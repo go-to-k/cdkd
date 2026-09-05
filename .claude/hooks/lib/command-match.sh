@@ -696,21 +696,32 @@ gate_unquote_span() {
 #  2. A `gh` GROUP absent from the second-verb-token list (`gh <group> <verb>`)
 #     leaves its verb undequoted. Deliberately the safe side: consuming a token
 #     that is an ARGUMENT is the failure the list exists to prevent.
-#  3. A structural token past `GATE_STRUCT_MAXTOKLEN` is left alone. State this
-#     as a WORKING bypass rather than as padding: EMPTY quoted pairs do not
-#     change the word, so `git c<300 x "">ommit -m x` really runs `git commit`
-#     and is not dequoted. It is 610 bytes, against 79 for the form the
-#     non-empty-span rule closed, and against 8 for `git "commit"` -- so it is
-#     the most expensive of the three, not the cheapest. A bound is
+#  3. A structural token past `GATE_STRUCT_MAXTOKLEN` is left alone, and this
+#     is a WORKING bypass rather than inert padding: empty quoted pairs do not
+#     change the word, so `git c<254 x "">ommit -m x` -- 523 bytes, measured,
+#     argv `[commit] [-m] [x]` -- really runs `git commit`. A bound is
 #     unavoidable: without one a 12 KB command took 154 s through
 #     `gate_segments` and killed the hook, which disarms every gate at once.
-#  4. More than `GATE_STRUCT_MAXTOK` tokens before the verb, likewise, and also
-#     RUNNABLE: `git --no-pager x24 "commit" -m x` is an ordinary command line.
-#     Its price is the same one -- see the constant.
-#  5. ANSI-C quoting: `git $'commit' -m x` really runs `git commit`, and the
-#     walk cannot read `$'...'` (it sees `$` plus a quoted span). It ABANDONS
-#     rather than emitting the mangled `$commit`. Pre-existing on origin/main,
-#     which matches it no better.
+#  4. More than `GATE_STRUCT_MAXTOK` tokens before the verb, likewise, and its
+#     floor is far lower than a `--no-pager` example suggests: git accepts the
+#     short `-P`, so `git -P x24 "commit" -m x` is EIGHTY-NINE bytes.
+#  5. ANSI-C and locale quoting: `git $'commit' -m x` and `git $"commit" -m x`
+#     both really run `git commit`, and the walk cannot read either (it sees
+#     `$` plus a quoted span). They ABANDON rather than emitting a mangled
+#     `$commit`. Pre-existing on origin/main, which matches them no better.
+#
+# WHAT THIS CHANGE IS AND IS NOT WORTH, stated because the residue list makes
+# it answerable rather than left to impression. The cheapest residue that
+# really runs the verb is `git $'commit' -m x` at EIGHTEEN bytes, against the
+# SEVENTEEN of the `git "commit"` this closes. So against an adversary who
+# picks their spelling, this buys one byte and nothing else. What it does buy
+# is the incidental case: an agent, or an instruction an agent was given, that
+# quotes a verb for ordinary reasons -- and that is what these gates are for.
+# They are guardrails on a process that can already run any command it likes,
+# not a boundary against a local attacker. Do not let a future round argue for
+# a wider, slower or riskier rewrite on the strength of "closing the bypass":
+# the bypass class is not closable by this route, and three rounds of trying
+# produced two denial-of-service regressions.
 #
 # HOOK-LOCAL PARSERS, audited rather than assumed (go-to-k/cdkd#2333 acceptance
 # criterion 3). The population is hooks that read `.tool_input.command` and do
@@ -840,7 +851,7 @@ _gate_struct_next() {
 # siblings) -- a bypass introduced by the change closing one. A surviving
 # BACKSLASH is refused for the same reason one direction over.
 _gate_struct_rewrite() {
-  local w="$1" rest="$1" out="" chunk q="" c spans=0
+  local w="$1" orig="$1" rest="$1" out="" chunk q="" c spans=0
   _GATE_DQ="$w"; _GATE_DQ_CHANGED=0
   case "$w" in *[\"\'\\]*) ;; *) return 0 ;; esac
   # A command word, a global-flag NAME and a subcommand are all short by
@@ -854,6 +865,36 @@ _gate_struct_rewrite() {
   # was rc=0 while its literal twin was rc=2). This bounds ONE TOKEN, so the
   # padding would have to sit INSIDE the verb itself.
   [ "${#w}" -le "$GATE_STRUCT_MAXTOKLEN" ] || return 0
+  # COLLAPSE PROVABLY-EMPTY QUOTED PAIRS FIRST, in one O(L) pass each, and do it
+  # AFTER the length check so the check still measures the token the caller
+  # actually typed.
+  #
+  # An empty pair contributes nothing to the word -- `c""""..""ommit` really
+  # runs `git commit` -- so it is FREE PADDING, and the walk must not pay for
+  # it. Two earlier revisions each got half of this: charging empty spans made
+  # 32 pairs (79 bytes) exhaust the span budget and abandon, re-opening this
+  # issue's own bypass; not charging them stopped the bypass but still ran a
+  # full O(remaining) chunk extraction per pair, so 24 tokens of 253 pairs --
+  # 49 KB, an ordinary-looking command line -- took 11.5 s against origin/main's
+  # 0.49 s and killed the hook. A killed hook cannot emit exit 2, which disarms
+  # every gate at once. Deleting the pairs outright is the only move that pays
+  # neither price.
+  #
+  # THE COST IS A FALSE REFUSAL ON ONE ABSURD SHAPE, and it is the loud
+  # direction: `git 'com""mit'` runs a subcommand git does not have, and now
+  # dequotes to `commit`, so the gates fire on a command that commits nothing.
+  # A structural token -- a command word, a global-flag name, a subcommand --
+  # never legitimately contains an empty pair, and a flag VALUE is copied
+  # verbatim and never reaches here, so no real command line takes this.
+  while :; do
+    case "$w" in
+      *'""'*|*"$GATE_SQ$GATE_SQ"*) ;;
+      *) break ;;
+    esac
+    w="${w//\"\"/}"
+    w="${w//$GATE_SQ$GATE_SQ/}"
+  done
+  rest="$w"
   # The walk advances by SPANS, not characters, for the reason recorded on
   # GATE_NOT_INERT_GLOB: `${s:i:1}` in a UTF-8 locale walks to offset `i` every
   # time, so a per-character loop here is quadratic. It removes only THAT
@@ -942,7 +983,10 @@ _gate_struct_rewrite() {
     # worse than none.
     *[\<\>\;\&\|\(\)\`\$]*) return 0 ;;
   esac
-  [ "$out" = "$w" ] && return 0
+  # Against the ORIGINAL token, not the collapsed one: the empty-pair collapse
+  # above rewrites `w`, so comparing to it reports "nothing changed" for
+  # exactly the padding shapes the collapse exists to see through.
+  [ "$out" = "$orig" ] && return 0
   _GATE_DQ="$out"; _GATE_DQ_CHANGED=1
   return 0
 }

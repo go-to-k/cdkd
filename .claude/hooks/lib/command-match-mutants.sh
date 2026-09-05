@@ -20,11 +20,13 @@
 #
 # THE BASELINE IS THE COPIED RUN, NOT THE IN-PLACE ONE, and the difference is
 # real: a few cases in the suite build fixtures relative to the SUITE'S OWN
-# directory, so they skip when it runs from a copy (measured: 545 in place, 543
-# here). Every mutant below is compared against the copied baseline printed on
-# the first line, so the comparison is internally consistent -- but do not read
-# the first line as the tree's case count. `bash
-# .claude/hooks/lib/command-match.test.sh` is what answers that.
+# directory, so they skip when it runs from a copy, and the copied baseline is
+# therefore a few cases lower than the in-place one. Every mutant below is
+# compared against the copied baseline printed on the FIRST LINE of this run,
+# so the comparison is internally consistent. Do not read that line as the
+# tree's case count, and -- given this script exists because a hand-copied
+# tally went stale twice -- no count is written here either. `bash
+# .claude/hooks/lib/command-match.test.sh` is what answers that question.
 #
 # Usage:  bash .claude/hooks/lib/command-match-mutants.sh [<mutant> ...]
 # Exit 0 when every mutant reduced the pass count, non-zero if any did not --
@@ -94,8 +96,13 @@ edits={
  'len-bound':        ('  [ "${#w}" -le "$GATE_STRUCT_MAXTOKLEN" ] || return 0\n', ''),
  'span-bound':       ('    [ "$spans" -gt "$GATE_STRUCT_MAXSPAN" ] && return 0\n', ''),
  'meta-reject':      ('    *[\\<\\>\;\\&\\|\\(\\)\\`\\$]*) return 0 ;;\n', ''),
- 'empty-span-charge':('      [ -n "$chunk" ] && spans=$((spans + 1))\n',
-                      '      spans=$((spans + 1))\n'),
+ # Deleting the empty-pair COLLAPSE, which is what makes free padding
+ # visible. Its predecessor probe -- flipping the span charge back on --
+ # became inert the moment the collapse landed, and this harness REPORTED
+ # that rather than passing quietly, which is the whole point of the
+ # `NOT DISCRIMINATED` arm. A probe list drifts away from its subject like
+ # any other enumeration.
+ 'empty-pair-collapse':('  while :; do\n    case "$w" in\n      *\'""\'*|*"$GATE_SQ$GATE_SQ"*) ;;\n      *) break ;;\n    esac\n    w="${w//\\"\\"/}"\n    w="${w//$GATE_SQ$GATE_SQ/}"\n  done\n', ''),
  'dq-backslash':     ('*) out="$out' + chr(92)*2 + '" ;;',
                       '*) out="$out$c"; rest="${rest#?}" ;;'),
  'gh-extra-always':  ('        case "$kind" in\n          gh)\n',
@@ -110,7 +117,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-span-charge dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then

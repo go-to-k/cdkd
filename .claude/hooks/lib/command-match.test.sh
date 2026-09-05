@@ -1664,7 +1664,10 @@ dq_same "a structural token past the LENGTH bound is left alone" \
   "git \"c${dq_long}ommit\" -m x"
 # The SPAN bound is charged only by spans that consumed characters, so the
 # case that exercises it must carry NON-empty ones.
-dq_many=$(printf '"x"%.0s' $(seq 1 40))
+# `"x"y` rather than `"x"`: consecutive `"x"` pairs put a `""` at every
+# junction, which the empty-pair collapse removes, leaving a token with almost
+# no spans at all.
+dq_many=$(printf '"x"y%.0s' $(seq 1 40))
 dq_same "a structural token past the SPAN bound is left alone" \
   "git c${dq_many}ommit -m x"
 # ...and the bounds must not fire on an ordinary command: a real global-flag
@@ -1785,28 +1788,41 @@ want_rest_each "f.txt" "a quoted -C flag still yields the restore tail" \
 # --- LATENCY IS A CORRECTNESS PROPERTY HERE, so it gets a case ---------------
 # A hook killed by the 10 s PreToolUse timeout cannot emit exit 2, and that
 # disarms EVERY gate at once -- strictly worse than any single unmatched
-# spelling. Two revisions of `gate_dequote_structural` shipped a walk that blew
-# that budget (a 12 KB command took 154 s; raising the token cap to 256 took
-# `branch-gate` from 4.43 s to KILLED on a 164 KB payload), and NOTHING in this
-# file noticed either time. This is the fence for that.
+# spelling. THREE successive revisions of `gate_dequote_structural` blew that
+# budget and nothing in this file noticed any of them: an unbounded walk took a
+# 12 KB command to 154 s; raising the token cap to 256 took `branch-gate` from
+# 4.43 s to KILLED on 164 KB; and exempting empty spans from the span budget
+# without DELETING them still ran a full O(remaining) extraction per pair, so
+# 49 KB took 11.5 s against origin/main's 0.49 s.
 #
-# The threshold is deliberately far below the real 10 s budget and the payload
-# far above any real command line, so ordinary machine-speed variation cannot
-# redden it -- only a return of the quadratic can.
-lat_tok=$(printf '%s' "--o=$(printf '"a"%.0s' $(seq 1 30))")
-lat_cmd="git"
-for _i in $(seq 1 400); do lat_cmd="$lat_cmd $lat_tok"; done
-lat_cmd="$lat_cmd \"commit\" -m x"
+# THE PAYLOAD IS THE ONE THAT WAS SLOW, and choosing it is the whole case. Two
+# earlier versions of this case measured nothing. The first used tokens with 30
+# NON-empty spans, which bail at the span bound after ~17 iterations: it ran in
+# 0.645 s with ALL THREE bounds removed, against a 3 s budget. The second used
+# empty pairs but only two SEGMENTS, and the per-segment walk stops at
+# GATE_STRUCT_MAXTOK tokens, so the cost plateaued at ~1.5 s -- still under
+# budget with the fix removed.
+#
+# Cost is per SEGMENT, so the payload has to be. Eight segments of 24 dense
+# tokens: measured 1.00 s here and 13.59 s with the empty-pair collapse
+# deleted, so the 4 s threshold sits an order of magnitude from both sides and
+# a loaded machine cannot reach it.
+lat_tok="-$(printf '""%.0s' $(seq 1 253))q"
+lat_seg="git"
+for _i in $(seq 1 24); do lat_seg="$lat_seg $lat_tok"; done
+lat_cmd="$lat_seg"
+for _i in $(seq 1 7); do lat_cmd="$lat_cmd ; $lat_seg"; done
+lat_cmd="$lat_cmd ; git commit -m x"
 lat_start=$(date +%s)
 gate_segments "$lat_cmd" >/dev/null 2>&1
 lat_end=$(date +%s)
 lat_secs=$((lat_end - lat_start))
-if [ "$lat_secs" -le 3 ]; then
+if [ "$lat_secs" -le 4 ]; then
   pass=$((pass + 1))
-  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 3s)\n' "${#lat_cmd}" "$lat_secs"
+  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 4s)\n' "${#lat_cmd}" "$lat_secs"
 else
   fail=$((fail + 1))
-  printf 'FAIL latency: %s bytes took %ss, budget 3s\n' "${#lat_cmd}" "$lat_secs"
+  printf 'FAIL latency: %s bytes took %ss, budget 4s\n' "${#lat_cmd}" "$lat_secs"
   fail_log="${fail_log}FAIL latency: ${#lat_cmd} bytes took ${lat_secs}s -- the PreToolUse timeout is 10s and a KILLED hook cannot emit exit 2, which disarms every gate at once\n"
 fi
 
