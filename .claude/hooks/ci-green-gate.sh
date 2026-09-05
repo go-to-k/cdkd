@@ -145,7 +145,12 @@ it in a retry loop just spins. Poll until checks EXIST, then watch:
 
   # Wait for the FIRST row. The discriminator is an EMPTY stdout, not the
   # exit code: rc=1 means EITHER "no checks reported" OR "a check failed".
-  until [ -n "$(gh pr checks ${pr_number:-<PR>} 2>/dev/null)" ]; do sleep 20; done
+  while :; do
+    out=\$(gh pr checks ${pr_number:-<PR>} 2>/dev/null); rc=\$?
+    [ -n "\$out" ] && break        # rows exist -- --watch can take over
+    [ "\$rc" = 1 ] || { echo "gh pr checks failed (rc=\$rc)"; break; }
+    sleep 20
+  done
   gh pr checks ${pr_number:-<PR>} --watch             # once a row exists
   # merge only after every check reports pass/skipping
 
@@ -154,7 +159,7 @@ it in a retry loop just spins. Poll until checks EXIST, then watch:
   #   a check FAILED      rc=1  stdout non-empty
   #   still running       rc=8  stdout non-empty
   #   all pass            rc=0  stdout non-empty
-  # So `--json name,state` buys nothing here (it is 0 bytes in the same
+  # So \`--json name,state\` buys nothing here (it is 0 bytes in the same
   # case), and polling on rc alone spins forever on a genuinely failing PR.
 
 If this repo genuinely has no CI, bypass explicitly:
