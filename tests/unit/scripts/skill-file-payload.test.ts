@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 172_004,
-    largest: { file: 'verify.md', bytes: 27_876 },
-    runnerUp: { file: 'implement.md', bytes: 27_713 },
+    corpusBytes: 172_746,
+    largest: { file: 'implement.md', bytes: 28_079 },
+    runnerUp: { file: 'verify.md', bytes: 27_876 },
   },
 };
 
@@ -233,6 +233,37 @@ const MIN_REFERENCE_FILES = 6;
 // The orchestrator paid 111 B for one stage-table clause, one corrected row
 // and the two "a few issues" phrasings the new default contradicted, leaving
 // 248 B.
+// The 2026-09-05 go-to-k/cdkd#2554 + go-to-k/cdkd#2615 retro added two rules
+// (implement.md's aim-the-mutation receipt, retro.md's promotion-routing and
+// mirror-aims-back clauses) plus a consequential rewrite in gates-and-pr.md,
+// and came out at 172,004 -> 172,746 with implement.md 27,713 -> 28,079
+// taking the lead back from verify.md 27,876 (unchanged); margin 709 -> 130 B.
+// The three components sum to the total and are stated so that they can be
+// checked rather than believed: implement.md +366, retro.md +254,
+// gates-and-pr.md +122, = +742. (An earlier revision of this paragraph said
+// +38 for the last of those, which reconciled with nothing; two reviewers
+// caught it, on the file whose whole subject is a byte figure going stale.)
+// Note what "paid for" does and does not mean here: every edited stage file
+// still GREW, so the payment was partial -- implement.md folded its
+// multi-copy-anchor clause into the receipt rather than keeping both, and
+// retro.md compressed six passages that carried an incident at paragraph
+// length where section 10-c asks for one line, the largest being 10-b's
+// restatement of 10-c's own byte-cap rationale. Contrast the
+// go-to-k/cdkd#2595 round and the batching pass below it, the two
+// that ended NET NEGATIVE.
+// implement.md's +366 B was NOT free, and this file predicted why: the
+// crossover the comment above forecast ("128 B of room at this writing") has
+// now happened twice, so implement.md is the leader and every byte added to
+// it moves the binding bound one for one -- the free direction described at
+// the go-to-k/cdkd#2607 entry applies only while a file is the RUNNER-UP.
+// Its other two lessons landed OUTSIDE this corpus on purpose --
+// .claude/skills/check-docs/SKILL.md (route a src change to the
+// .claude/rules satellites whose `paths:` glob matches it) and
+// .claude/rules/testing.md (a reworded string that becomes LESS specific
+// blunts a sentinel in a fixture the diff never opens). Free to THIS corpus,
+// but not free: the second spent 678 B of the `tests/setup.ts` payload band
+// in rule-file-payload.test.ts, whose three governing figures are re-derived
+// there in the same commit.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this

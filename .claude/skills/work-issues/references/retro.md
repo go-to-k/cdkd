@@ -53,26 +53,28 @@ rm -f /tmp/run-touched.$$
 
 - **An EMPTY result is not "nothing to promote" — check the extraction saw a
   FILE at all.** A body names its subject by SYMBOL as often as by path
-  (`EFSProvider.createOrAdoptAccessPoint` extracted as `EFSProvider.create`
-  and matched nothing while the criterion fired — go-to-k/cdkd#2442), and a
-  DOTFILE path needs the `\.?` prefix above (go-to-k/cdkd#2455 named a file
-  the retro PR itself added and the loop reported nothing). Print what the
-  extraction found; resolve by hand (`git grep -l '<the symbol>'`) whenever no
-  token is path-shaped or the diff is mostly dotfiles.
+  (go-to-k/cdkd#2442), and a DOTFILE needs the `\.?` prefix above
+  (go-to-k/cdkd#2455); both reported nothing while the criterion fired. Print
+  what the extraction found; resolve by hand (`git grep -l '<the symbol>'`)
+  whenever no token is path-shaped or the diff is mostly dotfiles.
 - **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
   citation from a target. Do the item, or re-classify it in the issue with the
   reason the criterion no longer applies. When the run's own PRs ARE the
   follow-ups' subject — one lane, or several sharing a subsystem — expect
-  EVERY one to hit and read the issue's REASON instead (go-to-k/cdkd#2514 10
-  of 10, and again across go-to-k/cdkd#2558's two-lane run, every one
-  correctly held on scope containment) — a run-wide hit rate is a property of the run's shape, not of
-  the deferrals.
+  EVERY one to hit, and read the issue's REASON instead (go-to-k/cdkd#2514 10
+  of 10; go-to-k/cdkd#2558's two lanes; all but three across
+  go-to-k/cdkd#2554's five) — a run-wide hit rate is a property of the run's
+  SHAPE, not of the deferrals.
 - **Re-read the REASON, not just the files — and when a hit CONTRADICTS it,
   the BODY is the stale side.** A reason anchored to the filing session's own
   state goes false while the decision it justified still stands.
   `.claude/rules/session-report.md` → Session-fit carries the shape, its
   boundary against the PR-shaped reason that is refused outright rather than
-  merely expiring, and the incident. Correct the issue when this catches one.
+  merely expiring, and the incident. Correct the issue when this catches one —
+  and when LANES REMAIN, route a hit whose file a later lane will open into
+  that lane's brief instead of noting it (go-to-k/cdkd#2604: a mid-run retro
+  logged the cleared blocker as "not that run's lane"; the next lane opened
+  that file anyway, and a third retro paid for what was twice free).
 
 Then split the filed count by what the §5-f window did with each finding:
 
@@ -123,10 +125,8 @@ still paid — obeyed text, retry anyway.
   restate.
 - **This skill's stage files** when the lesson is about running THIS flow. The
   edit target is the `references/<stage>.md` where the lesson fires — never
-  the SKILL.md orchestrator, unless the stage list itself changed (SKILL.md's
-  byte size is capped by `tests/unit/scripts/skill-file-payload.test.ts`, the
-  mechanical stop on the growth loop that produced the 231 KB single-file
-  predecessor).
+  the SKILL.md orchestrator, unless the stage list itself changed; its own
+  byte cap is 10-c's, and for the same reason.
 - **Another skill**, but only one this run actually exercised. ALL skills sit
   in the `check` gate's scope (`.claude/skills/**` since go-to-k/cdkd#2364),
   so editing any one invalidates the `check` marker.
@@ -154,20 +154,18 @@ unread one.
   bound** — the caps in `tests/unit/scripts/skill-file-payload.test.ts` are
   the mechanical stop on this skill's growth loop, and a retro that raises one
   converts the stop into a ratchet (the 2026-09-02 retro raised the corpus
-  floor to fit its additions; the 2026-09-04 compression pass reversed it and
-  re-derived every bound DOWNWARD). If a lesson genuinely cannot be paid for
-  by compression in its stage file, split the stage; the floor moves DOWN with
-  compression passes, never up to accommodate growth.
+  floor to fit its additions; the 2026-09-04 pass reversed it and re-derived
+  every bound DOWNWARD). A lesson compression cannot pay for splits the stage
+  instead; the floor moves DOWN only.
 - Do not restate a rule living in `CLAUDE.md` or another step — point at it.
-  `CLAUDE.md` is injected into every context; a stage-file paragraph
-  re-explaining a gate it already documents is paid for twice in every lane.
+  `CLAUDE.md` is injected into every context, so a stage-file paragraph
+  re-explaining a gate it documents is paid for twice in every lane.
 - A FLOW lesson (vs a cdkd one) gets mirrored into the same-named
   `work-issues` skill in `../cdk-local` and `../cdk-real-drift` — wording
   adapted per repo, one `chore:` PR per repo under that repo's own flow.
   Without the rules below this bullet is a duplicate GENERATOR (thirteen open
-  issues across the repos were one change; go-to-k/cdkd#2011 /
-  go-to-k/cdkd#2016 were the same three lessons filed twenty minutes apart by
-  two hops):
+  issues across the repos were one change; go-to-k/cdkd#2011 and
+  go-to-k/cdkd#2016 were three lessons filed twice, twenty minutes apart):
   - **The session that FINDS the lesson lands all three** — the default; the
     narrow exception (cannot pay the remaining gate cycles) is justified in
     the wrap. Land the mirror BEFORE the original's review rounds finish: the
@@ -175,7 +173,10 @@ unread one.
     momentum (measured 2026-09-02: the cdk-local port's reviewers found two
     defects in code cdkd had already merged past a three-axis panel, and
     cdkd's found one the port had inherited — the mirror is a second review
-    pass that happens to also be the deliverable).
+    pass that happens to also be the deliverable — and it reviews the SOURCE
+    too: re-deriving each claim against the target's gates re-opens the
+    original's, returning two defects in cdkd's own hooks on 2026-09-05,
+    go-to-k/cdkd#2630 / go-to-k/cdkd#2638).
   - **Filing a mirror issue covers the WHOLE remainder, in one turn** — file
     into every repo still missing it at once, each issue naming the others.
   - **A lane WORKING a mirror issue does not mirror onward** — the
@@ -204,16 +205,21 @@ unread one.
   gh -R go-to-k/<target> issue list --state open --search '<keyword>' --json number,title
   ```
 
-  (Measured: three issues filed for two lessons in 70 minutes, the lesson
-  sitting in a DIFFERENT window at each look — go-to-k/cdkd#1973 /
-  go-to-k/cdkd#1980 / go-to-k/cdkd#1986. No single window suffices.)
+  (No single window suffices: three issues for two lessons in 70 minutes, the
+  lesson in a DIFFERENT window at each look — go-to-k/cdkd#1973 /
+  go-to-k/cdkd#1980 / go-to-k/cdkd#1986.)
 
-  **Verify the copy against the TARGET repo, claim by claim, before shipping**
-  — gates/hooks/ship steps differ, so a sentence true here is false there.
+  **Verify the copy against the TARGET repo, claim by claim, before shipping —
+  and every briefed lesson against the SOURCE run's own diff.** Gates/hooks/ship
+  steps differ, so a sentence true here is false there; and a brief written from
+  memory names lessons the run never produced (2026-09-05: one was in no commit
+  of the source PR). "Not applicable here" is a legitimate per-lesson outcome
+  when MEASURED — two of the lessons briefed to cdk-real-drift were ruled out
+  that way: it has no `/review-pr` skill and no sentinel-bound live gate.
   Dispatch a read-only reviewer per target repo to check each gate name, hook
   behavior, skill name, path and cross-reference against that repo's own files
-  (caught four false claims on the first mirror). This rule lives HERE, not in
-  memory — memory is per-project-path and would not load in the targets.
+  (caught four false claims on the first mirror). Here rather than in memory,
+  which is per-project-path and would not load in the targets.
   **Read the BODY of every incident the copy cites** — a resolving number
   makes a wrong mechanism claim look sourced; name the mechanism the issue
   actually describes or drop it. **Fully qualify every issue/PR reference**
@@ -230,9 +236,9 @@ own worktree:
 MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
 
 ```bash
-# Suffix the branch to UTC MINUTE, not day: a merged branch's name is refused
-# by post-merge-orphan-push-gate, and more than one run lands per day
-# (measured: a date-suffixed name collided with a PR merged the same morning).
+# Suffix the branch to UTC MINUTE, not day: post-merge-orphan-push-gate
+# refuses a merged branch's name, and a date-suffixed one has already
+# collided with a PR merged the same morning.
 B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
 git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
@@ -255,17 +261,16 @@ git fetch origin && git switch -c "$B" origin/main
 - `chore:` prefix — `.claude/**` is not `src/**`; `commit-prefix-scope-gate`
   blocks `fix:` / `feat:` here.
 - English only in every committed line.
-- Scope does not exempt you from the markers: `check-gate` verifies BOTH
-  `check` and `docs` on every commit, and a fresh worktree starts with none.
-  `/verify-pr` sets all three in one pass; run it before the commit. A
+- Scope does not exempt you from the markers (CLAUDE.md, "Before every
+  commit") — a fresh worktree starts with none, and `/verify-pr` sets all
+  three in one pass; run it before the commit. A
   tooling-only PR gets §8's live-test exemption — the prose arm for a
   SKILL.md / rule edit, the command arm as soon as it lands in
   `.claude/hooks/**`. **There, run the WHOLE harness — `bash
   .claude/hooks/run-tests.sh`, not just your own hook's suite — and read the
   TALLY, not the rc**: a hooks edit re-triggers the path-filtered `hooks.yml`,
-  so a fence a PEER left inert surfaces as YOUR red CI (measured 2026-08-29: a
-  settings-only PR had broken a suite on `main` while sitting outside the
-  workflow's path filter; the retro PR repaired both halves).
+  so a fence a PEER left inert surfaces as YOUR red CI (2026-08-29: a
+  settings-only PR had broken a `main` suite sitting outside that path filter).
 - Agent-instruction files are deliberately NOT down-biased in `/review-pr`'s
   tier heuristic — a wrong rule here propagates into every future session —
   so take the tier the heuristic gives and do not argue it down.
@@ -281,11 +286,10 @@ git fetch origin && git switch -c "$B" origin/main
   and `--no-guess` because a plain `switch` would re-create the branch from
   `origin` instead of failing through to the fallback. §9 deliberately does
   NOT do it per-lane, because THIS section branches in the same tree and would
-  undo it. Leaving the tree on the retro branch makes the unmerged-lane Stop
-  hook warn every turn, and detaching is visible-surprising in the outer
-  tool's UI; restoring what the tool created is quiet on both counts. This is
-  `Session-fit: now`: deferring leaves main self-inconsistent, the evidence
-  dies with this session, and an open PR is NOT CLOSEABLE besides.
+  undo it. Restoring what the outer tool created is the quiet end state — it
+  silences the unmerged-lane Stop hook without the surprise of a detached HEAD
+  in that tool's UI. All of it is `Session-fit: now`: the evidence dies with
+  the session, and an open PR is NOT CLOSEABLE.
 
 Then report the outcome in one line of the wrap: what changed, in which step,
 and the run evidence behind it — or "no skill change" plus what held.

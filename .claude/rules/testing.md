@@ -697,6 +697,15 @@ checker must prove it sees its input", one layer out. Two rules:
   gate's digest scope, so the assertions can go blind while the marker is still
   fresh (fixture-facing half of `feedback_integ_after_final_rebase` /
   `feedback_review_fixes_stale_integ_marker`).
+- **A reword that makes a string LESS SPECIFIC blunts sentinels in fixtures
+  your diff never opens, and re-running finds none of them** — the grep still
+  MATCHES, it has just stopped discriminating, so every phase stays green
+  (`loggroup-never-expire-guard` grepped `not provably empty` until #2615
+  hedged the S3 reason the same way; review caught it, no fence did). Fence
+  it: `stateful-guard-message-sync.test.ts` derives the word-grams two
+  rendered strings SHARE and refuses a PINNED fixture carrying one outside a
+  full sentence. Read its scope note first — a population derived by scanning
+  every fixture looked general and was fail-OPEN (go-to-k/cdkd#2643).
 
 ### A checker must prove it sees its input
 

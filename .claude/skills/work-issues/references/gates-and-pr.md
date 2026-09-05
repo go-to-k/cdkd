@@ -4,8 +4,10 @@
 
 **Before the session's FIRST commit, run CLAUDE.md's gate-liveness probe** —
 `git commit --dry-run -m "gate liveness probe"` as your OWN Bash tool call.
-Git's ordinary output means the gates are NOT firing, and every gate step
-below is then self-enforced: run each check by hand and say so in the report.
+Ordinary git output means the gates are not firing ONLY if something was there
+to trip; with the markers already fresh, use CLAUDE.md's shape probe instead.
+Until the probe is CONCLUSIVE, every gate step below is self-enforced — run
+each by hand and say so in the report.
 
 From inside the worktree, run the local quality checks and record the markers:
 

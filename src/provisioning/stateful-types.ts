@@ -522,11 +522,15 @@ export const MULTI_REGION_RECREATE_BLOCKED_TYPES: ReadonlySet<string> = new Set(
  *  - `'has-retention'` — Logs::LogGroup with `RetentionInDays > 0`
  *    (read from the resource's recorded properties).
  *  - `'has-log-events'` — Logs::LogGroup whose emptiness is not
- *    established: the plan-time probe found at least one log stream,
- *    the probe could not run, or the caller is a mid-deploy site that
- *    has no probe opportunity at all. Its rendered text is HEDGED
- *    ("log group is not provably empty") for exactly that reason —
- *    only the hedge is true across all three.
+ *    established, on FIVE producers: the plan-time probe found a log
+ *    stream; it answered without settling the question; it hit a
+ *    not-found in a region it could not verify; it THREW; or the
+ *    caller is a mid-deploy site with no probe opportunity at all. The
+ *    two probe-failure arms are where this reason fails CLOSED while
+ *    the bucket fails OPEN, so its case list is a SUPERSET of
+ *    `'has-objects'`'s three rather than a mirror of them. Its
+ *    rendered text is HEDGED ("log group is not provably empty") for
+ *    exactly that reason — only the hedge is true across all five.
  *    `'has-objects'` carries the same duty across its own three cases
  *    and is hedged the same way ("S3 bucket is not provably empty",
  *    issue [#2615]). It was assertive until then, and the argument for
@@ -609,6 +613,28 @@ export function isStatefulRecreateTargetSync(
  * whose recorded bag does not already prove `has-retention`, on any of those
  * paths — empty or not.
  *
+ * `UpdateReplacePolicy: Retain` is the standing EXEMPTION, and it covers all
+ * three (issue [#2604]): the engine never consults this predicate under it —
+ * the property-driven guard tests `updateReplacePolicy !== 'Retain'`
+ * directly, and the fallback's two triggers short-circuit through
+ * `retainOldOnReplace`, which issue [#2518] added. The old resource survives
+ * the replacement, so there is no data loss to confirm, and the refusal's own
+ * remedy would have destroyed exactly what the user asked to keep.
+ * `Snapshot` is NOT exempt on any of them — a snapshot is a copy, not a
+ * surviving resource. So read the paragraph above as scoped to a template
+ * that is not retaining.
+ *
+ * The two engine sites are not the only callers: a THIRD sits outside those
+ * paths and outside that exemption — `recreate-confirm-prompt.ts` re-derives
+ * a `null` verdict for the `--recreate-via-*` pre-flight, where
+ * `--force-stateful-recreation` is what skipped the probe.
+ * `stateful-replace-message-doc-sync` pins the whole guard's reader list by
+ * file, but the residuals comment above its own walk enumerates what that
+ * cannot see — among them an ALIASED import, a `.mts` / `.cts` reader, and,
+ * the one that bit, a NEW PATH routed through an existing call site, which
+ * adds no file and reds nothing (issue [#2514]'s shape). So this enumeration
+ * is maintained by hand.
+ *
  * The log group's arm is the one issue [#2558] added, and the reason it is
  * needed is that the old predicate treated "no retention recorded" as "holds
  * nothing" when it is CloudWatch Logs' never-expire. Every other type matches
@@ -655,10 +681,19 @@ export function renderStatefulReason(reason: StatefulReason): string {
     case 'has-retention':
       return 'log group retains data (RetentionInDays > 0)';
     case 'has-log-events':
-      // Deliberately NOT "log group is non-empty", the assertive phrasing the
-      // bucket's sibling uses: this reason is rendered both when the plan-time
-      // probe FOUND a log stream and when nothing could be probed at all, and
-      // only the hedged wording is true in both cases.
+      // Deliberately NOT "log group is non-empty": this reason renders on
+      // FIVE producers, and only the hedged wording is true of all of them —
+      // the probe found a stream, it answered without settling the question,
+      // it hit a not-found in an unverified region, it THREW, and the
+      // mid-deploy arm ABOVE where no probe runs at all. The NOT-FOUND-IN-AN-
+      // UNVERIFIED-REGION and THREW arms are
+      // the divergence `recreate-targets.ts` documents: a probe failure fails
+      // CLOSED here and OPEN for the bucket. The mid-deploy arm is NOT part of
+      // it — the bucket's arm beside it answers `'has-objects'` on the same
+      // no-probe path, so that one is parity and must not be "simplified"
+      // toward the bucket. It was also the FIRST of the two to hedge; the
+      // bucket followed in issue [#2615], so the two are now the same shape
+      // rather than a contrast.
       return 'log group is not provably empty';
     case null:
       return '(not stateful)';
