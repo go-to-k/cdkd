@@ -141,11 +141,15 @@ export function warnUnresolvedLambdaTargetEnv(
       // boots NOR listeners). Claiming "the ECS targets DO honor it" there
       // would be vacuously true of an empty set and read as a contradiction,
       // so the sentence is carried only when there is an ECS half to speak
-      // about. The remedy line likewise STATES which source this path reads
-      // rather than telling the user to add a flag they may already have set:
-      // with a Lambda-only ALB nothing calls the dispatcher, so cdk-local's
-      // mutual-exclusion error (`:4896`) never fires and `--from-cfn-stack`
-      // can be present while this warning prints.
+      // about. The remedy line likewise STATES which source the Lambda path
+      // reads rather than telling the user to add a flag they may already have
+      // set. `--from-cfn-stack` CAN be present while this warning prints, and
+      // the reason is not that the dispatcher goes uncalled — the Lambda path
+      // does call it, from `resolveLambdaContainerEnv` (`:17892`). It calls it
+      // with the stripped six-key bag, so `activeExtras` is empty and the
+      // mutual-exclusion throw at `:4896` cannot fire. (An earlier revision of
+      // this comment said "nothing calls the dispatcher", which was false; the
+      // conclusion was right for the wrong reason.)
       const ecsNote =
         resolved.boots.length > 0
           ? 'The ECS service targets behind this ALB DO honor --from-state. '
@@ -159,7 +163,8 @@ export function warnUnresolvedLambdaTargetEnv(
             'Ref / Fn::GetAtt / Fn::Sub / Fn::ImportValue intrinsics unresolved, and each is ' +
             'then dropped with its own warning. ' +
             ecsNote +
-            'The only state source this path reads is --from-cfn-stack <name>, which reaches ' +
+            'The only state source the Lambda path reads is --from-cfn-stack <name>, which ' +
+            'reaches ' +
             'both target kinds on a CloudFormation-deployed stack; otherwise override the ' +
             'affected variables with --env-vars. Tracked as go-to-k/cdkd#2602 (upstream ' +
             'go-to-k/cdk-local#707).',
@@ -178,10 +183,17 @@ export function warnUnresolvedLambdaTargetEnv(
  * closure, deleting the decorator at its only wiring point left the entire
  * unit suite green (measured in review — 29/29). The decorator's own cases
  * exercise it directly, so they cannot see a call site that stopped calling
- * it. A named export gives that seam a subject a test can hold, and
- * `local-start-alb.test.ts` asserts BOTH halves: that this function returns a
- * warning-emitting strategy, and that the action passes THIS function's
- * result to `runEcsServiceEmulator` rather than a bare `albStrategy(...)`.
+ * it. A named export gives that seam a subject a test can hold.
+ *
+ * The seam is fenced BEHAVIOURALLY, in
+ * `tests/unit/cli/local-start-alb-wiring.test.ts`, which runs the real command
+ * and drives whatever object the action hands the engine. A source-shape
+ * assertion was tried first and defeated in review round 3 by hoisting
+ * `albStrategy(options)` into a local one statement up: its positive half was
+ * satisfied by the mutation's own COMMENT and its negative half could not
+ * cross the `)` the hoist introduced. That case is deleted rather than
+ * tightened — the behavioural one catches strictly more, and a fence a comment
+ * can satisfy reads as coverage while providing none.
  */
 export function buildAlbEmulatorStrategy(options: LocalStartAlbOptions): EmulatorStrategy {
   return warnUnresolvedLambdaTargetEnv(albStrategy(options), options);

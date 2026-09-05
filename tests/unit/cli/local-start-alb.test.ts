@@ -536,53 +536,46 @@ describe('non-forward listener actions (issue #2602)', () => {
   });
 });
 
-describe('buildAlbEmulatorStrategy wiring (issue #2602)', () => {
-  // The seam review found unfenced: with the composition inline in the
-  // command's action, deleting the decorator there left 29/29 green. Two
-  // halves, because either alone is defeatable — the behavioural case cannot
-  // see the action dropping the call, and the source case cannot see the
-  // composition being emptied.
+describe('buildAlbEmulatorStrategy (issue #2602)', () => {
+  // The named seam extracted after review found the wiring unfenced: with the
+  // composition inline in the command's action, deleting the decorator there
+  // left 29/29 green. THIS block covers the seam's own behaviour; that the
+  // ACTION still routes through it is fenced behaviourally in
+  // `local-start-alb-wiring.test.ts` (a source-shape assertion was tried here
+  // and defeated — see `buildAlbEmulatorStrategy`'s doc comment).
+
+  const template = JSON.parse(
+    readFileSync(
+      join(import.meta.dirname, '../../fixtures/alb-lambda-target/template.json'),
+      'utf8'
+    )
+  ) as Record<string, unknown>;
+  const stacks = [
+    {
+      stackName: 'LiveAlbProbeStack',
+      displayName: 'LiveAlbProbeStack',
+      artifactId: 'LiveAlbProbeStack',
+      template,
+      dependencyNames: [],
+      region: 'us-east-1',
+      account: '111122223333',
+    },
+  ];
+  const warningsFor = (fromState: boolean): string =>
+    buildAlbEmulatorStrategy({ fromState } as never)
+      .resolveBoots(stacks as never, ['Alb16C2F182'])
+      .warnings.join('\n');
 
   it('returns a strategy that warns on a real Lambda-bearing plan', () => {
-    const template = JSON.parse(
-      readFileSync(
-        join(import.meta.dirname, '../../fixtures/alb-lambda-target/template.json'),
-        'utf8'
-      )
-    ) as Record<string, unknown>;
-    const stacks = [
-      {
-        stackName: 'LiveAlbProbeStack',
-        displayName: 'LiveAlbProbeStack',
-        artifactId: 'LiveAlbProbeStack',
-        template,
-        dependencyNames: [],
-        region: 'us-east-1',
-        account: '111122223333',
-      },
-    ];
-    const { warnings } = buildAlbEmulatorStrategy({ fromState: true } as never).resolveBoots(
-      stacks as never,
-      ['Alb16C2F182']
-    );
-    expect(warnings.join('\n')).toContain('ApiFnE0725F78');
+    expect(warningsFor(true)).toContain('ApiFnE0725F78');
   });
 
-  it('is what the command action hands the engine', () => {
-    // A source-shape assertion, because the action is a closure the test
-    // cannot reach: what must hold is that `runEcsServiceEmulator` receives
-    // THIS function's result. The negative half is the load-bearing one — a
-    // regression re-inlines `albStrategy(options)` as the third argument.
-    const source = readFileSync(
-      join(import.meta.dirname, '../../../src/cli/commands/local-start-alb.ts'),
-      'utf8'
-    );
-    expect(source).toContain('buildAlbEmulatorStrategy(options),');
-    expect(source).not.toMatch(/runEcsServiceEmulator\([^)]*\balbStrategy\(/s);
-    // ...and the seam must still COMPOSE the decorator, or it is a rename of
-    // `albStrategy` and the source check above passes over nothing.
-    expect(source).toMatch(
-      /buildAlbEmulatorStrategy\([^)]*\)[^{]*\{\s*return warnUnresolvedLambdaTargetEnv\(albStrategy\(options\), options\);/
-    );
+  it('carries no warning at all without --from-state', () => {
+    // The seam's own copy of the non-state arm. Behavioural rather than an
+    // identity compare, because `albStrategy(options)` returns a FRESH object
+    // per call, so `toBe` against a second construction can never hold — it
+    // would fail on correct code and pass on nothing.
+    expect(warningsFor(false)).not.toContain('does not reach the container environment');
   });
+
 });

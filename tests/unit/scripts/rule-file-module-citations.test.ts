@@ -32,9 +32,9 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
  * under those names; the module is `src/deployment/intrinsic-function-resolver.ts`,
  * named correctly seven lines above. Measured populations (2026-09-06):
  *
- * - **Bare basename** in a code span — `` `docker-runner.ts` ``. 363 of them.
+ * - **Bare basename** in a code span — `` `docker-runner.ts` ``. 364 of them.
  *   Resolved against a SET OF BASENAMES collected from a repo walk.
- * - **Path form** in a code span — `` `src/analyzer/dag-builder.ts` ``. 247 of
+ * - **Path form** in a code span — `` `src/analyzer/dag-builder.ts` ``. 246 of
  *   them, invisible to the first cut. Resolved as a path from the repo root,
  *   falling back to `src/<cited>`: the corpus writes both spellings and three
  *   citations are `src`-relative (`utils/aws-region-resolver.ts`,
@@ -60,8 +60,8 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
  *   this fence pass or fail on whether a sibling checkout happens to be
  *   present — the hermeticity failure a fence is least able to notice, since
  *   it goes green on the machine you develop on. Such citations are counted
- *   and CAPPED instead ({@link MAX_EXTERNAL_CITATIONS}), so the corpus cannot
- *   quietly drift toward unverifiable references.
+ *   pinned by IDENTITY instead ({@link UNVERIFIABLE_CITATIONS}), so the corpus
+ *   cannot quietly drift toward unverifiable references.
  *
  * ## Deliberately-dead citations
  *
@@ -91,7 +91,12 @@ const SKIP_DIRS = new Set([
 
 /**
  * Modules the rules cite that are GONE from the tree on purpose. Key is the
- * basename as cited; value is why the citation stays. Adding an entry is a
+ * BASENAME, whatever spelling the citation used — which is a deliberate
+ * looseness with a cost worth naming: a stale PATH-form citation whose
+ * basename is listed here (say `src/wrong/place/import-tag-walk.ts`) is
+ * exempted too. Keying by full path instead would demand an entry per
+ * spelling of a file that no longer exists, which is worse; the entries are
+ * few and each is read when it changes. Value is why the citation stays. Adding an entry is a
  * claim that the text is talking about history — if it is talking about the
  * present, fix the text instead.
  */
@@ -109,7 +114,7 @@ const DELETED_MODULE_CITATIONS: Record<string, string> = {
 /**
  * Floors, so a regex that silently stopped matching cannot pass vacuously.
  * Every figure is a LITERAL from a measurement this fence does not itself
- * perform (2026-09-06: 610 code-span citations, of which 247 are path form,
+ * perform (2026-09-06: 610 code-span citations, of which 246 are path form,
  * plus 6 markdown links, across 38 of the 45 rule files) — a floor computed
  * from the pool it guards is satisfied by that pool going empty.
  *
@@ -123,11 +128,34 @@ const MIN_MARKDOWN_LINK_CITATIONS = 5;
 const MIN_FILES_WITH_CITATIONS = 30;
 
 /**
- * Citations resolving OUTSIDE the repo. Not a floor but a CEILING: each one is
- * a claim this fence cannot check hermetically (see the bounds above). One
- * exists today, in `gate-sibling-repos.md`. Raising this needs a reason.
+ * Citations this fence cannot check, pinned BY IDENTITY rather than counted.
+ *
+ * A count was tried first and review found two holes in it. It could not tell
+ * one unverifiable citation from another, so deleting this entry and adding a
+ * different one passed silently. And it was LAUNDERABLE: a stale in-repo path
+ * re-spelled with a leading `/` (`` `/src/gone.ts` ``) resolves as absolute,
+ * classifies as external, and skips the dead-citation check entirely. An exact
+ * set closes both — a new unverifiable citation is a new key, whatever its
+ * spelling.
+ *
+ * Two kinds live here, for two different reasons:
+ *
+ * - **Out of repo.** `gate-sibling-repos.md` names an absolute path into a
+ *   sibling checkout. It resolves on the maintainer's machine and never in CI,
+ *   so checking it would make this fence pass where you develop and fail where
+ *   it matters — the hermeticity failure a fence is least able to notice.
+ * - **`..`-relative.** `docs-page-template.md` writes `../src/x.ts` as an
+ *   ILLUSTRATION of a link that must not appear in `docs/`. There is no base
+ *   directory that makes it resolvable, and it is not meant to.
+ *
+ * Keyed `<rule file> :: <cited>`, checked in both directions.
  */
-const MAX_EXTERNAL_CITATIONS = 1;
+const UNVERIFIABLE_CITATIONS: Record<string, string> = {
+  'gate-sibling-repos.md :: /Users/goto/pc/github/cdk-local/src/types/state.ts':
+    'absolute path into a sibling checkout; present only on a developer machine, never in CI.',
+  'docs-page-template.md :: ../src/x.ts':
+    'deliberate placeholder illustrating a relative link that must NOT escape docs/.',
+};
 
 function walkFileNames(dir: string, out: Set<string>): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -164,8 +192,12 @@ function collectCitations(): Citation[] {
     for (const match of text.matchAll(/`([A-Za-z0-9._/-]+\.ts)`/g)) {
       const cited = match[1] as string;
       // `.d.ts` / `.generated.ts` are SUFFIX fragments, not filenames — the
-      // text writes them to name a file KIND. A leading dot is the tell.
-      if (cited.startsWith('.')) continue;
+      // text writes them to name a file KIND. The tell is a leading dot with
+      // NO slash; the guard used to be a bare `startsWith('.')`, which also
+      // swallowed `../`-relative citations and hid them from every check
+      // (review round 3). Those now reach the classifier and land in
+      // UNVERIFIABLE_CITATIONS, where they are at least counted by identity.
+      if (cited.startsWith('.') && !cited.startsWith('..')) continue;
       citations.push({ ruleFile: name, cited, kind: cited.includes('/') ? 'path' : 'bare' });
     }
     // Markdown links, which the corpus uses for cross-file pointers.
@@ -189,10 +221,25 @@ function targetOf(citation: Citation): string | undefined {
     : resolve(REPO_ROOT, citation.cited);
 }
 
-/** A citation this fence cannot check without depending on the host machine. */
-function isExternal(citation: Citation): boolean {
+/**
+ * A citation this fence cannot check: it points outside the repo (so checking
+ * it would depend on the host machine) or it is `..`-relative with no base
+ * that resolves. Both are pinned by identity in {@link UNVERIFIABLE_CITATIONS}.
+ */
+function isUnverifiable(citation: Citation): boolean {
+  // A `..`-prefixed CODE SPAN has no defined base — it is prose, not a link.
+  // A markdown LINK is relative to the rules directory and resolves normally,
+  // so `..` is ordinary there; four live links start with it. Scoping this to
+  // code spans matters: an earlier revision applied it to both and turned four
+  // perfectly checkable links into unverifiable ones.
+  if (citation.kind !== 'link' && citation.cited.startsWith('..')) return true;
   const target = targetOf(citation);
   return target !== undefined && !insideRepo(target);
+}
+
+/** The key {@link UNVERIFIABLE_CITATIONS} pins a citation by. */
+function unverifiableKey(citation: Citation): string {
+  return `${citation.ruleFile} :: ${citation.cited}`;
 }
 
 function resolvesInTree(citation: Citation, repoFileNames: Set<string>): boolean {
@@ -255,26 +302,28 @@ describe('.claude/rules module citations resolve against the tree', () => {
     expect(repoFileNames.has('rule-file-payload.test.ts')).toBe(true);
   });
 
-  it('carries no more unverifiable out-of-repo citations than it admits to', () => {
-    const external = citations
-      .filter(isExternal)
-      .map((c) => `${c.ruleFile} cites ${c.cited}`)
-      .sort();
+  it('pins every unverifiable citation by identity, in both directions', () => {
+    const found = [...new Set(citations.filter(isUnverifiable).map(unverifiableKey))].sort();
+    const pinned = Object.keys(UNVERIFIABLE_CITATIONS).sort();
+    // EQUALITY, not a count. A count could not tell one unverifiable citation
+    // from another, so swapping this entry for a different one passed silently
+    // — and a stale in-repo path re-spelled with a leading `/` laundered
+    // itself out of the dead-citation check by classifying as external.
     expect(
-      [...new Set(external)].length,
-      'A .claude/rules file cites a .ts path outside this repository: ' +
-        `${[...new Set(external)].join('; ')}. Such a citation resolves on whichever machine ` +
-        'happens to have the sibling checkout and never in CI, so this fence cannot verify it. ' +
-        'Prefer naming the sibling repo and the path in prose over writing a machine-specific ' +
-        'absolute path.'
-    ).toBeLessThanOrEqual(MAX_EXTERNAL_CITATIONS);
+      found,
+      'The set of .claude/rules citations this fence cannot verify has changed. Each one either ' +
+        'points outside the repo (resolves on a developer machine, never in CI) or is ' +
+        '`..`-relative with no resolvable base. Prefer naming the repo and path in prose over a ' +
+        'machine-specific absolute path; if the citation must stay, add it to ' +
+        'UNVERIFIABLE_CITATIONS with the reason.'
+    ).toEqual(pinned);
   });
 
   it('cites no module that is missing from the tree', () => {
     const dead = citations
       .filter(
         (c) =>
-          !isExternal(c) &&
+          !isUnverifiable(c) &&
           !resolvesInTree(c, repoFileNames) &&
           DELETED_MODULE_CITATIONS[basenameOf(c.cited)] === undefined
       )
