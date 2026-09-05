@@ -44,6 +44,13 @@ from the stored keys rather than from `state.json`, so a destroyed stack is
 still found. A stack with history in more than one region is an error until you
 name one.
 
+The human output routes every stored value through cdkd's terminal-sanitising
+helper, so a control byte in a provider `reason`, a logical id or an AWS error
+message cannot repaint a line of the post-mortem; `--json` is deliberately left
+byte-identical to the store, since it is machine-consumed. See
+[Deployment Events](deployment-events.md#rendering-control-bytes-are-neutralised-on-the-human-path-only)
+for what that does and does not cover.
+
 ## `cdkd events prune`
 
 The store self-bounds to the newest 20 runs at write time, and `cdkd destroy`
