@@ -50,11 +50,12 @@ by a probe or a trace, never by re-reading the diff:
   the probes.
 - **When the fix WIDENS what a guard catches, ask what the thing you are
   deleting was actually DOING — and confirm the instrument you measure with
-  probes the POSITION your change acts in** (go-to-k/cdkd#2333, WITHDRAWN
-  after four rounds: the removed quote-behaviour was the only brake on an
-  earlier widening, and the survey returned zero because every probe landed
-  in argument position, never the flag prefix the change acted on). A zero
-  measured in the wrong position is not weak evidence; it is none.
+  probes the POSITION your change acts in** (go-to-k/cdkd#2333's FIRST
+  attempt, withdrawn after four rounds: the removed quote-behaviour was the
+  only brake on an earlier widening, and the survey returned zero because
+  every probe landed in argument position, never the flag prefix the change
+  acted on). A zero measured in the wrong position is not weak evidence; it is
+  none.
 - **Derive the reader population before patching readers** — one grep returns
   every consumer at once; patching one per round IS the cascade.
 - **A benchmark or COST FENCE must exercise the path the change is on** — a
@@ -120,9 +121,9 @@ Unit tests passing is necessary but NOT sufficient:
 - **Deletion / DAG-order / state-cleanup change** → unmergeable until an
   integ's **destroy** step completes cleanly (`integ-destroy`, plus
   `integ-broad` for cross-cutting files). Run it via **`/run-integ <name>`**
-  — never raw `cdkd` from a shell, CLAUDE.md's rule and why. `/pick-integ`
-  chooses the fixture(s) and marks which are maintainer-only — never name one
-  it flagged.
+  — never raw `cdkd deploy` / `cdkd destroy` from a shell (CLAUDE.md carries
+  that rule and why). `/pick-integ` chooses the fixture(s) and marks which are
+  maintainer-only — never name one it flagged.
 - **Non-deletion source change** → still live-test the fixed path end-to-end
   (deploy → the redeploy that reproduced the bug → destroy), fresh fixture or
   `/run-integ` against an existing one.
@@ -308,8 +309,9 @@ code defects and FIVE false statements in prose. Habits that each caught one:
   prose one of three DISPOSITIONS: delete it (preferred — a changelog bullet
   cannot be re-derived, and an enumeration IS its own count), fence it with a
   floor AND a cap from a test that reads the code, or attribute it as a dated,
-  explicitly non-derivable measurement. Recounting fails because a widened set
-  falsifies counters in files the diff never touches (go-to-k/cdkd#2410 /
+  explicitly non-derivable measurement. Recounting fails because a set that
+  GAINS or LOSES a member — a fix closing one counts — falsifies counters in
+  files the diff never touches (go-to-k/cdkd#2410 /
   go-to-k/cdkd#2275, four in one run, every one caught by a reviewer and none
   by the author; go-to-k/cdkd#2519 drifted its per-type lists seven times
   across changelog, docs, PR body and comments, once inside the sentence
