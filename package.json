@@ -108,7 +108,7 @@
     "graphql": "^16.14.0",
     "http-proxy-agent": "^9.1.0",
     "https-proxy-agent": "^9.1.0",
-    "p-limit": "^5.0.0",
+    "p-limit": "^7.3.2",
     "proxy-from-env": "^2.1.0",
     "ws": "^8.20.0",
     "yaml": "^2.9.0"
