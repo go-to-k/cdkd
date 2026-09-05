@@ -1,6 +1,10 @@
 import { getLogger } from '../utils/logger.js';
 import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
+  findNestedStackTypeChanges,
+  renderNestedStackTypeChangeRefusal,
+} from './type-change-guard.js';
+import {
   collectPublishedOutputNames,
   exportAliasCollisionWarning,
   exportNameSecretExposure,
@@ -2194,6 +2198,55 @@ export class DeployEngine {
         // make, which is this issue's own bug class moved one command over.
         makeCanonicalizePropertiesFn(this.providerRegistry)
       );
+
+      // Issue #2668: refuse a Type change into or out of
+      // `AWS::CloudFormation::Stack` before anything is provisioned. A
+      // replacement routes BOTH halves on `change.resourceType` (the TEMPLATE's
+      // type), so such a row's delete reaches `NestedStackProvider.delete`,
+      // which ignores the physical id it is handed and destroys
+      // `<parent>~<logicalId>` whole. Full reasoning — including why the
+      // refusal is scoped to this type pair and carries no override — in
+      // `type-change-guard.ts`.
+      //
+      // Placed HERE rather than in a CLI pre-flight for two reasons: nested
+      // child stacks get their own `DeployEngine` from
+      // `NestedStackProvider.runChildDeploy` and never pass through
+      // `deploy.ts`, and this is the site that owns the very `changes` map the
+      // routing decision is made from, so a pre-flight would have to
+      // re-implement the diff's Type-change rule and could drift from it. It
+      // is still before every provider call — and before the `--dry-run`
+      // return below, so a dry run reports the refusal instead of previewing a
+      // plan cdkd will not run. The lock acquired above is released by this
+      // block's `finally`.
+      const nestedStackTypeChanges = findNestedStackTypeChanges({
+        changes,
+        stateResources: currentState.resources,
+      });
+      if (nestedStackTypeChanges.length > 0) {
+        // `markNonRetryable` for the same reason as the sibling refusals in
+        // this file: the verdict is computed from a state record and a template
+        // type, which no retry can change, while the message interpolates
+        // TEMPLATE-CONTROLLED text (a logical id, the stack name, both type
+        // strings, a physical id) into a string the SUBSTRING-matching
+        // classifiers read.
+        //
+        // LATENT today, and deliberately marked anyway — the #1778 precedent,
+        // and the same status `nested-stack-provider.ts` records for its own
+        // mark. No claim is made here about WHICH loop would observe it:
+        // two successive revisions of this comment named a loop that turned
+        // out unreachable, so the honest statement is the one the mark itself
+        // makes. `retry.ts` consults `isMarkedNonRetryable` ahead of
+        // `opts.isRetryable`, so the DECLARATION survives any caller that
+        // later opts back into retrying this path, which a message-only
+        // classifier could not.
+        throw markNonRetryable(
+          new CdkdError(
+            renderNestedStackTypeChangeRefusal(nestedStackTypeChanges, stackName),
+            'TYPE_CHANGE_NESTED_STACK'
+          )
+        );
+      }
+
       const hasChanges = this.diffCalculator.hasChanges(changes);
 
       if (!hasChanges) {
