@@ -488,6 +488,16 @@ const SPLIT_ADVICE =
  *
  * Every exclusion here exists because a pointer can be present in the bytes
  * and absent from the rendered page, which is the only thing a reader has.
+ * This is a HEURISTIC approximation of what CommonMark renders, not a parser.
+ * Three review rounds each found a construction it got wrong, so the honest
+ * framing is: it models the shapes an author plausibly writes -- a pointer
+ * moved and forgotten, a row demoted into a code block, a rename leaving a
+ * dangling link -- and it is not a security boundary against someone trying to
+ * smuggle a pointer past it. A real CommonMark parser would settle the class,
+ * and the repo declares none; adding a dependency to the whole project for one
+ * fence is the wrong trade, so the residual is documented instead of hidden.
+ * Every gap found so far and left open fails CLOSED.
+ *
  * Each item below carries its own provenance rather than a summary count: an
  * earlier revision of this paragraph said "shapes 1-5 ... 6-8" over a list of
  * six, and claimed none occurred in the corpus while two items named live
@@ -535,16 +545,57 @@ const SPLIT_ADVICE =
  * indistinguishable from ordinary bracketed prose without resolving every
  * definition, and this corpus brackets prose constantly. All three fail
  * CLOSED: the link is not credited, so the effect is a FALSE ORPHAN, which is
- * loud and fixable, never a silent pass. Note also that comment-stripping runs
- * BEFORE fence handling, so a `<!--` written inside a code fence eats text
- * past it -- wrong in principle, absent in this corpus, and again in the
- * false-orphan direction.
+ * loud and fixable, never a silent pass.
+ *
+ * One further gap is known and NOT closed: a reference definition sitting on a
+ * paragraph-continuation line renders as literal text rather than as a
+ * definition, and is still credited. Distinguishing it needs blank-line state
+ * this scan does not keep, and the cost of being wrong is small -- the
+ * filename is visible text on the page either way, so a reader following the
+ * index still finds the file.
+ *
+ * An earlier revision of this paragraph also claimed that comment-stripping
+ * running BEFORE fence handling was harmless and in the false-orphan
+ * direction. It was neither: a comment ENDING inside a code block left a bare
+ * fence marker behind, forging a close out of code content and silently
+ * crediting whatever followed. Comments are now resolved per line and only
+ * outside a fence. That claim is recorded here because it was written in the
+ * same commit that fixed a different silent pass -- a limitation noted as safe
+ * without being probed is worth less than no note at all.
  */
 function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
-  const withoutComments = lines.join('\n').replace(/<!--[\s\S]*?-->/g, '');
   const kept: string[] = [];
   let fence: string | undefined;
-  for (const line of withoutComments.split('\n')) {
+  let inComment = false;
+  for (const raw of lines) {
+    // Blockquote markers come off FIRST, so a fence or an indent inside a
+    // quote is seen. A quoted link is still visible to a reader, so the
+    // content is kept -- it is only a quoted FENCE that must hide what
+    // follows, and `^ {0,3}` could not see one.
+    let line = raw.replace(/^ {0,3}(?:> ?)+/, '');
+
+    // Comments are resolved INSIDE the line loop and only while outside a
+    // fence, which is the whole point. Stripping them from the joined text
+    // first -- the shape this replaces -- let a comment written inside a code
+    // block end mid-line and leave a bare ``` behind, forging a CLOSING fence
+    // out of code content and crediting whatever followed. That is a silent
+    // pass, not the false-orphan direction an earlier revision of this comment
+    // claimed. A `<!--` inside a fence is likewise not a comment.
+    if (fence === undefined) {
+      if (inComment) {
+        const close = line.indexOf('-->');
+        if (close === -1) continue;
+        line = line.slice(close + 3);
+        inComment = false;
+      }
+      line = line.replace(/<!--.*?-->/g, '');
+      const open = line.indexOf('<!--');
+      if (open !== -1) {
+        line = line.slice(0, open);
+        inComment = true;
+      }
+    }
+
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (marker !== undefined) {
       if (fence === undefined) fence = marker;
@@ -552,7 +603,10 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
       continue;
     }
     if (fence !== undefined) continue;
-    if (/^ {4,}\S/.test(line)) continue;
+    // A TAB is a four-column tab stop, so a tab-indented line renders as code
+    // exactly like four spaces. The corpus has none, which is why the
+    // spaces-only test looked complete and why widening it costs nothing.
+    if (/^(?: {4,}|\t)\S/.test(line)) continue;
     if (rowsOnly && !line.trimStart().startsWith('|')) continue;
     kept.push(line);
   }
@@ -568,7 +622,7 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
   const usedLabels = new Set<string>();
   for (const m of text.matchAll(/\]\[([^\]]+)\]/g)) usedLabels.add(m[1]!.toLowerCase());
   for (const m of text.matchAll(
-    /^ {0,3}\[([^\]]+)\]:\s*<?([^\s#<>]+\.md)>?(?:#\S*)?(?:\s+["'(][^\n]*)?\s*$/gm,
+    /^ {0,3}\[([^\]]+)\]:\s*<?([^\s#<>]+\.md)>?(?:#\S*)?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*$/gm,
   )) {
     if (usedLabels.has(m[1]!.toLowerCase())) targets.push(m[2]!);
   }
