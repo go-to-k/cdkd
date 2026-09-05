@@ -1683,6 +1683,11 @@
       "scenarios": []
     },
     {
+      "name": "recreate-nested-logical-id-collision",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "recreate-via-cc-api",
       "annotated": false,
       "scenarios": []
@@ -2860,6 +2865,7 @@
     "nodejs-function",
     "rds-dbinstance-backfill",
     "recreate-mixed-direction",
+    "recreate-nested-logical-id-collision",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
     "rename-refactor",

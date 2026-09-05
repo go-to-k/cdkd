@@ -343,7 +343,16 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
 
   it('site 5 — --recreate-via-cc-api destroy-then-create', async () => {
     primeUpdate();
-    await engine({ recreateViaCcApiTargets: new Set([LOGICAL]) }).deploy(STACK, template);
+    await engine({
+      // Scoped to the stack this engine deploys — since issue #2567 a target set
+      // naming another stack is ignored, which is what confines the flag to the
+      // stack the CLI pre-flight validated it against.
+      recreateTargets: {
+        stackName: STACK,
+        viaCcApi: new Set([LOGICAL]),
+        viaSdkProvider: new Set<string>(),
+      },
+    }).deploy(STACK, template);
     expect(mockProvider.delete).toHaveBeenCalled();
     expect(mockProvider.create).toHaveBeenCalledOnce();
     expect(seenCreate).toEqual([EXPECTED_BAG]);

@@ -561,6 +561,20 @@ export class NestedStackProvider implements ResourceProvider {
       parentCtx.diffCalculator!,
       parentCtx.providerRegistry,
       {
+        // THIS SPREAD IS THE PARENT→CHILD OPTION BOUNDARY. Anything the parent
+        // validated against ITS OWN template / state / live AWS arrives here
+        // unvalidated for the child, so an option carrying user-named
+        // identifiers must be scoped to the stack it was validated against
+        // rather than re-matched blind (issue
+        // [#2567](https://github.com/go-to-k/cdkd/issues/2567), where
+        // `--recreate-via-*` targets were a bare id set and matched a child
+        // resource that merely SHARED a logical id, skipping the child's
+        // stateful guard). Two options already carry that scope and are safe to
+        // inherit as-is: `recreateTargets` (matched only when its `stackName`
+        // equals the deploying stack's) and `onCurrentStateLoaded` (the
+        // prefix-migration gate returns early on a stack-name mismatch). The
+        // child deploys as `<parent>~<logicalId>`, so neither can ever match
+        // here.
         ...(parentCtx.options ?? {}),
         // Always overwrite (never spread-inherit) parameters: the parent's
         // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,

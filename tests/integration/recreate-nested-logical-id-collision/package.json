@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-recreate-nested-logical-id-collision",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd #2567 integ probe — a --recreate-via-* target is honoured only in the stack the pre-flight validated it against, not in a nested child that shares the logical id",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

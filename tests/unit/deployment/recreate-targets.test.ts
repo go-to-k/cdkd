@@ -409,6 +409,83 @@ describe('validateRecreateTargets (#615)', () => {
   });
 });
 
+describe('nested-stack scope of the flags (#2567)', () => {
+  const NESTED_TYPE = 'AWS::CloudFormation::Stack';
+
+  /** A parent template with one nested child and one ordinary resource. */
+  function parentTemplate(): CloudFormationTemplate {
+    return {
+      Resources: {
+        MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+        ChildStack: { Type: NESTED_TYPE, Properties: {} },
+      },
+    };
+  }
+
+  it('records the template\'s nested-stack logical ids', () => {
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.nestedStackLogicalIds).toEqual(['ChildStack']);
+  });
+
+  it('is EMPTY for a flat stack — so an ordinary typo keeps the plain message', () => {
+    const v = validateRecreateTargets({
+      template: { Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } } },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['Typo'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.nestedStackLogicalIds).toEqual([]);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toMatch(/not present in the synth template/);
+    // The hint is the whole point of carrying the ids; it must not fire where
+    // there is no nested stack to explain.
+    expect(error).not.toMatch(/nested stack/);
+  });
+
+  it('an id that lives only in a CHILD is refused at pre-flight, and the refusal says why', () => {
+    // This is what a "genuinely nested target" does today: the child's
+    // resources are not in the parent's template, so the flag never reaches
+    // the deploy at all. Scoping the target set (#2567) therefore removes no
+    // capability — the ONLY ids that used to reach a child engine were ones
+    // validated for the PARENT that collided by accident.
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['BucketInsideTheChild'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.unknownLogicalIds).toEqual(['BucketInsideTheChild']);
+    expect(v.targets).toEqual([]);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toMatch(/resources inside a nested stack are NOT addressable/);
+    // It names the nested stack(s) the user can see in their own template.
+    expect(error).toContain('ChildStack');
+  });
+
+  it('a top-level id that a child SHARES is still a valid target — for the parent only', () => {
+    // The collision case from the issue. The pre-flight validates it against
+    // the parent, and the engine honours it only in the parent
+    // (`deploy-engine-recreate-targets-stack-scope.test.ts` pins that half).
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { MyLambda: res('AWS::Lambda::Function', { physicalId: 'foo' }) }),
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.targets.map((t) => t.logicalId)).toEqual(['MyLambda']);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+});
+
 describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk-provider)', () => {
   it('rejects --recreate-via-sdk-provider on a resource currently provisionedBy: sdk (no-op)', () => {
     const template: CloudFormationTemplate = {
@@ -719,6 +796,7 @@ function emptyValidation(
     blockedAlreadyCcApi: [],
     blockedNoSdkProvider: [],
     conflictingDirections: [],
+    nestedStackLogicalIds: [],
   };
 }
 
@@ -1629,6 +1707,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
       conflictingDirections: [],
+      nestedStackLogicalIds: [],
     };
     const out = await probeAndRevalidateStateful({
       validation,
@@ -1702,6 +1781,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
       conflictingDirections: [],
+      nestedStackLogicalIds: [],
     };
     const out = await probeAndRevalidateStateful({
       validation,

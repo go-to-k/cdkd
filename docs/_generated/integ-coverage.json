@@ -606,7 +606,8 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
-        "nested-stack-secret"
+        "nested-stack-secret",
+        "recreate-nested-logical-id-collision"
       ],
       "signals": {
         "export-nested-stack": [
@@ -625,6 +626,9 @@
           "literal"
         ],
         "nested-stack-secret": [
+          "literal"
+        ],
+        "recreate-nested-logical-id-collision": [
           "literal"
         ]
       }
@@ -3629,6 +3633,7 @@
         "rds-aurora",
         "rds-dbinstance-backfill",
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "rollback-failure-injection",
@@ -3816,6 +3821,9 @@
           "l2"
         ],
         "recreate-mixed-direction": [
+          "l2"
+        ],
+        "recreate-nested-logical-id-collision": [
           "l2"
         ],
         "recreate-via-cc-api": [
@@ -4144,6 +4152,7 @@
         "orphan-resource",
         "propagation-races-2",
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "rename-refactor",
@@ -4430,6 +4439,10 @@
         ],
         "recreate-mixed-direction": [
           "l1"
+        ],
+        "recreate-nested-logical-id-collision": [
+          "l1",
+          "literal"
         ],
         "recreate-via-cc-api": [
           "l1"
@@ -4862,6 +4875,7 @@
         "orphan-resource",
         "outputs-only-export",
         "propagation-races-2",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
@@ -4992,6 +5006,10 @@
         ],
         "propagation-races-2": [
           "l2"
+        ],
+        "recreate-nested-logical-id-collision": [
+          "l1",
+          "literal"
         ],
         "recreate-via-cc-api": [
           "l1"
@@ -5591,6 +5609,7 @@
         "opensearch-domain-getatt",
         "outputs-only-export",
         "rds-full-stack",
+        "recreate-nested-logical-id-collision",
         "redshift-cluster-getatt",
         "rename-refactor",
         "replacement-fanout",
@@ -5744,6 +5763,9 @@
         ],
         "rds-full-stack": [
           "l2"
+        ],
+        "recreate-nested-logical-id-collision": [
+          "l1"
         ],
         "redshift-cluster-getatt": [
           "l1"

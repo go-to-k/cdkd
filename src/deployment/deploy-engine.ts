@@ -342,46 +342,54 @@ export interface DeployEngineOptions {
   onCurrentStateLoaded?: (stackName: string, state: StackState | undefined) => Promise<void>;
 
   /**
-   * Issue [#615] — user-named resources to destroy + recreate via Cloud
-   * Control API this deploy. Plumbed through `--recreate-via-cc-api
-   * <LogicalId>` (repeatable). Validated upstream in `deploy.ts` (typo /
-   * missing-state / ambiguous-intent / stateful guard); the engine
-   * trusts that every id in this set is present in cdkd state on entry.
+   * Issues [#615] / [#651] — user-named resources to destroy + recreate this
+   * deploy, plumbed through `--recreate-via-cc-api <LogicalId>` /
+   * `--recreate-via-sdk-provider <LogicalId>` (both repeatable), TOGETHER WITH
+   * the stack name the pre-flight validated them against.
    *
    * Behavior at each provisionResource site:
    *   - CREATE → log a warning + treat as normal CREATE (recreate is
    *     N/A for resources that don't yet exist).
-   *   - UPDATE → force the replacement code path, route the new
-   *     resource via CC API (regardless of whether the template has a
-   *     silent-drop property), stamp `provisionedBy: 'cc-api'` on the
-   *     new state record. The OLD resource's destroy uses its
-   *     state-recorded `provisionedBy` so the destroy hits the right
-   *     provider.
+   *   - UPDATE → force the replacement code path, route the new resource via
+   *     the named direction's layer (`viaCcApi`: Cloud Control regardless of
+   *     whether the template has a silent-drop property, stamping
+   *     `provisionedBy: 'cc-api'`; `viaSdkProvider`: cdkd's SDK provider,
+   *     stamping `provisionedBy: 'sdk'`, used to migrate a CC-sticky resource
+   *     back after a #609 backfill release adds coverage). The OLD resource's
+   *     destroy uses its state-recorded `provisionedBy` so the destroy hits
+   *     the right provider. Destroy-then-create ordering in both directions —
+   *     the old physical id usually reuses its user-supplied name, so a
+   *     create-first would collide.
    *   - DELETE → ignore the flag (the resource is being destroyed
    *     anyway).
    *
-   * When `undefined` or empty, the engine behaves exactly as before #615.
-   */
-  recreateViaCcApiTargets?: ReadonlySet<string>;
-
-  /**
-   * #651 — set of resource logical ids the user named with
-   * `--recreate-via-sdk-provider`. Reverse direction of {@link recreateViaCcApiTargets}:
-   * for each id, the engine destroys + recreates the resource via cdkd's
-   * SDK Provider, stamping `provisionedBy: 'sdk'` on the new state
-   * record. Used to migrate CC-sticky resources back to SDK after a
-   * #609 backfill release adds SDK coverage for a previously-silent-drop
-   * property.
+   * `stackName` is NOT decoration and NOT redundant with the engine's own
+   * stack (issue [#2567]). The ids are validated ONCE, in `deploy.ts`, against
+   * the TOP-LEVEL stack's template + state + live emptiness probes — and this
+   * whole option object is then spread into every NESTED child engine by
+   * `NestedStackProvider.runChildDeploy`. A bare id set therefore matched the
+   * CHILD's logical ids too, and since `recreateFlagged` is exactly what SKIPS
+   * the mid-deploy stateful guard below, a child resource that merely SHARED a
+   * logical id with a validated parent one (same construct id, or an
+   * `overrideLogicalId`) could be DELETE + CREATEd with neither the pre-flight
+   * nor the guard having looked at it. Carrying the validated stack name
+   * beside the ids — and matching only there — is what confines the flag to
+   * the stack the user actually named. Same shape as the prefix-migration
+   * gate's `gateStackName !== opts.stackName` guard, and for the same reason.
    *
-   * Same destroy-then-create ordering as `recreateViaCcApiTargets` —
-   * the old physical id usually reuses its user-supplied name so a
-   * create-first would collide.
-   *
-   * The two sets are mutually exclusive (the pre-flight validator
-   * rejects any logical id named in both). When `undefined` or empty,
-   * the engine behaves exactly as before #651.
+   * The two sets are mutually exclusive (the pre-flight validator rejects any
+   * logical id named in both), and the engine trusts that every id in them is
+   * present in the named stack's cdkd state on entry. When `undefined`, the
+   * engine behaves exactly as before #615 / #651.
    */
-  recreateViaSdkProviderTargets?: ReadonlySet<string>;
+  recreateTargets?: {
+    /** The stack the ids below were validated against — the ONLY stack they apply to. */
+    stackName: string;
+    /** `--recreate-via-cc-api` targets (SDK → Cloud Control). */
+    viaCcApi: ReadonlySet<string>;
+    /** `--recreate-via-sdk-provider` targets (Cloud Control → SDK). */
+    viaSdkProvider: ReadonlySet<string>;
+  };
 
   /**
    * Issue [#808] — best-effort structured deployment-event recorder. When
@@ -4323,16 +4331,28 @@ export class DeployEngine {
         const propertyDrivenReplacement = change.propertyChanges?.some(
           (pc) => pc.requiresReplacement
         );
+        // Issue [#2567] — the recreate targets apply ONLY to the stack the
+        // pre-flight validated them against. This engine instance may be a
+        // NESTED child (`NestedStackProvider.runChildDeploy` spreads the
+        // parent's options into it, and the child deploys under
+        // `<parent>~<logicalId>`), where the ids were never validated: neither
+        // the child's template, nor its state record, nor its live emptiness
+        // was ever looked at. Unscoped, a child resource sharing a logical id
+        // with a validated parent one was treated as recreate-flagged — and
+        // `recreateFlagged` is what SKIPS the stateful guard below.
+        const recreateTargets =
+          this.options.recreateTargets?.stackName === stackName
+            ? this.options.recreateTargets
+            : undefined;
         // Issue [#615] — the user explicitly named this resource via
         // `--recreate-via-cc-api <LogicalId>` so this deploy MUST destroy
         // + recreate it through Cloud Control regardless of whether the
         // template's diff would otherwise drive a replacement.
-        const recreateViaCcApi = this.options.recreateViaCcApiTargets?.has(logicalId) ?? false;
+        const recreateViaCcApi = recreateTargets?.viaCcApi.has(logicalId) ?? false;
         // #651 reverse direction. Mutually exclusive with `recreateViaCcApi`
         // — the pre-flight validator rejects any logical id named in both
         // lists, so at most one of these two booleans is true at a time.
-        const recreateViaSdkProvider =
-          this.options.recreateViaSdkProviderTargets?.has(logicalId) ?? false;
+        const recreateViaSdkProvider = recreateTargets?.viaSdkProvider.has(logicalId) ?? false;
         const recreateFlagged = recreateViaCcApi || recreateViaSdkProvider;
         const needsReplacement = propertyDrivenReplacement || recreateFlagged;
 

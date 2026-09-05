@@ -176,6 +176,19 @@ export interface RecreateTargetsValidation {
    * `--recreate-via-sdk-provider`. Ambiguous — pick one direction.
    */
   conflictingDirections: string[];
+  /**
+   * Issue [#2567]: the `AWS::CloudFormation::Stack` logical ids this stack's
+   * template declares, in template order. NOT an error category — it is the
+   * evidence the unknown-id message needs to explain the one shape a user
+   * cannot fix by correcting a typo: a resource that lives INSIDE a nested
+   * child, which the flags do not address. The engine matches the validated
+   * ids only against the stack they were validated against, so a child's
+   * resource is not reachable from the parent's flag; without this hint the
+   * user reads `not present in the synth template` and goes looking for a
+   * spelling mistake that is not there. Empty for a stack with no nested
+   * children, which is what keeps the hint off every ordinary typo.
+   */
+  nestedStackLogicalIds: string[];
 }
 
 /**
@@ -352,6 +365,9 @@ export function validateRecreateTargets(input: {
     blockedAlreadyCcApi,
     blockedNoSdkProvider,
     conflictingDirections,
+    nestedStackLogicalIds: Object.entries(input.template.Resources ?? {})
+      .filter(([, resource]) => resource?.Type === 'AWS::CloudFormation::Stack')
+      .map(([id]) => id),
   };
 }
 
@@ -386,6 +402,22 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `cdkd synth | jq '.Resources | keys'). Recreate operates on the ` +
         `synth template's logical ids, not CDK display paths.`
     );
+    // Issue [#2567] — one unknown-id shape is not a typo and cannot be fixed
+    // by re-reading the template: a resource that lives inside a NESTED stack.
+    // The flags name logical ids of the stack being deployed, and the engine
+    // matches them only against that stack, so a child's resource is not
+    // addressable from here. Only shown when the template actually declares a
+    // nested stack, so an ordinary typo keeps the plain message.
+    if (validation.nestedStackLogicalIds.length > 0) {
+      lines.push(
+        `  Note: resources inside a nested stack are NOT addressable — the ` +
+          `flags name logical ids of the stack being deployed, and this ` +
+          `template's nested stack(s) (` +
+          `${validation.nestedStackLogicalIds.join(', ')}) carry their own. ` +
+          `A logical id that a nested child happens to share with a top-level ` +
+          `resource recreates the TOP-LEVEL one only.`
+      );
+    }
   }
 
   if (validation.missingFromState.length > 0) {

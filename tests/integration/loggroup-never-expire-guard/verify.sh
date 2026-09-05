@@ -44,7 +44,7 @@
 #      happened (`provisionedBy == cc-api`), which is unreachable on an
 #      UNCHANGED template: phase 4 runs `env -u CDKD_TEST_UPDATE`, so its
 #      template is byte-identical to phase 1's, the diff is `NO_CHANGE`, and
-#      the deploy engine reads `recreateViaCcApiTargets` only inside its
+#      the deploy engine reads `recreateTargets` only inside its
 #      `case 'UPDATE'`. Proving the recreate EXECUTES is the sibling fixture's
 #      job; proving the guard is conditional is this one's.
 #   5. MID-DEPLOY, the headline case: rename the DATA group on a plain
