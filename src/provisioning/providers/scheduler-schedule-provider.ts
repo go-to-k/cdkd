@@ -23,6 +23,8 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { displaySafe } from '../../utils/display-safe.js';
+import { UNRENDERABLE, shellQuote } from '../../state/lock-contention-message.js';
 
 /**
  * SDK Provider for AWS::Scheduler::Schedule.
@@ -299,8 +301,15 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
+        // Issue [#2610] site 13, the twin of
+        // `dlm-lifecycle-policy-provider.ts`'s: `--replace` is a BOOLEAN option
+        // and `cdkd deploy` takes `[stacks...]`, so the appended logical id was
+        // parsed as a STACK NAME. The head of
+        // `ResourceUpdateNotSupportedError` already names the resource.
         `GroupName addresses the schedule (${previousGroupName ?? 'default'} -> ${groupName ?? 'default'}); ` +
-          `re-run with \`cdkd deploy --replace ${logicalId}\` to recreate it in the new group`
+          `re-run with \`cdkd deploy --replace\` to recreate it in the new group ` +
+          `(--replace is a boolean flag and takes no resource id; it applies to every ` +
+          `resource in the run whose in-place update is refused)`
       );
     }
 
@@ -349,9 +358,28 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       // The delete below targets the DEFAULT group; a custom-group schedule
       // would then hit the NotFound-idempotent branch and be left behind —
       // surface that instead of staying silent (the #961 orphan shape).
+      // The manual-recovery hint names a DELETE, which makes it the
+      // highest-consequence paste in this file, and `physicalId` is a
+      // `state.json` value. Same treatment as the issue [#2610] replacement
+      // advice: sanitize, shell-quote, and SUPPRESS the command when
+      // sanitizing changes the id, because a delete naming a sanitized name
+      // would remove a DIFFERENT schedule. It was previously interpolated
+      // UNQUOTED, so a name carrying a space split the arguments.
+      const safeId = displaySafe(physicalId, { asciiOnly: true });
+      const manualHint =
+        safeId && safeId === physicalId
+          ? `If the schedule lives in a custom group, delete it manually: ` +
+            `aws scheduler delete-schedule --name ${shellQuote(safeId)} --group-name <group>`
+          : `If the schedule lives in a custom group, delete it manually via the console: the ` +
+            `name recorded for it cannot be reproduced safely on a command line.`;
       this.logger.warn(
-        `State record for Schedule ${logicalId} carries no properties — deleting '${physicalId}' from the default group. ` +
-          `If the schedule lives in a custom group, delete it manually: aws scheduler delete-schedule --name ${physicalId} --group-name <group>`
+        // `safeId`, not a second `displaySafe(physicalId, ...)` call: one
+        // sanitization, one value. `|| UNRENDERABLE` matches
+        // `lock-manager.ts`'s treatment of the same case -- a fully
+        // unrenderable id must not render as an empty `''`, which reads as a
+        // schedule with no name rather than as one that cannot be named.
+        `State record for Schedule ${logicalId} carries no properties — deleting ` +
+          `'${safeId || UNRENDERABLE}' from the default group. ${manualHint}`
       );
     }
 

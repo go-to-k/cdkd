@@ -14,6 +14,11 @@ import { displaySafe } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { purgeNoncurrentKeyVersions } from './s3-noncurrent-version-purge.js';
+import {
+  UNRENDERABLE,
+  UNREPRODUCIBLE_LOCK_CLAUSE,
+  buildForceUnlockCommand,
+} from './lock-contention-message.js';
 import { hostname } from 'os';
 
 /**
@@ -462,8 +467,24 @@ export class LockManager {
         return false;
       }
 
+      // Sanitized for the same reason as `acquireLockWithRetry`'s own throw
+      // (issue [#2610] review): this LockError is raised from `acquireLock`,
+      // which `acquireLockWithRetry` calls UNCAUGHT — so it reaches the same
+      // terminal and the same persisted events store through the very path
+      // that fix covers, and leaving it raw would make that fix conditional on
+      // which of the two threw.
       throw new LockError(
-        `Failed to acquire lock for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to acquire lock for stack ` +
+          `'${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' ` +
+          `(${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}): ` +
+          // The DENYLIST form for the SDK's own text (the allowlist would mangle
+          // a legitimate non-ASCII message). Sanitized rather than left raw
+          // because S3 error text echoes the KEY, which embeds the stack name --
+          // so the value this line just sanitized twice would otherwise walk
+          // back in through the third interpolation, into the terminal and into
+          // `deployments/*.jsonl`. Two-of-three is the exact shape
+          // `custom-resource-provider.ts`'s cleanup line argues against.
+          `${displaySafe(error instanceof Error ? error.message : String(error))}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -841,8 +862,11 @@ export class LockManager {
   /**
    * Force release a lock regardless of owner or expiry status
    *
-   * This is intended for CLI usage (e.g., --force-unlock flag) when a lock
-   * is stuck and needs manual intervention.
+   * This is intended for CLI usage -- it is what the `cdkd force-unlock
+   * <stack>` SUBCOMMAND calls -- when a lock is stuck and needs manual
+   * intervention. There is no `--force-unlock` FLAG anywhere in `src/`; this
+   * comment said there was, and issue [#2610] site 14 records that the message
+   * `acquireLockWithRetry` used to raise had inherited the same mistake.
    *
    * Pass `region: undefined` to operate on a legacy
    * `{prefix}/{stackName}/lock.json` file.
@@ -1376,8 +1400,19 @@ export class LockManager {
         const remainingMs = lockInfo.expiresAt - Date.now();
 
         if (attempt < maxRetries) {
+          // The retry line is the SIBLING of the throw below and renders the
+          // same two values, so it takes the same sanitization. Scope, stated
+          // precisely rather than as a claim about the whole file: issue
+          // [#2610] sanitized the THREE sites on the acquire path -- this line,
+          // `acquireLockWithRetry`'s own throw, and `acquireLock`'s throw that
+          // it calls uncaught. Other `stackName` renders in this module (debug
+          // and warn lines on the release / renewal / force-release paths) are
+          // NOT covered and are tracked separately; `owner` / `operation` need
+          // nothing anywhere, being sanitized at their single source,
+          // `getLockRecord`.
           this.logger.info(
-            `Stack '${stackName}' (${region}) is locked by ${lockInfo.owner}` +
+            `Stack '${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' ` +
+              `(${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}) is locked by ${lockInfo.owner}` +
               `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
               `. Lock expires in ${this.formatDuration(remainingMs)}.` +
               ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
@@ -1392,14 +1427,53 @@ export class LockManager {
     const lockInfo = await this.getLockInfo(stackName, region);
     const expiresIn = lockInfo ? this.formatDuration(lockInfo.expiresAt - Date.now()) : 'unknown';
 
+    // Issue [#2610] site 14. This used to read "Use --force-unlock to manually
+    // release the lock", and NO `--force-unlock` Option is registered anywhere
+    // in `src/` -- `force-unlock` is a SUBCOMMAND (`cdkd force-unlock
+    // <stack>`), and `./lock-contention-message.ts` exists precisely to build
+    // that line with the `--stack-region` qualifier that decides WHICH lock
+    // object it resolves to. Six sibling contention sites already went through
+    // that builder; this one bypassed it.
+    //
+    // `buildForceUnlockCommand` returns '' when the stack name or region has
+    // nothing that can be reproduced safely on a command line, in which case
+    // the advice degrades rather than naming a command that would address a
+    // DIFFERENT lock -- see that module for why suggesting none is the honest
+    // answer there.
+    //
+    // No `LockRecoveryContext` is threaded: `acquireLockWithRetry` is handed a
+    // stack name and a region and holds neither the caller's `--profile` nor
+    // the resolved state bucket. The command is therefore region-qualified but
+    // not account-qualified, which is strictly better than the flag that does
+    // not exist; widening it means threading the context through all four
+    // callers and is left to issue [#2610].
+    const forceUnlockCommand = buildForceUnlockCommand(stackName, region);
+    // The suppression sentence is the SHARED one, not a third spelling of it
+    // (issue [#2610] review): `forceQuitRecoveryClause` emits the same clause,
+    // and `lock-contention-message.ts`'s header records that copies are how the
+    // next one drifts.
+    const recovery = forceUnlockCommand
+      ? `If you are certain no other process is active, run: ${forceUnlockCommand}`
+      : `If you are certain no other process is active, ` +
+        `${UNREPRODUCIBLE_LOCK_CLAUSE.charAt(0).toLowerCase()}${UNREPRODUCIBLE_LOCK_CLAUSE.slice(1)}`;
+    // Sanitize the HEAD too (issue [#2610] review). Suppressing the COMMAND for
+    // an unreproducible name while printing that same name raw one sentence
+    // earlier closes nothing: a `stackName` carrying a newline plus an ESC
+    // sequence forges the very `run:` line the suppression exists to prevent,
+    // and this message is not display-only -- it reaches the terminal AND the
+    // persisted `deployments/*.jsonl`. `buildLockContentionMessage` already
+    // renders its own head this way; this site had adopted only the
+    // suppression half of that precedent.
+    const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+    const safeRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
     throw new LockError(
-      `Failed to acquire lock for stack '${stackName}' (${region}) after ${maxRetries + 1} attempts. ` +
+      `Failed to acquire lock for stack '${safeStack}' (${safeRegion}) after ${maxRetries + 1} attempts. ` +
         (lockInfo
           ? `Locked by: ${lockInfo.owner}` +
             `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
             `, expires in: ${expiresIn}. ` +
-            `Use --force-unlock to manually release the lock.`
-          : 'Lock exists but could not read lock info.')
+            recovery
+          : `Lock exists but could not read lock info. ${recovery}`)
     );
   }
 }

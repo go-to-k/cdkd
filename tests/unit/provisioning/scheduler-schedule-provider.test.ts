@@ -22,14 +22,22 @@ vi.mock('@aws-sdk/client-scheduler', async () => {
   };
 });
 
-vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
+// Hoisted so the delete-path cases can read the degraded-record WARNING the
+// provider emits (issue [#2610] gave its manual-recovery hint the
+// sanitize / shell-quote / suppress treatment, and the assertions are on that
+// line rather than on "delete did not throw").
+const { childLogger } = vi.hoisted(() => ({
+  childLogger: {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
+    child: vi.fn(),
+  },
+}));
+childLogger.child.mockReturnValue(childLogger);
+
+vi.mock('../../../src/utils/logger.js', () => {
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -285,7 +293,50 @@ describe('SchedulerScheduleProvider', () => {
       expect(input).toEqual({ Name: 'my-sched' });
       // The degraded-record warning names the manual escape hatch — a
       // custom-group schedule cannot be addressed without properties.
-      // (childLogger.warn is the shared spy in the logger mock below.)
+      const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(
+        'delete it manually: aws scheduler delete-schedule --name my-sched --group-name <group>'
+      );
+    });
+
+    /**
+     * The manual-recovery hint names a DELETE, so it is the highest-consequence
+     * paste in this file, and `physicalId` is a `state.json` value. Issue
+     * [#2610]'s review round gave it the same sanitize / shell-quote / suppress
+     * treatment the replacement advice gets; these are its both-polarity pins.
+     * Before that it was interpolated UNQUOTED, so a name with a space split
+     * the arguments and a name with `;` chained a second command.
+     */
+    it('SHELL-QUOTES a physical id that needs it in the manual delete hint', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.delete('Sched', 'my sched; rm -rf /', TYPE, undefined);
+      const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain("--name 'my sched; rm -rf /' --group-name <group>");
+    });
+
+    it('SUPPRESSES the manual delete hint when the id cannot be reproduced safely', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.delete('Sched', 'sched\u001b[2K\u000awhoami', TYPE, undefined);
+      const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      // No command at all: one naming the sanitized id would delete a
+      // DIFFERENT schedule.
+      expect(warned).not.toContain('aws scheduler delete-schedule');
+      expect(warned).toContain('delete it manually via the console');
+      // ...and nothing forging a line survives into the warning either.
+      expect(warned).not.toContain('\u001b');
+      expect(warned).not.toContain('\u000a');
+    });
+
+    it('renders <unrenderable> for an id with NOTHING renderable left', async () => {
+      // The `|| UNRENDERABLE` arm, matching `lock-manager.ts` in this same PR.
+      // Without it the line reads `deleting '' from the default group`, which
+      // says a schedule with an EMPTY name rather than one that cannot be
+      // named.
+      mockSend.mockResolvedValueOnce({});
+      await provider.delete('Sched', '\u0000\u0001', TYPE, undefined);
+      const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain("deleting '<unrenderable>' from the default group");
+      expect(warned).not.toContain("deleting '' from");
     });
 
     it('wraps a non-NotFound failure in ProvisioningError', async () => {

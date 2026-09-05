@@ -94,7 +94,17 @@ function formatRemaining(ms: number): string {
   return `in ~${minutes}m`;
 }
 
-function shellQuote(value: string): string {
+/**
+ * Quote a value for a pasteable shell command.
+ *
+ * EXPORTED since issue [#2610]: `src/provisioning/replacement-protection-advice.ts`
+ * prints `aws <service> ...` recovery commands naming a resource's physical id,
+ * which is the same hazard one directory over. A second spelling of this
+ * predicate is how the two would come to disagree about which values need
+ * quoting -- the reason `display-safe.ts`'s header gives for not widening a
+ * rule by hand. It is a pure function of its argument and imports nothing.
+ */
+export function shellQuote(value: string): string {
   // A profile / prefix / bucket with a space or a quote would otherwise produce
   // a suggestion that silently truncates when pasted.
   // `~` is deliberately NOT here. It was added for `Parent~Child` (every
@@ -157,6 +167,22 @@ export function buildForceUnlockCommand(
 }
 
 /**
+ * What to say INSTEAD of a `cdkd force-unlock ...` line when
+ * {@link buildForceUnlockCommand} suppresses.
+ *
+ * Exported since issue [#2610]: `lock-manager.ts`'s exhausted-retry arm needed
+ * the same branch, and it was the THIRD place to spell it. The module header's
+ * point applies to the suppression sentence as much as to the command -- a
+ * banner ending in a bare `run: ` is the shape the review found, and copies are
+ * how the next one drifts. Byte-identical to what `forceQuitRecoveryClause`
+ * emitted before the extraction; its callers see no change.
+ */
+export const UNREPRODUCIBLE_LOCK_CLAUSE =
+  `Inspect the lock object directly: the name or region recorded for this ` +
+  `stack cannot be reproduced safely on a command line, so any command ` +
+  `shown here would address a different lock.`;
+
+/**
  * The force-quit banner's recovery sentence.
  *
  * Exported so the two `destroy-runner.ts` banners do not each decide what to
@@ -173,9 +199,7 @@ export function forceQuitRecoveryClause(
   const command = buildForceUnlockCommand(stackName, region, recovery);
   return command
     ? ` If the next run reports a lock, run: ${command}`
-    : ` Inspect the lock object directly: the name or region recorded for this ` +
-        `stack cannot be reproduced safely on a command line, so any command ` +
-        `shown here would address a different lock.`;
+    : ` ${UNREPRODUCIBLE_LOCK_CLAUSE}`;
 }
 
 /**

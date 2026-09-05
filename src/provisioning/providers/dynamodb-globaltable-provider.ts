@@ -93,6 +93,7 @@ import {
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import { maskDeep, type MaskerFn } from '../masked-retry-logger.js';
+import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1510,13 +1511,74 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     debug(`Updating DynamoDB GlobalTable ${logicalId}: ${maskSecrets(physicalId)}`);
 
     // ─── Immutable property guards (defense-in-depth) ───────────────────
+    // Issue [#2610] sites 5-7. The three refusals below advise a replacement,
+    // and the bare `--replace` they used to name was wrong twice over.
+    //
+    // 1. `AWS::DynamoDB::GlobalTable` is in `STATEFUL_TYPES`, so the deploy
+    //    engine's `--replace` fallback refuses a second time with
+    //    STATEFUL_REPLACE_BLOCKED unless `--force-stateful-recreation` is also
+    //    passed.
+    // 2. Neither flag can clear `DeletionProtectionEnabled`: the replacement's
+    //    DELETE runs from the deploy engine, which never sets
+    //    `DeleteContext.removeProtection` — `delete()`'s flip-off is gated on
+    //    exactly that field. See `../replacement-protection-advice.ts`.
+    //
+    // Read the RECORDED bag: all three guards fire before any `UpdateTable` in
+    // this method, so AWS still holds what `previousProperties` records. The
+    // resolution goes through `extractLocalDeletionProtection`, the SAME helper
+    // `create()` uses — the property is per-replica in this type's CFn schema
+    // (`Replicas[?Region==<deploy region>].DeletionProtectionEnabled`) with a
+    // top-level fallback, and a second spelling of that rule is how the two
+    // would come to disagree about which table is protected.
+    //
+    // An ASYNC THUNK, and both halves of that are decisions. It is a THUNK
+    // because all three guards are defence-in-depth (the replacement layer
+    // normally routes these changes away), so an ordinary `update()` must not
+    // pay for a sentence nothing will read. It is ASYNC because it resolves the
+    // client region ITSELF, lazily, rather than hoisting the method's own
+    // `currentRegion` above the guards: an earlier revision did hoist it, and
+    // the review of PR go-to-k/cdkd#2662 showed the cure was worse than the
+    // complaint. `config.region()` can REJECT, so hoisting it made a
+    // region-resolution error pre-empt the immutable-property refusal; wrapping
+    // THAT in a try/catch then degraded the method-wide `currentRegion` to `''`
+    // for its ~40 other uses -- including the replica diff loops, whose
+    // `region === currentRegion` skip is the only thing keeping the LOCAL
+    // replica from being issued a `Delete`. This file's delete path refuses
+    // outright on an unresolvable region for exactly that reason. Resolving
+    // inside the thunk keeps the method's read fail-CLOSED and unmoved, and
+    // bounds the degradation to one sentence: an unresolved region here means
+    // `extractLocalDeletionProtection` finds no local replica and falls back to
+    // the top-level flag, i.e. the short advice -- the same direction
+    // protection-enabled-out-of-band already takes.
+    const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
+    const replaceRemedy = async (): Promise<string> => {
+      let guardRegion = '';
+      try {
+        guardRegion = (await this.dynamoDBClient.config.region()) ?? '';
+      } catch {
+        guardRegion = '';
+      }
+      return extractLocalDeletionProtection(previousProperties, guardRegion) === true
+        ? protectedReplacementAdvice({
+            evidence:
+              "cdkd's recorded properties for this table carry " +
+              'DeletionProtectionEnabled: true for the deploy region',
+            replaceFlags,
+            disable: {
+              before: 'aws dynamodb update-table --table-name',
+              identifier: physicalId,
+              after: '--no-deletion-protection-enabled',
+            },
+          })
+        : `replacement required (deploy with ${replaceFlags}, or destroy + redeploy)`;
+    };
     if (
       properties['TableName'] !== undefined &&
       previousProperties['TableName'] !== undefined &&
       properties['TableName'] !== previousProperties['TableName']
     ) {
       throw new ProvisioningError(
-        `TableName is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        `TableName is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`,
         resourceType,
         logicalId,
         physicalId
@@ -1528,7 +1590,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       !deepEqual(properties['KeySchema'], previousProperties['KeySchema'])
     ) {
       throw new ProvisioningError(
-        `KeySchema is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        `KeySchema is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`,
         resourceType,
         logicalId,
         physicalId
@@ -1540,7 +1602,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       !deepEqual(properties['LocalSecondaryIndexes'], previousProperties['LocalSecondaryIndexes'])
     ) {
       throw new ProvisioningError(
-        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; ${await replaceRemedy()}`,
         resourceType,
         logicalId,
         physicalId
@@ -1583,7 +1645,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     // Resolve the client region ONCE for the whole update — the Tags
     // diff step, the BillingMode flip's capacity derivation, and the
-    // Replicas diff loop all need it.
+    // Replicas diff loop all need it. Deliberately NOT hoisted above the
+    // guards (see `replaceRemedy`): this read is fail-CLOSED, and every
+    // consumer below treats `currentRegion` as the LOCAL-replica
+    // discriminator.
     const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
 
     // issue #1653: the bag actually delivered, when a warn-and-SKIP arm below
@@ -1624,8 +1689,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const extractLocalTags = (
         props: Record<string, unknown>
       ): Array<{ Key?: string; Value?: string }> | undefined => {
-        const replicas = (props['Replicas'] ?? []) as Array<Record<string, unknown>>;
-        const local = replicas.find((r) => r['Region'] === currentRegion);
+        // The SHARED predicate, not a second spelling of it: this reader is
+        // the one that throws FIRST on the apply path, and it kept the
+        // unguarded form for a round after its sibling was fixed.
+        const local = localReplicaEntry(props, currentRegion);
         return local?.['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
       };
       if (tableArn) {
@@ -5141,7 +5208,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // gap. That gap shipped in #1419, so the correct map is buildable now
       // and the stopgap — which would have turned drift OFF for the entire
       // GSI subtree — is not taken.
-      const localReplicaEntry = replicas.find((r) => r['Region'] === currentRegion);
+      // Renamed off the module-scope `localReplicaEntry` it used to SHADOW
+      // (issue [#2610] review): the local wore the shared predicate's name
+      // while keeping the raw `.find` spelling that predicate exists to retire,
+      // which is the most misleading combination available.
+      //
+      // It does NOT call the shared predicate, and that is the considered
+      // answer rather than an omission: `replicas` here is the array this
+      // method just BUILT from `Promise.all` a few lines up, not a
+      // `props['Replicas']` bag off a template or a state record. The shared
+      // predicate's whole job is to survive a bag that is not an array, a
+      // condition that cannot arise for a locally constructed one -- so routing
+      // this through it would trade a true guarantee for a weaker one and read
+      // as if a bag were involved.
+      const localReplica = replicas.find((r) => r['Region'] === currentRegion);
       if (table.GlobalSecondaryIndexes && table.GlobalSecondaryIndexes.length > 0) {
         const cfnIndexes: Array<Record<string, unknown>> = [];
         const replicaIndexEntries: Array<Record<string, unknown>> = [];
@@ -5253,8 +5333,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // would read as "this replica overrides nothing", which is true but
         // is not what a template omitting the key says, and the comparator
         // only descends into keys the state baseline already has anyway.
-        if (localReplicaEntry && replicaIndexEntries.length > 0) {
-          localReplicaEntry['GlobalSecondaryIndexes'] = replicaIndexEntries;
+        if (localReplica && replicaIndexEntries.length > 0) {
+          localReplica['GlobalSecondaryIndexes'] = replicaIndexEntries;
         }
       }
 
@@ -5273,8 +5353,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       } else {
         result['WriteOnDemandThroughputSettings'] = {};
       }
-      if (localReplicaEntry && table.OnDemandThroughput?.MaxReadRequestUnits !== undefined) {
-        localReplicaEntry['ReadOnDemandThroughputSettings'] = {
+      if (localReplica && table.OnDemandThroughput?.MaxReadRequestUnits !== undefined) {
+        localReplica['ReadOnDemandThroughputSettings'] = {
           MaxReadRequestUnits: table.OnDemandThroughput.MaxReadRequestUnits,
         };
       }
@@ -6179,10 +6259,35 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 // ─── Pure-functional diff helpers (exported for testing) ───────────────
 
 /**
- * Diff CFn `Replicas[]` arrays. Keyed by `Region`. Returns adds, removes,
- * and modifies (entries whose other keys — KMSMasterKeyId,
- * GlobalSecondaryIndexes, TableClassOverride — differ from the old shape).
+ * The `Replicas[]` entry for `region`, or `undefined`.
+ *
+ * ONE predicate, because two readers of the same field had drifted: issue
+ * [#2610]'s review round guarded `extractLocalDeletionProtection` against a
+ * non-array `Replicas` and left `update()`'s inline `extractLocalTags` on the
+ * old `(props['Replicas'] ?? []) as Array<...>` -- which is the one that
+ * actually throws FIRST on the apply path, ~400 lines earlier in the same
+ * method, so guarding only the other produced no visible change and no test
+ * went red. A shared predicate is what stops the next reader inheriting the
+ * unguarded spelling; `derivePerCallProvisionedThroughput` documents the same
+ * hazard for the same field and guards independently.
+ *
+ * `Array.isArray`, not `?? []`: a non-array `Replicas` -- an unresolved
+ * intrinsic, or a hand-edited state record -- makes `.find` throw a bare
+ * `TypeError`, and since [#2610] one caller sits on the REFUSAL path, where a
+ * throw REPLACES three informative `ProvisioningError`s with a stack trace.
+ * The `r?.` guards a null ENTRY inside an otherwise-valid array.
  */
+export function localReplicaEntry(
+  props: Record<string, unknown>,
+  region: string
+): Record<string, unknown> | undefined {
+  const raw = props['Replicas'];
+  if (!Array.isArray(raw)) return undefined;
+  return (raw as Array<Record<string, unknown> | null | undefined>).find(
+    (r) => r?.['Region'] === region
+  ) as Record<string, unknown> | undefined;
+}
+
 /**
  * Extract the local replica's `DeletionProtectionEnabled` from a CFn
  * properties shape. The `AWS::DynamoDB::GlobalTable` CFn schema places
@@ -6201,8 +6306,7 @@ export function extractLocalDeletionProtection(
   props: Record<string, unknown>,
   region: string
 ): boolean | undefined {
-  const replicas = (props['Replicas'] ?? []) as Array<Record<string, unknown>>;
-  const local = replicas.find((r) => r['Region'] === region);
+  const local = localReplicaEntry(props, region);
   const perReplica = local?.['DeletionProtectionEnabled'];
   if (typeof perReplica === 'boolean') return perReplica;
   const topLevel = props['DeletionProtectionEnabled'];
@@ -8272,6 +8376,11 @@ export function collectTableOnDemandCeilings(
   };
 }
 
+/**
+ * Diff CFn `Replicas[]` arrays. Keyed by `Region`. Returns adds, removes,
+ * and modifies (entries whose other keys — KMSMasterKeyId,
+ * GlobalSecondaryIndexes, TableClassOverride — differ from the old shape).
+ */
 export function diffReplicas(
   oldReplicas: Array<Record<string, unknown>>,
   newReplicas: Array<Record<string, unknown>>

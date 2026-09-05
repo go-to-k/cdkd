@@ -354,8 +354,19 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
+        // Issue [#2610] site 12. `--replace` is
+        // `new Option('--replace', ...).default(false)` — a BOOLEAN with no
+        // `<value>` — while `cdkd deploy` declares `.argument('[stacks...]')`,
+        // so the logical id this line used to append was parsed as a STACK
+        // NAME and the pasted command silently deployed something else. The
+        // shape was copied from `--recreate-via-cc-api <ids>`, which does take
+        // an argument. Nothing is lost by dropping it: the error's own
+        // `ResourceUpdateNotSupportedError` head already renders
+        // `<type> (<logicalId>) cannot be updated in place: ...`.
         `DefaultPolicy cannot be changed in place; ` +
-          `re-run with \`cdkd deploy --replace ${logicalId}\` to recreate the policy`
+          `re-run with \`cdkd deploy --replace\` to recreate the policy ` +
+          `(--replace is a boolean flag and takes no resource id; it applies to every ` +
+          `resource in the run whose in-place update is refused)`
       );
     }
 

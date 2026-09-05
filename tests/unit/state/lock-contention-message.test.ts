@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import {
+  UNREPRODUCIBLE_LOCK_CLAUSE,
   buildForceUnlockCommand,
   buildLockContentionMessage,
+  forceQuitRecoveryClause,
 } from '../../../src/state/lock-contention-message.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
 
@@ -402,5 +404,48 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     const cmd = buildForceUnlockCommand('my stack', 'us-east-1', { stateBucket: 'my bucket' });
     expect(cmd).toContain(`cdkd force-unlock 'my stack'`);
     expect(cmd).toContain(`--state-bucket 'my bucket'`);
+  });
+});
+
+/**
+ * `forceQuitRecoveryClause` had NO test of its own. Issue [#2610] extracted its
+ * suppression sentence into the shared {@link UNREPRODUCIBLE_LOCK_CLAUSE} so a
+ * third site could stop copying it, and the round-2 review pointed out that
+ * "byte-identical, callers see no change" was an unverified claim about a
+ * function nothing exercised. These are that verification.
+ */
+describe('forceQuitRecoveryClause', () => {
+  it('names the pastable command when the stack and region are reproducible', () => {
+    expect(forceQuitRecoveryClause('MyStack', 'ap-northeast-1')).toBe(
+      ' If the next run reports a lock, run: cdkd force-unlock MyStack --stack-region ap-northeast-1'
+    );
+  });
+
+  it('carries the recovery context flags the hint resolves against', () => {
+    expect(
+      forceQuitRecoveryClause('MyStack', 'us-east-1', {
+        profile: 'prod',
+        stateBucket: 'cdkd-state-123456789012',
+      })
+    ).toContain(
+      'cdkd force-unlock MyStack --stack-region us-east-1 --profile prod ' +
+        '--state-bucket cdkd-state-123456789012'
+    );
+  });
+
+  it('falls back to the SHARED suppression clause, leading space included', () => {
+    // The extraction's actual claim. A control byte in the stack name makes
+    // `buildForceUnlockCommand` suppress, and what is emitted instead must be
+    // exactly the shared constant — not a paraphrase that drifted.
+    const clause = forceQuitRecoveryClause('My\u0000Stack', 'us-east-1');
+    expect(clause).toBe(` ${UNREPRODUCIBLE_LOCK_CLAUSE}`);
+    expect(clause).not.toContain('cdkd force-unlock');
+  });
+
+  it('the shared constant still reads as its own sentence', () => {
+    // It is spliced lowercase into `lock-manager.ts`'s sentence and used
+    // capitalised here, so both spellings have to stay grammatical.
+    expect(UNREPRODUCIBLE_LOCK_CLAUSE.startsWith('Inspect the lock object directly:')).toBe(true);
+    expect(UNREPRODUCIBLE_LOCK_CLAUSE.endsWith('would address a different lock.')).toBe(true);
   });
 });

@@ -17,6 +17,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
 import { displaySafe } from '../../utils/display-safe.js';
+import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
   getAccountInfo,
@@ -1176,8 +1177,35 @@ export class CustomResourceProvider implements ResourceProvider {
           reuseClientCredentials: true,
           tolerateNonStandardClient: true,
           onRebuild: ({ bucketRegion, currentRegion }) => {
+            // The THIRD render of `this.responseBucket` in this file (issue
+            // [#2635] review). The other two are sanitized, and the argument
+            // in `generatePresignedResponseUrl`'s comment applies here
+            // verbatim -- sanitizing two of three is the widening-by-hand
+            // shape `src/utils/display-safe.ts` exists to stop. `bucketRegion`
+            // and `currentRegion` both come off the WIRE.  `bucketRegion` is
+            // the result of `resolveBucketRegion`
+            // (`src/utils/aws-region-resolver.ts`), which
+            // `bucket-region-client.ts` calls at its line ~165;
+            // `currentRegion` is read there at ~146 off the client's own
+            // `config.region()`, typed `unknown` precisely because a test
+            // double can return anything. So they are the same
+            // class as an AWS error message. All three take the `asciiOnly`
+            // allowlist: a bucket name and a region name both have a known
+            // ASCII charset.
+            //
+            // `|| UNRENDERABLE` on every one of them, because `displaySafe`
+            // returns `''` for a value with nothing renderable left AND for
+            // `undefined`. Without it this line reads `is in ''`, which claims
+            // an empty region rather than an unusable one -- and for
+            // `currentRegion` it would be a REGRESSION, since the raw
+            // `String(currentRegion)` this replaced rendered `undefined`
+            // visibly. Pair every cap with its floor.
             this.logger.debug(
-              `Custom resource response bucket '${bucket}' is in '${bucketRegion}' (client was '${String(currentRegion)}'); building a region-corrected S3 client for response operations.`
+              `Custom resource response bucket ` +
+                `'${displaySafe(bucket, { asciiOnly: true }) || UNRENDERABLE}' is in ` +
+                `'${displaySafe(bucketRegion, { asciiOnly: true }) || UNRENDERABLE}' (client was ` +
+                `'${displaySafe(currentRegion, { asciiOnly: true }) || UNRENDERABLE}'); building a ` +
+                `region-corrected S3 client for response operations.`
             );
           },
         });
@@ -2509,8 +2537,16 @@ export class CustomResourceProvider implements ResourceProvider {
       expiresIn: 7200,
     });
 
+    // The SIBLING of the `cleanupResponseObject` line below, found by the issue
+    // [#2635] sweep rather than named by the issue: it renders the same two
+    // values (`responseBucket`, and a `responseKey` carrying a
+    // provider-supplied request id) into the same kind of debug line, so
+    // sanitizing one and not the other is the one-of-N widening
+    // `src/utils/display-safe.ts`'s header exists to stop.
     this.logger.debug(
-      `Generated pre-signed URL for response: s3://${this.responseBucket}/${responseKey}`
+      `Generated pre-signed URL for response: s3://${
+        displaySafe(this.responseBucket, { asciiOnly: true }) || UNRENDERABLE
+      }/${displaySafe(responseKey)}`
     );
     return presignedUrl;
   }
@@ -2687,10 +2723,34 @@ export class CustomResourceProvider implements ResourceProvider {
         })
       );
     } catch (error) {
+      // Issue [#2346]/[#2635]: every value rendered here goes through
+      // `displaySafe`, and every one that CAN sanitize to nothing carries a
+      // `|| UNRENDERABLE` floor -- an unusable value must not read as an empty
+      // one. `responseKey` is the deliberate exception and gets no floor:
+      // `getResponseKey` always appends `/cdkd-<digits>-<alnum>.json`, so it
+      // can never sanitize to empty, and a branch that cannot fire is dead code
+      // rather than a fence (measured in issue [#2610]'s final review round --
+      // the floor was added, probed, and came back GREEN because nothing can
+      // reach it). `error.message` is AWS-supplied text, and `responseKey`
+      // is `${this.responsePrefix}/${requestId}.json` — the request id is
+      // cdkd-minted (`prepareInvocation`), but the PREFIX is caller-supplied
+      // config (`CustomResourceProviderConfig.responsePrefix`), so the key is
+      // not a literal either. The issue body said the request id was the
+      // non-literal half; it is not, and the sanitization is warranted by the
+      // prefix instead. `bucket` is cdkd-authored and
+      // takes the `asciiOnly` POSITIVE allowlist (an S3 bucket name has a known
+      // ASCII charset, so that form has no residual at all), matching the
+      // sibling purge paths this line runs immediately before
+      // (`src/state/s3-noncurrent-version-purge.ts`,
+      // `src/state/s3-replication-purge-gap.ts`). Sanitizing two of three and
+      // leaving the third raw is the mixed-rendering residual that round was
+      // closing.
       this.logger.debug(
-        `Failed to delete custom-resource response object s3://${bucket}/${responseKey}; ` +
+        `Failed to delete custom-resource response object s3://${
+          displaySafe(bucket, { asciiOnly: true }) || UNRENDERABLE
+        }/${displaySafe(responseKey)}; ` +
           `it remains as a current object. Underlying error: ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          `${displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE}`
       );
     }
 
