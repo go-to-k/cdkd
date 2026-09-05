@@ -45,6 +45,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
@@ -380,10 +381,50 @@ export class ASGProvider implements ResourceProvider {
     // sub-resource fields the caller may reasonably expect to round-trip.
     const stringEq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
     if (!stringEq(properties['AutoScalingGroupName'], previousProperties['AutoScalingGroupName'])) {
+      // Issue [#2610] site 8. `--replace` alone cannot succeed on a group whose
+      // recorded `DeletionProtection` is `'prevent-all-deletion'` (see the
+      // level analysis below for why that is the ONLY blocking level): the
+      // replacement's DELETE runs from the deploy engine, which never sets
+      // `DeleteContext.removeProtection` — `delete()` below gates BOTH its
+      // flip-off and its `ForceDelete: true` on exactly that field. See
+      // `../replacement-protection-advice.ts`.
+      //
+      // Read the RECORDED bag: this guard fires before any
+      // `UpdateAutoScalingGroup` in this method, so AWS still holds what
+      // `previousProperties` records.
+      //
+      // The value is a THREE-level string enum, and only the strictest level
+      // blocks a deploy-side replacement. AWS's own wording: the setting
+      // controls whether `DeleteAutoScalingGroup` is allowed "according to the
+      // specified protection level" -- `prevent-force-deletion` withholds only
+      // the FORCE delete, and the deploy engine's replacement issues
+      // `ForceDelete: false` (see `delete()` below, where the flag rides
+      // `context?.removeProtection`). So on `prevent-force-deletion` the delete
+      // is not refused BECAUSE of protection, and telling the user to clear it
+      // would name a remedy that fixes nothing -- the exact defect issue
+      // [#2610] is about, reintroduced by an over-wide predicate. An ABSENT
+      // value is the AWS-side default, which `readCurrentState` writes back as
+      // the explicit `'none'` placeholder.
+      const recordedProtection = previousProperties['DeletionProtection'];
+      const remedy =
+        recordedProtection === 'prevent-all-deletion'
+          ? protectedReplacementAdvice({
+              evidence:
+                "cdkd's recorded properties for this group carry " +
+                'DeletionProtection: prevent-all-deletion',
+              replaceFlags: 'cdkd deploy --replace',
+              disable: {
+                before: 'aws autoscaling update-auto-scaling-group --auto-scaling-group-name',
+                identifier: physicalId,
+                after: '--deletion-protection none',
+              },
+            })
+          : 'Use cdkd deploy --replace to replace the group.';
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AutoScalingGroupName is immutable on AWS — UpdateAutoScalingGroup does not accept a new name; the name is fixed at creation. Use cdkd deploy --replace to replace the group.'
+        'AutoScalingGroupName is immutable on AWS — UpdateAutoScalingGroup does not accept a new name; the name is fixed at creation. ' +
+          remedy
       );
     }
     try {

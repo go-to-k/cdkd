@@ -713,12 +713,29 @@ refuses the change before it applies any property — the `AWS::Logs::LogGroup`
 that turns protection off with the immutable-property change reverted, then one
 that re-applies it with the replace flags.
 
-`AWS::Logs::LogGroup` is the type whose refusal names this explicitly today,
-and it only knows what cdkd RECORDED: protection you enabled out of band is in
-no state record, so that log group gets the shorter message above and still
-fails at the delete. The same wall stands in front of every type in
+Six types name this dead end explicitly in their own refusals, each reading its
+own protection property and naming the command that turns it off:
+`AWS::Logs::LogGroup`, `AWS::ElasticLoadBalancingV2::LoadBalancer`,
+`AWS::EMR::Cluster`, `AWS::Cognito::UserPool`, `AWS::DynamoDB::GlobalTable` and
+`AWS::AutoScaling::AutoScalingGroup`. Every one of them knows only what cdkd
+RECORDED: protection you enabled out of band is in no state record, so such a
+resource gets the shorter message and still fails at the delete. The same wall
+stands in front of every type in
 [`--remove-protection`'s table](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
-whenever a deploy has to replace one.
+whenever a deploy has to replace one, whether or not its refusal says so.
+
+`AWS::AutoScaling::AutoScalingGroup` is the one whose refusal is narrower than
+the type's protection setting, and deliberately: the group's three levels are
+`none`, `prevent-force-deletion` and `prevent-all-deletion`, and only the last
+blocks a replacement, because the deploy path's delete does not pass
+`ForceDelete`. At `prevent-force-deletion` there is nothing to disable.
+
+`AWS::Cognito::UserPool` is the one exception to the two-deploys rule below.
+Its refusal fires AFTER `UpdateUserPool` has already applied the template's
+`DeletionProtection`, so clearing it in the template DOES take effect in that
+same (failed) deploy — the next run with the replace flags then succeeds. Its
+refusal reads the desired value first for exactly that reason. Do not
+generalize it: every other type above refuses before applying anything.
 
 You are disabling protection on the resource that is about to be **deleted**,
 not on the one you end up with: every replacement path re-creates from your

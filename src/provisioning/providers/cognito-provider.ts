@@ -42,6 +42,7 @@ import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString, type ConfigStringOptions } from '../config-shape.js';
 import { maskDeep } from '../masked-retry-logger.js';
+import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -2140,7 +2141,36 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         physicalId,
         resourceType,
         properties['Schema'] as SchemaAttributeType[] | undefined,
-        previousProperties['Schema'] as SchemaAttributeType[] | undefined
+        previousProperties['Schema'] as SchemaAttributeType[] | undefined,
+        // Issue [#2610] site 4. Which bag answers "is this pool protected right
+        // now" is decided by ORDER, and this site is the one exception to the
+        // read-the-recorded-bag rule in
+        // `../replacement-protection-advice.ts`: the `UpdateUserPool` call a
+        // few lines above has ALREADY applied a DECLARED `DeletionProtection`,
+        // so by the time the schema refusal fires AWS holds the DESIRED value.
+        // That half is measured — the gate up there is a TRUTHINESS test
+        // (`if (properties['DeletionProtection'])`), so an absent / empty
+        // desired value is never put on the wire, which is why this mirrors
+        // that gate rather than using `??`, and
+        // `tests/unit/provisioning/cognito-schema-replace-remedy.test.ts`
+        // asserts the SENT input in all three arms.
+        //
+        // The FALLBACK's other half is NOT measured, and the review of PR
+        // go-to-k/cdkd#2662 was right to separate them: whether AWS then KEEPS
+        // the recorded value depends on whether omitting `DeletionProtection`
+        // resets it, and this file's own ledger (`readLiveMfaConfiguration`)
+        // records that AWS's blanket "unspecified parameters are set to their
+        // default value" holds FIELD BY FIELD — `AutoVerifiedAttributes` does
+        // reset, `MfaConfiguration` and `Policies` do not — with no entry for
+        // this field. If it turns out to reset, this arm reports "protection is
+        // on" for a pool AWS has just unprotected. Tracked, with the two
+        // controls the measurement needs, as issue
+        // [#2675](https://github.com/go-to-k/cdkd/issues/2675); until then the
+        // recorded bag is the better of two unproved answers, because it is the
+        // one every other site in this issue uses.
+        (properties['DeletionProtection']
+          ? properties['DeletionProtection']
+          : previousProperties['DeletionProtection']) === 'ACTIVE'
       );
 
       // EnabledMfas / email-OTP message+subject / WebAuthn config are NOT on
@@ -2227,7 +2257,15 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     newSchema: SchemaAttributeType[] | undefined,
-    oldSchema: SchemaAttributeType[] | undefined
+    oldSchema: SchemaAttributeType[] | undefined,
+    /**
+     * Whether `DeletionProtection` is `ACTIVE` on the pool AWS holds at the
+     * moment the immutable-Schema refusal below fires. Defaults to `false` so
+     * the short advice is the fallback for any future caller that cannot
+     * answer — the same direction issue [#2579] took for protection enabled
+     * out of band.
+     */
+    deletionProtected = false
   ): Promise<void> {
     const newAttrs = newSchema ?? [];
     const oldAttrs = oldSchema ?? [];
@@ -2281,13 +2319,45 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       ...addedStandard.map((n) => `added standard attribute '${n}'`),
     ];
     if (immutableChanges.length > 0) {
+      const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
+      const remedy = deletionProtected
+        ? protectedReplacementAdvice({
+            evidence: "cdkd's properties for this user pool carry DeletionProtection: ACTIVE",
+            replaceFlags,
+            disable: {
+              before: 'aws cognito-idp update-user-pool --user-pool-id',
+              identifier: physicalId,
+              after: '--deletion-protection INACTIVE',
+              // The one-liner above is not safe to paste unqualified, so the
+              // qualification rides `caveat`, which the builder renders OUTSIDE
+              // the backticks: prose inside a pasteable span is itself the
+              // defect this issue is about.
+              //
+              // The WEAKEST claim `readLiveMfaConfiguration`'s ledger supports.
+              // Two earlier spellings were both wrong: "RESETS every member the
+              // request omits" is AWS's blanket wording, which that ledger
+              // shows is per-field and false for at least two fields; and
+              // "is a full-replace API whose omission behaviour differs per
+              // field" contradicts itself, since "full-replace" IS the blanket
+              // claim the rest of the sentence withdraws. What survives is the
+              // per-field statement plus the honest admission that THIS field
+              // is unmeasured (issue [#2675]) -- and the advice a user needs is
+              // the same under every reading.
+              // ONE literal, not a concatenation: `'a' + 'b'` widens to
+              // `string` in TypeScript, and `CdkdAuthoredLiteral` rejects the
+              // widened type by design. That is the cost of moving this fence
+              // from a grep to the compiler, and it is worth paying.
+              caveat:
+                "Note UpdateUserPool's behaviour on an omitted member differs per field, and is unmeasured for DeletionProtection, so send your complete pool configuration alongside that flag rather than the flag alone.",
+            },
+          })
+        : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
         `the Schema change (${immutableChanges.join('; ')}) is immutable on AWS — AWS can only ADD ` +
           `custom attributes in place, so removing or modifying an attribute requires recreating the ` +
-          `pool. AWS::Cognito::UserPool is a stateful type, so re-run with ` +
-          `cdkd deploy --replace --force-stateful-recreation to recreate it (this deletes all users in the pool)`
+          `pool. ${remedy}`
       );
     }
 
