@@ -452,6 +452,13 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     // app is exactly the audience, and gating this on nesting made it
     // unreachable for them.
     //
+    // Phrased as a CONDITIONAL ("if a named id belongs to...") on purpose. The
+    // validator runs per stack and cannot see how many stacks the run carries,
+    // so an assertive spelling reads as a claim about other stacks to someone
+    // deploying exactly one — where the commonest cause is simply a typo. Read
+    // the rendered block, not this source, when changing it: the sentence
+    // BELOW it also opens with `Note:`.
+    //
     // The consequence sentence is deliberately precise, because the obvious
     // wording is FALSE. `runStack` throws `RECREATE_TARGETS_INVALID` inside its
     // own work-graph node, and `WorkGraph.execute` fails that node while
@@ -460,11 +467,11 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     // still runs. Telling the user of a data-loss flag that "the run is
     // refused" would assert the opposite of what happened.
     lines.push(
-      `  Note: each stack of this deploy validates the WHOLE flag list, so an ` +
-        `id belonging to a different stack is reported here. Only this stack ` +
-        `refuses; stacks that do not depend on it still deploy, including the ` +
-        `one that owns the id, where the recreate DOES run. The run exits ` +
-        `non-zero once every stack has settled.`
+      `  Note: if a named id belongs to a DIFFERENT stack of this deploy, it ` +
+        `is reported here too — each stack validates the WHOLE flag list. ` +
+        `Only the refusing stack stops; stacks that do not depend on it still ` +
+        `deploy, including the one that owns the id, where the recreate DOES ` +
+        `run. The run exits non-zero once every stack has settled.`
     );
     // Issue [#2567] — the nesting shape, which IS gated on the template
     // actually declaring a nested stack so an ordinary typo keeps the plain

@@ -554,7 +554,7 @@ describe('nested-stack scope of the flags (#2567)', () => {
       forceStatefulRecreation: false,
     });
     const error = renderRecreateTargetsErrors(v);
-    expect(error).toContain('each stack of this deploy validates the WHOLE flag list');
+    expect(error).toContain('belongs to a DIFFERENT stack of this deploy');
     // And it must NOT drag the nesting note along — that one stays gated.
     expect(error).not.toMatch(/nested stack/);
   });
