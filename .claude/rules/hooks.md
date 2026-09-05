@@ -525,8 +525,11 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   same command with the file absent rc=2). Unlike `issue-dup-check-gate`, an
   UNREADABLE `--body-file` still does not block: this gate objects to content
   it FINDS, so a refusal would be unclearable.
-  **What it catches, measured 2026-09-05** — of 300 bodies, 255 carry
-  `Session-fit: next` and it fires on **66** (26%), every hit on a literal
+  **What it catches, measured 2026-09-05** — of 300 bodies, 255 carry a
+  `Session-fit: next` FIELD LINE (the anchored predicate this gate reads; a
+  bare `grep -l` says 256 and counting prose mentions says 257 — state the
+  predicate or the number is unreproducible) and it fires on **66** (26%),
+  every hit on a literal
   term (`own review` 30, `own PR` 25, `unreviewable` 14, `share a PR` 3,
   `separate PR` 3). It does NOT catch reasoning that never names a PR: of its
   own three motivating deferrals it fires on go-to-k/cdkd#2590 but not #2587
@@ -538,14 +541,16 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   criterion to cite. Bypass `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, honored from
   the env and from a leading assignment in the command text (#2368), for an
   INLINE quote of PR-shaped reasoning. Smoke test:
-  `issue-deferral-criteria-gate.test.sh` (78 cases, bash 5.x + 3.2 via
-  `HOOK_BASH`). Mutation-probed: always-`exit 0` fails 43, always-`exit 2`
-  40; `next` polarity exactly the two `now` cases; the continuation boundary
-  4; segment scoping 4; the fence strip 2; the bolded key 2; the list-item
-  boundary 2; removing the heredoc arm 3; the APPEND arm 1. On the 255 real
-  bodies the pre-fix and post-fix hooks fire on the IDENTICAL 66, so the
-  fence / bold / list-item repairs are pure false-positive and
-  false-negative correction with zero drift.
+  `issue-deferral-criteria-gate.test.sh` (80 cases, bash 5.x + 3.2 via
+  `HOOK_BASH`). Mutation-probed: `exit 0` 43, `exit 2` 40, `next` polarity
+  exactly the two `now` cases, boundary 4, segment scoping 4, fence strip 2,
+  bolded key 2, list item 2, heredoc arm 3, APPEND arm 1. Pre-fix and post-fix
+  fire on the IDENTICAL 66 of the 255 — those repairs are pure
+  false-positive/negative correction, no drift. The fence STRIP needed a
+  second round: latching on any opener with no look-ahead made an UNCLOSED
+  fence blank the rest of the body (rc=0 where the pre-strip hook said 2) —
+  the heredoc latch class, one construct over. It now opens only when the SAME
+  marker recurs later.
 
 All twenty produce actionable error messages with the exact replacement
 command.
@@ -716,18 +721,14 @@ this fires on the fixture INVOCATION — the last moment a rebase is free.
 an old base (a bisect, a repro) is legitimate and a wrong refusal costs more
 than the waste. It guards a SPEND, not a merge.
 
-Two arms with opposite advice, so it stays worth reading: when main's advance
-touches integ-gate scope it names the FILE count and says rebase first; when it
-does not it says the marker will probably survive. The count is FILES and the
-message says files — an earlier revision counted `--name-only | grep -c` and
-printed "N of those COMMITS", so one commit touching five provider files read
-as "5 of those commits" directly under "1 commit(s) behind".
-
-It scopes with `HEAD...origin/main` (three dots): the question is what MAIN
-brought, not what the lane itself changed, and a lane running an integ normally
-carries its own in-scope commit. It does NOT `git fetch` (a PreToolUse hook must
-stay fast and side-effect-free), so it reads the last-fetched `origin/main` and
-UNDER-reports on a stale ref — the safe direction for a nudge.
+Two arms with opposite advice: when main's advance touches integ-gate scope it
+names the FILE count and says rebase first, else it says the marker will
+probably survive. It counts FILES and SAYS files — an earlier revision printed
+"N of those COMMITS", so one commit touching five provider files read as "5 of
+those commits" under "1 commit(s) behind". It scopes with `HEAD...origin/main`
+(three dots — the question is what MAIN brought, and a lane running an integ
+normally carries its own in-scope commit), and does NOT `git fetch`, so it
+under-reports on a stale ref — the safe direction for a nudge.
 
 **It arms on BOTH invocation shapes** — `verify.sh` AND the standard
 `node dist/cli.js deploy` flow. Requiring a `verify.sh` left it silent for
@@ -738,14 +739,12 @@ start; a path inside an arbitrary quoted string is a documented false positive
 costing a stray note, not a block. Repo opt-in; declared unexercisable in
 `unresolved-target-class.test.sh` (it refuses nothing).
 
-Smoke test: `integ-stale-base-detector.test.sh` (12 cases against real git
-fixtures, honouring `HOOK_BASH` so the HOOK runs under bash 3.2 too — it
-ignored it at first, and with `HOOK_BASH=/nonexistent` the suite still reported
-11/11 while a sibling collapsed to 1/63). Mutation-probed 2026-09-04, all
-restored: a silent `exit 0` stub fails 6, an alarming-arm-only stub fails 8, a
-both-arms stub fails 6 — and the 3-dot-to-2-dot mutation fails exactly the
+Smoke test: `integ-stale-base-detector.test.sh` (12 cases, real git fixtures,
+honouring `HOOK_BASH` so the HOOK runs under 3.2 — it ignored it at first, and
+`HOOK_BASH=/nonexistent` still reported 11/11). Probed: silent stub 6,
+alarming-arm-only 8, both-arms 6; 3-dot-to-2-dot fails exactly the
 lane-carries-its-own-commit case, which the suite could not see until that
-fixture was added (it survived the mutation at 11/11 before).
+fixture existed (it survived at 11/11 before).
 
 ## Markgate gate hooks (cwd-aware)
 

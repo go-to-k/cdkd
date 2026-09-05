@@ -900,13 +900,18 @@ describe('integ-stale-base-detector scope superset', () => {
     // what the hook does with `scope_re` is grep paths with it.
     const detectorRe = new RegExp(m![1]);
     const crossCutting = pathsFromHookRegex();
-    // Floor: if the upstream extractor ever returns [], every path trivially
-    // matches and this assertion would pass having compared nothing.
+    // NOT a length floor on `crossCutting`: `pathsFromHookRegex` already
+    // asserts its own (MIN_PATHS = 8), so a second one here can only fire at
+    // exactly 8 and is dead. The real vacuous case for a MATCH test is the
+    // opposite -- a regex matching everything (`.`, or a trailing empty
+    // alternative like `^src/…/|`) satisfies every path while fencing nothing.
+    // Guard that by requiring a path the detector must NOT match.
     expect(
-      crossCutting.length,
-      'the broad gate yielded no cross-cutting paths, so this superset check ' +
-        'would pass vacuously',
-    ).toBeGreaterThanOrEqual(9);
+      detectorRe.test('docs/README.md'),
+      "the detector's scope_re matches an obviously out-of-scope path, so it " +
+        'matches everything and this superset check fences nothing — look for a ' +
+        'bare `.` or a trailing empty alternative in the regex',
+    ).toBe(false);
 
     const missing = crossCutting.filter((p) => !detectorRe.test(p));
     expect(

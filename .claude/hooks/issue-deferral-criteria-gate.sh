@@ -70,8 +70,15 @@
 #
 # Corpus reading, so the coverage claim is a number rather than an impression.
 # Over `gh issue list --state all --limit 300 --json number,body` (2026-09-05),
-# 255 of the 300 bodies carry a `Session-fit: next` line and the gate fires on
-# 66 of them (26%). Every one of the 66 fires on a literal vocabulary term --
+# 255 of the 300 bodies carry a `Session-fit: next` FIELD LINE and the gate
+# fires on 66 of them (26%). The denominator depends on the predicate and the
+# difference is not noise: an anchored field-line match (what this gate reads --
+# line start, optional bold, optional list marker) gives 255, a bare
+# `grep -l 'Session-fit: next'` gives 256, and a reviewer counting prose
+# mentions too reported 257. 255 is the population that actually MAKES a
+# deferral decision; the extras are bodies QUOTING the phrase, which is exactly
+# the shape the fence strip exists to leave alone. State the predicate with the
+# number or the number cannot be reproduced. Every one of the 66 fires on a literal vocabulary term --
 # `own review` x30, `own PR` x25, `unreviewable` x14, `share a PR` x3,
 # `separate PR` x3 (bodies can carry more than one); eight sampled by hand are
 # genuine PR-shaped deferrals, none is a body arguing about the rule. So: a
@@ -268,12 +275,20 @@ pr_shaped() { # <reason text> -> 0 when it is PR-shaped, and records it
 # or a `tr` pass because the reason has to be REPORTED BACK in its original
 # casing, and lowercasing to match would mean carrying two copies of every line.
 scan_text() { # <body text> -> 0 when the body carries a PR-shaped deferral
-  local text="$1" line rest active=0 reason="" rc=1 nocase_was=0 fence=0
+  local text="$1" line rest active=0 reason="" rc=1 nocase_was=0 fence=0 fence_mark=""
   # A fence line is `` ``` `` or `~~~`, indented or not. The CONTENT of the
   # block is invisible to the scan; the fence line itself also closes an open
   # continuation, because a fenced block starts a new markdown block exactly
   # like a heading does.
-  local fence_re='^[[:space:]]*(```|~~~)'
+  # A fence OPENS only when its own closer appears later, and closes only on the
+  # SAME marker. Both halves are load-bearing and both were missing at first:
+  # latching on any opener with no look-ahead makes an UNCLOSED fence blank
+  # every remaining line (rc=0 where the pre-fence hook said 2), and ignoring
+  # the marker type lets a ``` line inside a ~~~ block close it early. This is
+  # the exact class .claude/rules/hooks.md documents for heredoc openers --
+  # "latching onto any <<WORD blanks every remaining line, fail open" -- so the
+  # look-ahead is copied from that solution rather than re-derived.
+  local fence_open_re='^[[:space:]]*(```|~~~)'
   # `[*_]*` on both sides of the colon accepts `**Severity:**` and
   # `**Severity**:`. Keeping the two boundary tests in sync with the key
   # spelling `session_fit_re` accepts is load-bearing: a body that bolds one
@@ -284,18 +299,50 @@ scan_text() { # <body text> -> 0 when the body carries a PR-shaped deferral
   local session_fit_re='session-fit[*_]*:[*_]*(.*)$'
   case "$(shopt -p nocasematch)" in *-s*) nocase_was=1 ;; esac
   shopt -s nocasematch
+  # Buffered into an array rather than streamed, because the opener has to look
+  # AHEAD for its own closer. Built with a read loop, not `mapfile` -- the hook
+  # suites run under macOS bash 3.2, where `mapfile` does not exist and would be
+  # a runtime error, which for a gate is a silent pass.
+  local -a lines=()
+  local n=0
   while IFS= read -r line; do
-    if [[ $line =~ $fence_re ]]; then
+    lines[$n]="$line"
+    n=$((n + 1))
+  done <<EOF
+$text
+EOF
+  local i=0 j
+  while [ "$i" -lt "$n" ]; do
+    line="${lines[$i]}"
+    i=$((i + 1))
+    if [[ $line =~ $fence_open_re ]]; then
+      local mark="${BASH_REMATCH[1]}" closes=0
       if [ "$fence" = "1" ]; then
-        fence=0
-      else
+        # Close only on the marker that opened it.
+        if [ "$mark" = "$fence_mark" ]; then fence=0; fence_mark=""; fi
+        continue
+      fi
+      # Open only if this same marker recurs LATER; a stray fence line must not
+      # swallow the rest of the body.
+      j=$i
+      while [ "$j" -lt "$n" ]; do
+        case "${lines[$j]}" in
+          *"$mark"*)
+            if [[ ${lines[$j]} =~ ^[[:space:]]*"$mark" ]]; then closes=1; break; fi
+            ;;
+        esac
+        j=$((j + 1))
+      done
+      if [ "$closes" = "1" ]; then
         fence=1
+        fence_mark="$mark"
         if [ "$active" = "1" ]; then
           active=0
           if pr_shaped "$reason"; then rc=0; break; fi
         fi
+        continue
       fi
-      continue
+      # Not a real fence -- fall through and treat it as ordinary text.
     fi
     if [ "$fence" = "1" ]; then
       continue
@@ -329,7 +376,7 @@ scan_text() { # <body text> -> 0 when the body carries a PR-shaped deferral
         reason=""
       fi
     fi
-  done < <(printf '%s\n' "$text")
+  done
   if [ "$rc" != "0" ] && [ "$active" = "1" ]; then
     pr_shaped "$reason" && rc=0
   fi

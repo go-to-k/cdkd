@@ -75,14 +75,17 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 # Those four are exactly the runs that refresh `integ-broad`, the marker this
 # hook exists to protect, so arming only on `verify.sh` missed the cases with
 # the most to lose.
-printf '%s' "$cmd" | grep -qE '(bash|sh)[[:space:]]+[^|;&]*verify\.sh|tests/integration/[^[:space:]]*/verify\.sh|(node|cdkd)[[:space:]]+[^|;&]*(dist/)?cli\.js[[:space:]]+(deploy|destroy)|^[[:space:]]*cdkd[[:space:]]+(deploy|destroy)[[:space:]]' || exit 0
+printf '%s' "$cmd" | grep -qE '(bash|sh)[[:space:]]+[^|;&]*verify\.sh|tests/integration/[^[:space:]]*/verify\.sh|(node|cdkd)[[:space:]]+[^|;&]*(dist/)?cli\.js[[:space:]]+(deploy|destroy)|(^|[|;&]|&&)[[:space:]]*cdkd[[:space:]]+(deploy|destroy)([[:space:]]|$)' || exit 0
 # Reading a fixture is not running one. Anchored at the start of the COMMAND,
 # and (since the review) also matched anywhere for the read verbs that take a
 # path argument -- `git diff .../verify.sh`, `git log -- .../verify.sh` and a
 # `cd x && cat .../verify.sh` all reached the warning before, which is how a
 # warn hook trains people to ignore it.
-printf '%s' "$cmd" | grep -qE '^[[:space:]]*(grep|rg|cat|less|head|tail|ls|wc|sed -n)[[:space:]]' && exit 0
-printf '%s' "$cmd" | grep -qE '(^|[|;&]|&&)[[:space:]]*(grep|rg|cat|less|head|tail|ls|wc|echo|git[[:space:]]+(diff|log|show|add|status))[[:space:]]' && exit 0
+# ONE read-verb test, in command position anywhere. Two lines were left after
+# the review widened this: the `^`-anchored one only still reached `sed -n`,
+# which the widened line did not list -- so `cd x && sed -n 1,5p .../verify.sh`
+# WARNED while the bare form was silent. Merged, with `sed -n` in the list.
+printf '%s' "$cmd" | grep -qE '(^|[|;&]|&&)[[:space:]]*(grep|rg|cat|less|head|tail|ls|wc|echo|sed[[:space:]]+-n|git[[:space:]]+(diff|log|show|add|status))[[:space:]]' && exit 0
 
 cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 [ -n "$cwd" ] || cwd=$PWD

@@ -259,6 +259,30 @@ UNFENCED="$TMPROOT/unfenced.md"
   printf 'Session-fit: next (not this session) -- this needs its own PR\n\n'
   printf 'Session-fit: now -- the evidence exists only in this session\n'
 } > "$UNFENCED"
+# An UNCLOSED fence must NOT swallow the rest of the body. Latching on any
+# opener with no look-ahead is the exact class .claude/rules/hooks.md documents
+# for heredoc openers ("blanks every remaining line, fail open"); measured
+# before the look-ahead, this body exited 0 where the pre-fence hook said 2.
+UNCLOSED_FENCE="$TMPROOT/unclosed-fence.md"
+{
+  printf 'Dup-check: searched.\n\n'
+  printf '```text\n'
+  printf 'a fence nobody closed\n\n'
+  printf 'Session-fit: next (not this session) -- this needs its own PR\n'
+  printf 'Severity: low -- probe\n'
+} > "$UNCLOSED_FENCE"
+# A ``` line INSIDE a ~~~ block must not close it, and the ~~~ block must not
+# stay open past its own closer. Without marker matching the inner line closed
+# the block early and the tail went unscanned.
+MIXED_FENCE="$TMPROOT/mixed-fence.md"
+{
+  printf 'Dup-check: searched.\n\n'
+  printf '~~~text\n'
+  printf 'an inner ``` line\n'
+  printf '~~~\n\n'
+  printf 'Session-fit: next (not this session) -- this needs its own PR\n'
+  printf 'Severity: low -- probe\n'
+} > "$MIXED_FENCE"
 # A ~~~ fence is a fence too.
 FENCED_TILDE="$TMPROOT/fenced-tilde.md"
 {
@@ -495,6 +519,8 @@ gh issue create --body-file stale-rel.md" "/" 2
 run "fenced backtick-text exhibit, own fit is now" "gh issue create --body-file $FENCED"       "$TMPROOT" 0
 run "fenced ~~~ exhibit, own fit is now"     "gh issue create --body-file $FENCED_TILDE" "$TMPROOT" 0
 run "the same quote UNFENCED still blocks"   "gh issue create --body-file $UNFENCED"     "$TMPROOT" 2
+run "an UNCLOSED fence does not swallow the body" "gh issue create --body-file $UNCLOSED_FENCE" "$TMPROOT" 2
+run "a mismatched inner marker does not close a ~~~ block" "gh issue create --body-file $MIXED_FENCE" "$TMPROOT" 2
 
 # --- a BOLDED key is still a key -------------------------------------------
 run "bold **Session-fit:** PR-shaped"  "gh issue create --body-file $BOLDFIT"  "$TMPROOT" 2
