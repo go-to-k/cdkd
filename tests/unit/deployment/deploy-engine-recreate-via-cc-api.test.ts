@@ -65,6 +65,13 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
   withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
 }));
 
+/**
+ * The stack the recreate targets are validated against, and the stack the
+ * engine is driven with. They must be the SAME string: since issue #2567 the
+ * engine honours a target only in the stack the pre-flight validated it in.
+ */
+const STACK_NAME = 'MyStack';
+
 describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
   let callOrder: string[];
   let sdkProvider: ResourceProvider;
@@ -150,7 +157,11 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
       mockDiffCalculator as unknown as never,
       mockProviderRegistry as unknown as never,
       {
-        recreateViaCcApiTargets: new Set(['MyLambda']),
+        recreateTargets: {
+          stackName: STACK_NAME,
+          viaCcApi: new Set(['MyLambda']),
+          viaSdkProvider: new Set<string>(),
+        },
       },
       'us-east-1'
     );
@@ -177,7 +188,7 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
     const provisionResource = (
       engine as unknown as { provisionResource: ProvisionResourceFn }
     ).provisionResource.bind(engine);
-    await provisionResource('MyLambda', change, stateResources, 'MyStack', template);
+    await provisionResource('MyLambda', change, stateResources, STACK_NAME, template);
   }
 
   function makeUpdateChange(): ResourceChange {

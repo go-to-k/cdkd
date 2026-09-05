@@ -112,7 +112,13 @@ describe('DeployEngine — same-name replacement with a name-idempotent Create A
       mockProviderRegistry as unknown as never,
       {
         ...(opts.replace !== undefined && { replace: opts.replace }),
-        ...(opts.recreateViaCcApi && { recreateViaCcApiTargets: new Set(['Queue']) }),
+        ...(opts.recreateViaCcApi && {
+          recreateTargets: {
+            stackName: 'MyStack',
+            viaCcApi: new Set(['Queue']),
+            viaSdkProvider: new Set<string>(),
+          },
+        }),
       },
       'us-east-1'
     );

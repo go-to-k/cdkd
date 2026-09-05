@@ -176,7 +176,62 @@ export interface RecreateTargetsValidation {
    * `--recreate-via-sdk-provider`. Ambiguous — pick one direction.
    */
   conflictingDirections: string[];
+  /**
+   * Issue [#2567]: `--recreate-via-*` named the `AWS::CloudFormation::Stack`
+   * row of a NESTED STACK itself.
+   *
+   * Refused, in both directions, with no `--force-stateful-recreation` bypass —
+   * the same shape as {@link blockedMultiRegionTargets} and for a stronger
+   * reason. The type is not in `STATEFUL_TYPES`, so nothing else stops it, and
+   * honoring it would route the whole child stack through the replacement
+   * path: `NestedStackProvider.delete` tears down every resource the child
+   * owns, under the CHILD's own policies and with no per-resource consent
+   * screen, and the re-create would then be asked of a layer that does not
+   * implement cdkd's nested-stack semantics at all. A user who wants a child's
+   * resource recreated has to name it in a deploy of that resource's own
+   * stack, which nested children do not get.
+   *
+   * The refusal is also what keeps {@link nestedStackLogicalIds} from being a
+   * hazard: that note NAMES these ids to the user, and naming them while
+   * accepting them would be an invitation.
+   */
+  blockedNestedStackTargets: RecreateTarget[];
+  /**
+   * Issue [#2567]: the `AWS::CloudFormation::Stack` logical ids this stack's
+   * template declares, in template order. NOT an error category — it is the
+   * evidence the unknown-id message needs to explain the one shape a user
+   * cannot fix by correcting a typo: a resource that lives INSIDE a nested
+   * child, which the flags do not address. The engine matches the validated
+   * ids only against the stack they were validated against, so a child's
+   * resource is not reachable from the parent's flag; without this hint the
+   * user reads `not present in the synth template` and goes looking for a
+   * spelling mistake that is not there. Empty for a stack with no nested
+   * children, which is what keeps the hint off every ordinary typo.
+   */
+  nestedStackLogicalIds: string[];
 }
+
+const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
+
+/**
+ * The CFn type of a nested stack's row in its PARENT's template. It decides
+ * both the refusal (`blockedNestedStackTargets`) and the evidence the
+ * unknown-id note renders (`nestedStackLogicalIds`) — so within this module it
+ * is spelled once, or the note could name ids the validator does not refuse.
+ *
+ * The two are NOT the same set, and deliberately so: the refusal keys on the
+ * STATE record's type, because what makes recreating one destructive is that
+ * `NestedStackProvider` owns the row and its delete tears down the child; the
+ * note keys on the TEMPLATE, because it is telling the user what their current
+ * template contains. They diverge only for a row whose type changed between
+ * deploys, and each side is right for its own question. Other modules spell it
+ * for themselves rather than sharing one export: the only EXPORTED copy lives
+ * in `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
+ * from the deployment layer would invert the dependency direction. (No count of
+ * the other spellings is given here on purpose — an unfenced number in a
+ * comment is a number that goes stale.)
+ */
+const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 
 /**
  * Plan-time validation of the user's recreate-via-cc-api list.
@@ -191,8 +246,6 @@ export interface RecreateTargetsValidation {
  * Input order is preserved; duplicate logical ids in the user's input
  * are deduplicated.
  */
-const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
-
 export function validateRecreateTargets(input: {
   template: CloudFormationTemplate;
   state: StackState;
@@ -224,6 +277,7 @@ export function validateRecreateTargets(input: {
     RecreateTarget & { statefulReason: Exclude<StatefulReason, null> }
   > = [];
   const blockedMultiRegionTargets: Array<RecreateTarget> = [];
+  const blockedNestedStackTargets: RecreateTarget[] = [];
   const blockedAlreadySdk: RecreateTarget[] = [];
   const blockedAlreadyCcApi: RecreateTarget[] = [];
   const blockedNoSdkProvider: RecreateTarget[] = [];
@@ -275,6 +329,15 @@ export function validateRecreateTargets(input: {
     // bypass flag for this category by design. Applies to BOTH directions.
     if (MULTI_REGION_RECREATE_BLOCKED_TYPES.has(resourceType)) {
       blockedMultiRegionTargets.push(target);
+    }
+
+    // Nested-stack refusal (issue [#2567]). Same "no bypass flag" shape as the
+    // multi-region category above; see `blockedNestedStackTargets` for why the
+    // operation is not merely out of scope but destructive. Keyed on the STATE
+    // record's type, like every other check here, so a row cdkd recorded as a
+    // nested stack is refused even if the template has since changed.
+    if (resourceType === NESTED_STACK_RESOURCE_TYPE) {
+      blockedNestedStackTargets.push(target);
     }
 
     if (direction === 'to-cc-api') {
@@ -348,10 +411,14 @@ export function validateRecreateTargets(input: {
     ambiguousIntentSdk,
     blockedStatefulTargets,
     blockedMultiRegionTargets,
+    blockedNestedStackTargets,
     blockedAlreadySdk,
     blockedAlreadyCcApi,
     blockedNoSdkProvider,
     conflictingDirections,
+    nestedStackLogicalIds: Object.entries(input.template.Resources ?? {})
+      .filter(([, resource]) => resource?.Type === NESTED_STACK_RESOURCE_TYPE)
+      .map(([id]) => id),
   };
 }
 
@@ -386,6 +453,48 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `cdkd synth | jq '.Resources | keys'). Recreate operates on the ` +
         `synth template's logical ids, not CDK display paths.`
     );
+    // Issue [#2567] — the multi-stack shape, rendered for EVERY unknown id
+    // rather than only for a template with nested stacks: a plain multi-stack
+    // app is exactly the audience, and gating this on nesting made it
+    // unreachable for them.
+    //
+    // THIS PARAGRAPH DELIBERATELY DOES NOT DESCRIBE WHAT THE RUN DOES NEXT.
+    // Three review rounds produced three different wrong descriptions of that
+    // — "one unknown id fails the entire run" (WorkGraph has no fail-fast),
+    // "only the stacks that could not resolve it stop" (a stack depending on a
+    // refuser is skipped too), and "the stack that owns the id, where the
+    // recreate DOES run" (that owner is itself skipped when it depends on a
+    // refusing stack). The orchestration is genuinely intricate — the flag list
+    // is run-global while each stack validates it against its OWN template, so
+    // every stack that does not declare the id refuses — and none of it is what
+    // a user at this prompt needs. What they need is which stack to name it in.
+    // Say only that. The unit case pins this note's rendered LINE by equality,
+    // so a rewrite -- or an appended sentence -- reds and has to be argued for;
+    // two weaker instruments were tried first and each let a fresh wrong
+    // description through.
+    lines.push(
+      `  Note: each stack of this deploy validates this WHOLE flag list ` +
+        `against its OWN template, so an id declared by a different stack of ` +
+        `the same run is reported here as unknown. Name it in a deploy of ` +
+        `only that stack.`
+    );
+    // Issue [#2567] — the nesting shape, which IS gated on the template
+    // actually declaring a nested stack so an ordinary typo keeps the plain
+    // message. Not a typo and not fixable by re-reading the template: the
+    // flags name logical ids of the stack being deployed, and the engine
+    // matches them only against that stack, so a child's resource is not
+    // addressable from here.
+    if (validation.nestedStackLogicalIds.length > 0) {
+      lines.push(
+        `  Note: resources inside a nested stack are NOT addressable — the ` +
+          `flags name logical ids of the stack being deployed, and this ` +
+          `template's nested stack(s) (` +
+          `${validation.nestedStackLogicalIds.join(', ')}) carry their own. ` +
+          `A logical id that a nested child happens to share with a top-level ` +
+          `resource recreates the TOP-LEVEL one only, and the nested stack ` +
+          `row itself is refused as a target.`
+      );
+    }
   }
 
   if (validation.missingFromState.length > 0) {
@@ -439,6 +548,24 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
           `${renderStatefulReason(blocked.statefulReason)}`
       );
     }
+  }
+
+  if (validation.blockedNestedStackTargets.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `${FLAG_UMBRELLA} refuses to operate on ` +
+        `${validation.blockedNestedStackTargets.length} nested-stack resource(s):`
+    );
+    for (const blocked of validation.blockedNestedStackTargets) {
+      lines.push(`  - ${blocked.logicalId} (${blocked.resourceType})`);
+    }
+    lines.push(
+      `  Recreating one would DELETE the whole child stack — every resource it ` +
+        `owns, with no per-resource confirmation — and re-create it through a ` +
+        `layer that does not implement cdkd's nested-stack handling. There is ` +
+        `no --force-stateful-recreation bypass. A resource inside a child is ` +
+        `not addressable by these flags at all.`
+    );
   }
 
   if (validation.blockedMultiRegionTargets.length > 0) {

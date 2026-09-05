@@ -7,7 +7,7 @@
  *   - Baseline state has `provisionedBy: 'cc-api'` (the resource landed
  *     on CC because cdkd auto-routed a silent-drop property).
  *   - The deploy engine receives the resource via
- *     `recreateViaSdkProviderTargets` (NOT `recreateViaCcApiTargets`).
+ *     `recreateTargets.viaSdkProvider` (NOT `.viaCcApi`).
  *   - The destroy uses the recorded `provisionedBy: 'cc-api'` provider.
  *   - The create's `getProviderFor` call receives the synthetic hint
  *     `provisionedBy: 'sdk'` so routing returns the SDK provider.
@@ -52,6 +52,13 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
 vi.mock('../../../src/deployment/resource-deadline.js', () => ({
   withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
 }));
+
+/**
+ * The stack the recreate targets are validated against, and the stack the
+ * engine is driven with. They must be the SAME string: since issue #2567 the
+ * engine honours a target only in the stack the pre-flight validated it in.
+ */
+const STACK_NAME = 'MyStack';
 
 describe('DeployEngine — --recreate-via-sdk-provider wire-through (#651)', () => {
   let callOrder: string[];
@@ -140,7 +147,11 @@ describe('DeployEngine — --recreate-via-sdk-provider wire-through (#651)', () 
       mockDiffCalculator as unknown as never,
       mockProviderRegistry as unknown as never,
       {
-        recreateViaSdkProviderTargets: new Set(['MyLambda']),
+        recreateTargets: {
+          stackName: STACK_NAME,
+          viaCcApi: new Set<string>(),
+          viaSdkProvider: new Set(['MyLambda']),
+        },
       },
       'us-east-1'
     );
@@ -172,7 +183,7 @@ describe('DeployEngine — --recreate-via-sdk-provider wire-through (#651)', () 
     const provisionResource = (
       engine as unknown as { provisionResource: ProvisionResourceFn }
     ).provisionResource.bind(engine);
-    await provisionResource('MyLambda', change, stateResources, 'MyStack', template);
+    await provisionResource('MyLambda', change, stateResources, STACK_NAME, template);
   }
 
   function makeUpdateChange(): ResourceChange {

@@ -203,7 +203,11 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       {
         ...(opts.replace === true && { replace: true }),
         ...(opts.recreateViaCcApi === true && {
-          recreateViaCcApiTargets: new Set(['MyResource']),
+          recreateTargets: {
+            stackName: 'MyStack',
+            viaCcApi: new Set(['MyResource']),
+            viaSdkProvider: new Set<string>(),
+          },
         }),
         ...(opts.recordEvents === true && {
           eventRecorder: {

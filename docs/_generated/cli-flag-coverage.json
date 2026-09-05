@@ -75,6 +75,7 @@
         "export",
         "gc-custom-asset-names",
         "loggroup-never-expire-guard",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "route53",
         "secrets-dynamic-ref",
@@ -247,6 +248,7 @@
         "rds-dbinstance-backfill",
         "rds-full-stack",
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "redshift-cluster-getatt",
@@ -313,6 +315,7 @@
         "lambda-url-authtype-replay",
         "loggroup-class-guard",
         "loggroup-never-expire-guard",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "replacement-immutable-name",
         "rollback-command",
@@ -533,6 +536,7 @@
         "rds-dbinstance-backfill",
         "rds-full-stack",
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "redshift-cluster-getatt",
@@ -604,6 +608,7 @@
       "integs": [
         "loggroup-never-expire-guard",
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api"
       ]
     },
@@ -611,6 +616,7 @@
       "flag": "--recreate-via-sdk-provider",
       "integs": [
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-sdk-provider"
       ]
     },
@@ -778,6 +784,7 @@
         "rds-dbinstance-backfill",
         "rds-full-stack",
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "redshift-cluster-getatt",
@@ -1067,6 +1074,7 @@
         "rds-dbinstance-backfill",
         "rds-full-stack",
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "redshift-cluster-getatt",
@@ -1333,6 +1341,7 @@
         "rds-dbinstance-backfill",
         "rds-full-stack",
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
         "redshift-cluster-getatt",

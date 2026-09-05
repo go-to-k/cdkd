@@ -409,6 +409,291 @@ describe('validateRecreateTargets (#615)', () => {
   });
 });
 
+describe('nested-stack scope of the flags (#2567)', () => {
+  const NESTED_TYPE = 'AWS::CloudFormation::Stack';
+
+  /** A parent template with one nested child and one ordinary resource. */
+  function parentTemplate(): CloudFormationTemplate {
+    return {
+      Resources: {
+        MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+        ChildStack: { Type: NESTED_TYPE, Properties: {} },
+      },
+    };
+  }
+
+  it('records the template\'s nested-stack logical ids', () => {
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.nestedStackLogicalIds).toEqual(['ChildStack']);
+  });
+
+  it('is EMPTY for a flat stack — so an ordinary typo keeps the plain message', () => {
+    const v = validateRecreateTargets({
+      template: { Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } } },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['Typo'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.nestedStackLogicalIds).toEqual([]);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toMatch(/not present in the synth template/);
+    // The hint is the whole point of carrying the ids; it must not fire where
+    // there is no nested stack to explain.
+    expect(error).not.toMatch(/nested stack/);
+  });
+
+  it('an id that lives only in a CHILD is refused at pre-flight, and the refusal says why', () => {
+    // This is what a "genuinely nested target" does today: the child's
+    // resources are not in the parent's template, so the flag never reaches
+    // the deploy at all. Scoping the target set (#2567) therefore removes no
+    // capability — the ONLY ids that used to reach a child engine were ones
+    // validated for the PARENT that collided by accident.
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['BucketInsideTheChild'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.unknownLogicalIds).toEqual(['BucketInsideTheChild']);
+    expect(v.targets).toEqual([]);
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toMatch(/resources inside a nested stack are NOT addressable/);
+    // It names the nested stack(s) the user can see in their own template.
+    expect(error).toContain('ChildStack');
+  });
+
+  it('names EVERY nested stack in the hint, not just the first', () => {
+    const v = validateRecreateTargets({
+      template: {
+        Resources: {
+          MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+          ChildStack: { Type: NESTED_TYPE, Properties: {} },
+          SecondChild: { Type: NESTED_TYPE, Properties: {} },
+        },
+      },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['Typo'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.nestedStackLogicalIds).toEqual(['ChildStack', 'SecondChild']);
+    // The rendered join is what the user reads; a per-id assertion would pass
+    // on a renderer that printed only one of them.
+    // The FULL needle, not just the join: `verify.sh` greps
+    // `nested stack(s) (Child)` on the real CLI output, and a wording drift
+    // that kept the parenthesised list would leave that grep silently
+    // unsatisfied with nothing here to catch it.
+    expect(renderRecreateTargetsErrors(v)).toContain('nested stack(s) (ChildStack, SecondChild)');
+  });
+
+  it('REFUSES the nested stack row itself as a target, in both directions', () => {
+    // The hint above NAMES these ids to the user. Naming them while accepting
+    // them would be an invitation: honoring one routes the whole child stack
+    // through the replacement path, so `NestedStackProvider.delete` tears down
+    // every resource the child owns with no per-resource confirmation.
+    for (const direction of ['recreateViaCcApi', 'recreateViaSdkProvider'] as const) {
+      const v = validateRecreateTargets({
+        template: parentTemplate(),
+        state: st('S', {
+          ChildStack: res(NESTED_TYPE, { physicalId: 'arn:cdkd-local:stack/S~ChildStack' }),
+        }),
+        recreateViaCcApi: direction === 'recreateViaCcApi' ? ['ChildStack'] : [],
+        recreateViaSdkProvider: direction === 'recreateViaSdkProvider' ? ['ChildStack'] : [],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+      });
+      expect(v.blockedNestedStackTargets.map((t) => t.logicalId)).toEqual(['ChildStack']);
+      const error = renderRecreateTargetsErrors(v);
+      expect(error).toMatch(/refuses to operate on 1 nested-stack resource/);
+      expect(error).toContain('ChildStack');
+      expect(error).toMatch(/DELETE the whole child stack/);
+    }
+  });
+
+  it('keys the refusal on the STATE record type, not the template type', () => {
+    // The harm case: state records `AWS::CloudFormation::Stack` (so
+    // `NestedStackProvider` owns the row and its delete tears down the whole
+    // child) while the template has since been edited to something else. A
+    // template-keyed check accepts that target and the destroy still runs off
+    // the state type. Measured: keying the check on `templateResource.Type`
+    // left all 81 cases in this file green before this one existed.
+    const v = validateRecreateTargets({
+      template: {
+        Resources: {
+          // Same logical id, now declared as an ordinary resource.
+          ChildStack: { Type: 'AWS::SNS::Topic', Properties: {} },
+        },
+      },
+      state: st('S', { ChildStack: res(NESTED_TYPE, { physicalId: 'child-arn' }) }),
+      recreateViaCcApi: ['ChildStack'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedNestedStackTargets.map((t) => t.logicalId)).toEqual(['ChildStack']);
+    expect(renderRecreateTargetsErrors(v)).toMatch(/refuses to operate on 1 nested-stack resource/);
+  });
+
+  it('the multi-stack note renders for a FLAT template — the audience it addresses', () => {
+    // The reachability, not the wording. This note was gated on
+    // `nestedStackLogicalIds.length > 0` in an earlier revision, which made the
+    // "belongs to a different stack" explanation invisible to exactly the users
+    // who hit it: a plain multi-stack app with no nested stacks anywhere.
+    const v = validateRecreateTargets({
+      template: { Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } } },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['LivesInAnotherStack'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    const error = renderRecreateTargetsErrors(v);
+    expect(error).toContain('validates this WHOLE flag list against its OWN template');
+    // And it must NOT drag the nesting note along — that one stays gated.
+    expect(error).not.toMatch(/nested stack/);
+  });
+
+  it('the multi-stack note describes NO run orchestration at all', () => {
+    // The class, not one wording. Three rounds produced three different wrong
+    // descriptions of what the run does after this refusal — it is cancelled;
+    // only the refusers stop; the owner still deploys — each false in its own
+    // way, because the flag list is run-global while every stack validates it
+    // against its OWN template, and `WorkGraph` skips a node whose dependency
+    // failed. The message now says which stack to name the id in and stops.
+    // This case fences the CLASS so a fourth attempt cannot land.
+    const v = validateRecreateTargets({
+      template: { Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } } },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['LivesInStackB'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    const error = renderRecreateTargetsErrors(v) ?? '';
+    // The whole LINE, equal — not merely contained.
+    //
+    // Two instruments failed here before this one. A `not.toMatch` alternation
+    // of the wordings already rejected let a fourth wrong description through
+    // in new words. Replacing it with `toContain` of the correct sentence was
+    // STRICTLY WEAKER: appending that same rejected claim after the pinned
+    // sentence passed 86/86, because containment bounds the sentence and says
+    // nothing about the paragraph. Equality on the rendered line bounds both.
+    const noteLine = error
+      .split('\n')
+      .find((l) => l.startsWith('  Note: each stack of this deploy'));
+    expect(noteLine, 'the multi-stack note is not rendered at all').toBeDefined();
+    expect(
+      noteLine,
+      'the multi-stack note was rewritten or extended. Every previous attempt to describe ' +
+        "what the RUN does after this refusal was false (see the comment at the note's " +
+        'lines.push site): the flag list is run-global while each stack validates it against ' +
+        'its OWN template, so every stack not declaring the id refuses, and WorkGraph skips ' +
+        'any stack depending on one of those. Say which stack to name the id in and stop.'
+    ).toBe(
+      '  Note: each stack of this deploy validates this WHOLE flag list against its OWN ' +
+        'template, so an id declared by a different stack of the same run is reported here ' +
+        'as unknown. Name it in a deploy of only that stack.'
+    );
+  });
+
+  it('renders BOTH `Note:` paragraphs for a nested template, in order', () => {
+    // The RENDERED block, not source order: an earlier spelling compared
+    // `indexOf` positions in the emitter and stayed green with the nesting note
+    // gated off entirely. Two paragraphs both opening `Note:` is a readability
+    // choice that only exists in the output.
+    const v = validateRecreateTargets({
+      template: {
+        Resources: {
+          MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+          ChildStack: { Type: NESTED_TYPE, Properties: {} },
+        },
+      },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['Typo'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    const error = renderRecreateTargetsErrors(v) ?? '';
+    const multiStack = error.indexOf('Note: each stack of this deploy validates');
+    const nesting = error.indexOf('Note: resources inside a nested stack');
+    expect(multiStack, 'the multi-stack note is not rendered').toBeGreaterThan(-1);
+    expect(nesting, 'the nesting note is not rendered').toBeGreaterThan(-1);
+    expect(
+      multiStack,
+      'the nesting note now renders BEFORE the multi-stack one'
+    ).toBeLessThan(nesting);
+  });
+
+  it('does NOT refuse when only the TEMPLATE says nested and state says otherwise', () => {
+    // The mirror of the case above, and the one a widened predicate
+    // (`state === NESTED || template === NESTED`) would fail. Measured: that
+    // widening keeps every other case in this file green. It is wrong because
+    // the refusal's whole justification is that `NestedStackProvider` owns the
+    // row and its delete tears down the child — which is decided by the STATE
+    // record, not by a template edited since. Refusing here would block a
+    // legitimate recreate with a message asserting a cascade that cannot
+    // happen.
+    const v = validateRecreateTargets({
+      template: { Resources: { WasOrdinary: { Type: NESTED_TYPE, Properties: {} } } },
+      state: st('S', { WasOrdinary: res('AWS::SNS::Topic', { physicalId: 'arn:topic' }) }),
+      recreateViaCcApi: ['WasOrdinary'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedNestedStackTargets).toEqual([]);
+    expect(v.targets.map((t) => t.logicalId)).toEqual(['WasOrdinary']);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+
+  it('the nested-stack refusal has NO --force-stateful-recreation bypass', () => {
+    // The multi-region category is the precedent: a structural refusal, not a
+    // data-loss confirmation, so the consent flag must not clear it.
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { ChildStack: res(NESTED_TYPE) }),
+      recreateViaCcApi: ['ChildStack'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: true,
+    });
+    expect(v.blockedNestedStackTargets.map((t) => t.logicalId)).toEqual(['ChildStack']);
+    expect(renderRecreateTargetsErrors(v)).toMatch(/no --force-stateful-recreation bypass/);
+  });
+
+  it('leaves an ORDINARY target unrefused — the guard is keyed on the type, not on nesting', () => {
+    // The other direction of the fence: a stack WITH nested children can still
+    // recreate its own top-level resources.
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { MyLambda: res('AWS::Lambda::Function', { physicalId: 'foo' }) }),
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedNestedStackTargets).toEqual([]);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+
+  it('a top-level id that a child SHARES is still a valid target — for the parent only', () => {
+    // The collision case from the issue. The pre-flight validates it against
+    // the parent, and the engine honours it only in the parent
+    // (`deploy-engine-recreate-targets-stack-scope.test.ts` pins that half).
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { MyLambda: res('AWS::Lambda::Function', { physicalId: 'foo' }) }),
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.targets.map((t) => t.logicalId)).toEqual(['MyLambda']);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+});
+
 describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk-provider)', () => {
   it('rejects --recreate-via-sdk-provider on a resource currently provisionedBy: sdk (no-op)', () => {
     const template: CloudFormationTemplate = {
@@ -719,6 +1004,8 @@ function emptyValidation(
     blockedAlreadyCcApi: [],
     blockedNoSdkProvider: [],
     conflictingDirections: [],
+    nestedStackLogicalIds: [],
+    blockedNestedStackTargets: [],
   };
 }
 
@@ -1629,6 +1916,8 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
       conflictingDirections: [],
+      nestedStackLogicalIds: [],
+      blockedNestedStackTargets: [],
     };
     const out = await probeAndRevalidateStateful({
       validation,
@@ -1702,6 +1991,8 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedAlreadyCcApi: [],
       blockedNoSdkProvider: [],
       conflictingDirections: [],
+      nestedStackLogicalIds: [],
+      blockedNestedStackTargets: [],
     };
     const out = await probeAndRevalidateStateful({
       validation,
