@@ -201,7 +201,7 @@ local-start-service-watch-fast	2026-07-26T20:18:09Z	PASS	186	verify.sh	re-run af
 log-pipeline	2026-07-31T07:44:41Z	PASS	95	standard	issue #1326 removalPolicy fix verified: stream deleted on destroy, 0 orphans
 loggroup-class-guard	2026-09-05T06:31:42Z	PASS	305	verify.sh	rc0, destroy clean, 0 orphans; PR 2611 re-gate on the edited fixture, 7 phases
 loggroup-kms-associate	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b3; KMS associate+disassociate, 4 phases; key PendingDeletion is AWS-mandated
-loggroup-never-expire-guard	2026-09-04T19:34:17Z	PASS	300	verify.sh	#2558 new fixture, first run; 8 phases (incl. 3b) — pre-flight refused on seeded / ALLOWED on empty (guard proven conditional on the real wire), plain-deploy rename refused with data intact, consented replacement, 2 del / 0 err, 0 orphans
+loggroup-never-expire-guard	2026-09-05T09:12:25Z	PASS	300	verify.sh	#2615 review round: sentinel tightened to 'log group is not provably empty' now that the bucket shares the hedge; 7 phases + 3b, 0 orphans
 macro-expansion	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; diff-expands + destroy-no-expand asserts, 0 orph
 microservices	2026-08-13T18:47:41Z	PASS	44	standard	Issue #1874 broad integ at rebased head 133a9660 (merged PR #1884 region fold + PR #1885); 19 created / 19 deleted, 0 errors, 0 orphans
 migrate-from-cfn	2026-09-05T04:33:02Z	PASS	260	run.sh	issue 2587: small arm now declares a no-default CfnParameter consumed by an Output, restoring real-AWS coverage of retireCloudFormationStack's UsePreviousValue forwarding. rc 0, retire + destroy 24 deleted 0 errors. Discrimination proved against real CFn: dropping the forwarding fails UpdateStack with 'ValidationError: Parameters: [TopicDisplayName] must have values'
@@ -226,7 +226,7 @@ rds-aurora	2026-08-10T08:05:51Z	PASS	2299	verify.sh	0810 P2 sweep b13; cluster r
 rds-dbinstance-backfill	2026-08-10T08:05:51Z	PASS	634	verify.sh	0810 P2 sweep b13; rds-provider re-verify, 0 err 0 orph
 rds-full-stack	2026-08-13T14:32:55Z	PASS	-	verify.sh	issue 1824 arm: SSM value == live DBSubnetGroupArn (subgrp: form, read off the create response); 16 created, all gone-probes OK, 0 err 0 orph
 recreate-mixed-direction	2026-08-08T16:42:21Z	PASS	92	verify.sh	P1 post-#1360 replacement-rules touch; mixed SDK<->CC recreate ok, 3 del/0 err, 0 orphans
-recreate-via-cc-api	2026-09-05T08:44:43Z	PASS	130	verify.sh	#2615 wording change: re-run because verify.sh greps the renamed sentence; non-empty arm matched the new text, 0 orphans
+recreate-via-cc-api	2026-09-05T09:12:25Z	PASS	130	verify.sh	#2615 review round: greps took -F and dropped the dead has-objects branch; both polarities still discriminate, 0 orphans
 recreate-via-sdk-provider	2026-08-08T16:40:35Z	PASS	78	verify.sh	P1 post-#1360 replacement-rules touch; CC->SDK mid-life recreate ok, 2 del/0 err, 0 orphans
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
 remove-protection	2026-09-05T03:27:04Z	PASS	1350	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
