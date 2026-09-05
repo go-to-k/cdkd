@@ -173,7 +173,8 @@ and sanitising consumed it" — so on the error line, the one field there that
 can be legitimately empty with nothing forged is exempt: an error's `message`
 is copied verbatim from the thrown error, so a bare `new Error()` stores `''`,
 and that row renders as `Error` with no trailing separator rather than claiming
-a suppressed value.
+a suppressed value. Every other field on the ERROR line requires write access
+to the event store to be blank.
 
 Two fields deliberately do NOT make that distinction. The run listing's
 `startedAt` / `finishedAt` render `?` both when no timestamp was recorded — cdkd
@@ -183,8 +184,6 @@ recorded". They keep the spelling the listing already used rather than gaining a
 second one: an earlier revision generalised the present-versus-consumed
 distinction across the whole renderer and each review round found it making the
 same false claim on a different input class.
-Every other field on that line requires write access to the event store to be
-blank.
 
 `--json` / `--format json` is deliberately **not** sanitised: it is a
 machine-consumed payload whose contract is byte-fidelity with the store, and a
