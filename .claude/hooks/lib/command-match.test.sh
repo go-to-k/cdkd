@@ -1959,6 +1959,36 @@ split_parity 'unbalanced apostrophe'  "echo don't; git commit -m y"
 split_parity 'process substitution'   'diff <(git commit) /dev/null'
 split_parity 'ANSI-C span'            "gh issue create --body \$'a\\x20b'"
 
+# --- gate_perl_word_ok must reject a STALE prelude ---------------------------
+#
+# The guard exists to catch a library that is present but does not WORK, and the
+# case it is most likely to meet is a SIBLING REPO one revision behind -- this
+# prelude is copied between three repos on purpose. A four-dimension probe was
+# measured certifying exactly that: the pre-`ebf5ac39` prelude (no mid-word
+# ANSI-C arm, `gate_unq` decoding instead of returning bytes) passed every
+# assertion, because all four inputs were pure ASCII at word position 0.
+#
+# Each case deletes ONE dimension from the REAL prelude and requires a
+# rejection. A dimension whose deletion still passes is one the probe does not
+# actually certify. Driven from a single python block rather than per-case shell
+# arguments: the mutations are regex literals full of quotes and backslashes,
+# and threading them through shell quoting broke the file twice.
+__pr_out=$(python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/testdata/probe-rejects.py" \
+             "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/command-match.sh" 2>&1)
+__pr_rc=$?
+printf '%s\n' "$__pr_out"
+__pr_ok=$(printf '%s\n' "$__pr_out" | grep -c '^OK   probe-rejects:')
+__pr_bad=$(printf '%s\n' "$__pr_out" | grep -c '^FAIL probe-rejects:')
+# The COUNT is asserted, not just the failures: a script that dies early prints
+# nothing and would otherwise read as six silent passes.
+if [ "$__pr_rc" != 0 ] || [ "$__pr_ok" -ne 6 ] || [ "$__pr_bad" -ne 0 ]; then
+  fail=$((fail + 1))
+  printf 'FAIL probe-rejects: expected 6 OK / 0 FAIL, got %s / %s (rc=%s)\n' "$__pr_ok" "$__pr_bad" "$__pr_rc"
+  fail_log+="FAIL probe-rejects: expected 6 OK / 0 FAIL, got $__pr_ok / $__pr_bad\n"
+else
+  pass=$((pass + __pr_ok))
+fi
+
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
   echo

@@ -129,10 +129,13 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   minor release (PR #346 / v0.97.0; release-please consumes the same prefixes
   today). Reads `-F <file>` / `--message=` / `--message ` too; `revert:`,
   `--amend`, and bare `git commit` (editor) pass. The error lists staged files
-  and suggests the right prefix (`chore:` for `.claude/**` / hooks / skills /
-  build / CI; `docs:` docs-only; `test:` tests-only; `chore(deps):`
-  package.json / lockfile only). Smoke test:
-  `commit-prefix-scope-gate.test.sh` (34 cases).
+  and suggests the right prefix. Smoke test:
+  `commit-prefix-scope-gate.test.sh` (49 cases).
+  **The `-F` / `--file` path is a shell WORD (`GATE_PERL_WORD`)**: five arms
+  enumerating quote positions left `--file "$VAR"` and a glued `-F<path>`
+  unextracted, so a `fix:` commit with no `src/**` change reached a release. An
+  UNRESOLVABLE path (`$`, backtick, `*`, `?`, `[`, `~user`) REFUSES; `~/` is
+  resolved, not refused.
 
 - **`.claude/hooks/pr-title-prefix-scope-gate.sh`** — PR-title counterpart:
   blocks `gh pr create --title "feat:|fix:..."` and
@@ -278,8 +281,8 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   that FALSE-BLOCKED an empty rewrite. The same precision keeps `-F` safe
   (`awk -F ,` names a path never written — stays a skip).
   **Five header-declared "known limits" were live BYPASSES and are fixed**
-  (2026-09-05, shared `GATE_PERL_WORD` — see "One value class for the FIVE
-  body gates" below), each measured rc=0 on a Japanese body where the plain
+  (2026-09-05, shared `GATE_PERL_WORD` — see "One value class for the SIX
+  gates that extract with perl" below), each measured rc=0 on a Japanese body where the plain
   spelling gave 2: a quoted `--body-file` path with a SPACE; the glued
   `-F<path>` / `-fbody=<text>` shorthands; a glued `-F<path>` on a SHORT-flag-
   only command, which never even ARMED; a path followed by an unquoted `;`;
@@ -545,10 +548,11 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   said 2) — the heredoc latch class one construct over; it now opens only when
   the SAME marker recurs later.
 
-**One value class for the FIVE body gates (`GATE_PERL_WORD`, 2026-09-05).**
-The english / dup-check / deferral / classification / pr-body-item-number gates
-pull a `--body-file` path and an inline `--body` value out of RAW command text
-with `perl` (a global scan over a slurp, which `[[ =~ ]]` cannot do). All five
+**One value class for the SIX gates that extract with perl (`GATE_PERL_WORD`,
+2026-09-05).** The english / dup-check / deferral / classification /
+pr-body-item-number / commit-prefix-scope gates pull a `--body-file` or `-F`
+path and an inline `--body` value out of RAW command text with `perl` (a global
+scan over a slurp, which `[[ =~ ]]` cannot do). All five
 spelled it `(["\x27]?)([^"\x27\s]+)\1`, which ENUMERATES where a quote may sit
 instead of taking one shell WORD. That lost SIX families at once, each
 measured, each fail-OPEN wherever polarity allowed: a quoted path containing a

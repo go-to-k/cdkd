@@ -1260,11 +1260,16 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # ── A shell WORD, for the gates that extract with PERL ─────────────────────
 #
 # `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
-# `[[ =~ ]]`. FIVE gates -- issue-deferral-criteria, gh-body-english,
-# issue-dup-check, issue-classification-label and pr-body-item-number -- pull a
-# `--body-file` path or an inline `--body` value out of RAW command text with
-# `perl -0777` instead, because they need a GLOBAL scan over a multi-line slurp
-# and `[[ =~ ]]` gives neither. Derive the list rather than trusting this
+# `[[ =~ ]]`. SIX gates -- issue-deferral-criteria, gh-body-english,
+# issue-dup-check, issue-classification-label, pr-body-item-number and
+# commit-prefix-scope -- pull a `--body-file` / `-F` path or an inline `--body`
+# value out of RAW command text with `perl -0777` instead, because they need a
+# GLOBAL scan over a multi-line slurp and `[[ =~ ]]` gives neither.
+# commit-prefix-scope joined last, and it joined because its own five-arm
+# enumeration had the same two holes: `--file "$VAR"` extracted NOTHING (that
+# spelling had no quoted alternative at all) and a glued `-F<path>` needed a
+# separator. Its polarity differs -- it reads a COMMIT MESSAGE, not an issue
+# body -- and the class did not care. Derive the list rather than trusting this
 # sentence -- `grep -l GATE_PERL_WORD .claude/hooks/*-gate.sh` -- because an earlier
 # revision of THIS comment said "three" while five files consumed it, which is
 # the same stale-sibling-note class the constant exists to end.
@@ -1520,6 +1525,17 @@ gate_perl_word_ok() {
   [ "$(gate_pw_probe_ b 'x --body-file /a\ b/p.md')"  = '/a b/p.md' ] || return 1
   [ "$(gate_pw_probe_ a "x --body-file \$'/a\\'b/p.md' rest")" = "/a'b/p.md" ] || return 1
   [ "$(gate_pw_probe_ m 'x --body-file /a/p.md; echo hi')" = '/a/p.md' ] || return 1
+  # 5  a MID-WORD ANSI-C span. Added after a review measured the four arms above
+  #    certifying a one-revision-STALE library -- the exact case the guard was
+  #    written for. The bare-run arm used to eat the `$` sigil greedily, so the
+  #    ANSI-C arm fired only at word position 0; every arm above sits at
+  #    position 0 and none of them could see it.
+  [ "$(gate_pw_probe_ w "x --body-file /a/b\$'\\x20'c.md")" = '/a/b c.md' ] || return 1
+  # 6  BYTE FIDELITY. `gate_unq` must return the byte string bash would pass;
+  #    decoding inside it corrupted every path carrying a byte >= 0x80 (measured
+  #    128 of 255) while leaving all five assertions above green, because each of
+  #    them is pure ASCII.
+  [ "$(gate_pw_probe_ y "x --body-file \$'/a/\\xc3\\xa9.md'")" = "$(printf '/a/\303\251.md')" ] || return 1
   return 0
 }
 

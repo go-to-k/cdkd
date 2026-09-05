@@ -74,6 +74,42 @@ run_case() {
       echo "$subject" > "$msgfile"
       cmdstr=$(printf 'git -C %q commit -F %q/msg*.txt' "$tmpdir" "$tmpdir")
       ;;
+    Fbracket)
+      # `[...]` is the THIRD POSIX glob metacharacter and the first cut of the
+      # unresolvable predicate listed only `*` and `?`. bash expands it, git
+      # reads the subject, and the hook -- seeing the literal bracketed text --
+      # found no readable file and passed.
+      local msgfile="$tmpdir/m1.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'git -C %q commit -F %q/m[0-9].txt' "$tmpdir" "$tmpdir")
+      ;;
+    FileVar)
+      # The `--file` twin of the `$VAR` hole. Its spellings had no QUOTED
+      # alternatives at all, so the path never got extracted and the
+      # unresolvable refusal was not even consulted -- the fix for `-F "$VAR"`
+      # left this one live, exactly one flag spelling over.
+      local msgfile="$tmpdir/msg.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'MSG=%q; git -C %q commit --file "$MSG"' "$msgfile" "$tmpdir")
+      ;;
+    FileVarSq)
+      local msgfile="$tmpdir/msg.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'git -C %q commit --file \x27$MSG/msg.txt\x27' "$tmpdir")
+      ;;
+    Fspace)
+      # A quoted path containing a SPACE -- the shape the whole value-class
+      # change is about, here too.
+      mkdir -p "$tmpdir/sp ace"
+      local msgfile="$tmpdir/sp ace/msg.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'git -C %q commit -F "%s"' "$tmpdir" "$msgfile")
+      ;;
+    Fglued)
+      local msgfile="$tmpdir/msg.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'git -C %q commit -F%q' "$tmpdir" "$msgfile")
+      ;;
     Ftilde)
       # A leading `~/` is deliberately NOT unresolvable: HOME is expanded
       # correctly, so refusing it would be a false refusal.
@@ -297,6 +333,21 @@ run_case "feat: via -F <glob> BLOCKED" 2 \
 # exactly as an absent literal path does -- git will report it itself.
 run_case "-F ~/absent file passes through" 0 \
   "fix(hooks): x" ".claude/hooks/a.sh" Ftilde
+run_case "fix: via -F <bracket glob> BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" Fbracket
+run_case "fix: via --file \$VAR BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" FileVar
+run_case "fix: via --file '\$VAR' BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" FileVarSq
+# The other two shapes the shared word class buys, both previously unreachable
+# by the five-arm enumeration. These are FAIL-OPEN closures, not refusals of an
+# unreadable path: the file exists and is read, and the prefix is judged.
+run_case "fix: via -F <quoted path with a space> BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" Fspace
+run_case "fix: via glued -F<path> BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" Fglued
+run_case "chore: via -F <quoted path with a space> allowed" 0 \
+  "chore(hooks): x" ".claude/hooks/a.sh" Fspace
 
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
