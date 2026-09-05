@@ -234,6 +234,22 @@ describe('pr-inherit-issue-labels workflow', () => {
     expect(posted).toEqual(['bug']);
   });
 
+  it('treats a metachar as a literal in the URL branch too', () => {
+    // The negative twin for the URL branch specifically. Round 2 measured that
+    // escaping the qualified branch while interpolating the RAW `$REPO` into
+    // the URL branch left all 23 other cases green -- the same one-sided gap
+    // round 1 found, one branch over. The case at 'matches a full issue URL in
+    // THIS repo but not in another' cannot catch it, because it uses
+    // `go-to-k/cdkd`, where the escaped and raw spellings are identical.
+    const { posted } = run({
+      REPO: 'go-to-k/cd.d',
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes https://github.com/go-to-k/cdXd/issues/5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual([]);
+  });
+
   it('treats a regex metachar in the repo name as a literal', () => {
     // `$REPO` is interpolated into an ERE. Unescaped, the `.` here is a
     // wildcard and `go-to-k/cdXd#5` passes as this repo -- a near-miss repo
