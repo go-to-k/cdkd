@@ -238,14 +238,30 @@ describe('a fixture sentinel still DISCRIMINATES one stateful reason (#2615)', (
     expect(SHARED_PHRASES).toContain('not provably empty');
   });
 
-  it('at least two fixtures quote a reason (floor for the derived population)', () => {
-    // Without this, a fixture tree that stopped quoting reasons at all — or a
-    // `readdirSync` that stopped seeing it — would make the scan below pass by
-    // scanning nothing.
-    expect(FIXTURES_QUOTING_A_REASON.map((f) => f.name).sort()).toEqual([
-      'loggroup-never-expire-guard',
-      'recreate-via-cc-api',
-    ]);
+  it('each fixture still quotes the reason it is ABOUT (floor + pairing)', () => {
+    // Two jobs in one assertion, and both matter.
+    //
+    // FLOOR: without it, a fixture tree that stopped quoting reasons at all —
+    // or a `readdirSync` that stopped seeing it — would make the scan below
+    // pass by scanning nothing.
+    //
+    // PAIRING: the blunt-phrase scan alone does NOT subsume the hand-written
+    // `toContain` this replaced. A fixture re-anchored onto a DIFFERENT full
+    // reason would carry no blunt phrase and pass, while asserting something
+    // cdkd never emits on that path. So the mapping is derived from the tree
+    // and pinned here: a fixture that re-anchors reds naming the pair to
+    // update, which is what the replaced assertion did.
+    expect(
+      Object.fromEntries(
+        FIXTURES_QUOTING_A_REASON.map((f) => [
+          f.name,
+          REASON_LITERALS.filter((lit) => f.text.includes(lit)),
+        ])
+      )
+    ).toEqual({
+      'loggroup-never-expire-guard': ['log group is not provably empty'],
+      'recreate-via-cc-api': ['S3 bucket is not provably empty'],
+    });
   });
 
   it.each(FIXTURES_QUOTING_A_REASON.map((f) => [f.name, f.text] as const))(
