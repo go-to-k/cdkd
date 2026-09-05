@@ -1536,6 +1536,11 @@ gate_perl_word_ok() {
   #    128 of 255) while leaving all five assertions above green, because each of
   #    them is pure ASCII.
   [ "$(gate_pw_probe_ y "x --body-file \$'/a/\\xc3\\xa9.md'")" = "$(printf '/a/\303\251.md')" ] || return 1
+  # 7  a SINGLE-quoted span containing a space. Arm 1 covers the double-quoted
+  #    one, and deleting the single-quote alternative from `$GW` left all six
+  #    arms above green while `--body-file '/a b/p.md'` extracted NOTHING --
+  #    the same stale-sibling fail-open shape, one quote character over.
+  [ "$(gate_pw_probe_ s "x --body-file '/a b/p.md'")" = '/a b/p.md' ] || return 1
   return 0
 }
 

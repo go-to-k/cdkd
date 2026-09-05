@@ -73,6 +73,7 @@ fi
 if ! declare -F gate_matches >/dev/null 2>&1 \
   || ! declare -F gate_target_dir_strict >/dev/null 2>&1 \
   || ! declare -F gate_perl_word_or_die >/dev/null 2>&1 \
+  || ! declare -F gate_segments >/dev/null 2>&1 \
   || ! declare -F gate_refuse_unresolved_target >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/lib/command-match.sh loaded but its API is incomplete (truncated file?)." >&2
   exit 2
@@ -154,11 +155,35 @@ if [[ -z "$subject" ]]; then
   # It also could not span a quoted path containing a SPACE, nor the GLUED
   # `-F<path>` git accepts as readily as `-F <path>`. `$GW` handles all of them
   # by taking one word; `gate_unq` removes the quoting.
-  msg_file=$(printf '%s' "$cmd" | perl -0777 -ne "$GATE_PERL_WORD"'
-    while (/(?:^|\s)(?:-F[=\s]*|--file[=\s]+|--file=)($GW)/g) {
+  # SCOPED TO THE `git ... commit` SEGMENT, not the whole command. `-F` is a
+  # flag on plenty of other commands -- `grep -F`, `awk -F`, `sort -F`, and gh's
+  # own `-F` -- so a whole-command scan takes the FIRST `-F` in the line, which
+  # is not necessarily the commit's. Measured, with only `.claude/**` staged and
+  # a `fix(hooks):` message:
+  #
+  #   git commit -F <path>                          -> <path>       rc=2
+  #   grep -Fq zzz f; git commit -F <path>          -> `q`          rc=0
+  #   awk -F , x && git commit -F <path>            -> `,`          rc=0
+  #   gh issue create -F b.md && git commit -F <p>  -> `b.md`       rc=0
+  #
+  # The first row is the regression this scoping closes: the five-arm extractor
+  # this replaced required `-F<space>`, so a GLUED `-Fq` was skipped and it
+  # found the real path. Widening to the glued spelling without scoping traded
+  # one hole for a worse one. The `-F -` branch below already scopes with its
+  # own `/git[^|;&]*commit/`, so the file was internally inconsistent too.
+  commit_seg=""
+  while IFS= read -r __seg; do
+    if gate_matches "$__seg" "$GATE_RE_GIT_COMMIT"; then commit_seg="$__seg"; break; fi
+  done < <(gate_segments "$cmd")
+  # No segment matched: fall back to the whole command rather than to NOTHING.
+  # An unreadable command is the fail-OPEN direction, and `gate_matches` has
+  # already established that this IS a git commit -- see the verb check above.
+  [ -n "$commit_seg" ] || commit_seg="$cmd"
+  msg_file=$(printf '%s' "$commit_seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    while (/(?:^|\s)(?:-F[=\s]*|--file[=\s]+)($GW)/g) {
       print gate_unq($1), "\n";
       last;
-    }' 2>/dev/null | head -n 1)
+    }' 2>/dev/null)
   if [[ "$msg_file" == "-" ]]; then
     # `git commit -F -` reads the message from STDIN, which in practice is a
     # heredoc whose body is part of this very command string — so the subject
@@ -207,8 +232,13 @@ if [[ -z "$subject" ]]; then
     # cut. Measured: `-F <dir>/m[0-9].txt` expanded to `m1.txt`, git read the
     # `fix(hooks):` subject with only `.claude/**` staged, and the hook -- seeing
     # the literal bracketed text -- found no readable file and passed at rc=0.
+    # `{` is brace expansion, the last of the four expansions the shell performs
+    # on an unquoted word here. `$(...)`, backticks and `~+` / `~-` are already
+    # covered by the `$` / backtick / `~`-not-`~/` arms; `!` history expansion is
+    # interactive-only. Measured: `-F <dir>/msg{1,2}.txt` expanded and committed.
     if [[ "$msg_file" == *'$'* || "$msg_file" == *'`'* \
        || "$msg_file" == *'*'* || "$msg_file" == *'?'* || "$msg_file" == *'['* \
+       || "$msg_file" == *'{'* \
        || ( "$msg_file" == '~'* && "$msg_file" != '~/'* ) ]]; then
       echo "Blocked by commit-prefix-scope-gate: the commit message is read from" >&2
       echo "a path this hook cannot resolve:" >&2

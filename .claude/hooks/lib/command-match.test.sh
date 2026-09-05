@@ -1981,10 +1981,10 @@ __pr_ok=$(printf '%s\n' "$__pr_out" | grep -c '^OK   probe-rejects:')
 __pr_bad=$(printf '%s\n' "$__pr_out" | grep -c '^FAIL probe-rejects:')
 # The COUNT is asserted, not just the failures: a script that dies early prints
 # nothing and would otherwise read as six silent passes.
-if [ "$__pr_rc" != 0 ] || [ "$__pr_ok" -ne 6 ] || [ "$__pr_bad" -ne 0 ]; then
+if [ "$__pr_rc" != 0 ] || [ "$__pr_ok" -ne 7 ] || [ "$__pr_bad" -ne 0 ]; then
   fail=$((fail + 1))
-  printf 'FAIL probe-rejects: expected 6 OK / 0 FAIL, got %s / %s (rc=%s)\n' "$__pr_ok" "$__pr_bad" "$__pr_rc"
-  fail_log+="FAIL probe-rejects: expected 6 OK / 0 FAIL, got $__pr_ok / $__pr_bad\n"
+  printf 'FAIL probe-rejects: expected 7 OK / 0 FAIL, got %s / %s (rc=%s)\n' "$__pr_ok" "$__pr_bad" "$__pr_rc"
+  fail_log+="FAIL probe-rejects: expected 7 OK / 0 FAIL, got $__pr_ok / $__pr_bad\n"
 else
   pass=$((pass + __pr_ok))
 fi

@@ -110,6 +110,36 @@ run_case() {
       echo "$subject" > "$msgfile"
       cmdstr=$(printf 'git -C %q commit -F%q' "$tmpdir" "$msgfile")
       ;;
+    Fdecoy)
+      # A `-F` belonging to ANOTHER command earlier in the same line. `-F` is a
+      # flag on grep / awk / sort / gh as well, so a whole-command scan takes
+      # the first one it sees. The GLUED `-Fq` is the dangerous spelling: the
+      # five-arm extractor this replaced required `-F<space>` and skipped it,
+      # so widening to the glued form without SEGMENT scoping traded one hole
+      # for a worse one.
+      local msgfile="$tmpdir/msg.txt"
+      echo "$subject" > "$msgfile"
+      echo zzz > "$tmpdir/f"
+      cmdstr=$(printf 'grep -Fq zzz %q; git -C %q commit -F %q' "$tmpdir/f" "$tmpdir" "$msgfile")
+      ;;
+    FdecoySpaced)
+      local msgfile="$tmpdir/msg.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'awk -F , %q && git -C %q commit -F %q' "$tmpdir" "$tmpdir" "$msgfile")
+      ;;
+    FdecoyGh)
+      local msgfile="$tmpdir/msg.txt" decoyfile="$tmpdir/decoy.md"
+      echo "$subject" > "$msgfile"
+      echo 'chore(scope): a decoy body, harmless on its own' > "$decoyfile"
+      cmdstr=$(printf 'gh issue create -F %q && git -C %q commit -F %q' "$decoyfile" "$tmpdir" "$msgfile")
+      ;;
+    Fbrace)
+      # Brace expansion, the last of the four expansions the shell performs on
+      # an unquoted word here.
+      local msgfile="$tmpdir/msg1.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'git -C %q commit -F %q/msg{1,2}.txt' "$tmpdir" "$tmpdir")
+      ;;
     Ftilde)
       # A leading `~/` is deliberately NOT unresolvable: HOME is expanded
       # correctly, so refusing it would be a false refusal.
@@ -348,6 +378,20 @@ run_case "fix: via glued -F<path> BLOCKED" 2 \
   "fix(hooks): x" ".claude/hooks/a.sh" Fglued
 run_case "chore: via -F <quoted path with a space> allowed" 0 \
   "chore(hooks): x" ".claude/hooks/a.sh" Fspace
+# The extraction is scoped to the `git ... commit` SEGMENT. Without that, a
+# `-F` on an earlier command in the same line wins the first hit and the commit
+# prefix is never seen -- a fail-open, and for the GLUED spelling a regression
+# introduced by widening the flag class.
+run_case "fix: with a glued -Fq decoy earlier in the line BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" Fdecoy
+run_case "fix: with a spaced awk -F decoy earlier BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" FdecoySpaced
+run_case "fix: with a gh -F decoy earlier BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" FdecoyGh
+run_case "chore: with a glued -Fq decoy earlier still allowed" 0 \
+  "chore(hooks): x" ".claude/hooks/a.sh" Fdecoy
+run_case "fix: via -F <brace expansion> BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" Fbrace
 
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

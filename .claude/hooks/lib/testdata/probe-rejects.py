@@ -52,6 +52,11 @@ MUTATIONS = [
         r'([^"\x27\\]+)',
     ),
     (
+        "single-quote span dropped from $GW",
+        r"|\x27[^\x27]*\x27|",
+        "|",
+    ),
+    (
         "gate_unq decodes instead of returning bytes",
         "{ $o .= gate_ansi_c($1);",
         "{ $o .= gate_utf8_lenient(gate_ansi_c($1));",
