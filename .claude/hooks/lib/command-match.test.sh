@@ -1644,8 +1644,15 @@ dq_case "under the token-count cap the verb is still dequoted" \
 # `c""""..""ommit` really runs `git commit` (confirmed with `eval printf`:
 # argv is `[commit] [-m] [x]`). Charging them against the SPAN budget let 32
 # pairs -- 79 bytes -- exhaust it and abandon, re-opening this issue'"'"'s own
-# bypass more cheaply than the shape it was filed for. Only a span that
-# CONSUMED characters is charged now, and these cases are the fence.
+# bypass more cheaply than the shape it was filed for. Deleting the pairs
+# before the walk is what closes it: the earlier span-charge exemption stopped
+# the bypass but still paid O(remaining) per pair, so 49 KB cost 11.5 s and
+# killed the hook.
+#
+# THESE TWO CASES DO NOT FENCE THE COLLAPSE, and saying so matters: both stay
+# green with the collapse deleted, because the charge exemption alone also lets
+# them through. The collapse's behavioural fence is the cross-context case
+# after them, and its cost fence is the wall-clock case at the end of this file.
 dq_free=""
 for _i in $(seq 1 40); do dq_free="$dq_free\"\""; done
 dq_case "40 EMPTY quoted pairs do not hide the verb" \
@@ -1653,6 +1660,14 @@ dq_case "40 EMPTY quoted pairs do not hide the verb" \
 dq_freesq=$(printf "''%.0s" $(seq 1 40))
 dq_case "40 empty APOSTROPHE pairs do not hide the verb either" \
   "git c${dq_freesq}ommit -m x" 'git commit -m x'
+# THE COLLAPSE'S OWN FENCE, and it pins a FALSE FIRE on purpose. Deleting the
+# pairs is a rewrite, so it reaches across quoting contexts: `git 'com""mit'`
+# runs a subcommand git does not have and now dequotes to `commit`, so the
+# gates fire on a command that commits nothing. That is the loud direction and
+# it is the price of the collapse -- pinning it is what lets a NON-timing case
+# notice if the collapse is ever removed.
+dq_case "an empty pair ACROSS quoting contexts is collapsed too (a false fire, pinned)" \
+  "git 'com\"\"mit' -m x" 'git commit -m x'
 # LENGTH and SPAN bounds on ONE token. Without them the span walk is quadratic
 # in token length AND in quote count together: measured through `gate_segments`
 # on one input, 12 KB took 154.5 s and 67 KB took 45.1 s, against 0.05 s and
@@ -1803,15 +1818,24 @@ want_rest_each "f.txt" "a quoted -C flag still yields the restore tail" \
 # GATE_STRUCT_MAXTOK tokens, so the cost plateaued at ~1.5 s -- still under
 # budget with the fix removed.
 #
-# Cost is per SEGMENT, so the payload has to be. Eight segments of 24 dense
-# tokens: measured 1.00 s here and 13.59 s with the empty-pair collapse
-# deleted, so the 4 s threshold sits an order of magnitude from both sides and
-# a loaded machine cannot reach it.
+# Cost is per SEGMENT, so the payload has to be. Four segments of twice the
+# token cap, measured on this machine against a 4 s threshold:
+#
+#   as it ships                        0.86 s
+#   with the empty-pair collapse gone  6.68 s
+#   with GATE_STRUCT_MAXTOK at 256    80.01 s
+#
+# So it reds for BOTH regressions this file has already shipped, with 4.6x of
+# headroom below the threshold -- re-measured under 8-way load at 1.08 s in
+# review, so it does not flake.
 lat_tok="-$(printf '""%.0s' $(seq 1 253))q"
+# DERIVED from the cap, not the literal 24: with exactly MAXTOK tokens the
+# payload is indifferent to the cap's VALUE, so raising the cap -- the round-2
+# regression -- did not redden this. Twice the cap does.
 lat_seg="git"
-for _i in $(seq 1 24); do lat_seg="$lat_seg $lat_tok"; done
+for _i in $(seq 1 $((GATE_STRUCT_MAXTOK * 2))); do lat_seg="$lat_seg $lat_tok"; done
 lat_cmd="$lat_seg"
-for _i in $(seq 1 7); do lat_cmd="$lat_cmd ; $lat_seg"; done
+for _i in $(seq 1 3); do lat_cmd="$lat_cmd ; $lat_seg"; done
 lat_cmd="$lat_cmd ; git commit -m x"
 lat_start=$(date +%s)
 gate_segments "$lat_cmd" >/dev/null 2>&1
