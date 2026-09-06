@@ -115,23 +115,49 @@ function secretsManagerSecretId(inner: string): string {
  * to rediscover.
  *
  * THE DELTA IS NOT PURELY COSMETIC ON A MIXED LEAF, and the narrow case is
- * stated rather than rounded off. Each of the three leaf walks that consume
- * this verdict (`rollback-executor.ts`, `cdkd drift`, `cdkd scrub`) refuses the
- * WHOLE leaf as soon as ONE token classifies `ambiguous`, before any token is
- * fetched. So for `local=<same-region ARN>;secure={{resolve:ssm-secure}}` with
- * a foreign producer region on record, the old bogus name bought a pre-fetch
- * refusal: nothing was resolved. Now the leaf goes to the primary resolver,
- * which walks tokens in scan order — so the ARN's plaintext IS fetched and
- * cached before the degenerate token throws, and the op fails either way.
+ * stated rather than rounded off. Three LEAF PRE-PASSES consume this verdict —
+ * `rollback-executor.ts`'s `resolveLeafByRegion`, `cdkd drift`'s
+ * `resolveDriftLeafByRegion` and `cdkd scrub`'s — and each refuses the WHOLE
+ * leaf as soon as ONE token classifies `ambiguous`, before any token is
+ * fetched. (There is a FOURTH consumer, and it is not a pre-pass:
+ * `resolveDynamicReferences` classifies token-by-token INSIDE its substitution
+ * loop, so it already fetches earlier tokens before refusing a later one. That
+ * is the point below about the pre-fetch refusal never having been a designed
+ * property of this verdict.)
  *
- * That is accepted rather than defended. The lost refusal was an ACCIDENT of
- * the mis-parse, not a designed protection: with no foreign producer region on
- * record — the overwhelmingly common case — the colon-less token classified
- * `local` before this change too, so the same sibling was already fetched. And
- * the sibling is fetched from the region its own verdict names, never a guessed
- * one, so nothing here weakens the issue #1957 rule this module exists to
- * enforce. What it costs is one needless call plus a plaintext cached in-process
- * for an operation that is about to fail.
+ * So for `local=<same-region ARN>;secure={{resolve:ssm-secure}}` with a foreign
+ * producer region on record, the old bogus name bought a pre-fetch refusal:
+ * nothing was resolved. Now the leaf is resolved — by the primary resolver when
+ * every other token is `local`, or through the segment-rebuild path when one is
+ * `named-region` — so the ARN's plaintext IS fetched and cached before the
+ * degenerate token throws. Pinned by
+ * `rollback-executor-cross-region-secret.test.ts`'s "the MIXED-leaf delta the
+ * colon-less guard accepts", so the trade is visible rather than argued.
+ *
+ * That is accepted rather than defended, on three grounds, and the third is a
+ * LIMIT rather than a reassurance:
+ *
+ *  1. The lost refusal was an ACCIDENT of the mis-parse, not a designed
+ *     protection: with no foreign producer region on record — the
+ *     overwhelmingly common case — the colon-less token classified `local`
+ *     before this change too, so the same sibling was already fetched.
+ *  2. The sibling is fetched from the region its OWN verdict names, never a
+ *     guessed one (a name-form sibling would itself be `ambiguous` and the
+ *     pre-pass would still refuse), so nothing here weakens the issue #1957
+ *     rule this module exists to enforce. Nothing fetched reaches `state.json`,
+ *     the rollback journal, the event store or a `--json` payload: the op
+ *     throws before any write.
+ *  3. WHAT THE OP DOES NEXT IS NOT UNIFORM, and this is the part worth knowing.
+ *     The replay fails the op and `cdkd drift` reports the resource NOT
+ *     compared — both loud. `cdkd scrub` is NOT: its best-effort catch re-raises
+ *     only a `DynamicReferenceRegionAmbiguousError`
+ *     (`isRegionAmbiguousRefusal`), and the resolver's replacement is a plain
+ *     `Error`, so scrub swallows it to `debug` and the run reports clean. That
+ *     is a LOUDNESS regression for that one command on this one input, bounded
+ *     by the fact that the identical silent miss already happens for the same
+ *     leaf whenever no foreign producer region is on record. Making the throw a
+ *     typed refusal is issue
+ *     [#2692](https://github.com/go-to-k/cdkd/issues/2692).
  */
 function ssmParameterName(inner: string): string {
   // Strip the SERVICE, whatever its spelling: `ssm:` and `ssm-secure:` both

@@ -309,6 +309,10 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       expect(ssmSends[0]?.region).toBe(STACK_REGION);
       expect(ssmInstances).toHaveLength(1);
       expect(ssmInstances[0]?.ctorConfig).toEqual({ region: STACK_REGION, profile: PROFILE });
+      // The title says DECRYPTING, so pin it: without this line, flipping
+      // `resolveSSMReference(parts, true, 'ssm-secure')` to `false` leaves this
+      // case green while the resolver hands the provider ciphertext.
+      expect((ssmSends[0]?.input as { WithDecryption?: unknown }).WithDecryption).toBe(true);
     });
 
     it('classifies a region-B SecureString as secret even when region A holds a plain String namesake', async () => {

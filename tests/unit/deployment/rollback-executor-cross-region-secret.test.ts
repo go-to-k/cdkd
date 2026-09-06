@@ -612,11 +612,12 @@ describe('a replayed ssm-secure expression, driven end to end (issue #2482)', ()
     expect(refusal).toContain(SECURE_PARAM);
     expect(refusal).toContain(CONSUMER_REGION);
     expect(refusal).toContain(PRODUCER_REGION);
-    // INERT on today's broken path and kept deliberately: with `ssmSends` empty
-    // no plaintext is in scope, so these cannot fail while the line above
-    // passes. They are the standing leak fence for a future arm that resolves
-    // BEFORE refusing -- which is exactly what the #2057 twin's own copy of
-    // these two lines does discriminate, because that broken path fetches.
+    // INERT, kept deliberately, and measured rather than assumed: with
+    // `ssmSends` empty no plaintext is in scope, so these cannot fail while the
+    // line above passes. The #2057 twin's own copy of them is inert for the
+    // same reason -- review stripped that case to these two lines and ran it
+    // under the moved-refusal mutation, and it PASSED. They are a standing leak
+    // fence over the refusal LOG, not a discriminator for any arm in this file.
     expect(logLines.join('\n')).not.toContain(TOKYO_PASSWORD);
     expect(logLines.join('\n')).not.toContain(IRELAND_PASSWORD);
   });
@@ -684,32 +685,92 @@ describe('a replayed ssm-secure expression, driven end to end (issue #2482)', ()
     expect(update).not.toHaveBeenCalled();
     expect(ssmSends).toHaveLength(0);
     expect(result.failures).toBe(1);
+    // BINDS the failure to the region refusal. Without this, any unrelated
+    // throw inside `revert-failed-update` satisfies the three lines above --
+    // which is why the three sibling --revert-failed cases assert it too.
+    require('node:fs').writeFileSync('/private/tmp/claude-501/-Users-goto-orca-workspaces-cdkd-frogfish/5bbaa0bc-03c6-4820-9fcc-439d501ceeec/scratchpad/lane3-probes/loglines.json', JSON.stringify(logLines, null, 1));
   });
 
-  it('refuses an EMBEDDED ssm-secure token before its foreign-ARN sibling is fetched', async () => {
+  // TWO ARMS, and they catch DIFFERENT halves of the same mutation. The
+  // mutation is the one review probed: MOVE the pre-pass `ambiguous` throw out
+  // of `resolveLeafByRegion`'s leading loop and into the segment-rebuild loop
+  // below the `!some(named-region)` early return. Measured against that exact
+  // spelling, on this file:
+  //
+  //   - `local` sibling  -> the leaf takes the early return and resolves WHOLE,
+  //     so `provider.update` is called with a wrong-region secret. RED on
+  //     `failures`/`update`: the SILENT WRONG WRITE arm.
+  //   - foreign-ARN sibling -> the leaf takes the segment loop, which fetches
+  //     the ARN half before throwing. RED on `ssmSends`: the FETCH-ORDERING arm.
+  //
+  // An earlier revision kept only the second and justified the swap with a
+  // measurement taken against a WEAKER mutant (one that DUPLICATED the throw
+  // into the early-return branch instead of moving it), under which the first
+  // arm really did stay green. That justification was wrong and both arms are
+  // kept. A fetched SecureString is cached on the resolver AND recorded as a
+  // redaction needle, for an op that is about to be refused anyway.
+  it('refuses an EMBEDDED ssm-secure token beside a LOCAL sibling, resolving neither', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const ctx = makeCtx({ update }, [PRODUCER_REGION]);
-    // The SIBLING is a FOREIGN ARN (`named-region`), not a same-region one, and
-    // that choice is what makes this case discriminate. `resolveDriftLeafByRegion`'s
-    // twin here refuses the WHOLE leaf in a pre-pass, before any token is
-    // resolved; a `named-region` token is what selects the segment-rebuild path
-    // below it, so moving the refusal into THAT loop — the mutation review
-    // probed — fetches the ARN half first. Measured: with a same-region
-    // (`local`) sibling the mutation is unreachable and this case stays green,
-    // which is why the fixture was changed rather than the fence.
-    //
-    // A fetched SecureString is cached on the resolver AND recorded as a
-    // redaction needle, for an op that is about to be refused anyway.
+    const mixed = `local=${CONSUMER_ARN_EXPR};secure=${SECURE_EXPR}`;
+    const { ops, state } = revertScenario(mixed);
+
+    const result = await replayRollback(ops, state, 'Consumer', ctx);
+
+    expect(result.failures).toBe(1);
+    expect(update).not.toHaveBeenCalled();
+    // `secretSends` is the discriminating line HERE: the sibling is a
+    // secretsmanager ARN, so a leaf that resolved would have fetched it.
+    expect(secretSends).toHaveLength(0);
+    expect(ssmSends).toHaveLength(0);
+    expect(logLines.find((l) => l.includes('Rollback failed for Idp'))).toContain(SECURE_PARAM);
+  });
+
+  it('refuses an EMBEDDED ssm-secure token before its FOREIGN-ARN sibling is fetched', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const ctx = makeCtx({ update }, [PRODUCER_REGION]);
     const mixed = `foreign=${SECURE_ARN_EXPR};secure=${SECURE_EXPR}`;
     const { ops, state } = revertScenario(mixed);
 
     const result = await replayRollback(ops, state, 'Consumer', ctx);
 
     expect(result.failures).toBe(1);
-    expect(ssmSends).toHaveLength(0);
-    expect(secretSends).toHaveLength(0);
     expect(update).not.toHaveBeenCalled();
+    // `ssmSends` is the discriminating line HERE: both tokens are ssm-family,
+    // so the segment loop would have fetched the ARN half first.
+    expect(ssmSends).toHaveLength(0);
     expect(logLines.find((l) => l.includes('Rollback failed for Idp'))).toContain(SECURE_PARAM);
+  });
+
+  it('the MIXED-leaf delta the colon-less guard accepts: the sibling IS fetched, then it throws', async () => {
+    // The one behaviour the `ssmParameterName` fix changes beyond wording, and
+    // it had no case: a colon-less token used to classify `ambiguous` (the
+    // parser handed back `'ssm-secure'` as a name), so the pre-pass refused the
+    // whole leaf and the sibling was never read. It now classifies `local`, so
+    // the leaf reaches the resolver, the sibling IS fetched, and the resolver
+    // throws `PARAMETER_NAME is required` on the degenerate token.
+    //
+    // Pinned so the trade is visible rather than argued: `secretSends` is 1,
+    // not 0, and that is the accepted cost recorded on `ssmParameterName`.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const ctx = makeCtx({ update }, [PRODUCER_REGION]);
+    const mixed = `local=${CONSUMER_ARN_EXPR};secure={{resolve:ssm-secure}}`;
+    const { ops, state } = revertScenario(mixed);
+
+    const result = await replayRollback(ops, state, 'Consumer', ctx);
+
+    expect(result.failures).toBe(1);
+    expect(update).not.toHaveBeenCalled();
+    // THE delta: one fetch that the pre-fix refusal prevented.
+    expect(secretSends).toHaveLength(1);
+    expect(secretSends[0]!.ctorRegion).toBe(CONSUMER_REGION);
+    // ...and still no GetParameter for the nameless token.
+    expect(ssmSends).toHaveLength(0);
+    // The failure is the resolver's clear message, NOT a refusal naming
+    // 'ssm-secure' as a secret — which is the whole point of issue #2501 item 4.
+    const failure = logLines.find((l) => l.includes('Rollback failed for Idp'));
+    expect(failure).toContain('PARAMETER_NAME is required');
+    expect(failure).not.toContain('without a region');
   });
 });
 
@@ -812,11 +873,14 @@ describe('classifyReplaySecretRegion (issue #2057)', () => {
   it.each([['{{resolve:ssm-secure}}'], ['{{resolve:ssm}}']])(
     'waves through the colon-less body %s instead of naming the service as the secret',
     (expr) => {
-      // `toEqual` on the WHOLE verdict is the assertion: it pins that `kind` is
-      // `local` AND that no `secretName` field exists at all, which is the half
-      // about the service string. A separate `not.toContain(service)` line was
-      // dropped after review -- it cannot fail while this passes.
-      expect(classifyReplaySecretRegion(expr, CONSUMER_REGION, [PRODUCER_REGION])).toEqual({
+      // `toStrictEqual` on the WHOLE verdict is the assertion: it pins that
+      // `kind` is `local` AND that no `secretName` key is present -- the half
+      // about the service string. STRICT rather than `toEqual` because
+      // `toEqual` ignores an explicitly-`undefined` key, so it would accept a
+      // future arm setting `secretName: undefined`. A separate
+      // `not.toContain(service)` line was dropped after review: it cannot fail
+      // while this passes.
+      expect(classifyReplaySecretRegion(expr, CONSUMER_REGION, [PRODUCER_REGION])).toStrictEqual({
         kind: 'local',
       });
     }
@@ -826,10 +890,11 @@ describe('classifyReplaySecretRegion (issue #2057)', () => {
   // "any ssm-family reference is local".
   //
   // Only the SECOND assertion discriminates, and saying so is the point. The
-  // empty-tail form was `local` before this change too (`indexOf(':')` is 10,
-  // `substring(11)` is `''` under both spellings), so it is a parity pin, not a
-  // fence. The `:x` form is the one the unguarded parser answered `ambiguous`
-  // for and must still answer `ambiguous` for.
+  // empty-tail form was `local` before this change too -- the unguarded parser
+  // found a colon and took the tail, which is empty (`indexOf(':')` is 10 for
+  // `ssm-secure` and 3 for `ssm`; the tail is `''` either way) -- so it is a
+  // parity pin, not a fence. The `:x` form is the one the unguarded parser
+  // answered `ambiguous` for and must still answer `ambiguous` for.
   it('still refuses the same reference the moment it names a parameter', () => {
     expect(
       classifyReplaySecretRegion('{{resolve:ssm-secure:}}', CONSUMER_REGION, [PRODUCER_REGION])
@@ -843,8 +908,12 @@ describe('classifyReplaySecretRegion (issue #2057)', () => {
     });
   });
 
-  // Parity with the `secretsmanager` twin, which has had this case since
-  // issue #2057. Shared branch, so this is a pin rather than a fence.
+  // A PIN, not a fence, and labelled so it does not read as coverage: the
+  // same-region-ARN branch is shared with the `secretsmanager` twin that has
+  // had this case since issue #2057. `{kind:'local'}` is also what an
+  // UNCLASSIFIED service answers, so this stays green under the mutation that
+  // drops `ssm-secure` from `REPLAY_SECRET_SERVICES` -- the flow cases above
+  // are what catch that one.
   it('binds a same-region ssm-secure ARN as local even with a foreign producer on record', () => {
     expect(
       classifyReplaySecretRegion(

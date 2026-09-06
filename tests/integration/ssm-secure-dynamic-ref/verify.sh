@@ -45,7 +45,9 @@
 # streaming any of them through `tee` would put the plaintext on the terminal /
 # in CI logs if the masking ever regressed. The rest (`diff`, `scrub`, `drift`,
 # `state show`) are captured into VARIABLES and printed, if at all, through
-# `diag_output`, which withholds on a marker hit the same way.
+# `diag_output`, which withholds on a marker hit the same way. The one
+# invocation in neither group is the cleanup trap's `state destroy`, whose
+# output is discarded to /dev/null outright.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})

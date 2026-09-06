@@ -2593,10 +2593,14 @@ async function refreshObservedForStack(
           // corroborated positional walk `unkeyedArrayPairsByAnchors` licenses
           // (issue #2012). "Descent stays off" is about pairing by INDEX ALONE,
           // not a claim that no array is ever walked by index here — and the
-          // flag is not a knob to reach for either way: `!descendArrays` is one
-          // of the three conjuncts in `isReadbackProjectedFromState`, so
-          // turning it ON here would not widen the walk, it would switch the
-          // corroborated pass OFF entirely.
+          // flag is not a knob to reach for either way. Turning it ON does two
+          // things, not one: it enables BLIND positional descent inside the
+          // path pass (`redactByPath`'s equal-length array arm, plus the
+          // `positionalIsExact` fallback for an unpaired keyed element), AND —
+          // because `!descendArrays` is one of the three conjuncts in
+          // `isReadbackProjectedFromState` — it switches the CORROBORATED pass
+          // off entirely. It is a trade, and the half it gives up is the half
+          // with evidence behind it.
           //
           // Inherited residual, not introduced here: `cdkd import`'s warn path
           // can leave a PUBLIC expression in `properties`, and
