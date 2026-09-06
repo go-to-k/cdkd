@@ -12,12 +12,11 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-- **44 of the 45 hooks ship a `*.test.sh` suite** (`run-tests.sh` is the
-  runner; only `post-merge-sync-reminder` has none — `stop-warn` got one via
-  issue #2396). `.claude/hooks/` holds 46 `*.test.sh` files:
-  `markgate-gate-name-class` and `unresolved-target-class` are CLASS fences
-  with no same-named `.sh`. **Recount rather than trusting this sentence** —
-  it has been stale twice: `ls .claude/hooks/*.sh | grep -v '\.test\.sh$'`.
+- **Every hook but `post-merge-sync-reminder` ships a `*.test.sh` suite**
+  (`run-tests.sh` is the runner; `stop-warn` got one via issue #2396), plus
+  two CLASS fences with no same-named `.sh` — `markgate-gate-name-class` and
+  `unresolved-target-class`. The counts that used to sit here went stale
+  twice and are gone: `ls .claude/hooks/*.sh | grep -v '\.test\.sh$' | wc -l`.
 - **The runner executes every suite under BOTH bashes** — PATH `bash`
   (Homebrew 5.x) and `/bin/bash` (macOS system **3.2**). Hooks are
   `#!/usr/bin/env bash`, so without newer bash first on PATH they run under
@@ -35,7 +34,7 @@ Authoring a hook — why every Bash gate stays unconditional, and why an unquote
 
 # Other PreToolUse safety hooks
 
-Twenty additional one-shot hooks block known foot-guns at the source.
+These one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/commit-msg-heredoc-gate.sh`** blocks
   `git commit -m "$(cat <<'EOF' ... EOF)"`-style invocations — outer-shell
@@ -364,6 +363,27 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   run can still exit non-zero (the `Errors  20 errors` case in
   `/work-issues` references/gates-and-pr.md §6).
 
+- **`.claude/hooks/broad-process-kill-gate.sh`** blocks the bare and
+  path-qualified `pkill` / `killall` command words. Both kill by NAME,
+  machine-wide, while this machine runs parallel lanes and backgrounded
+  `/run-integ` fixtures — a killed integ leaves AWS resources standing with no
+  teardown and no attribution (measured 2026-09-06: a lane self-reported
+  `pkill -f vitest` repo-wide with sibling lanes live). The steer is the
+  question kill-by-name skips: `pgrep -laf` → `ps -p <pid>` → `kill <pid>`.
+  **It is a STEER, not a boundary, and the passing set is UNBOUNDED** — the
+  hook's header names the three mechanisms rather than listing members,
+  because four successive revisions of that list were measured incomplete.
+  The one worth knowing here: the verb is only caught after a prefix
+  `gate_strip_prefix` KNOWS, so `nice` / `npx` / `setsid` / `busybox` /
+  `find -exec` pass while `sudo` / `env` / `nohup` / `timeout` block —
+  widening that belongs in `lib/command-match.sh`, where every gate gains it
+  at once. Lookups (`command -v` / `which` / `type`) are reads and pass; an
+  early revision refused them, and the relaxation fixing THAT opened a bypass
+  until its argument class excluded `$`, `(` and a backtick, so the blanker
+  now carries both polarities as cases. Library-load failure is CLOSED; a
+  missing `jq` or `awk` degrades to a pass, as in every sibling. Suite runs
+  under both bashes via `HOOK_BASH`.
+
 - **`.claude/hooks/issue-dup-check-gate.sh`** blocks `gh issue create` — and
   `gh api repos/<o>/<r>/issues`, the REST mint — when the body carries no
   `Dup-check:` line recording that the OPEN issue list was searched for this
@@ -560,7 +580,7 @@ returned 0. Fenced by `tests/unit/scripts/gate-perl-word-consumers.test.ts`,
 which also pins the consumer COUNT against the library header — that sentence
 said "three gates" while five files consumed the constant.
 
-All twenty produce actionable error messages with the exact replacement
+Every one produces an actionable error message naming the exact replacement
 command.
 
 ## Bug-hunt cleanup safety

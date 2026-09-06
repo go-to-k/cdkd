@@ -558,7 +558,8 @@ fi
 # costs one avoidable changelog conflict while a wrong refusal lands on someone
 # already fighting a rebase. So moving it into EXPECTED_EXERCISED today would
 # red fence 3 permanently.
-DECLARED_UNEXERCISED="
+DECLARED_UNEXERCISED='
+broad-process-kill-gate           gates pkill / killall, not a git/gh verb
 closes-paren-form-gate            verdict is the PR BODY, not the target tree
 commit-msg-heredoc-gate           verdict is the command SHAPE, target-independent
 flatten-before-rebase-gate        no rebase template exists to block -- see the note above
@@ -579,7 +580,7 @@ stop-unmerged-lane-warn           Stop hook, no command to gate
 stop-warn                         Stop hook, no command to gate
 vp-run-test-path-gate             gates a `vp` verb, not a git/gh one
 worktree-owner-gate               Edit|Write|NotebookEdit matcher, no Bash command
-"
+'
 unpartitioned=""
 for h in "${HOOKS[@]}"; do
   hb="$(basename "$h" .sh)"

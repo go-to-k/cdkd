@@ -138,12 +138,10 @@ still paid — obeyed text, retry anyway.
   edit target is the `references/<stage>.md` where the lesson fires — never
   the SKILL.md orchestrator, unless the stage list itself changed; its own
   byte cap is 10-c's, and for the same reason.
-- **Another skill**, but only one this run actually exercised. ALL skills sit
-  in the `check` gate's scope (`.claude/skills/**` since go-to-k/cdkd#2364),
-  so editing any one invalidates the `check` marker.
+- **Another skill**, but only one this run actually exercised — every skill
+  sits in the `check` gate's scope, so any edit invalidates that marker.
 - **`CLAUDE.md` / `.claude/rules/**`** when it applies to any work in this
-  repo, not just this flow (both in the `docs` gate's scope and in `check` —
-  read by the unit suite as INPUT).
+  repo, not just this flow (in both gates' scope).
 - **Memory** when the lesson is judgmental and cross-repo. Weakest enforcement
   — the landing spot when nothing above can hold the rule, not the default.
 
@@ -282,18 +280,14 @@ git fetch origin && git switch -c "$B" origin/main
 - **Merge it before the wrap report, then remove the worktree**
   (`git worktree remove .claude/worktrees/<name> && git worktree prune` —
   §9's closing check is "every worktree THIS run added is gone", and §10 must
-  not undo that). An IN-PLACE run added none, so instead this is where it runs
-  §9's IN-PLACE cleanup arm — **the LAST step of the whole run**: `git switch
+  not undo that). An IN-PLACE run added none; it runs §9's IN-PLACE cleanup
+  arm HERE instead, as **the LAST step of the whole run**: `git switch
   --no-guess <LAUNCH_BRANCH> && git branch -D` every branch this run created,
-  the retro branch included. AS-IS: no pull, no rebase, no fast-forward — the
-  branch is the outer tool's artifact. CHAINED, because an unchained delete
-  after a failed switch still removes every branch that is not checked out;
-  and `--no-guess` because a plain `switch` would re-create the branch from
-  `origin` instead of failing through to the fallback. §9 deliberately does
-  NOT do it per-lane, because THIS section branches in the same tree and would
-  undo it; the appendix carries why restoring beats detaching. All of it is
-  `Session-fit: now`: the evidence dies with the session, and an open PR is
-  NOT CLOSEABLE.
+  the retro branch included, AS-IS — no pull, no rebase, no fast-forward. §9
+  owns WHY (`--no-guess`, the chaining, the three end states) and defers the
+  step to here rather than per-lane, because THIS section branches in the same
+  tree and would undo it. All of it is `Session-fit: now`: the evidence dies
+  with the session, and an open PR is NOT CLOSEABLE.
 
 Then report the outcome in one line of the wrap: what changed, in which step,
 and the run evidence behind it — or "no skill change" plus what held.

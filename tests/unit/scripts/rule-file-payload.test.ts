@@ -1118,6 +1118,17 @@ const CORPUS_BYTES_MIN = 895_000;   // RE-DERIVED UPWARD 862_000 -> 895_000 (202
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
+// WHY THE PROJECTION BELOW DID NOT CATCH THAT BREACH, which the entry under
+// it records but does not explain: it compares against the LOCAL `origin/main`
+// ref, and a CI run's copy of that ref is frozen when the RUN STARTS.
+// go-to-k/cdkd#2695's run started 08:20:59Z; go-to-k/cdkd#2700 merged
+// 08:22:04Z, 65 s later, spending part of the same budget; go-to-k/cdkd#2695
+// went green 08:31:43Z having never seen it, nothing re-ran it, and it merged
+// 08:34:08Z.
+// So a green check attests to the base at its START, not at your merge -- and
+// no gate re-asks. `.claude/skills/check/SKILL.md` step 0 now fetches before
+// the suite, which fixes the LOCAL half only; go-to-k/cdkd#2705 tracks the
+// merge-time close.
 const CORPUS_BYTES_MAX = 962_000; // RE-DERIVED UPWARD 929_000 -> 962_000 (2026-09-06, issue
                                   // go-to-k/cdkd#2310): `origin/main` at df3eb981 measured
                                   // 929,172 B -- 172 B OVER the old ceiling with NO branch
