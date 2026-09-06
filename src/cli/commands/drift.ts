@@ -97,11 +97,12 @@ import type { ResourceState, StackState } from '../../types/state.js';
  *     resolves like `ssm`, so no CloudFormation service lands here and what
  *     remains is text that merely looks like a reference (or a service AWS
  *     adds later). The argument is unchanged: the cause is unrelated to #2108
- *     and permanent by construction, so it can never clear on a re-run. Driving the exit code off it
- *     would make `cdkd drift` exit non-zero forever, in CI, for every one of
- *     those users, over a defect this change did not introduce — the same
- *     "permanently non-zero" hazard `docs/cli-reference.md` already cites as a
- *     reason NOT to report an absent write-only credential as drift.
+ *     and permanent by construction, so it can never clear on a re-run.
+ *     Driving the exit code off it would make `cdkd drift` exit non-zero
+ *     forever, in CI, for every one of those users, over a defect this change
+ *     did not introduce — the same "permanently non-zero" hazard
+ *     `docs/cli-reference.md` already cites as a reason NOT to report an
+ *     absent write-only credential as drift.
  *
  * So the split is: as INFORMATION both causes mean the resource was not fully
  * compared, and the `--json` `notCompared` roll-up / the human `PARTIALLY
@@ -372,9 +373,10 @@ class DriftDetectedError extends CdkdError {
  * `notCompared`. The roll-up also contains resources whose only problem is a
  * surviving `{{resolve:...}}` token cdkd resolves for nobody — a look-alike
  * spelling, since issue #2482 moved `ssm-secure` onto the `ssm` path — which
- * can never clear on a re-run, and which this change did not create. Exiting non-zero for them would break `cdkd drift` in CI forever over
- * an unrelated defect, so the exit reads `refused` and `readFailed` while the
- * report covers all three. See `NotComparedCause` and `outcomeExitSignal`.
+ * can never clear on a re-run, and which this change did not create. Exiting
+ * non-zero for them would break `cdkd drift` in CI forever over an unrelated
+ * defect, so the exit reads `refused` and `readFailed` while the report covers
+ * all three. See `NotComparedCause` and `outcomeExitSignal`.
  *
  * WHY A NON-ZERO EXIT, and why it is a PRESERVATION rather than a new signal.
  * Pre-#2108 that population resolved the reference in the WRONG region, the
@@ -494,7 +496,8 @@ function notComparedOutcomes(
  * code covers only the CLEARABLE ones — `refused` (the population #2108 created)
  * and `readFailed` (issues #2151 / #1945). Exiting non-zero on
  * `unresolvedToken` would break `cdkd drift` in CI forever for every stack
- * holding such a spelling — permanent, unclearable, and unrelated. See {@link NotComparedCause}.
+ * holding such a spelling — permanent, unclearable, and unrelated. See
+ * {@link NotComparedCause}.
  *
  * A `drifted` outcome reports `drifted` even when its own comparison was
  * refused: drift is the stronger, actionable signal and the caller ranks it
@@ -694,10 +697,10 @@ function uncomparedTally(reports: StackDriftReport[]): Map<UncomparedReason, num
  *
  *   - The TRIGGER is `anyIncomplete`, i.e. {@link outcomeExitSignal}'s
  *     `incomplete`. It is narrow on purpose: a stack whose ONLY uncompared
- *     resource holds a `{{resolve:...}}` token cdkd resolves for nobody must not start
- *     shouting on every run about a comparison no action of the user's can ever
- *     complete -- the same CI-forever hazard that cause is kept out of the exit
- *     code on.
+ *     resource holds a `{{resolve:...}}` token cdkd resolves for nobody must
+ *     not start shouting on every run about a comparison no action of the
+ *     user's can ever complete -- the same CI-forever hazard that cause is
+ *     kept out of the exit code on.
  *   - The COUNT and the LABELS, once the line is triggered, cover EVERY
  *     uncompared resource, each named by its own reason (see
  *     {@link uncomparedTally}). A resource that was not compared was not
@@ -3070,8 +3073,12 @@ async function runAccept(
         // the record's own `properties` are the source: they hold no PUBLIC
         // expression — a `String` ssm reference is stored resolved — so any
         // `{{resolve:...}}` leaf in them is by construction a secret and may be
-        // copied over verbatim (`trustAnyExpression`), while array descent
-        // stays OFF because this bag came back from AWS and may be reordered.
+        // copied over verbatim (`trustAnyExpression`), while BLIND array
+        // descent stays OFF because this bag came back from AWS and may be
+        // reordered — blind, because this same rules constant still inherits
+        // the keyed descent of issue #1915 and the corroborated positional walk
+        // of issue #2012; see the `--revert` site below for what licenses the
+        // second one.
         // That is what catches a stored plaintext the VALUE map cannot: after a
         // rotation the map holds today's secret and the stored one is last
         // week's, so only position can name it.
@@ -4467,11 +4474,50 @@ async function runRevert(
                 // `buildRevertNewProperties`'s merge of the AWS-CURRENT
                 // snapshot with the resolved desired subtrees — so a top-level
                 // key that did not drift comes from AWS and may be reordered.
-                // Positional descent over an equal-length, differently-ordered
-                // array would write a sibling's expression onto the wrong
-                // element: the #1904 wrong-reference class, on a write path.
-                // Those leaves fall to the value scan instead, which the
-                // `properties`-side map completion above keeps complete.
+                // BLIND positional descent over an equal-length,
+                // differently-ordered array would write a sibling's expression
+                // onto the wrong element: the #1904 wrong-reference class, on a
+                // write path. Those leaves fall to the value scan instead,
+                // which the `properties`-side map completion above keeps
+                // complete.
+                //
+                // BLIND is load-bearing, and this paragraph used to omit it.
+                // `descendArrays: false` refuses to pair by INDEX ALONE; it is
+                // not a claim that cdkd never walks a readback array by index,
+                // which has been false since the anchor pass for issue #2012.
+                // This very constant selects that pass —
+                // `isReadbackProjectedFromState` is exactly
+                // `trustAnyExpression && !descendArrays && sourceIsSameGeneration`,
+                // which `STATE_SOURCED_READBACK_RULES` satisfies — so the two
+                // `redactSecretsForState` calls in this file that pass a SOURCE
+                // (`--accept`'s new baseline and this one) run
+                // `refuseUncertifiedReadbackPositions` after the path pass, and
+                // its unkeyed-array arm DOES pair element i with element i.
+                // What licenses that is `unkeyedArrayPairsByAnchors`: the index
+                // counts match, every position whose SOURCE subtree carries no
+                // dynamic reference is deep-equal on both sides, every
+                // reference-bearing element carries a distinguishing anchor of
+                // its own (or, being a bare reference leaf with no interior,
+                // leans on the array's literal frame), and no two
+                // reference-bearing elements share an order-insensitive anchor
+                // signature. AWS's own unrewritten values are the evidence, so
+                // the ORDER objection above is ANSWERED rather than assumed
+                // away — a different argument from this flag's, not a
+                // relaxation of it. Where the corroboration fails the array is
+                // returned untouched BY THAT PASS and keeps whatever the path
+                // pass left it, i.e. the value scan named above — with one
+                // further qualifier, since `secrets` at this site is often
+                // EMPTY (see the note below): on an empty map
+                // `deriveReadbackNeedles` learns needles from the positions the
+                // pass DID certify and `preferPositionDecisions` merges them
+                // over the refused array, so "untouched" is true of the
+                // position pass and not of the whole call. The sibling copies
+                // of this rationale in `secret-redaction.ts` were corrected in
+                // the #2012 lane; see `unkeyedArrayPairsByAnchors` for the two
+                // measured shapes behind the last two conditions — a
+                // `{Name:'db'} / {Name:''}` pair for the per-element evidence
+                // rule, and `AWS::AmazonMQ::Broker.Users` for the pairwise
+                // distinguishability one. Only the second is AmazonMQ.
                 // (Until issue #2482 `preserveLiveValuesAtUnresolvedTokens`
                 // was a second source, registering every live value it copied
                 // in over an `ssm-secure` survivor; a survivor is no longer a
@@ -5207,12 +5253,13 @@ function writeHumanReport(reports: StackDriftReport[]): void {
       // compared" — and NOT the exit code, which asks the narrower "did cdkd
       // refuse anything" (issue #2108). The two differ for a stack whose only
       // uncompared properties hold a surviving `{{resolve:...}}` token cdkd
-      // resolves for nobody: it warns here and still exits 0, deliberately. Keying the glyph
-      // on the exit code's subset instead would put a ✓ and a `1 resource
-      // checked` directly above a `PARTIALLY compared` block naming that same
-      // resource, which is the contradiction this branch exists to remove. The
-      // phrase `no drift detected` is kept in both spellings because it stays
-      // true; what changes is the claim that everything was looked at.
+      // resolves for nobody: it warns here and still exits 0, deliberately.
+      // Keying the glyph on the exit code's subset instead would put a ✓ and a
+      // `1 resource checked` directly above a `PARTIALLY compared` block naming
+      // that same resource, which is the contradiction this branch exists to
+      // remove. The phrase `no drift detected` is kept in both spellings
+      // because it stays true; what changes is the claim that everything was
+      // looked at.
       if (notCompared.length === 0 && checked === 0 && report.outcomes.length > 0) {
         // Issue [#2154](https://github.com/go-to-k/cdkd/issues/2154): a stack in
         // which NOTHING was compared must not get the reassuring glyph.

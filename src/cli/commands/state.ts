@@ -2566,8 +2566,17 @@ async function refreshObservedForStack(
           // `drainObservedCaptures` and the persist choke point — so a remedy
           // spelled at this call site would have left the DEFAULT path leaking.
           // That module's `refuseUncertifiedReadbackPositions` carries the
-          // measured per-shape table and the one residual it does not close
-          // (issue #2012).
+          // measured per-shape table, and since issue #2012 landed the rows it
+          // names are fewer — by TWO SEPARATE mechanisms, which the table keeps
+          // apart and so must this note. `unkeyedArrayPairsByAnchors` closes
+          // two rows CONDITIONALLY: an unkeyed array is walked positionally
+          // when its own positions corroborate the alignment. The OTHER two
+          // rows (an unpaired element beside a paired one; an observed KEY the
+          // source does not carry) are closed instead by DERIVED NEEDLES, and
+          // this write site is exactly where they apply — `deriveReadbackNeedles`
+          // returns nothing unless the secrets map is EMPTY, which it is here
+          // by construction (see {@link NO_RECORDED_SECRETS}). Read that
+          // function's own table for which shapes still fall through.
           //
           // `STATE_SOURCED_READBACK_RULES` is the row this write site occupies
           // in `secret-redaction.ts`'s generation table ("observed walk,
@@ -2575,11 +2584,23 @@ async function refreshObservedForStack(
           // so it is the same GENERATION as the bag beside it and holds no
           // PUBLIC ssm expression — a `String` parameter is stored resolved
           // (issue #1901) — which is what lets a stored expression win over the
-          // plaintext AWS echoes back. POSITIONAL array descent stays off
-          // because AWS may reorder a list; the order-independent KEYED descent
-          // added by issue #1915 lives inside that pass and is inherited here
-          // rather than re-solved, so a secret nested in a `Tags[]` /
-          // `Environment[]` element is reached too.
+          // plaintext AWS echoes back. BLIND positional array descent stays off
+          // because AWS may reorder a list, and the two relaxations that reach
+          // an element anyway both live inside that pass and are inherited here
+          // rather than re-solved: the order-independent KEYED descent added by
+          // issue #1915, so a secret nested in a `Tags[]` / `Environment[]`
+          // element is reached; and, for a list with no identity key, the
+          // corroborated positional walk `unkeyedArrayPairsByAnchors` licenses
+          // (issue #2012). "Descent stays off" is about pairing by INDEX ALONE,
+          // not a claim that no array is ever walked by index here — and the
+          // flag is not a knob to reach for either way. Turning it ON does two
+          // things, not one: it enables BLIND positional descent inside the
+          // path pass (`redactByPath`'s equal-length array arm, plus the
+          // `positionalIsExact` fallback for an unpaired keyed element), AND —
+          // because `!descendArrays` is one of the three conjuncts in
+          // `isReadbackProjectedFromState` — it switches the CORROBORATED pass
+          // off entirely. It is a trade, and the half it gives up is the half
+          // with evidence behind it.
           //
           // Inherited residual, not introduced here: `cdkd import`'s warn path
           // can leave a PUBLIC expression in `properties`, and

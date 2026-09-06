@@ -39,9 +39,15 @@
 #      Lambda log group, remove the parameters, purge the state bucket's object
 #      versions and assert zero survive.
 #
-# The deploy output is captured to a file and scanned for the markers BEFORE
-# anything of it is printed: streaming it through `tee` first would put the
-# plaintext on the terminal / in CI logs if the masking ever regressed.
+# NO cdkd output is printed before it has been scanned for the markers. The
+# three invocations that stream to the terminal -- the two deploys and the
+# destroy -- are captured to a FILE first and shown through `show_deploy_log`;
+# streaming any of them through `tee` would put the plaintext on the terminal /
+# in CI logs if the masking ever regressed. The rest (`diff`, `scrub`, `drift`,
+# `state show`) are captured into VARIABLES and printed, if at all, through
+# `diag_output`, which withholds on a marker hit the same way. The one
+# invocation in neither group is the cleanup trap's `state destroy`, whose
+# output is discarded to /dev/null outright.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -491,7 +497,23 @@ assert_state_redacted "Phase 2"
 
 # --- Phase 3: destroy --------------------------------------------------------
 echo "==> Phase 3: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+# CAPTURED and scanned before a byte is shown, exactly like the two deploy
+# phases. No realistic leak channel is known here — by this point state holds
+# only expressions and destroy prints resource ids, with in-process masking
+# still active — but "no channel is known" is the claim every other phase in
+# this fixture declines to make about itself, and an unscanned stream is where
+# a masking regression would surface unmasked in a CI log.
+if ! node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --force > "${DEPLOY_LOG}" 2>&1; then
+  echo "FAIL: destroy exited non-zero" >&2
+  show_deploy_log "destroy" >&2
+  exit 1
+fi
+if grep -qF -e "${MARKER}" -e "${MARKER_VERSIONED}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the destroy output leaked a SecureString value (output withheld)" >&2
+  exit 1
+fi
+show_deploy_log "destroy"
 assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
 echo "    consumer function deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

@@ -985,6 +985,45 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       expect(mockSSMSend).not.toHaveBeenCalled();
     });
 
+    // Issue #2501 item 3: `skipDynamicReferences` was pinned for the WHOLE-token
+    // form only. The skip arm sits inside the per-token loop, so the embedded
+    // form is a different path through it — the leaf is rebuilt by
+    // `String.replace` around whatever each token resolved to.
+    it('leaves an EMBEDDED ssm-secure token in place on the comparison path', async () => {
+      const leaf = `jdbc:postgresql://db/app?password=${secureExpr}`;
+
+      const result = await resolver.resolveDynamicReferences(leaf, {
+        ...defaultContext,
+        skipDynamicReferences: true,
+      });
+
+      // Byte-identical, surrounding text included: a substitution of ANY kind
+      // here is what the diff path compares against the persisted expression.
+      expect(result).toBe(leaf);
+      expect(mockSSMSend).not.toHaveBeenCalled();
+    });
+
+    it('skips only the SECRET token in a MIXED leaf, resolving its public ssm sibling', async () => {
+      // The discriminator the whole-token case cannot make: the skip is PER
+      // TOKEN, not per leaf. A plain `ssm` reference is public config stored
+      // RESOLVED in state, so the comparison path must still fetch it — while
+      // the `ssm-secure` sibling in the same string stays untouched.
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'app-user', Type: 'String' } });
+      const publicExpr = '{{resolve:ssm:/app/user}}';
+
+      const result = await resolver.resolveDynamicReferences(
+        `user=${publicExpr};password=${secureExpr}`,
+        { ...defaultContext, skipDynamicReferences: true }
+      );
+
+      expect(result).toBe(`user=app-user;password=${secureExpr}`);
+      // Exactly ONE lookup, it was for the PUBLIC parameter, and it did not
+      // decrypt — the comparison path may learn a type, never a plaintext.
+      expect(mockSSMSend).toHaveBeenCalledTimes(1);
+      expect(inputOfCall(0).Name).toBe('/app/user');
+      expect(inputOfCall(0).WithDecryption).toBe(false);
+    });
+
     it('keeps a trailing :<version> in the parameter name, as SSM parses it', async () => {
       mockSSMSend.mockResolvedValue({
         Parameter: { Value: 'v3-password', Type: 'SecureString' },
@@ -1123,6 +1162,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
   describe('resolved-value cache scope (issue #1933)', () => {
     const sharedSecretExpr = '{{resolve:secretsmanager:shared/db:SecretString}}';
     const sharedSsmExpr = '{{resolve:ssm:/shared/db/password}}';
+    const sharedSecureExpr = '{{resolve:ssm-secure:/shared/db/password}}';
 
     // SCOPE NOTE: both resolvers here share ONE mocked ambient client, so the
     // region dimension is SIMULATED — these cases prove per-RESOLVER isolation,
@@ -1162,6 +1202,58 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
         'virginia-password'
       );
       expect(mockSecretsManagerSend).toHaveBeenCalledTimes(2);
+    });
+
+    // Issue #2501 item 1: the suite pinned cache scoping for `secretsmanager`
+    // and `ssm` and not for the third spelling. `ssm-secure` is the one whose
+    // entry is written with `secret: true` from the SPELLING rather than from a
+    // `Type` the response carried, so it is the arm where a wider cache would
+    // look most harmless — and an SSM parameter of one NAME in two regions is
+    // two independent SecureStrings, exactly like a Secrets Manager secret.
+    it('does not serve one region ssm-secure resolution to another region resolver', async () => {
+      mockSSMSend
+        .mockResolvedValueOnce({ Parameter: { Value: 'virginia-pw', Type: 'SecureString' } })
+        .mockResolvedValueOnce({ Parameter: { Value: 'tokyo-pw', Type: 'SecureString' } });
+
+      const virginia = new IntrinsicFunctionResolver('us-east-1');
+      const tokyo = new IntrinsicFunctionResolver('ap-northeast-1');
+
+      const virginiaFirst = new Map<string, string>();
+      expect(
+        await virginia.resolveDynamicReferences(sharedSecureExpr, {
+          ...defaultContext,
+          recordedSecretValues: virginiaFirst,
+        })
+      ).toBe('virginia-pw');
+      expect(virginiaFirst.get('virginia-pw')).toBe(sharedSecureExpr);
+
+      const tokyoMap = new Map<string, string>();
+      expect(
+        await tokyo.resolveDynamicReferences(sharedSecureExpr, {
+          ...defaultContext,
+          recordedSecretValues: tokyoMap,
+        })
+      ).toBe('tokyo-pw');
+      // The needle is TOKYO's own value. With a process-global cache this map
+      // would carry `virginia-pw`, so tokyo's record would keep its real
+      // password in the clear while masking a value it never held.
+      expect(tokyoMap.get('tokyo-pw')).toBe(sharedSecureExpr);
+      expect(tokyoMap.has('virginia-pw')).toBe(false);
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
+
+      // The other polarity: isolation is between RESOLVERS, not per call. A
+      // second resource on virginia is served from virginia's own cache — and
+      // the cache-hit arm must still re-record into that resource's own map,
+      // which is a fresh empty one per resource.
+      const virginiaSecond = new Map<string, string>();
+      expect(
+        await virginia.resolveDynamicReferences(sharedSecureExpr, {
+          ...defaultContext,
+          recordedSecretValues: virginiaSecond,
+        })
+      ).toBe('virginia-pw');
+      expect(virginiaSecond.get('virginia-pw')).toBe(sharedSecureExpr);
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
     });
 
     it("records the secret into the SECOND stack's own map (the scrub --all clean report)", async () => {

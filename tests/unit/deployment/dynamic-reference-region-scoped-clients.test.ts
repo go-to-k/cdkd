@@ -278,6 +278,43 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       expect(ssmInstances[0]?.ctorConfig).toEqual({ region: STACK_REGION, profile: PROFILE });
     });
 
+    // Issue #2501 item 1's sibling half. The cache-scope suite pins that two
+    // RESOLVERS do not share an `ssm-secure` value; this file is where the
+    // region a CLIENT was BUILT with is observable, and it carried no
+    // `ssm-secure` case at all — so the spelling that is secret by SPELLING
+    // (no `Type` lookup needed to classify it) was the one #1957 site never
+    // covered.
+    it('sends an ssm-secure lookup to the RESOLVER region, decrypting, with the profile', async () => {
+      installAmbient(AMBIENT_REGION);
+      prime(AMBIENT_REGION, 'GetParameterCommand', {
+        Parameter: { Value: 'virginia-secure', Type: 'SecureString' },
+      });
+      prime(STACK_REGION, 'GetParameterCommand', {
+        Parameter: { Value: 'tokyo-secure', Type: 'SecureString' },
+      });
+
+      const resolver = new IntrinsicFunctionResolver(STACK_REGION);
+      const recordedSecretValues = new Map<string, string>();
+      const expression = '{{resolve:ssm-secure:/shared/db/password}}';
+      const result = await resolver.resolveDynamicReferences(expression, {
+        ...emptyContext,
+        recordedSecretValues,
+      });
+
+      // The two regions hold DIFFERENT values, so the resolved value alone
+      // discriminates which client answered; the ctorConfig pins it directly.
+      expect(result).toBe('tokyo-secure');
+      expect(recordedSecretValues.get('tokyo-secure')).toBe(expression);
+      expect(ssmSends).toHaveLength(1);
+      expect(ssmSends[0]?.region).toBe(STACK_REGION);
+      expect(ssmInstances).toHaveLength(1);
+      expect(ssmInstances[0]?.ctorConfig).toEqual({ region: STACK_REGION, profile: PROFILE });
+      // The title says DECRYPTING, so pin it: without this line, flipping
+      // `resolveSSMReference(parts, true, 'ssm-secure')` to `false` leaves this
+      // case green while the resolver hands the provider ciphertext.
+      expect((ssmSends[0]?.input as { WithDecryption?: unknown }).WithDecryption).toBe(true);
+    });
+
     it('classifies a region-B SecureString as secret even when region A holds a plain String namesake', async () => {
       // Acceptance criterion 3 (issue #1957 site 2, `cdkd scrub --all`): the
       // clients are installed ONCE while stacks in several regions are

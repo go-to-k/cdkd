@@ -100,13 +100,32 @@ function secretsManagerSecretId(inner: string): string {
  *  - A trailing `:<version>` / `:<label>` is part of the name AS SSM PARSES IT
  *    (`GetParameter` accepts `name:3` / `name:prod`), so stripping it would name
  *    a different thing in the refusal message than the one that would be read.
+ *
+ * A COLON-LESS body (`{{resolve:ssm}}` / `{{resolve:ssm-secure}}`) names no
+ * parameter at all, and the empty string is what says so: the caller reads a
+ * falsy name as `local`, which hands the reference on to the resolver's own
+ * `PARAMETER_NAME is required` — thrown BEFORE any client is built, so no
+ * `GetParameter` is ever issued for such a token. Without the guard
+ * `indexOf(':')` is `-1` and `substring(0)` returns the SERVICE STRING as the
+ * parameter name, so with a foreign producer region on record the same
+ * malformed input drew the ambiguous-region refusal naming `'ssm-secure'` as
+ * the secret. {@link secretsManagerSecretId} already answers `''` for its own
+ * nameless body (a fixed-length `substring` past the end of the string), and a
+ * sibling that answers something else is the kind of split a later reader has
+ * to rediscover.
+ *
+ * The colon-less relaxation has a CONSUMER-VISIBLE consequence on a mixed
+ * leaf, and it is recorded on {@link classifyReplaySecretRegion} rather than
+ * here: this function produces a NAME, and the delta belongs beside the
+ * VERDICT a reader arrives at it through.
  */
 function ssmParameterName(inner: string): string {
   // Strip the SERVICE, whatever its spelling: `ssm:` and `ssm-secure:` both
   // reach here (issue #2482), and a fixed `'ssm:'.length` would turn
   // `ssm-secure:/pw` into `secure:/pw`. The first colon ends the service; a
   // parameter name may legitimately carry colons after it (an ARN does).
-  return inner.substring(inner.indexOf(':') + 1);
+  const serviceEnd = inner.indexOf(':');
+  return serviceEnd < 0 ? '' : inner.substring(serviceEnd + 1);
 }
 
 /**
@@ -249,6 +268,101 @@ export function producerRegionsFromState(
  * A same-region ARN answers `local` even when a foreign producer region IS on
  * record: the expression settles the question itself, so the weaker evidence
  * never gets consulted.
+ *
+ * ---
+ *
+ * WHO CONSUMES THIS VERDICT, and what the issue #2501 colon-less fix changed
+ * for them. Recorded here because a reader arrives at the blast radius through
+ * the verdict, not through {@link ssmParameterName}, which merely produces a
+ * name.
+ *
+ * Three LEAF PRE-PASSES consume it — `rollback-executor.ts`'s
+ * `resolveLeafByRegion`, `cdkd drift`'s `resolveDriftLeafByRegion` and `cdkd
+ * scrub`'s — and each refuses the WHOLE leaf as soon as ONE token classifies
+ * `ambiguous`, before any token is fetched. There is a FOURTH consumer, and it
+ * is not a pre-pass: `resolveDynamicReferences` classifies token-by-token
+ * INSIDE its substitution loop, so it already fetches earlier tokens before
+ * refusing a later one. That is why the pre-fetch refusal was never a designed
+ * property of this verdict.
+ *
+ * Before the fix, a colon-less `{{resolve:ssm-secure}}` produced the SERVICE
+ * STRING as its name, so with a foreign producer region on record it drew an
+ * `ambiguous` verdict and the pre-pass refused the whole leaf: for
+ * `local=<same-region ARN>;secure={{resolve:ssm-secure}}`, nothing was
+ * resolved. It now answers `local`, so the leaf IS resolved — by the primary
+ * resolver when every other token is `local`, or through the segment-rebuild
+ * path when one is `named-region` — and the ARN sibling's plaintext is fetched
+ * and cached before the degenerate token throws `PARAMETER_NAME is required`.
+ * Pinned by `rollback-executor-cross-region-secret.test.ts`'s "the MIXED-leaf
+ * delta the colon-less guard accepts", so the trade is visible rather than
+ * argued.
+ *
+ * Accepted on three grounds, the third being a LIMIT rather than a
+ * reassurance:
+ *
+ *  1. The lost refusal was an ACCIDENT of the mis-parse, not a designed
+ *     protection: with no foreign producer region on record — the
+ *     overwhelmingly common case — the colon-less token classified `local`
+ *     before the fix too, so the same sibling was already fetched.
+ *  2. The sibling is fetched from the region its OWN verdict names, never a
+ *     guessed one (a name-form sibling would itself be `ambiguous` and the
+ *     pre-pass would still refuse), so nothing here weakens the issue #1957
+ *     rule this module exists to enforce. Nothing fetched reaches a DURABLE
+ *     sink — `state.json`, the rollback journal, the `deployments/` event
+ *     store, a `--json` payload — and the reason is NOT "the op throws before
+ *     any write", which is false for scrub (see 3: scrub swallows and keeps
+ *     writing). It is that both places a fetched plaintext is retained are
+ *     IN-PROCESS and neither is copied out: the resolver's own
+ *     `cachedDynamicReferences` (instance-scoped since issue #1933, so it dies
+ *     with the resolver) and `recordedSecretValues`, which every persist path
+ *     consults as a redaction NEEDLE set — an entry there causes a value to be
+ *     REPLACED BY its expression on the way out, never inserted.
+ *
+ *     ON THIS PATH one more needle can only redact more, which is why the
+ *     direction is safe even though it fetches more — and the qualifier is
+ *     load-bearing rather than hedging. It is NOT a general property of the
+ *     needle machinery: `redactSecretsForState`'s own doc (see the
+ *     `preferPositionDecisions` ordering note) records that a needle rewriting
+ *     a FRAME ANCHOR can un-certify `unkeyedArrayPairsByAnchors`, refuse the
+ *     array, and leave a sibling MIXED leaf in plaintext — "a regression of
+ *     shipped redaction, in the GHSA disclosure direction". That is reachable
+ *     with a NON-EMPTY map on a `STATE_SOURCED_READBACK_RULES` caller, e.g.
+ *     `rollback-executor.ts`'s `redactRollbackRecord` ->
+ *     `scrubResourceRecord`. It is not what fires here: the case this
+ *     paragraph is about records FEWER needles, not more, so nothing new can
+ *     rewrite an anchor.
+ *  3. WHAT THE OP DOES NEXT IS NOT UNIFORM. The replay fails the op and `cdkd
+ *     drift` reports the resource NOT compared — both loud. `cdkd scrub` is
+ *     NOT: `isRegionAmbiguousRefusal` re-raises only a
+ *     `DynamicReferenceRegionAmbiguousError`, and the resolver's replacement is
+ *     a plain `Error`, so scrub swallows it to `debug` and the run reports
+ *     clean. A LOUDNESS regression for that one command on this one input,
+ *     bounded by the identical silent miss that already happens for the same
+ *     leaf whenever no foreign producer region is on record.
+ *
+ *     Issue [#2692](https://github.com/go-to-k/cdkd/issues/2692) tracks it, and
+ *     the remedy is NOT resolver-local. Two candidate fixes are wrong, each in
+ *     its own way, and scrub has TWO predicates that must not be confused:
+ *     `isRegionAmbiguousRefusal` decides RE-RAISE vs SWALLOW (its three call
+ *     sites), while `isByDesignRefusal` — matching
+ *     `CrossAccountSecretRefusalError` — decides FINDING vs REFUSE. They point
+ *     in opposite directions, so a fix aimed at one must not be argued from
+ *     the other's record.
+ *
+ *      - Throwing `IntrinsicResolutionRefusalError` and widening
+ *        `isRegionAmbiguousRefusal` to match the BASE class would make every
+ *        user-fixable refusal that class carries RE-RAISE and fail the whole
+ *        stack — not the silent-downgrade hazard `isByDesignRefusal`'s doc
+ *        records, but the opposite over-refusal, on a class with throw sites
+ *        spread across the resolver.
+ *      - Throwing the region-ambiguous SUBCLASS is wrong differently: scrub
+ *        already re-raises it, but its message tells the user to spell the
+ *        reference as a full ARN, which cannot fix a reference naming no
+ *        parameter.
+ *
+ *     So #2692 needs a NEW sibling subclass AND a scrub-side predicate change,
+ *     which makes it blocked on `src/cli/commands/scrub.ts` (held by PR
+ *     #2562), not merely on the resolver's `integ-broad` cost.
  */
 export function classifyReplaySecretRegion(
   expression: string,
