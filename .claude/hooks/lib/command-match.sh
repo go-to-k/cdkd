@@ -478,6 +478,18 @@ gate_segments_raw() {
           # branch until here; the control without the ANSI-C span gave 2. The
           # two quote machines in this file must agree -- one of them being
           # right is what made this survive the round that fixed the other.
+          #
+          # `$$` FIRST, exactly as `close_paren` does it: the second `$` is the
+          # PID`s, and what follows is a PLAIN span where the escaped quote
+          # CLOSES. Adding the ANSI-C arm without this step-over opened a span
+          # on `$$\047` that never closed, so the rest of the line -- separators
+          # included -- became data. Measured through the real hooks:
+          #   echo $(echo a)$$\047\\\047 ; git commit -m x        rc=2 -> 0
+          #   echo $(echo a)$$\047\\\047 ; git checkout -- src/x.ts   gate never looked
+          # Both RUN under real bash. Porting one arm of a pair is how the
+          # previous round`s fix arrived half-applied; this is the same lesson
+          # one iteration later, so the two machines are diffed arm by arm now.
+          if (c == "$" && substr(line, i + 1, 1) == "$") { i++; continue }
           if (c == "$" && substr(line, i + 1, 1) == "\047" \
               && ignore_q != "\047" && ignore_q != "BOTH") { q = "A"; i++; continue }
           if (c == "$" && substr(line, i + 1, 1) == "(") {
@@ -1428,9 +1440,13 @@ GATE_PERL_WORD='
   # ANSI-C quoting is the FIRST alternative on purpose. `$` is an ordinary
   # character to the bare class below, so without this arm `$\x27...\x27` was
   # split into a bare `$` plus a plain single-quoted span -- which took the body
-  # LITERALLY, so `--body $\x27日本語\x27` reached the English-only
-  # gate as the ASCII text `$日本語` and passed, while bash sent
-  # Japanese. Its inner `\\.` also differs from the plain single-quote arm:
+  # LITERALLY, so `--body $\x27<CJK text>\x27` reached the English-only gate as
+  # ASCII -- a `$` followed by the same bytes read as literal characters -- and
+  # passed, while bash sent the DECODED text to GitHub. The characters are
+  # described rather than written here for the reason the gate itself enforces:
+  # this file lands in an OSS repository, and `non-english-text-gate` blocks the
+  # merge of any PR whose diff carries them, including in a comment explaining
+  # them. Its inner `\\.` also differs from the plain single-quote arm:
   # inside `$\x27...\x27` a backslash ESCAPES, so `\\\x27` does not close it.
   my $GW = qr/(?:\$\x27(?:[^\x27\\]|\\.)*\x27|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\\.|[^\s"\x27;|&()<>\x60])+/;
   # Append-as-BYTES normaliser. Perl strings carry an internal

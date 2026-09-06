@@ -540,10 +540,7 @@ the constant, because that is the file a change to it edits. Derive the
 consumer list with `grep -l GATE_PERL_WORD .claude/hooks/*-gate.sh` rather
 than trusting a count in prose;
 `tests/unit/scripts/gate-perl-word-consumers.test.ts` fences it and the
-library header against the tree. (A satellite restating that narrative was
-written and then removed: it duplicated the library note it pointed AT, and
-the corpus ceiling is a budget for the whole `.claude/rules` tree, so a split
-that adds frontmatter and a pointer SPENDS from it rather than funding.)
+library header against the tree.
 
 
 Also converted: the redirect-target matchers, which compared RAW command text

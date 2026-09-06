@@ -2050,6 +2050,16 @@ check 'an ANSI-C span before a second substitution does not split it' 0 \
   "$COMMIT" "$(printf 'echo "$(printf %%s $%sa\\%sb%s $(echo a) ; git commit -m x)"' "'" "'" "'")"
 check 'the same body does not hide a git checkout either' 0 \
   "$GATE_RE_GIT_CHECKOUT" "$(printf 'echo "$(printf %%s $%sa\\%sb%s $(echo a) ; git checkout -- src/x.ts)"' "'" "'" "'")"
+# `$$` is the PID, and what follows it is a PLAIN span where the escaped quote
+# CLOSES. `close_paren` steps over the second dollar; the ANSI-C arm added to
+# `flush_line` did not, so it opened a span that never closed and the rest of
+# the line -- separators included -- became data. Both shapes RUN under real
+# bash, and both walked past their gate: rc=2 -> 0 for the commit verb, and the
+# checkout gate never looked at all.
+check 'a $$ before plain quotes does not open an ANSI-C span (commit)' 0 \
+  "$COMMIT" "$(printf 'echo $(echo a)$$%s\\%s ; git commit -m x' "'" "'")"
+check 'a $$ before plain quotes does not open one for checkout either' 0 \
+  "$GATE_RE_GIT_CHECKOUT" "$(printf 'echo $(echo a)$$%s\\%s ; git checkout -- src/x.ts' "'" "'")"
 # The control: a balanced span must still be seen, or the three above would be
 # satisfied by a matcher that simply matches everything.
 check 'a balanced substitution body is still seen' 0 \
