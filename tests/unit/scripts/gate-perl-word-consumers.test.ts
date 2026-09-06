@@ -111,11 +111,16 @@ describe('perl programs are self-contained', () => {
     for (const f of consumers()) {
       const src = readFileSync(join(HOOKS, f), 'utf8');
       perlPrograms(src).forEach(({ body, whole }, i) => {
-        // The prelude marker is interpolated at the SHELL level, so it is part
-        // of the INVOCATION and not of the program body. Looking for it in the
-        // 60 characters BEFORE the match found it never -- the match already
-        // starts at `perl`, and the marker sits between `-e` and the quote.
-        const hasPrelude = whole.includes('"$GATE_PERL_WORD"');
+        // The prelude marker is interpolated at the SHELL level, so it belongs
+        // to the INVOCATION -- between `-e` and the opening quote -- and never
+        // to the program body. Scoped to exactly that span: `whole.includes()`
+        // is satisfiable by the BODY, so a program could drop the marker from
+        // its invocation and mention it in a comment instead (measured: that
+        // mutant read CLEAN). The revision before this one looked at the 60
+        // characters before the BODY, which was correct and which the comment
+        // replacing it wrongly called never-true -- this restores that reach
+        // and bounds it exactly.
+        const hasPrelude = whole.slice(0, whole.indexOf("'")).includes('"$GATE_PERL_WORD"');
         if (body.includes('line_writes(')) {
           if (body.includes('sub line_writes')) {
             offenders.push(`${f} program #${i}: defines line_writes privately again`);
@@ -129,6 +134,28 @@ describe('perl programs are self-contained', () => {
           offenders.push(`${f} program #${i}: uses $GW/gate_unq without the prelude`);
         }
       });
+    }
+    expect(offenders, offenders.join('\n')).toEqual([]);
+  });
+
+  it('the extractor reaches every perl invocation in every consumer', () => {
+    // The extractor terminates a multi-line program on `' 2>/dev/null`, so a
+    // NEW program without that terminator is INVISIBLE to the fence above --
+    // exactly the class it exists to catch. Measured: a `perl -0777 -e` with
+    // no prelude and no terminator, calling `line_writes`, read CLEAN; at
+    // runtime it dies on "Undefined subroutine", writes nothing, and the
+    // caller reads the non-zero exit as "does not write this path".
+    //
+    // Counting invocations against extractions is the check the fence itself
+    // cannot make: it can only judge what it managed to parse.
+    const offenders: string[] = [];
+    for (const f of consumers()) {
+      const src = readFileSync(join(HOOKS, f), 'utf8');
+      const invocations = [...src.matchAll(/perl\s+(?:-\S+\s+)*-\S*e\s+(?:"\$GATE_PERL_WORD")?'/g)].length;
+      const extracted = perlPrograms(src).length;
+      if (invocations !== extracted) {
+        offenders.push(`${f}: ${invocations} perl invocations, ${extracted} extracted`);
+      }
     }
     expect(offenders, offenders.join('\n')).toEqual([]);
   });

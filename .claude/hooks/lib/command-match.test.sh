@@ -1926,7 +1926,7 @@ utf8_case 'stray byte AFTER a character'  '"\xe6\x97\xa5\xff"' "U+65E5 $F"
 # BYTE-IDENTICAL. Without it a CI awk taking the fallback would be running an
 # untested matcher.
 split_parity() { # <name> <command>
-  local name="$1" cmd="$2" fast slow lib fallback
+  local name="$1" cmd="$2" fast slow fast_s slow_s lib fallback
   lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/command-match.sh"
   fallback="$(mktemp)"
   # Force the probe OFF. The anchor is asserted so a drifted probe fails here
@@ -1958,12 +1958,8 @@ split_parity() { # <name> <command>
     fail_log+="FAIL split parity (strip): $name\n  command: $cmd\n"
     return
   fi
-  if [ "$fast" = "$slow" ]; then
-    pass=$((pass + 1)); printf 'OK   split parity: %s\n' "$name"
-  else
-    fail=$((fail + 1)); printf 'FAIL split parity: %s\n' "$name"
-    fail_log+="FAIL split parity: $name\n  command: $cmd\n"
-  fi
+  # Both comparisons returned above on failure, so reaching here IS the pass.
+  pass=$((pass + 1)); printf 'OK   split parity: %s\n' "$name"
 }
 split_parity 'plain command'          'git -C /a/b commit -m x'
 split_parity 'quoted span with a space' 'gh issue create --body "a b c"'

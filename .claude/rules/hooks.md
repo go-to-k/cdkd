@@ -458,7 +458,7 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   the 3.2 half runs the HOOK under it too, via the `HOOK_BASH` shim; without
   that shim the suite ran under 3.2 while the subject kept using whatever
   `bash` came first on PATH, and the hook was invoked under it 0 times).
-  Re-probed on the 47-case suite: `exit 0` stub 18, `exit 2` 43, `$GW`
+  Re-probed on the 47-case suite: `exit 0` stub 19, `exit 2` 44, `$GW`
   reverted 39. Per-fence tallies live in the suite header.
 
 - **`.claude/hooks/issue-deferral-criteria-gate.sh`** blocks `gh issue create`

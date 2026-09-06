@@ -34,13 +34,15 @@
 #           extracted, the precedence chain ended at the whole SEGMENT -- which
 #           carries the PATH, not the body -- and no label was demanded at all
 #
-# Measured rather than asserted, EVERY number re-taken on the 46-case suite
-# after the review round that added the load-guard fence and the `-R`-with-a-
-# space case -- not carried forward:
+# Measured rather than asserted, EVERY number re-taken on the 47-case suite --
+# not carried forward. ADDING A CASE INVALIDATES ALL THREE, which is how the
+# round that FIXED a sibling gate's stale tallies shipped this one carrying
+# 18/43/38 from before its own new case: re-run the stubs whenever the count
+# changes, not only when a fence does.
 #
-#   always-`exit 0` stub                  fails 18   (nothing passes vacuously)
-#   always-`exit 2` stub                  fails 43   (nor blocks vacuously)
-#   `$GW` -> the retired class (below)    fails 38
+#   always-`exit 0` stub                  fails 19   (nothing passes vacuously)
+#   always-`exit 2` stub                  fails 44   (nor blocks vacuously)
+#   `$GW` -> the retired class (below)    fails 39
 #   `gate_perl_word_ok` -> always true    fails  1   -- the load-guard case
 #   short-flag `[=\s]*` -> `[=\s]+`       fails  1   -- the glued spelling#
 # THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated

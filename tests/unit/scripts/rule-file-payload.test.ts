@@ -943,10 +943,18 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 48; // + hooks-flag-value-class.md: hooks.md crossed the
-                              //  per-file cap again -- at least the EIGHTH split off this one
-                              //  file, counting the six satellites it already points at, so do not
-                              //  read the ordinals in the older entries below as a running total.
+const CORPUS_FILE_COUNT = 48; // + hooks-flag-value-class.md: the shared flag-value
+                              //  class -- the GATE_PERL_WORD prelude, its five consumers, the six
+                              //  families the enumerating spelling lost -- moved out under a glob
+                              //  naming the prelude and those consumers, because hooks.md crossed
+                              //  the 80,000 B cap again while documenting it. That makes 48.
+                              //
+                              //  + hooks-authoring.md (go-to-k/cdkd#2630) was the entry BEFORE
+                              //  this one and is what the paragraph below describes; repointing
+                              //  the head at the new satellite left its rationale credited to the
+                              //  wrong file. At least the EIGHTH split off hooks.md, counting the
+                              //  satellites it already points at, so do not read the ordinals in
+                              //  the older entries below as a running total.
                               //  The comment above this file's hooks.md row records the decision
                               //  that the next lane needing more room there splits rather than
                               //  trims someone else's entry or nudges the cap, and this is that
