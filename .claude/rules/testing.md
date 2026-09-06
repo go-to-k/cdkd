@@ -377,6 +377,38 @@ because nothing enforced it). Enforced by
 `echo` arguments). User-facing writeup in
 [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
+### A destructive prefix sweep must refuse a widened scope (mandatory)
+
+A teardown that LISTS under a variable prefix and DELETES every name it gets
+back widens when that variable is empty: to the whole ACCOUNT where the filter
+is nothing but the variable (`--log-group-name-prefix ""` matches every log
+group, `starts_with(RoleName, '')` every role), and to the whole NAMESPACE where
+it keeps a literal anchor (`/aws/lambda/` is every Lambda log group in the
+region). `cleanup` runs under `set +eu`, so nothing catches the empty value.
+
+The guard must DOMINATE the sweep: the sweep sits inside a non-catch-all arm,
+or after an `esac` whose catch-all leaves via `exit` / `return`. A `case` merely
+sitting ABOVE the sweep is not enough — a catch-all that warns and falls through
+stops nothing, and neither does a `case` with no catch-all at all, since bash
+falls straight through one no arm matches. Use a pattern that cannot match
+empty: the shortest literal prefix YOUR scope has, plus `?*` (`Cdkd?*` is not a
+house pattern — 36 of the 213 fixtures with a literal `STACK=` use a name that
+does not start with `Cdkd`, and a guard that never matches leaks silently, since
+every delete here is `|| true`).
+Put the accepting arm FIRST: bash takes the first match, so a `*)` above it
+swallows every scope. `exit 0` inside a subshell-bodied sweep helper; a wrapping
+`case` where the sweep sits inline in `cleanup`, since an `exit` there abandons
+the rest of the teardown; a plain early `return` where the whole function is the
+sweep, which carries no pattern and so has no "cannot match empty" analogue. A
+parameter-scoped helper guards its OWN `$1`, not its call sites. **The refusal
+must warn on stderr with the words `teardown sweep refused`** — a checker has to
+FIND a guard before it can judge one, and issue
+[#2690](https://github.com/go-to-k/cdkd/issues/2690) will key on that phrase.
+NOT mechanically enforced today: nothing checks the pattern, the arm order, or
+whether a guard dominates its sweep, so this file and the doc are the controls.
+User-facing writeup in
+[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
+
 ### `verify.sh` list readbacks must be order-insensitive (mandatory)
 
 AWS does not preserve the submitted order of list-valued members on readback.

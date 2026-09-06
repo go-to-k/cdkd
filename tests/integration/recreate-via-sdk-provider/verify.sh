@@ -76,11 +76,25 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
-  for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, \`${STACK}\`)].RoleName" --output text 2>/dev/null); do
-    aws iam detach-role-policy --role-name "${role}" \
-      --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null 2>&1 || true
-    aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
-  done
+  # SCOPE GUARD (#2621). Safety, not style: an empty `STACK` makes the
+  # JMESPath prefix empty, and EVERY role name starts with the empty string —
+  # so the sweep below becomes an account-wide role delete, while the `set +eu`
+  # above has disabled the only thing that would have caught the empty value.
+  # `case` and not `exit`: this runs inside `cleanup`, not a subshell, so a
+  # refusal must skip the sweep and let the rest of the teardown run. The
+  # convention is in `docs/integ-fixture-conventions.md`.
+  case "${STACK}" in
+    Cdkd?*)
+      for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, \`${STACK}\`)].RoleName" --output text 2>/dev/null); do
+        aws iam detach-role-policy --role-name "${role}" \
+          --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null 2>&1 || true
+        aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
+      done
+      ;;
+    *)
+      echo "    WARN: teardown sweep refused a stack scope outside Cdkd*: '${STACK:-<empty>}'" >&2
+      ;;
+  esac
   set -eu
 }
 

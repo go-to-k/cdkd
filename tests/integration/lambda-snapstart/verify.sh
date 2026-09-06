@@ -81,15 +81,29 @@ cleanup() {
   fi
   aws lambda delete-function --function-name "${FN}" --region "${REGION}" >/dev/null 2>&1 || true
   aws logs delete-log-group --log-group-name "/aws/lambda/${FN}" --region "${REGION}" >/dev/null 2>&1 || true
-  for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, '${STACK}')].RoleName" --output text 2>/dev/null); do
-    for parn in $(aws iam list-attached-role-policies --role-name "${role}" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
-      aws iam detach-role-policy --role-name "${role}" --policy-arn "${parn}" >/dev/null 2>&1 || true
-    done
-    for pname in $(aws iam list-role-policies --role-name "${role}" --query 'PolicyNames[]' --output text 2>/dev/null); do
-      aws iam delete-role-policy --role-name "${role}" --policy-name "${pname}" >/dev/null 2>&1 || true
-    done
-    aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
-  done
+  # SCOPE GUARD (#2621). Safety, not style: `starts_with(RoleName, '')` is true
+  # of EVERY role, so an empty `STACK` turns this sweep into an account-wide
+  # role delete — and the `set +eu` above has disabled the only thing that
+  # would have caught the empty value. `case` and not `exit`: this runs in
+  # `cleanup` itself, not a subshell, so a refusal must skip the sweep and let
+  # the rest of the teardown run. The convention is in
+  # `docs/integ-fixture-conventions.md`.
+  case "${STACK}" in
+    Cdkd?*)
+      for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, '${STACK}')].RoleName" --output text 2>/dev/null); do
+        for parn in $(aws iam list-attached-role-policies --role-name "${role}" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+          aws iam detach-role-policy --role-name "${role}" --policy-arn "${parn}" >/dev/null 2>&1 || true
+        done
+        for pname in $(aws iam list-role-policies --role-name "${role}" --query 'PolicyNames[]' --output text 2>/dev/null); do
+          aws iam delete-role-policy --role-name "${role}" --policy-name "${pname}" >/dev/null 2>&1 || true
+        done
+        aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
+      done
+      ;;
+    *)
+      echo "    WARN: teardown sweep refused a stack scope outside Cdkd*: '${STACK:-<empty>}'" >&2
+      ;;
+  esac
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true

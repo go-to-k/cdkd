@@ -152,7 +152,23 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
      the AWS resources by deterministic name, remove the `state.json` + `lock.json`,
      and **sweep `/aws/lambda/${STACK}*` log groups** (Lambda auto-creates them on
      invoke and neither CFn nor cdkd deletes them — leaving them counts as an
-     orphan).
+     orphan). **Any sweep that DELETES what a `${VAR}`-filtered listing returns
+     needs a scope guard that DOMINATES it** — either the sweep sits inside the
+     non-catch-all arm, or it sits after an `esac` whose catch-all leaves via
+     `exit` / `return`; a `case` that merely warns and falls through stops
+     nothing. An empty variable makes the filter match everything, `cleanup`
+     runs under `set +eu`, and every delete is `|| true`, so the run would wipe
+     unrelated resources and still exit 0. Accepting arm first, a pattern that
+     cannot match empty, and a WARN containing `teardown sweep refused`.
+     **Write YOUR OWN scope's shortest literal prefix plus `?*`** — `Cdkd?*` is
+     what the already-guarded fixtures happen to need and is NOT a house
+     pattern: 36 of the 213 fixtures with a literal `STACK=` use a name that
+     does not start with `Cdkd` (`EventBridgeStack`, `CognitoStack`, …), and
+     copying `Cdkd?*` into one of those makes the guard refuse PERMANENTLY and
+     silently, so the sweep never runs, the orphans leak and the run still
+     exits 0. See
+     [docs/integ-fixture-conventions.md](../../../docs/integ-fixture-conventions.md).
+     Convention only — nothing checks it yet (#2621, checker on #2690).
    - **Phase 1 — deploy**, then a **functional assertion that the feature
      actually works and reached AWS** (curl the endpoint / put an object and
      confirm the handler fired / read the property back via the AWS API). A clean

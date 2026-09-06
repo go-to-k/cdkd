@@ -121,6 +121,21 @@ cleanup() {
   )
   # Cluster role: deterministic-prefix discovery.
   ( set +eu
+    # SCOPE GUARD (#2621). Safety, not style: `contains(RoleName, '')` is true
+    # of EVERY role — wider even than the `starts_with` twin, since it matches
+    # anywhere in the name — so an empty `STACK` turns the sweep below into an
+    # account-wide role delete, and the `set +eu` above has disabled the only
+    # thing that would have caught the empty value. `exit 0` and not
+    # `return 0`: this is a SUBSHELL, so the exit ends the sweep and leaves
+    # `cleanup` running. The convention is in
+    # `docs/integ-fixture-conventions.md`.
+    case "${STACK}" in
+      Cdkd?*) ;;
+      *)
+        echo "    WARN: teardown sweep refused a stack scope outside Cdkd*: '${STACK:-<empty>}'" >&2
+        exit 0
+        ;;
+    esac
     for role in $(aws iam list-roles --query "Roles[?contains(RoleName, '${STACK}')].RoleName" --output text 2>/dev/null); do
       for pol in $(aws iam list-attached-role-policies --role-name "${role}" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
         aws iam detach-role-policy --role-name "${role}" --policy-arn "${pol}" >/dev/null 2>&1

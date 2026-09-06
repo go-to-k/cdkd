@@ -149,6 +149,26 @@ sweep_log_groups() { # best-effort teardown; never aborts the sweep
   # already running under `set +eu` (the cleanup trap).
   (
     set +eu
+    # PREFIX GUARD, the same one `s3_purge_prefix_versions` carries in
+    # tests/integration/s3-versions.sh and `sweep_log_groups` carries in the
+    # sibling loggroup-class-guard fixture. It is a safety property rather than
+    # style: this sweep DELETES every name the listing returns, and the `set
+    # +eu` at the top of this subshell has just disabled the only thing that
+    # would have caught an empty or unset `LG_PREFIX` — which lists, and would
+    # then delete, every log group in the account. Unreachable today (the
+    # prefix is a literal), and CloudWatch Logs would also reject an empty
+    # `--log-group-name-prefix`; the guard is what keeps the service from being
+    # the only thing standing between a future edit and an account-wide delete.
+    # `exit 0` and not `return 0`: this is a SUBSHELL, so the exit ends the
+    # sweep and the function returns its status, leaving the caller running.
+    # The convention is in `docs/integ-fixture-conventions.md` (issue #2621).
+    case "${LG_PREFIX}" in
+      /cdkd-integ/*/) ;;
+      *)
+        echo "    WARN: teardown sweep refused a prefix outside /cdkd-integ/: '${LG_PREFIX:-<empty>}'" >&2
+        exit 0
+        ;;
+    esac
     local names name
     names="$(aws logs describe-log-groups --log-group-name-prefix "${LG_PREFIX}" \
       --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null)"

@@ -258,6 +258,27 @@ assert_unkeyed_string_array() {
 # subshell so it never re-arms strict mode in a `set +eu` caller.
 deregister_family() { (
   set +eu
+  # SCOPE GUARD (#2621). `FAMILY` is the one DERIVED scope among these guards
+  # (`cdkd-test-array-secret-${ACCOUNT_ID}`). An empty `ACCOUNT_ID` would leave
+  # the bare literal, and `cdkd-test-array-secret-?*` REFUSES that — skipping
+  # the sweep rather than running it. That is deliberate and costs nothing:
+  # `ACCOUNT_ID` is assigned under `set -euo pipefail` near the top, well before
+  # this trap is armed, so a failed `sts get-caller-identity` aborts the run
+  # instead of reaching here. The guard is what keeps the shape safe one edit
+  # further on: drop the literal and `--family-prefix ""` matches EVERY family
+  # in the account, with the `set +eu` above having disabled the only thing that
+  # would have caught it.
+  # `deregister` is as destructive as `delete` here: an INACTIVE revision
+  # cannot be run and cannot be restored. `exit 0` and not `return 0`: this is
+  # a SUBSHELL, so the exit ends the sweep and leaves the caller running.
+  # The convention is in `docs/integ-fixture-conventions.md`.
+  case "${FAMILY}" in
+    cdkd-test-array-secret-?*) ;;
+    *)
+      echo "    WARN: teardown sweep refused a family prefix outside cdkd-test-array-secret-: '${FAMILY:-<empty>}'" >&2
+      exit 0
+      ;;
+  esac
   local arns arn
   arns=$(aws ecs list-task-definitions --family-prefix "${FAMILY}" --status ACTIVE \
     --region "${REGION}" --query 'taskDefinitionArns[]' --output text 2>/dev/null)

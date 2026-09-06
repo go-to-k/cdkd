@@ -85,10 +85,30 @@ cleanup() {
   done
   # The pipe role + queues are stack-prefixed; state destroy above removes
   # them on the happy path, these direct deletes cover interrupted runs.
-  for QURL in $(aws sqs list-queues --queue-name-prefix "${STACK}" --region "${REGION}" \
-      --query 'QueueUrls[]' --output text 2>/dev/null); do
-    aws sqs delete-queue --queue-url "${QURL}" --region "${REGION}" >/dev/null 2>&1 || true
-  done
+  #
+  # SCOPE GUARD (#2621), the SQS twin of `s3_purge_prefix_versions`'s prefix
+  # check in tests/integration/s3-versions.sh. Safety, not style: the
+  # loop DELETES every queue the listing returns, and `set +eu` above has
+  # disabled the only thing that would have caught an empty `STACK` — which
+  # makes `--queue-name-prefix ""` match, and this loop delete, every queue in
+  # the account. `case` and not `exit`: this runs in `cleanup` itself, not a
+  # subshell, so a refusal must skip the sweep and let the rest of the teardown
+  # run. The convention is in `docs/integ-fixture-conventions.md`.
+  case "${STACK}" in
+    Cdkd?*)
+      for QURL in $(aws sqs list-queues --queue-name-prefix "${STACK}" --region "${REGION}" \
+          --query 'QueueUrls[]' --output text 2>/dev/null); do
+        aws sqs delete-queue --queue-url "${QURL}" --region "${REGION}" >/dev/null 2>&1 || true
+      done
+      ;;
+    *)
+      echo "    WARN: teardown sweep refused a stack scope outside Cdkd*: '${STACK:-<empty>}'" >&2
+      ;;
+  esac
+  # No guard on this one, deliberately: the `-PipeRole` suffix is a literal
+  # anchor, so an empty `STACK` narrows the filter to `-PipeRole` rather than
+  # widening it to every role. The SQS sweep above has no such anchor, which is
+  # why only it is wrapped.
   for ROLE in $(aws iam list-roles \
       --query "Roles[?starts_with(RoleName, '${STACK}-PipeRole')].RoleName" \
       --output text 2>/dev/null); do

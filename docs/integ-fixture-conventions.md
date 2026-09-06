@@ -1,15 +1,24 @@
 ---
 title: Integration fixture conventions
-description: "The rules a cdkd integration fixture follows — verify.sh signal traps, gone-probes, CLI flags, removal policies, S3 version sweeps, and the unit-test priming conventions."
+description: "The rules a cdkd integration fixture follows — verify.sh signal traps, gone-probes, CLI flags, removal policies, S3 version sweeps, destructive prefix-sweep guards, and the unit-test priming conventions."
 unlisted: true
 ---
 
 # Integration fixture conventions
 
 The rules a `tests/integration/<name>/` fixture and its `verify.sh` follow, and
-the two unit-test conventions that go with them. Each is enforced by a checker
-under `tests/unit/scripts/`, so a violation fails CI rather than surfacing as a
-leaked AWS resource or a test that passes without testing anything.
+the two unit-test conventions that go with them. Almost all are enforced by a
+checker under `tests/unit/scripts/`, so a violation fails CI rather than
+surfacing as a leaked AWS resource or a test that passes without testing
+anything. Not all: ["Sort both sides of a list
+readback"](#sort-both-sides-of-a-list-readback) is deliberately unenforced, and
+["A destructive prefix sweep must refuse a widened
+scope"](#a-destructive-prefix-sweep-must-refuse-a-widened-scope) is
+convention-only — every sweep whose filter collapses to the empty string follows
+it today, but nothing mechanical stops the next one from omitting it, ordering
+its arms so the guard never fires, or wording its refusal so no future checker
+can find it. That checker is issue
+[#2690](https://github.com/go-to-k/cdkd/issues/2690).
 
 This page is for contributors writing or reviewing a fixture. Start from
 [Testing](testing.md), which walks a fixture end to end; come here when you are
@@ -986,6 +995,146 @@ record with `aws s3 cp`); and service-generated credentials with no marker in
 the source at all — Cognito's `ClientSecret` was that class and was found by
 grepping the BUCKET, not the source. The per-fixture zero-assertion plus
 periodic bucket inspection remain the backstop.
+
+## A destructive prefix sweep must refuse a widened scope
+
+A teardown that LISTS resources under a variable prefix and DELETES every name
+the listing returns is one empty variable away from an account-wide delete:
+
+```bash
+for name in $(aws logs describe-log-groups \
+    --log-group-name-prefix "${LG_PREFIX}" \
+    --query 'logGroups[].logGroupName' --output text); do
+  aws logs delete-log-group --log-group-name "${name}"
+done
+```
+
+With `LG_PREFIX` empty or unset the filter is the empty string, which every log
+group name matches, so the loop deletes every log group in the ACCOUNT. The
+same collapse happens to a JMESPath filter — `starts_with(RoleName, '${STACK}')`
+and `contains(RoleName, '${STACK}')` are true of every role when `STACK` is
+empty — and teardown is exactly where it goes unnoticed, because `cleanup` runs
+under `set +eu`: the one thing that would have caught the unset variable is
+switched off two lines above.
+
+**A literal anchor narrows the blast radius; it does not remove it.**
+`--log-group-name-prefix "/aws/lambda/${STACK}"` with an empty `STACK` collapses
+to the NAMESPACE rather than to the account — which is still every Lambda log
+group in the region, cdkd's and everyone else's. Guard those too;
+`iam-oidc-provider/verify.sh` keeps exactly that sweep inside its `case` arm for
+this reason. Guard with a `case` that refuses anything outside the fixture's own
+scope, ABOVE the first delete. It is the log-group / IAM twin of `_s3v_check_prefix`
+(["Sweep S3 object versions"](#sweep-s3-object-versions-and-assert-the-count-is-zero)),
+and like that one it is a safety guard, not style.
+
+**Which refusal you write is decided by control flow, not taste.** In a
+subshell-bodied sweep helper, refuse with `exit 0` — the exit ends the subshell
+and the function returns, leaving the caller running:
+
+```bash
+sweep_log_groups() {
+  ( set +eu
+    case "${LG_PREFIX}" in
+      /cdkd-integ/*/) ;;
+      *) echo "    WARN: teardown sweep refused a prefix outside /cdkd-integ/: '${LG_PREFIX:-<empty>}'" >&2
+         exit 0 ;;
+    esac
+    ...
+  )
+}
+```
+
+Inline in `cleanup` there is no subshell, so an `exit` would abandon the rest of
+the teardown — every later `state destroy`, every later sweep. Wrap the sweep in
+the `case` instead:
+
+```bash
+case "${STACK}" in
+  Cdkd?*)
+    for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, '${STACK}')].RoleName" --output text); do
+      aws iam delete-role --role-name "${role}" || true
+    done
+    ;;
+  *) echo "    WARN: teardown sweep refused a stack scope outside Cdkd*: '${STACK:-<empty>}'" >&2 ;;
+esac
+```
+
+A third spelling appears where the sweep is neither in a subshell nor worth
+wrapping — a plain early return at the top of the helper, which
+`eventsourcemapping-race/verify.sh`'s `list_esms_for_function` uses:
+
+```bash
+list_esms_for_function() {
+  local fn="$1"
+  if [ -z "${fn}" ]; then
+    echo "    WARN: teardown sweep refused an empty function scope" >&2
+    return 0
+  fi
+  ...
+}
+```
+
+It carries no pattern, so the "must not match the empty string" property below
+has no analogue for it; what stands in is that the test is `-z` and the branch
+LEAVES. Use it only where the whole function is the sweep — otherwise the
+`return` skips work the caller still needs.
+
+Four properties make the difference between a guard and a decoration:
+
+- **It must DOMINATE the sweep.** A `case` sitting above the sweep is not
+  enough: the sweep has to be inside a non-catch-all arm, or after an `esac`
+  whose catch-all leaves via `exit` / `return`. A catch-all that warns and falls
+  through stops nothing, and a `case` with no catch-all at all stops nothing
+  either — bash falls straight through one that no arm matches.
+- **The accepted pattern must not match the empty string, and it must match
+  YOUR scope.** `*)`, `"")` and a pattern that is itself an expansion all admit
+  the value the guard exists to exclude. Write **the shortest literal prefix
+  your own scope actually has, plus `?*`** — `Cdkd?*` where the stack is
+  `CdkdFooExample`, `ApiGateway?*` where it is `ApiGatewayStack`,
+  `/cdkd-integ/*/` for a log-group prefix. `Cdkd?*` is NOT a house pattern —
+  measured 2026-09-06, 36 of the 213 fixtures with a literal `STACK=` do not begin
+  with `Cdkd` — and copy-pasting it into one of those refuses PERMANENTLY and
+  silently: every delete here is `|| true`, so the run leaks and still exits 0
+  with the WARN buried in an EXIT trap. Aim to exclude EMPTY, not to name the fixture exactly:
+  an exact full literal goes stale on the next rename, and a stale guard is the
+  same silent leak.
+- **The refusal must WARN on stderr, with the words `teardown sweep refused`.**
+  A silent `return` is indistinguishable from the sweep having run and found
+  nothing, which is the difference between reading a failed teardown and
+  re-running it blind. The exact phrase is a forward-looking convention rather
+  than decoration: a checker has to FIND a guard before it can judge one, and
+  issue [#2690](https://github.com/go-to-k/cdkd/issues/2690) will key on this
+  phrase. Every guard added by issue
+  [#2621](https://github.com/go-to-k/cdkd/issues/2621) uses it — but
+  `s3-versions.sh`'s `_s3v_check_prefix`, the reference parameter-scoped guard
+  described below, predates the convention and refuses with `FAIL: s3-versions:
+  refusing to sweep …` instead. A checker keyed on the phrase alone would miss
+  the reference implementation; #2690 has to decide how it finds a guard before
+  it can judge one, and that is recorded there.
+- **The accepting arm must come FIRST.** Bash takes the first matching arm, so
+  a `*)` written above it swallows every scope and the sweep never runs — with
+  every pattern still looking correct in review. Nothing checks this today;
+  read the arms in order.
+
+**A scope that arrives as a PARAMETER is guarded in the HELPER, on its own
+parameter — not at the call sites.** A caller-side guard has to be repeated at
+every call, and the one added next year is the one that forgets; a helper-side
+guard cannot be forgotten. Every instance in this tree does it that way:
+`tests/integration/s3-versions.sh`'s `s3_purge_prefix_versions` validates its
+own `$2` with `_s3v_check_prefix` before doing anything, and its callers refuse
+nothing (`s3_purge_key_versions` guards its own `$2` the same way); and
+`eventsourcemapping-race/verify.sh`'s `list_esms_for_function` refuses an empty
+`$1` before it lists.
+
+**Where the convention is not yet applied.** Nearly all the namespace-anchored
+sweeps (`--log-group-name-prefix "/aws/lambda/${STACK}"` and kin) carry no guard
+— all unreachable today, since every scope variable is a literal, and one of
+them is already inside `iam-oidc-provider`'s arm — and
+`aws s3 rm "s3://${BUCKET}/${PREFIX}/" --recursive` puts the scope in a path
+segment rather than a flag. Both are tracked in
+[#2682](https://github.com/go-to-k/cdkd/issues/2682). Write the guard anyway if
+you are adding one of those shapes: the rule above covers them, only the
+back-fill does not.
 
 ## Unit tests: prime exactly what the code path consumes
 

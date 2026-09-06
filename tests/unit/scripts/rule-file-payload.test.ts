@@ -378,7 +378,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // which binds first and by a wide margin; a first draft of this comment
   // called this row "the binding fence on it" and review measured that false.
   // Caps move DOWN with a shrinking payload, never up to fit a growing one.
-  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 52_000], // measured 46,373 on 2026-09-06
+  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 52_000], // measured 48,527 on 2026-09-06 (was 46,373 before the #2621 prefix-sweep entry)
   // hooks.md WAS this path's only matcher, and while that held the cap was
   // dominated by MAX_RULE_FILE_BYTES no matter where it sat: at 135_000 (as
   // shipped) it was 15,000 B past the per-file cap and could not fire at all;
@@ -467,7 +467,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 48_000, 56_000],                            // measured  49,793 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
+  ['tests/setup.ts', 51_000, 56_000],                            // measured  51,947 on 2026-09-06 (floor 48,000 -> 51,000 across the #2621 lane, exactly as this file's GUTTED-satellite case prescribes)
   // 46_000 -> 48_000 on 2026-09-05: the go-to-k/cdkd#2595 retro added 1,126 B of
   // mutation-probe rules to `testing.md`, and the discriminate case below went
   // red exactly as its comment predicts ("testing.md growing spends it from the
@@ -483,16 +483,50 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // that -- moving a bound to fit the diff that spent it is the ratchet
   // `.claude/skills/work-issues/references/retro.md` 10-c forbids -- but the
   // asymmetry is now the live constraint: the bound is a strict `<`, so the
-  // usable room is 242 B and an addition of 243 B reds the discriminate case
+  // usable room is 972 B and an addition of 973 B reds the discriminate case
   // below. The fix is compression there,
   // not a bigger number here. Unlike the skill corpus, this file has no
   // MEASURED record, so these figures are the only thing that goes stale
   // silently; re-measure them in any commit that touches `testing.md` -- these,
   // plus the `measured` figure and the cap on the rule-file-payload.test.ts row
-  // above and this row's own cap, and the `testing.md (46,373 B)` figure in
+  // above and this row's own cap, and the `testing.md (48,527 B)` figure in
   // the gutting case below -- all of which bound, or are, a payload that IS
   // `testing.md`. Deliberately not stated as a COUNT: this sentence said
   // "three" while enumerating more, twice.
+  // RE-MEASURED 2026-09-06 after issue #2621 added the destructive-prefix-sweep
+  // entry to `testing.md` (46,373 -> 48,527 B): payload 49,793 -> 51,947,
+  // gutting bound 47,873 -> 50,027. That crossed the old 48_000 floor TWICE as
+  // the entry was reviewed, which is why the floor moved 48_000 -> 50_000 ->
+  // 51_000 across this lane -- the move this file's own `GUTTED satellite` case
+  // prescribes, not a ratchet. Usable room is 972 B (floor - bound - 1, as
+  // everywhere else on this page), so an addition of 973 B reds it.
+  //
+  // EVERY FIGURE ABOVE IS RE-DERIVED FROM ONE MEASUREMENT of the final tree,
+  // never carried forward by hand: three consecutive review rounds shipped
+  // arithmetic that had drifted from the files. Derive the file set BY GLOB, as
+  // the row and the discriminate case both do -- naming `testing.md` and
+  // `test-stream-fence.md` is correct only until a satellite is split out of
+  // either, and that is exactly how a stale figure gets re-introduced:
+  //
+  //   node --input-type=module -e '
+  //     import { readdirSync, readFileSync, statSync } from "node:fs";
+  //     const T = "tests/setup.ts", MIN = 1500;
+  //     const re = (g) => new RegExp("^" + g.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+  //       .replace(/\*\*/g, " ").replace(/\*/g, "[^/]*").replace(/ /g, ".*") + "$");
+  //     let sum = 0; const rows = [];
+  //     for (const f of readdirSync(".claude/rules").filter((n) => n.endsWith(".md"))) {
+  //       const fm = /^---\n([\s\S]*?)\n---/.exec(readFileSync(".claude/rules/" + f, "utf8"));
+  //       const globs = fm ? [...fm[1].matchAll(/^\s*-\s*[\x27"](.+?)[\x27"]\s*$/gm)].map((m) => m[1]) : [];
+  //       if (!globs.some((g) => re(g).test(T))) continue;
+  //       const b = statSync(".claude/rules/" + f).size; sum += b; rows.push([f, b]);
+  //     }
+  //     console.log("payload", sum);
+  //     for (const [f, b] of rows) console.log("bound if", f, "gutted", sum - b + MIN);
+  //   '
+  //
+  // then floor must satisfy: bound < floor <= payload <= cap, and usable room
+  // is floor - bound - 1.
+  //
   // RE-MEASURED 2026-09-05 after the work-issues retro escalated its
   // one-sided-fence rule into `testing.md` (+256 B of rule, 140 B of it paid
   // back by compressing three neighbouring mutation bullets, 46,257 -> 46,373 B
@@ -506,7 +540,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above
-  // `testing.md` (46,373 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
+  // `testing.md` (48,169 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
   // `test-stream-fence.md` down to the smallest size the `substantive content`
   // case still allows fails HERE. 51_000, 57_000 and 62_000 were each chosen by
   // hand and each failed to add signal: the first two sat below `testing.md`
