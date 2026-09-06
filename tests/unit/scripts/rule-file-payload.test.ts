@@ -236,6 +236,12 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // convention above: this satellite is the AUTHORING half of hooks.md and
   // must never be narrowed to the handful of hooks a lane happens to edit.
   ['hooks-authoring.md', 74],
+  // Two literal paths, the gate and its suite -- EXACT, like the other
+  // two-path satellites below. Split off hooks.md when that file crossed the
+  // per-file cap a second time this session (go-to-k/cdkd#2707); the content
+  // is the gate's vocabulary, its body-CHANNEL precedence and its mutation
+  // tallies, none of which a lane needs unless it has that gate open.
+  ['hooks-deferral-criteria.md', 2], // literal list: EXACT, see below
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
@@ -393,6 +399,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // landmine shape CORPUS_BYTES_MAX's comment names) and its branch-gate bullet
   // one line past the >4000 B ratchet. Moved out verbatim, hooks.md is 115,030 B
   // and the satellite 6,454 B.
+  ['.claude/hooks/issue-deferral-criteria-gate.sh', 68_000, 120_000], // measured 85,206
   ['.claude/hooks/branch-gate.sh', 74_000, 140_000], // measured 94,795
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
@@ -938,7 +945,13 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 47; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
+const CORPUS_FILE_COUNT = 48; // + hooks-deferral-criteria.md (go-to-k/cdkd#2707): hooks.md
+                              //  crossed the per-file cap AGAIN, and the tell was a CI-only
+                              //  failure -- the branch measured 79,289 B locally and 80,671 B
+                              //  merged, because main had grown the same file meanwhile. Read a
+                              //  near-cap number against origin/main, never against the branch.
+                              //
+                              //  + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
                               //  per-file cap again -- at least the seventh split off this one
                               //  file, counting the six satellites it already points at, so do not
                               //  read the ordinals in the older entries below as a running total.
