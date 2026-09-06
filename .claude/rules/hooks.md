@@ -504,7 +504,12 @@ These one-shot hooks block known foot-guns at the source.
   puts "needs its own PR" on the next line), bounded by a blank line, a
   heading, a list item, or the next NAMED field (`Session-fit` / `Severity` /
   `Effort` / `Estimate` / `Notes` / `Dup-check`) — mutation-probed, that
-  boundary is what keeps a sibling `Notes:` line out of the reason, and the
+  boundary is what keeps a sibling `Notes:` line out of the reason. The named
+  set is a deliberate TRADE, not an oversight: it also folds every OTHER field
+  line (`Note:` singular, `Repro:`) into the reason, which the sibling ports
+  avoid by taking any `word:` with a `://` carve-out — at the cost of missing
+  a reason that wraps over a non-field colon line, which this repo pins in
+  both directions, and the
   bullet case is what stopped a legitimate reason followed by a PR-mentioning
   bullet from folding it in. A FENCED CODE BLOCK is stripped first (``` and
   `~~~`), so a body quoting the refused line to argue ABOUT the rule is not
@@ -515,8 +520,21 @@ These one-shot hooks block known foot-guns at the source.
   **It reads the body the command is about to WRITE**, porting
   `gh-body-english-gate`'s #2397 heredoc extraction: precedence is the heredoc
   body this command writes, then the file on disk (unless a TRUNCATING write
-  superseded it — an APPEND still reads it), then the whole command, then an
-  inline `--body`. Without that the one-call shape was a FAIL-OPEN whenever
+  superseded it — an APPEND still reads it), then a fallback that is the
+  SEGMENT — or the whole command when the command WRITES the body path, since
+  a `printf … > b.md` writer lives in another segment — then an inline
+  `--body` / `-b`, then `.body` out of a `gh api --input` JSON payload. The
+  last two channels and the writer-aware split are #2707: `-b` and `--input`
+  were read by nothing (rc=0 on a PR-shaped `next`), and a `$cmd`-always
+  fallback REFUSED a filing whose sibling `git commit -m` message merely
+  QUOTED such a line. An inline body is also newline-RESTORED before scanning
+  — `gate_segments` emits one line per segment, so a multi-line `--body`
+  arrived flattened and every reason terminator became unreachable, refusing a
+  legitimate `next` whose `Effort:` line quotes
+  [session-report.md](session-report.md)'s own "needing its own PR plus
+  review" wording. The restore is a LOOKUP against the raw command, keyed on
+  the extracted value collapsing back byte-for-byte, so characters never
+  change and only newline positions move. Without that the one-call shape was a FAIL-OPEN whenever
   the target path already existed: the gate judged the PREVIOUS body and
   passed (measured — stale file present rc=0, file absent rc=2). Unlike
   `issue-dup-check-gate`, an UNREADABLE `--body-file` still does not block:
@@ -534,9 +552,9 @@ These one-shot hooks block known foot-guns at the source.
   PR-shaped `next` criterion to cite. Bypass
   `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, from the env or a leading assignment
   in the command text (#2368), for an INLINE quote of PR-shaped reasoning.
-  Smoke test: `issue-deferral-criteria-gate.test.sh` (105 cases, bash 5.x +
-  Re-probed on the 105-case suite: `exit 0` 60, `exit 2` 50, `$GW` reverted
-  36, short-flag 3, prelude guard 1. Per-fence tallies (the boundary, the
+  Smoke test: `issue-deferral-criteria-gate.test.sh` (121 cases, bash 5.x +
+  Re-probed on the 121-case suite: `exit 0` 68, `exit 2` 57, `$GW` reverted
+  43, short-flag 3, prelude guard 1. Per-fence tallies (the boundary, the
   six `key_re` field names, segment scoping, the fence strip, the heredoc
   arms) live in the suite header, which is re-measured wholesale each round.
   

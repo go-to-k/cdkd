@@ -46,15 +46,15 @@
 #     `word:`, with the `Notes:` sibling-field case as the control
 #
 # MUTATION-PROBED rather than asserted. EVERY number below was re-taken on the
-# 105-case suite after the review round that added the load-guard fence, the
-# six `key_re` field-name cases and the ANSI-C cases -- not carried forward. A
-# tally says how many cases ran, not what any of them fences, so each fence was
-# broken in the real hook and the survivors counted:
+# 121-case suite after the review round that added the inline-body parity, the
+# `--input` channel, the `-b` arm and the writer-aware fallback -- not carried
+# forward. A tally says how many cases ran, not what any of them fences, so
+# each fence was broken in the real hook and the survivors counted:
 #
-#   always-`exit 0` stub                     fails 60   (nothing passes vacuously)
-#   always-`exit 2` stub                     fails 50   (nor does anything block
+#   always-`exit 0` stub                     fails 68   (nothing passes vacuously)
+#   always-`exit 2` stub                     fails 57   (nor does anything block
 #                                                        vacuously)
-#   `$GW` -> the retired class (below)       fails 36   -- the whole quoted-value
+#   `$GW` -> the retired class (below)       fails 43   -- the whole quoted-value
 #                                                        family at once: spaced
 #                                                        paths, `-f body='...'`,
 #                                                        the glued flags and the
@@ -64,14 +64,23 @@
 #                                                        point: the guard has one
 #                                                        job and nothing else
 #                                                        depends on it
-#   `key_re` -> any `word:`                  fails  2   -- the wrapped sentence
+#   `key_re` -> any `word:`                  fails  3   -- the wrapped sentence
 #                                                        whose second line carries
-#                                                        a colon, plus its control
+#                                                        a colon, its control, and
+#                                                        the `Note:`-vs-`Notes:`
+#                                                        case. The SIBLING ports
+#                                                        deliberately run the
+#                                                        any-`word:` boundary with
+#                                                        a `://` carve-out; this
+#                                                        repo keeps the named set,
+#                                                        and these three cases are
+#                                                        what that choice costs and
+#                                                        buys.
 #   `key_re` minus ONE field name            fails  1 each for session-fit,
-#                                                        severity, effort,
-#                                                        estimate and dup-check;
-#                                                        2 for notes (it also has
-#                                                        the older $SIBLING case).
+#                                                        severity, estimate and
+#                                                        dup-check; 2 for notes
+#                                                        (the older $SIBLING case);
+#                                                        3 for effort.
 #                                                        Six probes, not one: the
 #                                                        any-`word:` mutation above
 #                                                        leaves all six passing,
@@ -79,8 +88,37 @@
 #                                                        and stops the reason at
 #                                                        the same place
 #   short-flag `[=\s]*` -> `[=\s]+`        fails  3   -- the GLUED spellings
-#                                                      (`-F<path>`), fenced apart
-#                                                      from the quoting fix
+#                                                      (`-F<path>`, `-b<text>`),
+#                                                      fenced apart from the
+#                                                      quoting fix. EVERY `[=\s]*`
+#                                                      site at once: changing only
+#                                                      the `-F` one fails 1, so the
+#                                                      spelling of the probe is the
+#                                                      number
+#   `restore_inline_newlines` call removed   fails  1   -- the inline multi-line
+#                                                      `--body`, which flattens to
+#                                                      one line and folds the next
+#                                                      field into the reason
+#   writer-aware fallback -> `$seg` always   fails  1   -- an unreadable body file
+#                                                      whose `printf` writer sits
+#                                                      in ANOTHER segment
+#   writer-aware fallback -> `$cmd` always   fails  1   -- a sibling `git commit
+#                                                      -m` message QUOTING a
+#                                                      PR-shaped line. BOTH arms
+#                                                      (unresolvable-path and
+#                                                      unreadable-file) at once:
+#                                                      each case reaches only one
+#                                                      of them, so a one-arm
+#                                                      probe fails 0 and reads as
+#                                                      unfenced
+#   `input_body_text` call removed           fails  1   -- the `gh api --input`
+#                                                      JSON payload
+#   `--input` path resolution dropped        fails  1   -- the RELATIVE payload
+#   `--input` raw path spelling dropped      fails  1   -- the relative payload
+#                                                      written by a heredoc in the
+#                                                      same call
+#   `-b` arm removed                         fails  1   -- gh short `--body`
+#   `[*_]*next` -> `next`                    fails  2   -- the BOLDED value
 #
 # THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
 # rather than the intent. A review measured three faithful-looking reverts of
@@ -440,6 +478,102 @@ run "clean commit -F before a PR-shaped body still blocks" \
   "git commit -F $CLEANMSG && gh issue create --body-file $OWNPR" "$TMPROOT" 2
 run "clean commit -F after a PR-shaped body still blocks" \
   "gh issue create --body-file $OWNPR && git commit -F $CLEANMSG" "$TMPROOT" 2
+
+# --- the inline-body channel vs `--body-file` --------------------------------
+# An inline `--body` and the SAME body through `--body-file` must reach the
+# SAME verdict. They did not before `restore_inline_newlines`: `gate_segments`
+# emits one line per segment, so a multi-line inline body arrived flattened,
+# every reason terminator (`Key:` field, list item, heading, blank line) became
+# unreachable, and the whole body read as ONE reason -- folding a LATER field`s
+# text in. The MEASURED defect is a FALSE BLOCK: a legitimate `next` whose
+# `Effort:` line quotes this repo`s own "needing its own PR plus review"
+# wording. That is the first case, and it is the one the mutation probe kills.
+#
+# The last case is the OTHER direction -- a PR-shaped reason on a later line
+# must still be caught. It passed before this change too (flattening moved the
+# text, it did not hide it), so it fences the FIX against over-correcting
+# rather than fencing the defect.
+INLINE_LIMIT="gh issue create --title t --body 'Session-fit: next (not this session) -- blocked on an AWS quota increase
+Effort: large (L) -- a behavior change needing its own PR plus review'"
+run "an inline multi-line --body ends the reason at the next field" \
+  "$INLINE_LIMIT" "$TMPROOT" 0
+printf 'Session-fit: next (not this session) -- blocked on an AWS quota increase\nEffort: large (L) -- a behavior change needing its own PR plus review\n' > "$TMPROOT/inline-limit.md"
+run "...and the SAME body via --body-file reaches the same verdict" \
+  "gh issue create --title t --body-file $TMPROOT/inline-limit.md" "$TMPROOT" 0
+run "an inline multi-line --body still catches a PR-shaped reason on a later line" \
+  "gh issue create --title t --body 'Dup-check: searched, none
+Session-fit: next (not this session) -- it needs its own PR
+Severity: low -- x'" "$TMPROOT" 2
+
+# The UNRESOLVABLE-BODY fallback is SEGMENT-scoped, like every other scan here.
+# It used to fall back to the whole command, so a `git commit -m` message that
+# QUOTES a PR-shaped line -- what the commit introducing this gate does -- was
+# read as the issue body and refused.
+run "an unresolvable body-file does not read the sibling commit message" \
+  "git commit -m 'gate: refuse a body reading
+Session-fit: next (not this session) -- it needs its own PR' && gh issue create --title t --body-file \"\$BODY\"" \
+  "$TMPROOT" 0
+
+# `gh api ... --input <file>` is a body CHANNEL of its own: the REST mint the
+# gate already arms on carries the whole payload as JSON on disk, so no
+# `--body-file` / `-F` / `-f body=` arm reads it. It filed a PR-shaped `next`
+# at rc=0 before `input_body_text`. Both directions, plus the "cannot read is
+# not evidence" rule that governs every other file arm here.
+printf '{"title":"t","body":"Session-fit: next (not this session) -- it needs its own PR"}\n' > "$TMPROOT/input-bad.json"
+printf '{"title":"t","body":"Session-fit: next (not this session) -- blocked on an AWS quota increase"}\n' > "$TMPROOT/input-ok.json"
+run "gh api --input: PR-shaped body in the JSON payload" \
+  "gh api repos/o/r/issues -f title=t --input $TMPROOT/input-bad.json" "$TMPROOT" 2
+run "gh api --input: legitimate body in the JSON payload" \
+  "gh api repos/o/r/issues -f title=t --input $TMPROOT/input-ok.json" "$TMPROOT" 0
+run "gh api --input: an unreadable payload is not evidence" \
+  "gh api repos/o/r/issues -f title=t --input $TMPROOT/input-missing.json" "$TMPROOT" 0
+
+# `-b` is gh`s documented short `--body`; it was extracted by nothing, so the
+# same PR-shaped reason gave rc=0 through it and rc=2 through `--body`.
+run "-b (gh short --body) carries a PR-shaped reason" \
+  "gh issue create --title t -b 'Session-fit: next (not this session) -- it needs its own PR'" \
+  "$TMPROOT" 2
+run "-b (gh short --body) carries a legitimate reason" \
+  "gh issue create --title t -b 'Session-fit: next (not this session) -- blocked on an AWS quota increase'" \
+  "$TMPROOT" 0
+
+# Cases for the fixes an earlier round shipped UNFENCED -- each verified to go
+# red when its own line is reverted, and green otherwise.
+run "-b (gh short --body) carries a PR-shaped reason" \
+  "gh issue create --title t -b 'Session-fit: next (not this session) -- it needs its own PR'" \
+  "$TMPROOT" 2
+run "-b (gh short --body) carries a legitimate reason" \
+  "gh issue create --title t -b 'Session-fit: next (not this session) -- blocked on an AWS quota increase'" \
+  "$TMPROOT" 0
+run "a BOLDED next value is read like a bolded key" \
+  "gh issue create --title t --body '**Session-fit:** **next** -- it needs its own PR'" \
+  "$TMPROOT" 2
+# This repo`s boundary is the NAMED field set, and it is pinned in BOTH
+# directions further down (a reason wrapping over `entirely:` must still
+# block). A URL scheme is not a named field, so it needs no carve-out here --
+# the sibling ports, whose boundary is any `Key:`, carry one.
+run "a wrapped reason is not ended by a URL scheme" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- see
+https://example.com/x it needs its own PR'" "$TMPROOT" 2
+# The unresolvable / unreadable body fallback reads the WRITER, which lives in
+# another segment, but not an unrelated sibling command`s message.
+run "an unreadable body-file whose writer is in the command is still judged" \
+  "printf 'Session-fit: next (not this session) -- it needs its own PR\\n' > $TMPROOT/nodir/b.md && gh issue create --title t --body-file $TMPROOT/nodir/b.md" \
+  "$TMPROOT" 2
+# `--input` goes through the same path resolution as `--body-file`: a relative
+# path is joined to the resolved cwd, and a payload written by a heredoc in the
+# SAME command is read out of it.
+printf '{"title":"t","body":"Session-fit: next (not this session) -- it needs its own PR"}\n' > "$TMPROOT/rel-input.json"
+run "gh api --input: a relative payload path resolves against the cwd" \
+  "gh api repos/o/r/issues -f title=t --input rel-input.json" "$TMPROOT" 2
+# RELATIVE and heredoc-written at once: the heredoc lookup is handed BOTH the
+# raw spelling and the resolved path, and only the raw one matches a command
+# that writes `hd-input.json`. Dropping either spelling makes this case red.
+run "gh api --input: a relative payload written by a heredoc in the same call" \
+  "cat > hd-input.json <<'JSON'
+{\"title\":\"t\",\"body\":\"Session-fit: next (not this session) -- it needs its own PR\"}
+JSON
+gh api repos/o/r/issues -f title=t --input hd-input.json" "$TMPROOT" 2
 
 # --- repo opt-in scope (issue #1259) ---------------------------------------
 cp "$OWNPR" "$NOOPTIN/own-pr.md"

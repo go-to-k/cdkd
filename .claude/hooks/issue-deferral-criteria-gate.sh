@@ -583,6 +583,89 @@ heredoc_bodies_either() { # <raw spelling> <resolved path>
 # falls back), and reconciling the three would mean picking one. Stated rather
 # than left to be discovered: if you fix a path-extraction bug in any of them,
 # check the other two.
+# `gh api ... --input <file>`: the REST mint`s body lives in a JSON payload on
+# disk, which is a body CHANNEL none of the `--body-file` / `-F` / `-f body=`
+# arms above recognises. Extract `.body` from it.
+#
+# The path goes through the SAME resolution as the `--body-file` arms, and for
+# the same reasons: a relative path is joined to the resolved cwd, a literal
+# `~/` is expanded, and a payload the command WRITES in this very call is read
+# out of its heredoc rather than off disk (writing the payload with a heredoc
+# in the same command is this repo`s own documented filing recipe). Resolving
+# only absolute, already-existing paths closed the narrowest third of the hole:
+# measured, `--input rel.json` and a `cat > x.json <<JSON` payload both filed a
+# PR-shaped `next` at rc=0 while the `--body-file` twin of each gave rc=2.
+#
+# Failure at any step (no `--input`, unreadable path, not JSON, no `body` key)
+# prints nothing, which the caller treats as "channel not recognised" and
+# passes -- this gate demands nothing be PRESENT, so "cannot read" is never
+# evidence of a violation.
+input_body_text() { # <segment>
+  local seg="$1" f_raw f hd
+  f_raw=$(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    if (/(?:^|\s)--input[=\s]+($GW)/) { print gate_unq($1), "\n"; }
+  ' 2>/dev/null)
+  [ -n "$f_raw" ] || return 0
+  case "$f_raw" in *'$'*|*'`'*) return 0 ;; esac
+  # shellcheck disable=SC2088
+  f="$f_raw"
+  case "$f" in
+    /*) ;;
+    "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;;
+    *) f="$target_dir/$f" ;;
+  esac
+  if [ ! -r "$f" ] || cmd_writes_either "$f_raw" "$f"; then
+    hd=$(heredoc_bodies_either "$f_raw" "$f") || hd=""
+    if [ -n "$hd" ]; then
+      printf '%s' "$hd" | jq -r '.body // empty' 2>/dev/null || true
+      return 0
+    fi
+  fi
+  [ -r "$f" ] || return 0
+  jq -r '.body // empty' "$f" 2>/dev/null || true
+}
+
+# Restore the line structure `gate_segments` flattened, for the ONE value the
+# caller already extracted from this segment.
+#
+# It is a LOOKUP, not a re-extraction: a raw value is used only when collapsing
+# its newlines to spaces reproduces the extracted line byte for byte, so the
+# characters never change and only newline POSITIONS move -- which loosens the
+# reason boundary, never tightens it.
+#
+# KNOWN BOUND, measured rather than claimed: the lookup table is built from the
+# whole raw command, so a value in ANOTHER segment whose collapsed form is
+# byte-identical to this one wins the lookup. Two `gh issue create` calls in
+# one chain can be crafted that way. It is fail-OPEN only (a restored value has
+# MORE terminators than the flat one, so the reason gets shorter, never
+# longer), and scoping it properly needs a raw-slice-per-segment API the
+# segmenter does not expose -- tracked separately rather than hidden here.
+restore_inline_newlines() { # <extracted body values, one per line> <raw command>
+  local values="$1" raw="$2" restored
+  restored=$(printf '%s' "$raw" | GATE_COLLAPSED="$values" perl -0777 -ne "$GATE_PERL_WORD"'
+    my %raw;
+    my $keep = sub {
+      my ($v) = @_;
+      return unless $v =~ /\n/;
+      (my $c = $v) =~ s/\n/ /g;
+      $raw{$c} = $v unless exists $raw{$c};
+    };
+    while (/(?:^|\s)(?:--body|-b)[=\s]+($GW)/g) { $keep->(gate_unq($1)); }
+    while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
+      next unless $v =~ s/^body=//;
+      next if $v =~ /^\@/;
+      $keep->($v);
+    }
+    for my $l (split /\n/, $ENV{GATE_COLLAPSED}, -1) {
+      print exists $raw{$l} ? $raw{$l} : $l, "\n";
+    }
+  ' 2>/dev/null)
+  # Fail SAFE, not open: if perl produced nothing the caller keeps the
+  # flattened text it already had, which is the pre-fix behaviour.
+  if [ -n "$restored" ]; then printf '%s' "$restored"; else printf '%s' "$values"; fi
+}
+
 segment_body_text() { # <segment>
   local seg="$1" f f_raw out="" hd have_hd
   while IFS= read -r f_raw; do
@@ -591,9 +674,25 @@ segment_body_text() { # <segment>
     # TEXT. Treat it like an unreadable path and fall back to the whole command
     # rather than refusing: unlike dup-check, this gate demands nothing be
     # PRESENT, so "cannot read" is not evidence of a violation.
+    # `$seg` unless the command WRITES this path, in which case `$cmd`. Both
+    # halves are measured, and they pull opposite ways:
+    #
+    #   `$cmd` always   a `git commit -m` message QUOTING a PR-shaped line --
+    #                   routine here; the commit introducing this gate does it
+    #                   -- was read as the issue body and REFUSED (rc=2).
+    #   `$seg` always   `printf <PR-shaped> > b.md && gh issue create
+    #                   --body-file b.md` with `b.md` unreadable lost the
+    #                   writer, which lives in ANOTHER segment (rc=2 -> 0).
+    #
+    # The writer is exactly what tells them apart, and `cmd_writes_either`
+    # already answers it against the RAW command text -- so it answers for an
+    # unexpanded `$VAR` path too, which is the arm below.
     case "$f_raw" in
-      *'$'*|*'`'*) out="$out
-$cmd"; continue ;;
+      *'$'*|*'`'*)
+        if cmd_writes_either "$f_raw" "$f_raw"; then out="$out
+$cmd"; else out="$out
+$seg"; fi
+        continue ;;
     esac
     # BOTH spellings are kept. `f` is the path to READ; `f_raw` is the path as
     # the command SPELLS it, and the write-detection above matches against the
@@ -628,8 +727,16 @@ $hd"
       out="$out
 $(cat "$f" 2>/dev/null || true)"
     elif [ "$have_hd" != "1" ]; then
-      out="$out
+      # Same split as the unresolvable-path arm above: the writer of an
+      # unreadable body file lives in another segment, everything else does
+      # not.
+      if cmd_writes_either "$f_raw" "$f"; then
+        out="$out
 $cmd"
+      else
+        out="$out
+$seg"
+      fi
     fi
   # `body=@` is matched FIRST so an `-F body=@path` is not also read as a bare
   # `-F path`. The bare `-F <path>` arm is not optional: `-F` is gh's short
@@ -674,6 +781,12 @@ $cmd"
   # value.
   printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
     while (/(?:^|\s)--body[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    # `-b` is gh`s documented short `--body`, and this scan is already scoped
+    # to the `gh issue create` SEGMENT, so it cannot collide with a `-b`
+    # belonging to another command. Without it the gate was INERT on that
+    # spelling: measured, the same PR-shaped reason gave rc=0 through `-b` and
+    # rc=2 through `--body`.
+    while (/(?:^|\s)-b[=\s]*($GW)/g) { print gate_unq($1), "\n"; }
     while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]*($GW)/g) {
       my $v = gate_unq($1);
       next unless $v =~ s/^body=//;
@@ -708,7 +821,21 @@ while IFS= read -r seg; do
     fi
   fi
   body_text=$(segment_body_text "$seg")
+  # An extraction that comes back EMPTY is not evidence of a clean body -- it
+  # means no arm recognised the body CHANNEL. `--input <file>` is one: the REST
+  # mint (`gh api repos/o/r/issues`) that `GATE_RE_API_MINT` already arms on
+  # carries its whole payload as JSON on disk, and no arm above reads it.
+  # Measured: `gh api repos/o/r/issues -f title=t --input p.json` with a
+  # PR-shaped `Session-fit: next` in `p.json` filed at rc=0.
+  #
+  # Read `.body` out of it, with the same "cannot read is not evidence" rule as
+  # the `--body-file` arms: an unreadable or non-JSON file leaves `body_text`
+  # empty and the segment passes.
+  if [ -z "$body_text" ]; then
+    body_text=$(input_body_text "$seg")
+  fi
   [ -n "$body_text" ] || continue
+  body_text=$(restore_inline_newlines "$body_text" "$cmd")
   if scan_text "$body_text"; then
     offending_seg="$seg"
     break
