@@ -42,6 +42,13 @@ run 2 'no -f, bare process name' 'pkill node'
 run 2 'killall' 'killall node'
 run 2 'killall with a signal' 'killall -9 node'
 run 2 'signal flag before the pattern' 'pkill -9 -f vitest'
+# An ENGINE-PARITY case, not a spelling case. `gate_strip_prefix` strips a
+# `<pattern>)` case-arm label, and it used to do so with an inline bracket
+# expression whose escapes landed INSIDE the brackets. Measured: bash 5.x
+# stripped the label here and 3.2 did not, so this exact payload was rc=2
+# under 5.x and rc=0 -- fail-open -- under the version CI runs. The suite
+# honours HOOK_BASH, so this case is the one that would have caught it.
+run 2 'case-arm label written with an escaped paren' 'x\) pkill -f node'
 run 2 'bare verb, no arguments at all' 'pkill'
 run 2 'long signal flag' 'pkill --signal TERM -f vitest'
 run 2 'user selector' 'pkill -u "$USER" -f vitest'

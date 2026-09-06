@@ -1944,22 +1944,91 @@ else
   fail_log="${fail_log}FAIL latency: gate_segments_marked took ${mark_lat_secs}s on 2000 segments -- this measured 11s before the bound, past the 10s PreToolUse timeout\n"
 fi
 
-# THE FLOOR IS THE MINIMUM ACROSS BOTH INVOCATION CONTEXTS, which is why it is
-# not the number a standalone run prints. Run directly from this directory the
-# suite reports 605; run through `run-tests.sh` from the repo root it reports
-# 556, because a handful of cases resolve fixtures relative to this file's own
-# directory and skip when the cwd is elsewhere. CI evaluates it through
-# `run-tests.sh`, so a floor calibrated on the standalone count fails there for
-# a reason that has nothing to do with coverage -- measured, 605 reddened the
-# suite under both bash builds while every case still passed, and so did 557.
+# --- gate_strip_prefix: ENGINE PARITY, not spelling -------------------------
 #
-# 557 came from this file's own failure message, which prints one MORE than the
-# number it compared (it increments `fail` first, then interpolates
-# `pass + fail`). Trusting the message rather than the predicate cost a whole
-# suite run; the message is corrected below. Closing the 49-case gap means
-# making those cases cwd-independent -- until then the floor's job is to catch a
-# COLLAPSE, and it does.
-CASE_FLOOR=556
+# These are the only DIRECT cases this function has, and they exist because it
+# had none when a defect in it reached CI. `gate_strip_prefix` decides the
+# command word for every gate that resolves one, and the three patterns it uses
+# to strip leaders were written with escapes inside bracket expressions. A
+# backslash there is an ordinary MEMBER under POSIX, and the two bash engines
+# read the result differently, so the SAME command produced different verdicts
+# under 3.2 and 5.x -- silently, and always in the fail-open direction.
+#
+# Why HERE rather than in a gate's suite: this file sources the library
+# IN-PROCESS, so `run-tests.sh`'s `/bin/bash` pass runs the code under 3.2 with
+# no `HOOK_BASH` plumbing at all. That makes these the cheapest possible fence
+# for the class, and the one a future change to this function will trip first.
+#
+# Each case pins the resolved verb, which is what a gate actually consumes.
+# Reverting any of the three patterns to its inline escaped form reddens this
+# block under one engine and leaves it green under the other -- which is the
+# signature of the bug, and the reason a single-engine run cannot be trusted
+# here.
+strip_is() { # name, expected result, input
+  local name="$1" want="$2" in_="$3" got
+  got="$(gate_strip_prefix "$in_")"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want [%s], got [%s])\n' "$name" "$want" "$got"
+    fail_log+="FAIL $name\n  input: $in_\n  want:  $want\n  got:   $got\n"
+  fi
+}
+
+# A command word bash does NOT read as `cd`: `\\cd` is `\cd` after one round of
+# quote removal, which is not the builtin. Measured under both engines: the
+# shell stays put. With the escaped bracket class, 3.2 stripped the backslash
+# and handed the gates a `cd` that never ran.
+strip_is 'a doubled backslash is not stripped off the verb' '\\cd /tmp' '\\cd /tmp'
+strip_is 'a doubled backslash mid-word survives too' 'c\\d /tmp' 'c\\d /tmp'
+# A single backslash IS quote removal, and bash does run this as cd.
+strip_is 'a single backslash before the verb is bash quoting' '\cd /tmp' '\cd /tmp'
+
+# Case-arm labels. The escaped form of this class made 5.x strip the label and
+# 3.2 leave it, so the verb behind it was invisible to every gate under 3.2.
+strip_is 'a plain case-arm label is stripped' 'pkill -f node' 'x) pkill -f node'
+strip_is 'a label containing an escaped paren is stripped' 'pkill -f node' 'x\) pkill -f node'
+strip_is 'a label that is only an escaped glob char is stripped' 'git commit -m z' '\?) git commit -m z'
+strip_is 'a case opener plus its first arm is stripped' 'pkill -f node' 'case y in x) pkill -f node'
+
+# Grouping punctuation. Same class, the two loops at the end of the function.
+strip_is 'a leading subshell paren is stripped' 'cd /tmp' '( cd /tmp'
+strip_is 'a leading brace group is stripped' 'cd /tmp' '{ cd /tmp'
+strip_is 'nested openers are stripped to stability' 'cd /tmp' '( { ( cd /tmp'
+strip_is 'a trailing closer is stripped' 'cd /tmp' 'cd /tmp )'
+strip_is 'a trailing brace is stripped' 'cd /tmp' 'cd /tmp }'
+# The negative controls: nothing here is a leader, so nothing may be removed.
+# Without these the block would pass just as well if the function returned its
+# input unchanged, which is exactly one of the two failure directions.
+strip_is 'an ordinary command is returned verbatim' 'cd /tmp' 'cd /tmp'
+strip_is 'a paren inside the argument is not a leader' 'echo a(b' 'echo a(b'
+strip_is 'a bare closer with no label is not an arm' ') cmd' ') cmd'
+# The CLOSE pattern's own discriminator. A trailing backslash is a line
+# continuation, not grouping punctuation -- but the escaped form `[\)\}]`
+# has a BACKSLASH as a set member, so it strips one. Both engines agree on
+# that, which is why this case is here and not in the parity block above:
+# without it, reverting the close pattern alone leaves this file green.
+strip_is 'a trailing backslash is not grouping punctuation' 'echo hi\\' 'echo hi\\'
+
+# THE FLOOR IS A COLLAPSE DETECTOR, NOT THE CASE COUNT -- and it is set BELOW
+# what any context currently reports, on purpose.
+#
+# It used to be calibrated to the number a particular invocation printed, and
+# that was measured wrong twice: 605 (the standalone count) reddened CI, and so
+# did 557, which came from this file's own failure message printing one MORE
+# than the number it compared. Both failures were about the floor, not about
+# coverage. The message is corrected below.
+#
+# Re-measured 2026-09-07 across all three contexts -- standalone from this
+# directory, from the repo root, and the exact `HOOK_BASH=<shell> <shell>
+# <suite>` form `run-tests.sh` uses -- under bash 5.3 and 3.2: every one
+# reports the SAME count. The historical 605/556 split (cases resolving
+# fixtures relative to this file's directory and skipping elsewhere) does not
+# reproduce. The floor is nevertheless left well under that number rather than
+# pinned to it, because a floor that tracks the count turns every added case
+# into an edit here and every environment difference into a red suite for a
+# reason that has nothing to do with what this file tests.
+CASE_FLOOR=572
 __ran=$((pass + fail))
 if [ "$__ran" -lt "$CASE_FLOOR" ]; then
   # THE COUNT IS CAPTURED BEFORE `fail` IS INCREMENTED. Interpolating
