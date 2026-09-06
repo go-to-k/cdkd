@@ -298,6 +298,64 @@ describe('validateRecreateTargets (#615)', () => {
       expect(unprobed?.statefulReason).toBe(null);
     });
 
+    it('LogGroup at SYNC time reads BOTH recorded bags, and coerces the value (#2521)', () => {
+      // The pre-flight's own wiring of the guard's two inputs, which the case
+      // above cannot see: it hands `recordedResource.properties` alone, so an
+      // out-of-band retention -- one set by the console or by
+      // `aws logs put-retention-policy`, hence present only in what the last
+      // deploy READ BACK -- never produced the cheap `has-retention` positive
+      // and the group was probed on every pre-flight instead.
+      //
+      // `StringRetLogs` is the coercion half in the same table: a
+      // CloudFormation-legal `'30'`, which the old `typeof === 'number'` test
+      // answered `null` for, so an EMPTY log group with a string retention was
+      // allowed through where a numeric one was refused.
+      //
+      // `NeitherLogs` is the negative control: without it a guard that
+      // answered `has-retention` for every log group would satisfy the two
+      // positives, and this validator's whole point is that the condition is
+      // still conditional.
+      const template: CloudFormationTemplate = {
+        Resources: {
+          ObservedRetLogs: { Type: 'AWS::Logs::LogGroup', Properties: {} },
+          StringRetLogs: { Type: 'AWS::Logs::LogGroup', Properties: {} },
+          NeitherLogs: { Type: 'AWS::Logs::LogGroup', Properties: {} },
+        },
+      };
+      const state = st('S', {
+        ObservedRetLogs: res('AWS::Logs::LogGroup', {
+          properties: { LogGroupName: '/x' },
+          observedProperties: { LogGroupName: '/x', RetentionInDays: 90 },
+        }),
+        StringRetLogs: res('AWS::Logs::LogGroup', {
+          properties: { LogGroupName: '/y', RetentionInDays: '30' },
+          // The provider's never-expire placeholder in the observed bag, so
+          // this row ALSO pins that a zero observed retention cannot veto the
+          // positive the recorded bag proves.
+          observedProperties: { LogGroupName: '/y', RetentionInDays: 0 },
+        }),
+        NeitherLogs: res('AWS::Logs::LogGroup', {
+          properties: { LogGroupName: '/z' },
+          observedProperties: { LogGroupName: '/z', RetentionInDays: 0 },
+        }),
+      });
+      const v = validateRecreateTargets({
+        template,
+        state,
+        recreateViaCcApi: ['ObservedRetLogs', 'StringRetLogs', 'NeitherLogs'],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+      });
+      expect(v.blockedStatefulTargets.map((b) => b.logicalId).sort()).toEqual([
+        'ObservedRetLogs',
+        'StringRetLogs',
+      ]);
+      for (const blocked of v.blockedStatefulTargets) {
+        expect(blocked.statefulReason, blocked.logicalId).toBe('has-retention');
+      }
+      expect(v.targets.find((x) => x.logicalId === 'NeitherLogs')?.statefulReason).toBe(null);
+    });
+
     it('S3 bucket is deferred to the async probe (sync target.statefulReason is null)', () => {
       // The sync map cannot judge S3 emptiness — it defers to the
       // deploy engine's live ListObjectsV2 probe. The sync result is

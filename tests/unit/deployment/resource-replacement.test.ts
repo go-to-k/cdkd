@@ -676,7 +676,16 @@ describe('DeployEngine - Resource Replacement', () => {
     // swap to `currentResource.properties` — a behaviourally identical spelling
     // of "recorded" — which is an over-strict false RED rather than a real
     // discrimination. The twin makes the same point explicitly.
-    const makeLogGroupState = (properties: Record<string, unknown>): StackState => ({
+    //
+    // `observedProperties` is a THIRD bag and the paragraph above does not
+    // constrain it (issue #2521): it lives ONLY on the state record, so the
+    // diff has no counterpart it could be made to diverge from. It is what
+    // AWS reported at the last deploy, which is where an out-of-band
+    // `aws logs put-retention-policy` lands and nowhere else.
+    const makeLogGroupState = (
+      properties: Record<string, unknown>,
+      observedProperties?: Record<string, unknown>
+    ): StackState => ({
       version: 1,
       stackName,
       resources: {
@@ -684,6 +693,7 @@ describe('DeployEngine - Resource Replacement', () => {
           physicalId: 'old-log-group',
           resourceType: 'AWS::Logs::LogGroup',
           properties,
+          ...(observedProperties !== undefined && { observedProperties }),
         },
       },
       outputs: {},
@@ -732,10 +742,11 @@ describe('DeployEngine - Resource Replacement', () => {
      */
     const seedCase = (
       recorded: Record<string, unknown>,
-      desired: Record<string, unknown>
+      desired: Record<string, unknown>,
+      observed?: Record<string, unknown>
     ): void => {
       mockStateBackend.getState.mockResolvedValue({
-        state: makeLogGroupState(recorded),
+        state: makeLogGroupState(recorded, observed),
         etag: 'etag-123',
       });
       mockDiffCalculator.calculateDiff.mockResolvedValue(makeChanges(recorded, desired));
@@ -816,6 +827,77 @@ describe('DeployEngine - Resource Replacement', () => {
       // The load-bearing half: nothing destructive ran.
       expect(mockProvider.create).not.toHaveBeenCalled();
       expect(mockProvider.delete).not.toHaveBeenCalled();
+    });
+
+    it('reads the OBSERVED bag when only it carries the retention (#2521)', async () => {
+      // The property-driven guard's OWN wiring of the third argument, and it
+      // needed its own case: the twin in `deploy-engine-replace.test.ts`
+      // covers the update-failure fallback's call site, and dropping the
+      // observed bag HERE left that suite green (measured by mutation probe --
+      // the two guards are separate call sites in the same method).
+      //
+      // The retention was set out of band, so it is in what the last deploy
+      // read back and in neither template bag. Reading `currentProps` alone
+      // still refuses this rename -- the deferral is stateful mid-deploy --
+      // so the REASON is the discriminator, exactly as in the two cases above.
+      seedCase(
+        { LogGroupName: 'old-log-group' },
+        { LogGroupName: 'new-log-group' },
+        { LogGroupName: 'old-log-group', RetentionInDays: 30 }
+      );
+
+      const engine = new DeployEngine(
+        mockStateBackend as any,
+        mockLockManager as any,
+        mockDagBuilder as any,
+        mockDiffCalculator as any,
+        mockProviderRegistry as any,
+        {}, // NO forceStatefulRecreation -> the guard must fire
+        'us-east-1'
+      );
+
+      const deployError = await engine.deploy(stackName, logGroupTemplate).then(
+        () => null,
+        (e) => e as Error
+      );
+      expect(deployError).not.toBeNull();
+      expect(codesInCauseChain(deployError!)).toContain('STATEFUL_REPLACE_BLOCKED');
+      const rendered = deployError!.message + String(deployError!.cause);
+      expect(rendered).toMatch(/log group retains data/);
+      expect(rendered).not.toMatch(/log group is not provably empty/);
+      expect(mockProvider.create).not.toHaveBeenCalled();
+      expect(mockProvider.delete).not.toHaveBeenCalled();
+    });
+
+    it('a ZERO observed retention does not veto a positive RECORDED one (#2521)', async () => {
+      // `readCurrentState` writes `RetentionInDays: 0` for a group with no
+      // retention policy, so the observed bag almost always CARRIES the key.
+      // Reading it as authoritative on presence would drop the `has-retention`
+      // verdict the recorded bag proves -- the case above's inverse, and the
+      // reason the guard takes a positive from EITHER bag rather than letting
+      // the observed one win outright.
+      seedCase(
+        { LogGroupName: 'old-log-group', RetentionInDays: 30 },
+        { LogGroupName: 'new-log-group' },
+        { LogGroupName: 'old-log-group', RetentionInDays: 0 }
+      );
+
+      const engine = new DeployEngine(
+        mockStateBackend as any,
+        mockLockManager as any,
+        mockDagBuilder as any,
+        mockDiffCalculator as any,
+        mockProviderRegistry as any,
+        {},
+        'us-east-1'
+      );
+
+      const deployError = await engine.deploy(stackName, logGroupTemplate).then(
+        () => null,
+        (e) => e as Error
+      );
+      expect(deployError).not.toBeNull();
+      expect(deployError!.message + String(deployError!.cause)).toMatch(/log group retains data/);
     });
 
     it('replaces the deferred log group under --force-stateful-recreation', async () => {

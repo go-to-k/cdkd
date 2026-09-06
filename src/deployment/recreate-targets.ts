@@ -324,7 +324,19 @@ export function validateRecreateTargets(input: {
       logicalId,
       resourceType,
       physicalId: recordedResource.physicalId,
-      statefulReason: isStatefulRecreateTargetSync(resourceType, recordedResource.properties),
+      // BOTH bags (issue [#2521]): a retention set out of band -- the console,
+      // `aws logs put-retention-policy` -- lands in `observedProperties` and in
+      // no other bag, and an imported record whose template never declared the
+      // property carries it there alone too. Passing `properties` only made the
+      // cheap `has-retention` positive unreachable for both, so every such log
+      // group paid a `DescribeLogStreams` round-trip that could not change the
+      // answer -- and an EMPTY one was allowed through where an identical group
+      // with a numerically recorded retention was refused.
+      statefulReason: isStatefulRecreateTargetSync(
+        resourceType,
+        recordedResource.properties,
+        recordedResource.observedProperties
+      ),
       direction,
     };
     targets.push(target);

@@ -303,9 +303,10 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
   it('treats the boolean-as-string shape `"true"` as protected', async () => {
     // A template can carry `DeletionProtectionEnabled: "true"`; a bare
     // `=== true` test would fall through to the dead-ending advice. This is the
-    // defect class issue #2521 still has open against the sibling retention
-    // guard's `typeof === 'number'` test, so it is pinned here rather than
-    // repeated.
+    // defect class issue #2521 closed one property over, replacing the
+    // sibling retention guard's `typeof === 'number'` test with a coercion —
+    // `DeletionProtectionEnabled` was left on the old footing, so it is pinned
+    // here rather than repeated.
     const message = await refuse(
       { LogGroupClass: 'INFREQUENT_ACCESS', DeletionProtectionEnabled: 'true' },
       { LogGroupClass: 'STANDARD', DeletionProtectionEnabled: 'true' }

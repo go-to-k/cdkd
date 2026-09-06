@@ -342,6 +342,7 @@
     {
       "flag": "--no-capture-observed-state",
       "integs": [
+        "loggroup-never-expire-guard",
         "secrets-array-nested"
       ]
     },
@@ -1653,6 +1654,7 @@
     "--resource-ids",
     "--resource-type",
     "--rest-api-id",
+    "--retention-in-days",
     "--revert",
     "--revert-failed",
     "--rm",

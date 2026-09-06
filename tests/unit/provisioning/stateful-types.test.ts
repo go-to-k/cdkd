@@ -189,9 +189,9 @@ describe('STATEFUL_TYPES (#615)', () => {
         'AWS::ElastiCache::CacheCluster',
         'AWS::ElastiCache::ReplicationGroup',
       ]) {
-        expect(isStatefulRecreateTargetSync(resourceType, {})).toBe('always');
-        expect(isStatefulRecreateTargetSync(resourceType, undefined)).toBe('always');
-        expect(isStatefulRecreateTargetForReplace(resourceType, {})).toBe('always');
+        expect(isStatefulRecreateTargetSync(resourceType, {}, undefined)).toBe('always');
+        expect(isStatefulRecreateTargetSync(resourceType, undefined, undefined)).toBe('always');
+        expect(isStatefulRecreateTargetForReplace(resourceType, {}, undefined)).toBe('always');
       }
     });
 
@@ -237,10 +237,10 @@ describe('STATEFUL_TYPES (#615)', () => {
     // `always` from it, a conditional one defers (S3) or reads a property that
     // is absent (LogGroup).
     const codeAlways = [...STATEFUL_TYPES]
-      .filter((t) => isStatefulRecreateTargetSync(t, {}) === 'always')
+      .filter((t) => isStatefulRecreateTargetSync(t, {}, undefined) === 'always')
       .sort();
     const codeConditional = [...STATEFUL_TYPES]
-      .filter((t) => isStatefulRecreateTargetSync(t, {}) !== 'always')
+      .filter((t) => isStatefulRecreateTargetSync(t, {}, undefined) !== 'always')
       .sort();
     const alwaysRows = alwaysTable.rows;
     const conditionalRows = conditionalTable.rows;
@@ -446,11 +446,11 @@ describe('STATEFUL_TYPES (#615)', () => {
         expect(STATEFUL_TYPES.has(resourceType)).toBe(true);
         // Every bag shape, because the whole point of `always` is that the
         // recorded properties cannot change the verdict.
-        expect(isStatefulRecreateTargetSync(resourceType, {})).toBe('always');
-        expect(isStatefulRecreateTargetSync(resourceType, undefined)).toBe('always');
-        expect(isStatefulRecreateTargetSync(resourceType, { RetentionInDays: 0 })).toBe('always');
-        expect(isStatefulRecreateTargetForReplace(resourceType, {})).toBe('always');
-        expect(isStatefulRecreateTargetForReplace(resourceType, undefined)).toBe('always');
+        expect(isStatefulRecreateTargetSync(resourceType, {}, undefined)).toBe('always');
+        expect(isStatefulRecreateTargetSync(resourceType, undefined, undefined)).toBe('always');
+        expect(isStatefulRecreateTargetSync(resourceType, { RetentionInDays: 0 }, undefined)).toBe('always');
+        expect(isStatefulRecreateTargetForReplace(resourceType, {}, undefined)).toBe('always');
+        expect(isStatefulRecreateTargetForReplace(resourceType, undefined, undefined)).toBe('always');
       });
     }
 
@@ -470,8 +470,8 @@ describe('STATEFUL_TYPES (#615)', () => {
       const kinds = new Set(
         [...STATEFUL_TYPES].flatMap((t) =>
           bags.flatMap((bag) => [
-            isStatefulRecreateTargetSync(t, bag),
-            isStatefulRecreateTargetForReplace(t, bag),
+            isStatefulRecreateTargetSync(t, bag, undefined),
+            isStatefulRecreateTargetForReplace(t, bag, undefined),
           ])
         )
       );
@@ -489,33 +489,33 @@ describe('STATEFUL_TYPES (#615)', () => {
       // `AWS::KMS::ReplicaKey`. Pinned so "add the KMS types" never becomes
       // "add all of them" by momentum.
       expect(STATEFUL_TYPES.has('AWS::KMS::Alias')).toBe(false);
-      expect(isStatefulRecreateTargetForReplace('AWS::KMS::Alias', {})).toBe(null);
+      expect(isStatefulRecreateTargetForReplace('AWS::KMS::Alias', {}, undefined)).toBe(null);
     });
   });
 });
 
 describe('isStatefulRecreateTargetSync (#615)', () => {
   it('returns "always" for unconditional stateful types regardless of properties', () => {
-    expect(isStatefulRecreateTargetSync('AWS::DynamoDB::Table', {})).toBe('always');
-    expect(isStatefulRecreateTargetSync('AWS::RDS::DBInstance', undefined)).toBe('always');
-    expect(isStatefulRecreateTargetSync('AWS::Cognito::UserPool', { UserPoolName: 'x' })).toBe(
+    expect(isStatefulRecreateTargetSync('AWS::DynamoDB::Table', {}, undefined)).toBe('always');
+    expect(isStatefulRecreateTargetSync('AWS::RDS::DBInstance', undefined, undefined)).toBe('always');
+    expect(isStatefulRecreateTargetSync('AWS::Cognito::UserPool', { UserPoolName: 'x' }, undefined)).toBe(
       'always'
     );
   });
 
   it('returns null for ephemeral types', () => {
-    expect(isStatefulRecreateTargetSync('AWS::Lambda::Function', {})).toBe(null);
-    expect(isStatefulRecreateTargetSync('AWS::IAM::Role', { RoleName: 'foo' })).toBe(null);
-    expect(isStatefulRecreateTargetSync('AWS::Unknown::Thing', {})).toBe(null);
+    expect(isStatefulRecreateTargetSync('AWS::Lambda::Function', {}, undefined)).toBe(null);
+    expect(isStatefulRecreateTargetSync('AWS::IAM::Role', { RoleName: 'foo' }, undefined)).toBe(null);
+    expect(isStatefulRecreateTargetSync('AWS::Unknown::Thing', {}, undefined)).toBe(null);
   });
 
   describe('AWS::Logs::LogGroup conditional', () => {
     it('returns "has-retention" when RetentionInDays > 0', () => {
       expect(
-        isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { RetentionInDays: 7 })
+        isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { RetentionInDays: 7 }, undefined)
       ).toBe('has-retention');
       expect(
-        isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { RetentionInDays: 365 })
+        isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { RetentionInDays: 365 }, undefined)
       ).toBe('has-retention');
     });
 
@@ -531,17 +531,131 @@ describe('isStatefulRecreateTargetSync (#615)', () => {
       // `isStatefulRecreateTargetForReplace` below (mid-deploy, no probe
       // opportunity -> `'has-log-events'`) and in the probe's own suite in
       // `tests/unit/deployment/recreate-targets.test.ts`.
-      expect(isStatefulRecreateTargetSync('AWS::Logs::LogGroup', {})).toBe(null);
+      expect(isStatefulRecreateTargetSync('AWS::Logs::LogGroup', {}, undefined)).toBe(null);
       expect(
-        isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { LogGroupName: 'x' })
+        isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { LogGroupName: 'x' }, undefined)
       ).toBe(null);
       expect(
-        isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { RetentionInDays: 0 })
+        isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { RetentionInDays: 0 }, undefined)
       ).toBe(null);
     });
 
     it('defers when properties is undefined', () => {
-      expect(isStatefulRecreateTargetSync('AWS::Logs::LogGroup', undefined)).toBe(null);
+      expect(isStatefulRecreateTargetSync('AWS::Logs::LogGroup', undefined, undefined)).toBe(null);
+    });
+
+    // Issue #2521. The cases below pin WHICH VALUE the cheap positive reads.
+    // Each is a bag pairing the two arguments differ in, so a call site that
+    // drops the observed argument, or a predicate that goes back to
+    // `typeof retention === 'number'`, reds one of them -- the reason they are
+    // written as a table of PAIRS rather than as independent assertions on one
+    // bag. Deliberately UNCOUNTED: an earlier revision said "the four cases
+    // below", a fifth was added, and the number went stale with nothing to
+    // catch it. A count here buys a reader nothing the `describe` does not
+    // already show.
+    describe('which bag, and which value, the has-retention positive reads (#2521)', () => {
+      it('coerces a CloudFormation-legal STRING retention', () => {
+        // CloudFormation is stringly typed: a hand-written L1, an `Fn::Sub`
+        // result, a `Type: String` parameter default, or a record imported by
+        // `cdkd import --migrate-from-cloudformation` all put `'30'` in the
+        // bag. The old `typeof retention === 'number'` test answered `null`
+        // for it, so an EMPTY log group with a string retention was ALLOWED
+        // through where an identical group with a numeric one was refused.
+        expect(
+          isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { RetentionInDays: '30' }, undefined)
+        ).toBe('has-retention');
+        expect(
+          isStatefulRecreateTargetSync('AWS::Logs::LogGroup', undefined, { RetentionInDays: '30' })
+        ).toBe('has-retention');
+      });
+
+      it('reads a retention that lives ONLY in observedProperties', () => {
+        // The out-of-band case: `aws logs put-retention-policy` or the console
+        // set the retention, so it is in what AWS REPORTS and in no template.
+        // An imported record whose template never declared the property lands
+        // in the same shape. Every caller used to pass `properties` alone, so
+        // neither produced `has-retention`.
+        expect(
+          isStatefulRecreateTargetSync(
+            'AWS::Logs::LogGroup',
+            { LogGroupName: 'x' },
+            { LogGroupName: 'x', RetentionInDays: 90 }
+          )
+        ).toBe('has-retention');
+      });
+
+      it('reads a retention that lives ONLY in properties, even against a ZERO observed one', () => {
+        // The case that REJECTS the precedence issue #2521 literally
+        // prescribed ("observed when present, falling back to properties").
+        // `readCurrentState` writes `RetentionInDays: 0` for a group with no
+        // retention policy, so the observed bag almost always CARRIES the key
+        // -- precedence would make the recorded bag dead for every captured
+        // record and DROP a positive verdict the guard already produced. The
+        // shipped rule is a plain OR, and this case is what goes red if
+        // anyone reinstates the precedence.
+        expect(
+          isStatefulRecreateTargetSync(
+            'AWS::Logs::LogGroup',
+            { RetentionInDays: 30 },
+            { RetentionInDays: 0 }
+          )
+        ).toBe('has-retention');
+        // ...and the same pairing one level out, where the deferral resolves.
+        expect(
+          isStatefulRecreateTargetForReplace(
+            'AWS::Logs::LogGroup',
+            { RetentionInDays: 30 },
+            { RetentionInDays: 0 }
+          )
+        ).toBe('has-retention');
+      });
+
+      it('DEFERS when NEITHER bag proves a positive retention', () => {
+        // The negative control the three positives need: without it a
+        // predicate that answered `has-retention` unconditionally would
+        // satisfy all of them. Both never-expire spellings on both sides.
+        expect(
+          isStatefulRecreateTargetSync(
+            'AWS::Logs::LogGroup',
+            { LogGroupName: 'x' },
+            { LogGroupName: 'x', RetentionInDays: 0 }
+          )
+        ).toBe(null);
+        expect(
+          isStatefulRecreateTargetForReplace(
+            'AWS::Logs::LogGroup',
+            { LogGroupName: 'x' },
+            { LogGroupName: 'x', RetentionInDays: 0 }
+          )
+        ).toBe('has-log-events');
+      });
+
+      it('does NOT read an unusable value as a retention', () => {
+        // `toFiniteNumber`, not a bare `Number()`. The DISCRIMINATING members
+        // of the list below are `true` and `[30]`, and only those two:
+        // measured under a bare `Number()`, `true` -> 1 and `[30]` -> 30, so
+        // both would PROVE a retention and this case would go red. Every
+        // other member (`''`, `'   '`, `[]`, `null` -> 0; `'abc'`, `{}` ->
+        // NaN) fails the `> 0` test under either implementation and pins
+        // nothing about the choice of coercion -- they are here as the
+        // never-expire family, not as evidence. An earlier version of this
+        // comment named exactly those inert members as the reason, which is
+        // the shape a probe result gets when it is written from memory
+        // instead of run.
+        //
+        // All of them must DEFER because nothing proved a retention, not
+        // because they coerced to zero.
+        for (const value of ['', '   ', 'abc', true, [], {}, null, [30]]) {
+          expect(
+            isStatefulRecreateTargetSync(
+              'AWS::Logs::LogGroup',
+              { RetentionInDays: value },
+              { RetentionInDays: value }
+            ),
+            `RetentionInDays: ${JSON.stringify(value)} must not prove a retention`
+          ).toBe(null);
+        }
+      });
     });
   });
 
@@ -550,8 +664,8 @@ describe('isStatefulRecreateTargetSync (#615)', () => {
       // The sync map intentionally defers S3. A caller that only has the
       // map gets `null` and is expected to call the async probe before
       // deciding to block the recreate.
-      expect(isStatefulRecreateTargetSync('AWS::S3::Bucket', { BucketName: 'foo' })).toBe(null);
-      expect(isStatefulRecreateTargetSync('AWS::S3::Bucket', undefined)).toBe(null);
+      expect(isStatefulRecreateTargetSync('AWS::S3::Bucket', { BucketName: 'foo' }, undefined)).toBe(null);
+      expect(isStatefulRecreateTargetSync('AWS::S3::Bucket', undefined, undefined)).toBe(null);
     });
   });
 });
@@ -579,20 +693,77 @@ describe('isStatefulRecreateTargetForReplace (--replace mid-deploy, no async pro
     // Unlike the sync variant (which returns null and relies on the async
     // ListObjectVersions probe), the --replace path has no probe opportunity,
     // so an S3 bucket must require --force-stateful-recreation regardless.
-    expect(isStatefulRecreateTargetForReplace('AWS::S3::Bucket', { BucketName: 'foo' })).toBe(
+    expect(isStatefulRecreateTargetForReplace('AWS::S3::Bucket', { BucketName: 'foo' }, undefined)).toBe(
       'has-objects'
     );
-    expect(isStatefulRecreateTargetForReplace('AWS::S3::Bucket', undefined)).toBe('has-objects');
+    expect(isStatefulRecreateTargetForReplace('AWS::S3::Bucket', undefined, undefined)).toBe('has-objects');
   });
 
   it('matches the sync variant for always-stateful types', () => {
-    expect(isStatefulRecreateTargetForReplace('AWS::DynamoDB::Table', {})).toBe('always');
-    expect(isStatefulRecreateTargetForReplace('AWS::RDS::DBInstance', {})).toBe('always');
+    expect(isStatefulRecreateTargetForReplace('AWS::DynamoDB::Table', {}, undefined)).toBe('always');
+    expect(isStatefulRecreateTargetForReplace('AWS::RDS::DBInstance', {}, undefined)).toBe('always');
+  });
+
+  it('a type\'s STATEFULNESS never depends on the bags — the invariant recreate-confirm-prompt.ts rests on', () => {
+    // `recreate-confirm-prompt.ts` calls this predicate with `undefined` for
+    // BOTH bags and consumes only whether the answer is null: a non-null
+    // verdict renders **DATA LOSS** plus a FIXED sentence naming the force
+    // flag, never `renderStatefulReason`, so WHICH non-null reason comes back
+    // is invisible there. That makes its two `undefined` arguments inert —
+    // measured, not assumed: swapping one for `{ RetentionInDays: 30 }` leaves
+    // the whole suite green, because the swap moves `has-log-events` to
+    // `has-retention` and both are non-null.
+    //
+    // So the thing worth fencing is not that call's arguments but the
+    // invariant it rests on. If a future edit made any arm return `null` for
+    // some bag, that prompt would silently drop the **DATA LOSS** line from
+    // the one screen a user reads before consenting to a destroy — and
+    // nothing at the call site could catch it, since it has no bag to vary.
+    //
+    // The bag list carries both LogGroup polarities and both S3 shapes on
+    // purpose: those are the only two types whose REASON is bag-computed, so a
+    // list without them would hold vacuously for every `'always'` type.
+    const bags: ReadonlyArray<Record<string, unknown> | undefined> = [
+      undefined,
+      {},
+      { RetentionInDays: 30 },
+      { RetentionInDays: 0 },
+      { RetentionInDays: '30' },
+      { RetentionInDays: 'abc' },
+      { BucketName: 'b' },
+    ];
+    const varying: string[] = [];
+    let pairs = 0;
+    for (const resourceType of [
+      ...STATEFUL_TYPES,
+      'AWS::Lambda::Function',
+      'AWS::IAM::Role',
+      'AWS::Glue::SecurityConfiguration',
+    ]) {
+      const nullness = new Set<boolean>();
+      for (const recorded of bags) {
+        for (const observed of bags) {
+          pairs++;
+          nullness.add(isStatefulRecreateTargetForReplace(resourceType, recorded, observed) === null);
+        }
+      }
+      if (nullness.size > 1) varying.push(resourceType);
+    }
+    // Floor: an empty type list or an empty bag list would make the assertion
+    // below hold at zero. The bag count is a LITERAL read off the array.
+    expect(bags).toHaveLength(7);
+    expect(pairs).toBeGreaterThanOrEqual(7 * 7 * 100);
+    expect(
+      varying,
+      'these types answer null for some bags and non-null for others, so ' +
+        "recreate-confirm-prompt.ts's bag-free call can no longer be trusted to " +
+        'produce the same **DATA LOSS** verdict the guard would'
+    ).toEqual([]);
   });
 
   it('keeps the sync verdict for a LogGroup the recorded retention already settles', () => {
     expect(
-      isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', { RetentionInDays: 30 })
+      isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', { RetentionInDays: 30 }, undefined)
     ).toBe('has-retention');
   });
 
@@ -612,14 +783,14 @@ describe('isStatefulRecreateTargetForReplace (--replace mid-deploy, no async pro
       { LogGroupName: 'x', RetentionInDays: 0 },
       undefined,
     ]) {
-      expect(isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', bag)).toBe(
+      expect(isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', bag, undefined)).toBe(
         'has-log-events'
       );
     }
   });
 
   it('returns null for non-stateful types (replace freely)', () => {
-    expect(isStatefulRecreateTargetForReplace('AWS::Glue::SecurityConfiguration', {})).toBe(null);
-    expect(isStatefulRecreateTargetForReplace('AWS::ECS::TaskDefinition', {})).toBe(null);
+    expect(isStatefulRecreateTargetForReplace('AWS::Glue::SecurityConfiguration', {}, undefined)).toBe(null);
+    expect(isStatefulRecreateTargetForReplace('AWS::ECS::TaskDefinition', {}, undefined)).toBe(null);
   });
 });

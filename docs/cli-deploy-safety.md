@@ -864,7 +864,7 @@ it holds no data.
 | Type | Guard fires when | Guard does not fire when |
 | --- | --- | --- |
 | `AWS::S3::Bucket` | The bucket has at least one current version, prior version, or delete-marker, or the probe page was truncated | The bucket is provably empty — but see the per-path note below |
-| `AWS::Logs::LogGroup` | `RetentionInDays > 0` on the recorded state, or the log group has at least one log stream | The log group has no retention recorded AND no log streams — but see the per-path note below |
+| `AWS::Logs::LogGroup` | `RetentionInDays > 0` in EITHER of cdkd's two recorded property bags, or the log group has at least one log stream | Neither bag records a positive retention AND the log group has no log streams — but see the per-path note below |
 
 **Retention is not an emptiness signal.** An unset or zero `RetentionInDays`
 is CloudWatch Logs' **never expire** setting — the most data-bearing
@@ -873,6 +873,31 @@ as "nothing to lose", so a never-expiring log group renamed in the template was
 destroyed on a plain `cdkd deploy` with no consent flag. An unset retention now
 DEFERS instead: at pre-flight the emptiness probe below decides, and mid-deploy,
 where no probe can run, the log group counts as stateful.
+
+**Which retention cdkd reads.** A state record carries two property bags —
+`properties`, what the last deploy applied, and `observedProperties`, what it
+read back from AWS — and a positive `RetentionInDays` in EITHER settles the
+guard. Neither bag takes precedence; either one proving a retention is
+enough. That is what lets a retention set OUT OF BAND (the console,
+`aws logs put-retention-policy`) count, and a record imported by
+`cdkd import --migrate-from-cloudformation` whose template never declared the
+property. The value is COERCED rather than type-tested, so the stringly-typed
+`RetentionInDays: '30'` a hand-written L1 or an `Fn::Sub` result produces
+counts as 30 rather than as no retention. A zero recorded in one bag never
+cancels a positive recorded in the other: zero is never-expire, which is not a
+statement that the group is empty.
+
+The coercion is JavaScript's `Number()`, filtered to finite values. That is
+**not** a reimplementation of CloudFormation's own parsing, and this page does
+not claim parity: `Number()` also accepts `'0x1e'`, `'0o36'`, `'1e3'`,
+`'30.5'` and `' 30 '`, spellings cdkd has not checked CloudFormation against.
+In the GUARD the difference is safe in the only direction that matters — a
+wider accepted set can only produce MORE `has-retention` verdicts, i.e. more
+refusals. The provider FORWARDS the coerced number to
+`logs:PutRetentionPolicy`, so an exotic spelling reaches AWS as its numeric
+value and is rejected there rather than by cdkd. Spell the retention as a
+plain decimal, which is the only form this page can promise behaves the same
+in cdkd and in CloudFormation.
 
 ### How the conditional types are judged, per path
 
@@ -944,8 +969,8 @@ Control `UnsupportedActionException` auto-fallback, which a plain `cdkd deploy`
 reaches with no flag — there is no opportunity to run either probe, so cdkd
 assumes the resource has data. Every bucket and every log group needs
 `--force-stateful-recreation` on those paths — a recorded `RetentionInDays > 0`
-does not exempt a log group there, it is simply a second reason the same guard
-fires. The one exemption on all three is `UpdateReplacePolicy: Retain`: the old
+(in either bag) does not exempt a log group there, it is simply a second reason
+the same guard fires. The one exemption on all three is `UpdateReplacePolicy: Retain`: the old
 resource survives the replacement, so there is no data loss to confirm and the
 flag is not required (and does not override the policy).
 

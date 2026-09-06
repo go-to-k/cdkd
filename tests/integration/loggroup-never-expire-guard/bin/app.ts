@@ -5,7 +5,7 @@ import { LoggroupNeverExpireGuardStack } from '../lib/loggroup-never-expire-guar
 const app = new cdk.App();
 new LoggroupNeverExpireGuardStack(app, 'CdkdLoggroupNeverExpireGuardExample', {
   description:
-    'cdkd never-expire log-group stateful-guard (issue #2558) integ probe: an unset RetentionInDays must not read as ephemeral',
+    'cdkd log-group stateful-guard integ probe: an unset RetentionInDays must not read as ephemeral (issue #2558), and a string-valued or observed-only one must still settle the guard (issue #2521)',
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,

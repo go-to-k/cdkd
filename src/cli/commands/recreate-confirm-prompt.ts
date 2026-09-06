@@ -99,15 +99,34 @@ export async function promptRecreateConfirm(input: {
     // A recorded reason is trusted as-is; only a `null` under the force flag
     // is re-derived, and only ever UPWARDS (the conservative predicate can
     // promote a deferral, never clear a positive verdict). Passing `undefined`
-    // for the recorded bag is deliberate: `RecreateTarget` does not carry one,
-    // and the only bag-driven verdict — a log group's `has-retention` — is
-    // already non-null here and never reaches this line.
+    // for BOTH property bags is deliberate: `RecreateTarget` carries neither,
+    // and the observed bag is a required parameter since issue [#2521]
+    // precisely so a site with no record in hand has to say so rather than
+    // omit it silently.
+    //
+    // Those two arguments are INERT here, and that is measured rather than
+    // argued: this line consumes only whether the answer is null (`rederived`
+    // below), and a re-derived verdict renders a FIXED sentence naming the
+    // force flag, never `renderStatefulReason` — so swapping an `undefined`
+    // for `{ RetentionInDays: 30 }` moves `has-log-events` to `has-retention`,
+    // changes no output, and leaves the whole suite green. An earlier note
+    // here said the bag-driven verdict "never reaches this line", which is
+    // true of one ARRIVING and false of one being manufactured here; the
+    // reason it does not matter is the inertness, not the arrival.
+    //
+    // What the line does rest on is that a type's STATEFULNESS never depends
+    // on the bags — otherwise a bag-free call could answer `null` where the
+    // guard would not, and the **DATA LOSS** line would vanish from the one
+    // screen a user reads before consenting. That invariant cannot be fenced
+    // from here, since this call has no bag to vary, so it is fenced where it
+    // lives: `tests/unit/provisioning/stateful-types.test.ts`, "a type's
+    // STATEFULNESS never depends on the bags".
     // ONE call to the predicate, deliberately: `stateful-replace-message-doc-sync`
     // scans `src/` for readers of the guard and asserts an exact list, one
     // entry per call site, so a second spelling here reads as a second reader.
     const rederivedReason =
       t.statefulReason === null && input.forceStatefulRecreation
-        ? isStatefulRecreateTargetForReplace(t.resourceType, undefined)
+        ? isStatefulRecreateTargetForReplace(t.resourceType, undefined, undefined)
         : null;
     const rederived = rederivedReason !== null;
     const reason = t.statefulReason ?? rederivedReason;
