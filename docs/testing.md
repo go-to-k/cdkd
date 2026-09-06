@@ -409,8 +409,9 @@ vp run build
 ```
 
 Writing a fixture from scratch means following a set of conventions — signal
-traps, gone-probes, removal policies, the S3 version sweep — each enforced by a
-checker so a violation fails CI rather than leaking a resource. They are
+traps, gone-probes, removal policies, the S3 version sweep, the guard on a
+destructive prefix sweep — most enforced by a checker so a violation fails CI
+rather than leaking a resource, and the page says which are not. They are
 collected in [Integration fixture conventions](integ-fixture-conventions.md).
 
 ## 3. Deploy Using cdkd
@@ -1001,7 +1002,7 @@ node ${CDKD_PATH}/dist/cli.js deploy ... --verbose
 ## Related
 
 - [Integration fixture conventions](integ-fixture-conventions.md) — the rules a
-  `verify.sh` follows, each enforced by a checker
+  `verify.sh` follows, most of them enforced by a checker
 - [Provider Development](provider-development.md) — writing the provider a
   fixture exercises
 - [Contributing Guide](contributing.md) — setting up the toolchain

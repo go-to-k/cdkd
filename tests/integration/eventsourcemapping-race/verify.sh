@@ -85,7 +85,14 @@ ESM_UUID=""
 # silently read as "no ESMs" when called as `$(list_esms_for_function ...)`.
 list_esms_for_function() {
   local fn="$1"
-  [ -z "${fn}" ] && return 0
+  # SCOPE GUARD (#2621). `contains(FunctionArn, '')` is true of EVERY mapping,
+  # and the caller deletes what this returns. The WARN is what distinguishes a
+  # refusal from an early death when reading a failed teardown; the convention
+  # is in `docs/integ-fixture-conventions.md`.
+  if [ -z "${fn}" ]; then
+    echo "    WARN: teardown sweep refused an empty function scope" >&2
+    return 0
+  fi
   local out
   out="$(aws lambda list-event-source-mappings \
     --region "${REGION}" \

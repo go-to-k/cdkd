@@ -180,9 +180,11 @@ sweep_log_groups() { # best-effort teardown; never aborts the sweep
     # only thing standing between a future edit and an account-wide delete.
     # `exit 0` and not `return 0`: this is a SUBSHELL, so the exit ends the
     # sweep and the function returns its status, leaving the caller running.
-    # The sibling `loggroup-never-expire-guard` fixture has the same sweep shape
-    # without this guard — tracked as issue #2621, deliberately not changed from
-    # here (it would add a second real-AWS integ to this PR's verification set).
+    # The sibling `loggroup-never-expire-guard` fixture had the same sweep shape
+    # without this guard; issue #2621 gave it one, and gave the same treatment
+    # to every other teardown in the tree whose filter collapses to the empty
+    # string when its scope variable is empty. The convention those all follow
+    # is written up in `docs/integ-fixture-conventions.md`.
     case "${LG_PREFIX}" in
       /cdkd-integ/*/) ;;
       *)
