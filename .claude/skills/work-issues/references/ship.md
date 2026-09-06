@@ -8,9 +8,9 @@ run its named integ fixtures and merge while it holds the turn, or run
 `/run-integ` and `gh pr merge` yourself FROM THAT LANE'S WORKTREE. The
 worktree matters mechanically: merge-gate verdicts (pr-review sha sentinel,
 verify-pr / integ markers) are computed against the tree the command runs
-from, so a merge from the main tree consults the WRONG store (measured
-2026-08-28: a fresh marker in the lane worktree, the main tree's stale
-sentinel blocking with a misleading sha mismatch; go-to-k/cdkd#2363). The
+from, so a merge from the main tree consults the WRONG store — CLAUDE.md's
+wrong-tree cwd race (go-to-k/cdkd#2363): false GREEN for a verification,
+false RED for a merge. The
 sentinels are GITIGNORED, so a fresh worktree has none and `markgate set` on a
 sentinel-bound gate refuses (`dead scope: include matches nothing ...`) —
 write the sentinel first (`/run-integ` step 11), never bypass. Ordering, not
@@ -25,9 +25,12 @@ reply every time.** `Resuming agent ...` means the stopped agent was restarted
 to receive it; `Message queued for delivery ...` delivers only if something
 ELSE resumes the agent — and a lane that ended its turn "merge-ready" is
 stopped by definition, so the turn-grant lands in a queue nothing drains
-(go-to-k/cdkd#2417: a lane sat idle five minutes; an immediate re-send
-answered `Resuming agent` and unstuck it). After any send answering "queued":
-confirm the agent actually runs, or re-send at once.
+(go-to-k/cdkd#2417: a lane sat idle five minutes until a re-send). After any
+send answering "queued": confirm the agent actually runs, or re-send at once.
+**`Resuming agent` is no acknowledgement either** — a lane resumed on it,
+reported CI for a superseded sha and stopped WITHOUT starting the instructed
+work (go-to-k/cdkd#2697). Confirm delivery in the TREE — grep for the change
+it asked for — never in the reply.
 
 **Before you watch CI, read the PR's merge state** (`/verify-pr` step 3): a PR
 at `mergeable=CONFLICTING state=DIRTY` never fires CI. In a fan-out run this is
@@ -73,9 +76,8 @@ git rebase origin/main                                   # at most one conflict
 ```
 
 Enforced by `.claude/hooks/flatten-before-rebase-gate.sh` (refuses `git rebase
-<upstream>` on a 2+-commit branch touching the append-shaped files; five lanes
-across two runs bought it). `CDKD_SKIP_FLATTEN_GATE=1` for a deliberate
-history-preserving rebase.
+<upstream>` on a 2+-commit branch touching the append-shaped files).
+`CDKD_SKIP_FLATTEN_GATE=1` for a deliberate history-preserving rebase.
 
 After resolving, verify BOTH sides survived:
 
@@ -102,9 +104,8 @@ diff <(git show origin/main:docs/changelog-cdkd.md) docs/changelog-cdkd.md | gre
 ```
 
 **The first line is what makes the second mean anything** — a needle main
-already carries can never read 1 (the first phrase reached for measured 18
-hits in main's copy; the check was vacuous). Take the phrase from YOUR entry's
-own subject.
+already carries can never read 1 (one phrase measured 18 hits there, vacuous).
+Take the phrase from YOUR entry's own subject.
 
 **A GENERATED file in a conflict is REGENERATED, never hand-merged** — resolve
 however lets the generator run, re-run it, commit ITS output (a hand-merge
@@ -120,8 +121,8 @@ alone can stale `docs/cli-flag-coverage.md` + its
 two rows for one test, which CI's normalization step rejects — run
 `vp run integ-ledger-normalize`
 after any rebase touching it **and commit the rewrite before pushing**
-(measured: the normalizer ran, its output was never committed, the PR went
-red; confirm with `git status --porcelain -- docs/_generated/`).
+(measured: its output was never committed and the PR went red; confirm with
+`git status --porcelain -- docs/_generated/`).
 
 ```bash
 gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
@@ -130,10 +131,10 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 **`-R` is not optional in a run that touches more than one repo.** Without it
 `gh` infers the repo from the CWD, which persists across Bash calls — a merge
 issued after an earlier `cd` into a sibling checkout targets THAT repo
-(measured: `gh pr merge 2432` ran against cdk-local, failing only because no
-such PR existed there; the error, `Could not resolve to a PullRequest`, reads
-as a permissions problem). Pass `-R` on EVERY `gh` call in a multi-repo run —
-`pr view`, `pr checks`, `issue comment` mis-target just as silently.
+(measured: a `gh pr merge` ran against cdk-local and failed ONLY because no
+such PR existed there; its `Could not resolve to a PullRequest` reads as a
+permissions problem). Pass `-R` on EVERY `gh` call in a multi-repo run — `pr
+view`, `pr checks`, `issue comment` mis-target just as silently.
 
 **`--delete-branch` from the PR's own worktree prints a bare `fatal: 'main' is
 already used by worktree ...` and the merge SUCCEEDED anyway** — nothing in
@@ -161,9 +162,8 @@ in the report. For the `.claude/rules` corpus this is now mechanical
 still needs the hand measurement. **When you hand a trim to another lane,
 check the target is REACHABLE from that lane's own bytes**: the floor is
 `merge-base size`, not zero — a target below it is an instruction to cut
-somebody else's entry (one dispatched target sat below the merge base alone;
-the agent refused). `cap - merge_base_size` is the most headroom one lane can
-leave.
+somebody else's entry, and `cap - merge_base_size` is the most headroom one
+lane can leave.
 
 MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
 

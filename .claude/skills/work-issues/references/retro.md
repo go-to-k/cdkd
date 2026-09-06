@@ -14,7 +14,15 @@ a gate, lowering a verification tier, loosening §0).
 
 ### 10-0. Measure the run's net effect on the backlog
 
-Count what the run did to the issue list, for the wrap report:
+Count what the run did to the issue list, for the wrap report. **Take the
+closed and filed sets from the RUN's own record — its posted claims and lane
+reports — never from a scan of the issue list by date or wording**: concurrent
+sessions file into the same window in the same vocabulary, and on 2026-09-06 a
+sweep for `lane` / `this run` returned seven issues of which only THREE were
+this run's — the other four came from two concurrent sessions
+(go-to-k/cdkd#2679 among them), separable only by reading each body's own
+account of the session that found it, usually its `Session-fit` reason. The
+queries below DATE the window; they do not attribute it.
 
 ```bash
 # closed BY this run (the lanes you merged, plus anything a sweep folded in)
@@ -58,18 +66,16 @@ rm -f /tmp/run-touched.$$
   what the extraction found; resolve by hand (`git grep -l '<the symbol>'`)
   whenever no token is path-shaped or the diff is mostly dotfiles.
 - **A hit is a prompt for judgement, not a verdict** — it cannot tell a
-  citation from a target, and the output does not help: go-to-k/cdkd#2621
-  cites a SIBLING fixture this run touched, by FULL path, and a retro wrote
-  that hit into a rule as a sourced incident, unpicked only by review. Open
-  the body and read the SENTENCE around the token before believing any hit
-  (printing it automatically is go-to-k/cdkd#2655, withdrawn from this recipe
-  with two measured defects). Do the item, or re-classify it in the issue with
-  the reason the criterion no longer applies. When the run's own PRs ARE the
+  citation from a target: a retro wrote go-to-k/cdkd#2621's citation of a
+  SIBLING fixture into a rule as a sourced incident, unpicked only by review.
+  Open the body and read the SENTENCE around the token before believing any
+  hit (printing it automatically was withdrawn with two measured defects —
+  go-to-k/cdkd#2655). Do the item, or re-classify it in the issue with the
+  reason the criterion no longer applies. When the run's own PRs ARE the
   follow-ups' subject — one lane, or several sharing a subsystem — expect
-  EVERY one to hit, and read the issue's REASON instead (go-to-k/cdkd#2514 10
-  of 10; go-to-k/cdkd#2558's two lanes; all but three across
-  go-to-k/cdkd#2554's five) — a run-wide hit rate is a property of the run's
-  SHAPE, not of the deferrals.
+  EVERY one to hit, and read the issue's REASON instead (go-to-k/cdkd#2514,
+  10 of 10; two more runs since) — a run-wide hit rate is a property of the
+  run's SHAPE, not of the deferrals.
 - **Re-read the REASON, not just the files — and when a hit CONTRADICTS it,
   the BODY is the stale side.** A reason anchored to the filing session's own
   state goes false while the decision it justified still stands.
@@ -158,10 +164,9 @@ unread one.
   wrong. **A retro NEVER buys room by raising a byte cap or a corpus
   bound** — the caps in `tests/unit/scripts/skill-file-payload.test.ts` are
   the mechanical stop on this skill's growth loop, and a retro that raises one
-  converts the stop into a ratchet (the 2026-09-02 retro raised the corpus
-  floor to fit its additions; the 2026-09-04 pass reversed it and re-derived
-  every bound DOWNWARD). A lesson compression cannot pay for splits the stage
-  instead; the floor moves DOWN only.
+  converts the stop into a ratchet (a 2026-09-02 retro raised the corpus floor
+  to fit its additions; the 2026-09-04 pass reversed it). A lesson compression
+  cannot pay for splits the stage instead; the floor moves DOWN only.
 - Do not restate a rule living in `CLAUDE.md` or another step — point at it.
   `CLAUDE.md` is injected into every context, so a stage-file paragraph
   re-explaining a gate it documents is paid for twice in every lane.
@@ -169,19 +174,17 @@ unread one.
   `work-issues` skill in `../cdk-local` and `../cdk-real-drift` — wording
   adapted per repo, one `chore:` PR per repo under that repo's own flow.
   Without the rules below this bullet is a duplicate GENERATOR (thirteen open
-  issues across the repos were one change; go-to-k/cdkd#2011 and
-  go-to-k/cdkd#2016 were three lessons filed twice, twenty minutes apart):
+  issues across the repos were one change; go-to-k/cdkd#2011 /
+  go-to-k/cdkd#2016 filed three lessons twice):
   - **The session that FINDS the lesson lands all three** — the default; the
     narrow exception (cannot pay the remaining gate cycles) is justified in
     the wrap. Land the mirror BEFORE the original's review rounds finish: the
     mirror's own reviewers read the same design with none of the original's
     momentum (measured 2026-09-02: the cdk-local port's reviewers found two
-    defects in code cdkd had already merged past a three-axis panel, and
-    cdkd's found one the port had inherited — the mirror is a second review
-    pass that happens to also be the deliverable — and it reviews the SOURCE
-    too: re-deriving each claim against the target's gates re-opens the
-    original's, returning two defects in cdkd's own hooks on 2026-09-05,
-    go-to-k/cdkd#2630 / go-to-k/cdkd#2638).
+    defects in code cdkd had already merged past a three-axis panel). It
+    reviews the SOURCE too — re-deriving each claim against the target's gates
+    re-opens the original's, returning two defects in cdkd's own hooks on
+    2026-09-05, go-to-k/cdkd#2630 / go-to-k/cdkd#2638.
   - **Filing a mirror issue covers the WHOLE remainder, in one turn** — file
     into every repo still missing it at once, each issue naming the others.
   - **A lane WORKING a mirror issue does not mirror onward** — the
@@ -223,8 +226,7 @@ unread one.
   that way: it has no `/review-pr` skill and no sentinel-bound live gate.
   Dispatch a read-only reviewer per target repo to check each gate name, hook
   behavior, skill name, path and cross-reference against that repo's own files
-  (caught four false claims on the first mirror). Here rather than in memory,
-  which is per-project-path and would not load in the targets.
+  (caught four false claims on the first mirror).
   **Read the BODY of every incident the copy cites** — a resolving number
   makes a wrong mechanism claim look sourced; name the mechanism the issue
   actually describes or drop it. **Fully qualify every issue/PR reference**
@@ -275,9 +277,8 @@ git fetch origin && git switch -c "$B" origin/main
   TALLY, not the rc**: a hooks edit re-triggers the path-filtered `hooks.yml`,
   so a fence a PEER left inert surfaces as YOUR red CI (2026-08-29: a
   settings-only PR had broken a `main` suite sitting outside that path filter).
-- Agent-instruction files are deliberately NOT down-biased in `/review-pr`'s
-  tier heuristic — a wrong rule here propagates into every future session —
-  so take the tier the heuristic gives and do not argue it down.
+- Take the tier `/review-pr`'s heuristic gives and do not argue it down —
+  agent-instruction files are deliberately not down-biased (CLAUDE.md).
 - **Merge it before the wrap report, then remove the worktree**
   (`git worktree remove .claude/worktrees/<name> && git worktree prune` —
   §9's closing check is "every worktree THIS run added is gone", and §10 must
@@ -290,10 +291,9 @@ git fetch origin && git switch -c "$B" origin/main
   and `--no-guess` because a plain `switch` would re-create the branch from
   `origin` instead of failing through to the fallback. §9 deliberately does
   NOT do it per-lane, because THIS section branches in the same tree and would
-  undo it. Restoring what the outer tool created is the quiet end state — it
-  silences the unmerged-lane Stop hook without the surprise of a detached HEAD
-  in that tool's UI. All of it is `Session-fit: now`: the evidence dies with
-  the session, and an open PR is NOT CLOSEABLE.
+  undo it; the appendix carries why restoring beats detaching. All of it is
+  `Session-fit: now`: the evidence dies with the session, and an open PR is
+  NOT CLOSEABLE.
 
 Then report the outcome in one line of the wrap: what changed, in which step,
 and the run evidence behind it — or "no skill change" plus what held.

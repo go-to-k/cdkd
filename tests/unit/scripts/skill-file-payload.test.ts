@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 173_046,
+    corpusBytes: 173_061,
     largest: { file: 'implement.md', bytes: 28_240 },
-    runnerUp: { file: 'verify.md', bytes: 28_154 },
+    runnerUp: { file: 'verify.md', bytes: 28_187 },
   },
 };
 
@@ -390,6 +390,48 @@ const MIN_REFERENCE_FILES = 6;
 // both questions.
 // If there is one transferable lesson here it is that a fence's battery
 // inherits the imagination of the round that wrote it.
+// The 2026-09-06 work-issues retro (go-to-k/cdkd#2638 / go-to-k/cdkd#2336 /
+// go-to-k/cdkd#2621 / go-to-k/cdkd#2636) landed three rules -- verify.md
+// 8-a's blocker-count-by-PART test for deciding WHICH part of a diff to
+// withdraw, ship.md's `Resuming agent` is-no-acknowledgement rider, and
+// retro.md 10-0's take-the-sets-from-the-run's-own-record rule -- and paid
+// for them inside the same files.
+// Components: verify.md 28,154 -> 28,187 (+33), ship.md 21,296 -> 21,304
+// (+8), retro.md 17,585 -> 17,559 (-26), = +15. Corpus 173,046 -> 173,061;
+// runner-up verify.md 28,154 -> 28,187; largest implement.md 28,240
+// untouched, so the binding margin goes 108 -> 126 B.
+// Read those two numbers together, because they move in OPPOSITE directions
+// and only one of them is the bound: the corpus GREW 15 B while the
+// assertion got 18 B safer, because 33 of the growth went into the
+// RUNNER-UP, where `corpus - runnerUp` is invariant. So this round is NOT a
+// net-negative one and does not claim to be -- it is a round whose growth
+// was routed to the one file where the bound cannot see it, and whose only
+// real payment was retro.md's -26. That routing is legitimate and is worth
+// knowing, but it is also the shape that lets a corpus creep while every
+// assertion stays green, so the honest statement is the pair, never the
+// margin alone.
+// Three of this round's numbers were wrong before review and are worth
+// naming, because all three are the class this file exists for. (1) MEASURED
+// went stale against the WORKING TREE while the reviewer read the commit --
+// the reviewed commit was self-consistent, so the red was visible only to
+// whoever ran the suite against the uncommitted tree, which is the reason
+// an amend must re-derive before it is staged, not after. (2) A 'seven
+// review rounds' figure in the verify.md rule came from a session BRIEF
+// rather than from go-to-k/cdkd#2678's body, which sources three. (3) The
+// rules-corpus bullet segmentation quoted CHARACTER counts as bytes, which
+// is why that entry now states DELTAS only -- see the note beside it.
+// Displacement paid for part of it in two files -- though only retro.md's
+// net shows it, verify.md having spent its savings on the new rule:
+// verify.md 8-i's reviewer-scratch-COPY paragraph now points at
+// `.claude/agents/pr-*-reviewer.md`,
+// which carries the two brief lines verbatim, and retro.md 10-d's
+// agent-instruction-tier bullet now points at CLAUDE.md, which owns the
+// down-bias exclusion. The rest was compressing paragraph-length incidents
+// into the one-line form 10-c asks for. A fourth lesson landed OUTSIDE this
+// corpus on purpose -- `.claude/rules/testing.md`, where a mutation applied
+// with `git checkout <ref> -- <paths>` needs a `git diff --stat HEAD`
+// receipt -- and cost the rules corpus 201 B, re-derived in
+// rule-file-payload.test.ts in the same commit.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller

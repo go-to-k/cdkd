@@ -17,11 +17,15 @@ by a probe or a trace, never by re-reading the diff:
   introduced by fixes; it ended when the sweep printed raw output and named
   both outcomes instead of emitting a verdict). The tell: each fix is more
   SOPHISTICATED than the last while plain rc-only sweeps nearby were right all
-  along. Expect the fix to feel like a retreat; it converges. Two riders:
-  **fence the REMEDIATION, not just the detection** (the last instance lived
-  in the repair path, which every fence had ignored), and **do not pre-commit
-  to a remedy for a finding you have not seen** — say what the next finding
-  would have to SHOW, not what you will do about it.
+  along. **WHICH part to shrink is a COUNT** — tally each round's blockers by
+  PART of the diff: go-to-k/cdkd#2678 put 11 of 11 in its classifier over that
+  classifier's three rounds and NONE in the guards it shipped. Then offer the next
+  round DELETION as an option it may take and STOP on ("fix cleanly, or DELETE
+  the added paths and scope the header's claim") — go-to-k/cdkd#2697 converged
+  in one round that way. Two riders: **fence the REMEDIATION, not just the
+  detection** (the last instance lived in the repair path every fence
+  ignored), and **do not pre-commit to a remedy for a finding you have not
+  seen** — say what the next finding would have to SHOW.
 - **If the thing you keep patching is a CLASSIFIER, stop and build §5's
   differential fence before the next fix** (go-to-k/cdkd#2027: five rounds,
   each finding a new spelling, rounds 3–4 adding five regressions; the
@@ -104,9 +108,8 @@ list says in one command whether anything is still outstanding.
   both directions before the round ends.** A carve-out is written while
   agreeing the fence was WRONG, the exact posture in which nobody asks what
   it now lets through (2026-09-02: three consecutive delta rounds each found
-  the previous round's carve-out was token-spendable — a line-wide skip, a
-  clause-wide negation exempting eleven prescriptive sentences, a
-  sentence-scoped one a whole fenced block inherited). Two cheap questions:
+  the previous round's carve-out token-spendable, at line, clause and sentence
+  scope in turn). Two cheap questions:
   does a PRESCRIPTIVE use of the same words spend the exemption (probe one),
   and is the exemption LOAD-BEARING at all (delete its wiring; the suite must
   go red).
@@ -307,10 +310,10 @@ code defects and FIVE false statements in prose. Habits that each caught one:
   was wrong in the other direction. Re-read a correction against the code.
 - **In a FIX round, the fix invalidated your own prose** — every past-tense
   measurement is stale until re-derived (one run: one code defect, TEN false
-  claims — a changelog citing a ledger row the same delta replaced, a fence
-  "claimed rather than probed" whose named case did not exist). Before a fix
-  round is final, re-derive every `file:line`, ledger citation and "measured"
-  verb, and say which tree they came from; for NUMBERS see the next bullet.
+  claims, among them a fence called "claimed rather than probed" whose named
+  case did not exist). Before a fix round is final, re-derive every
+  `file:line`, ledger citation and "measured" verb, and say which tree they
+  came from; for NUMBERS see the next bullet.
 - **The remedy is to DELETE the unproved clause, not rewrite it** — the
   recurring shape is a CONSEQUENCE bolted onto a verified claim ("X is
   load-bearing: deleting it would hard-fail" — X probed, the consequence
@@ -324,11 +327,10 @@ code defects and FIVE false statements in prose. Habits that each caught one:
   floor AND a cap from a test that reads the code, or attribute it as a dated,
   explicitly non-derivable measurement. Recounting fails because a set that
   GAINS or LOSES a member — a fix closing one counts — falsifies counters in
-  files the diff never touches (go-to-k/cdkd#2410 /
-  go-to-k/cdkd#2275, four in one run, every one caught by a reviewer and none
-  by the author; go-to-k/cdkd#2519 drifted its per-type lists seven times
-  across changelog, docs, PR body and comments, once inside the sentence
-  announcing the previous three were wrong). Sweep them with
+  files the diff never touches (go-to-k/cdkd#2410 / go-to-k/cdkd#2275: four in
+  one run, all caught by reviewers and none by the author; go-to-k/cdkd#2519
+  drifted its per-type lists seven times, once inside the sentence announcing
+  the previous three were wrong). Sweep them with
   `grep -rn "<the set's noun, then its cardinal>" src/ docs/ .claude/`, then
   dispose of each — a silent renumber is what makes the next reader re-file it.
 - **Write the rationale FIRST in a fix round** — the one rationale-first
@@ -339,11 +341,10 @@ code defects and FIVE false statements in prose. Habits that each caught one:
 - **A NIT is not a work item.** Fix what a reviewer DEMONSTRATES is wrong;
   leave the polish. Over four rounds on go-to-k/cdkd#2592 every blocker was
   fixed correctly and every NEW defect came from a low-severity suggestion —
-  a "no escape hatch" nit produced a flag that could not reach green; a "walk
-  `err.cause`" nit, a walk claiming one hop while recursing unbounded. The
+  a "no escape hatch" nit produced a flag that could not reach green. The
   tell: the new code answers a hypothetical, not an observation. When three
-  rounds have each found a defect inside the last one's fix, the APPROACH
-  changes — WITHDRAW the speculative addition rather than bounding it, and
+  rounds have each found a defect inside the last one's fix, WITHDRAW the
+  addition rather than bounding it — §8-a's blocker count names which one — and
   brief the next round to report only demonstrable defects.
 - **After several rounds, ask whether the change is worth merging AT ALL, and
   say you are not looking for reassurance** — price the residue in what an
@@ -363,7 +364,11 @@ code defects and FIVE false statements in prose. Habits that each caught one:
   built at runtime from `Failed to ${changeType} ${logicalId}`. Find the
   TEMPLATE.
 - **Your own BRIEF is a published claim** — grep every mechanism claim before
-  it ships in an instruction; the trigger is DESTINATION, not doubt.
+  it ships in an instruction; the trigger is DESTINATION, not doubt. **A brief
+  TRUE when sent goes false inside the RECIPIENT's own commit** — re-derive
+  every briefed measurement against the tree you are about to push
+  (go-to-k/cdkd#2697: a lane's same-commit alias pass left the briefed
+  addition inert).
 - **A REVIEWER brief fails worse** — a false premise aims the round at the
   wrong subject and the report still reads as authoritative (one false
   mechanism reached three briefs). Correct one in-flight.
@@ -390,12 +395,12 @@ leftover check — the `deployments/` events store legitimately survives it.
 writes it, run by the ORCHESTRATOR after its dispatched reviewers report and
 every blocker is addressed — a lane setting it is the "sub-agent self-review
 is not independent review" failure arriving through the marker (two of three
-lanes on 2026-08-29, go-to-k/cdkd#2383 / go-to-k/cdk-local#631; twice more on
-2026-09-04, where the one lane whose BRIEF named the prohibition was the one
-that obeyed — so put it in the brief, not only here). The merge gate cannot
-catch it: the sentinel is per-worktree and §9 merges from the lane's
-worktree, so a lane setting it after its final push matches. The PARENT can,
-and it is a named step of its own round — read the marker
+lanes on 2026-08-29, go-to-k/cdkd#2383; twice more on 2026-09-04 — the lane
+whose BRIEF named the prohibition was the one that obeyed, so put it there
+too). The merge gate cannot catch it: the sentinel is per-worktree and §9
+merges from the lane's worktree, so a lane setting it after its final push
+matches. The PARENT can, and it is a named step of its own round — read the
+marker
 BEFORE running `/review-pr`, since one already fresh there can only be the
 lane's (`mise exec -- markgate verify pr-review`, then
 `.markgate-pr-review-sha` against `git rev-parse HEAD`; a sha that is not HEAD
@@ -415,12 +420,9 @@ that shape means change the METHOD, not add a round — §5's "three spellings i
 three rounds". Review the FIXTURE as part of that diff, not as scaffolding
 around it — go-to-k/cdkd#2565's merge blocker was there (§8-d).
 
-**A reviewer's scratch COPY of a worktree is not detached from git.** A linked
+**A reviewer's scratch COPY of a worktree is not detached from git** — a linked
 worktree's `.git` is a FILE pointing into the main repo, and `cp -R` carries
-the pointer — a read-only reviewer's `git add -A` inside its copy staged three
-deletions in the LIVE tree (2026-08-29). Two lines for every read-only
-reviewer's brief: run NO writing git verb (`add` / `commit` / `restore` /
-`checkout` / `stash` / `clean`) anywhere, copy included — copy OUTSIDE every
-repository if you must copy — and report the target worktree's
-`git status --porcelain` before AND after the round. If damage happens anyway,
+the pointer, so a read-only reviewer's `git add -A` inside its copy staged
+three deletions in the LIVE tree (2026-08-29). `.claude/agents/pr-*-reviewer.md`
+carries the two lines every read-only brief needs. If damage happens anyway,
 the repair is `git restore --staged` (the INDEX only), the one carve-out.
