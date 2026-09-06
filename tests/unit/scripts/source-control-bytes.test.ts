@@ -47,11 +47,21 @@ function trackedFiles(): string[] {
  * reports as `??`. `--exclude-standard` is what keeps `node_modules/`, `dist/`
  * and every other `.gitignore` entry out, so the sweep needs no ignore list of
  * its own.
+ *
+ * `maxBuffer` is explicit because the default is 1 MB and THIS listing is the
+ * one that can blow it: the tracked listing is bounded by what is committed,
+ * while the untracked one is bounded by nothing. Measured — dropping
+ * `--exclude-standard` takes it to ~93k paths and `execFileSync` dies with
+ * `spawnSync git ENOBUFS` before a single assertion runs, so a mutation of the
+ * population reports a SPAWN failure instead of the finding it should. Same
+ * reason a developer with a large untracked, non-ignored directory would have
+ * seen it.
  */
 function untrackedFiles(): string[] {
   return execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
   })
     .split('\0')
     .filter(Boolean);
@@ -165,6 +175,12 @@ describe('describeFinding', () => {
     const nul = describeFinding('a/b.json', { byte: 0, offset: 1, line: 1 });
     expect(nul).toContain('JS/TS string literal');
     expect(nul).toMatch(/JSON|without string escapes/);
+    // Since #2696 the population includes UNTRACKED files, so the binary
+    // fallback cannot only say "add its extension to BINARY_EXTENSIONS" —
+    // that is wrong advice for a developer's local scratch binary.
+    expect(nul).toContain('BINARY_EXTENSIONS');
+    expect(nul).toMatch(/UNTRACKED local scratch file/);
+    expect(nul).toContain('gitignore');
   });
 
   it('tells a CR to convert line endings rather than to use an escape', () => {
@@ -302,16 +318,22 @@ describe('the working tree', () => {
  */
 describe('the untracked half of the working tree', () => {
   // Every probe path starts with this, so the pre-clean below can find a
-  // leftover from a process that died mid-probe. The pid keeps two concurrent
-  // vitest processes in ONE worktree off the same path.
+  // leftover from a process that died mid-probe.
   const probeRoot = `${PROBE_PREFIX}${process.pid}`;
 
   // A NUL-bearing probe lives ~500 ms; a kill inside that window leaves it at
   // the repo root, where — now that untracked files are in the population —
   // it reds the tree-wide sweep above on EVERY later run until someone removes
-  // it by hand. Sweeping the prefix at start-up closes that, and also covers a
+  // it by hand. Sweeping the prefix at start-up closes that, including a
   // leftover from a DIFFERENT pid. Scoped to entries directly under the repo
   // root whose name carries the prefix, which no real file uses.
+  //
+  // So the pid in `probeRoot` distinguishes LEFTOVERS, not concurrent runs:
+  // this sweep would delete a live probe belonging to a second vitest process
+  // running THIS file in THIS worktree at the same moment. That is not a case
+  // the repo has — parallel lanes get their own worktree, so their REPO_ROOT
+  // differs — and removing a leftover NUL beats tolerating one, because a
+  // leaked probe reds every later run for everyone.
   beforeAll(() => {
     for (const entry of readdirSync(REPO_ROOT)) {
       if (entry.startsWith(PROBE_PREFIX)) {
@@ -329,6 +351,14 @@ describe('the untracked half of the working tree', () => {
    * parameter is cheaper than three seeding mechanisms.
    */
   function withProbe(relative: string, contents: string, body: (relative: string) => void): void {
+    // The cleanup below removes `relative`'s FIRST segment recursively, so the
+    // parameter added in this round put an `rm -rf` one bad argument away from
+    // the worktree: measured, `/abs/x.ts` resolves that segment to REPO_ROOT
+    // itself and `../s/x.ts` to its parent. Inert for the callers below, which
+    // is exactly why it needs a guard rather than a convention.
+    if (!relative.startsWith(PROBE_PREFIX)) {
+      throw new Error(`probe path must start with ${PROBE_PREFIX}, got: ${relative}`);
+    }
     const absolute = join(REPO_ROOT, relative);
     mkdirSync(dirname(absolute), { recursive: true });
     writeFileSync(absolute, contents);
@@ -372,10 +402,14 @@ describe('the untracked half of the working tree', () => {
     });
   });
 
-  it('reads a CLEAN untracked file without reporting it', () => {
-    // The other direction. Without it, a sweep that flagged everything it found
-    // untracked would satisfy the case above.
-    withProbe(`${probeRoot}/nested/clean.ts`, "const sep = '\\0';\n", (relative) => {
+  it('reads a CLEAN untracked file at the repo ROOT without reporting it', () => {
+    // Two jobs. The other DIRECTION: without this, a sweep that flagged
+    // everything it found untracked would satisfy the case above. And the
+    // other DEPTH: the case above moved to a nested path to pin that the walk
+    // descends, and had this one moved with it, a walk listing ONLY nested
+    // paths — `untrackedFiles().filter((p) => p.includes('/'))` — would have
+    // gone unnoticed. Depth coverage has to be ADDED, not relocated.
+    withProbe(`${probeRoot}-clean.ts`, "const sep = '\\0';\n", (relative) => {
       const { offenders, untracked } = sweepTree();
       expect(untracked).toContain(relative);
       // Scoped to THIS file, not `offenders` as a whole: the tree-wide verdict
@@ -397,6 +431,11 @@ describe('the untracked half of the working tree', () => {
     // stay quiet about it.
     withProbe(`${probeRoot}.tmp`, "const sep = '\u0000';\n", (relative) => {
       const { offenders, untracked, tracked } = sweepTree();
+      // POSITIVE receipt first. Every other assertion here is an ABSENCE, and
+      // absence is what an empty sweep produces too: collapsing BOTH
+      // populations to `[]` left this case GREEN while seven of its siblings
+      // red, so it was passing on their evidence rather than its own.
+      expect(tracked).toContain('package.json');
       expect(untracked).not.toContain(relative);
       expect(tracked).not.toContain(relative);
       expect(offenders.filter((o) => o.startsWith(`${relative}:`))).toEqual([]);
