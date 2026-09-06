@@ -70,6 +70,14 @@ if ! declare -F gate_matches >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
   exit 2
 fi
+# `GATE_PERL_WORD` is the shared value class `extract_files` interpolates.
+# Undefined, `$GW` becomes the EMPTY string, `($GW)` matches empty at every
+# position, every extracted path is empty and the gate scans nothing -- a
+# silent fail-open, so it fails CLOSED like the two checks above.
+if [ -z "${GATE_PERL_WORD:-}" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh predates GATE_PERL_WORD, so this gate cannot extract a body path." >&2
+  exit 2
+fi
 gate_matches "$cmd" "$GATE_RE_GH_BODY_CARRIER" || exit 0
 if ! printf '%s' "$cmd" | grep -qE '(--body-file|body=@)'; then
   exit 0
@@ -87,13 +95,36 @@ fi
 
 extract_files() {
   local cmd="$1"
-  # Use perl to handle quoted args robustly. Output is one path per
-  # line. perl's regex is more permissive than bash's, and we
-  # collapse single/double quotes around the value.
-  printf '%s' "$cmd" | perl -ne '
-    while (/--body-file[=[:space:]]+(["\x27]?)([^"\x27[:space:]]+)\1/g) { print "$2\n"; }
-    while (/(?:--field|-F)[[:space:]]+(["\x27]?)body=@([^"\x27[:space:]]+)\1/g) { print "$2\n"; }
-  '
+  # One path per line, through the SHARED `GATE_PERL_WORD` value class
+  # (`$GW` = one shell WORD that may EMBED quoted spans; `gate_unq` = the
+  # shell's own unquoting). The local `(["\x27]?)([^"\x27\s]+)\1` this
+  # replaces ENUMERATED where a quote may sit and lost two families, both
+  # measured 2026-09-05 against this hook, both FAIL-OPEN (an unextracted path
+  # is a body nobody scans):
+  #
+  #   --body-file "<dir with space>/bad.md"   rc=0, plain spelling rc=2
+  #   -F body=@<path>  glued as `-Fbody=@…`   rc=0
+  #
+  # This is the FIFTH site of one root cause; the other four are
+  # gh-body-english / issue-dup-check / issue-deferral-criteria /
+  # issue-classification-label. If you fix a path-extraction bug in any of
+  # them, check the rest.
+  #
+  # KNOWN LIMIT, deliberately NOT closed here: a bare `-F <path>` (gh's short
+  # `--body-file`) is still not extracted, and the arming grep above does not
+  # even let it reach this function. The four siblings do read it, but they
+  # scope their scan to the `gh` SEGMENT; this gate scans the WHOLE command, so
+  # a bare `-F` arm would also read `git commit -F <msg>` and `awk -F ,` — and
+  # this gate BLOCKS on what it FINDS, so a commit message mentioning `#4`
+  # would become a false refusal. Closing it means segment-scoping first.
+  printf '%s' "$cmd" | perl -ne "$GATE_PERL_WORD"'
+    while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    while (/(?:--field|--raw-field|-F)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
+      next unless $v =~ s/^body=\@//;
+      print "$v\n";
+    }
+  ' 2>/dev/null
 }
 
 # Read a file's contents and emit only the lines (with line numbers,
@@ -191,7 +222,7 @@ find_offender() {
       print "$hit\n";
       last;
     }
-  '
+  ' 2>/dev/null
 }
 
 # Collect offenders: "<file>:<lineno>:<line>" entries, one per blocked
@@ -247,10 +278,16 @@ MAX_REPORT=10
 # `>f&&`, so a one-call heredoc written without spaces passed unscanned.
 cmd_writes_path() {
   local path="$1"
-  CMD="$cmd" TARGET="$path" perl -0777 -e '
-    my $cmd = $ENV{CMD};
-    my $t   = quotemeta($ENV{TARGET});
-    exit 0 if $cmd =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+  CMD="$cmd" TARGET="$path" perl -0777 -e "$GATE_PERL_WORD"'
+    # The redirect TARGET is matched as a shell WORD and unquoted before the
+    # comparison, for the same reason the flag values are: `$ENV{TARGET}` has
+    # already been through `gate_unq`, so the retired `(["\x27]?)$t\1` class
+    # could only ever match spellings that need no unquoting -- notably NOT
+    # `> /a\ b/x.md`, which reopened the heredoc-write window for exactly the
+    # backslash-escaped paths the flag side now reads.
+    my $cmd  = $ENV{CMD};
+    my $want = $ENV{TARGET};
+    exit 0 if line_writes($cmd, $want, 1);
     exit 1;
   ' 2>/dev/null
 }
@@ -258,10 +295,16 @@ cmd_writes_path() {
 # The TRUNCATING half. `>>` and `tee -a` are deliberately absent.
 cmd_replaces_path() {
   local path="$1"
-  CMD="$cmd" TARGET="$path" perl -0777 -e '
-    my $cmd = $ENV{CMD};
-    my $t   = quotemeta($ENV{TARGET});
-    exit 0 if $cmd =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+  CMD="$cmd" TARGET="$path" perl -0777 -e "$GATE_PERL_WORD"'
+    # The redirect TARGET is matched as a shell WORD and unquoted before the
+    # comparison, for the same reason the flag values are: `$ENV{TARGET}` has
+    # already been through `gate_unq`, so the retired `(["\x27]?)$t\1` class
+    # could only ever match spellings that need no unquoting -- notably NOT
+    # `> /a\ b/x.md`, which reopened the heredoc-write window for exactly the
+    # backslash-escaped paths the flag side now reads.
+    my $cmd  = $ENV{CMD};
+    my $want = $ENV{TARGET};
+    exit 0 if line_writes($cmd, $want, 0);
     exit 1;
   ' 2>/dev/null
 }
@@ -273,15 +316,20 @@ cmd_replaces_path() {
 # and unquoted delimiters, and `<<-`'s tab-stripped terminator. Exits non-zero
 # when the command writes the path through no heredoc at all.
 heredoc_bodies_for() {
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
+    my $want = $ENV{TARGET};
     my @lines = split /\n/, $c, -1;
     my @out;
     my $found = 0;
     for (my $i = 0; $i <= $#lines; $i++) {
       my $l = $lines[$i];
-      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless line_writes($l, $want, 1);
       next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
       my $dash  = ($1 eq "<<-");
       my $delim = $3;
@@ -370,6 +418,16 @@ scan_stream() {
 # other than a heredoc redirect (`printf > f`, `python3 -c ... > f`) cannot be
 # extracted, so it falls back to whatever is on disk -- and to nothing at all
 # when the path does not exist yet.
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which cannot
+# see a prelude that is present but does not COMPILE -- and that failure is
+# SILENT, because every extraction runs perl with stderr discarded, so the gate
+# would extract nothing and PASS what it exists to refuse. Probe it functionally,
+# once, here: after arming (so ordinary Bash calls pay nothing) and at TOP LEVEL.
+# TOP LEVEL is load-bearing -- the extraction helpers are called inside `$( )`,
+# where `exit 2` ends only the substitution subshell: measured, an in-function
+# guard PRINTED its refusal and the hook still returned 0.
+gate_perl_word_or_die pr-body-item-number-gate || exit 2
+
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   body_text=""

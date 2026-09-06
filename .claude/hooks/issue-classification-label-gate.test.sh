@@ -27,13 +27,32 @@
 #           transient gh failure must not stop a body edit)
 #   - PASS  for verbs deliberately not gated (`gh issue comment`), for a command
 #           that merely QUOTES the trigger, and in a repo that never opted in
+#   - BLOCK for a QUOTED `--body-file` path CONTAINING A SPACE and for the
+#           GLUED `-F<path>` spelling. This gate is the FOURTH site of one root
+#           cause (the english / dup-check / deferral gates are the others):
+#           the old value class could not span the space, nothing was
+#           extracted, the precedence chain ended at the whole SEGMENT -- which
+#           carries the PATH, not the body -- and no label was demanded at all
 #
-# Measured rather than asserted (2026-08-26), and re-measured after each fix:
-# an always-`exit 0` stub fails 14 of these and an always-`exit 2` stub fails 39
-# of 40, so neither direction can pass vacuously. Targeted mutants: the scan's
-# `[[:space:]]+` relaxed to `*` fails exactly 1 (the no-body space-rule case);
-# reverting the body-file precedence fails exactly 2 (both `--title` cases);
-# dropping the bare `-F <path>` arm fails exactly 1.
+# Measured rather than asserted, EVERY number re-taken on the 47-case suite --
+# not carried forward. ADDING A CASE INVALIDATES ALL THREE, which is how the
+# round that FIXED a sibling gate's stale tallies shipped this one carrying
+# 18/43/38 from before its own new case: re-run the stubs whenever the count
+# changes, not only when a fence does.
+#
+#   always-`exit 0` stub                  fails 19   (nothing passes vacuously)
+#   always-`exit 2` stub                  fails 44   (nor blocks vacuously)
+#   `$GW` -> the retired class (below)    fails 39
+#   `gate_perl_word_ok` -> always true    fails  1   -- the load-guard case
+#   short-flag `[=\s]*` -> `[=\s]+`       fails  1   -- the glued spelling#
+# THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
+# rather than the intent: the retired class CAPTURED, while call sites now write
+# `($GW)`, so any capture inside the prelude shifts `$1` everywhere and three
+# faithful-looking reverts give three different tallies. The number above is for
+# exactly this backref-free one-line prelude edit:
+#
+#     my $GW = qr/["\x27]?[^"\x27\s]+["\x27]?/;
+#
 
 set -u
 
@@ -45,6 +64,25 @@ FAIL=0
 #   $TMPROOT  -- a git repo carrying `.markgate.yml`, so the gate fires
 #   $NOOPTIN  -- a git repo without it, so the gate must stay silent
 TMPBASE=$(mktemp -d)
+
+# `HOOK_BASH=/bin/bash` runs the HOOK under that interpreter too, not just this
+# suite. Without it, `/bin/bash <suite>` measures the SUITE under 3.2 while the
+# subject keeps running whatever `bash` the shebang finds first on PATH --
+# Homebrew 5.x on a dev Mac -- so a 3.2 run reported a pass the hook never
+# earned. This gate gained new code in this change and had NO such run.
+#
+# The path is resolved ABSOLUTE first: `HOOK_BASH=bash` would make
+# `ln -sf bash <shim>/bash` point at itself, and every hook invocation would
+# then die on ELOOP -- a suite-wide red with a cause nowhere near the hook.
+if [ -n "${HOOK_BASH:-}" ]; then
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPBASE/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
 trap 'rm -rf "$TMPBASE"' EXIT
 TMPROOT="$TMPBASE/optin"
 NOOPTIN="$TMPBASE/no-optin"
@@ -317,6 +355,30 @@ ISSUE_42="" \
   "gh issue edit 42 --body-file $BODY_BOTH" \
   "$TMPROOT" 2 "severity:high"
 
+# --- the quoted-value holes (2026-09-05) ------------------------------------
+# This gate is the FOURTH site of one root cause (english / dup-check /
+# deferral are the others): the value class `(["\x27]?)([^"\x27\s]+)\1`
+# cannot span a QUOTED PATH CONTAINING A SPACE, so nothing is extracted, the
+# precedence chain ends at the whole SEGMENT -- which carries the PATH but not
+# the body -- and the gate demands no label at all. FAIL-OPEN, and measured:
+# both blocking cases below are rc=0 against the pre-fix hook while the
+# unquoted twin gives 2. `-F<path>` glued is the same family: gh accepts it.
+CLSSPACE="$TMPROOT/dir with space"
+mkdir -p "$CLSSPACE"
+cp "$BODY_BOTH" "$CLSSPACE/both.md"
+run_msg "create: spaced --body-file path is read as the body" \
+  "gh issue create -t x --body-file \"$CLSSPACE/both.md\"" \
+  "$TMPROOT" 2 "severity:high"
+run "create: spaced --body-file path with the labels" \
+  "gh issue create -t x --body-file \"$CLSSPACE/both.md\" --label severity:high --label effort:large" \
+  "$TMPROOT" 0
+run_msg "create: glued -F<path> is read as the body" \
+  "gh issue create -t x -F$BODY_BOTH" \
+  "$TMPROOT" 2 "severity:high"
+run "create: glued -F<path> with the labels" \
+  "gh issue create -t x -F$BODY_BOTH --label severity:high --label effort:large" \
+  "$TMPROOT" 0
+
 # --- not gated / not armed --------------------------------------------------
 run "gh issue comment is not gated" \
   "gh issue comment 42 --body-file $BODY_BOTH" \
@@ -333,6 +395,61 @@ payload=$(jq -n '{tool_name:"Edit", tool_input:{file_path:"/tmp/x"}}')
 out=$(printf '%s' "$payload" | "$HOOK" 2>&1) && rc=0 || rc=$?
 if [ "${rc:-0}" -eq 0 ]; then echo "PASS: non-Bash tool passes (exit 0)"; PASS=$((PASS + 1))
 else echo "FAIL: non-Bash tool passes (exit ${rc:-0})"; FAIL=$((FAIL + 1)); fi
+
+# --- the sixth site of the retired value class ------------------------------
+# `existing_labels` extracted the `-R` value with its own private
+# `(["\x27]?)([^\s"\x27]+)\1`, so a repo name containing a space extracted
+# NOTHING. It fails towards a false BLOCK rather than a bypass, which is why it
+# went unnoticed while the other five were fixed -- and why it needs a case: the
+# claim in this file is that the class is defined ONCE.
+#
+# Asserted on the ARGV, not on the exit code: the pre-fix gate extracted
+# NOTHING from a spaced `-R` value and refused anyway, so an exit-code case is
+# green against the bug. What actually changed is WHICH repo gh is asked about,
+# and this suite already owns the recorder that can see it.
+: > "$TMPBASE/calls.log"
+GH_CALL_LOG="$TMPBASE/calls.log" ISSUE_1="bug" \
+  run "quoted -R value containing a space does not derail the gate" \
+  "gh issue edit 1 -R \"owner/repo name\" --body 'Severity: high -- x
+Effort: small (S)'" "$TMPROOT" 2
+if grep -q -- '-R owner/repo name' "$TMPBASE/calls.log"; then
+  echo "PASS: edit: gh was asked about the SPACED -R repo, not a truncation of it"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: edit: the spaced -R value did not reach gh"
+  sed 's/^/      /' "$TMPBASE/calls.log"
+  FAIL=$((FAIL + 1))
+fi
+
+# --- the GATE_PERL_WORD load guard, fenced ----------------------------------
+# The cheap `[ -z ]` half cannot see a prelude that is PRESENT but does not
+# COMPILE, and every extraction runs perl with stderr discarded -- so the gate
+# would extract nothing and PASS what it exists to refuse. The payload below is
+# one this gate NORMALLY PASSES, so a resulting exit 2 can only come from the
+# guard, not from the gate's ordinary refusal.
+BROKEN_DIR="$TMPBASE/brokenlib"
+mkdir -p "$BROKEN_DIR/lib"
+cp "$HOOK" "$BROKEN_DIR/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/lib/command-match.sh" > "$BROKEN_DIR/lib/command-match.sh"
+if grep -q 'unclosed' "$BROKEN_DIR/lib/command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$BROKEN_DIR/lib/command-match.sh"; then
+  bl_rc=0
+  jq -n --arg c "gh issue create --title t --body 'nothing classified here' --label severity:high" --arg d "$TMPROOT" \
+    '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
+    | "$BROKEN_DIR/$(basename "$HOOK")" >/dev/null 2>&1 || bl_rc=$?
+  if [ "$bl_rc" = "2" ]; then
+    echo "PASS: a non-compiling GATE_PERL_WORD fails CLOSED (exit 2)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: a non-compiling GATE_PERL_WORD returned $bl_rc, expected 2"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  # A probe that silently does not run is the failure mode this file is about.
+  echo "FAIL: could not stage a broken GATE_PERL_WORD (sed anchor drifted)"
+  FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "Pass: $PASS  Fail: $FAIL"

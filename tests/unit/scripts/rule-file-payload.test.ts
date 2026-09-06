@@ -942,6 +942,14 @@ const CORPUS_FILE_COUNT = 47; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks
                               //  per-file cap again -- at least the seventh split off this one
                               //  file, counting the six satellites it already points at, so do not
                               //  read the ordinals in the older entries below as a running total.
+                              //
+                              //  A `hooks-flag-value-class.md` satellite was added on a branch and
+                              //  REMOVED before merge: it restated the library note it pointed AT,
+                              //  and splitting does not fund a CORPUS addition anyway -- the
+                              //  ceiling covers the whole tree, so a new file SPENDS its
+                              //  frontmatter and its pointer from the same budget. The per-file cap
+                              //  and the corpus ceiling want OPPOSITE moves; read which one failed
+                              //  before reaching for a split.
                               //  The comment above this file's hooks.md row records the decision
                               //  that the next lane needing more room there splits rather than
                               //  trims someone else's entry or nudges the cap, and this is that
@@ -1971,6 +1979,21 @@ describe('.claude/rules payload fence', () => {
     ).toEqual([]);
   });
 
+
+  it('every REACH_FLOORS row names a rule file that exists', () => {
+    // The forward direction -- every rule file has a row -- is asserted below.
+    // This is the REVERSE, and without it a row for a DELETED file is silently
+    // ignored: `REACH_FLOORS.get(name)` is only ever asked about files that
+    // exist. Measured: adding a row for `does-not-exist.md` left the whole file
+    // green, and a real deletion in this branch left its row behind for a full
+    // review round. A stale row is not just clutter -- it is a floor nothing
+    // enforces, next to rows that are load-bearing.
+    const names = new Set(ruleFiles.map((r) => r.name));
+    const dangling = [...REACH_FLOORS.keys()].filter((k) => !names.has(k));
+    expect(dangling, `REACH_FLOORS rows for files that do not exist: ${dangling.join(', ')}`).toEqual(
+      [],
+    );
+  });
   it('every rule file is covered by at least one budgeted path', () => {
     // This was measured once and written down as a claim in a comment. A claim
     // decays: a review probe on 2026-08-25 retyped `provider-masking.md`'s glob

@@ -1857,6 +1857,218 @@ if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
 fi
 echo
+# --- gate_utf8_lenient: the RFC 3629 well-formedness table -------------------
+#
+# This decoder decides what text the English-only class test SEES, so an
+# over-permissive row is a bypass (a surrogate- or overlong-encoded sequence
+# decoded into a character the class then reads as ordinary text) and an
+# under-permissive one is a false block. It is asserted here rather than
+# through a gate because a gate can only show the VERDICT, and every row below
+# collapses to the same verdict.
+#
+# Two spellings were measured and rejected before this one, both LOSING the
+# evidence: `utf8::decode` refuses the whole string on a single malformed byte,
+# and `Encode::decode` swallows the bytes FOLLOWING a bad lead byte as one
+# malformed run -- `\xff\xe6\x97\xa5` came back as a single U+FFFD with the
+# Japanese character gone.
+cp_of() { # <perl byte-string expression> -> "U+XXXX U+XXXX ..."
+  perl -0777 -e "$GATE_PERL_WORD"'
+    my $b = eval $ARGV[0];
+    print join(" ", map { sprintf("U+%04X", ord($_)) } split //, gate_utf8_lenient($b));
+  ' "$1" 2>/dev/null
+}
+utf8_case() { # <name> <perl expr> <expected code points>
+  local name="$1" expr="$2" want="$3" got
+  got=$(cp_of "$expr")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   utf8: %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL utf8: %s (want "%s", got "%s")\n' "$name" "$want" "$got"
+    fail_log+="FAIL utf8: $name\n  want: $want\n  got : $got\n"
+  fi
+}
+F=U+FFFD
+utf8_case 'ascii'                   '"AB"'                 'U+0041 U+0042'
+utf8_case 'NUL survives'            '"\x00"'               'U+0000'
+utf8_case 'valid 2-byte'            '"\xc3\xa9"'           'U+00E9'
+utf8_case 'valid 3-byte CJK'        '"\xe6\x97\xa5"'       'U+65E5'
+utf8_case 'valid 4-byte'            '"\xf0\x9f\x98\x80"'   'U+1F600'
+utf8_case 'max valid code point'    '"\xf4\x8f\xbf\xbf"'   'U+10FFFF'
+utf8_case 'above U+10FFFF refused'  '"\xf4\x90\x80\x80"'   "$F $F $F $F"
+utf8_case 'F5 lead refused'         '"\xf5\x80\x80\x80"'   "$F $F $F $F"
+utf8_case 'FE/FF refused'           '"\xfe\xff"'           "$F $F"
+utf8_case 'overlong 2-byte refused' '"\xc0\x80"'           "$F $F"
+utf8_case 'C1 lead refused'         '"\xc1\xbf"'           "$F $F"
+utf8_case 'overlong 3-byte refused' '"\xe0\x80\x80"'       "$F $F $F"
+utf8_case 'overlong 4-byte refused' '"\xf0\x80\x80\x80"'   "$F $F $F $F"
+utf8_case 'surrogate refused'       '"\xed\xa0\x80"'       "$F $F $F"
+utf8_case 'lone continuation'       '"\x80"'               "$F"
+utf8_case 'truncated 3-byte'        '"\xe6\x97"'           "$F $F"
+utf8_case 'truncated at EOS'        '"\xe6"'               "$F"
+# The two orderings that motivated the decoder: a valid character must survive
+# a stray byte on EITHER side. One U+FFFD per un-decodable byte, so the count
+# discriminates the per-RUN spelling that swallowed three bytes after the bad one.
+utf8_case 'stray byte BEFORE a character' '"\xff\xe6\x97\xa5"' "$F U+65E5"
+utf8_case 'stray byte AFTER a character'  '"\xe6\x97\xa5\xff"' "U+65E5 $F"
+
+# --- the SPLIT_CHARS fast path must equal the substr fallback ---------------
+#
+# `substr(s, k, 1)` is O(n) per call in the awk macOS ships, so every
+# per-character loop in the matcher was quadratic: measured through
+# `gh-body-english-gate`, a 200k-escape command took 208.74 s on the previous
+# code and 9.57 s now, against a 10 s PreToolUse timeout that a gate experiences
+# as a SILENT PASS. The loops now index a `split(s, arr, "")` array instead.
+#
+# POSIX leaves an EMPTY field separator UNDEFINED, so the array is used only
+# where a BEGIN probe measures that it splits into characters, and every loop
+# keeps the `substr` arm. That makes two code paths where there was one, and
+# this asserts they agree: for each input the two segmentations must be
+# BYTE-IDENTICAL. Without it a CI awk taking the fallback would be running an
+# untested matcher.
+split_parity() { # <name> <command>
+  local name="$1" cmd="$2" fast slow fast_s slow_s lib fallback
+  lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/command-match.sh"
+  fallback="$(mktemp)"
+  # Force the probe OFF. The anchor is asserted so a drifted probe fails here
+  # rather than silently comparing the fast path against itself.
+  if ! grep -q 'if (split("ab", __probe, "") == 2' "$lib"; then
+    fail=$((fail + 1)); printf 'FAIL split parity: probe anchor drifted\n'
+    fail_log+="FAIL split parity: probe anchor drifted\n"
+    rm -f "$fallback"; return
+  fi
+  sed 's|if (split("ab", __probe, "") == 2.*|SPLIT_CHARS = 0|' "$lib" > "$fallback"
+  # BOTH awk programs, not just the segmenter. `strip_noncommand_spans` carries
+  # its own copy of the `split(s, arr, "")` fast path, and the library never
+  # calls it, so this fence -- whose stated job is that a CI awk taking the
+  # fallback is not running an untested matcher -- reached only half the code
+  # it names. Compared through `od` so a difference in whitespace or a NUL
+  # cannot read as equal.
+  fast=$(gate_segments "$cmd" | od -An -c | tr -s ' ')
+  slow=$(bash -c '. "$1"; gate_segments "$2"' _ "$fallback" "$cmd" | od -An -c | tr -s ' ')
+  fast_s=$(strip_noncommand_spans "$cmd" | od -An -c | tr -s ' ')
+  slow_s=$(bash -c '. "$1"; strip_noncommand_spans "$2"' _ "$fallback" "$cmd" | od -An -c | tr -s ' ')
+  rm -f "$fallback"
+  if [ "$fast" != "$slow" ]; then
+    fail=$((fail + 1)); printf 'FAIL split parity (segments): %s\n' "$name"
+    fail_log+="FAIL split parity (segments): $name\n  command: $cmd\n"
+    return
+  fi
+  if [ "$fast_s" != "$slow_s" ]; then
+    fail=$((fail + 1)); printf 'FAIL split parity (strip): %s\n' "$name"
+    fail_log+="FAIL split parity (strip): $name\n  command: $cmd\n"
+    return
+  fi
+  # Both comparisons returned above on failure, so reaching here IS the pass.
+  pass=$((pass + 1)); printf 'OK   split parity: %s\n' "$name"
+}
+split_parity 'plain command'          'git -C /a/b commit -m x'
+split_parity 'quoted span with a space' 'gh issue create --body "a b c"'
+split_parity 'apostrophe in a body'   "gh issue create --body \"don't merge\""
+split_parity 'command substitution'   'git -C $(git rev-parse --show-toplevel) commit -m x'
+split_parity 'backtick substitution'  'git -C `pwd` commit -m x'
+split_parity 'separators'             'ls && git commit -m a; echo done | cat'
+split_parity 'escaped separator'      'echo a\; git commit -m x'
+split_parity 'heredoc body'           "$(printf 'cat > f <<EOF\nbody ; text\nEOF\ngh issue create --body-file f')"
+split_parity 'unbalanced apostrophe'  "echo don't; git commit -m y"
+split_parity 'process substitution'   'diff <(git commit) /dev/null'
+split_parity 'ANSI-C span'            "gh issue create --body \$'a\\x20b'"
+
+# --- gate_perl_word_ok must reject a STALE prelude ---------------------------
+#
+# The guard exists to catch a library that is present but does not WORK, and the
+# case it is most likely to meet is a SIBLING REPO one revision behind -- this
+# prelude is copied between three repos on purpose. A four-dimension probe was
+# measured certifying exactly that: the pre-`ebf5ac39` prelude (no mid-word
+# ANSI-C arm, `gate_unq` decoding instead of returning bytes) passed every
+# assertion, because all four inputs were pure ASCII at word position 0.
+#
+# Each case deletes ONE dimension from the REAL prelude and requires a
+# rejection. A dimension whose deletion still passes is one the probe does not
+# actually certify. Driven from a single python block rather than per-case shell
+# arguments: the mutations are regex literals full of quotes and backslashes,
+# and threading them through shell quoting broke the file twice.
+__pr_out=$(python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/testdata/probe-rejects.py" \
+             "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/command-match.sh" 2>&1)
+__pr_rc=$?
+printf '%s\n' "$__pr_out"
+__pr_ok=$(printf '%s\n' "$__pr_out" | grep -c '^OK   probe-rejects:')
+__pr_bad=$(printf '%s\n' "$__pr_out" | grep -c '^FAIL probe-rejects:')
+# The COUNT is asserted, not just the failures: a script that dies early prints
+# nothing and would otherwise read as six silent passes.
+if [ "$__pr_rc" != 0 ] || [ "$__pr_ok" -ne 7 ] || [ "$__pr_bad" -ne 0 ]; then
+  fail=$((fail + 1))
+  printf 'FAIL probe-rejects: expected 7 OK / 0 FAIL, got %s / %s (rc=%s)\n' "$__pr_ok" "$__pr_bad" "$__pr_rc"
+  fail_log+="FAIL probe-rejects: expected 7 OK / 0 FAIL, got $__pr_ok / $__pr_bad\n"
+else
+  pass=$((pass + __pr_ok))
+fi
+
+# --- a mis-closed substitution span must not HIDE the verb inside it ---------
+#
+# `close_paren` / the backtick scan decide where a `$( )` or `` ` ` `` span ends.
+# An EARLY closer is worse than none: `return 0` falls back to the stack, which
+# is benign, but a wrong index truncates the body and resumes with the enclosing
+# quote still open, so the REST of the real body is parsed as quoted prose and
+# the verb inside it never starts a segment.
+#
+# All three shapes below were UNGATED before the helpers learned about quotes
+# and backslashes, and all twelve hook suites stayed green throughout -- nothing
+# pinned a MIS-closed span, only balanced ones. Unbalanced parens inside quotes
+# are ordinary: grep counting a paren, sed substituting one, awk -F with one.
+check 'a paren inside a quoted string in the body does not end the span' 0 \
+  "$COMMIT" "$(printf 'echo "$(echo %s)%s ; git commit -m x)"' "'" "'")"
+check 'a backslash-escaped paren does not end the span' 0 \
+  "$COMMIT" 'echo "$(echo \) ; git commit -m x)"'
+check 'a backslash-escaped backtick does not end the span' 0 \
+  "$COMMIT" 'echo "`echo \` ; git commit -m x`"'
+# An ANSI-C span is the OPPOSITE of a plain single-quoted one: inside `$'...'`
+# a backslash ESCAPES, so `\'` does NOT close it. Teaching close_paren that a
+# backslash is literal inside single quotes -- right for `'...'` -- opened this
+# one, and it is the rule the `$GW` prelude in the same library already states.
+# Measured on this shape: origin/main gated it, the fix for the plain case left
+# it OPEN, and the ANSI-C state closes it again.
+check 'an escaped quote inside an ANSI-C span does not end it' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf $%sa\\%sb%s ; git commit -m x)"' "'" "'" "'")"
+# An ANSI-C span is the OPPOSITE of a plain single-quoted one: inside it a
+# backslash ESCAPES, so a backslash-quote does NOT close it. The sigil has to be
+# found by scanning FORWARD from the dollar, because a one-character look-back
+# cannot tell a real sigil from an ESCAPED dollar or from the second half of
+# `$$`. Measured across the three revisions: before the ANSI-C state the first
+# case below was OPEN; the look-back spelling closed it and opened the other
+# two; the forward scan gates all three.
+check 'an ESCAPED dollar before plain quotes is not an ANSI-C span' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf \\$%sa\\%s ; git commit -m x)"' "'" "'")"
+check 'the second dollar of $$ before plain quotes is not one either' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf $$%sa\\%s ; git commit -m x)"' "'" "'")"
+# The SIBLING quote machine, `flush_line`, needed the same ANSI-C state: it
+# opened a PLAIN span on the quote, the escaped quote inside closed it early,
+# and a SECOND substitution then split the line in the wrong place. One machine
+# being right is what let this survive the round that fixed the other -- and it
+# was open on origin/main too, for both the commit verb and the `git checkout`
+# data-loss gate.
+check 'an ANSI-C span before a second substitution does not split it' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf %%s $%sa\\%sb%s $(echo a) ; git commit -m x)"' "'" "'" "'")"
+check 'the same body does not hide a git checkout either' 0 \
+  "$GATE_RE_GIT_CHECKOUT" "$(printf 'echo "$(printf %%s $%sa\\%sb%s $(echo a) ; git checkout -- src/x.ts)"' "'" "'" "'")"
+# `$$` is the PID, and what follows it is a PLAIN span where the escaped quote
+# CLOSES. `close_paren` steps over the second dollar; the ANSI-C arm added to
+# `flush_line` did not, so it opened a span that never closed and the rest of
+# the line -- separators included -- became data. Both shapes RUN under real
+# bash, and both walked past their gate: rc=2 -> 0 for the commit verb, and the
+# checkout gate never looked at all.
+check 'a $$ before plain quotes does not open an ANSI-C span (commit)' 0 \
+  "$COMMIT" "$(printf 'echo $(echo a)$$%s\\%s ; git commit -m x' "'" "'")"
+check 'a $$ before plain quotes does not open one for checkout either' 0 \
+  "$GATE_RE_GIT_CHECKOUT" "$(printf 'echo $(echo a)$$%s\\%s ; git checkout -- src/x.ts' "'" "'")"
+# The control: a balanced span must still be seen, or the three above would be
+# satisfied by a matcher that simply matches everything.
+check 'a balanced substitution body is still seen' 0 \
+  "$COMMIT" 'echo "$(git commit -m x)"'
+# And the negative twin: no verb in the body means no match, so the cases above
+# are not passing because the whole command matches regardless.
+check 'a mis-closed span with NO verb in it does not match' 1 \
+  "$COMMIT" "$(printf 'echo "$(echo %s)%s ; echo done)"' "'" "'")"
+
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
   echo

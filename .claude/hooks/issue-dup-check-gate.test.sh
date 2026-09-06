@@ -14,10 +14,50 @@
 #           cdkd#563 false-positive cases)
 #   - PASS  in a repo that never opted in (no `.markgate.yml`), which is
 #           issue #1259's scoping applied to the issue surface
+#   - PASS  for a QUOTED `--body-file` path CONTAINING A SPACE whose body
+#           carries the marker, and for the GLUED `-F<path>` spelling. This
+#           gate was ACCIDENTALLY SAFE against the extraction bug that
+#           fail-opens its two siblings: with no path extracted the loop body
+#           never runs, `seg_has_marker` returns 1, and the gate BLOCKS -- so
+#           the miss surfaced as a FALSE BLOCK on a compliant body. The
+#           positive cases are the ones that go red against the pre-fix hook.
 #
-# Measured rather than asserted: an always-`exit 0` stub fails 11 of these and
-# an always-`exit 2` stub fails 18, so neither direction can pass vacuously, and
-# removing the opt-in guard alone fails exactly the two opt-in cases.
+# MUTATION-PROBED rather than asserted, EVERY number re-taken on the 60-case
+# suite after the review round that added the load-guard fence -- not carried
+# forward. (An earlier header quoted 11 / 18 from a ~29-case suite; both were
+# long stale, which is why this is re-taken wholesale each round.)
+#
+#   always-`exit 0` stub                  fails 29   (nothing passes vacuously)
+#   always-`exit 2` stub                  fails 34   (nor blocks vacuously)
+#   `$GW` -> the retired class (below)    fails 21
+#   `gate_perl_word_ok` -> always true    fails  0   -- and that ZERO is the
+#                                                      finding, not a gap. This
+#                                                      gate fails CLOSED on an
+#                                                      unreadable body (see the
+#                                                      note above), so a broken
+#                                                      prelude lands on the same
+#                                                      refusal by accident. The
+#                                                      guard is still wired here,
+#                                                      because relying on that
+#                                                      coincidence is what made
+#                                                      this file's original bug
+#                                                      invisible for a year.
+#   short-flag `[=\s]*` -> `[=\s]+`        fails  1   -- the GLUED spellings
+#                                                      (`-F<path>`), fenced apart
+#                                                      from the quoting fix
+#
+# THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
+# rather than the intent. A review measured three faithful-looking reverts of
+# the same idea and got three different tallies, because the retired class
+# CAPTURED (`(["\x27]?)([^"\x27\s]+)\1`) while call sites now write `($GW)` --
+# any capture inside the prelude shifts `$1` everywhere. The number below is
+# for exactly this one-line prelude edit, which is backref-free and so
+# reproducible:
+#
+#     my $GW = qr/["\x27]?[^"\x27\s]+["\x27]?/;
+#
+#   short-flag `[=\s]*` -> `[=\s]+`       fails  1   -- exactly the glued
+#                                                      `-F<path>` case
 
 set -u
 
@@ -30,6 +70,25 @@ FAIL=0
 # Real repos rather than mocks: the opt-in decision is exactly what
 # `git rev-parse --show-toplevel` reports, so mocking it would test nothing.
 TMPBASE=$(mktemp -d)
+
+# `HOOK_BASH=/bin/bash` runs the HOOK under that interpreter too, not just this
+# suite. Without it, `/bin/bash <suite>` measures the SUITE under 3.2 while the
+# subject keeps running whatever `bash` the shebang finds first on PATH --
+# Homebrew 5.x on a dev Mac -- so a 3.2 run reported a pass the hook never
+# earned. This gate gained new code in this change and had NO such run.
+#
+# The path is resolved ABSOLUTE first: `HOOK_BASH=bash` would make
+# `ln -sf bash <shim>/bash` point at itself, and every hook invocation would
+# then die on ELOOP -- a suite-wide red with a cause nowhere near the hook.
+if [ -n "${HOOK_BASH:-}" ]; then
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPBASE/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
 trap 'rm -rf "$TMPBASE"' EXIT
 TMPROOT="$TMPBASE/optin"
 NOOPTIN="$TMPBASE/no-optin"
@@ -257,9 +316,64 @@ EOF
 gh issue create --body-file $TMPROOT/hd3.md"
 run "heredoc body mentions it mid-line" "$HD_MID" "$TMPROOT" 2
 
+# --- the quoted-value holes (2026-09-05) ------------------------------------
+# This gate was ACCIDENTALLY SAFE against the extraction bug its two siblings
+# fail-open on, and the cases below pin the direction the accident actually
+# produced. The old value class `(["\x27]?)([^"\x27\s]+)\1` could not span a
+# QUOTED PATH CONTAINING A SPACE, so it extracted no path at all -- and here,
+# uniquely, "no path" reaches `return 1`, which this gate reads as "no marker"
+# and BLOCKS. So the miss surfaced as a FALSE BLOCK on a fully compliant body
+# (measured against the pre-fix hook: rc=2 here, rc=0 for the unquoted twin),
+# never as a pass. The safety came from an UNRELATED design choice one function
+# up, so the two positive cases are the ones that fail pre-fix; the negative
+# twins are controls that were already right and must stay right.
+DUPSPACEDIR="$TMPROOT/dir with space"
+mkdir -p "$DUPSPACEDIR"
+cp "$WITH" "$DUPSPACEDIR/with.md"
+cp "$WITHOUT" "$DUPSPACEDIR/without.md"
+run "spaced --body-file path carries Dup-check" \
+  "gh issue create --title t --body-file \"$DUPSPACEDIR/with.md\"" "$TMPROOT" 0
+run "spaced --body-file path lacks Dup-check" \
+  "gh issue create --title t --body-file \"$DUPSPACEDIR/without.md\"" "$TMPROOT" 2
+run "spaced bare -F <path> carries Dup-check" \
+  "gh issue create --title t -F \"$DUPSPACEDIR/with.md\"" "$TMPROOT" 0
+# The GLUED short-flag spelling gh accepts as readily as the spaced one.
+run "glued -F<path> carries Dup-check"   "gh issue create --title t -F$WITH"    "$TMPROOT" 0
+run "glued -F<path> lacks Dup-check"     "gh issue create --title t -F$WITHOUT" "$TMPROOT" 2
+
 run "empty command passes" "" "$TMPROOT" 0
 
 run_nonbash "non-Bash tool passes" 0
+
+# --- the GATE_PERL_WORD load guard, fenced ----------------------------------
+# The cheap `[ -z ]` half cannot see a prelude that is PRESENT but does not
+# COMPILE, and every extraction runs perl with stderr discarded -- so the gate
+# would extract nothing and PASS what it exists to refuse. The payload below is
+# one this gate NORMALLY PASSES, so a resulting exit 2 can only come from the
+# guard, not from the gate's ordinary refusal.
+BROKEN_DIR="$TMPBASE/brokenlib"
+mkdir -p "$BROKEN_DIR/lib"
+cp "$HOOK" "$BROKEN_DIR/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/lib/command-match.sh" > "$BROKEN_DIR/lib/command-match.sh"
+if grep -q 'unclosed' "$BROKEN_DIR/lib/command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$BROKEN_DIR/lib/command-match.sh"; then
+  bl_rc=0
+  jq -n --arg c "gh issue create --title t --body-file '"'"'$WITH'"'"'" --arg d "$TMPROOT" \
+    '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
+    | "$BROKEN_DIR/$(basename "$HOOK")" >/dev/null 2>&1 || bl_rc=$?
+  if [ "$bl_rc" = "2" ]; then
+    echo "PASS: a non-compiling GATE_PERL_WORD fails CLOSED (exit 2)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: a non-compiling GATE_PERL_WORD returned $bl_rc, expected 2"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  # A probe that silently does not run is the failure mode this file is about.
+  echo "FAIL: could not stage a broken GATE_PERL_WORD (sed anchor drifted)"
+  FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "Pass: $PASS  Fail: $FAIL"
