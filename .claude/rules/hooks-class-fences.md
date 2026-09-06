@@ -73,7 +73,10 @@ under 5.x and rc=0 -- fail-open -- under the version CI runs, against a control
 that blocks on both. It is now the same variable treatment, and the payload is
 a case in `broad-process-kill-gate.test.sh`, whose suite honours `HOOK_BASH`:
 with the inline spelling restored it is green under 5.x and red under
-`HOOK_BASH=/bin/bash`, which is the whole point of the shim.
+`HOOK_BASH=/bin/bash`, which is the whole point of honouring `HOOK_BASH`.
+That suite installs no PATH shim -- it invokes the hook through the variable
+directly; only the older sibling suites use a shim, and conflating the two is
+how this sentence was wrong once already.
 
 **The reason it survived to CI is the more transferable half.** The local
 reproduction ran the SUITE under `/bin/bash`, while the hook it invokes carries

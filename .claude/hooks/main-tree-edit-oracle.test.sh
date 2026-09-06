@@ -42,6 +42,9 @@
 # "inherited or introduced?" by measurement instead of by argument.
 set -u
 
+# `HOOK_BASH=<path>` runs the HOOK under that interpreter too, not merely this
+# suite. `run-tests.sh` already exports it alongside each shell it drives, and
+# this file IGNORED it until 2026-09-07: the hook is `#!/usr/bin/env bash`, so a
 # plain `bash "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
 # suite itself ran under 3.2. "Passes under bash 3.2" was therefore true of the
 # test and false of the thing under test, and a regex whose two bash engines
@@ -59,9 +62,6 @@ case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 1
 HOOK="${GATE_HOOK:-.claude/hooks/main-tree-edit-gate.sh}"
 
-# `HOOK_BASH=<path>` runs the HOOK under that interpreter too, not merely this
-# suite. `run-tests.sh` already exports it alongside each shell it drives, and
-# this file IGNORED it until 2026-09-07: the hook is `#!/usr/bin/env bash`, so a
 # A BOUND WITHOUT coreutils. `timeout(1)` is not on a stock macOS image, which
 # is the only runner carrying bash 3.2 and therefore the one this whole suite
 # exists to exercise -- so requiring it made the oracle fail there permanently.
@@ -74,26 +74,34 @@ HOOK="${GATE_HOOK:-.claude/hooks/main-tree-edit-gate.sh}"
 # file changed, so the status is not consulted -- what matters is that nothing
 # is left running.
 #
-# The watchdog runs under `set -m` in its own PROCESS GROUP, and the teardown
-# signals the GROUP (`kill -9 -- -<pgid>`). Killing the subshell PID alone
-# leaves its `sleep` child orphaned -- measured at one stray `sleep` per call
-# under both engines, 207 corpus rows deep -- and this suite exists to run real
-# commands, so leaking one process per row is the failure mode it must not have.
+# BOTH background jobs run under `set -m`, in their own PROCESS GROUPS, and both
+# teardowns signal the GROUP (`kill -9 -- -<pgid>`). A bare PID kills only the
+# job's own shell and orphans whatever it started -- and the two sides leak in
+# different places, so fixing one is not fixing the class:
+#
+#   - the watchdog leaked its `sleep` on EVERY call (measured 5/5, now 0/5);
+#   - the bounded command leaks its children on the TIMEOUT path, which is the
+#     only path the kill exists for at all. `bounded_bash 1 'sleep 77 & sleep
+#     78 & wait'` left BOTH of them running, under both engines.
+#
+# This suite runs 207 real commands, so a stray process per row is precisely the
+# failure mode it must not have.
 bounded_bash() { # <seconds> <command>
   local secs="$1" cmd="$2" pid watchdog
+  set -m
   # GROUND TRUTH must come from the SAME interpreter the gate is being asked
   # about. With a bare `bash` here, a dev Mac scores a 3.2 gate against 5.x
   # bash -- and the whole point of this file is that those two disagree.
   "$HOOK_RUNNER" -c "$cmd" >/dev/null 2>&1 &
   pid=$!
-  set -m
-  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  ( sleep "$secs"; kill -9 -- "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
   watchdog=$!
   set +m
   wait "$pid" 2>/dev/null
-  # Group first, then the bare pid as a fallback for any shell that did not
-  # give the job its own group. Both are best-effort: the watchdog may already
-  # have exited, and its absence is the ordinary case.
+  # Group first, bare pid as the fallback for any shell that did not give the
+  # job its own group. Both are best-effort: on the ordinary (non-timeout) path
+  # the target is already gone, and `kill` failing then is the expected case --
+  # which is why neither result is consulted.
   kill -9 -- "-$watchdog" 2>/dev/null || kill -9 "$watchdog" 2>/dev/null
   wait "$watchdog" 2>/dev/null
   return 0

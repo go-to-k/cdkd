@@ -1980,7 +1980,12 @@ strip_is() { # name, expected result, input
 # shell stays put. With the escaped bracket class, 3.2 stripped the backslash
 # and handed the gates a `cd` that never ran.
 strip_is 'a doubled backslash is not stripped off the verb' '\\cd /tmp' '\\cd /tmp'
-strip_is 'a doubled backslash mid-word survives too' 'c\\d /tmp' 'c\\d /tmp'
+# NOT A FENCE, and labelled so rather than deleted. None of the three patterns
+# looks inside a word, so this passes under an identity function and under
+# every revert probed -- it pins today's behaviour for a shape a future
+# mid-word rule would change, and claims nothing about the current one. The
+# discriminating twin is the LEADING-backslash case above it.
+strip_is 'a doubled backslash mid-word survives too (pin, not a fence)' 'c\\d /tmp' 'c\\d /tmp'
 # A single backslash IS quote removal, and bash does run this as cd.
 strip_is 'a single backslash before the verb is bash quoting' '\cd /tmp' '\cd /tmp'
 
@@ -2019,16 +2024,27 @@ strip_is 'a trailing backslash is not grouping punctuation' 'echo hi\\' 'echo hi
 # than the number it compared. Both failures were about the floor, not about
 # coverage. The message is corrected below.
 #
-# Re-measured 2026-09-07 across all three contexts -- standalone from this
-# directory, from the repo root, and the exact `HOOK_BASH=<shell> <shell>
-# <suite>` form `run-tests.sh` uses -- under bash 5.3 and 3.2: every one
-# reports the SAME count. The historical 605/556 split (cases resolving
-# fixtures relative to this file's directory and skipping elsewhere) does not
-# reproduce. The floor is nevertheless left well under that number rather than
-# pinned to it, because a floor that tracks the count turns every added case
-# into an edit here and every environment difference into a red suite for a
-# reason that has nothing to do with what this file tests.
-CASE_FLOOR=572
+# Measured 2026-09-07 in three contexts under bash 5.3 AND 3.2 -- standalone
+# from this directory, from the repo root, and the exact
+# `HOOK_BASH=<shell> <shell> <suite>` form with the repo-root cwd that
+# `run-tests.sh` invokes (read it there; it is one line) -- and all three
+# report the same count. That is a statement about those three runs and NOT a
+# refutation of the historical 605/556 split, which nothing here reproduced:
+# `run-tests.sh` itself prints only `ok` / `FAIL` per suite, never the tally,
+# so its context cannot be observed any other way than by replaying its
+# invocation, which is what was done.
+#
+# The floor is left well under the observed number rather than pinned to it.
+# Pinning turns every added case into an edit here and every environment
+# difference into a red suite for a reason that has nothing to do with what
+# this file tests -- which is exactly how it was got wrong twice.
+#
+# So it does not move when cases are ADDED, either. A round that added sixteen
+# raised it by sixteen and had to be talked back down: that is the pinning
+# behaviour this paragraph argues against, wearing the other sign. The value
+# changes only when the SHAPE of the suite does -- a whole block deleted, or the
+# skipping-fixture condition changing -- and never as bookkeeping for new cases.
+CASE_FLOOR=556
 __ran=$((pass + fail))
 if [ "$__ran" -lt "$CASE_FLOOR" ]; then
   # THE COUNT IS CAPTURED BEFORE `fail` IS INCREMENTED. Interpolating
