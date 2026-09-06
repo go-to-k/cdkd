@@ -100,13 +100,27 @@ function secretsManagerSecretId(inner: string): string {
  *  - A trailing `:<version>` / `:<label>` is part of the name AS SSM PARSES IT
  *    (`GetParameter` accepts `name:3` / `name:prod`), so stripping it would name
  *    a different thing in the refusal message than the one that would be read.
+ *
+ * A COLON-LESS body (`{{resolve:ssm}}` / `{{resolve:ssm-secure}}`) names no
+ * parameter at all, and the empty string is what says so: the caller reads a
+ * falsy name as `local`, which hands the reference on to the resolver's own
+ * `PARAMETER_NAME is required`. Without the guard `indexOf(':')` is `-1` and
+ * `substring(0)` returns the SERVICE STRING as the parameter name, so with a
+ * foreign producer region on record the same malformed input drew the
+ * ambiguous-region refusal naming `'ssm-secure'` as the secret. Doubly
+ * degenerate, so the consequence is wording only — but the two sibling
+ * extractions answer `''` here ({@link secretsManagerSecretId}'s fixed-length
+ * `substring` past the end, and `arnRegion`'s `startsWith('arn:')` test), and a
+ * third that answers something else is the kind of split a later reader has to
+ * rediscover.
  */
 function ssmParameterName(inner: string): string {
   // Strip the SERVICE, whatever its spelling: `ssm:` and `ssm-secure:` both
   // reach here (issue #2482), and a fixed `'ssm:'.length` would turn
   // `ssm-secure:/pw` into `secure:/pw`. The first colon ends the service; a
   // parameter name may legitimately carry colons after it (an ARN does).
-  return inner.substring(inner.indexOf(':') + 1);
+  const serviceEnd = inner.indexOf(':');
+  return serviceEnd < 0 ? '' : inner.substring(serviceEnd + 1);
 }
 
 /**

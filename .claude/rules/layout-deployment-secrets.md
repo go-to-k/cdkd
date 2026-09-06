@@ -203,8 +203,13 @@ Index of every area: [code-layout.md](code-layout.md).
       DISJOINT identities fall through to positional the same way. Keyed is
       preferred because `descendArrays` rests on an assumption the module
       cannot enforce (every `effectiveProperties` producer TODAY preserves
-      length and order). Two shapes fail closed: an array whose IDENTITY
-      FIELD itself holds a secret, and an array of ARRAYS.
+      length and order). Two shapes fail closed FOR KEYING: an array whose
+      IDENTITY FIELD itself holds a secret, and an array of ARRAYS. The
+      second is not a dead end on the READBACK paths — the anchor pass
+      (`unkeyedArrayPairsByAnchors`, its own bullet further down) re-enters
+      `refuseUncertifiedReadbackPositions`'s array arm for the nested list —
+      so read the closure as a statement about `identityKeyFor`, not about
+      the module.
     - `trustAnyExpression` follows the SOURCE's provenance: a template carries
       PUBLIC ssm expressions too, and persisting one would re-introduce the
       perpetual UPDATE #1901 prevents — so from a TEMPLATE source a leaf is
