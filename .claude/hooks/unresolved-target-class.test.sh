@@ -633,6 +633,10 @@ fi
 # a false positive is one comment away from being cleared, a false negative is
 # a silently re-opened gate.
 fence4_hazard() {
+  # A variable reference ends at the first character that cannot be part of a
+  # NAME (or at end of line). Every name test below is terminated with this;
+  # see the note on the one-hop scan for what an unterminated one reported.
+  local END='([^A-Za-z0-9_]|$)'
   local f="$1" gv m=0
   grep -qE '=~[^#]*\$\{?GATE_' "$f" && m=1
   if [ "$m" -eq 0 ]; then
@@ -642,10 +646,16 @@ fence4_hazard() {
         grep -oE 'printf[[:space:]]+-v[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$f" | grep -oE '[A-Za-z_][A-Za-z0-9_]*$'
       } | sort -u
     ); do
-      grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv}\}?\"?" "$f" && { m=1; break; }
+      # `$END` terminates the NAME. Without it `$f` prefix-matches
+      # `$fence_open_re`, and a hook with a one-letter local plus any
+      # `=~ $some_local_re` was reported as coupled to a shared constant --
+      # measured on issue-deferral-criteria-gate.sh, whose `f` is a body-file
+      # PATH and whose regex is local. A false positive here is worse than a
+      # miss: it makes a clean state unreachable without an exemption list.
+      grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv}\}?\"?${END}" "$f" && { m=1; break; }
       # A name copied into another name, one hop -- enough for the shapes seen.
-      for gv2 in $(grep -oE "[A-Za-z_][A-Za-z0-9_]*=\"?\\\$\{?${gv}\}?\"?" "$f" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*'); do
-        grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv2}\}?\"?" "$f" && { m=1; break 2; }
+      for gv2 in $(grep -oE "[A-Za-z_][A-Za-z0-9_]*=\"?\\\$\{?${gv}\}?\"?${END}" "$f" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*'); do
+        grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv2}\}?\"?${END}" "$f" && { m=1; break 2; }
       done
     done
   fi
@@ -773,20 +783,32 @@ if [[ "$c" =~ [[:space:]]push([[:space:]]+(.*))?$ ]]; then a="${BASH_REMATCH[2]}
 P6
 
 
+cat > "$probe_dir/prefix_local.sh" <<'P11'
+# A local whose name PREFIXES another local's name, matched against a LOCAL
+# regex. Nothing here is coupled to a shared constant: the one-hop copy `f`
+# only ever holds a path, and `$fence_open_re` is built in this file. Before
+# the name terminator this was reported as coupled, because `$f` matched the
+# first two characters of `$fence_open_re`.
+f_raw=$(printf '%s' "$seg" | perl -ne "$GATE_PERL_WORD" 'print')
+f="$f_raw"
+fence_open_re='^```'
+[[ $line =~ $fence_open_re ]] && mark="${BASH_REMATCH[1]}"
+P11
+
 undetected=""
 for probe in inline split indirect quoted printfv copied indirect_name inline_fn; do
   fence4_hazard "$probe_dir/$probe.sh" || undetected="$undetected $probe"
 done
 false_positive=""
-for probe in clean passthrough; do
+for probe in clean passthrough prefix_local; do
   fence4_hazard "$probe_dir/$probe.sh" && false_positive="$false_positive $probe"
 done
 if [ -n "$undetected" ]; then
   ng "fence 4 (guard the guard): the scan does not detect these coupling spellings, so its clean verdict on the real hooks means nothing:$undetected"
 elif [ -n "$false_positive" ]; then
-  ng "fence 4 (guard the guard): the scan flags$false_positive, which pass a GATE_ pattern to a helper instead of matching it. Four real hooks look like this; flagging them makes a clean state unreachable without an exemption list."
+  ng "fence 4 (guard the guard): the scan flags$false_positive, none of which is coupled to a shared constant: \`passthrough\` passes a GATE_ pattern to a helper instead of matching it (four real hooks look like this), and \`prefix_local\` matches a LOCAL regex whose name merely STARTS with a one-hop copy's name. Flagging either makes a clean state unreachable without an exemption list."
 else
-  ok "fence 4 (guard the guard): the scan detects all 8 coupling spellings and clears both non-coupling ones"
+  ok "fence 4 (guard the guard): the scan detects all 8 coupling spellings and clears all three non-coupling ones"
 fi
 
 if [ "$scanned" -lt 20 ]; then
