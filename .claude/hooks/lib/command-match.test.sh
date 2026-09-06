@@ -1784,6 +1784,35 @@ dq_case "a spaced -C value survives a rewritten verb" \
 dq_case "a spaced cd path survives a rewritten cd" \
   '"cd" "/a b" && git commit' 'cd "/a b" && git commit'
 
+# --- an ODD trailing BACKSLASH escapes the whitespace (go-to-k/cdkd#2650) ----
+# `cd\ /tmp` is ONE shell word, so it is not a `cd` at all -- bash answers
+# `cd /tmp: No such file or directory` and stays put. The token splitter here
+# breaks on whitespace alone, so it used to hand back `cd\`, rewrite that to
+# `cd`, and re-join with a plain space: a `cd` MANUFACTURED out of a command
+# bash never runs. Live: `cd\ /tmp ; echo hi > <tracked>` in the main checkout
+# on `main` came out of `main-tree-edit-gate` at rc=0 where it owed a 2.
+dq_same "an odd trailing backslash on the command word abandons" \
+  'cd\ /tmp && echo x > f'
+dq_same "the same in the subcommand slot" \
+  'git commit\ -m x'
+# EVEN is not odd: `\\` is a literal backslash, the space after it separates,
+# and the word really is `cd\` -- still not `cd`, and still left alone, but by
+# the existing backslash-in-result guard rather than by this one.
+dq_same "an even trailing backslash is a literal, not an escape" \
+  'cd\\ /tmp && echo x > f'
+# THE CONTROL THAT CAUGHT THE FIRST ATTEMPT. The parity walk reads a bounded
+# TAIL of the token, and the first spelling used `${t: -64}` unconditionally --
+# which bash evaluates to the EMPTY string when the token is shorter than the
+# window, unlike the analogous Python slice. Every short token then took the
+# unknowable-parity arm, so `gate_dequote_structural` abandoned on EVERY input
+# and the dequote silently stopped existing. A plain quoted verb is the
+# cheapest witness to that, and it is the one below.
+dq_case "a short verb still dequotes (bounded-tail regression)" \
+  'git "commit" -m x' 'git commit -m x'
+dq_case "a long token past the tail window still dequotes" \
+  'git "commit" -m aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  'git commit -m aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
 # --- the READER SITES, with a QUOTED structural token (go-to-k/cdkd#2333) ----
 # Closing this at `gate_matches` alone would not close it: every function that
 # decides a gate outcome from a segment reads the same stream, and each
@@ -1843,18 +1872,191 @@ lat_end=$(date +%s)
 lat_secs=$((lat_end - lat_start))
 if [ "$lat_secs" -le 4 ]; then
   pass=$((pass + 1))
-  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 4s)\n' "${#lat_cmd}" "$lat_secs"
+  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 8s)\n' "${#lat_cmd}" "$lat_secs"
 else
   fail=$((fail + 1))
-  printf 'FAIL latency: %s bytes took %ss, budget 4s\n' "${#lat_cmd}" "$lat_secs"
+  printf 'FAIL latency: %s bytes took %ss, budget 8s\n' "${#lat_cmd}" "$lat_secs"
   fail_log="${fail_log}FAIL latency: ${#lat_cmd} bytes took ${lat_secs}s -- the PreToolUse timeout is 10s and a KILLED hook cannot emit exit 2, which disarms every gate at once\n"
 fi
 
-CASE_FLOOR=546
-if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+# At the OBSERVED count, with no slack. It carried one case of slack until
+# go-to-k/cdkd#2650, which is the shape the differential's own header warns
+# about one directory over: slack is how a probe deletes cases and still
+# passes. Both builds agree on the number -- 556 under bash 3.2 and under 5.3
+# -- so no case is version-gated and a strict floor cannot fail on one runner
+# while passing on the other.
+
+# --- gate_segments_marked's SEGMENT-COUNT bound (go-to-k/cdkd#2650) ----------
+# The marking forks `printf | awk` PER SEGMENT, so its cost is linear in the
+# segment count. Measured before the bound: `( cd /tmpN ) ;` x 2000 took 11 s,
+# PAST the 10 s PreToolUse timeout -- and a killed hook cannot emit exit 2,
+# which disarms every gate at once. The bound makes the marking CONSERVATIVE
+# past the cap rather than absent: every segment marked 1, no `cd` honoured,
+# `main-tree-edit-gate` blocks. Both directions are asserted, because a bound
+# that only ever fires is a disabled feature and one that never fires is
+# decoration.
+mark_n() { # count -> the two tallies, space-separated
+  local n="$1" b="" i out
+  for i in $(seq 1 "$n"); do b="$b echo s$i ;"; done
+  out=$(gate_segments_marked "$b")
+  printf '%s %s' "$(printf '%s\n' "$out" | grep -c '^1	')" "$(printf '%s\n' "$out" | grep -c '^0	')"
+}
+# THE CAP VALUE IS PINNED FIRST. Every assertion below derives its expectation
+# from `$GATE_MARK_MAXSEG`, so with the cap set to 3 they all still passed --
+# the bound was fenced in shape and not in size, and a bound small enough to
+# fire on ordinary commands is a disabled feature wearing a passing test.
+if [ "$GATE_MARK_MAXSEG" = 200 ]; then
+  pass=$((pass + 1)); printf 'OK   marking bound: the cap is 200\n'
+else
+  fail=$((fail + 1)); printf 'FAIL marking bound: cap is %s, expected 200\n' "$GATE_MARK_MAXSEG"
+  fail_log="${fail_log}FAIL marking bound: GATE_MARK_MAXSEG is $GATE_MARK_MAXSEG; the cases below derive their expectations from it, so they cannot see the value change\n"
+fi
+if [ "$(mark_n "$GATE_MARK_MAXSEG")" = "0 $GATE_MARK_MAXSEG" ]; then
+  pass=$((pass + 1)); printf 'OK   marking bound: AT the cap every plain segment is still marked precisely\n'
+else
+  fail=$((fail + 1)); printf 'FAIL marking bound: at the cap, got [%s]\n' "$(mark_n "$GATE_MARK_MAXSEG")"
+  fail_log="${fail_log}FAIL marking bound: at the cap the precise path must still run; got [$(mark_n "$GATE_MARK_MAXSEG")]\n"
+fi
+_over=$((GATE_MARK_MAXSEG + 1))
+if [ "$(mark_n "$_over")" = "$_over 0" ]; then
+  pass=$((pass + 1)); printf 'OK   marking bound: ONE past the cap every segment is marked conservatively\n'
+else
+  fail=$((fail + 1)); printf 'FAIL marking bound: one past the cap, got [%s]\n' "$(mark_n "$_over")"
+  fail_log="${fail_log}FAIL marking bound: past the cap every segment must be marked 1 (no cd honoured); got [$(mark_n "$_over")]\n"
+fi
+mark_lat_cmd=""
+for _i in $(seq 1 2000); do mark_lat_cmd="$mark_lat_cmd ( cd /tmp$_i ) ;"; done
+mark_lat_start=$(date +%s)
+gate_segments_marked "$mark_lat_cmd" > /dev/null
+mark_lat_secs=$(( $(date +%s) - mark_lat_start ))
+# BUDGET 8s, NOT 4s, and the number is chosen from the thing that matters: the
+# PreToolUse timeout is 10s and a killed hook cannot emit exit 2. At 4s this
+# case went RED twice in five runs while other agents were busy on the same
+# machine -- a stable 2s standalone -- and a fence that fails on load is a
+# fence people learn to ignore. `date +%s` also has whole-second granularity,
+# so a 2s measurement carries +/-1s of quantisation before any contention.
+if [ "$mark_lat_secs" -le 8 ]; then
+  pass=$((pass + 1))
+  printf 'OK   latency: 2000 subshell segments through gate_segments_marked in %ss (budget 8s)\n' "$mark_lat_secs"
+else
   fail=$((fail + 1))
-  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least $CASE_FLOOR\n"
-  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+  printf 'FAIL latency: 2000 subshell segments took %ss, budget 8s\n' "$mark_lat_secs"
+  fail_log="${fail_log}FAIL latency: gate_segments_marked took ${mark_lat_secs}s on 2000 segments -- this measured 11s before the bound, past the 10s PreToolUse timeout\n"
+fi
+
+# --- gate_strip_prefix: ENGINE PARITY, not spelling -------------------------
+#
+# These are the only DIRECT cases this function has, and they exist because it
+# had none when a defect in it reached CI. `gate_strip_prefix` decides the
+# command word for every gate that resolves one, and the three patterns it uses
+# to strip leaders were written with escapes inside bracket expressions. A
+# backslash there is an ordinary MEMBER under POSIX, and the two bash engines
+# read the result differently, so the SAME command produced different verdicts
+# under 3.2 and 5.x -- silently, and always in the fail-open direction.
+#
+# Why HERE rather than in a gate's suite: this file sources the library
+# IN-PROCESS, so `run-tests.sh`'s `/bin/bash` pass runs the code under 3.2 with
+# no `HOOK_BASH` plumbing at all. That makes these the cheapest possible fence
+# for the class, and the one a future change to this function will trip first.
+#
+# Each case pins the resolved verb, which is what a gate actually consumes.
+# Reverting any of the three patterns to its inline escaped form reddens this
+# block under one engine and leaves it green under the other -- which is the
+# signature of the bug, and the reason a single-engine run cannot be trusted
+# here.
+strip_is() { # name, expected result, input
+  local name="$1" want="$2" in_="$3" got
+  got="$(gate_strip_prefix "$in_")"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want [%s], got [%s])\n' "$name" "$want" "$got"
+    fail_log+="FAIL $name\n  input: $in_\n  want:  $want\n  got:   $got\n"
+  fi
+}
+
+# A command word bash does NOT read as `cd`: `\\cd` is `\cd` after one round of
+# quote removal, which is not the builtin. Measured under both engines: the
+# shell stays put. With the escaped bracket class, 3.2 stripped the backslash
+# and handed the gates a `cd` that never ran.
+strip_is 'a doubled backslash is not stripped off the verb' '\\cd /tmp' '\\cd /tmp'
+# NOT A FENCE, and labelled so rather than deleted. None of the three patterns
+# looks inside a word, so this passes under an identity function and under
+# every revert probed -- it pins today's behaviour for a shape a future
+# mid-word rule would change, and claims nothing about the current one. The
+# discriminating twin is the LEADING-backslash case above it.
+strip_is 'a doubled backslash mid-word survives too (pin, not a fence)' 'c\\d /tmp' 'c\\d /tmp'
+# A single backslash IS quote removal, and bash does run this as cd.
+strip_is 'a single backslash before the verb is bash quoting' '\cd /tmp' '\cd /tmp'
+
+# Case-arm labels. The escaped form of this class made 5.x strip the label and
+# 3.2 leave it, so the verb behind it was invisible to every gate under 3.2.
+strip_is 'a plain case-arm label is stripped' 'pkill -f node' 'x) pkill -f node'
+strip_is 'a label containing an escaped paren is stripped' 'pkill -f node' 'x\) pkill -f node'
+strip_is 'a label that is only an escaped glob char is stripped' 'git commit -m z' '\?) git commit -m z'
+strip_is 'a case opener plus its first arm is stripped' 'pkill -f node' 'case y in x) pkill -f node'
+
+# Grouping punctuation. Same class, the two loops at the end of the function.
+strip_is 'a leading subshell paren is stripped' 'cd /tmp' '( cd /tmp'
+strip_is 'a leading brace group is stripped' 'cd /tmp' '{ cd /tmp'
+strip_is 'nested openers are stripped to stability' 'cd /tmp' '( { ( cd /tmp'
+strip_is 'a trailing closer is stripped' 'cd /tmp' 'cd /tmp )'
+strip_is 'a trailing brace is stripped' 'cd /tmp' 'cd /tmp }'
+# The negative controls: nothing here is a leader, so nothing may be removed.
+# Without these the block would pass just as well if the function returned its
+# input unchanged, which is exactly one of the two failure directions.
+strip_is 'an ordinary command is returned verbatim' 'cd /tmp' 'cd /tmp'
+strip_is 'a paren inside the argument is not a leader' 'echo a(b' 'echo a(b'
+strip_is 'a bare closer with no label is not an arm' ') cmd' ') cmd'
+# The CLOSE pattern's own discriminator. A trailing backslash is a line
+# continuation, not grouping punctuation -- but the escaped form `[\)\}]`
+# has a BACKSLASH as a set member, so it strips one. Both engines agree on
+# that, which is why this case is here and not in the parity block above:
+# without it, reverting the close pattern alone leaves this file green.
+strip_is 'a trailing backslash is not grouping punctuation' 'echo hi\\' 'echo hi\\'
+
+# THE FLOOR IS A COLLAPSE DETECTOR, NOT THE CASE COUNT -- and it is set BELOW
+# what any context currently reports, on purpose.
+#
+# It used to be calibrated to the number a particular invocation printed, and
+# that was measured wrong twice: 605 (the standalone count) reddened CI, and so
+# did 557, which came from this file's own failure message printing one MORE
+# than the number it compared. Both failures were about the floor, not about
+# coverage. The message is corrected below.
+#
+# Measured 2026-09-07 in three contexts under bash 5.3 AND 3.2 -- standalone
+# from this directory, from the repo root, and the exact
+# `HOOK_BASH=<shell> <shell> <suite>` form with the repo-root cwd that
+# `run-tests.sh` invokes (read it there; it is one line) -- and all three
+# report the same count. That is a statement about those three runs and NOT a
+# refutation of the historical 605/556 split, which nothing here reproduced:
+# `run-tests.sh` itself prints only `ok` / `FAIL` per suite, never the tally,
+# so its context cannot be observed any other way than by replaying its
+# invocation, which is what was done.
+#
+# The floor is left well under the observed number rather than pinned to it.
+# Pinning turns every added case into an edit here and every environment
+# difference into a red suite for a reason that has nothing to do with what
+# this file tests -- which is exactly how it was got wrong twice.
+#
+# So it does not move when cases are ADDED, either. A round that added sixteen
+# raised it by sixteen and had to be talked back down: that is the pinning
+# behaviour this paragraph argues against, wearing the other sign. The value
+# changes only when the SHAPE of the suite does -- a whole block deleted, or the
+# skipping-fixture condition changing -- and never as bookkeeping for new cases.
+CASE_FLOOR=556
+__ran=$((pass + fail))
+if [ "$__ran" -lt "$CASE_FLOOR" ]; then
+  # THE COUNT IS CAPTURED BEFORE `fail` IS INCREMENTED. Interpolating
+  # `pass + fail` after the increment reported one MORE case than the predicate
+  # compared, so the message read `only 557 ... expected at least 557` -- a
+  # failure that looks like an equality bug in the check. Someone reading it
+  # raises the floor to the number shown, the suite reds again for the same
+  # reason, and the real count is never learned. Measured; it cost a full
+  # suite run.
+  fail=$((fail + 1))
+  fail_log+="FAIL case floor: only $__ran cases ran, expected at least $CASE_FLOOR\n"
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$__ran" "$CASE_FLOOR"
 fi
 echo
 # --- gate_utf8_lenient: the RFC 3629 well-formedness table -------------------

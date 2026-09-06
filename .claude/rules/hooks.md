@@ -24,6 +24,16 @@ vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
   is a runtime error (#1458 shipped exactly that into `lib/command-match.sh`;
   #1477 found `provider-integ-gate.test.sh` failing 3 of 17 cases there —
   neither detectable from a bash-5-only run).
+- **Running the SUITE under 3.2 does not run the HOOK under 3.2** — the hooks
+  are `#!/usr/bin/env bash`, so a bare `bash "$HOOK"` takes whatever comes
+  first on PATH. `run-tests.sh` exports `HOOK_BASH` alongside each shell for
+  exactly this; a suite ignoring it advertises 3.2 coverage of its test rather
+  than of its subject. That hid a live fail-open until CI, the only runner
+  with 3.2 as both `bash` and `/bin/bash`: the two engines disagreed about a
+  bracket expression in `gate_strip_prefix` (go-to-k/cdkd#2650; the class is
+  written up in [hooks-class-fences.md](hooks-class-fences.md)). Reproduce the
+  runner by putting 3.2 FIRST on PATH, not by invoking the suite with
+  `/bin/bash`. go-to-k/cdkd#2715 lists the suites still missing the shim.
 - **A suite that exits 0 while printing a non-zero `fail: N` tally is a
   failure** — tally-not-exit-code is how the 3.2 breakage stayed invisible.
 - **Deliberately NOT part of `vp run check` / `vp run verify`** (throwaway
@@ -587,9 +597,12 @@ already fails open without `gh`.
   `Edit|Write|Bash`), and **`main-tree-dirty-detector.sh`** is its
   non-blocking PostToolUse backstop for the write targets a static scan
   cannot resolve. Full entries — the detection model, the Bash arm's literal
-  targets, the go-to-k/cdkd#2614 move to the shared `cd` resolver, and both
-  suites — in [hooks-main-tree-edit.md](hooks-main-tree-edit.md), which loads
-  when you touch either hook or its suite.
+  targets, the go-to-k/cdkd#2614 move to the shared `cd` resolver, the
+  go-to-k/cdkd#2650 ordered walk over `gate_segments_marked` with its two input
+  bounds, and all three suites (including the differential ORACLE, which
+  executes its corpus and compares the gate against what bash actually did) —
+  in [hooks-main-tree-edit.md](hooks-main-tree-edit.md), which loads when you
+  touch either hook, either suite, the oracle, or the shared matcher.
 
 - **`.claude/hooks/main-tree-git-cwd-detector.sh`** — PostToolUse (`Bash`)
   REACTIVE backstop for the cwd-RACE class: a command whose verdict is taken
