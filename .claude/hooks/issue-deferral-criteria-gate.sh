@@ -239,8 +239,13 @@ optin_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || true)
 # `prs?` is bounded by `([^[:alnum:]]|$)` rather than `\b` -- `\b` is a GNU
 # extension that BSD regcomp does not carry, so on macOS it would match nothing
 # and the gate would be inert.
-PR_SHAPE_RE='(own|separate)[[:space:]]+prs?([^[:alnum:]]|$)'
-PR_SHAPE_RE="$PR_SHAPE_RE"'|shar(e|es|ing)[[:space:]]+((a|an|the|its|their)[[:space:]]+)?prs?([^[:alnum:]]|$)'
+# `PR` and `pull request` are the SAME term, and so is a hyphen in place of the
+# space -- these are SPELLINGS of one noun, not the "third spelling in a third
+# round" the note below refuses to chase (which is about reasoning that never
+# names a PR at all). Measured before this alternation: `its own pull request`
+# and `its own-PR` both filed at rc=0 while `its own PR` gave 2.
+PR_SHAPE_RE='(own|separate)[[:space:]-]+(prs?|pull[[:space:]-]+requests?)([^[:alnum:]]|$)'
+PR_SHAPE_RE="$PR_SHAPE_RE"'|shar(e|es|ing)[[:space:]]+((a|an|the|its|their)[[:space:]]+)?(prs?|pull[[:space:]-]+requests?)([^[:alnum:]]|$)'
 # `(independent|separate)` rather than `independent` alone. `a separate review
 # surface` is as PR-shaped as `an independent` one, and the divergence was
 # measured against cdk-local's port of this gate, which already carried both:
@@ -549,9 +554,17 @@ heredoc_bodies_either() { # <raw spelling> <resolved path>
 #   2. the contents of the file at that path, unless arm 1 fired AND the
 #      command TRUNCATES the path (an APPEND leaves the existing content as
 #      the first half of the submitted body)
-#   3. the WHOLE command, when such a path was named, cannot be read, and no
-#      heredoc writes it -- a `printf > f` / `python3 -c ... > f` body, or an
-#      unresolvable `$VAR` path
+#   3. this SEGMENT plus every OTHER segment that WRITES the path, when such a
+#      path was named, cannot be read, and no heredoc writes it -- a
+#      `printf > f` body, or an unresolvable `$VAR` path. Not the whole
+#      command: that refuses a filing whose sibling `git commit -m` message
+#      merely QUOTES a PR-shaped line, and it does so even when a writer is
+#      present, so "is there a writer" is the wrong question and "WHICH segment
+#      is the writer" is the right one. NOTE this arm carries the writer`s
+#      COMMAND TEXT, not its output -- a `printf`-written body is only seen
+#      because the text appears in the command, so a writer over a READABLE
+#      file is not consulted at all (arm 2 wins, and arm 1 covers heredocs
+#      only).
 #   4. the inline `--body` value, plus the `-f`/`--field` `body=` forms the REST
 #      mint uses, quote-aware so a multi-word body stays one value
 #
@@ -601,12 +614,22 @@ heredoc_bodies_either() { # <raw spelling> <resolved path>
 # passes -- this gate demands nothing be PRESENT, so "cannot read" is never
 # evidence of a violation.
 input_body_text() { # <segment>
-  local seg="$1" f_raw f hd
+  local seg="$1" f_raw f hd have_hd
   f_raw=$(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
     if (/(?:^|\s)--input[=\s]+($GW)/) { print gate_unq($1), "\n"; }
   ' 2>/dev/null)
   [ -n "$f_raw" ] || return 0
-  case "$f_raw" in *'$'*|*'`'*) return 0 ;; esac
+  # A `$VAR` path cannot be resolved to disk -- but a heredoc in THIS command is
+  # keyed on the RAW spelling and needs no resolution, and writing the payload
+  # with a heredoc in the same call is the documented recipe. Measured before
+  # this arm: `cat > "$P" <<JSON ... JSON && gh api ... --input "$P"` filed at
+  # rc=0 while the `--body-file` twin gave 2.
+  case "$f_raw" in
+    *'$'*|*'`'*)
+      hd=$(heredoc_bodies_either "$f_raw" "$f_raw") || hd=""
+      [ -n "$hd" ] && printf '%s' "$hd" | jq -r '.body // empty' 2>/dev/null
+      return 0 ;;
+  esac
   # shellcheck disable=SC2088
   f="$f_raw"
   case "$f" in
@@ -614,35 +637,52 @@ input_body_text() { # <segment>
     "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;;
     *) f="$target_dir/$f" ;;
   esac
+  # The STATUS, not the OUTPUT. An empty heredoc body is legal, and reading
+  # emptiness as "no heredoc" falls through to the STALE file on disk -- so
+  # `cat > p.json <<JSON` with an empty body judged the PREVIOUS payload
+  # (measured rc=2 where the `--body-file` twin gives 0).
+  have_hd=0
   if [ ! -r "$f" ] || cmd_writes_either "$f_raw" "$f"; then
-    hd=$(heredoc_bodies_either "$f_raw" "$f") || hd=""
-    if [ -n "$hd" ]; then
-      printf '%s' "$hd" | jq -r '.body // empty' 2>/dev/null || true
-      return 0
-    fi
+    hd=$(heredoc_bodies_either "$f_raw" "$f") && have_hd=1
+  fi
+  if [ "$have_hd" = "1" ]; then
+    printf '%s' "$hd" | jq -r '.body // empty' 2>/dev/null || true
+    return 0
   fi
   [ -r "$f" ] || return 0
   jq -r '.body // empty' "$f" 2>/dev/null || true
 }
 
-# Restore the line structure `gate_segments` flattened, for the ONE value the
-# caller already extracted from this segment.
+# Restore the line structure `gate_segments` flattened, for the values the
+# caller extracted from THIS segment.
 #
-# It is a LOOKUP, not a re-extraction: a raw value is used only when collapsing
-# its newlines to spaces reproduces the extracted line byte for byte, so the
-# characters never change and only newline POSITIONS move -- which loosens the
-# reason boundary, never tightens it.
+# The lookup is scoped to the segment's own bytes, and the segmenter makes that
+# exact rather than approximate: it rewrites a newline to a SPACE and leaves
+# every other byte alone, so collapsing the whole command the same way produces
+# a string of identical LENGTH in which the segment appears verbatim. Its byte
+# offset there is its byte offset in the raw command, and the raw slice is that
+# offset plus the segment's length.
 #
-# KNOWN BOUND, measured rather than claimed: the lookup table is built from the
-# whole raw command, so a value in ANOTHER segment whose collapsed form is
-# byte-identical to this one wins the lookup. Two `gh issue create` calls in
-# one chain can be crafted that way. It is fail-OPEN only (a restored value has
-# MORE terminators than the flat one, so the reason gets shorter, never
-# longer), and scoping it properly needs a raw-slice-per-segment API the
-# segmenter does not expose -- tracked separately rather than hidden here.
-restore_inline_newlines() { # <extracted body values, one per line> <raw command>
-  local values="$1" raw="$2" restored
-  restored=$(printf '%s' "$raw" | GATE_COLLAPSED="$values" perl -0777 -ne "$GATE_PERL_WORD"'
+# Scoping matters because an unscoped table decides this segment's verdict from
+# ANOTHER segment's text: a `gh issue comment --body` whose collapsed form
+# equals the create's body handed the create its own newline placement, and the
+# create alone reached the opposite verdict. Not a bounded fail-open either --
+# added line structure can expose a LATER `Session-fit:` that the flat line hid,
+# because `scan_text` reads the first match per line.
+#
+# Restoration is not a safety direction, it is ACCURACY: the gate should judge
+# the body gh will send. A value the slice does not contain is left flat.
+restore_inline_newlines() { # <extracted values, one per line> <raw command> <segment>
+  local values="$1" raw="$2" seg="$3" restored
+  restored=$(GATE_RAW="$raw" GATE_SEG="$seg" GATE_COLLAPSED="$values" perl -e "$GATE_PERL_WORD"'
+    my $raw = $ENV{GATE_RAW};
+    my $seg = $ENV{GATE_SEG};
+    (my $flat = $raw) =~ s/\n/ /g;
+    my $off = index($flat, $seg);
+    # No slice means the segment did not come from this command text (a caller
+    # passing something else, or a segmenter that rewrote more than newlines).
+    # Print the input unchanged rather than guess.
+    my $slice = $off < 0 ? "" : substr($raw, $off, length($seg));
     my %raw;
     my $keep = sub {
       my ($v) = @_;
@@ -650,12 +690,20 @@ restore_inline_newlines() { # <extracted body values, one per line> <raw command
       (my $c = $v) =~ s/\n/ /g;
       $raw{$c} = $v unless exists $raw{$c};
     };
-    while (/(?:^|\s)(?:--body|-b)[=\s]+($GW)/g) { $keep->(gate_unq($1)); }
-    while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]*($GW)/g) {
-      my $v = gate_unq($1);
-      next unless $v =~ s/^body=//;
-      next if $v =~ /^\@/;
-      $keep->($v);
+    # MIRROR the extractor exactly: `--body` needs a separator, `-b` does not.
+    # Demanding one for both false-blocks the GLUED `-b<multi-line body>` -- it
+    # is extracted flattened and then never restored, which is precisely the
+    # defect this function exists to prevent (measured rc=2 on a legitimate
+    # two-field body).
+    for ($slice) {
+      while (/(?:^|\s)--body[=\s]+($GW)/g) { $keep->(gate_unq($1)); }
+      while (/(?:^|\s)-b[=\s]*($GW)/g)     { $keep->(gate_unq($1)); }
+      while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]*($GW)/g) {
+        my $v = gate_unq($1);
+        next unless $v =~ s/^body=//;
+        next if $v =~ /^\@/;
+        $keep->($v);
+      }
     }
     for my $l (split /\n/, $ENV{GATE_COLLAPSED}, -1) {
       print exists $raw{$l} ? $raw{$l} : $l, "\n";
@@ -666,6 +714,38 @@ restore_inline_newlines() { # <extracted body values, one per line> <raw command
   if [ -n "$restored" ]; then printf '%s' "$restored"; else printf '%s' "$values"; fi
 }
 
+# The body-file fallback text: the `gh` SEGMENT, plus every OTHER segment that
+# WRITES the path -- never the whole command.
+#
+# Three shapes, and only this rule gets all three right. Measured, each on a
+# body whose PR-shaped text is in the place named:
+#
+#   `$seg` only    lost the writer: `printf <PR-shaped> > b.md && gh issue
+#                  create --body-file b.md` (b.md unreadable) went 2 -> 0.
+#   `$cmd` whole   refused a filing whose sibling `git commit -m` message
+#                  merely QUOTES a PR-shaped line: 0 -> 2.
+#   `$cmd` when a  still refuses it the moment BOTH exist in one chain --
+#   writer exists  `git commit -m <PR-shaped> && printf <clean> > b.md &&
+#                  gh issue create --body-file b.md` gave 2.
+#
+# So the question is not "is there a writer somewhere" but "WHICH segment is
+# the writer", and the segmenter already answers it. `cmd_writes` reads the
+# global `$cmd`, so each segment is tested with that global rebound inside a
+# SUBSHELL -- rebinding it in place would corrupt every later scan.
+fallback_body_text() { # <raw spelling> <resolved path> <gh segment>
+  local f_raw="$1" f="$2" seg="$3" s out
+  out="$seg"
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    [ "$s" = "$seg" ] && continue
+    if ( cmd="$s"; cmd_writes_either "$f_raw" "$f" ); then
+      out="$out
+$s"
+    fi
+  done < <(gate_segments "$cmd")
+  printf '%s' "$out"
+}
+
 segment_body_text() { # <segment>
   local seg="$1" f f_raw out="" hd have_hd
   while IFS= read -r f_raw; do
@@ -674,25 +754,14 @@ segment_body_text() { # <segment>
     # TEXT. Treat it like an unreadable path and fall back to the whole command
     # rather than refusing: unlike dup-check, this gate demands nothing be
     # PRESENT, so "cannot read" is not evidence of a violation.
-    # `$seg` unless the command WRITES this path, in which case `$cmd`. Both
-    # halves are measured, and they pull opposite ways:
-    #
-    #   `$cmd` always   a `git commit -m` message QUOTING a PR-shaped line --
-    #                   routine here; the commit introducing this gate does it
-    #                   -- was read as the issue body and REFUSED (rc=2).
-    #   `$seg` always   `printf <PR-shaped> > b.md && gh issue create
-    #                   --body-file b.md` with `b.md` unreadable lost the
-    #                   writer, which lives in ANOTHER segment (rc=2 -> 0).
-    #
-    # The writer is exactly what tells them apart, and `cmd_writes_either`
-    # already answers it against the RAW command text -- so it answers for an
-    # unexpanded `$VAR` path too, which is the arm below.
+    # An unexpanded `$VAR` or a substitution cannot be resolved from command
+    # TEXT. Treat it like an unreadable path and fall back rather than refuse:
+    # unlike dup-check, this gate demands nothing be PRESENT, so "cannot read"
+    # is not evidence of a violation. Both spellings passed to the writer probe
+    # are the RAW one -- there is no resolved path here, which is the point.
     case "$f_raw" in
-      *'$'*|*'`'*)
-        if cmd_writes_either "$f_raw" "$f_raw"; then out="$out
-$cmd"; else out="$out
-$seg"; fi
-        continue ;;
+      *'$'*|*'`'*) out="$out
+$(fallback_body_text "$f_raw" "$f_raw" "$seg")"; continue ;;
     esac
     # BOTH spellings are kept. `f` is the path to READ; `f_raw` is the path as
     # the command SPELLS it, and the write-detection above matches against the
@@ -727,16 +796,9 @@ $hd"
       out="$out
 $(cat "$f" 2>/dev/null || true)"
     elif [ "$have_hd" != "1" ]; then
-      # Same split as the unresolvable-path arm above: the writer of an
-      # unreadable body file lives in another segment, everything else does
-      # not.
-      if cmd_writes_either "$f_raw" "$f"; then
-        out="$out
-$cmd"
-      else
-        out="$out
-$seg"
-      fi
+      # Same rule as the unresolvable-path arm above.
+      out="$out
+$(fallback_body_text "$f_raw" "$f" "$seg")"
     fi
   # `body=@` is matched FIRST so an `-F body=@path` is not also read as a bare
   # `-F path`. The bare `-F <path>` arm is not optional: `-F` is gh's short
@@ -835,7 +897,7 @@ while IFS= read -r seg; do
     body_text=$(input_body_text "$seg")
   fi
   [ -n "$body_text" ] || continue
-  body_text=$(restore_inline_newlines "$body_text" "$cmd")
+  body_text=$(restore_inline_newlines "$body_text" "$cmd" "$seg")
   if scan_text "$body_text"; then
     offending_seg="$seg"
     break

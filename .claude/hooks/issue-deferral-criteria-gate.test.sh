@@ -45,18 +45,19 @@
 #     the continuation boundary now pins the NAMED fields rather than any
 #     `word:`, with the `Notes:` sibling-field case as the control
 #
-# MUTATION-PROBED rather than asserted. EVERY number below was re-taken on the
-# 121-case suite after the review round that added the inline-body parity, the
-# `--input` channel, the `-b` arm and the writer-aware fallback -- not carried
-# forward. A tally says how many cases ran, not what any of them fences, so
-# each fence was broken in the real hook and the survivors counted:
+# MUTATION-PROBED rather than asserted. EVERY number below was re-taken
+# wholesale on the 125-case suite after the round-3 review -- not carried
+# forward, and three of the previous round's numbers did NOT reproduce, which
+# is the reason for the rule. A tally says how many cases ran, not what any of
+# them fences, so each fence was broken in the real hook and the survivors
+# counted:
 #
-#   always-`exit 0` stub                     fails 68   (nothing passes vacuously)
-#   always-`exit 2` stub                     fails 57   (nor does anything block
+#   always-`exit 0` stub                     fails 70   (nothing passes vacuously)
+#   always-`exit 2` stub                     fails 60   (nor does anything block
 #                                                        vacuously)
 #   `$GW` -> the retired class (below)       fails 43   -- the whole quoted-value
 #                                                        family at once: spaced
-#                                                        paths, `-f body='...'`,
+#                                                        paths, `-f body=<text>`,
 #                                                        the glued flags and the
 #                                                        ANSI-C spellings
 #   `gate_perl_word_ok` -> always true       fails  1   -- the load-guard case.
@@ -67,58 +68,60 @@
 #   `key_re` -> any `word:`                  fails  3   -- the wrapped sentence
 #                                                        whose second line carries
 #                                                        a colon, its control, and
-#                                                        the `Note:`-vs-`Notes:`
-#                                                        case. The SIBLING ports
-#                                                        deliberately run the
+#                                                        the URL-scheme case. The
+#                                                        SIBLING ports run the
 #                                                        any-`word:` boundary with
 #                                                        a `://` carve-out; this
 #                                                        repo keeps the named set,
-#                                                        and these three cases are
-#                                                        what that choice costs and
-#                                                        buys.
+#                                                        and these three are what
+#                                                        that choice buys. What it
+#                                                        COSTS is a `Note:` /
+#                                                        `Repro:` sibling folding
+#                                                        INTO the reason, which is
+#                                                        deliberate here and has
+#                                                        no case
 #   `key_re` minus ONE field name            fails  1 each for session-fit,
 #                                                        severity, estimate and
 #                                                        dup-check; 2 for notes
 #                                                        (the older $SIBLING case);
-#                                                        3 for effort.
-#                                                        Six probes, not one: the
-#                                                        any-`word:` mutation above
-#                                                        leaves all six passing,
-#                                                        because it fires EARLIER
-#                                                        and stops the reason at
-#                                                        the same place
-#   short-flag `[=\s]*` -> `[=\s]+`        fails  3   -- the GLUED spellings
-#                                                      (`-F<path>`, `-b<text>`),
-#                                                      fenced apart from the
-#                                                      quoting fix. EVERY `[=\s]*`
-#                                                      site at once: changing only
-#                                                      the `-F` one fails 1, so the
-#                                                      spelling of the probe is the
-#                                                      number
-#   `restore_inline_newlines` call removed   fails  1   -- the inline multi-line
-#                                                      `--body`, which flattens to
-#                                                      one line and folds the next
+#                                                        3 for effort
+#   short-flag `[=\s]*` -> `[=\s]+`        fails  3   -- the GLUED spellings.
+#                                                      EVERY `[=\s]*` site at
+#                                                      once: changing only the
+#                                                      `-F` one fails 1, so the
+#                                                      spelling of the probe IS
+#                                                      the number
+#   `restore_inline_newlines` call removed   fails  2   -- the inline multi-line
+#                                                      `--body` and its glued `-b`
+#                                                      twin, which flatten to one
+#                                                      line and fold the next
 #                                                      field into the reason
-#   writer-aware fallback -> `$seg` always   fails  1   -- an unreadable body file
-#                                                      whose `printf` writer sits
-#                                                      in ANOTHER segment
-#   writer-aware fallback -> `$cmd` always   fails  1   -- a sibling `git commit
-#                                                      -m` message QUOTING a
-#                                                      PR-shaped line. BOTH arms
-#                                                      (unresolvable-path and
-#                                                      unreadable-file) at once:
-#                                                      each case reaches only one
-#                                                      of them, so a one-arm
-#                                                      probe fails 0 and reads as
-#                                                      unfenced
-#   `input_body_text` call removed           fails  1   -- the `gh api --input`
-#                                                      JSON payload
-#   `--input` path resolution dropped        fails  1   -- the RELATIVE payload
+#   restore slice -> the whole raw command   fails  1   -- a sibling
+#                                                      `gh issue comment` body
+#                                                      deciding the create verdict
+#   restore `-b[=\s]*` -> `[=\s]+`         fails  1   -- the GLUED `-b<body>`,
+#                                                      extracted but never
+#                                                      restored
+#   fallback -> the segment only             fails  2   -- an unreadable and an
+#                                                      unresolvable body file
+#                                                      whose writer sits in
+#                                                      ANOTHER segment
+#   `input_body_text` call removed           fails  4   -- every `gh api --input`
+#                                                      case
+#   `--input` heredoc STATUS -> emptiness    fails  3   -- an EMPTY heredoc
+#                                                      rewrite falling through to
+#                                                      the stale payload on disk
+#   `--input` `$VAR` heredoc arm removed     fails  1
+#   `--input` relative join dropped          fails  1
 #   `--input` raw path spelling dropped      fails  1   -- the relative payload
 #                                                      written by a heredoc in the
 #                                                      same call
-#   `-b` arm removed                         fails  1   -- gh short `--body`
+#   `-b` extractor arm removed               fails  1   -- gh short `--body`
 #   `[*_]*next` -> `next`                    fails  2   -- the BOLDED value
+#
+# TWO PROBES NEED BOTH SITES BROKEN AT ONCE. The fallback lives at two arms
+# (unresolvable-path and unreadable-file) and each case reaches only one, so a
+# one-arm mutation fails 0 and reads as unfenced. Same for the `[=\s]*` row.
 #
 # THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
 # rather than the intent. A review measured three faithful-looking reverts of
@@ -530,13 +533,6 @@ run "gh api --input: an unreadable payload is not evidence" \
 
 # `-b` is gh`s documented short `--body`; it was extracted by nothing, so the
 # same PR-shaped reason gave rc=0 through it and rc=2 through `--body`.
-run "-b (gh short --body) carries a PR-shaped reason" \
-  "gh issue create --title t -b 'Session-fit: next (not this session) -- it needs its own PR'" \
-  "$TMPROOT" 2
-run "-b (gh short --body) carries a legitimate reason" \
-  "gh issue create --title t -b 'Session-fit: next (not this session) -- blocked on an AWS quota increase'" \
-  "$TMPROOT" 0
-
 # Cases for the fixes an earlier round shipped UNFENCED -- each verified to go
 # red when its own line is reverted, and green otherwise.
 run "-b (gh short --body) carries a PR-shaped reason" \
@@ -568,12 +564,46 @@ run "gh api --input: a relative payload path resolves against the cwd" \
   "gh api repos/o/r/issues -f title=t --input rel-input.json" "$TMPROOT" 2
 # RELATIVE and heredoc-written at once: the heredoc lookup is handed BOTH the
 # raw spelling and the resolved path, and only the raw one matches a command
-# that writes `hd-input.json`. Dropping either spelling makes this case red.
+# that writes `hd-input.json`. The RAW spelling is the load-bearing one --
+# dropping it makes this case red; passing the resolved path twice does not.
 run "gh api --input: a relative payload written by a heredoc in the same call" \
   "cat > hd-input.json <<'JSON'
 {\"title\":\"t\",\"body\":\"Session-fit: next (not this session) -- it needs its own PR\"}
 JSON
 gh api repos/o/r/issues -f title=t --input hd-input.json" "$TMPROOT" 2
+
+# Round-3 review shapes, each measured before the fix and each killed by
+# mutating its own line.
+run "a GLUED -b multi-line body is restored too" \
+  "gh issue create --title t -b'Session-fit: next (not this session) -- blocked on an AWS quota increase
+Effort: large (L) -- a behavior change needing its own PR plus review'" "$TMPROOT" 0
+# The fallback must be the SEGMENT plus the WRITER segments, never the whole
+# command: with a writer AND a quoting sibling in one chain, a `$cmd` fallback
+# refuses a clean body.
+run "a writer and a quoting sibling in one chain do not collide" \
+  "git commit -m 'quote: Session-fit: next (not this session) -- it needs its own PR' && printf 'ok\\n' > $TMPROOT/nodir/b.md && gh issue create --title t --body-file $TMPROOT/nodir/b.md" \
+  "$TMPROOT" 0
+run "an unresolvable body-file whose writer is in the command is judged" \
+  "printf 'Session-fit: next (not this session) -- it needs its own PR\\n' > \"\$BODY\" && gh issue create --title t --body-file \"\$BODY\"" \
+  "$TMPROOT" 2
+# The restore lookup is scoped to this segment's raw slice: another segment's
+# body must not decide this one's verdict.
+run "a sibling comment body does not decide the create verdict" \
+  "gh issue comment 1 --body 'Session-fit: now -- fine.
+Session-fit: next (not this session) -- it needs its own PR' && gh issue create --title t --body 'Session-fit: now -- fine. Session-fit: next (not this session) -- it needs its own PR'" \
+  "$TMPROOT" 0
+# An EMPTY heredoc body is legal, so the STATUS reports whether a heredoc was
+# found -- reading emptiness as "none" falls through to the stale file on disk.
+printf '{"title":"t","body":"Session-fit: next (not this session) -- it needs its own PR"}\n' > "$TMPROOT/stale-input.json"
+run "gh api --input: an empty heredoc rewrite supersedes the stale payload" \
+  "cat > $TMPROOT/stale-input.json <<'JSON'
+JSON
+gh api repos/o/r/issues -f title=t --input $TMPROOT/stale-input.json" "$TMPROOT" 0
+run "gh api --input: a \$VAR payload written by a heredoc is still read" \
+  "cat > \"\$P\" <<'JSON'
+{\"title\":\"t\",\"body\":\"Session-fit: next (not this session) -- it needs its own PR\"}
+JSON
+gh api repos/o/r/issues -f title=t --input \"\$P\"" "$TMPROOT" 2
 
 # --- repo opt-in scope (issue #1259) ---------------------------------------
 cp "$OWNPR" "$NOOPTIN/own-pr.md"

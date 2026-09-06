@@ -521,8 +521,10 @@ These one-shot hooks block known foot-guns at the source.
   `gh-body-english-gate`'s #2397 heredoc extraction: precedence is the heredoc
   body this command writes, then the file on disk (unless a TRUNCATING write
   superseded it — an APPEND still reads it), then a fallback that is the
-  SEGMENT — or the whole command when the command WRITES the body path, since
-  a `printf … > b.md` writer lives in another segment — then an inline
+  SEGMENT plus every OTHER segment that WRITES the body path — never the whole
+  command, which refuses a filing whose sibling `git commit -m` message merely
+  QUOTES a PR-shaped line, and not the segment alone, which loses a
+  `printf … > b.md` writer — then an inline
   `--body` / `-b`, then `.body` out of a `gh api --input` JSON payload. The
   last two channels and the writer-aware split are #2707: `-b` and `--input`
   were read by nothing (rc=0 on a PR-shaped `next`), and a `$cmd`-always
@@ -532,9 +534,17 @@ These one-shot hooks block known foot-guns at the source.
   arrived flattened and every reason terminator became unreachable, refusing a
   legitimate `next` whose `Effort:` line quotes
   [session-report.md](session-report.md)'s own "needing its own PR plus
-  review" wording. The restore is a LOOKUP against the raw command, keyed on
-  the extracted value collapsing back byte-for-byte, so characters never
-  change and only newline positions move. Without that the one-call shape was a FAIL-OPEN whenever
+  review" wording. The restore is a LOOKUP against this segment's
+  own bytes, keyed on the extracted value collapsing back byte-for-byte. The
+  slice is exact rather than approximate: the segmenter rewrites a newline to
+  a SPACE and leaves every other byte alone, so collapsing the whole command
+  the same way gives a string of identical length in which the segment appears
+  verbatim, and its offset there is its offset in the raw command. Scoping is
+  load-bearing — an unscoped table let a sibling `gh issue comment --body`
+  decide the create's verdict — and restoration is ACCURACY rather than a
+  safety direction: added line structure can also expose a later
+  `Session-fit:` the flat line hid, because `scan_text` reads the first match
+  per line. Without that the one-call shape was a FAIL-OPEN whenever
   the target path already existed: the gate judged the PREVIOUS body and
   passed (measured — stale file present rc=0, file absent rc=2). Unlike
   `issue-dup-check-gate`, an UNREADABLE `--body-file` still does not block:
@@ -552,9 +562,9 @@ These one-shot hooks block known foot-guns at the source.
   PR-shaped `next` criterion to cite. Bypass
   `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, from the env or a leading assignment
   in the command text (#2368), for an INLINE quote of PR-shaped reasoning.
-  Smoke test: `issue-deferral-criteria-gate.test.sh` (121 cases, bash 5.x +
-  Re-probed on the 121-case suite: `exit 0` 68, `exit 2` 57, `$GW` reverted
-  43, short-flag 3, prelude guard 1. Per-fence tallies (the boundary, the
+  Smoke test: `issue-deferral-criteria-gate.test.sh` (125 cases, bash 5.x and
+  3.2.57). Re-probed wholesale on the 125-case suite: `exit 0` stub 70,
+  `exit 2` stub 60, `$GW` reverted 43, short-flag 3, prelude guard 1. Per-fence tallies (the boundary, the
   six `key_re` field names, segment scoping, the fence strip, the heredoc
   arms) live in the suite header, which is re-measured wholesale each round.
   
