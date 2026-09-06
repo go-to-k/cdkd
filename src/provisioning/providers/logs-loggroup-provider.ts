@@ -34,6 +34,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
+import { toFiniteNumber } from '../dynamodb-warm-throughput.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -41,6 +42,125 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * Refuse a `RetentionInDays` the send path cannot USE (issue [#2521]).
+ *
+ * **The scope of this refusal is a TEST, not a paragraph.** Every review round
+ * on issue [#2521] found a hole in a PROSE statement of it — a coercible
+ * negative that fell through to `DeleteRetentionPolicy`, an unusable value
+ * silenced by the wrong change gate, wrong cells in the hand-written table
+ * that replaced those sentences, and then the one non-finite number
+ * JavaScript makes FALSY. No count is given here: the count itself drifted
+ * between this comment and the changelog, which is the same failure one level
+ * up. The table now lives in
+ * `tests/unit/provisioning/logs-loggroup-provider-retention-coercion.test.ts`
+ * as `CREATE_MATRIX` / `UPDATE_MATRIX`: one row per (value, previous) pair,
+ * each asserting which AWS call goes out, each carrying what the pre-#2521
+ * code did. Read a change against those rows and add one for any pair they do
+ * not cover; do not restate the rule here, because a fourth restatement is
+ * the thing that keeps being wrong.
+ *
+ * THREE refusal CASES across TWO `throw` statements — the non-finite guard
+ * clause at the top of the body has its own, and the other two share the
+ * second, differing only in the `detail` clause. Only the WHY of each:
+ *
+ *  - **a non-finite NUMBER** (`NaN`, `Infinity`, `-Infinity`). It sits ahead
+ *    of the falsy return because `NaN` is FALSY: without it that value exits
+ *    early, fails the `> 0` send test and reaches `DeleteRetentionPolicy`,
+ *    while its two siblings — truthy — were already refused. Leaving one
+ *    member of a family out is the inconsistency the negative arm below
+ *    introduced, so the arm names the family.
+ *  - **not a number at all** (`'  '`, `'abc'`, `[]`, `{}`, `true`). The
+ *    pre-coercion code tested `if (properties['RetentionInDays'])` and handed
+ *    the raw value to `PutRetentionPolicyCommand`, so CloudWatch Logs rejected
+ *    it. Refusing moves that rejection one layer earlier and names the
+ *    property.
+ *  - **a NEGATIVE number** (`-1`, `'-1'`). It coerces, so a refusal gated on
+ *    coercibility alone let it through; it then failed the `> 0` send test and
+ *    fell into the UPDATE path's `else`, which issues
+ *    `DeleteRetentionPolicy` — a template typo SILENTLY REMOVING a live
+ *    retention where the old code sent `-1` and failed loudly.
+ *
+ * The FALSY values pass through, as they did before — `0`, `''`, `false`,
+ * `null` and absent; `NaN` is the one exception, refused above because it is a
+ * malformed number rather than a spelling of "no retention".
+ *
+ * `'0'` is TRUTHY, so it reaches this function and passes too: zero is
+ * what {@link LogsLogGroupProvider.readCurrentState} records for a group with
+ * no retention policy, and CloudFormation coerces `'0'` to `0`, so routing the
+ * string to the same arm as the number is the consistency the coercion is for.
+ * On the UPDATE path against a live positive retention that is a real change —
+ * it DELETES where the old code sent and was rejected — and `UPDATE_MATRIX`
+ * pins it.
+ *
+ * The message names the value's TYPE and never the value. A provider's
+ * `properties` bag arrives with dynamic references already RESOLVED, so a
+ * `{{resolve:secretsmanager:...}}` scalar is PLAINTEXT by the time it reaches
+ * here, and this function has no masker to thread — `create()` takes no
+ * `CreateContext` and `applyUpdate` no `UpdateContext`
+ * (`.claude/rules/provider-masking.md`). Interpolating it as
+ * `${JSON.stringify(raw)}` was the first draft and
+ * `vp run audit:provider-secret-mask:check` refused it — but read that as one
+ * SPELLING being fenced, not the rule: the critic's population is
+ * interpolated `JSON.stringify` calls, so a bare `${raw}` here would leave it
+ * green. Do not put the value back without threading the capability first.
+ */
+function assertUsableRetention(
+  raw: unknown,
+  coerced: number | undefined,
+  logicalId: string,
+  resourceType: string
+): void {
+  // BEFORE the falsy return, because `NaN` is FALSY. Without this arm it exits
+  // here, fails the `> 0` send test, and reaches `DeleteRetentionPolicy` — the
+  // same silent-removal outcome as the negative arm below, reached through the
+  // one non-finite number JavaScript makes falsy, while its two truthy
+  // siblings were already refused.
+  //
+  // UNREACHABLE in production, and that is stated rather than argued around:
+  // the deploy-side bag is `JSON.parse` of the cloud assembly and the previous
+  // bag is `JSON.parse` of `state.json`, neither of which JSON can express;
+  // `cdkd import --migrate-from-cloudformation` synthesizes and reads the same
+  // JSON assembly rather than handing a YAML bag to a provider, so the `.nan`
+  // / `.inf` route an earlier revision of this comment claimed does not exist.
+  // Two review rounds traced that independently. It is kept as defence with no
+  // reachable case, for the same reason the family is named at all: a member
+  // left out is one to be rediscovered.
+  //
+  // Pre-#2521 `NaN` DELETED too (the old gate was `if (retentionInDays)` on
+  // the raw value), so nothing here repairs a regression.
+  //
+  // `null`, `''` and `false` deliberately stay OUT and keep taking the delete
+  // arm. Not because they are better-formed — `''` and `false` are as
+  // malformed as `true`, which IS refused, and unlike `NaN` they are
+  // reachable — but because the whole FALSY family behaves exactly as it did
+  // pre-#2521, and narrowing it is a decision about what CloudFormation's
+  // never-expire spelling is, wider than issue [#2521]. `NaN` is separated
+  // only because it is a NUMBER whose siblings this change already refuses.
+  if (typeof raw === 'number' && !Number.isFinite(raw)) {
+    throw new ProvisioningError(
+      `${logicalId} (${resourceType}): RetentionInDays must be a non-negative number or a ` +
+        `numeric string (CloudFormation coerces '30' to 30); the template declares a ` +
+        `non-finite number`,
+      resourceType,
+      logicalId
+    );
+  }
+  if (!raw) return;
+  if (coerced !== undefined && coerced >= 0) return;
+  const detail =
+    coerced === undefined
+      ? `the template's value is of type ${Array.isArray(raw) ? 'array' : typeof raw} and ` +
+        `does not parse as a finite number`
+      : 'the template declares a negative number';
+  throw new ProvisioningError(
+    `${logicalId} (${resourceType}): RetentionInDays must be a non-negative number or a ` +
+      `numeric string (CloudFormation coerces '30' to 30); ${detail}`,
+    resourceType,
+    logicalId
+  );
+}
 
 /**
  * AWS CloudWatch Logs LogGroup Provider
@@ -178,9 +298,39 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // never delete a pre-existing log group. See Issue #376 for the
       // cross-provider sweep.
       try {
-        // Apply retention policy if specified
-        const retentionInDays = properties['RetentionInDays'] as number | undefined;
-        if (retentionInDays) {
+        // Apply retention policy if specified.
+        //
+        // COERCED, not cast (issue [#2521]). CloudFormation is stringly typed
+        // and coerces `RetentionInDays: '30'` to the number its schema
+        // declares; the SDK does not — it serializes whatever it is handed, so
+        // a `'30'` reached CloudWatch Logs as a JSON string. `toFiniteNumber`
+        // is the repo's one answer to "is this stringly-typed CFn value a
+        // number?" (see its doc for why it is not a bare `Number()`).
+        const rawRetention = properties['RetentionInDays'];
+        const retentionInDays = toFiniteNumber(rawRetention);
+        // Unconditional here, unlike the UPDATE path's twin, and the
+        // asymmetry has ONE reason, not two: a create has no previous side, so
+        // there is no "unchanged" case to exempt.
+        //
+        // It is NOT that nothing has been mutated yet — `CreateLogGroupCommand`
+        // ran about a hundred lines up, so a throw here does leave AWS changed.
+        // What keeps that from orphaning the log group is the inner `catch`
+        // below, which issues a BEST-EFFORT `DeleteLogGroupCommand` gated on
+        // `createdNewLogGroup`. Best-effort is the operative word: if that
+        // delete itself fails, the failure is a `warn` naming the manual
+        // `aws logs delete-log-group` and the group survives, so this refusal
+        // can still cost an orphan on a bad day. That is the pre-existing
+        // shape of every post-create wiring failure in this method, not
+        // something the refusal introduced — and it is why the refusal is here
+        // rather than further down.
+        //
+        // What each value does is the table on {@link assertUsableRetention};
+        // on THIS path the refusal turns an AWS-side rejection into a
+        // cdkd-side one naming the property, and every falsy value is still
+        // skipped exactly as before rather than read as a request to remove a
+        // retention that was never set.
+        assertUsableRetention(rawRetention, retentionInDays, logicalId, resourceType);
+        if (retentionInDays !== undefined && retentionInDays > 0) {
           await this.logsClient.send(
             new PutRetentionPolicyCommand({
               logGroupName,
@@ -310,7 +460,13 @@ export class LogsLogGroupProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     try {
-      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
+      return await this.applyUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
       // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
@@ -330,6 +486,10 @@ export class LogsLogGroupProvider implements ResourceProvider {
   private async applyUpdate(
     logicalId: string,
     physicalId: string,
+    // Threaded rather than re-spelled as a literal: `update()` already
+    // receives it, and a hardcoded type in a refusal is a second place to
+    // update if this provider ever serves another one.
+    resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
@@ -362,9 +522,10 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // guaranteed to fail on the second deploy. (This also retires the
       // ADVICE half of issue [#2521], which filed the same line for reading
       // the DESIRED bag while the guard reads the RECORDED one: with no
-      // condition left, there is no bag to read. Its other half — a
+      // condition left, there is no bag to read. Its other two halves — a
       // string-valued retention defeating the guard's `typeof === 'number'`
-      // test — is untouched and still open.)
+      // test, and the guard never reading `observedProperties` — were closed
+      // separately, in `stateful-types.ts`.)
       const replaceFlags = '--replace --force-stateful-recreation';
 
       // Issue [#2579]: those two flags are not sufficient on a log group that
@@ -409,8 +570,10 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // so `'True'` or `1` falls through to the short advice: widening it is a
       // repo-wide change to a helper `hasCdkAutoDeleteTag` also uses, and the
       // fall-through direction is merely the pre-#2579 behaviour. It is the
-      // same defect class issue [#2521] still has open against the sibling
-      // retention guard's `typeof === 'number'` test.
+      // same defect class issue [#2521] closed one property over, where the
+      // stateful guard's `typeof === 'number'` test on `RetentionInDays` was
+      // replaced by a coercion — so the shape has a fix to copy if this one is
+      // ever taken up, not merely a sibling to point at.
       // The message deliberately STOPS at what this function can know, and
       // hands the rest to the doc. Three review rounds each proved a different
       // sentence about the downstream mechanism FALSE, because `update()` sees
@@ -450,6 +613,73 @@ export class LogsLogGroupProvider implements ResourceProvider {
       );
     }
 
+    // Read + VALIDATE the retention here, above every mutation, and send it
+    // further down (issue [#2521]).
+    //
+    // BOTH sides go through `toFiniteNumber`, and the comparison matters as
+    // much as the send: a state record carrying the string `'30'` — what
+    // `cdkd import --migrate-from-cloudformation` persists from a CFn template
+    // that spelled it that way — is `!==` the template's numeric `30`, so
+    // every deploy re-issued a PutRetentionPolicy for a retention that had not
+    // changed.
+    //
+    // The refusal is gated on the RAW value CHANGING, and each half of that
+    // was a review-round finding rather than a design:
+    //
+    //  - gating on a CHANGE at all, because an unusable value present
+    //    identically in BOTH bags is what an import record produces, and the
+    //    pre-coercion code compared it EQUAL and issued nothing; refusing it
+    //    would fail an unrelated property change on a template nobody touched.
+    //  - gating on RAW rather than on the COERCED comparison below, because
+    //    `toFiniteNumber` maps `'abc'`, `'  '`, `[]`, `{}`, `true`, `''` and
+    //    ABSENT all to `undefined`. A coerced gate therefore reads `'abc'`
+    //    against an absent-or-differently-unusable previous side as
+    //    UNCHANGED, skips the refusal AND the send, and the deploy succeeds
+    //    green with the property silently discarded while state records it —
+    //    the state-poisoning silent-drop class the `LogGroupClass` guard above
+    //    exists to prevent.
+    //  - ABOVE the KMS block, so a refusal cannot leave the update
+    //    half-applied with the key association changed and state unwritten.
+    //
+    // `sameRawRetention` is deliberately NOT a bare `JSON.stringify` compare,
+    // and not a bare `Object.is` either. `Object.is` alone would refuse an
+    // UNCHANGED `[]` or `{}`, because the template bag and the state bag never
+    // share a reference — the import no-op above is exactly that shape.
+    // `JSON.stringify` alone is not INJECTIVE: `Infinity`, `-Infinity` and
+    // `NaN` all render `'null'`, so an `Infinity` over a recorded `null` would
+    // compare UNCHANGED and take the refusal-skipped silent-drop route one
+    // layer down from the bullet above. So: identical by reference, OR
+    // structurally equal through a rendering that is FAITHFUL.
+    //
+    // BOTH exclusions are defence with no reachable case, labelled rather than
+    // argued — `!== 'null'` only matters for a non-finite number and
+    // `!== undefined` only for a symbol or function, and neither survives the
+    // `JSON.parse` both bags come out of. The `Object.is` arm is in the same
+    // position: the only pair it decides on its own is a non-finite value
+    // against itself. What is REACHABLE, and what that arm is really for, is
+    // the unchanged `[]` / `{}` — structurally equal, never the same
+    // reference, and refused by a bare `Object.is`.
+    //
+    // One RESIDUAL is argued the same way and left unfenced: an object
+    // carrying a `toJSON` that renders as the previous side's number would
+    // compare unchanged and reach the delete arm — but `previousProperties` is
+    // strictly `JSON.parse` output and no parse path builds a `toJSON` bearer,
+    // and adding `typeof raw !== 'object'` here would refuse the unchanged
+    // `[]` this arm exists for.
+    const rawRetention = properties['RetentionInDays'];
+    const rawPreviousRetention = previousProperties['RetentionInDays'];
+    const renderedRetention = JSON.stringify(rawRetention);
+    const sameRawRetention =
+      Object.is(rawRetention, rawPreviousRetention) ||
+      (renderedRetention !== undefined &&
+        renderedRetention !== 'null' &&
+        renderedRetention === JSON.stringify(rawPreviousRetention));
+    const retentionInDays = toFiniteNumber(rawRetention);
+    const oldRetentionInDays = toFiniteNumber(rawPreviousRetention);
+    if (!sameRawRetention) {
+      assertUsableRetention(rawRetention, retentionInDays, logicalId, resourceType);
+    }
+
     // Update KmsKeyId if changed. CFn applies it in place ("Update
     // requires: No interruption") via AssociateKmsKey / DisassociateKmsKey;
     // this previously had NO branch at all, so a KMS key change was
@@ -479,11 +709,36 @@ export class LogsLogGroupProvider implements ResourceProvider {
       this.logger.debug(`Updated KMS key association for log group ${physicalId}`);
     }
 
-    // Update retention policy if changed
-    const retentionInDays = properties['RetentionInDays'] as number | undefined;
-    const oldRetentionInDays = previousProperties['RetentionInDays'] as number | undefined;
-    if (retentionInDays !== oldRetentionInDays) {
-      if (retentionInDays) {
+    // Send the retention if the COERCED value changed. Coerced, so the two
+    // spellings of one retention compare equal and no redundant call goes out;
+    // the values were read and validated above, before any mutation.
+    //
+    // `previousRetentionUnknown` is the second trigger, and without it the
+    // coerced comparison DROPS a call the pre-#2521 code made. `toFiniteNumber`
+    // answers `undefined` for two different things — "the previous deploy
+    // applied no retention" and "cdkd cannot tell what it applied" — and a
+    // PRESENT, TRUTHY previous value that does not coerce is the second. Remove
+    // the property against such a record (`'abc'`, `[]`, an unresolved
+    // `{Ref:...}`, all of which an imported record can carry) and both sides
+    // coerce to `undefined`, the `!==` never opens, and cdkd issues nothing
+    // while recording absence — so a real retention on the log group would
+    // survive with nothing in state pointing at it, and the next diff would see
+    // no change. That is the silent-drop class this file's `LogGroupClass`
+    // guard exists to prevent, arriving through the coercion.
+    //
+    // Scoped by `!sameRawRetention` so the import NO-OP is untouched: an
+    // unusable value present identically in both bags still issues nothing, as
+    // it did before. And scoped by `Boolean(rawPreviousRetention)` because a
+    // FALSY previous (`''`, `false`, `null`, absent) is not unknown at all —
+    // every one of them was skipped by the pre-coercion truthiness test too, so
+    // no `PutRetentionPolicy` was ever issued for it and AWS provably holds no
+    // retention. Removing the property against one of those is the one place
+    // this change still drops a pre-#2521 call, deliberately: the call was
+    // redundant. `UPDATE_MATRIX` carries a row for it.
+    const previousRetentionUnknown =
+      !sameRawRetention && Boolean(rawPreviousRetention) && oldRetentionInDays === undefined;
+    if (retentionInDays !== oldRetentionInDays || previousRetentionUnknown) {
+      if (retentionInDays !== undefined && retentionInDays > 0) {
         await this.logsClient.send(
           new PutRetentionPolicyCommand({
             logGroupName: physicalId,
@@ -833,9 +1088,10 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // Always-emit per docs/provider-rules.md#readcurrentstate-for-drift-detection: a console-side
       // attach of a retention policy on a previously-unbounded log group
       // must surface as drift. `0` is the semantic "never expire"
-      // placeholder — it maps to `DeleteRetentionPolicyCommand` in
-      // update()'s truthy gate, so the round-trip is a no-op when state
-      // and AWS both have no retention.
+      // placeholder — `update()` sends `DeleteRetentionPolicyCommand` for it
+      // (its send gate is `retentionInDays !== undefined && > 0` since issue
+      // [#2521], where it used to be a bare truthiness test), so the
+      // round-trip is a no-op when state and AWS both have no retention.
       result['RetentionInDays'] = found.retentionInDays ?? 0;
       if (found.logGroupClass !== undefined) result['LogGroupClass'] = found.logGroupClass;
       // DeletionProtectionEnabled / BearerTokenAuthenticationEnabled —

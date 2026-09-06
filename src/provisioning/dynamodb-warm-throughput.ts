@@ -118,6 +118,15 @@ export interface WarmThroughputCoercion {
  * A YAML-borne numeric STRING is still accepted, because that is a real
  * template shape and `'12000'` genuinely means 12000.
  *
+ * The accepted STRING set is `Number()`'s, which is WIDER than a decimal
+ * integer: `'0x1e'`, `'0o36'`, `'1e3'`, `'30.5'` and `' 30 '` all coerce.
+ * Whether CloudFormation accepts those for an `Integer`-typed property is
+ * unmeasured, and issue [#2698](https://github.com/go-to-k/cdkd/issues/2698)
+ * holds the live A/B that would settle it. It matters at the CALLERS that
+ * FORWARD the result to AWS rather than merely compare it — narrowing this
+ * shared helper would change the DynamoDB capacity readers too, so read that
+ * issue before tightening anything here.
+ *
  * EXPORTED, and not because warm throughput needs it exported. This exact rule
  * was hand-written three times — here, as `dynamodb-table-provider.ts`'s
  * `capacityNumber` (byte-identical), and as `dynamodb-globaltable-provider.ts`'s

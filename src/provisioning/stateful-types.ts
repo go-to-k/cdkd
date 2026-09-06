@@ -42,9 +42,12 @@
  *     "never expire" — the most data-bearing configuration the type
  *     has, and what `LogsLogGroupProvider` records `0` for — so reading
  *     it as "holds nothing" destroyed years of events on a plain
- *     `cdkd deploy`. A recorded `RetentionInDays > 0` still answers
- *     `has-retention` from the bag alone (a cheap positive, never
- *     probed away); every other bag DEFERS, exactly as the bucket does.
+ *     `cdkd deploy`. A `RetentionInDays > 0` recorded in EITHER of the
+ *     state record's property bags still answers `has-retention` from
+ *     the bags alone (a cheap positive, never probed away); every other
+ *     bag DEFERS, exactly as the bucket does. Which bags, and why the
+ *     value is coerced rather than type-tested, is issue [#2521] —
+ *     see {@link logGroupHasPositiveRetention}.
  *     The pre-flight resolves the deferral with a live
  *     `logs:DescribeLogStreams` probe (a log group with no stream can
  *     hold no event, since every event belongs to a stream); mid-deploy,
@@ -109,6 +112,19 @@
  * hand-added with the reason at the entry, and a provider added that way
  * should be reviewed for whether it wants a `forceDataDelete` gate too.
  */
+
+// A `.ts` extension, deliberately, against this repo's ordinary `.js` rule.
+// `scripts/audit-stateful-candidates.ts` imports `STATEFUL_TYPES` and runs
+// under BARE `node` (Node 24 strips the types), where module resolution is
+// literal: a `./dynamodb-warm-throughput.js` specifier resolves to a file that
+// does not exist and the whole audit dies with `ERR_MODULE_NOT_FOUND` — which
+// is how this landed, as three red cases in
+// `tests/unit/scripts/stateful-candidates.test.ts` rather than as a type
+// error. `src/utils/aws-clients.ts` and `src/utils/aws-client-defaults.ts`
+// carry the same spelling for the same reason: they are the other two src
+// modules on a `scripts/` entrypoint's import closure. The target is a LEAF
+// (no imports of its own), so this closure ends here.
+import { toFiniteNumber } from './dynamodb-warm-throughput.ts';
 
 export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Database / storage primaries (data-bearing core).
@@ -519,8 +535,12 @@ export const MULTI_REGION_RECREATE_BLOCKED_TYPES: ReadonlySet<string> = new Set(
  *    delete-marker; the probe answered with a page carrying a
  *    continuation marker and no entries, which does not settle the
  *    question (issue [#2578]); or nothing was probed at all.
- *  - `'has-retention'` — Logs::LogGroup with `RetentionInDays > 0`
- *    (read from the resource's recorded properties).
+ *  - `'has-retention'` — Logs::LogGroup with `RetentionInDays > 0` in EITHER
+ *    of the state record's two property bags, `observedProperties` or
+ *    `properties`, and read through {@link toFiniteNumber} so a
+ *    CloudFormation-legal `'30'` counts (issue [#2521]). See
+ *    {@link logGroupHasPositiveRetention} for why a zero observed retention
+ *    may not veto a positive recorded one.
  *  - `'has-log-events'` — Logs::LogGroup whose emptiness is not
  *    established, on FIVE producers: the plan-time probe found a log
  *    stream; it answered without settling the question; it hit a
@@ -551,10 +571,70 @@ export const MULTI_REGION_RECREATE_BLOCKED_TYPES: ReadonlySet<string> = new Set(
 export type StatefulReason = 'always' | 'has-objects' | 'has-retention' | 'has-log-events' | null;
 
 /**
- * Cheap, synchronous read of the resource's recorded properties only.
+ * Does either recorded bag prove this log group carries a POSITIVE
+ * `RetentionInDays`? (issue [#2521])
+ *
+ * Two decisions, and both were defects before this function existed.
+ *
+ * **The value is COERCED, not type-tested.** The predicate used to gate on
+ * `typeof retention === 'number' && retention > 0`, and CloudFormation is
+ * stringly typed: a hand-written L1, an `Fn::Sub`-produced value, a
+ * `Type: String` parameter's default, or a record imported by
+ * `cdkd import --migrate-from-cloudformation` all put `'30'` into the bag,
+ * where the type test answers "not a number". {@link toFiniteNumber} is the
+ * repo's single answer to "is this stringly-typed CFn value a number?" —
+ * imported rather than re-spelled here for the reason its own doc gives, that
+ * the same rule hand-written twice diverges on the next fix to one copy. It
+ * rejects `''`, `'   '`, `null`, `[]` and `false`, each of which a bare
+ * `Number()` turns into a `0` that would read as never-expire.
+ *
+ * **BOTH bags are consulted, and a positive in EITHER wins.** The old read
+ * saw `properties` alone, so a retention set OUT OF BAND (the console,
+ * `aws logs put-retention-policy`, another tool) or one recorded only in
+ * `observedProperties` — an imported record whose template never declared
+ * the property — never produced `has-retention`.
+ *
+ * The rule is a plain OR, and the loop order below is INERT — a review round
+ * caught an earlier version of this paragraph claiming `observedProperties`
+ * is "read FIRST", a precedence the code does not implement and must not.
+ * A strict "observed when present, else properties" rule — which is what
+ * issue [#2521] literally prescribed — was tried and REJECTED:
+ * `LogsLogGroupProvider.readCurrentState` writes `RetentionInDays: 0` for a
+ * group with no retention policy, so the observed bag almost always CARRIES
+ * the key, and precedence would make the recorded bag dead for every record
+ * that has ever been captured and would DROP the `has-retention` verdict this
+ * guard already produced. A test pins that rejection
+ * (`tests/unit/provisioning/stateful-types.test.ts`, "reads a retention that
+ * lives ONLY in properties, even against a ZERO observed one"). The OR is
+ * also the strictly safer direction: it can only ADD refusals, never remove
+ * one.
+ *
+ * What a `false` here means is DEFER, not "holds nothing" — see the callers.
+ */
+function logGroupHasPositiveRetention(
+  recordedProperties: Record<string, unknown> | undefined,
+  observedProperties: Record<string, unknown> | undefined
+): boolean {
+  for (const bag of [observedProperties, recordedProperties]) {
+    const retention = toFiniteNumber(bag?.['RetentionInDays']);
+    if (retention !== undefined && retention > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Cheap, synchronous read of the state record's own property bags only —
+ * no AWS call. Both bags are parameters rather than one: `properties` is
+ * what the last deploy applied, `observedProperties` what it read back,
+ * and the log group's arm consults BOTH (issue [#2521]). Passing the
+ * observed bag is REQUIRED, not optional, so a new call site has to
+ * decide what it holds instead of silently repeating the omission that
+ * issue records; `undefined` is the right answer where no record is in
+ * hand (`recreate-confirm-prompt.ts`).
+ *
  * TWO types return `null` meaning DEFER rather than "not stateful":
- * `AWS::S3::Bucket` always, and `AWS::Logs::LogGroup` whenever the
- * recorded bag does not already prove `has-retention`. The live probes
+ * `AWS::S3::Bucket` always, and `AWS::Logs::LogGroup` whenever neither
+ * bag already proves `has-retention`. The live probes
  * that resolve both deferrals (`ListObjectVersions` for the bucket,
  * `DescribeLogStreams` for the log group) live in
  * `src/deployment/recreate-targets.ts#probeStatefulRecreateTargetsAsync`
@@ -569,12 +649,14 @@ export type StatefulReason = 'always' | 'has-objects' | 'has-retention' | 'has-l
  */
 export function isStatefulRecreateTargetSync(
   resourceType: string,
-  recordedProperties: Record<string, unknown> | undefined
+  recordedProperties: Record<string, unknown> | undefined,
+  observedProperties: Record<string, unknown> | undefined
 ): StatefulReason {
   if (!STATEFUL_TYPES.has(resourceType)) return null;
   if (resourceType === 'AWS::Logs::LogGroup') {
-    const retention = recordedProperties?.['RetentionInDays'];
-    if (typeof retention === 'number' && retention > 0) return 'has-retention';
+    if (logGroupHasPositiveRetention(recordedProperties, observedProperties)) {
+      return 'has-retention';
+    }
     // NOT "no retention, therefore nothing to lose" — an unset or zero
     // retention is CloudWatch Logs' never-expire (issue [#2558]). The bag
     // cannot answer whether the group holds events, so defer to the live
@@ -610,8 +692,8 @@ export function isStatefulRecreateTargetSync(
  * — be DELETE + CREATEd (data loss) without `--force-stateful-recreation`. To
  * stay fail-safe, both deferrals resolve to stateful here: the user must pass
  * `--force-stateful-recreation` to replace ANY S3 bucket, and any log group
- * whose recorded bag does not already prove `has-retention`, on any of those
- * paths — empty or not.
+ * neither of whose recorded property bags already proves `has-retention`, on
+ * any of those paths — empty or not.
  *
  * `UpdateReplacePolicy: Retain` is the standing EXEMPTION, and it covers all
  * three (issue [#2604]): the engine never consults this predicate under it —
@@ -642,18 +724,19 @@ export function isStatefulRecreateTargetSync(
  */
 export function isStatefulRecreateTargetForReplace(
   resourceType: string,
-  recordedProperties: Record<string, unknown> | undefined
+  recordedProperties: Record<string, unknown> | undefined,
+  observedProperties: Record<string, unknown> | undefined
 ): StatefulReason {
-  const sync = isStatefulRecreateTargetSync(resourceType, recordedProperties);
+  const sync = isStatefulRecreateTargetSync(resourceType, recordedProperties, observedProperties);
   if (sync) return sync;
   if (resourceType === 'AWS::S3::Bucket') {
     // Cannot prove the bucket is empty mid-deploy — assume it has data.
     return 'has-objects';
   }
   if (resourceType === 'AWS::Logs::LogGroup') {
-    // Same shape, one type down: the bag proved nothing (retention is unset or
-    // zero, i.e. never-expire) and no probe can run here, so assume the group
-    // holds events.
+    // Same shape, one type down: neither bag proved a positive retention
+    // (unset or zero, i.e. never-expire) and no probe can run here, so assume
+    // the group holds events.
     return 'has-log-events';
   }
   return null;

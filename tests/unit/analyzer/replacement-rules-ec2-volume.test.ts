@@ -87,6 +87,6 @@ describe('AWS::EC2::Volume stateful guard (#1356)', () => {
   });
 
   it('requires --force-stateful-recreation on the mid-deploy replacement path', () => {
-    expect(isStatefulRecreateTargetForReplace(VOLUME, { Size: 1 })).toBe('always');
+    expect(isStatefulRecreateTargetForReplace(VOLUME, { Size: 1 }, undefined)).toBe('always');
   });
 });

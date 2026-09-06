@@ -188,7 +188,16 @@ describe('DeployEngine — --replace wire-through', () => {
     // is the discriminator — stateful iff the bag it reads carries
     // `RetentionInDays > 0` — so these two knobs let a test put the retention
     // in exactly one bag and pin which one the guard consulted.
-    bags?: { recorded?: Record<string, unknown>; desired?: Record<string, unknown> },
+    // `observed` is the state record's `observedProperties` -- a THIRD
+    // independent bag since issue #2521, so a test can put the retention in
+    // exactly the bag it means and pin which of the two recorded bags the
+    // guard consulted. Left undefined by default, which is what every
+    // pre-#2521 case here described.
+    bags?: {
+      recorded?: Record<string, unknown>;
+      desired?: Record<string, unknown>;
+      observed?: Record<string, unknown>;
+    },
     // The recorded physical id. Overridable because `replacementNameOrigin`
     // classifies it against `${stackName}-${logicalId}` — the default is a
     // name no derivation produces, so it takes the user-supplied branch, and a
@@ -231,6 +240,7 @@ describe('DeployEngine — --replace wire-through', () => {
         attributes: {},
         dependencies: [],
         provisionedBy: 'sdk',
+        ...(bags?.observed !== undefined && { observedProperties: bags.observed }),
         ...(recordedUpdateReplacePolicy !== undefined && {
           updateReplacePolicy: recordedUpdateReplacePolicy,
         }),
@@ -1143,6 +1153,74 @@ describe('DeployEngine — --replace wire-through', () => {
         expect(err!.cause?.message).not.toMatch(/log group retains data/);
         expect(provider.delete).not.toHaveBeenCalled();
         expect(callOrder).toEqual(['update']);
+      });
+
+      it('reads the OBSERVED bag when only it carries the retention (#2521)', async () => {
+        // The out-of-band case, pinned at the ENGINE rather than only at the
+        // predicate: the retention was set by the console or by
+        // `aws logs put-retention-policy`, so it is in what the last deploy
+        // READ BACK and in neither template bag. The engine used to hand the
+        // guard `currentProps` alone, so this log group produced the deferral
+        // reason and the cheap positive was unreachable from here no matter
+        // what the predicate did.
+        //
+        // The reason is the discriminator, exactly as in the two cases above:
+        // dropping the third argument at this call site leaves the refusal
+        // firing (the deferral still blocks) but changes its wording, so this
+        // reds on the wiring rather than only on the predicate.
+        rejectWith(CC_REJECTION);
+        const err = await invokeProvision(
+          makeEngine({}),
+          'AWS::Logs::LogGroup',
+          undefined,
+          undefined,
+          {
+            // The two template bags must DIFFER: `provisionResource` compares
+            // the resolved desired bag against `currentProperties` and
+            // short-circuits an identical pair as a no-op, so a fixture whose
+            // only distinguishing bag is the observed one never reaches the
+            // guard at all. Measured -- the first draft of this case used
+            // `{ LogGroupName: 'x' }` on both sides and passed vacuously.
+            recorded: { LogGroupName: 'x' },
+            desired: { LogGroupName: 'y' },
+            observed: { LogGroupName: 'x', RetentionInDays: 30 },
+          }
+        ).then(
+          () => null,
+          (e) => e as Error & { cause?: { message?: string; code?: string } }
+        );
+        expect(err).not.toBeNull();
+        expect(err!.cause?.code).toBe('STATEFUL_REPLACE_BLOCKED');
+        expect(err!.cause?.message).toMatch(/log group retains data/);
+        expect(err!.cause?.message).not.toMatch(/log group is not provably empty/);
+        expect(provider.delete).not.toHaveBeenCalled();
+        expect(callOrder).toEqual(['update']);
+      });
+
+      it('a ZERO observed retention does not veto a positive RECORDED one (#2521)', async () => {
+        // The asymmetry, pinned where a call site could break it. A log group
+        // whose observed bag was captured before the retention was applied --
+        // or which simply has none -- records `RetentionInDays: 0`, the
+        // provider's never-expire placeholder. Reading the observed bag as
+        // AUTHORITATIVE whenever the key is PRESENT would turn this into the
+        // deferral reason and lose a positive the guard already produced.
+        rejectWith(CC_REJECTION);
+        const err = await invokeProvision(
+          makeEngine({}),
+          'AWS::Logs::LogGroup',
+          undefined,
+          undefined,
+          {
+            recorded: { RetentionInDays: 30 },
+            desired: { LogGroupName: 'x' },
+            observed: { LogGroupName: 'x', RetentionInDays: 0 },
+          }
+        ).then(
+          () => null,
+          (e) => e as Error & { cause?: { message?: string; code?: string } }
+        );
+        expect(err).not.toBeNull();
+        expect(err!.cause?.message).toMatch(/log group retains data/);
       });
 
       it('replaces a log group under --force-stateful-recreation, deleting the old one', async () => {

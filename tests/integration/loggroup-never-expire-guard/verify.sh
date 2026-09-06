@@ -9,9 +9,12 @@
 #
 # Both polarities are exercised against real AWS, at both guard timings:
 #
-#   1. Deploy two never-expiring log groups. Assert AWS reports NO retention on
-#      both (the fixture must contain the feature under test — with a retention
-#      the run would exercise the `has-retention` branch and pass vacuously).
+#   1. Deploy three log groups. TWO never expire; assert AWS reports NO
+#      retention on those (the fixture must contain the feature under test —
+#      with a retention they would exercise the `has-retention` branch and pass
+#      vacuously). The THIRD is issue #2521's `StringRetLg`, whose template
+#      spells the retention as the string '30'; assert AWS reports 30 and that
+#      cdkd RECORDED the string, which is that arm's premise.
 #   2. Seed one log stream + one event into the DATA group; assert the EMPTY
 #      group still has zero streams. These are the two probe inputs.
 #   3. PRE-FLIGHT, positive: `--recreate-via-cc-api DataLg` with NO consent flag
@@ -31,6 +34,25 @@
 #      CONDITIONAL rather than unconditional, so it is the assertion this phase
 #      exists for: without it the fixture could not tell this fix from a
 #      blanket refuse-everything.
+#   4b. ISSUE #2521, the STRING-retention arm: `StringRetLg` declares
+#      `RetentionInDays: '30'` — CloudFormation-legal, and what a hand-written
+#      L1 / an `Fn::Sub` result / an imported CFn template produces. It is
+#      EMPTY, so before the fix the guard's `typeof === 'number'` test answered
+#      `null`, the probe found no streams, and the recreate was ALLOWED — while
+#      an identical group with a numeric `30` was refused from the bag alone.
+#      The phase asserts the refusal AND the `has-retention` reason, so a
+#      refusal arriving via the probe cannot satisfy it — and phase 1 deploys
+#      with `--no-capture-observed-state` so the OTHER half of the same fix
+#      (the two-bag read) cannot satisfy it either: with the observed bag
+#      populated, `readCurrentState` would have put a NUMERIC 30 in it and the
+#      phase would pass with the coercion reverted.
+#   4c. ISSUE #2521, the OBSERVED-bag arm, run on the very group phase 4 just
+#      proved is allowed through. A retention is set OUT OF BAND
+#      (`aws logs put-retention-policy`), `cdkd state refresh-observed` captures
+#      it into `observedProperties` alone — `properties` still declares none,
+#      because the template still says never-expire — and the same command
+#      phase 4 ran is now REFUSED. Before the fix the guard read `properties`
+#      only, so an out-of-band retention was invisible to it.
 #
 #      Every PRE-FLIGHT phase — 3, 3b and 4 — runs `--dry-run`, matching what
 #      the sibling fixture does for its own pre-flight-only pair
@@ -52,7 +74,7 @@
 #      original group AND its stream are still there.
 #   6. Consent path: the same rename with `--force-stateful-recreation`
 #      replaces the group.
-#   7. Destroy; assert both groups are gone and the cdkd state is removed.
+#   7. Destroy; assert all three groups are gone and the cdkd state is removed.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -130,6 +152,9 @@ LG_PREFIX="/cdkd-integ/never-expire-guard/"
 DATA_LG="${LG_PREFIX}data"
 DATA_LG_RENAMED="${LG_PREFIX}data-renamed"
 EMPTY_LG="${LG_PREFIX}empty"
+# Issue #2521's coercion arm. Empty like `EMPTY_LG`, but its template declares
+# `RetentionInDays` as the STRING '30'.
+STRING_RET_LG="${LG_PREFIX}string-retention"
 SEED_STREAM="cdkd-integ-seed"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -332,6 +357,38 @@ else:
 ' "$1"
 }
 
+# The RAW JSON value of one property, out of one of the state record's two
+# property bags, for the log group with this AWS name. Prints `ABSENT` when the
+# bag does not carry the key at all.
+#
+# RAW, via `json.dumps`, because the whole point of issue #2521's coercion arm
+# is the value's TYPE: a `30` and a `"30"` are the same `--output text` string
+# and different premises. Any other outcome (no such record, unreadable state)
+# exits NON-ZERO rather than printing a value a caller could mistake for an
+# answer. That aborts the run because every call site is a plain assignment,
+# where `set -e` sees the substitution's status — the `sys.exit` itself only
+# ends the subshell. This is a PREMISE probe, and a premise that silently
+# degrades is how an arm passes while testing nothing.
+state_property_json() { # $1 = log group name, $2 = properties|observedProperties
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+    python3 -c '
+import json, sys
+state = json.load(sys.stdin)
+name, bag = sys.argv[1], sys.argv[2]
+for record in state["resources"].values():
+    if (record.get("resourceType") == "AWS::Logs::LogGroup"
+            and record.get("properties", {}).get("LogGroupName") == name):
+        contents = record.get(bag) or {}
+        if "RetentionInDays" not in contents:
+            print("ABSENT")
+        else:
+            print(json.dumps(contents["RetentionInDays"]))
+        break
+else:
+    sys.exit("no AWS::Logs::LogGroup state record named " + name)
+' "$1" "$2"
+}
+
 # The refusal phases grep cdkd's OWN output, so a reword upstream would turn
 # every assertion into a silent zero match. The sentinel distinguishes "the
 # guard did not fire" from "the wording moved": if the refusal names the log
@@ -354,10 +411,54 @@ assert_stateful_refusal() { # $1 = phase label, $2 = output
   fi
 }
 
-# --- Phase 1: deploy two never-expiring log groups -------------------------
-echo "==> Phase 1: deploy two log groups with NO retention policy"
+# The issue #2521 arms assert the OTHER reason: `has-retention`, decided from
+# the recorded bags with no AWS call. Its whole content is that the bag settled
+# the question, so the phase must also prove the deferral reason is ABSENT —
+# `has-log-events` is reachable from a stream, from a probe that could not
+# answer, and from a probe that threw, and any of those would satisfy a bare
+# "the deploy was refused" check while proving nothing about the bag.
+assert_has_retention_refusal() { # $1 = phase label, $2 = output
+  local label="$1" out="$2"
+  if ! grep -q "log group retains data" <<<"${out}"; then
+    if grep -q "log group is not provably empty" <<<"${out}"; then
+      echo "FAIL: ${label}: refused with the DEFERRAL reason, not the retention one — the guard did not settle this log group from its recorded bags, which is what issue #2521 fixed" >&2
+    elif grep -q "AWS::Logs::LogGroup" <<<"${out}"; then
+      echo "FAIL: ${label}: the output names AWS::Logs::LogGroup but carries neither reason phrase. Either renderStatefulReason('has-retention') was reworded — update this fixture with the source — or the run failed for some other reason before the guard; the tail below says which" >&2
+    else
+      echo "FAIL: ${label}: expected the stateful-guard refusal, got no reason phrase at all" >&2
+    fi
+    printf '%s\n' "${out}" | tail -20 >&2
+    exit 1
+  fi
+  if grep -q "log group is not provably empty" <<<"${out}"; then
+    echo "FAIL: ${label}: BOTH reasons are present — this phase's log group must be settled by the bag alone" >&2
+    printf '%s\n' "${out}" | tail -20 >&2
+    exit 1
+  fi
+  if ! grep -q -- "--force-stateful-recreation" <<<"${out}"; then
+    echo "FAIL: ${label}: the refusal did not name --force-stateful-recreation as the remedy" >&2
+    exit 1
+  fi
+}
+
+# --- Phase 1: deploy the three log groups ----------------------------------
+echo "==> Phase 1: deploy two log groups with NO retention policy, plus one whose retention is the STRING '30'"
+# `--no-capture-observed-state` is what makes phase 4b DISCRIMINATING, and
+# without it that phase is a duplicate of 4c. `readCurrentState` records
+# `RetentionInDays: <number>` for every log group a successful CREATE touches,
+# so with the capture on, `StringRetLg`'s observed bag would hold a NUMERIC 30
+# -- and the guard, which reads either bag, would answer `has-retention`
+# through the observed route with the string coercion reverted. The phase
+# would stay green against the very defect it exists for.
+#
+# Phase 4c populates the observed bags again -- stack-wide, via
+# `cdkd state refresh-observed`, which is what its own arm needs -- so nothing
+# later loses coverage. Every phase between 1 and 4b is `--dry-run`, which is
+# also what stops the engine's own observed-state backfill from firing; phase
+# 4b re-asserts that rather than trusting it.
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --no-capture-observed-state
 
 for lg in "${DATA_LG}" "${EMPTY_LG}"; do
   assert_lg_exists "${lg}"
@@ -368,6 +469,38 @@ for lg in "${DATA_LG}" "${EMPTY_LG}"; do
   fi
 done
 echo "    both log groups live with no retention policy (never expire)"
+
+# The issue #2521 arm's own premise, and it is TWO facts in one read. AWS
+# reporting `30` proves (a) the string retention was not silently dropped and
+# (b) it reached CloudWatch Logs as a NUMBER — `PutRetentionPolicy` takes an
+# integer, and before the coercion the provider handed it the raw `'30'`. A
+# fixture whose string retention never landed would leave this group
+# never-expiring, i.e. an ordinary copy of `EmptyLg` testing nothing.
+assert_lg_exists "${STRING_RET_LG}"
+STRING_RET="$(lg_retention "${STRING_RET_LG}")"
+if [ "${STRING_RET}" != "30" ]; then
+  echo "FAIL: ${STRING_RET_LG} reports retention '${STRING_RET}', expected 30 — the template's STRING '30' did not reach AWS as a number, so issue #2521's coercion arm has nothing to test" >&2
+  exit 1
+fi
+# ...and the same value as cdkd RECORDED it, which is the input the guard reads.
+# Asserting the raw JSON, not the rendered text: `30` and `"30"` render alike
+# and are opposite premises, and it is the STRING that the pre-fix
+# `typeof === 'number'` test answered `null` for.
+STRING_RET_RECORDED="$(state_property_json "${STRING_RET_LG}" properties)"
+if [ "${STRING_RET_RECORDED}" != '"30"' ]; then
+  echo "FAIL: cdkd recorded RetentionInDays as ${STRING_RET_RECORDED} for ${STRING_RET_LG}, expected the JSON string \"30\" — the guard's coercion arm is only exercised while the RECORDED value is a string" >&2
+  exit 1
+fi
+# ...and the observed bag must be ABSENT, which is the other half of what
+# makes phase 4b test the coercion rather than the two-bag read. A present
+# observed retention here means `--no-capture-observed-state` stopped working
+# and that phase would pass through the wrong route.
+STRING_RET_OBSERVED_P1="$(state_property_json "${STRING_RET_LG}" observedProperties)"
+if [ "${STRING_RET_OBSERVED_P1}" != "ABSENT" ]; then
+  echo "FAIL: observedProperties records RetentionInDays as ${STRING_RET_OBSERVED_P1} for ${STRING_RET_LG} right after a --no-capture-observed-state deploy; phase 4b needs it ABSENT, or the guard answers through the observed bag and the string coercion goes untested" >&2
+  exit 1
+fi
+echo "    string-retention log group live with retention 30, recorded as the string \"30\", observed bag empty"
 
 # --- Phase 2: seed the data group; leave the other empty -------------------
 echo "==> Phase 2: seed one log stream + one event into ${DATA_LG}"
@@ -386,6 +519,14 @@ if [ "${DATA_STREAMS}" -lt 1 ]; then
 fi
 if [ "${EMPTY_STREAMS}" -ne 0 ]; then
   echo "FAIL: the empty log group already has ${EMPTY_STREAMS} streams — the probe's negative input is missing" >&2
+  exit 1
+fi
+# The issue #2521 arm needs the string-retention group EMPTY, and that is the
+# whole discrimination: with a stream, the live probe would refuse it anyway
+# and the phase would pass without the fix.
+STRING_RET_STREAMS="$(lg_stream_count "${STRING_RET_LG}")"
+if [ "${STRING_RET_STREAMS}" -ne 0 ]; then
+  echo "FAIL: the string-retention log group has ${STRING_RET_STREAMS} streams — phase 4b would be satisfied by the emptiness probe rather than by the recorded retention" >&2
   exit 1
 fi
 
@@ -537,6 +678,94 @@ if [ "${EMPTY_STREAMS_P4}" -ne 0 ]; then
 fi
 echo "    empty never-expiring log group ALLOWED through the pre-flight with NO consent flag — the condition is still conditional"
 
+# --- Phase 4b: issue #2521, a STRING-valued recorded retention -------------
+echo "==> Phase 4b: --recreate-via-cc-api on the EMPTY group whose retention is the STRING '30' (expect refusal from the bag)"
+STRING_RET_LOGICAL_ID="$(state_logical_id_for "${STRING_RET_LG}")"
+echo "    logical id: string-retention=${STRING_RET_LOGICAL_ID}"
+# RE-TAKEN here, not inherited from phase 1's copy four phases back. The real
+# invariant is not "phase 1 passed a flag" but "NO non-dry-run deploy has run
+# since": the engine's own observed-state backfill targets exactly the records
+# phase 1 leaves without an observed bag, and the only reason it has not fired
+# is that phases 3, 3b and 4 all pass `--dry-run`. Dropping that flag from any
+# of them, or inserting a plain deploy, would revert this phase to a duplicate
+# of 4c with nothing red. One S3 read buys the invariant a check at the point
+# it is CONSUMED.
+# BOTH premises, re-taken together: the arm needs the STRING in `properties`
+# as much as it needs the observed bag empty, and phase 1's copy of that one
+# is just as far back.
+STRING_RET_RECORDED_P4B="$(state_property_json "${STRING_RET_LG}" properties)"
+if [ "${STRING_RET_RECORDED_P4B}" != '"30"' ]; then
+  echo "FAIL: phase 4b: properties records RetentionInDays as ${STRING_RET_RECORDED_P4B} for ${STRING_RET_LG}, expected the JSON string \"30\" — the coercion arm is only exercised while the RECORDED value is a string" >&2
+  exit 1
+fi
+STRING_RET_OBSERVED_P4B="$(state_property_json "${STRING_RET_LG}" observedProperties)"
+if [ "${STRING_RET_OBSERVED_P4B}" != "ABSENT" ]; then
+  echo "FAIL: phase 4b: observedProperties carries RetentionInDays=${STRING_RET_OBSERVED_P4B} for ${STRING_RET_LG}. This arm needs it ABSENT, or the guard settles from the observed bag and the STRING coercion goes untested. Either something between phase 1 and here ran a non-dry-run deploy, or phase 1's --no-capture-observed-state stopped taking effect" >&2
+  exit 1
+fi
+set +e
+P4B_OUT="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --dry-run \
+  --recreate-via-cc-api "${STRING_RET_LOGICAL_ID}" 2>&1)"
+P4B_RC=$?
+set -e
+if [ "${P4B_RC}" -eq 0 ]; then
+  echo "FAIL: phase 4b: the pre-flight ALLOWED a log group whose recorded RetentionInDays is the string '30' — the guard is back on a typeof === 'number' test (issue #2521)" >&2
+  printf '%s\n' "${P4B_OUT}" | tail -20 >&2
+  exit 1
+fi
+assert_has_retention_refusal "phase 4b" "${P4B_OUT}"
+assert_lg_exists "${STRING_RET_LG}"
+echo "    string retention settled the guard from the bag — refused with no probe"
+
+# --- Phase 4c: issue #2521, a retention that lives ONLY in observedProperties
+# The SAME log group and the SAME command phase 4 just ran and was allowed
+# through, so this phase's before/after pair is inside one run: the only thing
+# that changed is a retention AWS now reports and no template declares.
+echo "==> Phase 4c: set a retention on ${EMPTY_LG} OUT OF BAND, then re-run phase 4's command (expect refusal)"
+aws logs put-retention-policy --log-group-name "${EMPTY_LG}" --retention-in-days 60 \
+  --region "${REGION}"
+# `refresh-observed` is what makes an out-of-band change visible to cdkd
+# WITHOUT a redeploy — and a redeploy is not an option here: the template still
+# declares never-expire, so the diff is NO_CHANGE and no `readCurrentState`
+# would run. `--yes` because the command prompts and this is non-interactive.
+node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# BOTH halves of the premise, because the arm is exactly about which bag was
+# read: the template bag must still declare nothing, and the observed bag must
+# carry the out-of-band value.
+EMPTY_RET_DECLARED="$(state_property_json "${EMPTY_LG}" properties)"
+EMPTY_RET_OBSERVED="$(state_property_json "${EMPTY_LG}" observedProperties)"
+if [ "${EMPTY_RET_DECLARED}" != "ABSENT" ]; then
+  echo "FAIL: phase 4c: the template bag records RetentionInDays as ${EMPTY_RET_DECLARED}; this arm needs it ABSENT there, or it re-tests phase 4b instead" >&2
+  exit 1
+fi
+if [ "${EMPTY_RET_OBSERVED}" != "60" ]; then
+  echo "FAIL: phase 4c: observedProperties records RetentionInDays as ${EMPTY_RET_OBSERVED}, expected 60 — the out-of-band retention was not captured, so this arm would prove nothing" >&2
+  exit 1
+fi
+# Still zero streams, so a `has-log-events` refusal remains impossible and the
+# only thing that can refuse this group is the observed retention.
+EMPTY_STREAMS_P4C="$(lg_stream_count "${EMPTY_LG}")"
+if [ "${EMPTY_STREAMS_P4C}" -ne 0 ]; then
+  echo "FAIL: phase 4c: the empty log group has ${EMPTY_STREAMS_P4C} streams — the refusal below could come from the probe rather than from the observed bag" >&2
+  exit 1
+fi
+set +e
+P4C_OUT="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --dry-run \
+  --recreate-via-cc-api "${EMPTY_LOGICAL_ID}" 2>&1)"
+P4C_RC=$?
+set -e
+if [ "${P4C_RC}" -eq 0 ]; then
+  echo "FAIL: phase 4c: the pre-flight ALLOWED a log group whose retention is recorded only in observedProperties — phase 4 allowed the same target and this phase must not (issue #2521)" >&2
+  printf '%s\n' "${P4C_OUT}" | tail -20 >&2
+  exit 1
+fi
+assert_has_retention_refusal "phase 4c" "${P4C_OUT}"
+assert_lg_exists "${EMPTY_LG}"
+echo "    out-of-band retention, visible only in observedProperties, now settles the guard"
+
 # --- Phase 5: mid-deploy, the headline case (plain deploy, no flags) -------
 echo "==> Phase 5: rename the seeded log group on a PLAIN deploy (expect refusal, data intact)"
 set +e
@@ -594,9 +823,9 @@ if [ -n "${REMAINING}" ]; then
   echo "FAIL: log groups still exist under ${LG_PREFIX} after destroy: ${REMAINING}" >&2
   exit 1
 fi
-echo "    both log groups deleted"
+echo "    all three log groups deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — never-expire log-group guard (issue #2558): pre-flight probe both polarities, plain-deploy refusal with data intact, consented replacement, all 7 phases passed"
+echo "[verify] PASS — log-group stateful guard: never-expire probe both polarities (issue #2558), the string-valued and observed-only retention arms (issue #2521), plain-deploy refusal with data intact, consented replacement, all 9 phases passed"

@@ -4455,7 +4455,18 @@ export class DeployEngine {
           // surviving resource — the live resource is still destroyed and
           // recreated, so the consent flag is still the right gate.
           if (propertyDrivenReplacement && !recreateFlagged && updateReplacePolicy !== 'Retain') {
-            const statefulReason = isStatefulRecreateTargetForReplace(resourceType, currentProps);
+            // Three arguments, not two (issue [#2521]): the guard's log-group arm
+            // reads a positive `RetentionInDays` out of EITHER recorded bag, so
+            // the observed one -- where an out-of-band `put-retention-policy`, or
+            // an import whose template never declared the property, puts it -- has
+            // to travel with the recorded one. `currentProps` stays the recorded
+            // bag exactly as before; `currentResource` is this UPDATE branch's
+            // state record, the only place the observed bag exists.
+            const statefulReason = isStatefulRecreateTargetForReplace(
+              resourceType,
+              currentProps,
+              currentResource.observedProperties
+            );
             if (statefulReason && this.options.forceStatefulRecreation !== true) {
               const immutableProps = change.propertyChanges
                 ?.filter((pc) => pc.requiresReplacement)
@@ -5198,7 +5209,13 @@ export class DeployEngine {
               // surviving resource.
               const statefulReason = retainOldOnReplace
                 ? null
-                : isStatefulRecreateTargetForReplace(resourceType, currentProps);
+                : isStatefulRecreateTargetForReplace(
+                    resourceType,
+                    currentProps,
+                    // The observed bag, for the same reason the property-driven
+                    // guard above passes it (issue [#2521]).
+                    currentResource.observedProperties
+                  );
               if (statefulReason && this.options.forceStatefulRecreation !== true) {
                 // No `Retain` note here any more (issue #2518): reaching this
                 // throw MEANS the template is not applying `Retain`, because
