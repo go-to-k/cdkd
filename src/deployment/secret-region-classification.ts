@@ -104,15 +104,34 @@ function secretsManagerSecretId(inner: string): string {
  * A COLON-LESS body (`{{resolve:ssm}}` / `{{resolve:ssm-secure}}`) names no
  * parameter at all, and the empty string is what says so: the caller reads a
  * falsy name as `local`, which hands the reference on to the resolver's own
- * `PARAMETER_NAME is required`. Without the guard `indexOf(':')` is `-1` and
- * `substring(0)` returns the SERVICE STRING as the parameter name, so with a
- * foreign producer region on record the same malformed input drew the
- * ambiguous-region refusal naming `'ssm-secure'` as the secret. Doubly
- * degenerate, so the consequence is wording only — but the two sibling
- * extractions answer `''` here ({@link secretsManagerSecretId}'s fixed-length
- * `substring` past the end, and `arnRegion`'s `startsWith('arn:')` test), and a
- * third that answers something else is the kind of split a later reader has to
- * rediscover.
+ * `PARAMETER_NAME is required` — thrown BEFORE any client is built, so no
+ * `GetParameter` is ever issued for such a token. Without the guard
+ * `indexOf(':')` is `-1` and `substring(0)` returns the SERVICE STRING as the
+ * parameter name, so with a foreign producer region on record the same
+ * malformed input drew the ambiguous-region refusal naming `'ssm-secure'` as
+ * the secret. {@link secretsManagerSecretId} already answers `''` for its own
+ * nameless body (a fixed-length `substring` past the end of the string), and a
+ * sibling that answers something else is the kind of split a later reader has
+ * to rediscover.
+ *
+ * THE DELTA IS NOT PURELY COSMETIC ON A MIXED LEAF, and the narrow case is
+ * stated rather than rounded off. Each of the three leaf walks that consume
+ * this verdict (`rollback-executor.ts`, `cdkd drift`, `cdkd scrub`) refuses the
+ * WHOLE leaf as soon as ONE token classifies `ambiguous`, before any token is
+ * fetched. So for `local=<same-region ARN>;secure={{resolve:ssm-secure}}` with
+ * a foreign producer region on record, the old bogus name bought a pre-fetch
+ * refusal: nothing was resolved. Now the leaf goes to the primary resolver,
+ * which walks tokens in scan order — so the ARN's plaintext IS fetched and
+ * cached before the degenerate token throws, and the op fails either way.
+ *
+ * That is accepted rather than defended. The lost refusal was an ACCIDENT of
+ * the mis-parse, not a designed protection: with no foreign producer region on
+ * record — the overwhelmingly common case — the colon-less token classified
+ * `local` before this change too, so the same sibling was already fetched. And
+ * the sibling is fetched from the region its own verdict names, never a guessed
+ * one, so nothing here weakens the issue #1957 rule this module exists to
+ * enforce. What it costs is one needless call plus a plaintext cached in-process
+ * for an operation that is about to fail.
  */
 function ssmParameterName(inner: string): string {
   // Strip the SERVICE, whatever its spelling: `ssm:` and `ssm-secure:` both

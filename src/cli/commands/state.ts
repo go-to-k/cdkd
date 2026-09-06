@@ -2566,13 +2566,17 @@ async function refreshObservedForStack(
           // `drainObservedCaptures` and the persist choke point — so a remedy
           // spelled at this call site would have left the DEFAULT path leaking.
           // That module's `refuseUncertifiedReadbackPositions` carries the
-          // measured per-shape table, and since the anchor pass for issue #2012
-          // landed the rows it names are fewer: two of the four it once listed
-          // as residuals now close CONDITIONALLY (an unkeyed array whose
-          // positions corroborate each other, and — because the map here is
-          // empty — the derived needles `deriveReadbackNeedles` learns from
-          // those certified positions). Read that function's own table for
-          // which shapes still fall through.
+          // measured per-shape table, and since issue #2012 landed the rows it
+          // names are fewer — by TWO SEPARATE mechanisms, which the table keeps
+          // apart and so must this note. `unkeyedArrayPairsByAnchors` closes
+          // two rows CONDITIONALLY: an unkeyed array is walked positionally
+          // when its own positions corroborate the alignment. The OTHER two
+          // rows (an unpaired element beside a paired one; an observed KEY the
+          // source does not carry) are closed instead by DERIVED NEEDLES, and
+          // this write site is exactly where they apply — `deriveReadbackNeedles`
+          // returns nothing unless the secrets map is EMPTY, which it is here
+          // by construction (see {@link NO_RECORDED_SECRETS}). Read that
+          // function's own table for which shapes still fall through.
           //
           // `STATE_SOURCED_READBACK_RULES` is the row this write site occupies
           // in `secret-redaction.ts`'s generation table ("observed walk,
@@ -2588,7 +2592,11 @@ async function refreshObservedForStack(
           // element is reached; and, for a list with no identity key, the
           // corroborated positional walk `unkeyedArrayPairsByAnchors` licenses
           // (issue #2012). "Descent stays off" is about pairing by INDEX ALONE,
-          // not a claim that no array is ever walked by index here.
+          // not a claim that no array is ever walked by index here — and the
+          // flag is not a knob to reach for either way: `!descendArrays` is one
+          // of the three conjuncts in `isReadbackProjectedFromState`, so
+          // turning it ON here would not widen the walk, it would switch the
+          // corroborated pass OFF entirely.
           //
           // Inherited residual, not introduced here: `cdkd import`'s warn path
           // can leave a PUBLIC expression in `properties`, and

@@ -612,6 +612,11 @@ describe('a replayed ssm-secure expression, driven end to end (issue #2482)', ()
     expect(refusal).toContain(SECURE_PARAM);
     expect(refusal).toContain(CONSUMER_REGION);
     expect(refusal).toContain(PRODUCER_REGION);
+    // INERT on today's broken path and kept deliberately: with `ssmSends` empty
+    // no plaintext is in scope, so these cannot fail while the line above
+    // passes. They are the standing leak fence for a future arm that resolves
+    // BEFORE refusing -- which is exactly what the #2057 twin's own copy of
+    // these two lines does discriminate, because that broken path fetches.
     expect(logLines.join('\n')).not.toContain(TOKYO_PASSWORD);
     expect(logLines.join('\n')).not.toContain(IRELAND_PASSWORD);
   });
@@ -651,6 +656,34 @@ describe('a replayed ssm-secure expression, driven end to end (issue #2482)', ()
     // answered" observable at all.
     expect(desired.ProviderDetails.client_secret).toBe(IRELAND_PASSWORD);
     expect(desired.ProviderDetails.client_secret).not.toBe(TOKYO_PASSWORD);
+  });
+
+  it('--revert-failed reaches the ssm-secure arm too, on its OWN resolveReplayProps sites', async () => {
+    // `replayFailedOperations` resolves through call sites distinct from
+    // `replayRollback`'s, and the existing --revert-failed cases are
+    // `secretsmanager` only. Without this, the ssm-secure arm is proven on ONE
+    // of the two replay entry points.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const ctx = makeCtx({ update }, [PRODUCER_REGION]);
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: res({ properties: { ProviderDetails: { client_secret: 'literal-prev' } } }),
+        attemptedProperties: { ProviderDetails: { client_secret: SECURE_EXPR } },
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({ properties: { ProviderDetails: { client_secret: 'literal-current' } } }),
+    };
+
+    const result = await replayFailedOperations(failedOps, state, 'Consumer', ctx);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(ssmSends).toHaveLength(0);
+    expect(result.failures).toBe(1);
   });
 
   it('refuses the whole leaf when an ssm-secure token is EMBEDDED beside a local one', async () => {
@@ -769,25 +802,31 @@ describe('classifyReplaySecretRegion (issue #2057)', () => {
   // so with a foreign producer region on record the verdict was `ambiguous`
   // naming `'ssm-secure'` (or `'ssm'`) as the secret — a refusal message about
   // a secret that does not exist, in place of the resolver's clear one.
-  it.each([
-    ['{{resolve:ssm-secure}}', 'ssm-secure'],
-    ['{{resolve:ssm}}', 'ssm'],
-  ])('waves through the colon-less body %s instead of naming %s as the secret', (expr, service) => {
-    const verdict = classifyReplaySecretRegion(expr, CONSUMER_REGION, [PRODUCER_REGION]);
-    // BOTH halves matter: the verdict, and that the service string never became
-    // a `secretName`. Asserting only `kind` would pass on a future arm that
-    // refused for a different reason while still echoing `'ssm-secure'`.
-    expect(verdict).toEqual({ kind: 'local' });
-    expect(JSON.stringify(verdict)).not.toContain(service);
-  });
+  it.each([['{{resolve:ssm-secure}}'], ['{{resolve:ssm}}']])(
+    'waves through the colon-less body %s instead of naming the service as the secret',
+    (expr) => {
+      // `toEqual` on the WHOLE verdict is the assertion: it pins that `kind` is
+      // `local` AND that no `secretName` field exists at all, which is the half
+      // about the service string. A separate `not.toContain(service)` line was
+      // dropped after review -- it cannot fail while this passes.
+      expect(classifyReplaySecretRegion(expr, CONSUMER_REGION, [PRODUCER_REGION])).toEqual({
+        kind: 'local',
+      });
+    }
+  );
 
-  // The CONTROL for the case above: with a colon present the same input is
-  // still classified, so the guard cannot have been implemented as "any
-  // ssm-family reference is local".
+  // The CONTROL for the case above: the guard cannot have been implemented as
+  // "any ssm-family reference is local".
+  //
+  // Only the SECOND assertion discriminates, and saying so is the point. The
+  // empty-tail form was `local` before this change too (`indexOf(':')` is 10,
+  // `substring(11)` is `''` under both spellings), so it is a parity pin, not a
+  // fence. The `:x` form is the one the unguarded parser answered `ambiguous`
+  // for and must still answer `ambiguous` for.
   it('still refuses the same reference the moment it names a parameter', () => {
     expect(
       classifyReplaySecretRegion('{{resolve:ssm-secure:}}', CONSUMER_REGION, [PRODUCER_REGION])
-    ).toEqual({ kind: 'local' }); // an EMPTY name is still no name
+    ).toEqual({ kind: 'local' }); // parity pin: an EMPTY name is still no name
     expect(
       classifyReplaySecretRegion('{{resolve:ssm-secure:x}}', CONSUMER_REGION, [PRODUCER_REGION])
     ).toEqual({
@@ -795,6 +834,18 @@ describe('classifyReplaySecretRegion (issue #2057)', () => {
       secretName: 'x',
       foreignProducerRegions: [PRODUCER_REGION],
     });
+  });
+
+  // Parity with the `secretsmanager` twin, which has had this case since
+  // issue #2057. Shared branch, so this is a pin rather than a fence.
+  it('binds a same-region ssm-secure ARN as local even with a foreign producer on record', () => {
+    expect(
+      classifyReplaySecretRegion(
+        `{{resolve:ssm-secure:arn:aws:ssm:${CONSUMER_REGION}:111122223333:parameter/db/pw}}`,
+        CONSUMER_REGION,
+        [PRODUCER_REGION]
+      )
+    ).toEqual({ kind: 'local' });
   });
 
   // The sibling extraction already answered `''` for its own degenerate body

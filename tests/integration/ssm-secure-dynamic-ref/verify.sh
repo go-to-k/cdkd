@@ -39,10 +39,13 @@
 #      Lambda log group, remove the parameters, purge the state bucket's object
 #      versions and assert zero survive.
 #
-# EVERY cdkd invocation whose output could carry a value is captured to a file
-# and scanned for the markers BEFORE anything of it is printed -- the two
-# deploys and the destroy: streaming any of them through `tee` first would put
-# the plaintext on the terminal / in CI logs if the masking ever regressed.
+# NO cdkd output is printed before it has been scanned for the markers. The
+# three invocations that stream to the terminal -- the two deploys and the
+# destroy -- are captured to a FILE first and shown through `show_deploy_log`;
+# streaming any of them through `tee` would put the plaintext on the terminal /
+# in CI logs if the masking ever regressed. The rest (`diff`, `scrub`, `drift`,
+# `state show`) are captured into VARIABLES and printed, if at all, through
+# `diag_output`, which withholds on a marker hit the same way.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})

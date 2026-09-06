@@ -320,8 +320,10 @@ Index of every area: [code-layout.md](code-layout.md).
     carries its own distinguishing anchor (`isUniquelyKeyedBy`'s bar) or,
     being a bare reference, leans on the array's literal FRAME; and no two
     share an ORDER-INSENSITIVE anchor signature (the last two are the #2012
-    review's, each a measured misattribution on
-    `AWS::AmazonMQ::Broker.Users`). A position AWS did not rewrite is evidence
+    review's, each from a measured misattribution -- a `{Name:'db'}` /
+    `{Name:''}` pair for the per-element rule, `AWS::AmazonMQ::Broker.Users`
+    for the pairwise one; only the second is AmazonMQ). A position AWS did not
+    rewrite is evidence
     the containers are the same element (a REORDERED list stops matching and
     is refused). The other two rows (an UNPAIRED element beside a paired one;
     an observed KEY the source does not carry) close by DERIVED NEEDLES

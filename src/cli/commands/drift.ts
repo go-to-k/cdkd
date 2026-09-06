@@ -4504,12 +4504,20 @@ async function runRevert(
                 // the ORDER objection above is ANSWERED rather than assumed
                 // away — a different argument from this flag's, not a
                 // relaxation of it. Where the corroboration fails the array is
-                // returned untouched by that pass and keeps whatever the path
-                // pass left it, i.e. the value scan named above. The sibling
-                // copies of this rationale in `secret-redaction.ts` were
-                // corrected in the #2012 lane; see `unkeyedArrayPairsByAnchors`
-                // for the two misattributions on `AWS::AmazonMQ::Broker.Users`
-                // that forced the last two conditions.
+                // returned untouched BY THAT PASS and keeps whatever the path
+                // pass left it, i.e. the value scan named above — with one
+                // further qualifier, since `secrets` at this site is often
+                // EMPTY (see the note below): on an empty map
+                // `deriveReadbackNeedles` learns needles from the positions the
+                // pass DID certify and `preferPositionDecisions` merges them
+                // over the refused array, so "untouched" is true of the
+                // position pass and not of the whole call. The sibling copies
+                // of this rationale in `secret-redaction.ts` were corrected in
+                // the #2012 lane; see `unkeyedArrayPairsByAnchors` for the two
+                // measured shapes behind the last two conditions — a
+                // `{Name:'db'} / {Name:''}` pair for the per-element evidence
+                // rule, and `AWS::AmazonMQ::Broker.Users` for the pairwise
+                // distinguishability one. Only the second is AmazonMQ.
                 // (Until issue #2482 `preserveLiveValuesAtUnresolvedTokens`
                 // was a second source, registering every live value it copied
                 // in over an `ssm-secure` survivor; a survivor is no longer a
