@@ -686,14 +686,21 @@ describe('a replayed ssm-secure expression, driven end to end (issue #2482)', ()
     expect(result.failures).toBe(1);
   });
 
-  it('refuses the whole leaf when an ssm-secure token is EMBEDDED beside a local one', async () => {
+  it('refuses an EMBEDDED ssm-secure token before its foreign-ARN sibling is fetched', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const ctx = makeCtx({ update }, [PRODUCER_REGION]);
-    // The ambiguous token is embedded in a larger string, beside a same-region
-    // ARN that is `local`. The refusal must still fire before the local half is
-    // fetched — a fetched SecureString is cached on the resolver and recorded
-    // as a redaction needle for an op that is about to be refused anyway.
-    const mixed = `local=${CONSUMER_ARN_EXPR};secure=${SECURE_EXPR}`;
+    // The SIBLING is a FOREIGN ARN (`named-region`), not a same-region one, and
+    // that choice is what makes this case discriminate. `resolveDriftLeafByRegion`'s
+    // twin here refuses the WHOLE leaf in a pre-pass, before any token is
+    // resolved; a `named-region` token is what selects the segment-rebuild path
+    // below it, so moving the refusal into THAT loop — the mutation review
+    // probed — fetches the ARN half first. Measured: with a same-region
+    // (`local`) sibling the mutation is unreachable and this case stays green,
+    // which is why the fixture was changed rather than the fence.
+    //
+    // A fetched SecureString is cached on the resolver AND recorded as a
+    // redaction needle, for an op that is about to be refused anyway.
+    const mixed = `foreign=${SECURE_ARN_EXPR};secure=${SECURE_EXPR}`;
     const { ops, state } = revertScenario(mixed);
 
     const result = await replayRollback(ops, state, 'Consumer', ctx);
