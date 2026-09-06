@@ -24,6 +24,16 @@ vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
   is a runtime error (#1458 shipped exactly that into `lib/command-match.sh`;
   #1477 found `provider-integ-gate.test.sh` failing 3 of 17 cases there —
   neither detectable from a bash-5-only run).
+- **Running the SUITE under 3.2 does not run the HOOK under 3.2** — the hooks
+  are `#!/usr/bin/env bash`, so a bare `bash "$HOOK"` takes whatever comes
+  first on PATH. `run-tests.sh` exports `HOOK_BASH` alongside each shell for
+  exactly this; a suite ignoring it advertises 3.2 coverage of its test rather
+  than of its subject. That hid a live fail-open until CI, the only runner
+  with 3.2 as both `bash` and `/bin/bash`: the two engines disagreed about a
+  bracket expression in `gate_strip_prefix` (go-to-k/cdkd#2650; the class is
+  written up in [hooks-class-fences.md](hooks-class-fences.md)). Reproduce the
+  runner by putting 3.2 FIRST on PATH, not by invoking the suite with
+  `/bin/bash`. go-to-k/cdkd#2715 lists the suites still missing the shim.
 - **A suite that exits 0 while printing a non-zero `fail: N` tally is a
   failure** — tally-not-exit-code is how the 3.2 breakage stayed invisible.
 - **Deliberately NOT part of `vp run check` / `vp run verify`** (throwaway
