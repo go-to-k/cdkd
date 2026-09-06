@@ -68,9 +68,26 @@
 # addresses reasoning that never says "PR"; the gate makes the cheap, reusable
 # spelling loud at the moment of filing. Neither alone is the mechanism.
 #
+# RE-MEASURED after the 2026-09-05 quoted-value / bold-value / vocabulary /
+# boundary round, because widening a vocabulary can move the fire count and a
+# coverage claim taken before the widening is not evidence for the code after
+# it. Same command, later the same day: the population is 259 (the corpus MOVED
+# under a `--limit 300` window -- four more bodies carry the field line), and
+# the gate fires on 66, the SAME 66 as the pre-fix hook, by file. Nothing was
+# newly refused and nothing stopped being refused. So all three widenings are
+# LATENT rather than live: `separate review surface` appears in 0 of the 259, a
+# bolded `**next**` value in 0, and no fired body's reason wrapped over a line
+# carrying a stray colon. They close shapes the corpus has not written yet --
+# which is the point of fixing them while they are cheap, and the reason the
+# regression cases are synthetic.
+#
 # Corpus reading, so the coverage claim is a number rather than an impression.
+# This is the EARLIER of the two same-day readings (the paragraph above is the
+# later one, taken after the widenings); both are kept because the difference
+# between them is the point -- the denominator moves under a `--limit 300`
+# window while the fire count did not.
 # Over `gh issue list --state all --limit 300 --json number,body` (2026-09-05),
-# 255 of the 300 bodies carry a `Session-fit: next` FIELD LINE and the gate
+# 255 of the 300 bodies carried a `Session-fit: next` FIELD LINE and the gate
 # fires on 66 of them (26%). The denominator depends on the predicate and the
 # difference is not noise: an anchored field-line match (what this gate reads --
 # line start, optional bold, optional list marker) gives 255, a bare
@@ -145,7 +162,13 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_matches >/dev/null \
   || ! declare -F gate_segments >/dev/null \
-  || [ -z "${GATE_RE_GH_ISSUE_CREATE:-}" ]; then
+  || [ -z "${GATE_RE_GH_ISSUE_CREATE:-}" ] \
+  || [ -z "${GATE_PERL_WORD:-}" ]; then
+  # `GATE_PERL_WORD` is checked for the same reason as the constant above, and
+  # its absence is WORSE than a missing function: left undefined, the `$GW` the
+  # extraction interpolates becomes the EMPTY string, `($GW)` matches empty at
+  # every position, and every body path comes back empty -- a silent fail-open
+  # rather than a 127.
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing, unloadable, or" >&2
   echo "predates GATE_RE_GH_ISSUE_CREATE, so issue-deferral-criteria-gate" >&2
   echo "cannot evaluate the command. Restore the file; do not work around the" >&2
@@ -218,7 +241,14 @@ optin_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || true)
 # and the gate would be inert.
 PR_SHAPE_RE='(own|separate)[[:space:]]+prs?([^[:alnum:]]|$)'
 PR_SHAPE_RE="$PR_SHAPE_RE"'|shar(e|es|ing)[[:space:]]+((a|an|the|its|their)[[:space:]]+)?prs?([^[:alnum:]]|$)'
-PR_SHAPE_RE="$PR_SHAPE_RE"'|independent[[:space:]]+review[[:space:]]+surface'
+# `(independent|separate)` rather than `independent` alone. `a separate review
+# surface` is as PR-shaped as `an independent` one, and the divergence was
+# measured against cdk-local's port of this gate, which already carried both:
+# the same body answered rc=0 here and blocked there. The three repos answering
+# differently on one deferral is the failure this whole family exists to
+# prevent, so the vocabulary is kept in sync deliberately rather than by
+# coincidence.
+PR_SHAPE_RE="$PR_SHAPE_RE"'|(independent|separate)[[:space:]]+review[[:space:]]+surface'
 PR_SHAPE_RE="$PR_SHAPE_RE"'|unreviewable'
 PR_SHAPE_RE="$PR_SHAPE_RE"'|own[[:space:]]+review([^[:alnum:]]|$)'
 
@@ -294,7 +324,23 @@ scan_text() { # <body text> -> 0 when the body carries a PR-shaped deferral
   # spelling `session_fit_re` accepts is load-bearing: a body that bolds one
   # field bolds them all, so a bold-blind boundary would fold the whole field
   # block into the reason.
-  local key_re='^[[:space:]]*([-*+>][[:space:]]+)?[*_]*[A-Za-z][A-Za-z_-]*[*_]*:'
+  #
+  # The key is the NAMED FIELD SET, not `any word followed by a colon`. The
+  # loose spelling `[A-Za-z][A-Za-z_-]*:` read an ordinary English sentence
+  # wrapping onto a line that merely CONTAINS a colon as the next field and cut
+  # the reason there. Measured 2026-09-05, rc=0 where the reason is plainly
+  # PR-shaped:
+  #
+  #   Session-fit: next (not this session) -- a different subsystem
+  #   entirely: it needs its own PR.
+  #
+  # `entirely:` ended the continuation, so `it needs its own PR` was never
+  # scanned. Truncating the reason is the FAIL-OPEN direction, and the comment
+  # at this spot already claimed the boundary was the sibling FIELDS
+  # (`Severity:` / `Effort:` / `Estimate:` / `Dup-check:`) -- the code just did
+  # not say so. `Notes:` is in the list because session-report.md's TODO block
+  # adds it; `nocasematch` is on, so one lowercase spelling covers every casing.
+  local key_re='^[[:space:]]*([-*+>][[:space:]]+)?[*_]*(session-fit|severity|effort|estimate|notes|dup-check)[*_]*:'
   local item_re='^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+'
   local session_fit_re='session-fit[*_]*:[*_]*(.*)$'
   case "$(shopt -p nocasematch)" in *-s*) nocase_was=1 ;; esac
@@ -368,7 +414,14 @@ EOF
       # -- an agent talking itself INTO finishing the work needs no supervision.
       # A line stating neither token (an old packed body, a `Session-fit` in
       # prose) is not a deferral decision this gate can read, so it passes.
-      if [[ $rest =~ ^[[:space:]]*next([^[:alpha:]]|$) ]]; then
+      # `[*_]*` before `next` for the same reason the KEY accepts it, and the
+      # asymmetry was a measured silent pass: a body that bolds one field bolds
+      # them all, and `Session-fit: **next** (not this session) -- it needs its
+      # own PR` gave rc=0 while `**Session-fit:** next ...` with the identical
+      # reason gave 2. No corpus instance today, so this is latent rather than
+      # live -- and a gate that silently passes the bolded VALUE while refusing
+      # the bolded KEY is the shape nobody would trust once they found it.
+      if [[ $rest =~ ^[[:space:]]*[*_]*next([^[:alpha:]]|$) ]]; then
         reason="$rest"
         active=1
       else
@@ -394,22 +447,46 @@ EOF
 # the body being submitted and still has to be scanned; only `>` / `tee`
 # supersede it.
 cmd_writes() { # <path as the command spells it>
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
+    my $want = $ENV{TARGET};
     # The trailing class covers the TIGHT spellings -- `>f<<EOF`, `>f;`,
     # `>f&&` -- which a `(?:\s|$)` terminator misses, and `>f<<EOF` is the
     # very shape this exists for.
-    exit 0 if $c =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 0 if line_writes($c, $want, 1);
     exit 1;
   ' 2>/dev/null
 }
 
 cmd_replaces() { # <path as the command spells it>
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
-    exit 0 if $c =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    my $want = $ENV{TARGET};
+    exit 0 if line_writes($c, $want, 0);
     exit 1;
   ' 2>/dev/null
 }
@@ -422,15 +499,27 @@ cmd_replaces() { # <path as the command spells it>
 # The STATUS, not the output, reports whether a heredoc was found: an empty
 # heredoc body is legal and prints nothing.
 heredoc_bodies_for() { # <path as the command spells it>
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
+    my $want = $ENV{TARGET};
     my @lines = split /\n/, $c, -1;
     my @out;
     my $found = 0;
     for (my $i = 0; $i <= $#lines; $i++) {
       my $l = $lines[$i];
-      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless line_writes($l, $want, 1);
       next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
       my $dash  = ($1 eq "<<-");
       my $delim = $3;
@@ -566,10 +655,28 @@ $cmd"
   # `body=@` is matched FIRST so an `-F body=@path` is not also read as a bare
   # `-F path`. The bare `-F <path>` arm is not optional: `-F` is gh's short
   # `--body-file`.
-  done < <(printf '%s' "$seg" | perl -0777 -ne '
-      while (/(?:--field|--raw-field|-F)[=\s]+(["\x27]?)body=\@([^"\x27\s]+)\1/g) { print "$2\n"; }
-      while (/--body-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
-      while (/(?:^|\s)-F[=\s]+(["\x27]?)([^"\x27\s=]+)\1(?=\s|$)/g) { print "$2\n"; }
+  #
+  # The value class is `$GW` from the SHARED `GATE_PERL_WORD` prelude, not a
+  # local `(["\x27]?)([^"\x27\s]+)\1`. That local shape could not span a QUOTED
+  # PATH CONTAINING A SPACE, so it extracted NOTHING and this gate judged an
+  # empty body -- measured 2026-09-05, `--body-file "<dir with space>/x.md"`
+  # carrying a PR-shaped deferral gave rc=0 where the unquoted spelling gave 2.
+  # See lib/command-match.sh -> GATE_PERL_WORD for the other hole it closes and
+  # why the class is defined once rather than per hook.
+  done < <(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+      while (/(?:--field|--raw-field|-F)[=\s]*($GW)/g) {
+        my $v = gate_unq($1);
+        next unless $v =~ s/^body=\@//;
+        print "$v\n";
+      }
+      while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+      # A bare `-F <path>` carries no `key=`, which is what distinguishes it
+      # from the `gh api -F body=@p` form handled above.
+      while (/(?:^|\s)-F[=\s]*($GW)(?=\s|$)/g) {
+        my $v = gate_unq($1);
+        next if $v =~ /=/;
+        print "$v\n";
+      }
     ' 2>/dev/null)
 
   if [ -n "$out" ]; then
@@ -577,15 +684,19 @@ $cmd"
     return 0
   fi
 
-  printf '%s' "$seg" | perl -0777 -ne '
-    while (/(?:^|\s)--body[=\s]+("(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\S+)/g) {
-      my $v = $1;
-      $v =~ s/^["\x27]//; $v =~ s/["\x27]$//;
-      print "$v\n";
-    }
-    while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]+("(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\S+)/g) {
-      my $v = $1;
-      $v =~ s/^["\x27]//; $v =~ s/["\x27]$//;
+  # ARM 4, and the `-f body=` half of it had its own measured fail-open. The
+  # old value alternative was tried AFTER the literal `body=`, so gh's OWN
+  # documented spelling -- `-f body='<text>'`, quote INSIDE the value -- fell
+  # through to `\S+` and captured `body='a`. Measured 2026-09-05: rc=0 on a
+  # PR-shaped deferral, where `-f 'body=<same text>'` (quote OUTSIDE, the only
+  # shape this suite covered) gave 2; `-f body="..."` and `--field body='...'`
+  # were rc=0 too. `$GW` takes the whole shell WORD first and `gate_unq` then
+  # removes the quoting wherever it sat, so all four spellings land on the same
+  # value.
+  printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    while (/(?:^|\s)--body[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
       next unless $v =~ s/^body=//;
       next if $v =~ /^\@/;
       print "$v\n";
@@ -601,6 +712,16 @@ $cmd"
 # `git commit -F <msg> && gh issue create --body-file <clean>` would have been
 # refused over text that is not the issue body at all.
 offending_seg=""
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which cannot
+# see a prelude that is present but does not COMPILE -- and that failure is
+# SILENT, because every extraction runs perl with stderr discarded, so the gate
+# would extract nothing and PASS what it exists to refuse. Probe it functionally,
+# once, here: after arming (so ordinary Bash calls pay nothing) and at TOP LEVEL.
+# TOP LEVEL is load-bearing -- the extraction helpers are called inside `$( )`,
+# where `exit 2` ends only the substitution subshell: measured, an in-function
+# guard PRINTED its refusal and the hook still returned 0.
+gate_perl_word_or_die issue-deferral-criteria-gate || exit 2
+
 while IFS= read -r seg; do
   if ! gate_matches "$seg" "$GATE_RE_GH_ISSUE_CREATE"; then
     if [ -z "$GATE_RE_API_MINT" ] || ! gate_matches "$seg" "$GATE_RE_API_MINT"; then

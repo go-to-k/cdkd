@@ -236,6 +236,11 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // convention above: this satellite is the AUTHORING half of hooks.md and
   // must never be narrowed to the handful of hooks a lane happens to edit.
   ['hooks-authoring.md', 74],
+  // Seven literal paths: the shared prelude, its five consumers, and the
+  // consumer fence. The count is EXACT because the list is literal --
+  // narrowing it to, say, only the prelude would take the per-gate
+  // measurements dark for the gates they are about.
+  ['hooks-flag-value-class.md', 7],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
@@ -938,7 +943,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 47; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
+const CORPUS_FILE_COUNT = 48; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
                               //  per-file cap again -- at least the seventh split off this one
                               //  file, counting the six satellites it already points at, so do not
                               //  read the ordinals in the older entries below as a running total.

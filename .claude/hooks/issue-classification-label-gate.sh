@@ -72,10 +72,16 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 # rather than forking the file: the two spellings are the ONLY difference
 # between the three copies, and a fork is how they drift.
 # shellcheck source=lib/command-match.sh
-if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
-  && ! . "$__hook_dir/_command-match.sh" 2>/dev/null; then
+if { ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  && ! . "$__hook_dir/_command-match.sh" 2>/dev/null; } \
+  || [ -z "${GATE_PERL_WORD:-}" ]; then
+  # `GATE_PERL_WORD` is checked because a library that predates it leaves the
+  # `$GW` the extraction interpolates as the EMPTY string: `($GW)` then matches
+  # empty everywhere and every body path comes back empty -- a silent
+  # fail-open rather than a loud 127.
   echo "Blocked: the shared command matcher (lib/command-match.sh or" >&2
-  echo "_command-match.sh) is missing or unloadable, so" >&2
+  echo "_command-match.sh) is missing, unloadable or predates" >&2
+  echo "GATE_PERL_WORD, so" >&2
   echo "issue-classification-label-gate cannot evaluate the command." >&2
   echo "Restore the file; do not work around the gate." >&2
   exit 2
@@ -219,10 +225,29 @@ $cmd"
   # exited 0 on a body stating `Severity: high` with no label. Sibling
   # issue-dup-check-gate.sh already carries the same three arms. `body=@` is
   # matched FIRST so an `-F body=@path` is not also read as a bare `-F path`.
-  done < <(printf '%s' "$seg" | perl -0777 -ne '
-      while (/(?:--field|--raw-field|-F)[=\s]+(["\x27]?)body=\@([^"\x27\s]+)\1/g) { print "$2\n"; }
-      while (/--body-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
-      while (/(?:^|\s)-F[=\s]+(["\x27]?)([^"\x27\s=]+)\1(?=\s|$)/g) { print "$2\n"; }
+  #
+  # The value class is `$GW` from the SHARED `GATE_PERL_WORD` prelude, not a
+  # local `(["\x27]?)([^"\x27\s]+)\1`. That local shape could not span a
+  # QUOTED PATH CONTAINING A SPACE, so it extracted NOTHING, the fallback chain
+  # ended at the whole SEGMENT (which carries the path but not the body), and
+  # the gate demanded no label at all. Measured 2026-09-05 on a body stating
+  # `Severity: high` with no labels: `--body-file "<dir with space>/x.md"` gave
+  # rc=0 where the unquoted spelling gave 2, and so did the GLUED `-F<path>`
+  # spelling gh accepts as readily as `-F <path>` -- hence `[=\s]*` on the
+  # short flags. This gate is the FOURTH site of one root cause; the note above
+  # about checking the siblings is why it was found.
+  done < <(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+      while (/(?:--field|--raw-field|-F)[=\s]*($GW)/g) {
+        my $v = gate_unq($1);
+        next unless $v =~ s/^body=\@//;
+        print "$v\n";
+      }
+      while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+      while (/(?:^|\s)-F[=\s]*($GW)(?=\s|$)/g) {
+        my $v = gate_unq($1);
+        next if $v =~ /=/;
+        print "$v\n";
+      }
     ' 2>/dev/null)
 
   if [ -n "$out" ]; then
@@ -230,12 +255,8 @@ $cmd"
     return 0
   fi
 
-  out=$(printf '%s' "$seg" | perl -0777 -ne '
-    while (/(?:^|\s)--body[=\s]+("(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\S+)/g) {
-      my $v = $1;
-      $v =~ s/^["\x27]//; $v =~ s/["\x27]$//;
-      print "$v\n";
-    }' 2>/dev/null)
+  out=$(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    while (/(?:^|\s)--body[=\s]+($GW)/g) { print gate_unq($1), "\n"; }' 2>/dev/null)
   if [ -n "$out" ]; then
     printf '%s' "$out"
     return 0
@@ -267,9 +288,17 @@ existing_labels() {
   # which sends the lookup to another repo. Leftmost match after `issue edit`,
   # and a value starting with `-` is rejected rather than passed to gh as a
   # stray flag.
-  repo_args=$(printf '%s' "$seg" | perl -0777 -ne '
-    if (/\bissue\s+edit\b.{0,400}?\s(?:-R|--repo)[=\s]+(["\x27]?)([^\s"\x27]+)\1/s) {
-      print $2 unless $2 =~ /^-/;
+  # The SIXTH site of the value class, through the same shared `$GW` as the
+  # other five. It differs from them in consequence, not in kind: this lookup
+  # only decides WHICH repo's existing labels to read, and failing to extract
+  # makes the gate demand labels it might not have needed -- a false BLOCK, not
+  # a bypass. It is converted anyway, because "defined ONCE" was already this
+  # file's claim while a private copy sat here, and because the false block is
+  # real: `-R "owner/repo name"` is unusual but legal.
+  repo_args=$(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    if (/\bissue\s+edit\b.{0,400}?\s(?:-R|--repo)[=\s]+($GW)/s) {
+      my $v = gate_unq($1);
+      print $v unless $v =~ /^-/;
     }' 2>/dev/null)
   if [ -n "$repo_args" ]; then
     gh issue view "$num" -R "$repo_args" --json labels -q '.labels[].name' 2>/dev/null
@@ -284,6 +313,16 @@ has_label() {
 
 offending_seg=""
 missing=""
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which cannot
+# see a prelude that is present but does not COMPILE -- and that failure is
+# SILENT, because every extraction runs perl with stderr discarded, so the gate
+# would extract nothing and PASS what it exists to refuse. Probe it functionally,
+# once, here: after arming (so ordinary Bash calls pay nothing) and at TOP LEVEL.
+# TOP LEVEL is load-bearing -- the extraction helpers are called inside `$( )`,
+# where `exit 2` ends only the substitution subshell: measured, an in-function
+# guard PRINTED its refusal and the hook still returned 0.
+gate_perl_word_or_die issue-classification-label-gate || exit 2
+
 while IFS= read -r seg; do
   is_edit=0
   if gate_matches "$seg" "$GATE_RE_GH_ISSUE_EDIT"; then

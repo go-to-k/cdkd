@@ -77,6 +77,21 @@ CMD_MATCH_PLACEHOLDER=$'\002'
 # (`bash -c "<verb> ..."`), which would need real parsing.
 strip_noncommand_spans() {
   printf '%s' "$1" | awk -v ph="$CMD_MATCH_PLACEHOLDER" '
+    # Same probe-guarded per-character access as the segmenter program below --
+    # `substr(s, k, 1)` is O(n) per call in the awk macOS ships, so the pass-2
+    # loop is quadratic without it. Duplicated rather than shared because these
+    # are two separate `awk` invocations; the ONLY safe coupling between them is
+    # that both measure rather than assume, since an EMPTY field separator is
+    # UNDEFINED in POSIX and an awk returning one field would hand every loop a
+    # single character and disarm the matcher silently.
+    function chars_of(s, arr,   m) {
+      if (SPLIT_CHARS) return split(s, arr, "")
+      return 0
+    }
+    BEGIN {
+      SPLIT_CHARS = 0
+      if (split("ab", __probe, "") == 2 && __probe[1] == "a" && __probe[2] == "b") SPLIT_CHARS = 1
+    }
     { lines[NR] = $0 }
     END {
       # ---- pass 1: heredoc bodies, only when verifiably terminated -------
@@ -137,8 +152,9 @@ strip_noncommand_spans() {
       # a large command turned each hook into seconds of latency.
       st = 0; esc = 0; emitted = 0; runstart = 1
       n = length(out)
+      nc = chars_of(out, CH)
       for (k = 1; k <= n; k++) {
-        c = substr(out, k, 1)
+        c = (nc ? CH[k] : substr(out, k, 1))
         if (esc) { esc = 0; continue }
         if (st == 0) {
           if (c == "\\") { esc = 1; continue }
@@ -226,6 +242,14 @@ GATE_SEP_SUBST=$'\024'
 #     (the text inside one RUNS, so `echo "$(git commit -m x)"` is a commit).
 gate_segments_raw() {
   awk '
+    BEGIN {
+      # See chars_of(): an empty FS is UNDEFINED in POSIX, so measure rather
+      # than assume. Two characters in, two fields out, and each field the right
+      # character -- a count-only check passes on an awk that returns the whole
+      # string twice.
+      SPLIT_CHARS = 0
+      if (split("ab", __probe, "") == 2 && __probe[1] == "a" && __probe[2] == "b") SPLIT_CHARS = 1
+    }
     # Does <t> appear as a bare line at or after <from>? A heredoc opener whose
     # delimiter never arrives is not an opener: latching onto it blanks every
     # remaining line, so a real verb after `cat <<EOF` + prose read as NO MATCH.
@@ -234,12 +258,55 @@ gate_segments_raw() {
     # the #2129 convergence and shared with cdk-local / cdk-real-drift).
     # The index just past the `)` closing a `$(` that starts at `from`, or 0 when
     # it is unbalanced. Depth-counted so `$(a $(b) c)` is one span.
-    function close_paren(line, from,   j, depth, c) {
-      depth = 1
+    # QUOTE- AND ESCAPE-AWARE. A naive depth count returns an EARLY closer for
+    # a `)` that is data rather than structure, and an early closer is worse
+    # than none: `return 0` falls back to the stack (the benign direction),
+    # while a wrong index truncates the body and resumes with `q` still `"`, so
+    # the REST of the real body is parsed as quoted prose and the verb inside it
+    # never starts a segment. Measured, `gate_matches ... GATE_RE_GIT_COMMIT`:
+    #
+    #   echo "$(echo <sq>)<sq> ; git commit -m x)"   was UNGATED
+    #   echo "$(echo \) ; git commit -m x)"          was UNGATED
+    #   echo "$(git commit -m x)"                    GATED  (control)
+    #
+    # where <sq> is a literal single quote, spelled out rather than written:
+    # this whole awk program is a SHELL single-quoted string, so one apostrophe
+    # in a comment ends it and hands the rest of the file to bash as code. That
+    # has now broken this file three times in one session.
+    #
+    # Unbalanced parens inside quotes are ordinary -- grep counting a paren, sed
+    # substituting one, awk -F with one -- so this is not a corner case.
+    function close_paren(line, from,   j, depth, c, iq) {
+      depth = 1; iq = ""
       for (j = from; j <= length(line); j++) {
         c = substr(line, j, 1)
+        # SINGLE quotes first, and BEFORE the backslash arm: inside them a
+        # backslash is LITERAL, so `\047a\\\047` closes at its second quote.
+        # Skipping the backslash there consumed the closer, left `iq` open, and
+        # the span never closed -- and in the QUOTED branch a `return 0` does
+        # NOT fall back harmlessly: `extra` is populated only when a closer is
+        # found, so the body was never scanned. Measured, that made
+        # `echo "$(printf \047a\\\047 ; git commit -m x)"` UNGATED.
+        if (iq == "\047") { if (c == iq) iq = ""; continue }
+        if (c == "\\") { j++; continue }
+        if (iq != "") { if (c == iq) iq = ""; continue }
+        if (c == "\"" || c == "\047") { iq = c; continue }
         if (c == "(") depth++
         else if (c == ")") { depth--; if (depth == 0) return j }
+      }
+      return 0
+    }
+    # The offset of the CLOSING backtick relative to `from`, or 0 when the span
+    # does not close. `index()` cannot be used: it takes the next backtick even
+    # when it is BACKSLASH-ESCAPED, which truncated the body the same way an
+    # early paren did -- `echo "\x60echo \\\x60 ; git commit -m x\x60"` was
+    # UNGATED. Returns the same 1-based offset `index()` did, so call sites are
+    # unchanged.
+    function close_backtick(s,   j, c) {
+      for (j = 1; j <= length(s); j++) {
+        c = substr(s, j, 1)
+        if (c == "\\") { j++; continue }
+        if (c == "\140") return j
       }
       return 0
     }
@@ -255,10 +322,30 @@ gate_segments_raw() {
     # rewritten to a single quote so the wrapper cannot be unbalanced -- the
     # copy queued in `extra` keeps the original text, so nothing is lost for the
     # pass that scans the body as a command.
-    function neutralise(s,   k, c, out) {
+    # PER-CHARACTER ACCESS. `substr(s, k, 1)` is O(n) per call in the awk macOS
+    # ships (BWK 20200816), so every `for (k…) substr(s,k,1)` loop below is
+    # QUADRATIC in the length of its subject -- measured on a bare awk loop:
+    # 400 KB took 3.03 s with substr and 0.19 s with a split array, a factor of
+    # 16 in the term that dominates. Through `gate_segments` that is the
+    # difference between a gate answering and a gate being KILLED by the 10 s
+    # PreToolUse timeout, which for a gate is a SILENT PASS.
+    #
+    # POSIX leaves an EMPTY field separator UNDEFINED, so this is not assumed:
+    # `SPLIT_CHARS` is set by a runtime PROBE in BEGIN and every caller falls
+    # back to `substr` where the probe fails. Guessing wrong here would not be a
+    # slow gate but a DEAD one -- an awk that returns 1 field would give every
+    # loop a single character and disarm the whole matcher, silently.
+    function chars_of(s, arr,   m) {
+      if (SPLIT_CHARS) return split(s, arr, "")
+      return 0
+    }
+
+    function neutralise(s,   k, c, out, m, mc, NCH) {
       out = ""
-      for (k = 1; k <= length(s); k++) {
-        c = substr(s, k, 1)
+      m = length(s)
+      mc = chars_of(s, NCH)
+      for (k = 1; k <= m; k++) {
+        c = (mc ? NCH[k] : substr(s, k, 1))
         if (c == "&") out = out SEP_AMP
         else if (c == ";") out = out SEP_SEMI
         else if (c == "|") out = out SEP_PIPE
@@ -289,10 +376,11 @@ gate_segments_raw() {
     # and the commit would stop matching. `;` is the same separator in a form
     # that survives being put on one line, and the enclosing command is
     # unaffected because neutralise() turns it into a placeholder there anyway.
-    function subst_open(line,   i, n, c, depth, bt) {
+    function subst_open(line,   i, n, c, depth, bt, sc, SCH) {
       depth = 0; bt = 0; n = length(line)
+      sc = chars_of(line, SCH)
       for (i = 1; i <= n; i++) {
-        c = substr(line, i, 1)
+        c = (sc ? SCH[i] : substr(line, i, 1))
         if (c == "\\") { i++; continue }
         # BACKTICK PARITY, tracked SEPARATELY from the paren depth
         # (go-to-k/cdkd#2156 review round 1). The first version of this function
@@ -327,16 +415,29 @@ gate_segments_raw() {
     # and a `--body "…multi-line…"` argument is ONE span. Resetting it per line
     # split a PR body into segments and matched a `&& git commit` inside the
     # prose (review of go-to-k/cdk-local#542).
-    function flush_line(line,   i, n, c, res, rest, d) {
-      res = ""; n = length(line); pending_tag = ""
+    # RUN-EMITTED, not character by character. `res = res c` in a loop is
+    # quadratic in most awks -- the same defect pass 2 above already fixed --
+    # and this function is the hot path of the segmenter, called twice per gate.
+    # Measured before the change on one `--body` value: 2.6 s at 20k characters
+    # and 14.5 s at 50k, against the 10 s PreToolUse timeout in
+    # .claude/settings.json, and a timed-out gate is a SILENT PASS.
+    #
+    # `runstart` is the index of the first character not yet copied. A branch
+    # that emits the source text VERBATIM leaves it alone (the characters stay
+    # in the pending run); a branch that emits something DIFFERENT flushes the
+    # run first, appends its own text, and restarts the run after whatever it
+    # consumed. `emitrun` is that flush.
+    function flush_line(line,   i, n, c, res, rest, d, runstart, fc, FCH) {
+      res = ""; n = length(line); pending_tag = ""; runstart = 1
+      fc = chars_of(line, FCH)
       for (i = 1; i <= n; i++) {
-        c = substr(line, i, 1)
+        c = (fc ? FCH[i] : substr(line, i, 1))
         if (q == "") {
           # An escaped character outside quotes is LITERAL: `echo a\; git commit`
           # is ONE echo, and splitting on that `;` blocked it (go-to-k/cdkd#2130
           # test review).
-          if (c == "\\") { res = res c substr(line, i + 1, 1); i++; continue }
-          if ((c == "\"" || c == "'"'"'") && c != ignore_q && ignore_q != "BOTH") { q = c; res = res c; continue }
+          if (c == "\\") { i++; continue }   # both chars stay in the run
+          if ((c == "\"" || c == "'"'"'") && c != ignore_q && ignore_q != "BOTH") { q = c; continue }
           if (c == "$" && substr(line, i + 1, 1) == "(") {
             # DUAL-EMIT (go-to-k/cdkd#2027 review). Splitting here truncated the
             # enclosing command: `git -C $(git rev-parse --show-toplevel) commit`
@@ -347,28 +448,28 @@ gate_segments_raw() {
             cp = close_paren(line, i + 2)
             if (cp > 0) {
               extra = extra substr(line, i + 2, cp - i - 2) "\n"
-              res = res neutralise(substr(line, i, cp - i + 1))
+              res = res substr(line, runstart, i - runstart) neutralise(substr(line, i, cp - i + 1)); runstart = cp + 1
               i = cp
               continue
             }
-            res = res "\n"; i++; continue
+            res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 2; i++; continue
           }
           # Process substitution runs its body too: `diff <(git commit) …`.
-          if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { res = res "\n"; i++; continue }
+          if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 2; i++; continue }
           if (c == "`") {
-            bt = index(substr(line, i + 1), "`")
+            bt = close_backtick(substr(line, i + 1))
             if (bt > 0) {
               extra = extra substr(line, i + 1, bt - 1) "\n"
-              res = res neutralise(substr(line, i, bt + 1))
+              res = res substr(line, runstart, i - runstart) neutralise(substr(line, i, bt + 1)); runstart = i + bt + 1
               i = i + bt
               continue
             }
-            res = res "\n"; continue
+            res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 1; continue
           }
-          if (c == "&" || c == ";" || c == "|") { res = res "\n"; continue }
+          if (c == "&" || c == ";" || c == "|") { res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 1; continue }
           if (c == "<" && substr(line, i + 1, 1) == "<") {
             # `<<<` is a here-string, not a heredoc opener.
-            if (substr(line, i + 2, 1) == "<") { res = res "<<<"; i += 2; continue }
+            if (substr(line, i + 2, 1) == "<") { i += 2; continue }   # verbatim
             rest = substr(line, i)
             if (match(rest, /^<<-?[ \t]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
               d = substr(rest, RSTART, RLENGTH)
@@ -376,18 +477,16 @@ gate_segments_raw() {
               gsub(/["'"'"']/, "", d)
               if (d != "") pending_tag = d
             }
-            res = res c
             continue
           }
-          res = res c
           continue
         }
         # inside a quoted span: separators are DATA, not structure
-        if (c == "\\" && q == "\"") { res = res c substr(line, i + 1, 1); i++; continue }
-        if (c == q) { q = ""; res = res c; continue }
-        if (c == "&") { res = res SEP_AMP; continue }
-        if (c == ";") { res = res SEP_SEMI; continue }
-        if (c == "|") { res = res SEP_PIPE; continue }
+        if (c == "\\" && q == "\"") { i++; continue }   # both chars stay in the run
+        if (c == q) { q = ""; continue }
+        if (c == "&") { res = res substr(line, runstart, i - runstart) SEP_AMP; runstart = i + 1; continue }
+        if (c == ";") { res = res substr(line, runstart, i - runstart) SEP_SEMI; runstart = i + 1; continue }
+        if (c == "|") { res = res substr(line, runstart, i - runstart) SEP_PIPE; runstart = i + 1; continue }
         if (c == "$" && substr(line, i + 1, 1) == "(") {
           # Queue the body here as well as on the unquoted branch: a command
           # substitution RUNS whatever it contains, quoted or not, so
@@ -396,7 +495,7 @@ gate_segments_raw() {
           # unquoted branch acted on it).
           cp = close_paren(line, i + 2)
           if (cp > 0) extra = extra substr(line, i + 2, cp - i - 2) "\n"
-          res = res SEP_SUBST "("; i++; continue
+          res = res substr(line, runstart, i - runstart) SEP_SUBST "("; runstart = i + 2; i++; continue
         }
         # A BACKTICK substitution runs its body exactly as `$(` does, and this
         # branch had no arm for it, so the body was never scanned as a command
@@ -426,13 +525,14 @@ gate_segments_raw() {
         # Backticks do not nest, so the closer is simply the next one -- no depth
         # counting, unlike close_paren.
         if (c == "`" && q == "\"") {
-          bt = index(substr(line, i + 1), "`")
+          bt = close_backtick(substr(line, i + 1))
           if (bt > 0) {
             extra = extra substr(line, i + 1, bt - 1) "\n"
             # Collapse the span to the placeholder: the enclosing text is DATA
             # either way, and leaving the body inline would let a `;` or `&&`
             # inside it reach the enclosing segment as structure.
-            res = res SEP_SUBST
+            res = res substr(line, runstart, i - runstart) SEP_SUBST
+            runstart = i + bt + 1
             i = i + bt
             continue
           }
@@ -440,11 +540,10 @@ gate_segments_raw() {
           # has already joined the continuation, so an odd backtick here means
           # the span was genuinely never closed. Neutralise it and keep scanning
           # rather than latching -- dropping the rest is the fail-open direction.
-          res = res SEP_SUBST
-          continue
+          res = res substr(line, runstart, i - runstart) SEP_SUBST; runstart = i + 1; continue
         }
-        res = res c
       }
+      res = res substr(line, runstart)
       return res
     }
     # One full pass. Runs twice at most: see the END rule.
@@ -1207,6 +1306,298 @@ GATE_PATH_TOKEN='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)'
 # works in assignment context, and writing it inline inside a function produced
 # a pattern that silently never matched (go-to-k/cdkd#2027 review round 4).
 GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
+
+# ── A shell WORD, for the gates that extract with PERL ─────────────────────
+#
+# `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
+# `[[ =~ ]]`. FIVE gates -- issue-deferral-criteria, gh-body-english,
+# issue-dup-check, issue-classification-label and pr-body-item-number -- pull a
+# `--body-file` / `-F` path or an inline `--body` value out of RAW command text
+# with `perl -0777` instead, because they need a GLOBAL scan over a multi-line
+# slurp and `[[ =~ ]]` gives neither.
+#
+# commit-prefix-scope was the sixth and LEFT again. It joined for the same two
+# holes -- `--file "$VAR"` extracted NOTHING, a glued `-F<path>` needed a
+# separator -- and a later round found that its real problem was running THREE
+# instruments over one segment (this scan for the path, a grep for the `-F -`
+# opener, quote-blanked text for `--amend`), every pair of which disagreed
+# somewhere. One `gate_argv` walk answers all three, and a shell WORD taken by
+# SPLITTING is strictly better than one taken by SCANNING, so the class this
+# constant ends does not arise there at all. A gate whose value is a whole
+# argument, not a span inside a bigger text, belongs in that column. Derive the list rather than trusting this
+# sentence -- `grep -l GATE_PERL_WORD .claude/hooks/*-gate.sh` -- because an earlier
+# revision of THIS comment said "three" while five files consumed it, which is
+# the same stale-sibling-note class the constant exists to end.
+# All of them spelled the value class `(["']?)([^"'\s]+)\1`, and that shape had
+# THREE MEASURED holes, all fail-OPEN (go-to-k/cdkd, 2026-09-05):
+#
+#   gh issue create --body-file "<dir with space>/x.md"
+#     The bare class cannot span the space, and with the optional quote group
+#     unset it cannot start on the quote either, so NOTHING is extracted and
+#     the gate judges an empty body. Measured: issue-deferral-criteria-gate
+#     rc=0 on a PR-shaped deferral where the unquoted spelling gave 2, and
+#     gh-body-english-gate rc=0 on a JAPANESE body where the unquoted spelling
+#     gave 2 -- the English-only rule was bypassable by putting the body file
+#     in a directory whose name contains a space.
+#
+#   gh api repos/O/R/issues -f body='<text>'
+#     gh's OWN documented spelling puts the quote INSIDE the value, after the
+#     `body=`. An alternation tried AFTER the literal `body=` falls through to
+#     `\S+` and captures `body='a`. Measured on issue-deferral-criteria-gate:
+#     rc=0, where `-f 'body=<text>'` (quote OUTSIDE, the only shape its suite
+#     covered) gave 2.
+#
+# So the value class is defined ONCE, here, rather than a fourth time in the
+# next hook that needs it. `GATE_PERL_WORD` is a perl PRELUDE, not a regex: a
+# caller prefixes it to its own program --
+#
+#   perl -0777 -ne "$GATE_PERL_WORD"'
+#     while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }'
+#
+# -- and it defines two names:
+#
+#   $GW        ONE shell word that may EMBED quoted spans: the perl twin of
+#              `_GATE_WORD_CHAR`. `body='a b c'` is one word, `"/a b/x.md"` is
+#              one word, and a bare run still stops at whitespace.
+#   gate_unq   the shell's own unquoting of such a word, so a caller gets the
+#              string gh actually receives: spans unwrapped, and `\X` unescaped
+#              exactly where the shell would unescape it (inside a
+#              double-quoted span only for `\ " $` and a backtick; never inside
+#              a single-quoted one, which takes no escapes).
+#
+# UNBALANCED quotes are not a regression risk here: `$GW`'s bare alternative
+# excludes both quote characters, so a word like `/tmp/o'neill/x.md` stops at
+# the apostrophe -- which is exactly where the old class stopped too.
+#
+# A hook using this MUST also assert `GATE_PERL_WORD` is non-empty in its
+# library-load guard. Left undefined, `$GW` interpolates as the EMPTY string,
+# `($GW)` then matches empty at every position, and the extraction yields empty
+# values that every caller skips -- a silent fail-open, which is the exact
+# class this constant closes.
+#
+# The apostrophes below are spelled `\x27` -- a PERL escape, valid in a regex
+# and in a substitution alike -- because this is a bash SINGLE-QUOTED string
+# and a literal apostrophe would end it. The `'"'"'` idiom used elsewhere in
+# this file would work too, and is unreadable at this density.
+GATE_PERL_WORD='
+  # ANSI-C quoting is the FIRST alternative on purpose. `$` is an ordinary
+  # character to the bare class below, so without this arm `$\x27...\x27` was
+  # split into a bare `$` plus a plain single-quoted span -- which took the body
+  # LITERALLY, so `--body $\x27日本語\x27` reached the English-only
+  # gate as the ASCII text `$日本語` and passed, while bash sent
+  # Japanese. Its inner `\\.` also differs from the plain single-quote arm:
+  # inside `$\x27...\x27` a backslash ESCAPES, so `\\\x27` does not close it.
+  my $GW = qr/(?:\$\x27(?:[^\x27\\]|\\.)*\x27|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\\.|[^\s"\x27;|&()<>\x60])+/;
+  # Append-as-BYTES normaliser. Perl strings carry an internal
+  # character-vs-bytes flag, and the callers of this prelude run under mixed
+  # `-C` settings: the path extraction has none, the non-English body scan uses
+  # `-CSD`, where the input is ALREADY decoded. Mixing the two in one result
+  # produces a string that is half characters and half bytes -- which is exactly
+  # how a literal accent beside an escape defeated the class test. Everything
+  # here is bytes; whoever needs characters decodes once, at its own call site.
+  sub gate_bytes {
+    my ($t) = @_;
+    utf8::encode($t) if utf8::is_utf8($t);
+    return $t;
+  }
+
+  # ANSI-C escape decoding, used only by the `$\x27...\x27` arm of gate_unq.
+  #
+  # EVERYTHING IS NORMALISED TO BYTES AND DECODED ONCE AT THE END, and each half
+  # of that is load-bearing:
+  #
+  #   bash itself is mixed -- `\xHH` and `\NNN` emit raw BYTES while `\uXXXX`
+  #   emits a CHARACTER -- so the only representation both agree on is the byte
+  #   string bash would actually pass. Hence `\u` is encoded rather than left
+  #   wide.
+  #
+  #   The LITERAL run has to be encoded too, and missing that was a live
+  #   BYPASS. The callers run under mixed `-C` settings: the path extraction has
+  #   none, the non-English body scan uses `-CSD`, where the input string is
+  #   ALREADY decoded. So a literal non-ASCII character sitting next to an
+  #   escape produced a string that was half characters and half bytes, the
+  #   closing `utf8::decode` refused it as invalid UTF-8, and the whole value
+  #   stayed Latin-1 -- which `NON_ENGLISH_RE` (CJK / Hangul) never matches.
+  #   Measured against the real hook:
+  #
+  #     --body $\x27\u65e5\u672c\u8a9e\x27         rc=2   blocked
+  #     --body $\x27<one accent>\u65e5\u672c\u8a9e\x27  rc=0   BYPASS
+  #     --body $\x27<one accent>\xe6\x97\xa5\x27        rc=0   BYPASS
+  #
+  #   Both bypasses publish Japanese, and the carrier is an ordinary Latin-1
+  #   accent that is not itself blocked, so nothing looks wrong.
+  #
+  #   `utf8::is_utf8` guards the encode: encoding unconditionally is correct for
+  #   the `-CSD` caller and DOUBLE-encodes for the byte-mode ones, which is the
+  #   same defect facing the other way.
+  #
+  # A value that is not valid UTF-8 once assembled is left exactly as built --
+  # utf8::decode returns false without modifying it, which is the right answer
+  # for a genuinely binary `\xNN` payload.
+  sub gate_ansi_c {
+    my ($v) = @_;
+    my %simple = ("a"=>"\a","b"=>"\b","e"=>"\e","E"=>"\e","f"=>"\f",
+                  "n"=>"\n","r"=>"\r","t"=>"\t","v"=>"\013",
+                  "\\"=>"\\","\x27"=>"\x27","\""=>"\"","?"=>"?");
+    # `\G` + `pos()`, never a destructive `s/^...//`. Each substitution copies
+    # the REMAINDER of the string, so a per-character loop over an n-character
+    # value is O(n^2): measured at 0.36 s for 5k escapes, 2.7 s for 20k and
+    # 14.5 s for 50k, against the 10 s PreToolUse timeout in
+    # .claude/settings.json -- and a timed-out hook is, for a gate, a SILENT
+    # PASS. Scanning leaves the string alone and is linear.
+    pos($v) = 0;
+    my $o = "";
+    my $n = length($v);
+    while (pos($v) < $n) {
+      # `& 255`: bash truncates an escape to a byte, so `\400` is NUL, not U+0100.
+      if    ($v =~ /\G\\x([0-9A-Fa-f]{1,2})/gc)  { $o .= chr(hex($1) & 255); }
+      elsif ($v =~ /\G\\([0-7]{1,3})/gc)         { $o .= chr(oct($1) & 255); }
+      elsif ($v =~ /\G\\u([0-9A-Fa-f]{1,4})/gc)  { $o .= gate_bytes(pack("U", hex($1))); }
+      elsif ($v =~ /\G\\U([0-9A-Fa-f]{1,8})/gc)  { $o .= gate_bytes(pack("U", hex($1))); }
+      elsif ($v =~ /\G\\c(.)/gcs)                { $o .= chr(ord(uc $1) & 255 ^ 64); }
+      elsif ($v =~ /\G\\(.)/gcs)                 { $o .= gate_bytes(exists $simple{$1} ? $simple{$1} : "\\" . $1); }
+      elsif ($v =~ /\G([^\\]+)/gcs)              { $o .= gate_bytes($1); }
+      elsif ($v =~ /\G(.)/gcs)                   { $o .= gate_bytes($1); }
+      else                                        { last; }
+    }
+    return $o;
+  }
+
+  # Byte string -> character string, lenient. The alternation is the standard
+  # UTF-8 well-formedness table (RFC 3629): no overlongs, no surrogates, no
+  # code point above U+10FFFF -- an over-permissive matcher here would decode a
+  # surrogate-encoded sequence into a character the class test then treats as
+  # ordinary text.
+  sub gate_utf8_lenient {
+    my ($b) = @_;
+    pos($b) = 0;
+    my $o = "";
+    my $n = length($b);
+    # `\G` + `pos()` for the same reason as gate_ansi_c: a destructive loop here
+    # is O(n^2) and the hook timeout is a silent pass.
+    while (pos($b) < $n) {
+      if ($b =~ /\G((?:[\x00-\x7F]|[\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2})+)/gcs) {
+        my $t = $1;
+        utf8::decode($t);
+        $o .= $t;
+      } elsif ($b =~ /\G./gcs) {
+        $o .= "\x{FFFD}";
+      } else {
+        last;
+      }
+    }
+    return $o;
+  }
+  sub gate_unq {
+    my ($t) = @_;
+    pos($t) = 0;
+    my $o = "";
+    my $n = length($t);
+    # `\G` + `pos()`, not `s/^...//`: see gate_ansi_c. A value made of many
+    # adjacent quoted chunks is a per-span loop, and the same O(n^2) applies.
+    while (pos($t) < $n) {
+      if ($t =~ /\G"((?:[^"\\]|\\.)*)"/gcs) {
+        my $s = $1; $s =~ s/\\([\\"\$`])/$1/gs; $o .= gate_bytes($s);
+      } elsif ($t =~ /\G\$\x27((?:[^\x27\\]|\\.)*)\x27/gcs) { $o .= gate_ansi_c($1);
+      } elsif ($t =~ /\G\x27([^\x27]*)\x27/gcs)             { $o .= gate_bytes($1);
+      } elsif ($t =~ /\G\\(.)/gcs)                          { $o .= gate_bytes($1);
+      # `\$(?!\x27)`: an ordinary `$` is legitimate text (`cost $5`,
+      # `hello$USER`) and must be consumed here, but a `$` that OPENS an ANSI-C
+      # span must be left for the arm above. Without the look-ahead this run ate
+      # the sigil greedily, so the ANSI-C arm only ever fired at word position 0
+      # -- one ASCII character before it defeated the whole decode, and
+      # `gh api -f body=$\x27...\x27` was bypassed UNCONDITIONALLY because
+      # `body=` is always such a prefix.
+      } elsif ($t =~ /\G((?:[^"\x27\\\$]|\$(?!\x27))+)/gcs) { $o .= gate_bytes($1);
+      } elsif ($t =~ /\G(.)/gcs)                            { $o .= gate_bytes($1);
+      } else { last; }
+    }
+    return $o;
+  }
+'
+
+# `GATE_PERL_WORD` is one shared literal that five blocking gates interpolate,
+# so its failure mode is the one this whole mechanism must not have: every
+# consumer runs `perl ... 2>/dev/null`, so a prelude that is PRESENT but does
+# not COMPILE produces no output, no stderr, and no exit-code change -- the
+# gates simply extract nothing and pass. Measured: a non-empty, non-compiling
+# prelude silently disarmed four gates at once (a Japanese body, a PR-shaped
+# deferral, an unlabelled `Severity: high`, and a bare `#4` all reached rc=0).
+#
+# `[ -n "$GATE_PERL_WORD" ]` cannot see that, so it is not the guard -- it is
+# only the cheap first half. This is the second half: run the prelude on a
+# known input and require the known answer. Call it AFTER a gate has armed, not
+# at library-load: the library is sourced by every hook on every Bash call,
+# while an armed gate is already about to fork perl anyway.
+#
+# Returns 0 when the prelude is usable, 1 otherwise. Callers must fail CLOSED.
+# Memoised fail-closed wrapper: probe once per process, at the first point a
+# gate is actually about to extract, then remember. `$1` is the gate's own name
+# so the refusal says which one refused.
+# RESET AT LOAD. `__GATE_PW_OK` is an ordinary shell variable, so without this
+# it is inheritable: `__GATE_PW_OK=1 gh issue create ...` made the probe report
+# a working prelude it never ran, and a Japanese body passed at rc=0 against a
+# deliberately broken library (measured). A guard whose whole job is to fail
+# closed on a tampered library must not be disable-able by one env var.
+__GATE_PW_OK=
+
+gate_perl_word_or_die() {
+  if [ "${__GATE_PW_OK:-}" != "1" ]; then
+    if gate_perl_word_ok; then
+      __GATE_PW_OK=1
+    else
+      echo "Blocked by $1: .claude/hooks/lib/command-match.sh defines GATE_PERL_WORD," >&2
+      echo "but running it does not return the expected value -- the prelude is missing," >&2
+      echo "outdated, or does not compile. Every extraction in this gate runs perl with" >&2
+      echo "stderr discarded, so a broken prelude would silently extract NOTHING and the" >&2
+      echo "gate would PASS whatever it was meant to refuse. Refusing instead." >&2
+      echo "Fix the library (or restore it from origin/main) and retry." >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+gate_perl_word_ok() {
+  [ -n "${GATE_PERL_WORD:-}" ] || return 1
+  # FOUR dimensions, not one. The first cut asserted a single quoted-span pair,
+  # and a review measured two preludes that passed it while carrying a live
+  # bypass: a one-revision-STALE library (no ANSI-C arm -- which is exactly the
+  # state a sibling repo mid-port is in), and one hardcoded to the probe's own
+  # input. A guard that pins one dimension certifies one dimension.
+  #
+  # Each line below is a different arm of `$GW` / `gate_unq`, chosen because
+  # each was a measured fail-open in its own right:
+  #   1  a QUOTED span containing a space
+  #   2  a BACKSLASH-escaped space
+  #   3  an ANSI-C span, decoded rather than taken literally
+  #   4  the metacharacter STOP (the word must not swallow the `;`)
+  gate_pw_probe_() {
+    printf '%s' "$2" | perl -0777 -ne "$GATE_PERL_WORD"'
+      while (/--body-file[=\s]+($GW)/g) { print gate_unq($1) }' 2>/dev/null
+  }
+  [ "$(gate_pw_probe_ q 'x --body-file "/a b/p.md"')" = '/a b/p.md' ] || return 1
+  [ "$(gate_pw_probe_ b 'x --body-file /a\ b/p.md')"  = '/a b/p.md' ] || return 1
+  [ "$(gate_pw_probe_ a "x --body-file \$'/a\\'b/p.md' rest")" = "/a'b/p.md" ] || return 1
+  [ "$(gate_pw_probe_ m 'x --body-file /a/p.md; echo hi')" = '/a/p.md' ] || return 1
+  # 5  a MID-WORD ANSI-C span. Added after a review measured the four arms above
+  #    certifying a one-revision-STALE library -- the exact case the guard was
+  #    written for. The bare-run arm used to eat the `$` sigil greedily, so the
+  #    ANSI-C arm fired only at word position 0; every arm above sits at
+  #    position 0 and none of them could see it.
+  [ "$(gate_pw_probe_ w "x --body-file /a/b\$'\\x20'c.md")" = '/a/b c.md' ] || return 1
+  # 6  BYTE FIDELITY. `gate_unq` must return the byte string bash would pass;
+  #    decoding inside it corrupted every path carrying a byte >= 0x80 (measured
+  #    128 of 255) while leaving all five assertions above green, because each of
+  #    them is pure ASCII.
+  [ "$(gate_pw_probe_ y "x --body-file \$'/a/\\xc3\\xa9.md'")" = "$(printf '/a/\303\251.md')" ] || return 1
+  # 7  a SINGLE-quoted span containing a space. Arm 1 covers the double-quoted
+  #    one, and deleting the single-quote alternative from `$GW` left all six
+  #    arms above green while `--body-file '/a b/p.md'` extracted NOTHING --
+  #    the same stale-sibling fail-open shape, one quote character over.
+  [ "$(gate_pw_probe_ s "x --body-file '/a b/p.md'")" = '/a b/p.md' ] || return 1
+  return 0
+}
 
 # The regexes, kept here so every gate spells its verb the same way. Each is
 # anchored at the START of a segment; `git -C <path>` / `git -c k=v` and
