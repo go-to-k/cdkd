@@ -378,7 +378,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // which binds first and by a wide margin; a first draft of this comment
   // called this row "the binding fence on it" and review measured that false.
   // Caps move DOWN with a shrinking payload, never up to fit a growing one.
-  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 52_000], // measured 48,527 on 2026-09-06 (was 46,373 before the #2621 prefix-sweep entry)
+  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 52_000], // measured 48,728 on 2026-09-06 (was 46,373 before the #2621 prefix-sweep entry)
   // hooks.md WAS this path's only matcher, and while that held the cap was
   // dominated by MAX_RULE_FILE_BYTES no matter where it sat: at 135_000 (as
   // shipped) it was 15,000 B past the per-file cap and could not fire at all;
@@ -467,7 +467,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 51_000, 56_000],                            // measured  51,947 on 2026-09-06 (floor 48,000 -> 51,000 across the #2621 lane, exactly as this file's GUTTED-satellite case prescribes)
+  ['tests/setup.ts', 51_000, 56_000],                            // measured  52,148 on 2026-09-06 (floor 48,000 -> 51,000 across the #2621 lane, exactly as this file's GUTTED-satellite case prescribes)
   // 46_000 -> 48_000 on 2026-09-05: the go-to-k/cdkd#2595 retro added 1,126 B of
   // mutation-probe rules to `testing.md`, and the discriminate case below went
   // red exactly as its comment predicts ("testing.md growing spends it from the
@@ -483,13 +483,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // that -- moving a bound to fit the diff that spent it is the ratchet
   // `.claude/skills/work-issues/references/retro.md` 10-c forbids -- but the
   // asymmetry is now the live constraint: the bound is a strict `<`, so the
-  // usable room is 972 B and an addition of 973 B reds the discriminate case
+  // usable room is 771 B and an addition of 772 B reds the discriminate case
   // below. The fix is compression there,
   // not a bigger number here. Unlike the skill corpus, this file has no
   // MEASURED record, so these figures are the only thing that goes stale
   // silently; re-measure them in any commit that touches `testing.md` -- these,
   // plus the `measured` figure and the cap on the rule-file-payload.test.ts row
-  // above and this row's own cap, and the `testing.md (48,527 B)` figure in
+  // above and this row's own cap, and the `testing.md (48,728 B)` figure in
   // the gutting case below -- all of which bound, or are, a payload that IS
   // `testing.md`. Deliberately not stated as a COUNT: this sentence said
   // "three" while enumerating more, twice.
@@ -498,8 +498,27 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // gutting bound 47,873 -> 50,027. That crossed the old 48_000 floor TWICE as
   // the entry was reviewed, which is why the floor moved 48_000 -> 50_000 ->
   // 51_000 across this lane -- the move this file's own `GUTTED satellite` case
-  // prescribes, not a ratchet. Usable room is 972 B (floor - bound - 1, as
-  // everywhere else on this page), so an addition of 973 B reds it.
+  // prescribes, not a ratchet.
+  // RE-MEASURED 2026-09-06 by the work-issues retro, which added a probe-receipt
+  // rule to `testing.md` (48,527 -> 48,728 B): payload 51,947 -> 52,148,
+  // gutting bound 50,027 -> 50,228, usable room 972 -> 771 B. Segmented at the
+  // BULLET boundary, as the 2026-09-05 entry above prescribes: the receipt
+  // bullet +288 B (already net of one compression inside it) and the
+  // neighbouring probe-disposition bullet -87 B, summing to the +201. Stated
+  // as DELTAS and not as before/after absolutes on purpose: two independent
+  // measurements of the same two bullets agreed on both deltas and differed
+  // by one byte on the disposition bullet's absolutes, because that bullet
+  // is the LAST before a heading, so whether the blank line separating them
+  // belongs to it is a choice. (The receipt bullet abuts the next bullet and
+  // has no such ambiguity.) A delta is invariant under that choice; an
+  // absolute is not, so only the delta is checkable everywhere. An earlier
+  // revision also quoted
+  // 586/874 and 572/485, which were CHARACTER counts short by the em-dashes
+  // and the section sign -- caught in review, on the page whose whole subject
+  // is a byte figure going stale. Derived
+  // by RUNNING the glob command below, not by hand -- which is also how the
+  // `testing.md` figure in the gutting case was found sitting at 48,169 B,
+  // stale by 358 B before this commit touched anything.
   //
   // EVERY FIGURE ABOVE IS RE-DERIVED FROM ONE MEASUREMENT of the final tree,
   // never carried forward by hand: three consecutive review rounds shipped
@@ -540,7 +559,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above
-  // `testing.md` (48,169 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
+  // `testing.md` (48,728 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
   // `test-stream-fence.md` down to the smallest size the `substantive content`
   // case still allows fails HERE. 51_000, 57_000 and 62_000 were each chosen by
   // hand and each failed to add signal: the first two sat below `testing.md`

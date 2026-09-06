@@ -120,16 +120,19 @@ the trigger is a TS entry point, or several spawns in a case.
   TWO things at once is one you did not run.** A false mutation-table entry
   surfaces only when a reviewer re-executes every claim; nothing else looks.
   PR #2612 is the harder half, where the probe WAS run: a "reds four cases"
-  claim rested on a probe that had also edited the rendered line's TEXT, and
-  re-measuring one mutation at a time inverted it (each alone green, BOTH reds
-  one case — the two mechanisms are mutually redundant). One mutation per
-  probe, tree restored byte-exact between them.
+  claim rested on a probe that had also edited the rendered line's TEXT;
+  re-measured one at a time each alone was green, and BOTH together red one
+  case (the two mechanisms are mutually redundant). One mutation per probe,
+  tree restored byte-exact between them. **And a receipt taken with
+  `git diff --stat` cannot see a mutation applied by
+  `git checkout <ref> -- <paths>`** — that STAGES, so the tree matches the
+  index and the diff prints nothing, reading as "the mutation never landed";
+  take the receipt with `git diff --stat HEAD` (go-to-k/cdkd#2697).
 - **Give a probe result written into a SOURCE COMMENT the same disposition as a
   count in published prose** — delete it, fence it, or attribute it as a dated
   measurement (`.claude/skills/work-issues/references/verify.md` §8-g). Nothing
   downstream re-checks such a line: PR #2612's wrong claim sat on a branch
-  comment beside a destructive confirm prompt, invisible to every test, and
-  only review stopped it becoming a fence a later editor would trust. State
+  comment invisible to every test, stopped only by review. State
   instead the invariant the two mechanisms jointly enforce, which is
   re-derivable and cannot go stale.
 
