@@ -96,6 +96,7 @@ import { fileURLToPath } from 'node:url';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 no longer ships the
 // stable JS compiler API (see the note in gen-property-coverage.ts).
 import ts from 'typescript-v6';
+import { escapeCell } from './markdown-table.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -863,7 +864,9 @@ function renderMarkdown(report: UpdateWrapCoverageReport): string {
       const methods = [...c.unwrappedSendMethods, ...c.unguardedWrapMethods]
         .map((m) => `\`${m}\``)
         .join(', ');
-      lines.push(`| \`${c.className}\` | \`${c.file}\` | ${methods} | ${c.rationale ?? ''} |`);
+      lines.push(
+        `| \`${c.className}\` | \`${c.file}\` | ${methods} | ${escapeCell(c.rationale ?? '')} |`
+      );
     }
     lines.push('');
   }
