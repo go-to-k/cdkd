@@ -2036,12 +2036,20 @@ check 'an escaped quote inside an ANSI-C span does not end it' 0 \
 # `$$`. Measured across the three revisions: before the ANSI-C state the first
 # case below was OPEN; the look-back spelling closed it and opened the other
 # two; the forward scan gates all three.
-check 'an escaped quote inside an ANSI-C span does not end it' 0 \
-  "$COMMIT" "$(printf 'echo "$(printf $%sa\\%sb%s ; git commit -m x)"' "'" "'" "'")"
 check 'an ESCAPED dollar before plain quotes is not an ANSI-C span' 0 \
   "$COMMIT" "$(printf 'echo "$(printf \\$%sa\\%s ; git commit -m x)"' "'" "'")"
 check 'the second dollar of $$ before plain quotes is not one either' 0 \
   "$COMMIT" "$(printf 'echo "$(printf $$%sa\\%s ; git commit -m x)"' "'" "'")"
+# The SIBLING quote machine, `flush_line`, needed the same ANSI-C state: it
+# opened a PLAIN span on the quote, the escaped quote inside closed it early,
+# and a SECOND substitution then split the line in the wrong place. One machine
+# being right is what let this survive the round that fixed the other -- and it
+# was open on origin/main too, for both the commit verb and the `git checkout`
+# data-loss gate.
+check 'an ANSI-C span before a second substitution does not split it' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf %%s $%sa\\%sb%s $(echo a) ; git commit -m x)"' "'" "'" "'")"
+check 'the same body does not hide a git checkout either' 0 \
+  "$GATE_RE_GIT_CHECKOUT" "$(printf 'echo "$(printf %%s $%sa\\%sb%s $(echo a) ; git checkout -- src/x.ts)"' "'" "'" "'")"
 # The control: a balanced span must still be seen, or the three above would be
 # satisfied by a matcher that simply matches everything.
 check 'a balanced substitution body is still seen' 0 \

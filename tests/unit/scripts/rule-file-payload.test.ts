@@ -236,11 +236,6 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // convention above: this satellite is the AUTHORING half of hooks.md and
   // must never be narrowed to the handful of hooks a lane happens to edit.
   ['hooks-authoring.md', 74],
-  // Seven literal paths: the shared prelude, its five consumers, and the
-  // consumer fence. The count is EXACT because the list is literal --
-  // narrowing it to, say, only the prelude would take the per-gate
-  // measurements dark for the gates they are about.
-  ['hooks-flag-value-class.md', 7],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
@@ -1984,6 +1979,21 @@ describe('.claude/rules payload fence', () => {
     ).toEqual([]);
   });
 
+
+  it('every REACH_FLOORS row names a rule file that exists', () => {
+    // The forward direction -- every rule file has a row -- is asserted below.
+    // This is the REVERSE, and without it a row for a DELETED file is silently
+    // ignored: `REACH_FLOORS.get(name)` is only ever asked about files that
+    // exist. Measured: adding a row for `does-not-exist.md` left the whole file
+    // green, and a real deletion in this branch left its row behind for a full
+    // review round. A stale row is not just clutter -- it is a floor nothing
+    // enforces, next to rows that are load-bearing.
+    const names = new Set(ruleFiles.map((r) => r.name));
+    const dangling = [...REACH_FLOORS.keys()].filter((k) => !names.has(k));
+    expect(dangling, `REACH_FLOORS rows for files that do not exist: ${dangling.join(', ')}`).toEqual(
+      [],
+    );
+  });
   it('every rule file is covered by at least one budgeted path', () => {
     // This was measured once and written down as a claim in a comment. A claim
     // decays: a review probe on 2026-08-25 retyped `provider-masking.md`'s glob

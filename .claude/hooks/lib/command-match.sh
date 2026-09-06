@@ -468,6 +468,18 @@ gate_segments_raw() {
           # test review).
           if (c == "\\") { i++; continue }   # both chars stay in the run
           if ((c == "\"" || c == "'"'"'") && c != ignore_q && ignore_q != "BOTH") { q = c; continue }
+          # ANSI-C span, the same state `close_paren` tracks. Without it this
+          # machine opened a PLAIN span on the quote and the escaped quote
+          # inside closed it early, so the rest of the body was read as code and
+          # a second substitution split the line in the wrong place. Measured
+          # against the real `branch-gate.sh`:
+          #   echo "$(printf %s $\047a\\\047b\047 $(echo a) ; git commit -m x)"
+          # passed through at rc=0 on origin/main and at every revision of this
+          # branch until here; the control without the ANSI-C span gave 2. The
+          # two quote machines in this file must agree -- one of them being
+          # right is what made this survive the round that fixed the other.
+          if (c == "$" && substr(line, i + 1, 1) == "\047" \
+              && ignore_q != "\047" && ignore_q != "BOTH") { q = "A"; i++; continue }
           if (c == "$" && substr(line, i + 1, 1) == "(") {
             # DUAL-EMIT (go-to-k/cdkd#2027 review). Splitting here truncated the
             # enclosing command: `git -C $(git rev-parse --show-toplevel) commit`
@@ -512,8 +524,11 @@ gate_segments_raw() {
           continue
         }
         # inside a quoted span: separators are DATA, not structure
-        if (c == "\\" && q == "\"") { i++; continue }   # both chars stay in the run
-        if (c == q) { q = ""; continue }
+        # A backslash ESCAPES in a double-quoted span and in an ANSI-C one; in a
+        # plain single-quoted span it is literal, which is why `q == "\047"` is
+        # not in this test.
+        if (c == "\\" && (q == "\"" || q == "A")) { i++; continue }   # both chars stay in the run
+        if (c == q || (q == "A" && c == "\047")) { q = ""; continue }
         if (c == "&") { res = res substr(line, runstart, i - runstart) SEP_AMP; runstart = i + 1; continue }
         if (c == ";") { res = res substr(line, runstart, i - runstart) SEP_SEMI; runstart = i + 1; continue }
         if (c == "|") { res = res substr(line, runstart, i - runstart) SEP_PIPE; runstart = i + 1; continue }
