@@ -2029,6 +2029,19 @@ check 'a backslash-escaped backtick does not end the span' 0 \
 # it OPEN, and the ANSI-C state closes it again.
 check 'an escaped quote inside an ANSI-C span does not end it' 0 \
   "$COMMIT" "$(printf 'echo "$(printf $%sa\\%sb%s ; git commit -m x)"' "'" "'" "'")"
+# An ANSI-C span is the OPPOSITE of a plain single-quoted one: inside it a
+# backslash ESCAPES, so a backslash-quote does NOT close it. The sigil has to be
+# found by scanning FORWARD from the dollar, because a one-character look-back
+# cannot tell a real sigil from an ESCAPED dollar or from the second half of
+# `$$`. Measured across the three revisions: before the ANSI-C state the first
+# case below was OPEN; the look-back spelling closed it and opened the other
+# two; the forward scan gates all three.
+check 'an escaped quote inside an ANSI-C span does not end it' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf $%sa\\%sb%s ; git commit -m x)"' "'" "'" "'")"
+check 'an ESCAPED dollar before plain quotes is not an ANSI-C span' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf \\$%sa\\%s ; git commit -m x)"' "'" "'")"
+check 'the second dollar of $$ before plain quotes is not one either' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf $$%sa\\%s ; git commit -m x)"' "'" "'")"
 # The control: a balanced span must still be seen, or the three above would be
 # satisfied by a matcher that simply matches everything.
 check 'a balanced substitution body is still seen' 0 \

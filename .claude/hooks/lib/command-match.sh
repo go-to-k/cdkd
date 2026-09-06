@@ -276,7 +276,7 @@ gate_segments_raw() {
     #
     # Unbalanced parens inside quotes are ordinary -- grep counting a paren, sed
     # substituting one, awk -F with one -- so this is not a corner case.
-    function close_paren(line, from,   j, depth, c, iq) {
+    function close_paren(line, from,   j, depth, c, iq, d) {
       depth = 1; iq = ""
       for (j = from; j <= length(line); j++) {
         c = substr(line, j, 1)
@@ -293,15 +293,34 @@ gate_segments_raw() {
         # escaped quote as the closer, left `iq` open past the real one, and
         # made the same shape ungated the other way round:
         #   echo "$(printf $\047a\\\047b\047 ; git commit -m x)"   ungated
-        # This is the rule the `$GW` prelude in this same file already states;
-        # the two now agree.
+        # This is the rule the `$GW` prelude in this same file already states.
+        #
+        # The sigil is found by scanning FORWARD from the `$`, never by looking
+        # BACK from the quote. A one-character look-back cannot tell a real
+        # ANSI-C sigil from a `$` that is ESCAPED, or that is the second half
+        # of `$$` (the PID) -- both are a literal dollar followed by a PLAIN
+        # single-quoted string, where a backslash-quote CLOSES. Reading those
+        # as ANSI-C held `iq` open past the real closer, `close_paren` returned
+        # 0, and in the double-quoted branch the body was never scanned as a
+        # command at all. Measured by differential fuzz against real bash over
+        # 20,312 substitution bodies: the look-back spelling produced 15
+        # fail-opens the revision before it did not have, and the same 15 also
+        # walked past `branch-gate` and the `git checkout` data-loss gate.
+        #
+        # Forward is correct BECAUSE of the arm order: an escaped `$` is eaten
+        # by the backslash arm below before its `$` is ever examined here, and
+        # `$$` steps over its own second character.
         if (iq == "A") { if (c == "\\") { j++; continue }
                          if (c == "\047") iq = ""; continue }
         if (iq == "\047") { if (c == iq) iq = ""; continue }
         if (c == "\\") { j++; continue }
         if (iq != "") { if (c == iq) iq = ""; continue }
+        if (c == "$") { d = substr(line, j + 1, 1)
+                        if (d == "$") { j++; continue }
+                        if (d == "\047") { iq = "A"; j++; continue }
+                        continue }
         if (c == "\"") { iq = c; continue }
-        if (c == "\047") { iq = (j > 1 && substr(line, j - 1, 1) == "$") ? "A" : "\047"; continue }
+        if (c == "\047") { iq = "\047"; continue }
         if (c == "(") depth++
         else if (c == ")") { depth--; if (depth == 0) return j }
       }

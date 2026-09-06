@@ -943,18 +943,18 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 48; // + hooks-flag-value-class.md: the shared flag-value
-                              //  class -- the GATE_PERL_WORD prelude, its five consumers, the six
-                              //  families the enumerating spelling lost -- moved out under a glob
-                              //  naming the prelude and those consumers, because hooks.md crossed
-                              //  the 80,000 B cap again while documenting it. That makes 48.
+const CORPUS_FILE_COUNT = 47; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
+                              //  per-file cap again -- at least the seventh split off this one
+                              //  file, counting the six satellites it already points at, so do not
+                              //  read the ordinals in the older entries below as a running total.
                               //
-                              //  + hooks-authoring.md (go-to-k/cdkd#2630) was the entry BEFORE
-                              //  this one and is what the paragraph below describes; repointing
-                              //  the head at the new satellite left its rationale credited to the
-                              //  wrong file. At least the EIGHTH split off hooks.md, counting the
-                              //  satellites it already points at, so do not read the ordinals in
-                              //  the older entries below as a running total.
+                              //  A `hooks-flag-value-class.md` satellite was added on a branch and
+                              //  REMOVED before merge: it restated the library note it pointed AT,
+                              //  and splitting does not fund a CORPUS addition anyway -- the
+                              //  ceiling covers the whole tree, so a new file SPENDS its
+                              //  frontmatter and its pointer from the same budget. The per-file cap
+                              //  and the corpus ceiling want OPPOSITE moves; read which one failed
+                              //  before reaching for a split.
                               //  The comment above this file's hooks.md row records the decision
                               //  that the next lane needing more room there splits rather than
                               //  trims someone else's entry or nudges the cap, and this is that
