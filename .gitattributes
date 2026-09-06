@@ -1,10 +1,13 @@
 # Normalize line endings to LF on checkout for all text files (issue #1592).
-# check-source-control-bytes.ts (#1587) REJECTS a raw CR in tracked text
-# files, and CI runs on ubuntu-latest — without this rule a contributor on
-# Windows with core.autocrlf=true produces CRLF working files and hits a
-# tree-wide checker failure as the first signal. text=auto lets git keep
-# detecting binaries; the tree carried zero CR bytes when this landed, so
-# the rule changes no existing content.
+# check-source-control-bytes.ts (#1587) REJECTS a raw CR in the working
+# tree's text files, and CI runs on ubuntu-latest — without this rule a
+# contributor on Windows with core.autocrlf=true produces CRLF working files
+# and hits a tree-wide checker failure as the first signal. text=auto lets git
+# keep detecting binaries; the tree carried zero CR bytes when this landed, so
+# the rule changes no existing content. Bound, since #2696 widened that sweep
+# to UNTRACKED files: this normalizes content git MANAGES, so a contributor's
+# untracked CRLF scratch file is swept with nothing here mitigating it —
+# gitignore it or convert it, as the checker's own message says.
 * text=auto eol=lf
 
 # The integ ledger is an append-ish, one-row-per-test TSV updated by every

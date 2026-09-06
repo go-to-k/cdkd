@@ -224,9 +224,10 @@ gates:
       #     CLAUDE.md and .claude/rules/** are already in both.
       # Known limit, deliberate (mirrors go-to-k/cdk-local#620's call, and
       # sharpened by go-to-k/cdkd#2381 / go-to-k/cdk-local#630):
-      # tests/unit/scripts/source-control-bytes.test.ts reads every tracked
-      # non-binary file via `git ls-files` and stays a carve-out — CI is the
-      # backstop for it.
+      # tests/unit/scripts/source-control-bytes.test.ts reads every non-binary
+      # file in the WORKING tree via `git ls-files` plus `git ls-files --others
+      # --exclude-standard` (go-to-k/cdkd#2696) and stays a carve-out — CI is
+      # the backstop for it.
       #
       # The predicate that licenses a carve-out is NOT "repo-wide population
       # vs finite one". It is: does the assertion fire on a RARE condition,

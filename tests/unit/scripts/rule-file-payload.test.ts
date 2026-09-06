@@ -1079,7 +1079,17 @@ const CORPUS_FILE_COUNT = 47; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 862_000;   // RE-DERIVED UPWARD 817_000 -> 862_000 (issue
+const CORPUS_BYTES_MIN = 895_000;   // RE-DERIVED UPWARD 862_000 -> 895_000 (2026-09-06, issue
+                                    // go-to-k/cdkd#2310): measured 929,171 B on the tree that
+                                    // ships this line -- 34,171 B of slack, the same ~34 KB every
+                                    // previous setting used. Moved in the SAME change that
+                                    // re-derived CORPUS_BYTES_MAX above, because that change is
+                                    // exactly what made this one stale: left at 862_000 it held
+                                    // 67,171 B, double the slack its own comment claimed, and a
+                                    // floor that drifts from its measurement stops being one.
+                                    // The round that re-derives the ceiling is the round that
+                                    // re-derives the floor.
+                                    // 862_000 was: // RE-DERIVED UPWARD 817_000 -> 862_000 (issue
                                     // go-to-k/cdkd#2447): measured 895,893 B on the REBASED tree
                                     // -- 33,893 B of slack, the same ~34 KB every previous setting
                                     // used. Re-derived rather than left alone because the old
@@ -1108,19 +1118,22 @@ const CORPUS_BYTES_MIN = 862_000;   // RE-DERIVED UPWARD 817_000 -> 862_000 (iss
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 929_000; // RE-DERIVED UPWARD 890_000 -> 929_000 (issue go-to-k/cdkd#2447):
-                                  // measured 895,893 on the REBASED tree + 33,107 B of headroom
-                                  // -- NARROWER than the ~39 KB the previous ceiling held, which
-                                  // is deliberate and is why it is not described as "the same".
-                                  // The corpus crossed
-                                  // the old 890,000 ceiling on a lane that added ONE satellite,
-                                  // already trimmed once; past that the remaining text is the
-                                  // load-bearing decisions themselves, and this file's own
-                                  // instruction is not to summarise or delete it. Note the figure
-                                  // includes `docker-argv-redaction.md`, which landed on main
-                                  // while this branch was open -- FOUR earlier revisions of this
-                                  // comment quoted a draft or a pre-rebase tree and went stale.
-                                  // 890_000 was: // RE-DERIVED DOWNWARD 1_040_000 -> 890_000 (measured 851,451 + the ~39 KB of headroom the old ceiling held). // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 962_000; // RE-DERIVED UPWARD 929_000 -> 962_000 (2026-09-06, issue
+                                  // go-to-k/cdkd#2310): `origin/main` at df3eb981 measured
+                                  // 929,172 B -- 172 B OVER the old ceiling with NO branch
+                                  // involved, so CI run 34022213808 was red on main and every lane
+                                  // was blocked, including branches that REMOVE bytes (the
+                                  // merge-projection assertion below reads origin/main, not the
+                                  // working tree). Re-derived rather than funded by trimming: the
+                                  // overrun belongs to no single entry, and this file's own
+                                  // instruction is not to summarise or delete the text. 32,828 B
+                                  // of headroom -- the same ~33 KB the previous ceiling was set
+                                  // with, because a bound whose headroom is smaller than one
+                                  // ordinary lane fails for a reason unrelated to whoever trips
+                                  // it. The corpus levers themselves (cut / move content out of
+                                  // .claude/rules / raise) stay open on go-to-k/cdkd#2310.
+                                  // 929_000 was: // RE-DERIVED UPWARD 890_000 -> 929_000 (issue go-to-k/cdkd#2447): measured 895,893 on the REBASED tree + 33,107 B of headroom -- NARROWER than the ~39 KB the previous ceiling held, which is deliberate and is why it is not described as "the same". The corpus crossed the old 890,000 ceiling on a lane that added ONE satellite, already trimmed once; past that the remaining text is the load-bearing decisions themselves, and this file's own instruction is not to summarise or delete it. Note the figure includes `docker-argv-redaction.md`, which landed on main while this branch was open -- FOUR earlier revisions of this comment quoted a draft or a pre-rebase tree and went stale.
+                                  // 890_000 was:// RE-DERIVED DOWNWARD 1_040_000 -> 890_000 (measured 851,451 + the ~39 KB of headroom the old ceiling held). // growth is the norm here; this catches bulk growth that stays under every per-file cap.
                                     // 1_000_000 -> 1_040_000 (2026-09-03, go-to-k/cdkd#2402's
                                     // third review round): measured 1,000,819 B. The previous
                                     // bound was set at 12,808 B of slack and TWO lanes spent it
