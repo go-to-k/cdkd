@@ -1071,7 +1071,17 @@ const CORPUS_FILE_COUNT = 47; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 862_000;   // RE-DERIVED UPWARD 817_000 -> 862_000 (issue
+const CORPUS_BYTES_MIN = 895_000;   // RE-DERIVED UPWARD 862_000 -> 895_000 (2026-09-06, issue
+                                    // go-to-k/cdkd#2310): measured 929,171 B on the tree that
+                                    // ships this line -- 34,171 B of slack, the same ~34 KB every
+                                    // previous setting used. Moved in the SAME change that
+                                    // re-derived CORPUS_BYTES_MAX above, because that change is
+                                    // exactly what made this one stale: left at 862_000 it held
+                                    // 67,171 B, double the slack its own comment claimed, and a
+                                    // floor that drifts from its measurement stops being one.
+                                    // The round that re-derives the ceiling is the round that
+                                    // re-derives the floor.
+                                    // 862_000 was: // RE-DERIVED UPWARD 817_000 -> 862_000 (issue
                                     // go-to-k/cdkd#2447): measured 895,893 B on the REBASED tree
                                     // -- 33,893 B of slack, the same ~34 KB every previous setting
                                     // used. Re-derived rather than left alone because the old

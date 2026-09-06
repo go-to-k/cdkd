@@ -148,7 +148,8 @@ export function describeFinding(path: string, finding: ControlByteFinding): stri
   const escapeAdvice = (escape: string) =>
     `In a JS/TS string literal write it as the escape '${escape}' instead (identical at ` +
     `runtime); in a format without string escapes (JSON, Markdown, YAML, shell) remove the ` +
-    `byte. If the file is genuinely binary, add its extension to BINARY_EXTENSIONS.`;
+    `byte. If the file is genuinely binary and belongs in the repo, add its extension to ` +
+    `BINARY_EXTENSIONS; if it is an UNTRACKED local scratch file, delete it or gitignore it.`;
 
   if (finding.byte === 0x00) {
     return (

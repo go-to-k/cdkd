@@ -1,6 +1,14 @@
-import { describe, it, expect } from 'vite-plus/test';
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { beforeAll, describe, it, expect } from 'vite-plus/test';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   BINARY_EXTENSIONS,
@@ -24,6 +32,9 @@ import {
  */
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
+
+/** Shared by the probe paths below and by the pre-clean that removes their leftovers. */
+const PROBE_PREFIX = '.source-control-bytes-probe-';
 
 function trackedFiles(): string[] {
   return execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' })
@@ -198,11 +209,31 @@ function sweepTree(): { offenders: string[]; tracked: string[]; untracked: strin
       }
       if (!stat.isFile()) continue;
 
+      // The READ needs its own guard, for the cases the stat above CANNOT
+      // absorb — measured, not assumed: a path that is already gone fails
+      // `statSync` and is skipped there, so what reaches here is a file that
+      // STATTED fine and still cannot be read. Three ways: it vanishes in the
+      // stat→read window, it is unreadable (probed live with a mode-000
+      // untracked file — unguarded the suite dies on `EACCES: permission
+      // denied` with a stack trace instead of reporting a finding), or it is
+      // too large (`ERR_FS_FILE_TOO_LARGE`). The untracked half is why this
+      // now matters: that population is MUTABLE during a run and is not
+      // curated by anyone — a peer session in a sibling worktree, or this
+      // file's own probe, writes and removes files in it. A file this sweep
+      // cannot read is one it cannot judge, and `read` records only what WAS
+      // judged, so the floors stay honest about the skip.
+      let content;
+      try {
+        content = readFileSync(full);
+      } catch {
+        continue;
+      }
+
       // Cap per file. An unlisted GENUINELY binary file (someone commits a
       // .jar / .bin) is the designed "fails loudly" path — but uncapped it
       // yields ~1 finding per byte, so a 10 MB asset would build millions of
       // strings for vitest to diff. That is an OOM, not a loud message.
-      const findings = findControlBytes(readFileSync(full));
+      const findings = findControlBytes(content);
       read[origin].push(path);
       for (const finding of findings.slice(0, 5)) {
         offenders.push(describeFinding(path, finding));
@@ -270,30 +301,63 @@ describe('the working tree', () => {
  * a test instead of a by-hand check.
  */
 describe('the untracked half of the working tree', () => {
-  // A repo-root dotfile whose extension matches no `.gitignore` rule and no
-  // BINARY_EXTENSIONS entry. `*.tmp`, `.commit-msg*.txt`, `.pr-body*.txt` and
-  // `.gh-body*.txt` ARE ignored here, and an ignored probe proves nothing — the
-  // `untracked` assertion below is what catches that, since an ignored file
-  // never enters the population at all. The pid keeps two concurrent vitest
-  // processes off the same path.
-  const probeName = `.source-control-bytes-probe-${process.pid}.probe`;
+  // Every probe path starts with this, so the pre-clean below can find a
+  // leftover from a process that died mid-probe. The pid keeps two concurrent
+  // vitest processes in ONE worktree off the same path.
+  const probeRoot = `${PROBE_PREFIX}${process.pid}`;
 
-  function withProbe(contents: string, body: (relative: string) => void): void {
-    const absolute = join(REPO_ROOT, probeName);
+  // A NUL-bearing probe lives ~500 ms; a kill inside that window leaves it at
+  // the repo root, where — now that untracked files are in the population —
+  // it reds the tree-wide sweep above on EVERY later run until someone removes
+  // it by hand. Sweeping the prefix at start-up closes that, and also covers a
+  // leftover from a DIFFERENT pid. Scoped to entries directly under the repo
+  // root whose name carries the prefix, which no real file uses.
+  beforeAll(() => {
+    for (const entry of readdirSync(REPO_ROOT)) {
+      if (entry.startsWith(PROBE_PREFIX)) {
+        rmSync(join(REPO_ROOT, entry), { recursive: true, force: true });
+      }
+    }
+  });
+
+  /**
+   * Seed one probe file at `relative`, run `body`, then remove the whole
+   * top-level entry the probe created.
+   *
+   * The path is a PARAMETER because the three cases below need three different
+   * ones — nested vs. root, and checked vs. gitignored — and one helper with a
+   * parameter is cheaper than three seeding mechanisms.
+   */
+  function withProbe(relative: string, contents: string, body: (relative: string) => void): void {
+    const absolute = join(REPO_ROOT, relative);
+    mkdirSync(dirname(absolute), { recursive: true });
     writeFileSync(absolute, contents);
     try {
-      body(probeName);
+      body(relative);
     } finally {
-      rmSync(absolute, { force: true });
+      // The TOP-LEVEL entry, not the file: a nested probe leaves its
+      // directories behind otherwise, and an empty directory git does not list
+      // would sit at the root forever.
+      rmSync(join(REPO_ROOT, relative.split('/')[0]!), { recursive: true, force: true });
     }
     // Restore, asserted OUTSIDE the finally so a failing body reports its own
-    // failure first. A leaked probe would red the tree-wide sweep above on
-    // every later run — this file is its own subject.
+    // failure first.
     expect(existsSync(absolute)).toBe(false);
   }
 
-  it('READS a freshly written untracked file and REPORTS a raw NUL in it', () => {
-    withProbe("const sep = '\u0000';\n", (relative) => {
+  it('READS a freshly written untracked file in a SUBDIRECTORY and REPORTS a raw NUL in it', () => {
+    // The path is NESTED and the extension is `.ts`, and both are load-bearing
+    // rather than incidental:
+    //   * nested, because `git ls-files --others` DESCENDS and a walk that
+    //     stopped at the repo root would still satisfy a root-level probe —
+    //     while issue #2696's own motivating case was a NUL in an untracked
+    //     file under `tests/`. Mutating the population to
+    //     `untrackedFiles().filter((p) => !p.includes('/'))` must red here.
+    //   * `.ts`, because the tracked half carries four per-extension floors
+    //     against a BINARY_EXTENSIONS neuter, and the untracked half has no
+    //     real files to floor. A probe with a made-up extension would stay
+    //     green under an untracked-only `.ts` exemption; this one does not.
+    withProbe(`${probeRoot}/nested/stray.ts`, "const sep = '\u0000';\n", (relative) => {
       const { offenders, tracked, untracked } = sweepTree();
       // Receipt 1 — git really classifies the probe as untracked-and-not-ignored.
       expect(untracked).toContain(relative);
@@ -311,7 +375,7 @@ describe('the untracked half of the working tree', () => {
   it('reads a CLEAN untracked file without reporting it', () => {
     // The other direction. Without it, a sweep that flagged everything it found
     // untracked would satisfy the case above.
-    withProbe("const sep = '\\0';\n", (relative) => {
+    withProbe(`${probeRoot}/nested/clean.ts`, "const sep = '\\0';\n", (relative) => {
       const { offenders, untracked } = sweepTree();
       expect(untracked).toContain(relative);
       // Scoped to THIS file, not `offenders` as a whole: the tree-wide verdict
@@ -319,6 +383,22 @@ describe('the untracked half of the working tree', () => {
       // control byte ANYWHERE red this case with a message naming a different
       // file (measured while live-testing go-to-k/cdkd#2696 with a seeded
       // untracked NUL). A discrimination case must fail for its own reason.
+      expect(offenders.filter((o) => o.startsWith(`${relative}:`))).toEqual([]);
+    });
+  });
+
+  it('leaves a GITIGNORED file out of the population entirely', () => {
+    // `--exclude-standard` is what keeps `node_modules/` and `dist/` out, and
+    // until this case it was claimed in prose and pinned by nothing: dropping
+    // the flag takes the population from a handful of files to the whole
+    // ignored tree, which reds eventually and by accident rather than here and
+    // by name. `*.tmp` is a `.gitignore` entry, so this probe is invisible to
+    // git — and it carries a NUL, so a sweep that read it anyway could not
+    // stay quiet about it.
+    withProbe(`${probeRoot}.tmp`, "const sep = '\u0000';\n", (relative) => {
+      const { offenders, untracked, tracked } = sweepTree();
+      expect(untracked).not.toContain(relative);
+      expect(tracked).not.toContain(relative);
       expect(offenders.filter((o) => o.startsWith(`${relative}:`))).toEqual([]);
     });
   });
