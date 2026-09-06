@@ -934,7 +934,10 @@ gate_segments_raw() {
 # wrappers, and the keywords that open a compound statement.
 gate_strip_prefix() {
   local s="$1"
-  # THE THREE PATTERNS BELOW LIVE IN VARIABLES, AND NONE CARRIES A BACKSLASH.
+  # THE THREE PATTERNS BELOW LIVE IN VARIABLES, AND NONE CARRIES A BACKSLASH
+  # INSIDE A BRACKET EXPRESSION. The qualifier is the whole rule: a `\)`
+  # OUTSIDE the brackets is an ordinary escaped literal both engines agree
+  # on, and `_gate_case_arm` legitimately uses one.
   # Both halves are load-bearing, and inline they pull in opposite directions:
   # a bare `)` inside a bracket expression ends the `[[ ]]` word before the
   # regex engine sees it (bash 3.2 AND 5.x both reject it), while a backslash
