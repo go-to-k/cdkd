@@ -316,9 +316,21 @@ export function producerRegionsFromState(
  *     `cachedDynamicReferences` (instance-scoped since issue #1933, so it dies
  *     with the resolver) and `recordedSecretValues`, which every persist path
  *     consults as a redaction NEEDLE set — an entry there causes a value to be
- *     REPLACED BY its expression on the way out, never inserted. One more
- *     needle can only redact more, which is why this direction is safe even
- *     though it fetches more.
+ *     REPLACED BY its expression on the way out, never inserted.
+ *
+ *     ON THIS PATH one more needle can only redact more, which is why the
+ *     direction is safe even though it fetches more — and the qualifier is
+ *     load-bearing rather than hedging. It is NOT a general property of the
+ *     needle machinery: `redactSecretsForState`'s own doc (see the
+ *     `preferPositionDecisions` ordering note) records that a needle rewriting
+ *     a FRAME ANCHOR can un-certify `unkeyedArrayPairsByAnchors`, refuse the
+ *     array, and leave a sibling MIXED leaf in plaintext — "a regression of
+ *     shipped redaction, in the GHSA disclosure direction". That is reachable
+ *     with a NON-EMPTY map on a `STATE_SOURCED_READBACK_RULES` caller, e.g.
+ *     `rollback-executor.ts`'s `redactRollbackRecord` ->
+ *     `scrubResourceRecord`. It is not what fires here: the case this
+ *     paragraph is about records FEWER needles, not more, so nothing new can
+ *     rewrite an anchor.
  *  3. WHAT THE OP DOES NEXT IS NOT UNIFORM. The replay fails the op and `cdkd
  *     drift` reports the resource NOT compared — both loud. `cdkd scrub` is
  *     NOT: `isRegionAmbiguousRefusal` re-raises only a
@@ -329,18 +341,28 @@ export function producerRegionsFromState(
  *     leaf whenever no foreign producer region is on record.
  *
  *     Issue [#2692](https://github.com/go-to-k/cdkd/issues/2692) tracks it, and
- *     the remedy is NOT resolver-local — stating that here because the obvious
- *     fix is one this repo has already tried and REVERTED. Throwing
- *     `IntrinsicResolutionRefusalError` and widening `isRegionAmbiguousRefusal`
- *     to match it is exactly the change `scrub.ts`'s own doc records as
- *     downgrading five USER-FIXABLE refusals to findings, letting scrub print
- *     `No plaintext secrets found` and exit 0 over surviving plaintext.
- *     Throwing the region-ambiguous SUBCLASS is wrong too: its message tells
- *     the user to spell the reference as a full ARN, which cannot fix a
- *     reference that names no parameter. So #2692 needs a NEW sibling subclass
- *     AND a scrub-side predicate change — which makes it blocked on
- *     `src/cli/commands/scrub.ts` (held by PR #2562), not merely on the
- *     resolver's `integ-broad` cost.
+ *     the remedy is NOT resolver-local. Two candidate fixes are wrong, each in
+ *     its own way, and scrub has TWO predicates that must not be confused:
+ *     `isRegionAmbiguousRefusal` decides RE-RAISE vs SWALLOW (its three call
+ *     sites), while `isByDesignRefusal` — matching
+ *     `CrossAccountSecretRefusalError` — decides FINDING vs REFUSE. They point
+ *     in opposite directions, so a fix aimed at one must not be argued from
+ *     the other's record.
+ *
+ *      - Throwing `IntrinsicResolutionRefusalError` and widening
+ *        `isRegionAmbiguousRefusal` to match the BASE class would make every
+ *        user-fixable refusal that class carries RE-RAISE and fail the whole
+ *        stack — not the silent-downgrade hazard `isByDesignRefusal`'s doc
+ *        records, but the opposite over-refusal, on a class with throw sites
+ *        spread across the resolver.
+ *      - Throwing the region-ambiguous SUBCLASS is wrong differently: scrub
+ *        already re-raises it, but its message tells the user to spell the
+ *        reference as a full ARN, which cannot fix a reference naming no
+ *        parameter.
+ *
+ *     So #2692 needs a NEW sibling subclass AND a scrub-side predicate change,
+ *     which makes it blocked on `src/cli/commands/scrub.ts` (held by PR
+ *     #2562), not merely on the resolver's `integ-broad` cost.
  */
 export function classifyReplaySecretRegion(
   expression: string,
