@@ -42,22 +42,26 @@
 # "inherited or introduced?" by measurement instead of by argument.
 set -u
 
+# plain `bash "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
+# suite itself ran under 3.2. "Passes under bash 3.2" was therefore true of the
+# test and false of the thing under test, and a regex whose two bash engines
+# DISAGREE (`gate_strip_prefix`; see .claude/rules/hooks-class-fences.md) could
+# only fail on a runner that has 3.2 as both -- i.e. in CI, never here.
+#
+# Resolved to an ABSOLUTE path so the value cannot depend on where the hook is
+# invoked from. `run-tests.sh` passes `bash` / `/bin/bash`, both of which
+# `command -v` settles; the fallback only matters for a hand-typed relative
+# path, and it deliberately resolves against the caller's cwd, not this file's.
+HOOK_RUNNER="${HOOK_BASH:-bash}"
+HOOK_RUNNER="$(command -v "$HOOK_RUNNER" 2>/dev/null || printf '%s' "$HOOK_RUNNER")"
+case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
+
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 1
 HOOK="${GATE_HOOK:-.claude/hooks/main-tree-edit-gate.sh}"
 
 # `HOOK_BASH=<path>` runs the HOOK under that interpreter too, not merely this
 # suite. `run-tests.sh` already exports it alongside each shell it drives, and
 # this file IGNORED it until 2026-09-07: the hook is `#!/usr/bin/env bash`, so a
-# plain `"$HOOK_RUNNER" "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
-# suite itself ran under 3.2. "Passes under bash 3.2" was therefore true of the
-# test and false of the thing under test, and a regex whose two bash engines
-# DISAGREE (`gate_strip_prefix`'s bracket expressions; see
-# .claude/rules/hooks-class-fences.md) could only fail on a runner that has 3.2
-# as both -- i.e. in CI, never here. Resolved ABSOLUTE because a bare name would
-# find this shim itself and recurse.
-HOOK_RUNNER="${HOOK_BASH:-bash}"
-HOOK_RUNNER="$(command -v "$HOOK_RUNNER" 2>/dev/null || printf '%s' "$HOOK_RUNNER")"
-case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
 # A BOUND WITHOUT coreutils. `timeout(1)` is not on a stock macOS image, which
 # is the only runner carrying bash 3.2 and therefore the one this whole suite
 # exists to exercise -- so requiring it made the oracle fail there permanently.
@@ -69,26 +73,31 @@ case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
 # the watchdog got there. Either way the caller only asks whether the protected
 # file changed, so the status is not consulted -- what matters is that nothing
 # is left running.
+#
+# The watchdog runs under `set -m` in its own PROCESS GROUP, and the teardown
+# signals the GROUP (`kill -9 -- -<pgid>`). Killing the subshell PID alone
+# leaves its `sleep` child orphaned -- measured at one stray `sleep` per call
+# under both engines, 207 corpus rows deep -- and this suite exists to run real
+# commands, so leaking one process per row is the failure mode it must not have.
 bounded_bash() { # <seconds> <command>
   local secs="$1" cmd="$2" pid watchdog
-  bash -c "$cmd" >/dev/null 2>&1 &
+  # GROUND TRUTH must come from the SAME interpreter the gate is being asked
+  # about. With a bare `bash` here, a dev Mac scores a 3.2 gate against 5.x
+  # bash -- and the whole point of this file is that those two disagree.
+  "$HOOK_RUNNER" -c "$cmd" >/dev/null 2>&1 &
   pid=$!
+  set -m
   ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
   watchdog=$!
+  set +m
   wait "$pid" 2>/dev/null
-  kill -9 "$watchdog" 2>/dev/null
+  # Group first, then the bare pid as a fallback for any shell that did not
+  # give the job its own group. Both are best-effort: the watchdog may already
+  # have exited, and its absence is the ordinary case.
+  kill -9 -- "-$watchdog" 2>/dev/null || kill -9 "$watchdog" 2>/dev/null
   wait "$watchdog" 2>/dev/null
   return 0
 }
-
-TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
-if false; then
-  # NOT a silent skip: an oracle that opts out is indistinguishable from one
-  # that passes, so this is loud and non-zero.
-  echo "not ok main-tree-edit-oracle: no timeout(1) binary; refusing to run commands unbounded"
-  echo "  total: 1  fail: 1"
-  exit 1
-fi
 
 PROT="docs/_generated/ledger.tsv"
 SB=$(mktemp -d); FIX=$(mktemp -d)

@@ -934,6 +934,18 @@ gate_segments_raw() {
 # wrappers, and the keywords that open a compound statement.
 gate_strip_prefix() {
   local s="$1"
+  # THE THREE PATTERNS BELOW LIVE IN VARIABLES, AND NONE CARRIES A BACKSLASH.
+  # Both halves are load-bearing, and inline they pull in opposite directions:
+  # a bare `)` inside a bracket expression ends the `[[ ]]` word before the
+  # regex engine sees it (bash 3.2 AND 5.x both reject it), while a backslash
+  # written to escape it lands INSIDE the bracket, where POSIX makes it an
+  # ordinary member -- and the two engines then disagree about the result. An
+  # unquoted variable on the right of `=~` is still matched as a regex and the
+  # shell parser never meets the `)`, which is what satisfies both. Measured
+  # divergences that reached this repo are recorded on the uses below.
+  local _gate_case_arm='^[[:space:]]*[^()|;&[:space:]]+\)[[:space:]]*(.*)$'
+  local _gate_open_group='^[[:space:]]*[({][[:space:]]*(.*)$'
+  local _gate_close_group='^(.*[^[:space:]])[[:space:]]*[)}][[:space:]]*$'
   # Trim first: a segment split off after a separator starts with a space, and
   # every verb regex is anchored at the segment start.
   s="${s#"${s%%[![:space:]]*}"}"
@@ -962,7 +974,14 @@ gate_strip_prefix() {
     if [[ "$s" =~ ^[[:space:]]*case[[:space:]]+[^[:space:]]+[[:space:]]+in[[:space:]]+(.*)$ ]]; then
       s="${BASH_REMATCH[1]}"
     fi
-    if [[ "$s" =~ ^[[:space:]]*[^\(\)\|\;\&[:space:]]+\)[[:space:]]*(.*)$ ]]; then
+    # Same construct, same variable treatment, same reason as the two loops at
+    # the end of this function -- and it is here because it was MEASURED to
+    # diverge, not because it looked similar. With the escapes written inline,
+    # `x\) pkill -f node` had its case-arm prefix stripped by bash 5.x and left
+    # alone by 3.2, so `broad-process-kill-gate` answered 2 under 5.x and 0 --
+    # fail-open -- under the version CI runs. Stripping is the safe arm: it is
+    # what makes the gate consider the verb at all.
+    if [[ "$s" =~ $_gate_case_arm ]]; then
       s="${BASH_REMATCH[1]}"
     fi
     # The QUOTED-value form of an assignment is handled by the dedicated rule
@@ -978,33 +997,10 @@ gate_strip_prefix() {
   done
   # Any remaining grouping punctuation at either end (nested subshells).
   #
-  # The patterns live in VARIABLES, and there is no backslash inside either
-  # bracket expression. Both halves of that are load-bearing, and they pull in
-  # opposite directions when the pattern is written inline:
-  #
-  #   - Inline, a bare `)` cannot be used: bash 3.2's `[[ ]]` parser scans for
-  #     the closing bracket before the regex engine ever sees the word, and
-  #     `[)}]` ends it early -- `syntax error in conditional expression:
-  #     unexpected token ')'`. That is why this was originally spelled `[\)\}]`.
-  #   - But in a POSIX bracket expression a backslash is an ORDINARY MEMBER,
-  #     not an escape, so `[\(\{]` is the set {backslash, paren, brace} and it
-  #     strips a leading BACKSLASH too. bash 3.2's engine honours that reading;
-  #     bash 5.x's does not. So the two disagreed about a command word:
-  #     `\\cd /tmp ; echo hi > <tracked>` left this function as `cd /tmp` under
-  #     3.2 and unchanged under 5.x, and the gate followed a `cd` that REAL
-  #     BASH DOES NOT RUN (measured under both: the shell stays put), letting
-  #     the write escape the protected tree.
-  #
-  # An unquoted variable in the `=~` right-hand side is still matched as a
-  # regex, and the shell parser never sees the `)` -- satisfying both. It is
-  # the only spelling that does; keep it.
-  #
-  # This only ever showed on the CI runner, which carries 3.2 as both `bash`
-  # and `/bin/bash`. Locally the suite ran under 3.2 while the HOOK it invokes
-  # took `#!/usr/bin/env bash` to 5.x, so "passes under bash 3.2" was true of
-  # the test and false of the thing under test.
-  local _gate_open_group='^[[:space:]]*[({][[:space:]]*(.*)$'
-  local _gate_close_group='^(.*[^[:space:]])[[:space:]]*[)}][[:space:]]*$'
+  # Both engines agreed here once the escapes came out; before that, `\\cd /tmp
+  # ; echo hi > <tracked>` left this function as `cd /tmp` under 3.2 and
+  # unchanged under 5.x, so the gate followed a `cd` REAL BASH DOES NOT RUN
+  # (measured under both: the shell stays put) and the write escaped the tree.
   while [[ "$s" =~ $_gate_open_group ]]; do s="${BASH_REMATCH[1]}"; done
   while [[ "$s" =~ $_gate_close_group ]]; do s="${BASH_REMATCH[1]}"; done
   s="${s#"${s%%[![:space:]]*}"}"

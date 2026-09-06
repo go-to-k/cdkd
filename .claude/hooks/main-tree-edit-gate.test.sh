@@ -13,13 +13,16 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/main-tree-edit-gate.sh"
 # `HOOK_BASH=<path>` runs the HOOK under that interpreter too, not merely this
 # suite. `run-tests.sh` already exports it alongside each shell it drives, and
 # this file IGNORED it until 2026-09-07: the hook is `#!/usr/bin/env bash`, so a
-# plain `"$HOOK_RUNNER" "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
+# plain `bash "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
 # suite itself ran under 3.2. "Passes under bash 3.2" was therefore true of the
 # test and false of the thing under test, and a regex whose two bash engines
-# DISAGREE (`gate_strip_prefix`'s bracket expressions; see
-# .claude/rules/hooks-class-fences.md) could only fail on a runner that has 3.2
-# as both -- i.e. in CI, never here. Resolved ABSOLUTE because a bare name would
-# find this shim itself and recurse.
+# DISAGREE (`gate_strip_prefix`; see .claude/rules/hooks-class-fences.md) could
+# only fail on a runner that has 3.2 as both -- i.e. in CI, never here.
+#
+# Resolved to an ABSOLUTE path so the value cannot depend on where the hook is
+# invoked from. `run-tests.sh` passes `bash` / `/bin/bash`, both of which
+# `command -v` settles; the fallback only matters for a hand-typed relative
+# path, and it deliberately resolves against the caller's cwd, not this file's.
 HOOK_RUNNER="${HOOK_BASH:-bash}"
 HOOK_RUNNER="$(command -v "$HOOK_RUNNER" 2>/dev/null || printf '%s' "$HOOK_RUNNER")"
 case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
@@ -433,7 +436,7 @@ cp -R .claude/hooks "$BROKEN"
 echo 'this is not shell(' > "$BROKEN/lib/command-match.sh"
 fc_out=$(printf '%s' \
   "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')" \
-  | bash "$BROKEN/main-tree-edit-gate.sh" 2>&1)
+  | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" 2>&1)
 fc_rc=$?
 if [[ "$fc_rc" == 2 ]]; then
   pass=$((pass + 1)); echo "ok   (exit 2) an unloadable library fails CLOSED"
@@ -461,7 +464,7 @@ cp -R .claude/hooks "$STUBLIB"
 } > "$STUBLIB/lib/command-match.sh"
 printf '%s' \
   "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')" \
-  | bash "$STUBLIB/main-tree-edit-gate.sh" >/dev/null 2>&1
+  | "$HOOK_RUNNER" "$STUBLIB/main-tree-edit-gate.sh" >/dev/null 2>&1
 sl_rc=$?
 if [[ "$sl_rc" == 2 ]]; then
   pass=$((pass + 1)); echo "ok   (exit 2) a library missing gate_segments_marked fails CLOSED"
@@ -474,7 +477,7 @@ fi
 cp .claude/hooks/lib/command-match.sh "$BROKEN/lib/command-match.sh"
 printf '%s' \
   "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > /tmp/elsewhere.txt"}}')" \
-  | bash "$BROKEN/main-tree-edit-gate.sh" >/dev/null 2>&1
+  | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" >/dev/null 2>&1
 fc_ctl=$?
 if [[ "$fc_ctl" == 0 ]]; then
   pass=$((pass + 1)); echo "ok   (exit 0) the same copy with the library restored allows an outside write"

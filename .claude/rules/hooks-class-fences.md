@@ -52,11 +52,28 @@ this file keeps warning about: `\\cd /tmp ; echo hi > <tracked>` left the
 function as `cd /tmp` under 3.2, so every gate that resolves a target followed
 a `cd` that REAL BASH DOES NOT RUN (measured under both: the shell stays put),
 and the write escaped the protected tree. The backslashes were not gratuitous
--- bash 3.2's `[[ ]]` parser scans for the closing bracket before the regex
-engine sees the word, so a bare `[)}]` written INLINE is a syntax error there.
-Only one spelling satisfies both: put each pattern in a VARIABLE and leave the
-right-hand side of `=~` unquoted, which is still matched as a regex while the
-shell parser never meets the `)`.
+-- the `[[ ]]` parser scans for the closing bracket before the regex engine
+sees the word, so a bare `[)}]` written INLINE is a syntax error. That half is
+NOT version-specific: 3.2 and 5.3 reject it identically (measured), and an
+earlier revision of this paragraph blamed 3.2 for it.
+
+The spelling adopted is to put each pattern in a VARIABLE and leave the
+right-hand side of `=~` unquoted -- still matched as a regex, while the shell
+parser never meets the `)`. It is not the ONLY spelling that works: an inline
+alternation `(\)|\})` also parses and behaves identically on both engines
+(measured). The variable is preferred because it scales to the negated classes
+in the same function, where an alternation cannot express "any character except
+these", and because it keeps all three patterns declared in one place.
+
+**Three sites, not two.** The same construct sat three lines above, stripping a
+`<pattern>)` case-arm label with `[^\(\)\|\;\&[:space:]]`. It was found by a
+reviewer and then MEASURED rather than assumed: for `x\) pkill -f node`, 5.x
+stripped the label and 3.2 did not, so `broad-process-kill-gate` answered rc=2
+under 5.x and rc=0 -- fail-open -- under the version CI runs, against a control
+that blocks on both. It is now the same variable treatment, and the payload is
+a case in `broad-process-kill-gate.test.sh`, whose suite honours `HOOK_BASH`:
+with the inline spelling restored it is green under 5.x and red under
+`HOOK_BASH=/bin/bash`, which is the whole point of the shim.
 
 **The reason it survived to CI is the more transferable half.** The local
 reproduction ran the SUITE under `/bin/bash`, while the hook it invokes carries
