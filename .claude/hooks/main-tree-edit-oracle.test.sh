@@ -44,8 +44,45 @@ set -u
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 1
 HOOK="${GATE_HOOK:-.claude/hooks/main-tree-edit-gate.sh}"
+
+# `HOOK_BASH=<path>` runs the HOOK under that interpreter too, not merely this
+# suite. `run-tests.sh` already exports it alongside each shell it drives, and
+# this file IGNORED it until 2026-09-07: the hook is `#!/usr/bin/env bash`, so a
+# plain `"$HOOK_RUNNER" "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
+# suite itself ran under 3.2. "Passes under bash 3.2" was therefore true of the
+# test and false of the thing under test, and a regex whose two bash engines
+# DISAGREE (`gate_strip_prefix`'s bracket expressions; see
+# .claude/rules/hooks-class-fences.md) could only fail on a runner that has 3.2
+# as both -- i.e. in CI, never here. Resolved ABSOLUTE because a bare name would
+# find this shim itself and recurse.
+HOOK_RUNNER="${HOOK_BASH:-bash}"
+HOOK_RUNNER="$(command -v "$HOOK_RUNNER" 2>/dev/null || printf '%s' "$HOOK_RUNNER")"
+case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
+# A BOUND WITHOUT coreutils. `timeout(1)` is not on a stock macOS image, which
+# is the only runner carrying bash 3.2 and therefore the one this whole suite
+# exists to exercise -- so requiring it made the oracle fail there permanently.
+# Refusing to run unbounded is still right (these are real commands), but the
+# bound does not have to come from an external binary: run the command in the
+# background, and have a watchdog kill it if it outlives the budget.
+#
+# `wait` returns the command's own status when it finished first, and 137 when
+# the watchdog got there. Either way the caller only asks whether the protected
+# file changed, so the status is not consulted -- what matters is that nothing
+# is left running.
+bounded_bash() { # <seconds> <command>
+  local secs="$1" cmd="$2" pid watchdog
+  bash -c "$cmd" >/dev/null 2>&1 &
+  pid=$!
+  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  watchdog=$!
+  wait "$pid" 2>/dev/null
+  kill -9 "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  return 0
+}
+
 TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
-if [ -z "$TIMEOUT_BIN" ]; then
+if false; then
   # NOT a silent skip: an oracle that opts out is indistinguishable from one
   # that passes, so this is loud and non-zero.
   echo "not ok main-tree-edit-oracle: no timeout(1) binary; refusing to run commands unbounded"
@@ -86,7 +123,7 @@ TAILS=( '' ' ; cd /tmp' ' ; ( cd /tmp )' ' ; cd\ /tmp' ' ; cd $(echo /tmp)' )
 run_bash() { # <sandbox-cwd> <protected-file> <command> -> yes|no
   local dir="$1" prot="$2" cmd="$3"
   printf 'row\n' > "$prot"
-  ( cd "$dir" && PATH="$SB/bin:/usr/bin:/bin" "$TIMEOUT_BIN" 5 bash -c "$cmd" ) >/dev/null 2>&1
+  ( cd "$dir" && PATH="$SB/bin:/usr/bin:/bin" bounded_bash 5 "$cmd" ) >/dev/null 2>&1
   if [ -f "$prot" ] && [ "$(cat "$prot" 2>/dev/null)" != "row" ]; then echo yes; else echo no; fi
 }
 selfcheck_fail=0
@@ -125,7 +162,7 @@ probe() { # <gate payload cwd> <sandbox cwd> <command> <label> [latency-only]
   written=$(run_bash "$scwd" "$MAIN/$PROT" "$cmd")
   t0=$(date +%s)
   printf '%s' "$(jq -nc --arg c "$cmd" --arg w "$pcwd" \
-    '{tool_name:"Bash",cwd:$w,tool_input:{command:$c}}')" | bash "$HOOK" >/dev/null 2>&1
+    '{tool_name:"Bash",cwd:$w,tool_input:{command:$c}}')" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
   rc=$?
   t1=$(date +%s); ms=$((t1 - t0))
   # 5s of a 10s PreToolUse timeout. Past the budget the hook is on its way to

@@ -10,6 +10,20 @@ set -u
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/main-tree-edit-gate.sh"
 
+# `HOOK_BASH=<path>` runs the HOOK under that interpreter too, not merely this
+# suite. `run-tests.sh` already exports it alongside each shell it drives, and
+# this file IGNORED it until 2026-09-07: the hook is `#!/usr/bin/env bash`, so a
+# plain `"$HOOK_RUNNER" "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
+# suite itself ran under 3.2. "Passes under bash 3.2" was therefore true of the
+# test and false of the thing under test, and a regex whose two bash engines
+# DISAGREE (`gate_strip_prefix`'s bracket expressions; see
+# .claude/rules/hooks-class-fences.md) could only fail on a runner that has 3.2
+# as both -- i.e. in CI, never here. Resolved ABSOLUTE because a bare name would
+# find this shim itself and recurse.
+HOOK_RUNNER="${HOOK_BASH:-bash}"
+HOOK_RUNNER="$(command -v "$HOOK_RUNNER" 2>/dev/null || printf '%s' "$HOOK_RUNNER")"
+case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
+
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -40,7 +54,7 @@ pass=0; fail=0
 # run_case <expected_exit> <desc> <json>
 run_case() {
   local expected="$1" desc="$2" json="$3" rc
-  printf '%s' "$json" | bash "$HOOK" >/dev/null 2>&1
+  printf '%s' "$json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
   rc=$?
   if [[ "$rc" == "$expected" ]]; then
     pass=$((pass+1)); printf 'ok   (exit %s) %s\n' "$rc" "$desc"

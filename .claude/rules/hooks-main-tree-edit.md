@@ -118,7 +118,10 @@ toll only on a session actually touching these two hooks.
   how "inherited or introduced?" gets settled rather than argued — that is how
   `origin/main` was measured at 38 fail-opens against this branch's 0. Its
   header carries the grid's dimensions and the two traps that made an earlier
-  revision of it vacuous; no figure from it is restated here.
+  revision of it vacuous; no figure from it is restated here. **Both suites
+  honour `HOOK_BASH`** — they did not until 2026-09-07, and that is how a
+  bash-3.2-only fail-open in `gate_strip_prefix` stayed invisible to every
+  local run of them.
 
   Smoke test: `main-tree-edit-gate.test.sh`, whose CASE_FLOOR is the count —
   read it there rather than here. The three quoted-`cd`

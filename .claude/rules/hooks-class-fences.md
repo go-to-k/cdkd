@@ -42,6 +42,32 @@ One assertion in that file is an INVARIANT rather than a case: **no non-empty co
 
 Two classes are NO LONGER gaps, having been closed in review round 5. A **glob, a brace expansion or a `~user` prefix** in a `-C` or a `cd` is now treated as unreadable exactly like `$VAR`: the shell expands them and the commit lands in a real repo, while the parser cannot say which one, and the reverted "not a git repository" branch had been letting them through (`cd <wt>/.claude/worktrees/*/ && git commit` and `cd ~nobody/wt && git commit` both measured rc=0, now rc=2). A **leading `~/` or a bare `~` is deliberately NOT in that set**, because HOME is expanded here correctly and refusing it would be a false refusal.
 
+**A THIRD class closed with them, and it is the one worth generalising: the
+two bashes disagreed about a regex.** `gate_strip_prefix` stripped grouping
+punctuation with the inline bracket expressions `[\(\{]` / `[\)\}]`. In a
+POSIX bracket expression a backslash is an ORDINARY MEMBER rather than an
+escape, so those sets contain a BACKSLASH -- bash 3.2's engine reads them that
+way and bash 5.x's does not. The consequence was a fail-open in the direction
+this file keeps warning about: `\\cd /tmp ; echo hi > <tracked>` left the
+function as `cd /tmp` under 3.2, so every gate that resolves a target followed
+a `cd` that REAL BASH DOES NOT RUN (measured under both: the shell stays put),
+and the write escaped the protected tree. The backslashes were not gratuitous
+-- bash 3.2's `[[ ]]` parser scans for the closing bracket before the regex
+engine sees the word, so a bare `[)}]` written INLINE is a syntax error there.
+Only one spelling satisfies both: put each pattern in a VARIABLE and leave the
+right-hand side of `=~` unquoted, which is still matched as a regex while the
+shell parser never meets the `)`.
+
+**The reason it survived to CI is the more transferable half.** The local
+reproduction ran the SUITE under `/bin/bash`, while the hook it invokes carries
+`#!/usr/bin/env bash` and took whatever came first on `PATH` -- 5.x. So "passes
+under bash 3.2" was true of the test and false of the thing under test, and the
+divergence was invisible until a runner that has only 3.2 ran both halves under
+it. Reproduce the runner by putting 3.2 FIRST on `PATH`
+(`D=$(mktemp -d); ln -sf /bin/bash "$D/bash"; PATH="$D:$PATH" /bin/bash <suite>`),
+not by invoking the suite with `/bin/bash`. The sibling suites that added a
+`HOOK_BASH` shim are solving the same problem from the other end.
+
 ## The gate-name class fence (issue 2198)
 
 `.claude/hooks/markgate-gate-name-class.test.sh` asserts, for every

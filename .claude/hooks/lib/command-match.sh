@@ -977,8 +977,36 @@ gate_strip_prefix() {
     s="${s#"${s%%[![:space:]]*}"}"
   done
   # Any remaining grouping punctuation at either end (nested subshells).
-  while [[ "$s" =~ ^[[:space:]]*[\(\{][[:space:]]*(.*)$ ]]; do s="${BASH_REMATCH[1]}"; done
-  while [[ "$s" =~ ^(.*[^[:space:]])[[:space:]]*[\)\}][[:space:]]*$ ]]; do s="${BASH_REMATCH[1]}"; done
+  #
+  # The patterns live in VARIABLES, and there is no backslash inside either
+  # bracket expression. Both halves of that are load-bearing, and they pull in
+  # opposite directions when the pattern is written inline:
+  #
+  #   - Inline, a bare `)` cannot be used: bash 3.2's `[[ ]]` parser scans for
+  #     the closing bracket before the regex engine ever sees the word, and
+  #     `[)}]` ends it early -- `syntax error in conditional expression:
+  #     unexpected token ')'`. That is why this was originally spelled `[\)\}]`.
+  #   - But in a POSIX bracket expression a backslash is an ORDINARY MEMBER,
+  #     not an escape, so `[\(\{]` is the set {backslash, paren, brace} and it
+  #     strips a leading BACKSLASH too. bash 3.2's engine honours that reading;
+  #     bash 5.x's does not. So the two disagreed about a command word:
+  #     `\\cd /tmp ; echo hi > <tracked>` left this function as `cd /tmp` under
+  #     3.2 and unchanged under 5.x, and the gate followed a `cd` that REAL
+  #     BASH DOES NOT RUN (measured under both: the shell stays put), letting
+  #     the write escape the protected tree.
+  #
+  # An unquoted variable in the `=~` right-hand side is still matched as a
+  # regex, and the shell parser never sees the `)` -- satisfying both. It is
+  # the only spelling that does; keep it.
+  #
+  # This only ever showed on the CI runner, which carries 3.2 as both `bash`
+  # and `/bin/bash`. Locally the suite ran under 3.2 while the HOOK it invokes
+  # took `#!/usr/bin/env bash` to 5.x, so "passes under bash 3.2" was true of
+  # the test and false of the thing under test.
+  local _gate_open_group='^[[:space:]]*[({][[:space:]]*(.*)$'
+  local _gate_close_group='^(.*[^[:space:]])[[:space:]]*[)}][[:space:]]*$'
+  while [[ "$s" =~ $_gate_open_group ]]; do s="${BASH_REMATCH[1]}"; done
+  while [[ "$s" =~ $_gate_close_group ]]; do s="${BASH_REMATCH[1]}"; done
   s="${s#"${s%%[![:space:]]*}"}"
   s="${s%"${s##*[![:space:]]}"}"
   printf '%s' "$s"
