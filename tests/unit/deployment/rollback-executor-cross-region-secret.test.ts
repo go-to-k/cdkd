@@ -688,7 +688,9 @@ describe('a replayed ssm-secure expression, driven end to end (issue #2482)', ()
     // BINDS the failure to the region refusal. Without this, any unrelated
     // throw inside `revert-failed-update` satisfies the three lines above --
     // which is why the three sibling --revert-failed cases assert it too.
-    require('node:fs').writeFileSync('/private/tmp/claude-501/-Users-goto-orca-workspaces-cdkd-frogfish/5bbaa0bc-03c6-4820-9fcc-439d501ceeec/scratchpad/lane3-probes/loglines.json', JSON.stringify(logLines, null, 1));
+    expect(logLines.find((l) => l.includes('Rollback failed for failed-op Idp'))).toContain(
+      SECURE_PARAM
+    );
   });
 
   // TWO ARMS, and they catch DIFFERENT halves of the same mutation. The
