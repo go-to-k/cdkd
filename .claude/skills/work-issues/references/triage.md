@@ -218,9 +218,12 @@ Reading candidate bodies:
   round after claiming.
 - **Resolve EVERY issue's premise against the tree at CLAIM time** — a body
   can be already-done, not-yet-true, or WRONG, and all three look identical
-  from the title. One grep per asserted symbol/file/behaviour is the whole
-  cost (2026-08-26: THREE of six claimed issues had a false premise — each
-  still worth doing as a DIFFERENT change). Write what you found in the claim
+  from the title. One grep per asserted SYMBOL is the whole cost —
+  the symbol, never the body's file path or line numbers, which go stale
+  first and whose staleness reads as "already fixed" (2026-08-26: THREE of
+  six claimed issues had a false premise, each still worth doing as a
+  DIFFERENT change; go-to-k/cdkd#2286 named the wrong file and its lines had
+  drifted ~290). Write what you found in the claim
   comment and correct the issue body. The not-yet-true direction is commoner:
   a body written from an unmerged branch describes THAT branch — on an empty
   grep, `gh pr list --state all --search <symbol>` separates "premise wrong"

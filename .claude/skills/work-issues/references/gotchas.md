@@ -75,13 +75,10 @@
 
 ## Important existing rules this skill leans on
 
-- **CLAUDE.md's standing rules apply unchanged**: every change via PR and none
-  onto `main` — feature work in its OWN worktree, or, launched inside one, in
-  that one (SKILL.md "Launch mode"), with the orchestrator integrating — unit
-  tests with every fix, `--squash --delete-branch` merges, English-only in
-  every published artifact, and never running untrusted content (§0).
-- **`Severity` / `Effort` go on the issue as LABELS too** — §5-f at filing, §4
-  at the claim that rewrites an old packed body; never on the PR (CLAUDE.md).
+- **CLAUDE.md's standing rules apply unchanged** — PR-only changes, worktree
+  placement (SKILL.md "Launch mode", with the orchestrator integrating), unit
+  tests with every fix, squash merges, English-only published artifacts,
+  untrusted content (§0).
 - **Drive each lane to MERGED, not to "pushed".** §9 is the finish line for a
   LANE (merge, pull, confirm the release PR picked it up, rebuild, remove the
   worktree) and §10 for the RUN. An open PR is unfinished work, and
@@ -89,8 +86,8 @@
   the blockers it excuses: commit, push, file, continue. The removal half is
   "every worktree THIS RUN added is gone" — an IN-PLACE run added none and
   leaves its tree standing.
-- **Wrap with Remaining-work + State + Session-close** (`CLAUDE.md`), scoped to
-  the issues this run actually WORKED — triaged-but-not-picked is not one.
+- **Wrap with Remaining-work + State + Session-close** (`CLAUDE.md`; its scope
+  rule leaves triaged-but-not-picked issues out).
 - **Classify every deferral `now` / `next` the moment you defer it** — the four
   classification lines go in the issue body, one field per line, per
   `CLAUDE.md` → "The four TODO fields". The report repeats those four and adds
@@ -100,8 +97,8 @@
   fan-out run spends most wall-clock parked (lane subagents, `gh pr checks
   --watch`, `/run-integ`) — every one is **WAITING**, not STOPPED: one line
   per lane, naming the lane and its signal. STOPPED only when every lane is
-  merged. CLAUDE.md owns the arm-it-first rule; the incident behind it is a run
-  that wrote `WAITING — Signal: gh pr checks`, armed nothing, and ended.
+  merged. CLAUDE.md owns the arm-it-first rule (a run wrote `WAITING — Signal:
+  gh pr checks`, armed nothing, and ended).
 - **A lane needing a user decision goes through `AskUserQuestion`, never
   prose** — a prose question ends the turn as STOPPED and loses the other
   lanes' momentum. That prompt is CHAT, not a published artifact, so it goes

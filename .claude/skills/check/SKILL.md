@@ -12,7 +12,29 @@ state quickly.
 
 Run these sequentially and report results:
 
-0. **Worktree pre-flight**: `[ -d node_modules ] || pnpm install --frozen-lockfile`.
+0. **Worktree pre-flight**: `git fetch -q origin || echo 'FETCH FAILED --
+   budget verdicts below are LOCAL-only'` first, then
+   `[ -d node_modules ] || pnpm install --frozen-lockfile`. The fetch is
+   BEST-EFFORT and must not fail the step (offline, or no `origin`, exits
+   128), but its failure is not free either: say so in the report, because
+   the cumulative-budget verdict in step 4 then attests to your local ref
+   rather than to the merge.
+
+   **The fetch is what makes step 4's CUMULATIVE-BUDGET check mean anything.**
+   `rule-file-payload.test.ts` projects this branch's delta onto the LOCAL
+   `origin/main` ref (`skill-file-payload.test.ts` does NOT project — it
+   measures the working tree, so its per-file caps carry this risk with no
+   projection at all). A ref predating a peer's merge projects a merge that
+   cannot happen. **A CI run carries the same staleness, because its base is
+   frozen when the run STARTS**: measured 2026-09-06, go-to-k/cdkd#2695's run
+   started 08:20:59Z, go-to-k/cdkd#2700 merged 08:22:04Z — 65 s later — and
+   the run went green at 08:31:43Z having never seen it. Nothing re-ran it,
+   and #2695 merged at 08:34:08Z, putting `main` 172 B over the rules-corpus
+   ceiling with both PRs' CI green. So a green check attests to the base at
+   its START, not at your merge: fetch and re-run before the LAST `/check` of
+   a lane, and treat a summed-budget verdict as stale the moment a peer
+   merges.
+
    `git worktree add` does NOT copy `node_modules`, and in a fresh worktree
    `vp check` fails with an UNNAMED `typescript(tsconfig-error): Invalid
    tsconfig — Cannot find type definition file for 'node'`, which reads like a

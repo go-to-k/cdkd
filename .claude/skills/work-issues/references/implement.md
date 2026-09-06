@@ -121,7 +121,10 @@ measured miss:
   over; a redaction fixing update/delete but not create; one enumeration
   completed while a second in the same file — and a third on the same LINE —
   kept the defect). Every one found by enumerating readers with grep, none by
-  re-reading the diff. After writing a fix:
+  re-reading the diff. **So does a SWEEP, over its OWN output** — re-run the
+  predicate on the diff the sweep produced (go-to-k/cdkd#2662: three of a
+  run's ten false-guarantee comments were added or left by a sweep meant to
+  end that class). After writing a fix:
 
   ```bash
   # Derive the population from the CODE, not from the files your diff touched.
@@ -246,7 +249,11 @@ its own alibi (go-to-k/cdkd#2333).
 other things produce identical output.** Ask in order before touching the
 fence: (1) **did the edit land WHERE YOU AIMED IT?** — the probe's RECEIPT,
 not a post-mortem (5-g's rule applies to a probe you run yourself):
-`grep -c '<anchor>'` BEFORE, `git diff -- <file>` after, read the hunk. A
+`grep -c '<anchor>'` BEFORE, `git diff -- <file>` after, read the hunk.
+**AIMED IT means the PRODUCTION file**: re-typing the subject's logic inside
+the test mutates a COPY and reports RED for a fence that does not exist
+(go-to-k/cdkd#2662: "27 probes, ALL RED", one of them green; reverting
+production turned six more floors green). A
 count above 1 decides the tool, in opposite directions: `sed` / `perl -pi`
 are per-LINE, so a RED can belong to every copy at once, while `perl -0pi`
 without `/g` mutates only the FIRST in the file — which on go-to-k/cdkd#2627

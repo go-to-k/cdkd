@@ -216,6 +216,12 @@
           },
           {
             "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/broad-process-kill-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking for a machine-wide pkill/killall..."
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/flatten-before-rebase-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking whether the branch should be flattened before rebasing..."

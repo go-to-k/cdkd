@@ -147,19 +147,21 @@ refuses it as "not fully merged", the expected squash artifact. Confirm MERGED
 first and the `-D` is safe.
 
 **Merge order is not arbitrary: a lane that fixes a full-suite flake goes
-FIRST**, and every other lane rebases onto it. The corollary: a PR's CI runs
-on the MERGE ref, so a red check can come from a PEER's just-merged content
-your local green never saw — the fix is fetch + rebase + re-run, not
-distrusting the peer's new test.
+FIRST**, and every other lane rebases onto it. A RED check can equally be a
+peer's just-merged content your local green never saw — fetch, rebase, re-run.
+The GREEN direction of that staleness is below.
 
-**When the failing check is a CUMULATIVE BUDGET** (a byte cap, a corpus total
-— any verdict that is a SUM over the tree), CI evaluates the MERGE RESULT, so
-a peer growing the same file moves your verdict without touching your diff;
-trimming to the LOCAL number stays red on every push. Measure what the merge
-produces — `git merge-tree HEAD origin/main` — and say the resulting HEADROOM
-in the report. For the `.claude/rules` corpus this is now mechanical
-(`rule-file-payload.test.ts` projects the merge); any OTHER cumulative budget
-still needs the hand measurement. **When you hand a trim to another lane,
+**A CUMULATIVE BUDGET is measured BEFORE THE MERGE, not when a check goes
+red** (any SUM over the tree: a byte cap, a corpus total). A peer growing the
+same file moves your verdict without touching your diff, and **CI cannot catch
+it — a run evaluates the merge result AS OF ITS OWN START** (go-to-k/cdkd#2695
+merged 12 min after go-to-k/cdkd#2700 spent the same budget, on a run started
+65 s before it; `main` went 172 B over, both PRs green — go-to-k/cdkd#2705).
+Run `git merge-tree HEAD origin/main` on a FRESHLY FETCHED ref as the last
+step before merging and report the HEADROOM; the LOCAL number is not the
+verdict. `rule-file-payload.test.ts` projects this for `.claude/rules`, only
+as fresh as your local ref; every other one, this skill's corpus included, is
+hand-measured. **When you hand a trim to another lane,
 check the target is REACHABLE from that lane's own bytes**: the floor is
 `merge-base size`, not zero — a target below it is an instruction to cut
 somebody else's entry, and `cap - merge_base_size` is the most headroom one

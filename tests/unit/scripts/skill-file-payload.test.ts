@@ -122,8 +122,8 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 173_061,
-    largest: { file: 'implement.md', bytes: 28_240 },
+    corpusBytes: 173_147,
+    largest: { file: 'implement.md', bytes: 28_727 },
     runnerUp: { file: 'verify.md', bytes: 28_187 },
   },
 };
@@ -432,6 +432,47 @@ const MIN_REFERENCE_FILES = 6;
 // with `git checkout <ref> -- <paths>` needs a `git diff --stat HEAD`
 // receipt -- and cost the rules corpus 201 B, re-derived in
 // rule-file-payload.test.ts in the same commit.
+// The 2026-09-06 work-issues retro (go-to-k/cdkd#2610 / go-to-k/cdkd#2635 /
+// go-to-k/cdkd#2501 / go-to-k/cdkd#2521) landed three rules here --
+// implement.md 5-e's aim-the-probe-at-PRODUCTION clause, 5-b's a-sweep-owes-
+// it-to-its-own-output rider, and triage.md's grep-the-SYMBOL-not-the-path
+// correction -- and paid for them by DISPLACEMENT in two other files.
+// Components: implement.md 28,240 -> 28,727 (+487), triage.md 26,219 ->
+// 26,404 (+185), retro.md 17,559 -> 17,159 (-400), gotchas.md 7,938 -> 7,591
+// (-347), ship.md 21,304 -> 21,465 (+161), = +86. Corpus 173,061 -> 173,147;
+// largest implement.md, runner-up verify.md 28,187 untouched, so the binding
+// margin goes 126 -> 40 B.
+// This round is NET POSITIVE and says so rather than routing the growth to
+// the runner-up, where the bound cannot see it. The last +161 was added after
+// review, deliberately: ship.md's cumulative-budget paragraph was triggered
+// only "when the failing check is a CUMULATIVE BUDGET" and asserted that "CI
+// evaluates the MERGE RESULT" -- a maintainer read it and still merged
+// go-to-k/cdkd#2695 onto a stale green, because nothing was failing and the
+// sentence promised CI had it covered. The trigger is now BEFORE THE MERGE
+// and the CI claim is corrected to the run-start freeze. 40 B is a thin
+// margin and the next round should open by compressing rather than adding.
+// Both payments were duplication, not compression: retro.md 10-d was carrying
+// a second copy of ship.md section 9's IN-PLACE restore RATIONALE
+// (`--no-guess`, the chaining, the three end states) and now points at it --
+// its COMMAND arm and its `no pull, no rebase, no fast-forward` phrase stay,
+// because work-issues-launch-mode.test.ts pins both in this file by name, and
+// a first attempt that cut them reded exactly the two rows whose comments
+// record the same deletion being made once before. gotchas.md's
+// appendix was carrying a THIRD copy of the Severity/Effort-are-labels rule
+// that CLAUDE.md states and `issue-classification-label-gate.sh` enforces.
+// Its other two lessons landed OUTSIDE this corpus on purpose and cost it
+// nothing: `.claude/skills/check/SKILL.md` step 0 now runs `git fetch -q
+// origin` before the suite, and a new
+// `.claude/hooks/broad-process-kill-gate.sh`. Note which file that fetch is
+// for -- rule-file-payload.test.ts PROJECTS onto the local `origin/main`
+// ref, and THIS file deliberately does not (see the header): its caps are
+// per-file, so a stale ref cannot hide a collision here the way it hid
+// go-to-k/cdkd#2695's 172 B breach of the rules-corpus ceiling. A review
+// round caught this comment claiming both files project. That breach was
+// resolved on `main` by go-to-k/cdkd#2704 re-deriving the ceiling upward,
+// not by this branch; what this branch does to the rules corpus is remove
+// 504 B of duplication net, and the WHY-it-was-not-caught note sits beside
+// that ceiling in rule-file-payload.test.ts.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller
