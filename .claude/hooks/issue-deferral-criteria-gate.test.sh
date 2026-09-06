@@ -46,7 +46,7 @@
 #     `word:`, with the `Notes:` sibling-field case as the control
 #
 # MUTATION-PROBED rather than asserted. EVERY number below was re-taken
-# wholesale on the 125-case suite after the round-3 review -- not carried
+# wholesale on the 129-case suite after the round-4 review -- not carried
 # forward, and three of the previous round's numbers did NOT reproduce, which
 # is the reason for the rule. A tally says how many cases ran, not what any of
 # them fences, so each fence was broken in the real hook and the survivors
@@ -55,7 +55,7 @@
 #   always-`exit 0` stub                     fails 70   (nothing passes vacuously)
 #   always-`exit 2` stub                     fails 60   (nor does anything block
 #                                                        vacuously)
-#   `$GW` -> the retired class (below)       fails 43   -- the whole quoted-value
+#   `$GW` -> the retired class (below)       fails 47   -- the whole quoted-value
 #                                                        family at once: spaced
 #                                                        paths, `-f body=<text>`,
 #                                                        the glued flags and the
@@ -84,7 +84,7 @@
 #                                                        severity, estimate and
 #                                                        dup-check; 2 for notes
 #                                                        (the older $SIBLING case);
-#                                                        3 for effort
+#                                                        4 for effort
 #   short-flag `[=\s]*` -> `[=\s]+`        fails  3   -- the GLUED spellings.
 #                                                      EVERY `[=\s]*` site at
 #                                                      once: changing only the
@@ -110,7 +110,14 @@
 #                                                      case
 #   `--input` heredoc STATUS -> emptiness    fails  3   -- an EMPTY heredoc
 #                                                      rewrite falling through to
-#                                                      the stale payload on disk
+#                                                      the stale payload on disk.
+#                                                      SPELLING: `&& have_hd=1`
+#                                                      -> `|| hd=""` AND the
+#                                                      following test -> `[ -n
+#                                                      "$hd" ]`. Changing only
+#                                                      the test fails 1, so as
+#                                                      with the glued-flag row
+#                                                      the probe IS the number
 #   `--input` `$VAR` heredoc arm removed     fails  1
 #   `--input` relative join dropped          fails  1
 #   `--input` raw path spelling dropped      fails  1   -- the relative payload
@@ -118,6 +125,20 @@
 #                                                      same call
 #   `-b` extractor arm removed               fails  1   -- gh short `--body`
 #   `[*_]*next` -> `next`                    fails  2   -- the BOLDED value
+#
+#   segment ORDINAL -> plain `index`         fails  1   -- two segments that
+#                                                      collapse to identical
+#                                                      text sharing one raw
+#                                                      slice
+#   `pull[[:space:]-]+requests?` dropped     fails  2   -- `own pull request`
+#                                                      and `own-PR`
+#
+# THE WRITER PRE-FILTER IS NOT FENCED BY A CASE, deliberately. It is a COST
+# fix -- without it 40 chained `--body-file missing$i.md` took 10-19 s across
+# the three repos, past the PreToolUse timeout, which is a SILENT PASS -- and a
+# wall-clock assertion in a unit suite is a flake generator on a loaded
+# machine. Deleting the pre-filter leaves the suite green (fails 0); the
+# measurement lives in the comment beside it.
 #
 # TWO PROBES NEED BOTH SITES BROKEN AT ONCE. The fallback lives at two arms
 # (unresolvable-path and unreadable-file) and each case reaches only one, so a
@@ -604,6 +625,26 @@ run "gh api --input: a \$VAR payload written by a heredoc is still read" \
 {\"title\":\"t\",\"body\":\"Session-fit: next (not this session) -- it needs its own PR\"}
 JSON
 gh api repos/o/r/issues -f title=t --input \"\$P\"" "$TMPROOT" 2
+
+# Round-4 blockers, each measured before the fix.
+# `index` alone hands the SECOND of two segments that collapse to identical
+# text the FIRST one's raw slice, so a flat PR-shaped filing passed on its
+# twin's newline placement. The ordinal selects the right occurrence.
+run "twin segments do not share one raw slice" \
+  "gh issue create --title t --body 'Session-fit: next (not this session)
+Severity: high it needs its own PR' && gh issue create --title t --body 'Session-fit: next (not this session) Severity: high it needs its own PR'" \
+  "$TMPROOT" 2
+# `PR` / `pull request` / `own-PR` are SPELLINGS of one noun. A passing mention
+# of somebody else's pull request is not a PR-shaped REASON and must still pass.
+run "own pull request, spelled out" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- it needs its own pull request'" \
+  "$TMPROOT" 2
+run "own-PR, hyphenated" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- it needs its own-PR'" \
+  "$TMPROOT" 2
+run "a passing mention of an upstream pull request still passes" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- blocked on upstream pull request aws/aws-cdk#123 landing'" \
+  "$TMPROOT" 0
 
 # --- repo opt-in scope (issue #1259) ---------------------------------------
 cp "$OWNPR" "$NOOPTIN/own-pr.md"

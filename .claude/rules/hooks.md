@@ -562,9 +562,9 @@ These one-shot hooks block known foot-guns at the source.
   PR-shaped `next` criterion to cite. Bypass
   `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, from the env or a leading assignment
   in the command text (#2368), for an INLINE quote of PR-shaped reasoning.
-  Smoke test: `issue-deferral-criteria-gate.test.sh` (125 cases, bash 5.x and
-  3.2.57). Re-probed wholesale on the 125-case suite: `exit 0` stub 70,
-  `exit 2` stub 60, `$GW` reverted 43, short-flag 3, prelude guard 1. Per-fence tallies (the boundary, the
+  Smoke test: `issue-deferral-criteria-gate.test.sh` (129 cases, bash 5.x and
+  3.2.57). Re-probed wholesale on the 129-case suite: `exit 0` stub 70,
+  `exit 2` stub 60, `$GW` reverted 47, short-flag 3, prelude guard 1. Per-fence tallies (the boundary, the
   six `key_re` field names, segment scoping, the fence strip, the heredoc
   arms) live in the suite header, which is re-measured wholesale each round.
   
