@@ -84,6 +84,7 @@ import pLimit from 'p-limit';
 // `scripts/audit-provider-coverage.ts`.
 import { getAwsClients } from '../src/utils/aws-clients.ts';
 import { STATEFUL_TYPES } from '../src/provisioning/stateful-types.ts';
+import { escapeCell } from './markdown-table.ts';
 
 const SCHEMA_VERSION = 1;
 
@@ -1151,7 +1152,7 @@ export function renderMarkdown(report: StatefulCandidateReport): string {
   lines.push('|--------|-----------:|--------------------|');
   for (const signal of STATEFUL_SIGNALS) {
     lines.push(
-      `| \`${signal.key}\` | ${report.summary.signalCounts[signal.key] ?? 0} | ${signal.rationale} |`
+      `| \`${signal.key}\` | ${report.summary.signalCounts[signal.key] ?? 0} | ${escapeCell(signal.rationale)} |`
     );
   }
   lines.push('');
@@ -1163,8 +1164,18 @@ export function renderMarkdown(report: StatefulCandidateReport): string {
     const createOnly = c.createOnlyProperties
       .map((p) => `\`${p.replace(/^\/properties\//, '')}\``)
       .join(', ');
+    // Escaped even though a type name and a JSON-pointer property name are
+    // STRUCTURAL, not prose. The split that decides escaping is PROVENANCE, and
+    // these two are the only cells in any generator whose value arrives from an
+    // AWS API rather than from this repository: both are read off a
+    // `cloudformation:DescribeType` response, which for a tier-2 type includes
+    // THIRD-PARTY public-registry schemas. The only thing keeping a `|` out of
+    // them is the provider meta-schema's `^[A-Za-z0-9]{1,64}$` on property
+    // names — a constraint enforced remotely, by a service this repo does not
+    // control and cannot re-check. `tests/unit/scripts/table-cell-escape.test.ts`
+    // pins both sites by name for that reason.
     lines.push(
-      `| \`${c.typeName}\` | ${c.guarded ? 'yes' : '**no**'} | ${c.signals.join(', ')} | ${createOnly} |`
+      `| \`${escapeCell(c.typeName)}\` | ${c.guarded ? 'yes' : '**no**'} | ${c.signals.join(', ')} | ${escapeCell(createOnly)} |`
     );
   }
   lines.push('');

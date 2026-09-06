@@ -69,6 +69,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSy
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { githubTree, githubBlob } from './github-links.ts';
+import { escapeCell } from './markdown-table.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -770,7 +771,7 @@ function renderMarkdown(report: CoverageReport): string {
     lines.push('| Resource Type | Rationale |');
     lines.push('|---|---|');
     for (const e of report.allowListed) {
-      lines.push(`| \`${e.resourceType}\` | ${e.rationale} |`);
+      lines.push(`| \`${e.resourceType}\` | ${escapeCell(e.rationale)} |`);
     }
     lines.push('');
   }

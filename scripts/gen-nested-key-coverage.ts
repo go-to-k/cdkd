@@ -940,6 +940,7 @@ import ts from 'typescript-v6';
 // Same-directory `.ts` import: Node 24 native type-stripping resolves imports
 // literally when run via `node scripts/gen-nested-key-coverage.ts`.
 import { parseProviderSource } from './gen-property-coverage.ts';
+import { escapeCell } from './markdown-table.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -5996,7 +5997,7 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
     lines.push('| --- | --- | --- | --- |');
     for (const d of divergences) {
       lines.push(
-        `| \`${d.resourceType}\` | \`${d.nestedKey}\` | ${d.bucket} | ${d.detail ?? '—'} |`
+        `| \`${d.resourceType}\` | \`${d.nestedKey}\` | ${d.bucket} | ${escapeCell(d.detail ?? '—')} |`
       );
     }
     lines.push('');
@@ -6021,7 +6022,7 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
     lines.push('| Resource type | CFn nested key / path | Rationale |');
     lines.push('| --- | --- | --- |');
     for (const e of allowListed) {
-      lines.push(`| \`${e.resourceType}\` | \`${e.nestedKey}\` | ${e.rationale ?? ''} |`);
+      lines.push(`| \`${e.resourceType}\` | \`${e.nestedKey}\` | ${escapeCell(e.rationale ?? '')} |`);
     }
     lines.push('');
   }
@@ -6062,9 +6063,9 @@ function renderMarkdown(report: NestedKeyCoverageReport): string {
     lines.push('| --- | --- | --- | --- | --- |');
     for (const e of shapeHandled) {
       lines.push(
-        `| \`${e.resourceType}\` | \`${e.definition}\` | \`${e.nestedKey}\` | ${e.pass} | ${
+        `| \`${e.resourceType}\` | \`${e.definition}\` | \`${e.nestedKey}\` | ${e.pass} | ${escapeCell(
           e.sdkDetail ?? '—'
-        } |`
+        )} |`
       );
     }
     lines.push('');
