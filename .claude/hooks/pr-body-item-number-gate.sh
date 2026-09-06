@@ -124,7 +124,7 @@ extract_files() {
       next unless $v =~ s/^body=\@//;
       print "$v\n";
     }
-  '
+  ' 2>/dev/null
 }
 
 # Read a file's contents and emit only the lines (with line numbers,
@@ -222,7 +222,7 @@ find_offender() {
       print "$hit\n";
       last;
     }
-  '
+  ' 2>/dev/null
 }
 
 # Collect offenders: "<file>:<lineno>:<line>" entries, one per blocked
@@ -285,13 +285,6 @@ cmd_writes_path() {
     # could only ever match spellings that need no unquoting -- notably NOT
     # `> /a\ b/x.md`, which reopened the heredoc-write window for exactly the
     # backslash-escaped paths the flag side now reads.
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $cmd  = $ENV{CMD};
     my $want = $ENV{TARGET};
     exit 0 if line_writes($cmd, $want, 1);
@@ -309,13 +302,6 @@ cmd_replaces_path() {
     # could only ever match spellings that need no unquoting -- notably NOT
     # `> /a\ b/x.md`, which reopened the heredoc-write window for exactly the
     # backslash-escaped paths the flag side now reads.
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $cmd  = $ENV{CMD};
     my $want = $ENV{TARGET};
     exit 0 if line_writes($cmd, $want, 0);
@@ -336,13 +322,6 @@ heredoc_bodies_for() {
     # `$ENV{TARGET}` has already been through `gate_unq` and the retired
     # `(["\x27]?)$t\1` class could only match spellings that need no
     # unquoting -- notably NOT `> /a\ b/x.md`.
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $c = $ENV{CMD};
     my $want = $ENV{TARGET};
     my @lines = split /\n/, $c, -1;

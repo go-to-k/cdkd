@@ -1937,9 +1937,27 @@ split_parity() { # <name> <command>
     rm -f "$fallback"; return
   fi
   sed 's|if (split("ab", __probe, "") == 2.*|SPLIT_CHARS = 0|' "$lib" > "$fallback"
+  # BOTH awk programs, not just the segmenter. `strip_noncommand_spans` carries
+  # its own copy of the `split(s, arr, "")` fast path, and the library never
+  # calls it, so this fence -- whose stated job is that a CI awk taking the
+  # fallback is not running an untested matcher -- reached only half the code
+  # it names. Compared through `od` so a difference in whitespace or a NUL
+  # cannot read as equal.
   fast=$(gate_segments "$cmd" | od -An -c | tr -s ' ')
   slow=$(bash -c '. "$1"; gate_segments "$2"' _ "$fallback" "$cmd" | od -An -c | tr -s ' ')
+  fast_s=$(strip_noncommand_spans "$cmd" | od -An -c | tr -s ' ')
+  slow_s=$(bash -c '. "$1"; strip_noncommand_spans "$2"' _ "$fallback" "$cmd" | od -An -c | tr -s ' ')
   rm -f "$fallback"
+  if [ "$fast" != "$slow" ]; then
+    fail=$((fail + 1)); printf 'FAIL split parity (segments): %s\n' "$name"
+    fail_log+="FAIL split parity (segments): $name\n  command: $cmd\n"
+    return
+  fi
+  if [ "$fast_s" != "$slow_s" ]; then
+    fail=$((fail + 1)); printf 'FAIL split parity (strip): %s\n' "$name"
+    fail_log+="FAIL split parity (strip): $name\n  command: $cmd\n"
+    return
+  fi
   if [ "$fast" = "$slow" ]; then
     pass=$((pass + 1)); printf 'OK   split parity: %s\n' "$name"
   else
@@ -2007,6 +2025,14 @@ check 'a backslash-escaped paren does not end the span' 0 \
   "$COMMIT" 'echo "$(echo \) ; git commit -m x)"'
 check 'a backslash-escaped backtick does not end the span' 0 \
   "$COMMIT" 'echo "`echo \` ; git commit -m x`"'
+# An ANSI-C span is the OPPOSITE of a plain single-quoted one: inside `$'...'`
+# a backslash ESCAPES, so `\'` does NOT close it. Teaching close_paren that a
+# backslash is literal inside single quotes -- right for `'...'` -- opened this
+# one, and it is the rule the `$GW` prelude in the same library already states.
+# Measured on this shape: origin/main gated it, the fix for the plain case left
+# it OPEN, and the ANSI-C state closes it again.
+check 'an escaped quote inside an ANSI-C span does not end it' 0 \
+  "$COMMIT" "$(printf 'echo "$(printf $%sa\\%sb%s ; git commit -m x)"' "'" "'" "'")"
 # The control: a balanced span must still be seen, or the three above would be
 # satisfied by a matcher that simply matches everything.
 check 'a balanced substitution body is still seen' 0 \

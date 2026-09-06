@@ -70,6 +70,25 @@ FAIL=0
 # Real repos rather than mocks: the opt-in decision is exactly what
 # `git rev-parse --show-toplevel` reports, so mocking it would test nothing.
 TMPBASE=$(mktemp -d)
+
+# `HOOK_BASH=/bin/bash` runs the HOOK under that interpreter too, not just this
+# suite. Without it, `/bin/bash <suite>` measures the SUITE under 3.2 while the
+# subject keeps running whatever `bash` the shebang finds first on PATH --
+# Homebrew 5.x on a dev Mac -- so a 3.2 run reported a pass the hook never
+# earned. This gate gained new code in this change and had NO such run.
+#
+# The path is resolved ABSOLUTE first: `HOOK_BASH=bash` would make
+# `ln -sf bash <shim>/bash` point at itself, and every hook invocation would
+# then die on ELOOP -- a suite-wide red with a cause nowhere near the hook.
+if [ -n "${HOOK_BASH:-}" ]; then
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPBASE/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
 trap 'rm -rf "$TMPBASE"' EXIT
 TMPROOT="$TMPBASE/optin"
 NOOPTIN="$TMPBASE/no-optin"

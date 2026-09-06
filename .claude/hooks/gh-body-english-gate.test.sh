@@ -32,12 +32,14 @@
 #     file, with the English-heredoc twin as the polarity control.
 #   - FAILS CLOSED when `GATE_PERL_WORD` is present but does not COMPILE.
 #
-# MUTATION-PROBED rather than asserted, every number taken on the 129-case
-# suite:
+# MUTATION-PROBED rather than asserted, every number RE-taken on the 144-case
+# suite. The header carried 129/86/42/32 after the suite had grown to 144 --
+# stale tallies read as measured ones, so re-take them whenever a case is added,
+# not only when a fence changes:
 #
-#   always-`exit 0` stub                  fails 86   (nothing passes vacuously)
-#   always-`exit 2` stub                  fails 42   (nor blocks vacuously)
-#   `$GW` -> the retired class (below)    fails 32
+#   always-`exit 0` stub                  fails 95   (nothing passes vacuously)
+#   always-`exit 2` stub                  fails 48   (nor blocks vacuously)
+#   `$GW` -> the retired class (below)    fails 38
 #   `gate_perl_word_ok` -> always true    fails  1   -- the load-guard case
 #   short-flag `[=\s]*` -> `[=\s]+`       fails  4   -- the GLUED spellings
 #   arming grep back to `-F[[:space:]=]`  fails  2   -- exactly the two
@@ -699,8 +701,13 @@ gh issue create --title x --body-file $SPACED" 2
 # --- the quoted-value holes (2026-09-05) -------------------------------
 # Both were listed in this file's header as KNOWN LIMITS and both were live
 # bypasses of the English-only rule, so the limit line was a licence rather
-# than a boundary. Each blocking case below is rc=0 against the pre-fix hook
-# checked out of `origin/main`, with its plain-spelling twin at 2.
+# than a boundary. MOST blocking cases below are rc=0 against the pre-fix hook
+# checked out of `origin/main`, with the plain-spelling twin at 2 -- but not
+# all, and the blanket claim that used to stand here was wrong. Measured
+# against that hook, `trailing |` and `trailing &&` already gave rc=2: the old
+# class stopped at the metacharacter for its own reasons, so those two are
+# REGRESSION guards, not demonstrations of the hole. They are kept because the
+# new grammar has to stop there too, for a different reason.
 #
 # (A) A quoted `--body-file` path CONTAINING A SPACE. The old value class
 # `(["\x27]?)([^"\x27\s]+)\1` could not span the space, so NOTHING was

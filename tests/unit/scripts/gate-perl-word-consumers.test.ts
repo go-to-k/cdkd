@@ -47,13 +47,19 @@ function consumers(): string[] {
  * is unambiguous here because a literal single quote cannot appear inside a
  * bash single-quoted string.
  */
-function perlPrograms(source: string): string[] {
+function perlPrograms(source: string): { body: string; whole: string }[] {
   // `-\S*e\s` and not `-e\s`: the flag is routinely FUSED (`perl -0777 -ne`,
   // `perl -ne`), and requiring a standalone `-e` token silently matched 0 of
   // issue-dup-check's and issue-classification-label's programs -- the
   // no-prelude assertion below was vacuous for two of the five consumers.
-  const re = /perl\s+(?:-\S+\s+)*-\S*e\s+(?:"\$GATE_PERL_WORD")?'([\s\S]*?)'\s*2>\/dev\/null/g;
-  return [...source.matchAll(re)].map((m) => m[1]);
+  // ONE-LINE programs first. Without that alternative a `perl -pe '...'`
+  // whose program has no `2>/dev/null` swallowed everything down to the next
+  // terminator -- measured, one such helper produced a 7,914-character
+  // "program" spanning three real ones, and the offender indices this test
+  // prints named the wrong function.
+  const re =
+    /perl\s+(?:-\S+\s+)*-\S*e\s+(?:"\$GATE_PERL_WORD")?(?:'([^'\n]*)'|'([\s\S]*?)'\s*2>\/dev\/null)/g;
+  return [...source.matchAll(re)].map((m) => ({ body: m[1] ?? m[2] ?? '', whole: m[0] }));
 }
 
 describe('GATE_PERL_WORD consumers', () => {
@@ -94,23 +100,33 @@ describe('GATE_PERL_WORD consumers', () => {
 });
 
 describe('perl programs are self-contained', () => {
-  it('every program calling line_writes also defines it and $want', () => {
+  it('every program calling line_writes reaches it through the prelude', () => {
+    // `line_writes` USED to be defined inside each program, and this fence
+    // required that. Nine byte-identical copies shipped that way -- in a file
+    // whose own comment called a private copy "the shape this whole change
+    // exists to retire" -- so it moved into `GATE_PERL_WORD`, and the
+    // invariant moved with it: a program may no longer define it privately,
+    // and must interpolate the prelude that does.
     const offenders: string[] = [];
     for (const f of consumers()) {
       const src = readFileSync(join(HOOKS, f), 'utf8');
-      perlPrograms(src).forEach((prog, i) => {
-        if (!prog.includes('line_writes(')) return;
-        if (!prog.includes('sub line_writes')) offenders.push(`${f} program #${i}: no sub line_writes`);
-        if (!prog.includes('my $want')) offenders.push(`${f} program #${i}: no $want`);
-        // `$GW` and `gate_unq` come from the prelude, which is interpolated at
-        // the SHELL level and so is not inside `prog`. A program using them
-        // without the prelude marker is the same silent-death shape.
-        if (prog.includes('$GW') || prog.includes('gate_unq(')) {
-          const idx = src.indexOf(prog);
-          const head = src.slice(Math.max(0, idx - 60), idx);
-          if (!head.includes('"$GATE_PERL_WORD"')) {
-            offenders.push(`${f} program #${i}: uses $GW/gate_unq without the prelude`);
+      perlPrograms(src).forEach(({ body, whole }, i) => {
+        // The prelude marker is interpolated at the SHELL level, so it is part
+        // of the INVOCATION and not of the program body. Looking for it in the
+        // 60 characters BEFORE the match found it never -- the match already
+        // starts at `perl`, and the marker sits between `-e` and the quote.
+        const hasPrelude = whole.includes('"$GATE_PERL_WORD"');
+        if (body.includes('line_writes(')) {
+          if (body.includes('sub line_writes')) {
+            offenders.push(`${f} program #${i}: defines line_writes privately again`);
           }
+          if (!body.includes('my $want')) offenders.push(`${f} program #${i}: no $want`);
+          if (!hasPrelude) {
+            offenders.push(`${f} program #${i}: calls line_writes without the prelude`);
+          }
+        }
+        if ((body.includes('$GW') || body.includes('gate_unq(')) && !hasPrelude) {
+          offenders.push(`${f} program #${i}: uses $GW/gate_unq without the prelude`);
         }
       });
     }

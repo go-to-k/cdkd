@@ -136,6 +136,12 @@ READ_RE='^(grep|rg|cat|less|head|tail|ls|wc|echo|sed[[:space:]]+-n|git[[:space:]
 # test as the last statement of a loop body is the shape that aborts the whole
 # construct under a caller's `set -e`, and this file documents that class for
 # `gate_segments` itself.
+# A whole-command `grep` PRE-FILTER before this loop was proposed and TRIED,
+# on the reasoning that `gate_segments` forks awk and this hook fires on every
+# Bash call. It measured NOTHING and was removed rather than shipped with a
+# rationale that does not hold: with and without it, `ls -la` and a 1 MB chain
+# both cost ~0.014s, and no shape moved the number -- plain chain, quote-heavy,
+# substitution-heavy, one 50 KB quoted argument, 1200 heredocs, all ~0.014s.
 armed=0
 while IFS= read -r seg; do
   if ! printf '%s' "$seg" | grep -qE "$ARM_RE"; then

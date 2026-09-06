@@ -62,6 +62,25 @@ FAIL=0
 #   $TMPROOT  -- a git repo carrying `.markgate.yml`, so the gate fires
 #   $NOOPTIN  -- a git repo without it, so the gate must stay silent
 TMPBASE=$(mktemp -d)
+
+# `HOOK_BASH=/bin/bash` runs the HOOK under that interpreter too, not just this
+# suite. Without it, `/bin/bash <suite>` measures the SUITE under 3.2 while the
+# subject keeps running whatever `bash` the shebang finds first on PATH --
+# Homebrew 5.x on a dev Mac -- so a 3.2 run reported a pass the hook never
+# earned. This gate gained new code in this change and had NO such run.
+#
+# The path is resolved ABSOLUTE first: `HOOK_BASH=bash` would make
+# `ln -sf bash <shim>/bash` point at itself, and every hook invocation would
+# then die on ELOOP -- a suite-wide red with a cause nowhere near the hook.
+if [ -n "${HOOK_BASH:-}" ]; then
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPBASE/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
 trap 'rm -rf "$TMPBASE"' EXIT
 TMPROOT="$TMPBASE/optin"
 NOOPTIN="$TMPBASE/no-optin"
@@ -381,9 +400,24 @@ else echo "FAIL: non-Bash tool passes (exit ${rc:-0})"; FAIL=$((FAIL + 1)); fi
 # NOTHING. It fails towards a false BLOCK rather than a bypass, which is why it
 # went unnoticed while the other five were fixed -- and why it needs a case: the
 # claim in this file is that the class is defined ONCE.
-run "quoted -R value containing a space does not derail the gate" \
+#
+# Asserted on the ARGV, not on the exit code: the pre-fix gate extracted
+# NOTHING from a spaced `-R` value and refused anyway, so an exit-code case is
+# green against the bug. What actually changed is WHICH repo gh is asked about,
+# and this suite already owns the recorder that can see it.
+: > "$TMPBASE/calls.log"
+GH_CALL_LOG="$TMPBASE/calls.log" ISSUE_1="bug" \
+  run "quoted -R value containing a space does not derail the gate" \
   "gh issue edit 1 -R \"owner/repo name\" --body 'Severity: high -- x
 Effort: small (S)'" "$TMPROOT" 2
+if grep -q -- '-R owner/repo name' "$TMPBASE/calls.log"; then
+  echo "PASS: edit: gh was asked about the SPACED -R repo, not a truncation of it"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: edit: the spaced -R value did not reach gh"
+  sed 's/^/      /' "$TMPBASE/calls.log"
+  FAIL=$((FAIL + 1))
+fi
 
 # --- the GATE_PERL_WORD load guard, fenced ----------------------------------
 # The cheap `[ -z ]` half cannot see a prelude that is PRESENT but does not

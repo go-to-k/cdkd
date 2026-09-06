@@ -943,8 +943,8 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 48; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
-                              //  per-file cap again -- at least the seventh split off this one
+const CORPUS_FILE_COUNT = 48; // + hooks-flag-value-class.md: hooks.md crossed the
+                              //  per-file cap again -- at least the EIGHTH split off this one
                               //  file, counting the six satellites it already points at, so do not
                               //  read the ordinals in the older entries below as a running total.
                               //  The comment above this file's hooks.md row records the decision

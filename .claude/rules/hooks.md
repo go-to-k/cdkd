@@ -266,7 +266,7 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   only command, which never even ARMED; a path followed by an unquoted `;`;
   and ANSI-C `$'…'`. A limit line is not a licence.
   No bypass marker — translate the text. Smoke test:
-  `gh-body-english-gate.test.sh` (129 cases, bash 5.x AND macOS 3.2;
+  `gh-body-english-gate.test.sh` (144 cases, bash 5.x AND macOS 3.2;
   `HOOK_BASH=<path>` runs the HOOK under that bash too). The
   japanese-in-the-PATH pass case is LOAD-BEARING (fails if the extraction is
   replaced by a whole-command scan), paired with a
@@ -274,8 +274,8 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   Review-round regressions are each verified red against the corresponding
   PRE-FIX hook (16 in the latest round alone); each Unicode range covered in
   ISOLATION; plus known-limit, quoted-body false-positive and registration
-  Re-probed on the 129-case suite: `exit 0` stub 86, `exit 2` 42, `$GW`
-  reverted 32. Per-fence tallies live in the suite header.
+  Re-probed on the 144-case suite: `exit 0` stub 95, `exit 2` 48, `$GW`
+  reverted 38. Per-fence tallies live in the suite header.
 
 - **`.claude/hooks/gated-command-preamble-gate.sh`** blocks a Bash call that
   runs a SIDE-EFFECTING preamble in an earlier segment than a GATED command
@@ -405,7 +405,9 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   PreToolUse time the body file does not exist yet — so an UNREADABLE body
   file (and only then) falls back to scanning the whole command with the
   ANCHORED marker (heredoc bodies have real line structure). Smoke test:
-  `issue-dup-check-gate.test.sh` (60 cases, bash 5.x + 3.2 — every
+  `issue-dup-check-gate.test.sh` (60 cases, bash 5.x + 3.2 — the 3.2 half runs
+  the HOOK under it too, via the `HOOK_BASH` shim, which this suite lacked
+  until 2026-09-06 — every
   `--body-file` spelling both directions, the mid-sentence marker,
   unreadable-path and unexpanded-`$VAR` blocks, the `cd` chain, ungated
   verbs, the `gh api` mint, subshell / `-R` / substitution spellings,
@@ -452,9 +454,12 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   SPACE, and the glued `-F<path>`, extracted nothing, the precedence chain
   ended at the whole SEGMENT — which carries the PATH, not the body — and NO
   label was demanded. Measured rc=0 where the plain spelling gave 2. Smoke
-  test: `issue-classification-label-gate.test.sh` (46 cases, bash 5.x + 3.2).
-  Re-probed on the 46-case suite: `exit 0` stub 18, `exit 2` 43, `$GW`
-  reverted 38. Per-fence tallies live in the suite header.
+  test: `issue-classification-label-gate.test.sh` (47 cases, bash 5.x + 3.2 --
+  the 3.2 half runs the HOOK under it too, via the `HOOK_BASH` shim; without
+  that shim the suite ran under 3.2 while the subject kept using whatever
+  `bash` came first on PATH, and the hook was invoked under it 0 times).
+  Re-probed on the 47-case suite: `exit 0` stub 18, `exit 2` 43, `$GW`
+  reverted 39. Per-fence tallies live in the suite header.
 
 - **`.claude/hooks/issue-deferral-criteria-gate.sh`** blocks `gh issue create`
   (and the `gh api repos/<o>/<r>/issues` mint) when the body's
@@ -723,8 +728,12 @@ refuses nothing; declared unexercisable in `unresolved-target-class.test.sh`.
 Smoke test: `integ-stale-base-detector.test.sh` (22 cases, real git fixtures,
 honouring `HOOK_BASH` so the HOOK runs under 3.2 — it ignored it at first, and
 `HOOK_BASH=/nonexistent` still reported 11/11). Probed, all re-taken
-2026-09-05 with BOTH halves of each tally: silent stub 9 pass / 10 fail,
-alarming-arm-only 8 / 11, both-arms 10 / 9; 3-dot-to-2-dot fails exactly the
+2026-09-06 with BOTH halves of each tally: silent stub 11 pass / 11 fail,
+`in_scope` forced true 20 / 2, forced false 20 / 2. The numbers here said
+9/10, 8/11 and 10/9 — none of which sums to the 22 cases named one sentence
+earlier, which is the cheapest way to catch a stale tally: read it against the
+case count beside it. The SUITE header had the right ones throughout, so prefer
+it; 3-dot-to-2-dot fails exactly the
 lane-carries-its-own-commit case, which the suite could not see until that
 fixture existed (it survived at 11/11 before); read-verb test deleted fails
 exactly the 4 silence cases; read-verb test back to PER-COMMAND fails exactly

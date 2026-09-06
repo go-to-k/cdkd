@@ -287,10 +287,21 @@ gate_segments_raw() {
         # NOT fall back harmlessly: `extra` is populated only when a closer is
         # found, so the body was never scanned. Measured, that made
         # `echo "$(printf \047a\\\047 ; git commit -m x)"` UNGATED.
+        # ... but an ANSI-C span is the OPPOSITE: in `$\047...\047` a backslash
+        # ESCAPES, so `\\\047` does NOT close it. Tracked as its own state
+        # rather than folded into the plain single-quote arm, which read the
+        # escaped quote as the closer, left `iq` open past the real one, and
+        # made the same shape ungated the other way round:
+        #   echo "$(printf $\047a\\\047b\047 ; git commit -m x)"   ungated
+        # This is the rule the `$GW` prelude in this same file already states;
+        # the two now agree.
+        if (iq == "A") { if (c == "\\") { j++; continue }
+                         if (c == "\047") iq = ""; continue }
         if (iq == "\047") { if (c == iq) iq = ""; continue }
         if (c == "\\") { j++; continue }
         if (iq != "") { if (c == iq) iq = ""; continue }
-        if (c == "\"" || c == "\047") { iq = c; continue }
+        if (c == "\"") { iq = c; continue }
+        if (c == "\047") { iq = (j > 1 && substr(line, j - 1, 1) == "$") ? "A" : "\047"; continue }
         if (c == "(") depth++
         else if (c == ")") { depth--; if (depth == 0) return j }
       }
@@ -1488,6 +1499,24 @@ GATE_PERL_WORD='
     }
     return $o;
   }
+  # `line_writes($line, $want, $any)` -- does this line REDIRECT to $want?
+  # `$any` also counts APPENDS (`>>`, `tee -a`); without it only TRUNCATING
+  # writes count, which is the difference between "this command supersedes the
+  # file on disk" and "it merely adds to it".
+  #
+  # Shared rather than inlined. The three gates that read a redirect target
+  # each carried a BYTE-IDENTICAL private copy, three times over -- and one of
+  # those copies carries a comment saying that an eighth private copy of a
+  # matcher "is the shape this whole change exists to retire". Nine shipped.
+  # Here it also inherits `gate_perl_word_ok`s compile probe, which a private
+  # copy never did.
+  sub line_writes {
+    my ($l, $want, $any) = @_;
+    my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                  : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+    while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+    return 0;
+  }
   sub gate_unq {
     my ($t) = @_;
     pos($t) = 0;
@@ -1572,30 +1601,35 @@ gate_perl_word_ok() {
   #   2  a BACKSLASH-escaped space
   #   3  an ANSI-C span, decoded rather than taken literally
   #   4  the metacharacter STOP (the word must not swallow the `;`)
-  gate_pw_probe_() {
+  _gate_pw_probe() {
     printf '%s' "$2" | perl -0777 -ne "$GATE_PERL_WORD"'
       while (/--body-file[=\s]+($GW)/g) { print gate_unq($1) }' 2>/dev/null
   }
-  [ "$(gate_pw_probe_ q 'x --body-file "/a b/p.md"')" = '/a b/p.md' ] || return 1
-  [ "$(gate_pw_probe_ b 'x --body-file /a\ b/p.md')"  = '/a b/p.md' ] || return 1
-  [ "$(gate_pw_probe_ a "x --body-file \$'/a\\'b/p.md' rest")" = "/a'b/p.md" ] || return 1
-  [ "$(gate_pw_probe_ m 'x --body-file /a/p.md; echo hi')" = '/a/p.md' ] || return 1
+  [ "$(_gate_pw_probe q 'x --body-file "/a b/p.md"')" = '/a b/p.md' ] || return 1
+  [ "$(_gate_pw_probe b 'x --body-file /a\ b/p.md')"  = '/a b/p.md' ] || return 1
+  [ "$(_gate_pw_probe a "x --body-file \$'/a\\'b/p.md' rest")" = "/a'b/p.md" ] || return 1
+  [ "$(_gate_pw_probe m 'x --body-file /a/p.md; echo hi')" = '/a/p.md' ] || return 1
   # 5  a MID-WORD ANSI-C span. Added after a review measured the four arms above
   #    certifying a one-revision-STALE library -- the exact case the guard was
   #    written for. The bare-run arm used to eat the `$` sigil greedily, so the
   #    ANSI-C arm fired only at word position 0; every arm above sits at
   #    position 0 and none of them could see it.
-  [ "$(gate_pw_probe_ w "x --body-file /a/b\$'\\x20'c.md")" = '/a/b c.md' ] || return 1
+  [ "$(_gate_pw_probe w "x --body-file /a/b\$'\\x20'c.md")" = '/a/b c.md' ] || return 1
   # 6  BYTE FIDELITY. `gate_unq` must return the byte string bash would pass;
   #    decoding inside it corrupted every path carrying a byte >= 0x80 (measured
   #    128 of 255) while leaving all five assertions above green, because each of
   #    them is pure ASCII.
-  [ "$(gate_pw_probe_ y "x --body-file \$'/a/\\xc3\\xa9.md'")" = "$(printf '/a/\303\251.md')" ] || return 1
+  [ "$(_gate_pw_probe y "x --body-file \$'/a/\\xc3\\xa9.md'")" = "$(printf '/a/\303\251.md')" ] || return 1
   # 7  a SINGLE-quoted span containing a space. Arm 1 covers the double-quoted
   #    one, and deleting the single-quote alternative from `$GW` left all six
   #    arms above green while `--body-file '/a b/p.md'` extracted NOTHING --
   #    the same stale-sibling fail-open shape, one quote character over.
-  [ "$(gate_pw_probe_ s "x --body-file '/a b/p.md'")" = '/a b/p.md' ] || return 1
+  [ "$(_gate_pw_probe s "x --body-file '/a b/p.md'")" = '/a b/p.md' ] || return 1
+  # A function defined INSIDE a function is global in bash, so this helper
+  # outlived the probe that needed it and sat in every hook's namespace for the
+  # rest of the process. Unset rather than moved to file scope: it exists only
+  # for these nine assertions.
+  unset -f _gate_pw_probe
   return 0
 }
 

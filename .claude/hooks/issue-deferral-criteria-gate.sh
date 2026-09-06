@@ -453,13 +453,6 @@ cmd_writes() { # <path as the command spells it>
     # `$ENV{TARGET}` has already been through `gate_unq` and the retired
     # `(["\x27]?)$t\1` class could only match spellings that need no
     # unquoting -- notably NOT `> /a\ b/x.md`.
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $c = $ENV{CMD};
     my $want = $ENV{TARGET};
     # The trailing class covers the TIGHT spellings -- `>f<<EOF`, `>f;`,
@@ -477,13 +470,6 @@ cmd_replaces() { # <path as the command spells it>
     # `$ENV{TARGET}` has already been through `gate_unq` and the retired
     # `(["\x27]?)$t\1` class could only match spellings that need no
     # unquoting -- notably NOT `> /a\ b/x.md`.
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $c = $ENV{CMD};
     my $want = $ENV{TARGET};
     exit 0 if line_writes($c, $want, 0);
@@ -505,13 +491,6 @@ heredoc_bodies_for() { # <path as the command spells it>
     # `$ENV{TARGET}` has already been through `gate_unq` and the retired
     # `(["\x27]?)$t\1` class could only match spellings that need no
     # unquoting -- notably NOT `> /a\ b/x.md`.
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $c = $ENV{CMD};
     my $want = $ENV{TARGET};
     my @lines = split /\n/, $c, -1;

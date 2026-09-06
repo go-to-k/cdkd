@@ -209,13 +209,6 @@ cmd_writes() {
     # `$ENV{TARGET}` has already been through `gate_unq` and the retired
     # `(["\x27]?)$t\1` class could only match spellings that need no
     # unquoting -- notably NOT `> /a\ b/x.md`.
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $c = $ENV{CMD};
     my $want = $ENV{TARGET};
     # `(?:\s|$)` alone missed `>f<<EOF` -- the TIGHT spelling of the very shape
@@ -235,19 +228,14 @@ cmd_replaces() {
     # the backslash-escaped paths this PR taught the flag side to read
     # (measured: a heredoc writing Japanese to a backslash-escaped path over a
     # stale English file on disk gave rc=0; the quoted spelling gave 2).
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $c = $ENV{CMD};
     my $want = $ENV{TARGET};
-    # Through the shared `line_writes`, like its two siblings. It is
-    # behaviourally identical spelled inline, and that is exactly why it must
-    # not be: an eighth private copy of a matcher is the shape this whole
-    # change exists to retire, and it is the copy that will drift.
+    # Through the shared `line_writes` in the prelude, like its two siblings.
+    # It is behaviourally identical spelled inline, and that is exactly why it
+    # must not be: a private copy of a matcher is the shape this whole change
+    # exists to retire, and it is the copy that will drift. This file shipped
+    # THREE such copies while carrying that sentence, and the two sibling gates
+    # three each -- nine byte-identical spellings of six lines.
     exit 0 if line_writes($c, $want, 0);
     exit 1;
   ' 2>/dev/null
@@ -268,13 +256,6 @@ heredoc_bodies_for() {
     # the backslash-escaped paths this PR taught the flag side to read
     # (measured: a heredoc writing Japanese to a backslash-escaped path over a
     # stale English file on disk gave rc=0; the quoted spelling gave 2).
-    sub line_writes {
-      my ($l, $want, $any) = @_;
-      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
-                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
-      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
-      return 0;
-    }
     my $c = $ENV{CMD};
     my $want = $ENV{TARGET};
     my @lines = split /\n/, $c, -1;
