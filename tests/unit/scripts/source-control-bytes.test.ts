@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
@@ -10,15 +10,38 @@ import {
 } from '../../../scripts/check-source-control-bytes.js';
 
 /**
- * Regression guard for issue #1587 — a committed raw NUL makes a source file
- * invisible to every grep/rg-based audit. See
- * `scripts/check-source-control-bytes.ts` for the measured blast radius.
+ * Regression guard for issue #1587 — a raw NUL makes a source file invisible to
+ * every grep/rg-based audit. See `scripts/check-source-control-bytes.ts` for the
+ * measured blast radius.
+ *
+ * The population is the WORKING TREE, not the committed tree (issue #2696): a
+ * file a session has just written but not yet committed is exactly where an
+ * authoring-tool encoding artifact lands, and scanning only tracked files hid
+ * such a byte until the commit that added it (measured 2026-09-06: a raw NUL at
+ * offset 6547 in an untracked test file cleared `vp check --fix`, `vp run
+ * check`, `vp run typecheck:test`, `vp run build` and a full 910-file
+ * `vp test run`).
  */
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 
 function trackedFiles(): string[] {
   return execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean);
+}
+
+/**
+ * Untracked-but-not-ignored files — exactly the set `git status --porcelain`
+ * reports as `??`. `--exclude-standard` is what keeps `node_modules/`, `dist/`
+ * and every other `.gitignore` entry out, so the sweep needs no ignore list of
+ * its own.
+ */
+function untrackedFiles(): string[] {
+  return execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  })
     .split('\0')
     .filter(Boolean);
 }
@@ -151,50 +174,59 @@ describe('describeFinding', () => {
  * is the repo's "a checker must prove it SEES its input" rule failing on this
  * checker's own test.
  */
-function sweepTree(): { offenders: string[]; read: string[] } {
+function sweepTree(): { offenders: string[]; tracked: string[]; untracked: string[] } {
   const offenders: string[] = [];
-  const read: string[] = [];
+  const read = { tracked: [] as string[], untracked: [] as string[] };
 
-  for (const path of trackedFiles()) {
-    if (isBinaryPath(path)) continue;
-    const full = join(REPO_ROOT, path);
-    // `git ls-files` lists submodule gitlinks and files a checkout may omit.
-    let stat;
-    try {
-      stat = statSync(full);
-    } catch {
-      continue;
-    }
-    if (!stat.isFile()) continue;
+  // Two populations, ONE loop and ONE set of filters — the untracked half is a
+  // widening of who is listed, never a second classifier. `read` stays SPLIT
+  // because the floors below are per-population: folding the two into one count
+  // would let untracked files top up a tracked floor that had collapsed.
+  for (const [origin, paths] of [
+    ['tracked', trackedFiles()],
+    ['untracked', untrackedFiles()],
+  ] as const) {
+    for (const path of paths) {
+      if (isBinaryPath(path)) continue;
+      const full = join(REPO_ROOT, path);
+      // `git ls-files` lists submodule gitlinks and files a checkout may omit.
+      let stat;
+      try {
+        stat = statSync(full);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile()) continue;
 
-    // Cap per file. An unlisted GENUINELY binary file (someone commits a
-    // .jar / .bin) is the designed "fails loudly" path — but uncapped it
-    // yields ~1 finding per byte, so a 10 MB asset would build millions of
-    // strings for vitest to diff. That is an OOM, not a loud message.
-    const findings = findControlBytes(readFileSync(full));
-    read.push(path);
-    for (const finding of findings.slice(0, 5)) {
-      offenders.push(describeFinding(path, finding));
-    }
-    if (findings.length > 5) {
-      offenders.push(`${path}: ...and ${findings.length - 5} more control bytes`);
+      // Cap per file. An unlisted GENUINELY binary file (someone commits a
+      // .jar / .bin) is the designed "fails loudly" path — but uncapped it
+      // yields ~1 finding per byte, so a 10 MB asset would build millions of
+      // strings for vitest to diff. That is an OOM, not a loud message.
+      const findings = findControlBytes(readFileSync(full));
+      read[origin].push(path);
+      for (const finding of findings.slice(0, 5)) {
+        offenders.push(describeFinding(path, finding));
+      }
+      if (findings.length > 5) {
+        offenders.push(`${path}: ...and ${findings.length - 5} more control bytes`);
+      }
     }
   }
 
-  return { offenders, read };
+  return { offenders, ...read };
 }
 
-describe('the committed tree', () => {
-  it('has no stray control bytes in any tracked text file', () => {
+describe('the working tree', () => {
+  it('has no stray control bytes in any text file, tracked or untracked', () => {
     expect(sweepTree().offenders).toEqual([]);
   });
 
-  it('actually READ a realistic number of files, so a broken sweep cannot pass vacuously', () => {
+  it('actually READ a realistic number of TRACKED files, so a broken sweep cannot pass vacuously', () => {
     // Banded against the ~3344 actually read. A loose `> 500` floor was NOT
     // enough: adding `.ts` + `.md` to BINARY_EXTENSIONS neuters the check over
     // 1648 files and still leaves ~1695, which would clear it. The
     // per-extension floors below are what make that specific neuter fail.
-    expect(sweepTree().read.length).toBeGreaterThan(2500);
+    expect(sweepTree().tracked.length).toBeGreaterThan(2500);
   });
 
   it.each([
@@ -202,8 +234,8 @@ describe('the committed tree', () => {
     ['.json', 800],
     ['.sh', 200],
     ['.md', 100],
-  ])('actually READ the %s files (floor %i), so exempting them by extension fails', (ext, floor) => {
-    const read = sweepTree().read.filter((p) => p.endsWith(ext));
+  ])('actually READ the tracked %s files (floor %i), so exempting them by extension fails', (ext, floor) => {
+    const read = sweepTree().tracked.filter((p) => p.endsWith(ext));
     expect(read.length).toBeGreaterThan(floor);
   });
 
@@ -220,6 +252,75 @@ describe('the committed tree', () => {
     // it catches a re-introduction in ANY spelling.
     expect(source).toMatch(/join\(\s*['"]\\0['"]\s*\)/);
     expect(source.includes('\u0000')).toBe(false);
+  });
+});
+
+/**
+ * The untracked half's own floor.
+ *
+ * A COUNT is the wrong instrument here, and it would be flaky in the dangerous
+ * direction: the untracked set is whatever a developer happens to have lying
+ * about, and on a fresh checkout it is EMPTY (measured 0 on this tree), so
+ * `untracked.length > N` either fails on a clean checkout or, at N = 0, IS the
+ * vacuous pass this widening exists to remove. What is invariant is the
+ * RELATION — whatever git reports as untracked-and-not-ignored, the sweep
+ * reaches, reads and judges. So the floor SEEDS its own input and requires the
+ * sweep to name that file: `.claude/rules/testing.md`'s "a checker must prove it
+ * sees its input" and "must also prove it FAILS — against real code", written as
+ * a test instead of a by-hand check.
+ */
+describe('the untracked half of the working tree', () => {
+  // A repo-root dotfile whose extension matches no `.gitignore` rule and no
+  // BINARY_EXTENSIONS entry. `*.tmp`, `.commit-msg*.txt`, `.pr-body*.txt` and
+  // `.gh-body*.txt` ARE ignored here, and an ignored probe proves nothing — the
+  // `untracked` assertion below is what catches that, since an ignored file
+  // never enters the population at all. The pid keeps two concurrent vitest
+  // processes off the same path.
+  const probeName = `.source-control-bytes-probe-${process.pid}.probe`;
+
+  function withProbe(contents: string, body: (relative: string) => void): void {
+    const absolute = join(REPO_ROOT, probeName);
+    writeFileSync(absolute, contents);
+    try {
+      body(probeName);
+    } finally {
+      rmSync(absolute, { force: true });
+    }
+    // Restore, asserted OUTSIDE the finally so a failing body reports its own
+    // failure first. A leaked probe would red the tree-wide sweep above on
+    // every later run — this file is its own subject.
+    expect(existsSync(absolute)).toBe(false);
+  }
+
+  it('READS a freshly written untracked file and REPORTS a raw NUL in it', () => {
+    withProbe("const sep = '\u0000';\n", (relative) => {
+      const { offenders, tracked, untracked } = sweepTree();
+      // Receipt 1 — git really classifies the probe as untracked-and-not-ignored.
+      expect(untracked).toContain(relative);
+      // Receipt 2 — and it is NOT reachable through the tracked half, so the
+      // verdict below can only come from the population this widening added.
+      expect(tracked).not.toContain(relative);
+      // Receipt 3 — the verdict names THAT file, at THAT offset: "const sep = '"
+      // is 13 bytes, so the NUL sits at offset 13 on line 1.
+      expect(offenders.filter((o) => o.startsWith(`${relative}:`))).toEqual([
+        describeFinding(relative, { byte: 0, offset: 13, line: 1 }),
+      ]);
+    });
+  });
+
+  it('reads a CLEAN untracked file without reporting it', () => {
+    // The other direction. Without it, a sweep that flagged everything it found
+    // untracked would satisfy the case above.
+    withProbe("const sep = '\\0';\n", (relative) => {
+      const { offenders, untracked } = sweepTree();
+      expect(untracked).toContain(relative);
+      // Scoped to THIS file, not `offenders` as a whole: the tree-wide verdict
+      // is the case above's job, and asserting it again here made a stray
+      // control byte ANYWHERE red this case with a message naming a different
+      // file (measured while live-testing go-to-k/cdkd#2696 with a seeded
+      // untracked NUL). A discrimination case must fail for its own reason.
+      expect(offenders.filter((o) => o.startsWith(`${relative}:`))).toEqual([]);
+    });
   });
 });
 

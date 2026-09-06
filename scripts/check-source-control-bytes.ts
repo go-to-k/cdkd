@@ -1,5 +1,6 @@
 /**
- * Classifier for stray control bytes in committed TEXT files (issue #1587).
+ * Classifier for stray control bytes in the working tree's TEXT files
+ * (issue #1587), tracked and untracked alike (issue #2696).
  *
  * A raw NUL (U+0000) written literally into a source file — rather than as the
  * `\0` escape — is valid in a JS/TS string literal and behaves identically at

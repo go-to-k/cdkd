@@ -1,8 +1,8 @@
 # Normalize line endings to LF on checkout for all text files (issue #1592).
-# check-source-control-bytes.ts (#1587) REJECTS a raw CR in tracked text
-# files, and CI runs on ubuntu-latest — without this rule a contributor on
-# Windows with core.autocrlf=true produces CRLF working files and hits a
-# tree-wide checker failure as the first signal. text=auto lets git keep
+# check-source-control-bytes.ts (#1587) REJECTS a raw CR in the working
+# tree's text files, and CI runs on ubuntu-latest — without this rule a
+# contributor on Windows with core.autocrlf=true produces CRLF working files
+# and hits a tree-wide checker failure as the first signal. text=auto lets git keep
 # detecting binaries; the tree carried zero CR bytes when this landed, so
 # the rule changes no existing content.
 * text=auto eol=lf
