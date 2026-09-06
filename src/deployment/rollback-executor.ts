@@ -1443,11 +1443,32 @@ async function resolveLeafByRegion(
  * writer is one of only two that can honestly claim it.
  *
  * Using `STATE_SOURCED_READBACK_RULES` here reads plausible and is wrong in the
- * quiet direction: it turns positional array descent off. Since issue #1915 a
- * `Tags[]` / ECS `Environment[]` element is reached by KEYED descent either
- * way, so the concrete loss is narrower than it was — it is a list whose
- * elements carry no `Name` / `Key` identity, which only positional descent can
- * walk.
+ * quiet direction: it turns BLIND positional array descent off. BLIND is
+ * load-bearing, and an earlier revision of this paragraph omitted it — the
+ * concrete loss is narrower than "positional descent is off" makes it sound,
+ * by TWO mechanisms rather than one:
+ *
+ *  - Since issue #1915 a `Tags[]` / ECS `Environment[]` element is reached by
+ *    the order-independent KEYED descent either way.
+ *  - Since issue #2012 an UNKEYED list is reached too, under corroboration.
+ *    That is not a general relaxation: swapping this constant in would satisfy
+ *    all three conjuncts of `isReadbackProjectedFromState`
+ *    (`trustAnyExpression && !descendArrays && sourceIsSameGeneration`), which
+ *    ARMS `refuseUncertifiedReadbackPositions`, and its unkeyed arm walks
+ *    element i against element i whenever `unkeyedArrayPairsByAnchors`
+ *    corroborates the alignment (index counts match; every position whose
+ *    SOURCE subtree carries no dynamic reference is deep-equal on both sides;
+ *    every reference-bearing element carries a distinguishing anchor of its own
+ *    or, being a bare reference leaf, leans on the array's literal frame; and
+ *    no two reference-bearing elements share an order-insensitive anchor
+ *    signature).
+ *
+ * So the residual loss is narrower again: an unkeyed list whose positions ALSO
+ * fail to corroborate. The CONCLUSION is unchanged — `STATE_DERIVED_RULES` is
+ * still right here, for the reason one paragraph up (the bag was produced by
+ * resolving the source, so the two correspond positionally by construction and
+ * need no corroboration to say so). What changes is only how much a reader
+ * should think the alternative costs (issue #2691).
  *
  * No-op when the op resolved no secret.
  */

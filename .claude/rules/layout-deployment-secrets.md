@@ -187,9 +187,11 @@ Index of every area: [code-layout.md](code-layout.md).
     - `descendArrays` follows the BAG's provenance: a bag produced BY resolving
       the source (`TEMPLATE_DERIVED_RULES` / `STATE_DERIVED_RULES`) is walked
       POSITIONALLY (resolution preserves structure), while an AWS readback may
-      be REORDERED (the reason `drift-normalize.ts` exists) — positional
+      be REORDERED (the reason `drift-normalize.ts` exists) — BLIND positional
       descent would write an expression onto the WRONG element and leave the
-      real secret in plaintext. Since issue #1915 every kind FIRST tries a
+      real secret in plaintext (BLIND because, since #2012, a CORROBORATED
+      positional walk is available on the readback paths; see the anchor-pass
+      bullet below). Since issue #1915 every kind FIRST tries a
       KEYED descent pairing elements by an identity field (`Name` / `Key`)
       with uniqueness required on BOTH sides; a key that is not really an
       identity fails uniqueness and refuses the WHOLE array rather than
@@ -280,9 +282,15 @@ Index of every area: [code-layout.md](code-layout.md).
     see: `cdkd state refresh-observed` (`src/cli/commands/state.ts`), which
     reached this module along NO path at all (issue #1926). Its readback is
     the DECRYPTED value for any resource deployed from a secret reference and
-    its secrets map is EMPTY by construction — the #1900 shape: the PATH pass
-    carries it alone, positioned against the record's own `properties` under
-    `STATE_SOURCED_READBACK_RULES`, inheriting #1915's keyed array descent.
+    its secrets map is EMPTY by construction — the #1900 shape, positioned
+    against the record's own `properties` under
+    `STATE_SOURCED_READBACK_RULES`. THREE mechanisms carry it, not one, and
+    the source comment (`src/cli/commands/state.ts`) names all three: the PATH
+    pass with #1915's keyed array descent; #2012's corroborated positional walk
+    (`unkeyedArrayPairsByAnchors`) for a list with no identity key; and, because
+    the map is empty here BY CONSTRUCTION, the DERIVED NEEDLES
+    `deriveReadbackNeedles` learns from the positions that pass certified —
+    which only runs on an empty map, so this site is the one where they apply.
   - **`refuseUncertifiedReadbackPositions`** closes the MIXED-leaf row
     (`postgres://u:{{resolve:...}}@h`, an `Fn::Join` around
     `secretValueFromJson`) on every empty-map readback path — the path pass

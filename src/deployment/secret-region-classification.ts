@@ -114,50 +114,10 @@ function secretsManagerSecretId(inner: string): string {
  * sibling that answers something else is the kind of split a later reader has
  * to rediscover.
  *
- * THE DELTA IS NOT PURELY COSMETIC ON A MIXED LEAF, and the narrow case is
- * stated rather than rounded off. Three LEAF PRE-PASSES consume this verdict —
- * `rollback-executor.ts`'s `resolveLeafByRegion`, `cdkd drift`'s
- * `resolveDriftLeafByRegion` and `cdkd scrub`'s — and each refuses the WHOLE
- * leaf as soon as ONE token classifies `ambiguous`, before any token is
- * fetched. (There is a FOURTH consumer, and it is not a pre-pass:
- * `resolveDynamicReferences` classifies token-by-token INSIDE its substitution
- * loop, so it already fetches earlier tokens before refusing a later one. That
- * is the point below about the pre-fetch refusal never having been a designed
- * property of this verdict.)
- *
- * So for `local=<same-region ARN>;secure={{resolve:ssm-secure}}` with a foreign
- * producer region on record, the old bogus name bought a pre-fetch refusal:
- * nothing was resolved. Now the leaf is resolved — by the primary resolver when
- * every other token is `local`, or through the segment-rebuild path when one is
- * `named-region` — so the ARN's plaintext IS fetched and cached before the
- * degenerate token throws. Pinned by
- * `rollback-executor-cross-region-secret.test.ts`'s "the MIXED-leaf delta the
- * colon-less guard accepts", so the trade is visible rather than argued.
- *
- * That is accepted rather than defended, on three grounds, and the third is a
- * LIMIT rather than a reassurance:
- *
- *  1. The lost refusal was an ACCIDENT of the mis-parse, not a designed
- *     protection: with no foreign producer region on record — the
- *     overwhelmingly common case — the colon-less token classified `local`
- *     before this change too, so the same sibling was already fetched.
- *  2. The sibling is fetched from the region its OWN verdict names, never a
- *     guessed one (a name-form sibling would itself be `ambiguous` and the
- *     pre-pass would still refuse), so nothing here weakens the issue #1957
- *     rule this module exists to enforce. Nothing fetched reaches `state.json`,
- *     the rollback journal, the event store or a `--json` payload: the op
- *     throws before any write.
- *  3. WHAT THE OP DOES NEXT IS NOT UNIFORM, and this is the part worth knowing.
- *     The replay fails the op and `cdkd drift` reports the resource NOT
- *     compared — both loud. `cdkd scrub` is NOT: its best-effort catch re-raises
- *     only a `DynamicReferenceRegionAmbiguousError`
- *     (`isRegionAmbiguousRefusal`), and the resolver's replacement is a plain
- *     `Error`, so scrub swallows it to `debug` and the run reports clean. That
- *     is a LOUDNESS regression for that one command on this one input, bounded
- *     by the fact that the identical silent miss already happens for the same
- *     leaf whenever no foreign producer region is on record. Making the throw a
- *     typed refusal is issue
- *     [#2692](https://github.com/go-to-k/cdkd/issues/2692).
+ * The colon-less relaxation has a CONSUMER-VISIBLE consequence on a mixed
+ * leaf, and it is recorded on {@link classifyReplaySecretRegion} rather than
+ * here: this function produces a NAME, and the delta belongs beside the
+ * VERDICT a reader arrives at it through.
  */
 function ssmParameterName(inner: string): string {
   // Strip the SERVICE, whatever its spelling: `ssm:` and `ssm-secure:` both
@@ -308,6 +268,79 @@ export function producerRegionsFromState(
  * A same-region ARN answers `local` even when a foreign producer region IS on
  * record: the expression settles the question itself, so the weaker evidence
  * never gets consulted.
+ *
+ * ---
+ *
+ * WHO CONSUMES THIS VERDICT, and what the issue #2501 colon-less fix changed
+ * for them. Recorded here because a reader arrives at the blast radius through
+ * the verdict, not through {@link ssmParameterName}, which merely produces a
+ * name.
+ *
+ * Three LEAF PRE-PASSES consume it — `rollback-executor.ts`'s
+ * `resolveLeafByRegion`, `cdkd drift`'s `resolveDriftLeafByRegion` and `cdkd
+ * scrub`'s — and each refuses the WHOLE leaf as soon as ONE token classifies
+ * `ambiguous`, before any token is fetched. There is a FOURTH consumer, and it
+ * is not a pre-pass: `resolveDynamicReferences` classifies token-by-token
+ * INSIDE its substitution loop, so it already fetches earlier tokens before
+ * refusing a later one. That is why the pre-fetch refusal was never a designed
+ * property of this verdict.
+ *
+ * Before the fix, a colon-less `{{resolve:ssm-secure}}` produced the SERVICE
+ * STRING as its name, so with a foreign producer region on record it drew an
+ * `ambiguous` verdict and the pre-pass refused the whole leaf: for
+ * `local=<same-region ARN>;secure={{resolve:ssm-secure}}`, nothing was
+ * resolved. It now answers `local`, so the leaf IS resolved — by the primary
+ * resolver when every other token is `local`, or through the segment-rebuild
+ * path when one is `named-region` — and the ARN sibling's plaintext is fetched
+ * and cached before the degenerate token throws `PARAMETER_NAME is required`.
+ * Pinned by `rollback-executor-cross-region-secret.test.ts`'s "the MIXED-leaf
+ * delta the colon-less guard accepts", so the trade is visible rather than
+ * argued.
+ *
+ * Accepted on three grounds, the third being a LIMIT rather than a
+ * reassurance:
+ *
+ *  1. The lost refusal was an ACCIDENT of the mis-parse, not a designed
+ *     protection: with no foreign producer region on record — the
+ *     overwhelmingly common case — the colon-less token classified `local`
+ *     before the fix too, so the same sibling was already fetched.
+ *  2. The sibling is fetched from the region its OWN verdict names, never a
+ *     guessed one (a name-form sibling would itself be `ambiguous` and the
+ *     pre-pass would still refuse), so nothing here weakens the issue #1957
+ *     rule this module exists to enforce. Nothing fetched reaches a DURABLE
+ *     sink — `state.json`, the rollback journal, the `deployments/` event
+ *     store, a `--json` payload — and the reason is NOT "the op throws before
+ *     any write", which is false for scrub (see 3: scrub swallows and keeps
+ *     writing). It is that both places a fetched plaintext is retained are
+ *     IN-PROCESS and neither is copied out: the resolver's own
+ *     `cachedDynamicReferences` (instance-scoped since issue #1933, so it dies
+ *     with the resolver) and `recordedSecretValues`, which every persist path
+ *     consults as a redaction NEEDLE set — an entry there causes a value to be
+ *     REPLACED BY its expression on the way out, never inserted. One more
+ *     needle can only redact more, which is why this direction is safe even
+ *     though it fetches more.
+ *  3. WHAT THE OP DOES NEXT IS NOT UNIFORM. The replay fails the op and `cdkd
+ *     drift` reports the resource NOT compared — both loud. `cdkd scrub` is
+ *     NOT: `isRegionAmbiguousRefusal` re-raises only a
+ *     `DynamicReferenceRegionAmbiguousError`, and the resolver's replacement is
+ *     a plain `Error`, so scrub swallows it to `debug` and the run reports
+ *     clean. A LOUDNESS regression for that one command on this one input,
+ *     bounded by the identical silent miss that already happens for the same
+ *     leaf whenever no foreign producer region is on record.
+ *
+ *     Issue [#2692](https://github.com/go-to-k/cdkd/issues/2692) tracks it, and
+ *     the remedy is NOT resolver-local — stating that here because the obvious
+ *     fix is one this repo has already tried and REVERTED. Throwing
+ *     `IntrinsicResolutionRefusalError` and widening `isRegionAmbiguousRefusal`
+ *     to match it is exactly the change `scrub.ts`'s own doc records as
+ *     downgrading five USER-FIXABLE refusals to findings, letting scrub print
+ *     `No plaintext secrets found` and exit 0 over surviving plaintext.
+ *     Throwing the region-ambiguous SUBCLASS is wrong too: its message tells
+ *     the user to spell the reference as a full ARN, which cannot fix a
+ *     reference that names no parameter. So #2692 needs a NEW sibling subclass
+ *     AND a scrub-side predicate change — which makes it blocked on
+ *     `src/cli/commands/scrub.ts` (held by PR #2562), not merely on the
+ *     resolver's `integ-broad` cost.
  */
 export function classifyReplaySecretRegion(
   expression: string,

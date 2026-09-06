@@ -772,7 +772,13 @@ describe('a replayed ssm-secure expression, driven end to end (issue #2482)', ()
     // 'ssm-secure' as a secret — which is the whole point of issue #2501 item 4.
     const failure = logLines.find((l) => l.includes('Rollback failed for Idp'));
     expect(failure).toContain('PARAMETER_NAME is required');
-    expect(failure).not.toContain('without a region');
+    // The needle is the SERVICE STRING, which is what the unguarded parser put
+    // in the refusal. `not.toContain('without a region')` sat here first and
+    // was INERT: that phrase belongs to `DynamicReferenceRegionAmbiguousError`,
+    // which the replay cannot raise at all — `resolveReplayProps` builds its
+    // `ResolverContext` with no `producerRegions`, so the resolver's own
+    // per-token check never arms. Proven by execution before the swap.
+    expect(failure).not.toContain("'ssm-secure'");
   });
 });
 
