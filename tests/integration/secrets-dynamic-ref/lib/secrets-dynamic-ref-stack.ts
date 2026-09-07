@@ -63,10 +63,18 @@ export class SecretsDynamicRefStack extends cdk.Stack {
 
     // --- SecretsManager secret with a KNOWN JSON value -----------------
     // generateSecretString is NOT used: we need a value verify.sh knows.
+    // `pin` is a TWO-character value (issue #2516): shorter than the redaction
+    // value scan's four-character needle floor, so nothing but the span arm
+    // on an engine-marked bag can persist a literal leaf embedding it as its
+    // token. Any length from one to three is below the floor; two keeps the
+    // framed form (`port:q7`) unambiguous in a template diff, and letters
+    // rather than digits mean it cannot coincide with a numeric field of the
+    // Lambda readback (a MemorySize, a Timeout). verify.sh never prints it,
+    // masked or not.
     const secret = new secretsmanager.Secret(this, 'DynRefSecret', {
       secretName,
       secretStringValue: cdk.SecretValue.unsafePlainText(
-        JSON.stringify({ username: 'cdkd-user', password: 'cdkd-known-pw-123' })
+        JSON.stringify({ username: 'cdkd-user', password: 'cdkd-known-pw-123', pin: 'q7' })
       ),
     });
     secret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
@@ -157,6 +165,23 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // BECAUSE the two references share a value. With distinct keys they
         // pass no matter what the redaction does.
         SECRET_PASSWORD_STAGED: `{{resolve:secretsmanager:${secretName}:SecretString:password:AWSCURRENT}}`,
+        // A LITERAL string embedding a reference whose resolved value is TWO
+        // characters (issue #2516) — shorter than the redaction value scan's
+        // four-character needle floor, where the scan makes no claim at all.
+        // Before the fix this leaf persisted `port:<pin>` in plaintext in
+        // `properties`, in the AWS readback (`observedProperties`) and in the
+        // `PortLiteral` output below, with or without a sibling. Same literal
+        // shape and same `literalSecretName` reason as DB_DSN_LITERAL; the
+        // whole-value sibling below shares the plaintext so the collapsed
+        // map's survivor is the STAGED spelling, and verify.sh asserts this
+        // leaf keeps its OWN plain spelling — a fix writing the survivor
+        // would show. ORDER IS LOAD-BEARING for the same reason as
+        // DB_DSN_LITERAL: keep this key above SECRET_PIN_STAGED.
+        DB_PORT_LITERAL: `port:{{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`,
+        // The whole-value sibling of DB_PORT_LITERAL on the STAGED spelling.
+        // Persisted by the whole-token arm regardless of the fix; its job is
+        // to be the map's survivor for the two-character plaintext.
+        SECRET_PIN_STAGED: `{{resolve:secretsmanager:${secretName}:SecretString:pin:AWSCURRENT}}`,
         // SSM plaintext-parameter form. Public config: state stores this
         // RESOLVED, which is the discriminator for the SecureString case below.
         SSM_VALUE: `{{resolve:ssm:${paramName}}}`,
@@ -295,5 +320,13 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         }),
       });
     }
+    // A literal OUTPUT embedding the two-character reference (issue #2516):
+    // the same leaf shape as DB_PORT_LITERAL, walked by the outputs
+    // redaction against the template's `Outputs`. verify.sh asserts
+    // `state.outputs.PortLiteral` holds the expression. No export name on
+    // purpose: an exported secret-bearing output is a different arm.
+    new cdk.CfnOutput(this, 'PortLiteral', {
+      value: `port:{{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`,
+    });
   }
 }

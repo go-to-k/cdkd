@@ -35,10 +35,16 @@ const CARRIED_LITERAL = 'a-literal-from-the-previous-generation';
 // The PLAIN spelling of EXPR_A's key, resolving to the SAME plaintext (issue
 // #2485): the collision an embedded Output has to survive.
 const EXPR_A_PLAIN = '{{resolve:secretsmanager:db:SecretString:password}}';
+// A secret whose value sits BELOW the value scan's needle floor (issue #2516):
+// two characters, so no needle is ever built from it and only the span arm,
+// on a marked bag, can write it as its token.
+const EXPR_PIN = '{{resolve:secretsmanager:db:SecretString:pin}}';
+const PLAINTEXT_PIN = 'q7';
 const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_A]: PLAINTEXT_A,
   [EXPR_B]: PLAINTEXT_B,
   [EXPR_A_PLAIN]: PLAINTEXT_A,
+  [EXPR_PIN]: PLAINTEXT_PIN,
 };
 
 // A reference whose value MOVES between resolutions inside one deploy. The
@@ -356,5 +362,61 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
     // positional descent gives up no redaction here.
     expect(list[1]).toBe(EXPR_B);
     expect(JSON.stringify(saved)).not.toContain(PLAINTEXT_B);
+  });
+
+  describe('an embedded 1-3 character secret in a literal Output (issue #2516)', () => {
+    // Below the value scan's needle floor only the engine's same-generation
+    // mark on the OUTPUTS bag lets the span arm write the token. The two
+    // cases below are the two bags `redactOutputs` can be handed on this path:
+    // the one `resolveOutputs` produced (marked), and the previous deploy's
+    // `persistedOutputs` a resolution failure keeps (never marked).
+    const PORT_SOURCE = `port:${EXPR_PIN}`;
+    const PORT_PLAINTEXT = `port:${PLAINTEXT_PIN}`;
+
+    function withPreviousOutputs(outputs: Record<string, unknown>) {
+      mockStateBackend.getState!.mockResolvedValue({
+        state: { ...structuredClone(currentState), outputs },
+        etag: 'etag-1',
+      });
+    }
+
+    it('the bag this pass resolved is marked, so the leaf persists its expression', async () => {
+      // The previous deploy (pre-fix) persisted the plaintext; today's
+      // resolution rewrites the bag, and the changed value is what gets saved.
+      withPreviousOutputs({ Port: PORT_PLAINTEXT });
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
+        },
+        Outputs: { Port: { Value: PORT_SOURCE } },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+      expect(saved.outputs['Port']).toBe(PORT_SOURCE);
+      expect(JSON.stringify(saved)).not.toContain(PORT_PLAINTEXT);
+    });
+
+    it('the PREVIOUS deploy\'s bag a resolution failure keeps is not marked, so its plaintext stays as stored', async () => {
+      // The value scan leaves a sub-floor middle alone, and nothing vouches
+      // for a bag this pass did not produce — writing today's token over it
+      // would be the fabrication the mark exists to prevent.
+      withPreviousOutputs({ Port: PORT_PLAINTEXT });
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
+        },
+        Outputs: {
+          Port: { Value: PORT_SOURCE },
+          Broken: { Value: { 'Fn::GetAtt': ['Missing', 'Arn'] } },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+      expect(saved.outputs['Port']).toBe(PORT_PLAINTEXT);
+    });
   });
 });

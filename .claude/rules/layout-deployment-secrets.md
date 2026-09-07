@@ -139,19 +139,55 @@ Index of every area: [code-layout.md](code-layout.md).
     expressions resolving to the SAME value collapse (last write wins) and
     every site is rewritten to the survivor — a permanent spurious UPDATE
     (#1904). The value scan stays for every leaf the source cannot position
-    (diverged shape, missing key, a leaf that merely EMBEDS a secret, a
-    cross-stack leaf the source does not literally spell).
+    (diverged shape, missing key, a leaf that embeds a secret through an
+    INTRINSIC source or a literal one `positionByEmbeddedSpan` below refuses,
+    a cross-stack leaf the source does not literally spell).
   - **`positionByEmbeddedSpan`** (issue #2485) positions a LITERAL leaf that
     EMBEDS one token (`postgres://u:{{resolve:...}}@h`) by the span its source
     states — the other shape the value scan collapses. Gated on PASS-LOCAL
     evidence: `recordResolvedPair`, the per-map-instance `expression ->
     plaintext` record the resolver writes beside `secrets.set` (the collapsed
     map cannot tell "lost the slot to a sibling" from "never resolved here",
-    nor can the process-wide expression set), AND equivalence with the value
-    scan's own answer, so it only chooses WHICH of this pass's expressions is
-    written, never whether. A map no resolver populated (a derived needle
-    map, an inheritance copy, a `new Map` copy) keeps the value scan, as does
-    an embedded 1-3 character secret (the scan's residual).
+    nor can the process-wide expression set), AND — on a bag whose
+    generation is not proven — equivalence with the value scan's own answer,
+    so there it only chooses WHICH of this pass's expressions is written,
+    never whether. A map no resolver populated (a derived needle
+    map, an inheritance copy, a `new Map` copy) keeps the value scan. An
+    embedded 1-3 character secret sits BELOW the scan's needle floor, where
+    the scan makes no claim, so the arm writes it as its token ONLY on a bag
+    whose generation the ENGINE proved (issue #2516): `markSameGenerationBag`
+    marks the object — a `WeakSet`, the shape of the pair side table — at five
+    sites whose CONDITIONS differ per site; the function's own docstring is the
+    authority and this is the index (`propertiesToRecord`, on the resolved bag
+    or on the SUBSET of it the SDK route writes -- taken AFTER that narrowing,
+    since the helper returns a fresh object whenever it drops a key -- never a
+    provider's `effectiveProperties` replacement; the `observedProperties`
+    readback `drainObservedCaptures` installs, a COPY, and marked for EVERY
+    drained capture including an unchanged resource's auto-refresh, where the
+    empty secrets map rather than the mark is what keeps it safe; the `outputs`
+    bag `resolveOutputs` returns, which is the redaction INPUT; whether it is
+    also the STORED object depends on whether this pass recorded an output
+    secret -- with one `redactOutputs` returns a fresh bag, with none (the
+    ordinary deploy) it returns its input and the marked object IS stored; on the no-change path the redacted bag is stored when the
+    outputs changed) and on two never-installed COPIES
+    of the resolver's own output (the update arm's no-change re-check, marked
+    BEFORE a provider call it may skip, or a stored token would read as a
+    change on every deploy; a failed op's journaled `attemptedProperties`),
+    and `redactSecretsForState` reads the
+    mark for the object it is handed and threads it down the walk. A previous
+    generation's record, a scrub / import / drift walk, a sub-bag walked on
+    its own and any copy stay unmarked and keep the plaintext the scan
+    leaves. Residuals, in full on the arm's own docstring: the
+    `effectiveProperties` bag; a coinciding readback; an interference refusal
+    (substring interference by a 4+ character needle -- a sub-floor interferer
+    leaves the scan silent and costs the OTHER secret, never a fabrication,
+    unless it matches the WHOLE leaf, which the floorless exact-match arm
+    rewrites: accepted one line up on an empty frame, refused on a nonempty
+    one);
+    `maskSecretsInText`, whose substring arm shares the floor, so a warn line
+    can still print the plaintext (#2453); `cdkd scrub`, walking a STORED bag
+    no deploy marked; and the `Fn::Join` / `Fn::Sub` source shape -- all
+    tracked, with the nested-stack and `cdkd import` twins, by #2745.
   - **`positionByIntrinsicSkeleton`** (issue #1916) positions `Fn::Join` /
     `Fn::Sub` source leaves — the DOMINANT CDK shape
     (`secret.secretValueFromJson(...)` renders the ARN as a `Ref`, so every

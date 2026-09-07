@@ -159,6 +159,107 @@ function resolvedPlaintextOf(
 }
 
 /**
+ * The bag OBJECTS a deploy pass produced ITSELF and installed on a success
+ * path — the fact the resolved-pair evidence above cannot state (issue
+ * [#2516](https://github.com/go-to-k/cdkd/issues/2516)).
+ *
+ * A pair proves that THIS pass resolved a token to a plaintext; it says nothing
+ * about which bag is being walked. The deploy engine's persist choke point
+ * walks EVERY record in the state map against today's template, and a record
+ * that merely ENTERED the create/update arm is still the PREVIOUS generation
+ * until its provider call succeeds (an intermediate save, a pre/post-rollback
+ * save, Ctrl-C — the same population the `sourceIsSameGeneration` note on
+ * {@link PathSourceRules} names). One record also carries two bags of
+ * different provenance: `properties`, this pass's resolved bag once the
+ * provider succeeded, and `observedProperties`, an AWS readback installed
+ * separately. So the fact is BAG-specific, not caller- or record-level, and it
+ * is carried on the object: {@link markSameGenerationBag} at the moment the
+ * successful result is installed, consulted by {@link redactSecretsForState}
+ * for the object it is handed. A copy of the bag, a derived needle map, a
+ * previous generation's record, a scrub / import / drift walk and a bag the
+ * engine did not mark all answer `false` and keep the fall-through.
+ *
+ * A `WeakSet` for the reason {@link resolvedPairsOf} is a `WeakMap`: the mark
+ * dies with the object it is on, and nothing has to clear it.
+ */
+const sameGenerationBags = new WeakSet<object>();
+
+/**
+ * Mark `bag` as an object THIS pass is entitled to speak for, and return it.
+ * The one evidence {@link positionByEmbeddedSpan} needs beyond a resolved pair
+ * to write a middle SHORTER than {@link MIN_NEEDLE_LENGTH} — see the arm.
+ *
+ * Deliberately NOT "produced by resolving today's template, read back from a
+ * resource it just wrote, and about to be installed on a success path": each
+ * of those three was in this sentence and each is false at one site (an
+ * unchanged resource's auto-refresh resolves nothing; the no-change re-check
+ * and the journal are never installed on the record). The conditions are per
+ * site and are listed below.
+ *
+ * WHAT THE MARK CLAIMS, which is the only thing every site shares: the object
+ * is one THIS PASS is entitled to speak for, so a sub-floor middle in it may
+ * be written as the token this pass recorded. What never qualifies is a bag of
+ * MIXED provenance: a provider's `effectiveProperties` replacement may carry
+ * previous-state values IN, so an object-level mark on it would prove nothing
+ * for those leaves — it stays unmarked and keeps the residual. Nor does the
+ * object the resolver produced, marked at resolution time: it is not
+ * necessarily the object state ends up holding.
+ *
+ * The CONDITIONS are per SITE, not global, and stating them globally is what
+ * this paragraph kept getting wrong (PR 2753, rounds 3 and 4). "After the
+ * provider call" is false for the no-change re-check, which marks BEFORE it
+ * and may skip it entirely. "Every leaf this pass produced" is false for the
+ * auto-refresh readback of an UNCHANGED resource, where nothing was resolved
+ * at all — there the safety comes from the empty secrets map, not from the
+ * mark. Read the per-site list below rather than a rule over all five.
+ *
+ * The five call sites, and which of them the record HOLDS, because the earlier
+ * "two never-installed copies" reading of this paragraph was false once the
+ * third copy arrived:
+ * - `propertiesToRecord` — the record's `properties`, installed. The resolved
+ *   bag itself when the route drops nothing, a narrowed copy of it when it
+ *   does, and `withoutSilentDropProperties` returns its input by reference in
+ *   the first case, which is why the mark must be taken AFTER the narrowing
+ *   and not before.
+ * - `drainObservedCaptures` — the `observedProperties` readback it installs,
+ *   and a COPY: the object a provider returned is never the marked one, so a
+ *   provider that hands back its own `properties` argument cannot get a
+ *   previous generation marked. It marks EVERY capture it drains, which is
+ *   wider than "a resource this pass wrote" — the schema-upgrade auto-refresh
+ *   of an UNCHANGED resource is marked too. What keeps that safe is the map,
+ *   not the mark: `perResourceSecrets` is populated only in the create /
+ *   update arms, so an unchanged resource's walk carries an empty one and the
+ *   span arm cannot fire whatever the object is marked.
+ * - `resolveOutputs` — the `outputs` bag this pass resolved. What every site
+ *   shares is that the marked object is the redaction INPUT; whether the
+ *   record then holds that same object varies, and here it depends on whether
+ *   this pass recorded any output secret: with one,
+ *   `redactOutputs` returns a fresh redacted bag and that return value is
+ *   installed; with none — the ordinary deploy — it returns its input
+ *   unchanged and the marked object IS the one
+ *   stored. On the no-change path the newly redacted bag is installed when
+ *   the outputs CHANGED, and the previous `persistedOutputs` is kept
+ *   otherwise; that previous bag is unmarked, which is the answer that arm
+ *   wants.
+ * - the update arm's no-change re-check — a marked `{ ...resolvedProps }`
+ *   compared against the stored record so a stored token reads as a no-op.
+ *   NOT installed; the object the provider is handed is the unmarked original.
+ * - the rollback journal's FAILED-op `attemptedProperties` — a marked copy, so
+ *   that persisted artifact does not carry the plaintext on exactly the
+ *   failure path. NOT installed on the record.
+ */
+export function markSameGenerationBag<T extends object>(bag: T): T {
+  sameGenerationBags.add(bag);
+  return bag;
+}
+
+function isSameGenerationBag(bag: unknown): boolean {
+  // `WeakSet.has` answers `false` for a primitive or `null` without throwing,
+  // so no type guard sits in front of it: one that did would be inert.
+  return sameGenerationBags.has(bag as object);
+}
+
+/**
  * Every `{{resolve:...}}` expression this process has PROVEN resolves to a
  * secret, as a SET — uncollapsed by resolved value (issue #1910).
  *
@@ -1633,6 +1734,15 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   persisted bag is same-generation by construction; a TEMPLATE source never
  *   is, however the caller reached it.
  *
+ *   The BAG's generation is a separate fact, and it lives on the object rather
+ *   than in these rules for the same reason (issue #2516): the engine marks
+ *   each bag it installed on a success path with {@link markSameGenerationBag},
+ *   and {@link redactSecretsForState} reads the mark for the object it was
+ *   handed. That is what lets `positionByEmbeddedSpan` write an embedded
+ *   1-3 character secret as its token on this pass's own bag while every
+ *   cross-generation walk — the same population listed above — keeps the value
+ *   scan's answer. No rules constant claims it.
+ *
  *   The refusal is a FALL-BACK, not a stop: a refused leaf takes a WHOLE-VALUE
  *   redaction rather than being returned untouched. That is what lets the rule
  *   be set conservatively without giving up issue #1917. On a bag the pass
@@ -2612,15 +2722,78 @@ function singleSpanFrame(
  * not create is the whole-token arm's: a middle that is ALREADY an expression
  * (a persisted answer from another generation), which the token refusal below
  * keeps out — and, by the same argument, any leaf the value scan would NOT
- * rewrite to exactly `prefix + survivor + suffix`: a middle shorter than the
- * scan's needle floor (an embedded 1-3 character secret stays the scan's
- * documented residual — issue #2516 tracks closing it with a bound that
- * proves the bag's generation, which this evidence does not), a whole leaf
- * that is itself another recorded plaintext, a needle starting in the prefix
- * and overlapping the middle. The
- * arm checks that equivalence against the scan's own answer rather than
- * re-deriving the scan's rules. Pinned by the cross-generation cases in
- * `secret-redaction-embedded-span.test.ts`.
+ * rewrite to exactly `prefix + survivor + suffix`: a whole leaf that is itself
+ * another recorded plaintext, a needle starting in the prefix and overlapping
+ * the middle, and — on a bag whose generation is NOT proven — a middle shorter
+ * than the scan's needle floor. The arm checks that equivalence against the
+ * scan's own answer rather than re-deriving the scan's rules. Pinned by the
+ * cross-generation cases in `secret-redaction-embedded-span.test.ts`.
+ *
+ * BELOW THE NEEDLE FLOOR the scan makes no claim at all (issue
+ * [#2516](https://github.com/go-to-k/cdkd/issues/2516)): {@link buildNeedleRegex}
+ * drops every plaintext shorter than {@link MIN_NEEDLE_LENGTH} from its
+ * alternation, so an embedded 1-3 character secret is left in plaintext by
+ * the scan, with or without a same-plaintext sibling. Accepting the scan's
+ * silence (`scanned === bag`) as equivalence would therefore be a NEW claim
+ * rather than a choice within the scan's class, and on a previous
+ * generation's bag it would fabricate: a 1-3 character readback or old
+ * record that COINCIDES with today's plaintext (`port:0` where AWS returns a
+ * default and today's secret resolved to `0`) would be persisted as today's
+ * expression, which round-trips today and, after a rotation, reports a drift
+ * that never happened. So that arm is admitted only for a bag whose
+ * generation IS proven: `bagIsSameGeneration`, the object-level mark
+ * {@link markSameGenerationBag} puts on the bags the deploy engine hands to
+ * redaction on a success path (the record's `properties`, which are the
+ * resolved bag or the subset of it the SDK route writes; EVERY
+ * `observedProperties` readback `drainObservedCaptures` drains, an unchanged
+ * resource's auto-refresh included, where the empty secrets map rather than
+ * the mark is what keeps it safe; and the `outputs` bag this pass resolved,
+ * whose redacted RETURN VALUE is usually what the record holds) and on two
+ * copies of the resolver's own output that the record never holds. That
+ * function's contract is the authority — the conditions differ per site and
+ * do not survive being stated once. Threaded down from
+ * {@link redactSecretsForState} for exactly the object it was handed. With
+ * the mark AND the pair, `recorded === middle` says this pass resolved the
+ * source token to the middle and the bag is this pass's own, so
+ * `prefix + token + suffix` is what the template says at that leaf and what
+ * the resource holds. Without the mark the sub-floor middle keeps today's
+ * bound, which is the scan's answer: the plaintext, unchanged.
+ *
+ * What stays, stated here rather than papered over. A provider that
+ * substituted `effectiveProperties` built a bag of MIXED provenance, so that
+ * object is never marked and a sub-floor middle in it keeps the scan's
+ * answer. A readback AWS rewrote at that offset to a value that coincides
+ * with the 1-3 character secret is persisted as the expression: value-equal
+ * until the secret rotates, and the same residual the value scan already has
+ * for a 4+ character coincidence in a readback. Every refusal of this arm
+ * returns the scan's answer, so a leaf refused for interference (a frame
+ * that is itself a recorded plaintext, say) has its frame rewritten and its
+ * sub-floor middle left in plaintext. And this arm positions a LITERAL
+ * source leaf only: an `Fn::Join` / `Fn::Sub` source rendering the same
+ * `port:` + token goes to {@link positionByIntrinsicSkeleton}, which refuses
+ * unless the WHOLE bag is a recorded plaintext, so a sub-floor secret
+ * embedded through an intrinsic — the dominant CDK shape — still falls to
+ * the value scan and persists in plaintext. `cdkd scrub`, the documented
+ * repair tool for a pre-GHSA record, cannot repair a sub-floor embedded leaf
+ * either: it walks a STORED bag, which no deploy marked, so the arm is
+ * unreachable from it by construction and the leaf keeps the scan's answer.
+ * The MASKING channel keeps the residual whole: `maskSecretsInText`'s
+ * substring arm carries the same four-character floor, so once this arm has
+ * put `port:{{resolve:...}}` in state, a warn line quoting an AWS message can
+ * still print `port:q7`. Pre-existing and not a regression -- the #2453 class,
+ * and the reason the list would otherwise read as complete when it is not
+ * (maintainer review of PR 2753, round 2).
+ *
+ * The next DEPLOY of that resource repairs the leaves this arm is eligible
+ * for — a LITERAL source leaf on a bag the engine marks — because the
+ * re-check compares unequal against a record holding the plaintext and the
+ * resource is written again from a bag this pass produced. The residuals
+ * named above (an `effectiveProperties` substitution, an intrinsic source
+ * shape) are not repaired by that deploy either; they stay tracked by
+ * #2745. Tracked, with the sub-floor
+ * residuals of a nested-stack child's inherited parameter and of `cdkd
+ * import`'s own resolution, by issue
+ * [#2745](https://github.com/go-to-k/cdkd/issues/2745).
  *
  * One shape reaches this arm that a reader may not expect: a WHOLE-token
  * source that FAILED the whole-token arm's `isKnownSecretExpression` gate (an
@@ -2651,7 +2824,8 @@ function singleSpanFrame(
 function positionByEmbeddedSpan(
   bag: string,
   source: string,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  bagIsSameGeneration: boolean
 ): string {
   const scanned = redactSecretsForState(bag, secrets);
   const frame = singleSpanFrame(bag, source);
@@ -2659,16 +2833,16 @@ function positionByEmbeddedSpan(
   const { token, prefix, suffix, middle } = frame;
   const recorded = resolvedPlaintextOf(secrets, token);
   if (recorded === undefined || recorded !== middle) return scanned;
-  // THE SAME CLASS OF ANSWER AS THE VALUE SCAN, proven rather than argued: the
-  // arm accepts only a leaf the scan itself would rewrite to
-  // `prefix + <the map's survivor for the middle> + suffix` — the middle and
-  // nothing else. That is what makes the substitution a CHOICE among this
-  // pass's expressions rather than a new claim: below the scan's needle floor
-  // the scan leaves the middle alone (so does this arm); where another
-  // recorded plaintext matches the WHOLE leaf, or starts in the prefix and
-  // overlaps the middle, the scan's whole-value / leftmost precedence picks
-  // that needle instead (so does this arm, by falling through to it). See the
-  // generation note in the docstring for why this bound matters.
+  // THE SAME CLASS OF ANSWER AS THE VALUE SCAN, proven rather than argued: on
+  // a bag whose generation is NOT proven the arm accepts only a leaf the scan
+  // itself would rewrite to `prefix + <the map's survivor for the middle> +
+  // suffix` — the middle and nothing else. That is what makes the
+  // substitution a CHOICE among this pass's expressions rather than a new
+  // claim: where another recorded plaintext matches the WHOLE leaf, or starts
+  // in the prefix and overlaps the middle, the scan's whole-value / leftmost
+  // precedence picks that needle instead (so does this arm, by falling
+  // through to it). See the generation note in the docstring for why this
+  // bound matters, and for the one relaxation below it.
   const survivor = secrets.get(middle);
   // A type-narrowing formality, not a reachable refusal: `recorded === middle`
   // already implies an entry for `middle` — both resolver seams `set` the
@@ -2676,8 +2850,32 @@ function positionByEmbeddedSpan(
   // copies the entries first, and nothing deletes from a `RecordedSecretValues`
   // map. Kept in the fail-closed shape rather than as a non-null assertion.
   if (survivor === undefined) return scanned;
-  if (scanned !== prefix + survivor + suffix) return scanned;
-  return prefix + token + suffix;
+  if (scanned === prefix + survivor + suffix) return prefix + token + suffix;
+  // Below the scan's needle floor the scan leaves the middle alone, and its
+  // silence is accepted as equivalence ONLY on a bag whose generation the
+  // engine proved (issue #2516) — see "BELOW THE NEEDLE FLOOR" in the
+  // docstring. `scanned === bag` rather than a length test on the middle: an
+  // interference case whose OTHER needle is 4+ characters makes the scan
+  // rewrite SOMETHING, so it stays refused here exactly as it is refused one
+  // line up, and a sub-floor middle in a leaf the scan otherwise left
+  // untouched is what reaches the return. The claim is not universal
+  // (maintainer review of PR 2753, round 2): it holds for SUBSTRING
+  // interference by a 4+ character needle. An interfering needle that is
+  // itself sub-floor leaves the scan silent too, so such a leaf reaches this
+  // arm. A sub-floor needle matching the WHOLE leaf is rewritten by the
+  // scan's own exact-match arm, which has no floor, and where that happens
+  // splits on the FRAME (rounds 2 and 3 of the same review each corrected
+  // this sentence): with an EMPTY frame -- leaf === middle -- `scanned`
+  // equals the survivor, so the equality one line up ACCEPTS the leaf and it
+  // never reaches here, which is the right answer and this pass's own token
+  // either way; with a NONEMPTY frame the scan's answer is the other
+  // secret's expression, that equality fails, and the leaf is refused here.
+  // What the silent case costs is the OTHER secret's
+  // under-redaction — the value scan's own pre-existing residual below the
+  // floor — never a fabricated expression, because the returned token is
+  // still the one THIS pass recorded resolving to this leaf's middle.
+  if (bagIsSameGeneration && scanned === bag) return prefix + token + suffix;
+  return scanned;
 }
 
 /**
@@ -2890,7 +3088,8 @@ function redactByPath(
   source: unknown,
   secrets: RecordedSecretValues,
   rules: PathSourceRules,
-  secretExpressions: ReadonlySet<string>
+  secretExpressions: ReadonlySet<string>,
+  bagIsSameGeneration: boolean
 ): unknown {
   if (isDynamicReferenceString(source) && typeof bag === 'string') {
     // A TEMPLATE source carries PUBLIC ssm expressions too, and those must stay
@@ -2959,7 +3158,7 @@ function redactByPath(
     // refusal (a public reference, an embedded token this pass cannot vouch
     // for) the arm returns the value scan of the leaf itself, computed once
     // inside it, so a secret embedded beside the token is still redacted.
-    return positionByEmbeddedSpan(bag, source, secrets);
+    return positionByEmbeddedSpan(bag, source, secrets, bagIsSameGeneration);
   }
   if (typeof bag === 'string' && isPlainObject(source)) {
     // The source leaf is an intrinsic OBJECT, so there is no string to copy —
@@ -3103,9 +3302,24 @@ function redactByPath(
         rules.descendArrays && bag.length === source.length && orderPreserved;
       return bag.map((item, i) => {
         const j = partnerIndex[i]!;
-        if (j >= 0) return redactByPath(item, source[j], secrets, rules, secretExpressions);
+        if (j >= 0)
+          return redactByPath(
+            item,
+            source[j],
+            secrets,
+            rules,
+            secretExpressions,
+            bagIsSameGeneration
+          );
         if (positionalIsExact) {
-          return redactByPath(item, source[i], secrets, rules, secretExpressions);
+          return redactByPath(
+            item,
+            source[i],
+            secrets,
+            rules,
+            secretExpressions,
+            bagIsSameGeneration
+          );
         }
         return redactSecretsForState(item, secrets);
       });
@@ -3117,7 +3331,9 @@ function redactByPath(
       // may be REORDERED, so that kind does not take this arm at all and falls
       // to the value scan rather than writing an expression onto a wrong
       // element.
-      return bag.map((item, i) => redactByPath(item, source[i], secrets, rules, secretExpressions));
+      return bag.map((item, i) =>
+        redactByPath(item, source[i], secrets, rules, secretExpressions, bagIsSameGeneration)
+      );
     }
   }
   if (isPlainObject(bag) && isPlainObject(source)) {
@@ -3131,7 +3347,7 @@ function redactByPath(
       // `Object.hasOwn`, not `k in source`: the prototype chain would answer for
       // `constructor` / `toString` and hand the walk a function as the source.
       out[k] = Object.hasOwn(source, k)
-        ? redactByPath(v, source[k], secrets, rules, secretExpressions)
+        ? redactByPath(v, source[k], secrets, rules, secretExpressions, bagIsSameGeneration)
         : redactSecretsForState(v, secrets);
     }
     return out;
@@ -4537,7 +4753,18 @@ export function redactSecretsForState<T>(
     // The second revision simply ran the scan LAST over their output, which is
     // the MIRROR defect — see {@link preferPositionDecisions}, where both are
     // measured and the merge that ends them is argued.
-    const positioned = redactByPath(bag, source, secrets, rules, recordedExpressionsOf(secrets));
+    // The generation mark is read for the OBJECT this call was handed and
+    // threaded down the walk unchanged: a sub-bag walked on its own (a
+    // nested-stack `Parameters` block, a caller's slice) is a different
+    // object and answers `false`, which is the safe direction.
+    const positioned = redactByPath(
+      bag,
+      source,
+      secrets,
+      rules,
+      recordedExpressionsOf(secrets),
+      isSameGenerationBag(bag)
+    );
     if (!isReadbackProjectedFromState(rules)) return positioned as T;
     // The path pass certifies a WHOLE-TOKEN source leaf and nothing else, so on
     // the readback paths — where the map can be empty and the value scan is a
