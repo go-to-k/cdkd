@@ -49,6 +49,19 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
+
+/**
+ * Every way `gen-nested-key-coverage.ts --check` announces a failure.
+ *
+ * Both spellings are load-bearing: `FAIL` prefixes its four blocking verdicts
+ * (divergences, and the three stale-list refusals) and `failed` prefixes the
+ * crash path. A run that says either of these and yields no parsed finding must
+ * never render as clean. Fenced against the producer by
+ * `tests/unit/scripts/cfn-schema-refresh-workflow.test.ts`, which greps both
+ * spellings out of `gen-nested-key-coverage.ts` — nothing else joins the two
+ * files, and a reword there would otherwise make this pattern silently inert.
+ */
+export const NESTED_KEY_FAILURE_RE = /nested-key-coverage:\s*(FAIL|failed)\b/;
 const FIXTURES_DIR = join(REPO_ROOT, 'tests/fixtures/cfn-schemas');
 const PROVIDERS_DIR = join(REPO_ROOT, 'src/provisioning/providers');
 
@@ -91,38 +104,43 @@ export function comparePropertySets(committedJson, refreshedJson) {
  * the report; only the type and the bucket are pulled out, for grouping. Lines
  * it does not recognise are ignored rather than guessed at.
  *
- * **Refuses to return nothing from output that says it FAILED.** The checker's
- * finding-line format lives in another file and nothing fences the two, so a
- * wording change there would make this parser return `[]` and the pull request
- * would render "nothing needs a decision" over a red check — the same
- * silent-empty class {@link parseDeclaredProperties} already refuses for its own
- * input, and the failure this whole job exists to prevent, one level up.
+ * **A FAILING checker never renders as clean.** The finding-line format lives in
+ * another file and nothing joins the two, so a wording change there would make
+ * this parser return `[]` and the pull request would render "nothing needs a
+ * decision" over a red check — the silent-empty class this whole job exists to
+ * prevent, one level up. The checker also has three other FAIL modes (stale
+ * allow-list / segmentRenames / terminalRenames) plus a crash path that
+ * legitimately print no finding line, and refusing on THOSE discarded the whole
+ * diagnosis — losing the removal and addition sections too — while blaming a
+ * format change that had not happened. So a failure with no parsed finding is
+ * reported as `unparsed`: the caller renders a section naming it rather than
+ * either throwing the diagnosis away or claiming the refresh is clean.
  *
  * @param {string} checkOutput
- * @returns {Array<{resourceType: string, bucket: string, line: string}>}
+ * @returns {{divergences: Array<{resourceType: string, nestedKey: string, bucket: string, detail: string}>, unparsedFailure: boolean}}
  */
 export function parseNestedKeyDivergences(checkOutput) {
-  /** @type {Array<{resourceType: string, bucket: string, line: string}>} */
-  const out = [];
+  /** @type {Array<{resourceType: string, nestedKey: string, bucket: string, detail: string}>} */
+  const divergences = [];
   for (const raw of checkOutput.split('\n')) {
     const line = raw.trim();
-    const m = /^(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+):\s.*\[([a-z-]+)\]/.exec(line);
-    if (!m) continue;
-    out.push({ resourceType: m[1], bucket: m[2], line });
-  }
-  // Scoped to the DIVERGENCE failure. The checker has three other FAIL modes
-  // (stale allow-list / segmentRenames / terminalRenames) that legitimately
-  // print no finding line, and refusing on those made `main()` discard the
-  // whole diagnosis — losing the removal and addition sections too — while
-  // blaming a format change that had not happened.
-  if (out.length === 0 && /nested-key-coverage:\s*FAIL\s*—\s*nested CFn/i.test(checkOutput)) {
-    throw new Error(
-      'audit:nested-key-coverage:check reported FAIL but no finding line parsed — ' +
-        'its output format changed. Refusing to report "nothing needs a decision" ' +
-        'over a failing check.'
+    // Captured field by field rather than quoted whole: `nestedKey` comes from
+    // the un-checksummable bundle by way of the fixtures, so the report must
+    // render it through the same guard every other bundle-derived name takes.
+    const m = /^(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+):\s+(\S+)\s+\[([a-z-]+)\](?:\s+\((.*)\))?$/.exec(
+      line
     );
+    if (!m) continue;
+    divergences.push({
+      resourceType: m[1],
+      nestedKey: m[2],
+      bucket: m[3],
+      detail: m[4] ?? '',
+    });
   }
-  return out;
+  const unparsedFailure =
+    divergences.length === 0 && NESTED_KEY_FAILURE_RE.test(checkOutput);
+  return { divergences, unparsedFailure };
 }
 
 /**
@@ -331,6 +349,74 @@ export function sdkModelsMember(property, providerRelPath, repoRoot = REPO_ROOT)
  * @param {(pkg: string) => string} [viewLatest] injectable for tests
  * @returns {{installed: string, latest: string, behind: boolean} | undefined}
  */
+/**
+ * Every AWS SDK client a provider imports, with its installed version.
+ *
+ * Split out of {@link sdkModelsMember} because the version-lag question has no
+ * member to look up: the caller wants "which clients could this type's provider
+ * be lagging on", and asking `sdkModelsMember` with a name that matches nothing
+ * answered with `consulted[0]` — the FIRST import, which is right only by
+ * coincidence on a provider importing several (17 of 78 serve more than one
+ * type, and `ec2-provider.ts` imports several clients).
+ *
+ * @param {string | undefined} providerRelPath
+ * @param {string} [repoRoot]
+ * @returns {Array<{client: string, version: string}>}
+ */
+/**
+ * The imported clients that plausibly serve a resource type, best-effort.
+ *
+ * A provider imports more than the service it provisions — `@aws-sdk/client-sts`
+ * is in most of them — and reporting an unrelated client's version lag beside a
+ * Glue key divergence is a confident answer to a question nobody asked. The
+ * type's own service segment, case-folded and stripped of separators, is
+ * matched against the client's suffix.
+ *
+ * Falls back to EVERY row rather than to none when nothing matches: the caller
+ * renders an absent type as "UNKNOWN, not ruled out", and a silently empty
+ * answer would read as ruled out. The narrowing is a noise reduction, not a
+ * correctness claim.
+ *
+ * @param {string} resourceType
+ * @param {Array<{client: string, version: string}>} rows
+ * @returns {Array<{client: string, version: string}>}
+ */
+export function clientsForType(resourceType, rows) {
+  const service = (resourceType.split('::')[1] ?? '').toLowerCase();
+  if (!service) return rows;
+  const matched = rows.filter(
+    (r) => r.client.replace('@aws-sdk/client-', '').replace(/-/g, '') === service
+  );
+  return matched.length > 0 ? matched : rows;
+}
+
+export function sdkClientVersions(providerRelPath, repoRoot = REPO_ROOT) {
+  if (!providerRelPath) return [];
+  const abs = join(repoRoot, providerRelPath);
+  if (!existsSync(abs)) return [];
+  /** @type {Array<{client: string, version: string}>} */
+  const out = [];
+  const clients = [
+    ...new Set(
+      [...readFileSync(abs, 'utf8').matchAll(/from '(@aws-sdk\/client-[a-z0-9-]+)'/g)].map(
+        (m) => m[1]
+      )
+    ),
+  ];
+  for (const client of clients) {
+    if (!existsSync(join(repoRoot, 'node_modules', client, 'dist-types/models'))) continue;
+    try {
+      const version = JSON.parse(
+        readFileSync(join(repoRoot, 'node_modules', client, 'package.json'), 'utf8')
+      ).version;
+      if (typeof version === 'string' && version) out.push({ client, version });
+    } catch {
+      // An unreadable manifest is not a lag finding.
+    }
+  }
+  return out;
+}
+
 export function sdkVersionLag(client, installed, viewLatest = defaultViewLatest) {
   if (!installed) return undefined;
   let latest;
@@ -386,25 +472,34 @@ export function parseDeclaredProperties(generatedSource) {
   // a swallowed type renders "nothing needs a decision" over a red check, and
   // the whole-map refusal below cannot see it.
   const boundaries = [...generatedSource.matchAll(/\[\s*'([A-Z][\w:]+)'\s*,\s*\{/g)];
+  let recognised = 0;
   for (let i = 0; i < boundaries.length; i++) {
     const slice = generatedSource.slice(
       boundaries[i].index,
       i + 1 < boundaries.length ? boundaries[i + 1].index : undefined
     );
     const handled = /handled:\s*new Set(?:<[^>]*>)?\(\s*\[([\s\S]*?)\]\s*\)/.exec(slice);
+    const empty = /handled:\s*new Set(?:<[^>]*>)?\(\s*\)/.test(slice);
+    if (handled || empty) recognised++;
     declared.set(
       boundaries[i][1],
       new Set(handled ? [...handled[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : [])
     );
   }
 
-  // Refuses on a SHORTFALL, not just on zero. The zero-only form was blind to
-  // exactly the defect above, where 131 of 134 parsed and the report looked
-  // healthy.
-  if (declared.size !== boundaries.length || (boundaries.length === 0 && generatedSource.includes('PROPERTY_COVERAGE_BY_TYPE'))) {
+  // Refuses on a SHORTFALL of RECOGNISED entries, which is not the same as a
+  // shortfall of MAP KEYS: `declared.set` runs once per boundary, so comparing
+  // `declared.size` against `boundaries.length` could only ever fire on a
+  // duplicate type name. Measured — renaming the `handled` member emptied all
+  // 134 sets with no refusal, filtering every removal away and rendering
+  // "nothing needs a decision" over a red check. Both shapes count: a populated
+  // `new Set([...])` and the empty `new Set<string>()` a type with nothing
+  // declared is written as.
+  if (recognised !== boundaries.length) {
     throw new Error(
-      `property-coverage.generated.ts: parsed ${declared.size} of ${boundaries.length} ` +
-        'type entries — the shape changed. Refusing to report from a partial parse.'
+      `property-coverage.generated.ts: recognised the declaration shape in ${recognised} of ` +
+        `${boundaries.length} type entries — the shape changed. Refusing to report from a ` +
+        'partial parse.'
     );
   }
   if (declared.size === 0) {
@@ -451,12 +546,16 @@ export function renderDiagnosis({
   writableAdded,
   readOnlyAddedCount = 0,
   divergences,
+  nestedKeyUnparsed = false,
   skipped,
   sdkLag,
 }) {
   const lines = ['## What changed, and what needs a decision', ''];
 
-  if (removed.length === 0 && divergences.length === 0) {
+  // `nestedKeyUnparsed` is part of the condition, not just a section below it:
+  // a checker that FAILED in a mode this report cannot read is the one state
+  // where "additions only" is a confident wrong answer rather than a gap.
+  if (removed.length === 0 && divergences.length === 0 && !nestedKeyUnparsed) {
     lines.push('Nothing in this refresh needs a decision — additions only.', '');
   }
 
@@ -486,12 +585,26 @@ export function renderDiagnosis({
         // the SAME refresh, and both sides are in hand — so say so rather than
         // leaving the reader to spot it. This is the single most decisive
         // signal in the report when it fires.
-        const renames = entry.renameCandidates?.[property] ?? [];
+        //
+        // Re-checked against `writableAdded` HERE rather than trusted from the
+        // caller: a declaration cannot be pointed at a READ-ONLY property, so a
+        // rename claim naming one is advice that cannot be followed. The caller
+        // already filters, and that filter had no pin — swapping its argument
+        // for the unfiltered `added` list left every case green. Checking it
+        // where both sides are in hand closes the class whatever the caller
+        // passes.
+        const settableHere = new Set(
+          writableAdded.find((w) => w.resourceType === entry.resourceType)?.properties ?? []
+        );
+        const renames = (entry.renameCandidates?.[property] ?? []).filter((r) =>
+          settableHere.has(r)
+        );
         if (renames.length > 0) {
           lines.push(
-            `    - **Likely a RENAME**: this refresh also ADDED ` +
-              `${renames.map(renderName).join(', ')} to the same type. If so, ` +
-              'update the declaration to the new name rather than retiring it.'
+            `    - **Possibly a RENAME**: this refresh also ADDED ` +
+              `${renames.map(renderName).join(', ')} to the same type. That is a ` +
+              'name-similarity guess, not a finding — confirm it against the live ' +
+              'registry below before repointing the declaration.'
           );
         }
 
@@ -529,9 +642,34 @@ export function renderDiagnosis({
       ''
     );
     for (const d of divergences) {
-      lines.push(`- \`${d.line}\``);
+      const detail = d.detail ? ` — ${renderDetail(d.detail)}` : '';
+      lines.push(
+        `- ${renderName(d.resourceType)}: ${renderKey(d.nestedKey)} [${d.bucket}]${detail}`
+      );
     }
     lines.push('', ...divergenceProcedure(divergences, sdkLag), '');
+  }
+
+  if (nestedKeyUnparsed) {
+    // The checker said it failed and this report could not read a finding out
+    // of it. Neither throwing the diagnosis away nor calling the refresh clean
+    // is honest — both were tried, and the second is the exact silent-clean
+    // verdict the whole job exists to prevent.
+    lines.push(
+      '### The nested-key check FAILED in a mode this report cannot read',
+      '',
+      'It reported a failure and printed no finding line this parser recognises.',
+      'That is one of its non-divergence refusals (a stale `NESTED_KEY_ALLOW_LIST`,',
+      '`segmentRenames` or `terminalRenames` entry — each a real decision, and each',
+      'exactly what a schema refresh causes), a crash, or a change to its output',
+      'format. **Read the failing job log before merging**; the sections below are',
+      'still accurate for everything other than nested keys.',
+      '',
+      '```bash',
+      'vp run audit:nested-key-coverage:check',
+      '```',
+      ''
+    );
   }
 
   if (writableAdded.length > 0) {
@@ -609,6 +747,9 @@ export function pairRenames(property, writableAdded) {
   // maintainer an unrelated addition was `Id` renamed. PascalCase makes the
   // ends the meaningful boundaries: `RepositoryId` ends with `Id`,
   // `GeoProximityLocationV2` starts with `GeoProximityLocation`.
+  // An empty name matches every addition through `endsWith('')`. Unreachable
+  // from a real fixture, and refused rather than left to the caller.
+  if (!property) return [];
   return writableAdded.filter(
     (a) =>
       a !== property &&
@@ -644,6 +785,54 @@ export function renderName(name) {
 }
 
 /**
+ * The literal form of a name for a paste-able SHELL command.
+ *
+ * Same character class as {@link renderName} and for the same reason, but the
+ * consequence differs: these go inside single quotes in a `bash` block the
+ * runbook tells the maintainer to paste, so a `'` in a bundle-derived name is
+ * command injection into the maintainer's own terminal rather than a broken
+ * Markdown span. The class excludes it. A rejected name yields a placeholder
+ * that cannot be pasted by accident.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function renderLiteral(name) {
+  return /^[A-Za-z0-9.:]+$/.test(name) ? name : 'NAME_REJECTED_UNEXPECTED_CHARACTERS';
+}
+
+/**
+ * A nested key PATH, which is dotted and may carry the `#top` sentinel.
+ *
+ * Wider than {@link renderName}'s class by exactly the characters a path needs,
+ * and no wider: the point is refusing the ones that end a Markdown span or open
+ * a link (a backtick, `[`, `]`, `<`, `>`, whitespace).
+ *
+ * @param {string} key
+ * @returns {string}
+ */
+export function renderKey(key) {
+  return /^[A-Za-z0-9._:#-]+$/.test(key)
+    ? `\`${key}\``
+    : '**[key rejected: unexpected characters]**';
+}
+
+/**
+ * Free-form checker prose, stripped rather than rejected.
+ *
+ * Unlike a name this has no shape to validate against, and it is repo-derived
+ * (SDK model member names) rather than bundle-derived — so the treatment is to
+ * remove the characters that could break out of the line, not to refuse the
+ * whole string. It already arrives carrying backticks the checker wrote.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function renderDetail(text) {
+  return text.replace(/[`<>[\]()|\\\r\n]/g, '').trim();
+}
+
+/**
  * The steps that actually settle a removed-property case.
  *
  * Written as commands rather than as advice: a report that classifies without
@@ -662,13 +851,13 @@ function removedProcedure(removed) {
     '',
     '1. If a **RENAME** is flagged above it is a NAME-SIMILARITY guess, not a',
     '   finding — confirm with step 2 before repointing the declaration.',
-    '2. Otherwise confirm against the live registry — this is the API AWS serves,',
+    '2. Confirm against the live registry — this is the API AWS serves,',
     '   not the published bundle:',
     '',
     '   ```bash',
-    `   aws cloudformation describe-type --type RESOURCE --type-name '${type}' \\`,
+    `   aws cloudformation describe-type --type RESOURCE --type-name '${renderLiteral(type)}' \\`,
     "     --query Schema --output text | jq -r '.properties | keys[]' | grep -i " +
-      `'${property}'`,
+      `'${renderLiteral(property)}'`,
     '   ```',
     '',
     '3. If the SDK evidence says the name is gone AND step 2 finds nothing, the',
@@ -690,22 +879,31 @@ function removedProcedure(removed) {
  * @param {Array<{resourceType: string, bucket: string, line: string}>} divergences
  * @returns {string[]}
  */
-function divergenceProcedure(divergences, lag) {
+function divergenceProcedure(divergences, sdkLag) {
   const hasMissing = divergences.some((d) => d.bucket !== 'case-divergence');
   /** @type {string[]} */
   const lagLines = [];
-  if (hasMissing && lag) {
+  const lags = sdkLag ?? [];
+  if (hasMissing && lags.length > 0) {
+    // One line per (type, client) rather than one line for the whole section.
+    // A single line covering "the first divergent type" left every other
+    // divergence's SDK-lag reading unstated while reading like a verdict, and
+    // the client it named came from the provider's FIRST import.
+    lagLines.push('', '**Installed vs published, for the divergent types above:**', '');
+    for (const l of lags) {
+      lagLines.push(
+        l.behind
+          ? `- ${renderName(l.resourceType)} — \`${l.client}\` is ${l.installed}, npm ` +
+            `publishes ${l.latest}. The SDK-lag reading is LIVE here: bump and re-check ` +
+            'before allow-listing anything.'
+          : `- ${renderName(l.resourceType)} — \`${l.client}\` is ${l.installed}, which is ` +
+            'current, so the SDK-lag reading is ruled out here.'
+      );
+    }
     lagLines.push(
       '',
-      lag.behind
-        ? `**For ${renderName(lag.resourceType)} only**: the installed ` +
-          `\`${lag.client}\` is ${lag.installed}; npm publishes ${lag.latest}. The ` +
-          'SDK-lag reading is LIVE — bump and re-check before allow-listing anything. ' +
-          'Divergences on other services are NOT covered by this line.'
-        : `**For ${renderName(lag.resourceType)} only**: the installed ` +
-          `\`${lag.client}\` is ${lag.installed}, which is current, so the SDK-lag ` +
-          'reading is ruled out there. Divergences on other services are NOT covered ' +
-          'by this line.',
+      'A type absent from that list is one whose client could not be read — its',
+      'SDK-lag reading is UNKNOWN, not ruled out.',
       ''
     );
   }
@@ -846,26 +1044,39 @@ function main() {
     }
   }
 
-  const divergences = parseNestedKeyDivergences(readArg('--nested-key-log'));
+  const nestedKey = parseNestedKeyDivergences(readArg('--nested-key-log'));
+  const divergences = nestedKey.divergences;
   const skipped = readArg('--skipped-log')
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => /^AWS::/.test(l));
 
-  // Version lag is asked only when a divergence needs it, and only for the
-  // client of the first divergent type — one network call, never on the happy
-  // path, and its failure is silent by construction.
-  /** @type {{client: string, installed: string, latest: string, behind: boolean} | undefined} */
-  let sdkLag;
-  const firstDivergent = divergences.find((d) => d.bucket !== 'case-divergence');
-  if (firstDivergent) {
-    const evidence = sdkModelsMember(
-      'CdkdVersionProbeOnly',
-      providerFiles.get(firstDivergent.resourceType)
+  // Version lag is asked only when a divergence needs it — never on the happy
+  // path — and for EVERY divergent type's clients rather than the first one's
+  // first import. Each distinct client is asked once; the failure of any single
+  // lookup is silent by construction and shows up as an absent row, which the
+  // rendered section names as UNKNOWN rather than ruled out.
+  /** @type {Array<{resourceType: string, client: string, installed: string, latest: string, behind: boolean}>} */
+  const sdkLag = [];
+  /** @type {Map<string, {installed: string, latest: string, behind: boolean} | undefined>} */
+  const lagByClient = new Map();
+  const emitted = new Set();
+  for (const d of divergences) {
+    if (d.bucket === 'case-divergence') continue;
+    const rows = clientsForType(
+      d.resourceType,
+      sdkClientVersions(providerFiles.get(d.resourceType))
     );
-    if (evidence) {
-      const lag = sdkVersionLag(evidence.client, evidence.version);
-      if (lag) sdkLag = { client: evidence.client, resourceType: firstDivergent.resourceType, ...lag };
+    for (const { client, version } of rows) {
+      if (!lagByClient.has(client)) lagByClient.set(client, sdkVersionLag(client, version));
+      const lag = lagByClient.get(client);
+      // One row per (type, client): several divergences routinely land on the
+      // same type, and repeating its row reads as several findings.
+      const key = `${d.resourceType}\u0000${client}`;
+      if (lag && !emitted.has(key)) {
+        emitted.add(key);
+        sdkLag.push({ resourceType: d.resourceType, client, ...lag });
+      }
     }
   }
 
@@ -875,6 +1086,7 @@ function main() {
       writableAdded,
       readOnlyAddedCount,
       divergences,
+      nestedKeyUnparsed: nestedKey.unparsedFailure,
       skipped,
       sdkLag,
     }) + '\n'

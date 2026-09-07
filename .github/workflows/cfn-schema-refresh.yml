@@ -255,6 +255,12 @@ jobs:
       - name: Diagnose what needs a decision
         if: steps.drift.outputs.drifted == 'true'
         run: |
+          set -euo pipefail
+          # The checker is EXPECTED to exit non-zero here — a divergence is the
+          # hand-off this whole step exists to describe. `set +e` spans only the
+          # invocation, so a later pipeline in this step cannot silently inherit
+          # a relaxed shell (which is exactly how `tee` swallowed the refresh's
+          # exit code one step up).
           set +e
           vp run audit:nested-key-coverage:check > /tmp/nested-key.log 2>&1
           set -e
@@ -295,7 +301,14 @@ jobs:
               echo "::warning::PR ${{ steps.open_pr.outputs.number }} is ${state}, not OPEN — it closed while this ran. Skipping; the next cycle recomputes."
               exit 0
             fi
-            before_sha=$(git ls-remote --heads origin "refs/heads/${existing_branch}" | awk 'NR==1{print $1}')
+            # The BASE this commit sits on — the tip fetched in the switch step,
+            # minutes ago. Reading the REMOTE here instead was the bug: a human
+            # pushing during the refresh moves the remote BEFORE this line, so
+            # the post-failure comparison found the tip unmoved and declared a
+            # real lost race "not a lost race", exiting 1. A non-fast-forward
+            # rejection means the remote left the base we committed on, so the
+            # base is what it must be compared against.
+            base_sha=$(git rev-parse HEAD)
             # ADDITIVE commit onto the open PR's branch. Never force: a
             # non-fast-forward here means a human pushed while this ran, and
             # overwriting that is the one outcome worth losing a cycle over.
@@ -313,11 +326,11 @@ jobs:
               # nothing, forever. The remote tip moving is what distinguishes
               # them.
               now=$(git ls-remote --heads origin "refs/heads/${existing_branch}" | awk 'NR==1{print $1}')
-              if [ -n "${now}" ] && [ "${now}" != "${before_sha}" ]; then
-                echo "::warning::Could not push to ${existing_branch} — a concurrent update won (tip moved ${before_sha} -> ${now}). The next run recomputes the same drift."
+              if [ -n "${now}" ] && [ "${now}" != "${base_sha}" ]; then
+                echo "::warning::Could not push to ${existing_branch} — a concurrent update won (tip is ${now}, this commit was built on ${base_sha}). The next run recomputes the same drift."
                 exit 0
               fi
-              echo "::error::Push to ${existing_branch} failed and the remote tip did not move — this is not a lost race."
+              echo "::error::Push to ${existing_branch} failed while the remote tip is still the base this commit was built on (${base_sha}) — a fast-forward was possible, so this is not a lost race."
               exit 1
             fi
           else

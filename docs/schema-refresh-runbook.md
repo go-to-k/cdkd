@@ -22,6 +22,7 @@ why the job is allowed to fail — is in
 | No pull request | Nothing. Most days are this. |
 | A pull request, CI green | Read the diff, squash merge. |
 | A pull request, CI red | Two classes need a decision — the PR names which. |
+| A pull request saying the nested-key check failed unreadably | Read that job's log; the other sections still hold. |
 | A comment on an open pull request | New drift was added to it. Same two classes. |
 
 The job keeps **at most one pull request open**. While one is open, later runs
@@ -56,7 +57,10 @@ Nothing that encodes a judgement is touched: no `unhandledByDesign`, no
 
 If a push onto an open pull request would not fast-forward — someone pushed
 while the job ran — it gives up for that cycle with a warning rather than
-forcing. The next run recomputes the same drift.
+forcing. The next run recomputes the same drift. A push that fails while the
+branch has NOT moved is a different thing (a permission or branch-protection
+problem), and fails the job loudly instead: a green daily run that lands
+nothing, forever, is the failure mode worth being noisy about.
 
 ## A green pull request
 
@@ -96,8 +100,11 @@ A provider still declares a property AWS no longer publishes.
 published model; the API is the behaviour.
 
 The pull request does most of this for you — it says whether the AWS SDK still
-models the name, and flags a **likely rename** when the same refresh added a
-name to the same type. To settle the rest:
+models the name, and flags a **possible rename** when the same refresh added a
+settable name to the same type whose spelling extends or is extended by the
+removed one. That test is deliberately narrow: a rename that changes the middle
+of a name is not flagged, so the absence of a flag is not evidence there was no
+rename. To settle the rest:
 
 ```bash
 # 1. Confirm against the live registry — the API AWS serves, not the bundle.
@@ -108,10 +115,10 @@ aws cloudformation describe-type --type RESOURCE --type-name 'AWS::Service::Type
 vp test run property-coverage
 ```
 
-If a rename was flagged, take it: point the declaration at the new name. If
-both the SDK and the live registry have dropped the name, delete the
-declaration. If either still knows it, add a `bogusTolerated` entry with a
-one-line reason.
+A flagged rename is a name-similarity guess, not a finding — confirm it in step
+1 before repointing the declaration at the new name. If both the SDK and the
+live registry have dropped the name, delete the declaration. If either still
+knows it, add a `bogusTolerated` entry with a one-line reason.
 
 ### A nested key diverged
 

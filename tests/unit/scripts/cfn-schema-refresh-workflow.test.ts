@@ -109,7 +109,11 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       for (const name of ['Refresh fixtures from the public schema bundle', 'Detect drift']) {
         expect(byName(name).if).toBeUndefined();
       }
-      for (const name of ['Regenerate the derived artifacts', 'Publish the refresh']) {
+      for (const name of [
+        'Regenerate the derived artifacts',
+        'Diagnose what needs a decision',
+        'Publish the refresh',
+      ]) {
         expect(byName(name).if).toBe("steps.drift.outputs.drifted == 'true'");
       }
     });
@@ -270,8 +274,28 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // the `tee` added for the skip list reports ITS status, and the refresh's
       // exit 2 on a capture failure becomes "no drift" and a green run.
       const refresh = shellOf('Refresh fixtures from the public schema bundle');
-      expect(refresh).toContain('tee /tmp/refresh.log');
-      expect(refresh).toContain('set -o pipefail');
+      // Position, not presence: the token appearing anywhere in the step is
+      // satisfied by a `set -o pipefail` written AFTER the pipeline, which
+      // protects nothing. Measured — moving it below the `tee` left this green.
+      const pipefailAt = refresh.indexOf('set -o pipefail');
+      const teeAt = refresh.indexOf('tee /tmp/refresh.log');
+      expect(teeAt, 'the tee\u2019d refresh is gone \u2014 this case guards nothing').toBeGreaterThan(-1);
+      expect(pipefailAt, 'no pipefail in the refresh step').toBeGreaterThan(-1);
+      expect(pipefailAt, 'pipefail is set AFTER the pipeline it must guard').toBeLessThan(teeAt);
+    });
+
+    it('gives every step that runs a pipeline a pipefail before it', () => {
+      // The generalisation of the defect above, so the next pipeline added to
+      // any step cannot reintroduce it silently.
+      for (const step of steps) {
+        const run = step.run;
+        if (!run) continue;
+        const pipeAt = run.search(/\S \| \S|\|\s*\n/);
+        if (pipeAt === -1) continue;
+        const at = run.indexOf('pipefail');
+        expect(at, `${step.name}: runs a pipeline with no pipefail`).toBeGreaterThan(-1);
+        expect(at, `${step.name}: pipefail is set after its first pipeline`).toBeLessThan(pipeAt);
+      }
     });
 
     it('fails the step when a push failure is NOT a lost race', () => {
@@ -279,9 +303,51 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // green exit, or the daily job lands nothing forever while reporting
       // success.
       const publish = shellOf('Publish the refresh');
-      expect(publish).toContain('before_sha');
-      expect(publish).toMatch(/::error::/);
-      expect(publish).toMatch(/exit 1/);
+      // The RELATION, not the tokens. Inverting the comparison — so a real
+      // permission failure exits 0 and a real lost race exits 1, precisely the
+      // defect — left the token-presence form green, as did blanking the
+      // baseline entirely.
+      expect(publish).toMatch(/if \[ -n "\$\{now\}" \] && \[ "\$\{now\}" != "\$\{base_sha\}" \]; then/);
+      const raceAt = publish.search(/::warning::Could not push/);
+      const errAt = publish.search(/::error::Push to/);
+      expect(raceAt).toBeGreaterThan(-1);
+      expect(errAt).toBeGreaterThan(raceAt);
+      // The lost-race arm exits 0 INSIDE the moved-tip branch; the hard failure
+      // is the fall-through.
+      expect(publish.slice(raceAt, errAt)).toMatch(/exit 0/);
+      expect(publish.slice(errAt)).toMatch(/exit 1/);
+    });
+
+    it('takes the push baseline from the LOCAL base, not a remote read', () => {
+      // Reading the remote just before pushing samples it AFTER a concurrent
+      // human push, so the post-failure comparison finds the tip "unmoved" and
+      // calls a real lost race "not a lost race", exiting 1. The base the
+      // commit was built on is what a non-fast-forward is relative to.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('base_sha=$(git rev-parse HEAD)');
+      const baseAt = publish.indexOf('base_sha=$(git rev-parse HEAD)');
+      const commitAt = publish.indexOf('git commit -m "chore(schemas): additional');
+      expect(commitAt).toBeGreaterThan(-1);
+      expect(baseAt, 'the baseline is captured after the commit it describes').toBeLessThan(
+        commitAt
+      );
+      expect(publish, 'the baseline is still read off the remote').not.toMatch(
+        /base_sha=\$\(git ls-remote/
+      );
+    });
+
+    it('guards the umbrella comment\u2019s PR link on the number having resolved', () => {
+      // The comment itself is deliberately unguarded — the list is worth posting
+      // even when the number lookup failed. What must be guarded is the LINK,
+      // which would otherwise read `pull/` and point at the repo's PR index.
+      const publish = shellOf('Publish the refresh');
+      const guardAt = publish.search(/if \[ -n "\$\{pr_number:?-?\}" \]/);
+      const linkAt = publish.indexOf('/pull/${pr_number}');
+      expect(guardAt, 'the PR link is emitted with no PR-number guard').toBeGreaterThan(-1);
+      expect(linkAt).toBeGreaterThan(-1);
+      expect(guardAt).toBeLessThan(linkAt);
+      // And the comment still fires outside that guard.
+      expect(publish.indexOf('${BACKFILL_UMBRELLA}')).toBeGreaterThan(linkAt);
     });
 
     it('pins the cross-file literals the shell greps for', () => {
