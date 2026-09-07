@@ -1,15 +1,15 @@
 {
   "resourceType": "AWS::CodeCommit::Repository",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-07",
   "properties": [
     "Arn",
     "CloneUrlHttp",
     "CloneUrlSsh",
     "Code",
-    "Id",
     "KmsKeyId",
     "Name",
     "RepositoryDescription",
+    "RepositoryId",
     "RepositoryName",
     "Tags",
     "Triggers"
@@ -18,12 +18,12 @@
     "Arn",
     "CloneUrlHttp",
     "CloneUrlSsh",
-    "Id",
-    "Name"
+    "Name",
+    "RepositoryId"
   ],
   "createOnlyProperties": [],
   "primaryIdentifier": [
-    "Id"
+    "RepositoryId"
   ],
   "nestedProperties": {
     "Triggers": [
@@ -72,7 +72,7 @@
       "CloneUrlSsh": "scalar",
       "RepositoryName": "scalar",
       "Triggers": "array",
-      "Id": "scalar",
+      "RepositoryId": "scalar",
       "Arn": "scalar",
       "Code": "object",
       "RepositoryDescription": "scalar",

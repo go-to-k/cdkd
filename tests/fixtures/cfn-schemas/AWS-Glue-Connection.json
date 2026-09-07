@@ -1,19 +1,21 @@
 {
   "resourceType": "AWS::Glue::Connection",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-07",
   "properties": [
     "CatalogId",
     "ConnectionInput",
-    "Id"
+    "Name",
+    "Tags"
   ],
   "readOnlyProperties": [
-    "Id"
+    "Name"
   ],
   "createOnlyProperties": [
     "CatalogId"
   ],
   "primaryIdentifier": [
-    "Id"
+    "CatalogId",
+    "Name"
   ],
   "nestedProperties": {
     "ConnectionInput": [
@@ -101,60 +103,61 @@
     "#top": {
       "ConnectionInput": "object",
       "CatalogId": "scalar",
-      "Id": "scalar"
-    },
-    "OAuth2PropertiesInput": {
-      "AuthorizationCodeProperties": "object",
-      "OAuth2ClientApplication": "object",
-      "TokenUrl": "scalar",
-      "OAuth2Credentials": "object",
-      "OAuth2GrantType": "scalar",
-      "TokenUrlParametersMap": "object"
-    },
-    "ConnectionInput": {
-      "AuthenticationConfiguration": "object",
-      "PythonProperties": "object",
-      "Description": "scalar",
-      "ConnectionType": "scalar",
-      "MatchCriteria": "array",
-      "ConnectionProperties": "object",
-      "AthenaProperties": "object",
-      "ValidateForComputeEnvironments": "array",
-      "Name": "scalar",
-      "SparkProperties": "object",
-      "PhysicalConnectionRequirements": "object",
-      "ValidateCredentials": "scalar"
-    },
-    "PhysicalConnectionRequirements": {
-      "AvailabilityZone": "scalar",
-      "SecurityGroupIdList": "array",
-      "SubnetId": "scalar"
-    },
-    "BasicAuthenticationCredentials": {
-      "Username": "scalar",
-      "Password": "scalar"
+      "Tags": "object",
+      "Name": "scalar"
     },
     "AuthorizationCodeProperties": {
       "AuthorizationCode": "scalar",
       "RedirectUri": "scalar"
+    },
+    "AuthenticationConfiguration": {
+      "AuthenticationType": "scalar",
+      "BasicAuthenticationCredentials": "object",
+      "CustomAuthenticationCredentials": "object",
+      "KmsKeyArn": "scalar",
+      "OAuth2Properties": "object",
+      "SecretArn": "scalar"
+    },
+    "BasicAuthenticationCredentials": {
+      "Password": "scalar",
+      "Username": "scalar"
+    },
+    "ConnectionInput": {
+      "AthenaProperties": "object",
+      "AuthenticationConfiguration": "object",
+      "ConnectionProperties": "object",
+      "ConnectionType": "scalar",
+      "Description": "scalar",
+      "MatchCriteria": "array",
+      "Name": "scalar",
+      "PhysicalConnectionRequirements": "object",
+      "PythonProperties": "object",
+      "SparkProperties": "object",
+      "ValidateCredentials": "scalar",
+      "ValidateForComputeEnvironments": "array"
     },
     "OAuth2ClientApplication": {
       "AWSManagedClientApplicationReference": "scalar",
       "UserManagedClientApplicationClientId": "scalar"
     },
     "OAuth2Credentials": {
-      "UserManagedClientApplicationClientSecret": "scalar",
+      "AccessToken": "scalar",
       "JwtToken": "scalar",
       "RefreshToken": "scalar",
-      "AccessToken": "scalar"
+      "UserManagedClientApplicationClientSecret": "scalar"
     },
-    "AuthenticationConfigurationInput": {
-      "SecretArn": "scalar",
-      "KmsKeyArn": "scalar",
-      "OAuth2Properties": "object",
-      "CustomAuthenticationCredentials": "object",
-      "BasicAuthenticationCredentials": "object",
-      "AuthenticationType": "scalar"
+    "OAuth2Properties": {
+      "AuthorizationCodeProperties": "object",
+      "OAuth2ClientApplication": "object",
+      "OAuth2Credentials": "object",
+      "OAuth2GrantType": "scalar",
+      "TokenUrl": "scalar",
+      "TokenUrlParametersMap": "object"
+    },
+    "PhysicalConnectionRequirements": {
+      "AvailabilityZone": "scalar",
+      "SecurityGroupIdList": "array",
+      "SubnetId": "scalar"
     }
   },
   "definitionRequired": {
@@ -162,11 +165,11 @@
       "CatalogId",
       "ConnectionInput"
     ],
+    "AuthenticationConfiguration": [
+      "AuthenticationType"
+    ],
     "ConnectionInput": [
       "ConnectionType"
-    ],
-    "AuthenticationConfigurationInput": [
-      "AuthenticationType"
     ]
   }
 }

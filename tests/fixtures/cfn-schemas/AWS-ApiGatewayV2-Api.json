@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Api",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-07",
   "properties": [
     "ApiEndpoint",
     "ApiId",
@@ -13,6 +13,7 @@
     "Description",
     "DisableExecuteApiEndpoint",
     "DisableSchemaValidation",
+    "ExecuteApiArn",
     "FailOnWarnings",
     "IpAddressType",
     "Name",
@@ -25,7 +26,8 @@
   ],
   "readOnlyProperties": [
     "ApiEndpoint",
-    "ApiId"
+    "ApiId",
+    "ExecuteApiArn"
   ],
   "createOnlyProperties": [
     "ProtocolType"
@@ -77,6 +79,7 @@
       "Target": "scalar",
       "FailOnWarnings": "scalar",
       "ApiEndpoint": "scalar",
+      "ExecuteApiArn": "scalar",
       "Description": "scalar",
       "DisableExecuteApiEndpoint": "scalar",
       "DisableSchemaValidation": "scalar",

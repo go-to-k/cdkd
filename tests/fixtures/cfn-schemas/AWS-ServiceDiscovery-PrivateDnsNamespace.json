@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-07",
   "properties": [
     "Arn",
     "Description",
@@ -72,8 +72,7 @@
   },
   "definitionRequired": {
     "#top": [
-      "Name",
-      "Vpc"
+      "Name"
     ],
     "Tag": [
       "Key",

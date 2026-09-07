@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Events::Rule",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-07",
   "properties": [
     "Arn",
     "Description",
@@ -8,13 +8,15 @@
     "EventPattern",
     "Name",
     "RoleArn",
+    "RuleName",
     "ScheduleExpression",
     "State",
     "Tags",
     "Targets"
   ],
   "readOnlyProperties": [
-    "Arn"
+    "Arn",
+    "RuleName"
   ],
   "createOnlyProperties": [
     "Name"
@@ -192,6 +194,7 @@
       "Targets": "array",
       "Arn": "scalar",
       "RoleArn": "scalar",
+      "RuleName": "scalar",
       "Tags": "array",
       "Name": "scalar"
     },
