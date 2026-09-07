@@ -58,6 +58,7 @@ import {
   buildFixture,
   downloadSchemaBundle,
   fixtureDiffersIgnoringDate,
+  MAX_BUNDLE_BYTES,
   readSchemaBundle,
   refreshFixturesFromEntries,
   serializeFixture,
@@ -830,24 +831,35 @@ describe('download and decompression bounds', () => {
     expect(() => readSchemaBundle(buf)).toThrow(/declares 0 uncompressed bytes/);
   });
 
-  it('refuses a zip declaring more entries than any real bundle, before parsing them', () => {
-    // The EOCD total-entries field, patched to a crafted count. The ceiling has
-    // to be read from the tail BEFORE `new AdmZip()`, which parses the whole
-    // central directory eagerly at ~9 KB of heap per entry.
-    const zip = new AdmZip();
-    zip.addFile('aws-test-t0.json', Buffer.from('{"properties":{}}'));
-    const buf = zip.toBuffer();
-    const EOCD_SIG = 0x06054b50;
-    let eocd = -1;
-    for (let i = buf.length - 22; i >= 0; i--) {
-      if (buf.readUInt32LE(i) === EOCD_SIG) {
-        eocd = i;
-        break;
-      }
-    }
-    expect(eocd, 'no EOCD found — fixture is wrong').toBeGreaterThanOrEqual(0);
-    buf.writeUInt16LE(0xfffe, eocd + 10);
-    expect(() => readSchemaBundle(buf)).toThrow(/over the .* ceiling/);
+  /**
+   * The central-directory parse is bounded ARITHMETICALLY by the byte cap
+   * rather than by an entry-count check, and this pins that arithmetic.
+   *
+   * `new AdmZip(buffer)` builds an object per directory record before any
+   * other check in the module runs, so a buffer that is nothing but records is
+   * the cheapest attack on the runner. Measured 2026-09-07: ~8,686 bytes of
+   * heap per entry, minimum record 46 bytes plus a one-character name.
+   *
+   * A hand-rolled EOCD ceiling was tried instead and deleted: two independent
+   * reviews measured four bypasses (wrong field — `ENDTOT` vs the `ENDSUB`
+   * adm-zip allocates from; wrong ZIP64 field; a `0xFFFF` gate adm-zip never
+   * consults; highest-vs-lowest EOCD), and its test patched the one field
+   * adm-zip ignores, so it was green while inert. This case cannot go inert
+   * the same way: it asserts a relationship between two constants, with no
+   * parsing involved.
+   */
+  it('keeps the worst-case directory parse survivable, so raising the cap is a security decision', () => {
+    const MIN_CENTRAL_RECORD_BYTES = 47; // 46-byte header + 1-char name
+    const HEAP_BYTES_PER_ENTRY = 8686; // measured against adm-zip 0.5.x
+    const worstCaseHeapBytes =
+      (MAX_BUNDLE_BYTES / MIN_CENTRAL_RECORD_BYTES) * HEAP_BYTES_PER_ENTRY;
+    // 3 GB: comfortably under a runner's memory and under Node's default
+    // old-space, so the run reaches MAX_MISSING_TYPE_RATIO and is refused
+    // there rather than being OOM-killed mid-parse.
+    expect(worstCaseHeapBytes).toBeLessThan(3 * 1024 * 1024 * 1024);
+    // And the cap must still clear the real bundle with headroom — a cap
+    // tightened until it refuses AWS's own artifact would fail every cycle.
+    expect(MAX_BUNDLE_BYTES).toBeGreaterThan(2 * 2_989_693);
   });
 
   it('reads a normal bundle without tripping the cap', () => {

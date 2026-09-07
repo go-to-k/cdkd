@@ -138,19 +138,21 @@ export function findUnrecognizedProperties(
   if (!templateProperties) return [];
   const coverage = getPropertyCoverage(resourceType);
   if (!coverage) return [];
-  const keys = Object.keys(templateProperties);
-  // A WHOLE-BAG intrinsic — `Properties: { 'Fn::If': [...] }` — is not a
-  // property name, and reporting it would be the one FALSE warn this
-  // predicate can emit. The test is `Fn::*` as the SOLE key, mirroring
-  // `IntrinsicFunctionResolver`, which only treats a single-key object as an
-  // intrinsic: in a MIXED bag (`{ 'Fn::If': [...], Foo: 1 }`) the resolver
-  // leaves `Fn::If` as a literal key, the SDK provider drops it, and the warn
-  // is then correct rather than false. Skipping by prefix alone suppressed
-  // exactly that case.
-  const isWholeBagIntrinsic = keys.length === 1 && keys[0]!.startsWith('Fn::');
-  if (isWholeBagIntrinsic) return [];
   const unrecognized: string[] = [];
-  for (const prop of keys) {
+  for (const prop of Object.keys(templateProperties)) {
+    // An intrinsic KEY is not a property name, and reporting one would be the
+    // only FALSE warn this predicate can emit. `Properties: { 'Fn::If': [...] }`
+    // is legal CloudFormation (and what `CfnInclude` / a raw `addOverride`
+    // produces), and `Ref` sits in the same position.
+    //
+    // Matched by PRESENCE, not as a sole key — that mirrors what the resolver
+    // actually does. `IntrinsicFunctionResolver.resolveValue` dispatches on
+    // `if ('Fn::If' in obj)` / `if ('Ref' in obj)`, so a MIXED bag is still
+    // resolved as an intrinsic and its siblings are discarded. A sole-key rule
+    // here (tried once, reverted) therefore re-introduced the false warn for
+    // exactly the mixed shape: the resolver's own sole-key test lives only in
+    // `detectUnknownIntrinsicKey`, which governs UNKNOWN keys, not this.
+    if (prop === 'Ref' || prop.startsWith('Fn::')) continue;
     if (coverage.handled.has(prop)) continue;
     if (coverage.silentDrop.has(prop)) continue;
     unrecognized.push(prop);

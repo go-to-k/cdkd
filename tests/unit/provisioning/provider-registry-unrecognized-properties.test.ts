@@ -118,13 +118,17 @@ describe('findUnrecognizedProperties (issue #2718)', () => {
     expect(
       findUnrecognizedProperties(fx.resourceType, { 'Fn::If': ['C', {}, {}] })
     ).toEqual([]);
-    // But a MIXED bag is NOT the intrinsic form: the resolver only treats a
-    // single-key object as an intrinsic, so here `Fn::If` stays a literal key
-    // the provider drops — the warn is correct, and suppressing it by a bare
-    // prefix test would have hidden a real drop.
+    // A MIXED bag too: `resolveValue` dispatches on `'Fn::If' in obj`, so the
+    // whole bag is still resolved as an intrinsic. An earlier revision used a
+    // SOLE-KEY rule here on the belief that the resolver did — it does not
+    // (that rule governs only UNKNOWN intrinsic keys), so this case pins the
+    // corrected behaviour: the intrinsic key is never reported, the real
+    // unknown beside it still is.
     expect(
       findUnrecognizedProperties(fx.resourceType, { 'Fn::If': ['C', {}, {}], [UNKNOWN_PROP]: 1 })
-    ).toEqual([UNKNOWN_PROP, 'Fn::If']);
+    ).toEqual([UNKNOWN_PROP]);
+    // `Ref` sits in the same position and takes the same path.
+    expect(findUnrecognizedProperties(fx.resourceType, { Ref: 'X' })).toEqual([]);
   });
 
   it('returns [] for undefined properties', () => {

@@ -57,3 +57,4 @@ export declare function downloadSchemaBundle(
   url: string,
   fetchImpl?: (url: string, init?: unknown) => Promise<unknown>
 ): Promise<Buffer>;
+export declare const MAX_BUNDLE_BYTES: number;

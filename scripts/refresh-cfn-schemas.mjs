@@ -752,24 +752,42 @@ const MAX_MISSING_TYPE_RATIO = 0.1;
 
 /**
  * Cap on the downloaded bundle, and on the cumulative UNCOMPRESSED bytes read
- * out of it. Measured 2026-09-07 at 2,989,693 compressed / 13,991,910
- * uncompressed, so 64 MB is ~4.5x headroom on the uncompressed side.
+ * out of it. Measured 2026-09-07: 2,989,693 compressed / 13,991,910
+ * uncompressed, so this leaves ~4.2x headroom on the compressed side.
  *
  * AWS publishes no checksum or signature for this artifact, so it cannot be
  * pinned by content — TLS plus the origin host is the whole trust story. That
- * makes a decompression bound the only defence against a bundle that unzips
- * into far more than it claims, and the floors above cannot serve: both run
- * AFTER extraction, so a zip bomb exhausts memory before either is consulted.
+ * makes a size bound the only defence against a bundle that expands into far
+ * more than it claims, and the entry FLOOR below cannot serve: it runs after
+ * extraction, so a bomb exhausts memory before it is consulted.
+ *
+ * **It also bounds the CENTRAL-DIRECTORY parse, which is why it is 12 MB
+ * rather than something roomier.** `new AdmZip(buffer)` builds an object per
+ * directory record before any check in this module runs, so a buffer that is
+ * nothing but records is the cheapest attack on the runner. Measured
+ * 2026-09-07: ~8,686 bytes of heap per entry, and the smallest possible record
+ * is 46 bytes plus a one-character name. The worst case is therefore
+ * `MAX_BUNDLE_BYTES / 47 * 8686` — about 2.3 GB here, which survives and is
+ * then refused by {@link MAX_MISSING_TYPE_RATIO}, since none of those entries
+ * match a registered type. At 64 MB the same arithmetic gives ~12.4 GB, which
+ * OOM-kills the job.
+ *
+ * A hand-rolled End-Of-Central-Directory entry-count ceiling was tried here
+ * instead, and DELETED rather than fixed a third time. Two independent reviews
+ * measured four working bypasses: it read `ENDTOT` where adm-zip allocates
+ * from `ENDSUB`, used `ZIP64TOT` where adm-zip uses `ZIP64SUB`, gated the
+ * ZIP64 path on a `0xFFFF` sentinel adm-zip never consults, and took the
+ * highest EOCD where adm-zip takes the lowest. A correct version is possible —
+ * both reviewers supplied one — but it mirrors adm-zip's internals, so a
+ * dependency bump can silently re-open it, and it parses attacker-controlled
+ * bytes to defend against attacker-controlled bytes. The arithmetic above
+ * needs neither.
+ *
+ * RAISING THIS CONSTANT IS A SECURITY DECISION, not a capacity one; the
+ * arithmetic is pinned by `tests/unit/scripts/refresh-cfn-schemas-zip.test.ts`.
  */
-const MAX_BUNDLE_BYTES = 64 * 1024 * 1024;
+export const MAX_BUNDLE_BYTES = 12 * 1024 * 1024;
 
-/**
- * Ceiling on the number of entries the bundle may declare. Measured 2026-09-07
- * at 1729, so this is ~29x headroom — it exists to refuse a crafted directory,
- * not to track AWS's type count. See {@link assertEntryCountUnderCeiling} for
- * why it has to be checked before adm-zip parses.
- */
-const MAX_ZIP_ENTRIES = 50000;
 
 /**
  * Convert a CFn resource type to its entry name in the public schema bundle.
@@ -877,61 +895,12 @@ export function refreshFixturesFromEntries({
 }
 
 /**
- * Refuse a zip whose central directory declares more entries than any real
- * schema bundle could, BEFORE handing the buffer to adm-zip.
- *
- * The order is the point. `new AdmZip(buffer)` parses the entire central
- * directory eagerly, at roughly 9 KB of heap per entry, and every other bound
- * in this module runs after that — so a 64 MB buffer that is nothing but
- * central-directory records (~1.4M entries) costs about 12 GB of heap and
- * OOM-kills the runner before a single byte is inflated. `MIN_ZIP_ENTRIES` is
- * a FLOOR checked later and cannot help.
- *
- * Read straight from the End Of Central Directory record rather than from
- * adm-zip, since the whole point is to answer before adm-zip runs. The ZIP64
- * form is honored because a plain EOCD saturates at 0xFFFF, and adm-zip
- * follows the ZIP64 count.
- *
- * @param {Buffer} zipBuffer
- */
-function assertEntryCountUnderCeiling(zipBuffer) {
-  const EOCD_SIG = 0x06054b50;
-  const ZIP64_EOCD_SIG = 0x06064b50;
-  // The EOCD sits in the last 22 bytes plus up to 64 KB of comment.
-  const scanFrom = Math.max(0, zipBuffer.length - (22 + 0xffff));
-  let eocd = -1;
-  for (let i = zipBuffer.length - 22; i >= scanFrom; i--) {
-    if (zipBuffer.readUInt32LE(i) === EOCD_SIG) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) return; // Not a zip we can read — adm-zip will say so properly.
-  let total = zipBuffer.readUInt16LE(eocd + 10);
-  if (total === 0xffff) {
-    for (let i = eocd - 20; i >= scanFrom; i--) {
-      if (zipBuffer.readUInt32LE(i) === ZIP64_EOCD_SIG) {
-        total = Number(zipBuffer.readBigUInt64LE(i + 32));
-        break;
-      }
-    }
-  }
-  if (total > MAX_ZIP_ENTRIES) {
-    throw new Error(
-      `Schema bundle declares ${total} entries, over the ${MAX_ZIP_ENTRIES} ceiling — ` +
-        'refusing to parse its central directory.'
-    );
-  }
-}
-
-/**
  * Read a schema bundle into an entry-name → JSON map.
  *
  * @param {Buffer} zipBuffer
  * @returns {Map<string, string>}
  */
 export function readSchemaBundle(zipBuffer) {
-  assertEntryCountUnderCeiling(zipBuffer);
   const zip = new AdmZip(zipBuffer);
   /** @type {Map<string, string>} */
   const entries = new Map();
