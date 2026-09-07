@@ -181,8 +181,10 @@ already HAS the fix can detect its own regression:
 
   **bash 3.2 is exercised on the HOOK, not just the suite.** `/bin/bash <suite>`
   leaves the hook on `#!/usr/bin/env bash`, which PATH resolves to the 5.x.
-  `HOOK_BASH=<path>` puts a `bash` shim first on PATH; six suites honour it and
-  `run-tests.sh` sets it per shell. Verified with a bash-4-only PARSE error
+  `HOOK_BASH=<path>` puts a `bash` shim first on PATH, and `run-tests.sh` sets
+  it per shell. How many suites honour it is not written here -- it was `six`
+  and is not any more: `grep -l HOOK_BASH .claude/hooks/*.test.sh`, and
+  go-to-k/cdkd#2715 tracks the ones that still do not. Verified with a bash-4-only PARSE error
   (`;;&` in a `case`) per hook: red with the shim, green without.
 - **`.claude/hooks/stop-unmerged-lane-warn.sh`** covers the quieter half: a
   linked worktree whose branch is COMMITTED but still ahead of `origin/main` --

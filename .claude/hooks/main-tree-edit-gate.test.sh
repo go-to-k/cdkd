@@ -10,6 +10,23 @@ set -u
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/main-tree-edit-gate.sh"
 
+# `HOOK_BASH=<path>` runs the HOOK under that interpreter too, not merely this
+# suite. `run-tests.sh` already exports it alongside each shell it drives, and
+# this file IGNORED it until 2026-09-07: the hook is `#!/usr/bin/env bash`, so a
+# plain `bash "$HOOK"` takes whatever comes first on PATH -- 5.x -- while the
+# suite itself ran under 3.2. "Passes under bash 3.2" was therefore true of the
+# test and false of the thing under test, and a regex whose two bash engines
+# DISAGREE (`gate_strip_prefix`; see .claude/rules/hooks-class-fences.md) could
+# only fail on a runner that has 3.2 as both -- i.e. in CI, never here.
+#
+# Resolved to an ABSOLUTE path so the value cannot depend on where the hook is
+# invoked from. `run-tests.sh` passes `bash` / `/bin/bash`, both of which
+# `command -v` settles; the fallback only matters for a hand-typed relative
+# path, and it deliberately resolves against the caller's cwd, not this file's.
+HOOK_RUNNER="${HOOK_BASH:-bash}"
+HOOK_RUNNER="$(command -v "$HOOK_RUNNER" 2>/dev/null || printf '%s' "$HOOK_RUNNER")"
+case "$HOOK_RUNNER" in /*) ;; *) HOOK_RUNNER="$PWD/$HOOK_RUNNER" ;; esac
+
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -18,6 +35,11 @@ git init -q -b main "$MAIN"
 mkdir -p "$MAIN/docs/_generated" "$MAIN/src"
 echo "row" > "$MAIN/docs/_generated/ledger.tsv"
 echo "x" > "$MAIN/src/existing.ts"
+# A tracked file OUTSIDE `src|tests|docs|scripts|.claude`, so the only arm that
+# can refuse a write to it is `tracked`. Without one, every "tracked" case in
+# this file was actually exercising `new-source-file` -- which is how a dead
+# `tracked` arm sat behind a green suite for an entire branch.
+echo "readme" > "$MAIN/README.md"
 # Opt the fixture into the gate (issue #1259).
 touch "$MAIN/.markgate.yml"
 git -C "$MAIN" add -A
@@ -40,12 +62,35 @@ pass=0; fail=0
 # run_case <expected_exit> <desc> <json>
 run_case() {
   local expected="$1" desc="$2" json="$3" rc
-  printf '%s' "$json" | bash "$HOOK" >/dev/null 2>&1
+  printf '%s' "$json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
   rc=$?
   if [[ "$rc" == "$expected" ]]; then
     pass=$((pass+1)); printf 'ok   (exit %s) %s\n' "$rc" "$desc"
   else
     fail=$((fail+1)); printf 'FAIL (exit %s, want %s) %s\n' "$rc" "$expected" "$desc"
+  fi
+}
+
+# ASSERTS THE REFUSAL TEXT, not only the exit code.
+#
+# `run_case` compares rc and discards stderr, and rc alone cannot tell a REFUSAL
+# from a CRASH: a `set -u` abort exits 2 as well. That is not hypothetical --
+# the overflow refusal referenced `__cds`, a variable `local` to
+# `__union_cd_bases`, so every overflow aborted with `__cds: unbound variable`
+# and printed no message at all, while the case for it sat green on the crash.
+# The same blindness hid a dead `tracked` arm behind a neighbouring arm that
+# refused with the same code. Use this wherever WHICH refusal fired is the
+# thing under test.
+run_case_text() {
+  local expected="$1" needle="$2" desc="$3" json="$4" rc out
+  out=$(printf '%s' "$json" | "$HOOK_RUNNER" "$HOOK" 2>&1 >/dev/null); rc=$?
+  if [[ "$rc" == "$expected" && "$out" == *"$needle"* ]]; then
+    pass=$((pass+1)); printf 'ok   (exit %s, text) %s\n' "$rc" "$desc"
+  else
+    fail=$((fail+1))
+    printf 'FAIL (exit %s want %s; text %s) %s\n' "$rc" "$expected" \
+      "$([[ "$out" == *"$needle"* ]] && echo ok || echo MISSING)" "$desc"
+    printf '     wanted text: %s\n     got: %s\n' "$needle" "$(printf '%s' "$out" | head -2)"
   fi
 }
 
@@ -151,6 +196,44 @@ run_case 2 "Bash 'tee ledger.tsv' then '&& cd /tmp' in main tree" \
 run_case 2 "Bash new src/ file then '&& cd /tmp' in main tree" \
   "$(jq -nc --arg cmd "echo hi > src/brandnew.ts && cd /tmp" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# An ODD trailing backslash escapes the space, so `cd\ /tmp` is the single word
+# `cd /tmp` -- bash answers "No such file or directory" and NEVER LEAVES the
+# main tree, yet the segmenter used to hand this walk a clean `cd` + `/tmp`.
+# Measured before the fix (go-to-k/cdkd#2650): rc=0, i.e. the write below was
+# allowed onto a tracked file on `main`. THE EVEN-BACKSLASH SIBLING IS NOT A
+# CONTROL and is no longer labelled one: run under guard-removed,
+# guard-always-fires and pristine it returns 2 in all three, so it cannot
+# discriminate the guard and calling it a control asserted something it never
+# checked. It stays as an ordinary case -- `cd\\ /tmp` is a two-word command
+# whose verb is `cd\`, refused whatever the guard does. The DISCRIMINATING
+# control lives in `command-match.test.sh` ("a short verb still dequotes"),
+# where removing the bound turns roughly twenty cases red.
+run_case 2 "Bash escaped-space 'cd\\ /tmp' then '> ledger.tsv' in main tree" \
+  "$(jq -nc --arg cmd 'cd\ /tmp ; echo hi > docs/_generated/ledger.tsv' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash even-backslash 'cd\\\\ /tmp' then '> ledger.tsv' in main tree" \
+  "$(jq -nc --arg cmd 'cd\\ /tmp ; echo hi > docs/_generated/ledger.tsv' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# NOT A CONTROL EITHER, for the same measured reason (rc=0 under both
+# polarities). It bounds the blast radius: a real `cd` out of the tree still
+# has to be honoured, or the fix above would have bought its rc=2 by breaking
+# every legitimate move instead.
+run_case 0 "Bash real 'cd /tmp' then a write there, from the main tree" \
+  "$(jq -nc --arg cmd 'cd /tmp ; echo hi > ledger.tsv' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# A `(` inside a QUOTED argument is not a subshell. An earlier revision of the
+# marking counted parens blind to quoting, so this marked the REAL `cd` as
+# subshell-derived, ignored it, and blocked a write that lands in the worktree
+# -- the loud direction, but wrong. The marking reads the segment through
+# `strip_noncommand_spans` first, so the quoted `(` is gone before any paren is
+# counted. The second case is its CONTROL: a real subshell `cd` must still be
+# ignored, or the fix above would have been bought by disabling the marking.
+run_case 0 "Bash a QUOTED ( then a real cd <wt> then a write there" \
+  "$(jq -nc --arg cmd "echo \"a (b\" && cd $WT && echo x > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash a REAL subshell cd <wt> then a write in main tree" \
+  "$(jq -nc --arg cmd "( cd $WT ) ; echo x > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 # A SUBSHELL cd does not move the caller's cwd, and `$( )` is the ordinary
 # path-resolution idiom -- `.claude/hooks/**` carries it in ~20 files, so this
 # one fires by accident rather than by contrivance.
@@ -203,10 +286,10 @@ run_case 2 "Bash 'tee<TAB>ledger.tsv' then '&& cd /tmp' in main tree" \
 # refused although it lands in the feature worktree. Loud, one rephrase away,
 # and the direction this repo prefers: three attempts to widen the scan each
 # traded this for a SILENT miss (go-to-k/cdkd#2650 carries the tables).
-run_case 2 "Bash a backtick span, a \$( ) span, then 'cd <wt>' and a write (false refusal)" \
+run_case 0 "Bash a backtick span, a \$( ) span, then 'cd <wt>' and a write" \
   "$(jq -nc --arg cmd "x=\`date\`; y=\$(pwd); cd $WT && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
-run_case 2 "Bash the same two spans in the other order (false refusal)" \
+run_case 0 "Bash the same two spans in the other order" \
   "$(jq -nc --arg cmd "y=\$(pwd); x=\`date\`; cd $WT && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
@@ -215,7 +298,7 @@ run_case 2 "Bash the same two spans in the other order (false refusal)" \
 # it dropped the `cd` too, but silently BYPASSED instead of refusing whenever
 # the payload cwd was a feature worktree. Pinning the refusing answer here is
 # what makes that regression visible if the scan is ever widened again.
-run_case 2 "Bash a quoted '>' before a real cd (false refusal)" \
+run_case 0 "Bash a quoted '>' before a real cd is not a write" \
   "$(jq -nc --arg cmd "echo \"a > b\" && cd $WT && echo x > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
@@ -228,13 +311,13 @@ run_case 2 "Bash a quoted '>' before a real cd (false refusal)" \
 # is now pinned in both polarities rather than asserted in one. INHERITED from
 # origin/main, not introduced here; widening the scan to close it is
 # go-to-k/cdkd#2650.
-run_case 0 "Bash a backtick + \$( ) span then 'cd <main>' and a write (INVERTED: a silent miss)" \
+run_case 2 "Bash a backtick + \$( ) span then 'cd <main>' and a write" \
   "$(jq -nc --arg cmd "x=\`date\`; y=\$(pwd); cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
-run_case 0 "Bash the same two spans in the other order (INVERTED: a silent miss)" \
+run_case 2 "Bash the same two spans in the other order, cd into main" \
   "$(jq -nc --arg cmd "y=\$(pwd); x=\`date\`; cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
-run_case 0 "Bash a quoted '>' then 'cd <main>' and a write (INVERTED: a silent miss)" \
+run_case 2 "Bash a quoted '>' then 'cd <main>' and a write" \
   "$(jq -nc --arg cmd "echo \"a > b\" && cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
@@ -280,10 +363,489 @@ verb_case 0 '"cd"'
 # the same. Reviewed and deliberately NOT fixed: the two revisions that caught
 # this class are the two that opened main-tree-cwd bypasses, so a sixth attempt
 # is the pattern this lane already paid for five times. go-to-k/cdkd#2650.
-run_case 0 "Bash a partially-quoted cd verb from a feature cwd (known silent miss)" \
+run_case 2 "Bash a partially-quoted cd verb from a feature cwd" \
   "$(jq -nc --arg cmd "c\"\"d $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
+
+# --- THE CHANGES THAT HAD NO CASE AT ALL (go-to-k/cdkd#2650 review round 2) ---
+# Each of the five below was measured by a reviewer as rc 2 -> 0 with its
+# implementation reverted, while all three suites stayed green. A behaviour with
+# no case that goes red is not covered by "the suite passes"; it is covered by
+# nothing. Every one writes a TRACKED file in the main tree, so the missing
+# direction was a silent fail-open in each case.
+run_case 2 "Bash a quoted ) inside a substitution, then a write in main tree" \
+  "$(jq -nc --arg cmd "x=\$(echo 'a)b'; cd /tmp) ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash a PROCESS SUBSTITUTION cd, then a write in main tree" \
+  "$(jq -nc --arg cmd "diff <(cd /tmp && pwd) f ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash a 'bash -c' cd cannot move the caller, then a write in main tree" \
+  "$(jq -nc --arg cmd "bash -c \"cd /tmp\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash an if-compound subshell cd, then a write in main tree" \
+  "$(jq -nc --arg cmd "if (cd /tmp); then echo hi > docs/_generated/ledger.tsv; fi" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash a while-compound subshell cd, then a write in main tree" \
+  "$(jq -nc --arg cmd "while (cd /tmp); do echo hi > docs/_generated/ledger.tsv; break; done" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# --- A WRITE INSIDE A SUBSTITUTION, FOLLOWED BY A cd ------------------------
+# The body runs in a child, but its REDIRECTION lands in the caller's cwd, so
+# the write is real. Bodies used to be drained once at the very END of the
+# stream, which resolved them against the base as it stood AFTER the trailing
+# `cd` -- the "a cd after the write moved the base" incident this gate exists
+# for, arriving by a new route. Verified against real bash: the tracked file
+# really was overwritten while the gate returned 0. These four spellings are
+# what a differential oracle over a write grid reported, not what looked
+# representative.
+for __v in '$(echo hi > docs/_generated/ledger.tsv)' '$(echo hi >> docs/_generated/ledger.tsv)' \
+           '`echo hi > docs/_generated/ledger.tsv`' '`echo hi >> docs/_generated/ledger.tsv`'; do
+  run_case 2 "Bash a write inside $__v then '; cd /tmp' in main tree" \
+    "$(jq -nc --arg cmd "x=$__v ; cd /tmp" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+run_case 2 "Bash a cd inside one substitution and a write in the next" \
+  "$(jq -nc --arg cmd "x=\$(cd /tmp) ; y=\$(echo hi > docs/_generated/ledger.tsv)" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# --- THE SUBSTITUTION MARK MUST NOT BE FORGEABLE ---------------------------
+# `gate_segments_marked` carries "this segment came from a substitution body"
+# as a sentinel byte in the stream. If a command can contain that byte, it can
+# assert the property about itself -- and the property means "do not honour
+# this `cd`", so asserting it turns a real `cd` into one the gate ignores.
+# Measured before the input was sanitised: from a feature worktree,
+# `<byte>cd <main tree> && echo hi > <tracked>` went rc 2 -> 0. The unprefixed
+# twin is the control, and it discriminates: it is 2 in both worlds only
+# because the byte is what does the damage.
+__SENT=$(printf '\025')
+run_case 2 "Bash a FORGED substitution mark cannot disarm a real cd (feature cwd)" \
+  "$(jq -nc --arg cmd "${__SENT}cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash the same command without the forged mark (feature cwd)" \
+  "$(jq -nc --arg cmd "cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash a forged mark mid-command does not disarm the cd either" \
+  "$(jq -nc --arg cmd "echo ${__SENT}x ; cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# --- THE INPUT BOUND, BOTH SIDES AND THE OVER-BLOCK CONTROL -----------------
+# Past GATE_EDIT_MAXBYTES the walk is skipped and the base is pinned at the
+# payload cwd, which is strictly MORE refusing -- the second case is the proof,
+# since the identical shape under the bound is correctly ALLOWED by the third.
+# The fourth bounds the blast radius: a write to a path outside the repo must
+# still pass, or the cheap path would be a blanket refusal of large commands in
+# every repo on every branch, which is what this hook must never become.
+__pad=": $(printf '#%.0s' $(seq 1 40000)) ;"
+run_case 2 "Bash PAST the byte bound: write to a tracked file in main tree" \
+  "$(jq -nc --arg cmd "$__pad echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash PAST the byte bound: a real cd out is NOT followed (conservative)" \
+  "$(jq -nc --arg cmd "$__pad cd /tmp ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash UNDER the bound: the same real cd out IS followed" \
+  "$(jq -nc --arg cmd "cd /tmp ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash PAST the byte bound: a write OUTSIDE the repo still passes" \
+  "$(jq -nc --arg cmd "$__pad echo hi > /tmp/elsewhere.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# --- THE FAIL-CLOSED LOAD PATH, which had no case at all (go-to-k/cdkd#2650) -
+# The guard has been here since the hook started sourcing the shared matcher,
+# and nothing ran it. It matters more than an ordinary arm because this hook's
+# matcher is `Edit|Write|Bash`: an unloadable library takes away every tool an
+# agent would repair it with, which is by design and therefore has to SAY so.
+# Measured the hard way -- an apostrophe inside a comment in the library's awk
+# program closed the shell string, and the session that wrote it was locked out
+# of its own repo. Asserted: the refusal fires (exit 2, never 0), and it names
+# the operator route out. A refusal with no way out reads as a broken harness.
+BROKEN="$TMPDIR/broken"
+cp -R .claude/hooks "$BROKEN"
+echo 'this is not shell(' > "$BROKEN/lib/command-match.sh"
+fc_out=$(printf '%s' \
+  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')" \
+  | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" 2>&1)
+fc_rc=$?
+if [[ "$fc_rc" == 2 ]]; then
+  pass=$((pass + 1)); echo "ok   (exit 2) an unloadable library fails CLOSED"
+else
+  fail=$((fail + 1)); echo "not ok (exit $fc_rc, want 2) an unloadable library must fail CLOSED"
+fi
+if [[ "$fc_out" == *"prefix the command with"* && "$fc_out" == *"bash -n"* ]]; then
+  pass=$((pass + 1)); echo "ok   the fail-closed refusal names the operator route out"
+else
+  fail=$((fail + 1)); echo "not ok the fail-closed refusal must name a route out; got: $fc_out"
+fi
+# A library that LOADS CLEANLY but lacks the symbol. The broken-syntax fixture
+# above can never reach the `declare -F gate_segments_marked` clause -- it trips
+# the `. source` arm first -- so that clause was load-bearing and untested:
+# measured, dropping it makes this hook accept `origin/main`'s library and
+# return 0 on a tracked-file write. Anything defining the other two helpers but
+# not this one does; a stub is used rather than a git object so the case does
+# not depend on the repo's history being fetched.
+STUBLIB="$TMPDIR/stublib"
+cp -R .claude/hooks "$STUBLIB"
+{
+  printf 'gate_unquote_span() { printf %%s "$1"; }\n'
+  printf 'gate_unquote() { printf %%s "$1"; }\n'
+  printf 'gate_segments() { printf %%s "$1"; }\n'
+} > "$STUBLIB/lib/command-match.sh"
+printf '%s' \
+  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')" \
+  | "$HOOK_RUNNER" "$STUBLIB/main-tree-edit-gate.sh" >/dev/null 2>&1
+sl_rc=$?
+if [[ "$sl_rc" == 2 ]]; then
+  pass=$((pass + 1)); echo "ok   (exit 2) a library missing gate_segments_marked fails CLOSED"
+else
+  fail=$((fail + 1)); echo "not ok (exit $sl_rc, want 2) a loadable library without gate_segments_marked must fail CLOSED"
+fi
+
+# The same fixture with the library RESTORED is the control: it proves the two
+# assertions above came from the broken library and not from the copy itself.
+cp .claude/hooks/lib/command-match.sh "$BROKEN/lib/command-match.sh"
+printf '%s' \
+  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > /tmp/elsewhere.txt"}}')" \
+  | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" >/dev/null 2>&1
+fc_ctl=$?
+if [[ "$fc_ctl" == 0 ]]; then
+  pass=$((pass + 1)); echo "ok   (exit 0) the same copy with the library restored allows an outside write"
+else
+  fail=$((fail + 1)); echo "not ok (exit $fc_ctl, want 0) the copied hook must work when its library loads"
+fi
+
+# A FLOOR, which this suite never had. Its sibling `command-match.test.sh`
+# tightened one to zero slack while a DELETED case here stayed invisible -- and
+# this is the only suite in which the four fail-opens found in review could be
+# expressed at all, so a silent shrink here is the expensive kind. At the
+# observed count: both bash builds agree, so no case is version-gated.
+# --- FOUR BEHAVIOURS A REVIEWER MEASURED AS UNFENCED ------------------------
+# Each was revertible with the gate suite, the oracle, the matcher suite and the
+# differential ALL green. "Every suite passes" is not coverage; a case that goes
+# red is. Each of these was watched doing so before being written down.
+#
+# 1. The `cd` TARGET is unquoted (`gate_unquote`), not just the verb. Cases
+#    11-13 quote the VERB and the oracle uses a bare path, so dropping the
+#    target unquote was invisible: measured, from a feature cwd
+#    `cd "<main>" && echo hi > <tracked>` went 2 -> 0.
+run_case 2 "Bash a QUOTED cd TARGET from a feature cwd still resolves" \
+  "$(jq -nc --arg cmd "cd \"$MAIN\" && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 2. A substitution followed by a multi-line `--body`. THIS CASE DOES NOT
+#    DISCRIMINATE `drain_extra`'s quote handling and is not claimed to: probed
+#    against the shipped code, dropping the body's `ignore_q` retry leaves this
+#    suite at 76/0. What that repair IS fenced by is the verb question, one
+#    layer down -- `gate_matches ... GATE_RE_GIT_COMMIT` on a backtick body
+#    whose `#` comment carries an apostrophe goes MATCH -> NO-MATCH, measured
+#    before and after the fix. The case stays because the shape is worth having
+#    in the gate's own corpus, but the fence lives in `command-match.test.sh`.
+run_case 2 "Bash a substitution then a multi-line body then a write" \
+  "$(jq -nc --arg cmd 'x=$(cd /tmp) ; gh pr comment 1 --body "a
+b" ; echo hi > docs/_generated/ledger.tsv' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 3. `sed -i` is a write vehicle on BOTH paths, and the suite had no `sed` case
+#    at all -- only the oracle exercised it.
+run_case 2 "Bash sed -i rewriting a tracked file in the main tree" \
+  "$(jq -nc --arg cmd "sed -i.bak -e s/row/POISON/ docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 4. The over-cap path unions in raw-text `cd` targets. Without that union a
+#    feature-worktree write reached the main tree behind 210 padding segments.
+run_case 2 "Bash over the marking cap, cd INTO the main tree from a feature cwd" \
+  "$(jq -nc --arg cmd "$(printf '; true %.0s' $(seq 1 210)) ; cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 5-8. THE FOUR BLOCKERS THE go-to-k/cdkd#2711 REVIEW FOUND, each a fail-open
+#      this branch INTRODUCED and each measured rc 2 -> 0 against origin/main's
+#      2 before the repair. They are here rather than in the oracle because the
+#      oracle's grid has no axis for any of them.
+#
+# 5. The over-cap compensation asked a re-derived question over a different
+#    population: the library counts RAW segment lines (blanks included), this
+#    hook counted the OUTPUT stream (blanks dropped). So an ordinary multi-line
+#    call could be over the cap in the library -- every `cd` discarded -- and
+#    under it by the hook's count, with nothing compensating.
+run_case 2 "Bash blank-line padding puts the library over the cap, not the hook" \
+  "$(jq -nc --arg cmd "cd $MAIN$(printf '\n%.0s' $(seq 1 200))
+echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 6. The same defect reached by a shape nobody would call padding: a plain
+#    multi-line script with blank lines between its steps.
+run_case 2 "Bash an ordinary multi-line script, blank lines between steps" \
+  "$(jq -nc --arg cmd "cd $MAIN
+$(for i in $(seq 1 110); do printf 'echo step%s\n\n' "$i"; done)
+echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 7. `GATE_EDIT_MAXPAIRS` was tested as `added + n > cap` with `added` zero on
+#    the first pass, so a command already carrying more than `cap` candidates
+#    unioned NOTHING -- the cap became the off-switch the union exists to deny.
+#    Every `>` is a candidate, so a quoted body of markdown blockquotes reaches
+#    it with no padding at all.
+#    THE LINE COUNT IS CHOSEN TO CROSS `GATE_EDIT_MAXBYTES`, and an earlier
+#    revision of this case did not. 211 lines is 3874 B -- UNDER the 4096 B cap
+#    -- so it took the ordinary walk and never reached `__union_cd_bases` at
+#    all: the case passed while the union was broken, which is how the round-10
+#    regression below shipped past a suite reporting 83/0. 250 lines is 4.5 KB
+#    and takes the over-bytes arm, which is the one under test.
+run_case 2 "Bash a 250-line quoted body starves the cd union of its budget" \
+  "$(jq -nc --arg cmd "cd $MAIN ; true --body \"$(for i in $(seq 1 250); do printf '> quoted line %s\n' "$i"; done)\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#    And the round-10 shape itself: past the budget the union used to copy the
+#    array's HEAD, while the real write target is its TAIL. Measured rc 2 -> 0
+#    at N=240 with the tracked file really overwritten.
+run_case 2 "Bash a 900-line quoted body: the write is the LAST candidate" \
+  "$(jq -nc --arg cmd "cd $MAIN ; true --body \"$(for i in $(seq 1 900); do printf '> quoted line %s\n' "$i"; done)\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 8. The union matched a bare literal `cd`, so `"cd"` / `'cd'` / `\cd` -- the
+#    spellings go-to-k/cdkd#2614 closed on the ordinary walk -- were invisible
+#    on BOTH bounded paths. Paired with its literal control, which passes on
+#    every revision, so the pair cannot go green together by accident.
+run_case 2 "Bash a QUOTED cd verb on the over-bytes path" \
+  "$(jq -nc --arg cmd ": '$(printf 'a%.0s' $(seq 1 5000))' ; \"cd\" $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash a LITERAL cd verb on the over-bytes path (control)" \
+  "$(jq -nc --arg cmd ": '$(printf 'a%.0s' $(seq 1 5000))' ; cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 9. Unbounded `bash -c` recursion: each level restarted with a fresh
+#    `GATE_MARK_MAXSEG` budget and contributed ONE segment to its parent, so
+#    neither existing bound could see the nesting. Cost was quadratic --
+#    measured 24.1 s at 4087 bytes against a 10 s PreToolUse timeout, and a
+#    KILLED hook cannot emit exit 2, which disarms every gate at once.
+#
+#    THE EXPECTATION IS 0, AND THAT IS THE POINT. Asked of real bash rather than
+#    assumed: `sh -c` runs a CHILD, so none of those `cd`s moves this shell, the
+#    write resolves against the FEATURE worktree, and a feature worktree always
+#    passes -- measured, the worktree's ledger is written and the main tree's is
+#    not. A first draft of this case asserted 2 and was wrong about bash, not
+#    about the gate. What it pins is that the depth bound did not change the
+#    VERDICT for the shape it bounds; the cost half is fenced by the latency
+#    assertion in command-match.test.sh, which can time the library directly.
+run_case 0 "Bash deeply nested sh -c around a cd, then a write" \
+  "$(jq -nc --arg cmd "$(printf 'sh -c %.0s' $(seq 1 300))cd $MAIN ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 10. LATENCY, and it is a gate-bypass case rather than a performance one: past
+#     the 10 s PreToolUse timeout the hook is KILLED and cannot emit exit 2, so
+#     every gate goes quiet at once. Every `>` is a write candidate, so a
+#     `--body` holding N blockquote lines carries N of them, and each used to
+#     cost a `dirname` fork plus a subshell plus two `git` calls. Measured on
+#     900 such lines: origin/main 7.15 s, this branch 13.79 s before the union
+#     cap was bounded by WORK rather than by rounds, 8.86 s after, and 0.17 s
+#     once the per-parent-directory memo landed. The budget is deliberately far
+#     under the timeout and far over the measured cost, so this fails on a
+#     return of the per-candidate forks, not on a slow machine.
+__lat_body=$(awk 'BEGIN{printf "cd /tmp\n"; for(i=0;i<900;i++) printf "> quoted line %d\n", i}')
+__lat_json=$(jq -nc --arg cmd "gh pr comment 1 --body \"$__lat_body\"" --arg cwd "$MAIN" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__lat_t0=$(date +%s)
+printf '%s' "$__lat_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__lat_t1=$(date +%s)
+__lat_secs=$((__lat_t1 - __lat_t0))
+if [ "$__lat_secs" -le 4 ]; then
+  pass=$((pass + 1))
+  printf 'ok   latency: 900 write candidates in %ss (budget 4s, timeout 10s)\n' "$__lat_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: 900 write candidates took %ss, budget 4s\n' "$__lat_secs"
+fi
+
+# 11-13. THE SHAPES THAT DEFEATED THREE SUCCESSIVE VERSIONS OF THE UNION CAP.
+#        All three passed a suite reporting 83/0 while the gate allowed a write
+#        bash really performed, so they are pinned by shape rather than by the
+#        cap arithmetic that happened to be wrong that round.
+#
+# 11. A DECOY `cd` INSIDE A QUOTED BODY, ahead of the real one. Under any cap
+#     that budgeted the first round, only the decoy was unioned and the real
+#     `cd <main tree>` was dropped. The decoy is not contrived: this hook's own
+#     refusal message prints `cd .claude/worktrees/<slug>`, so quoting the
+#     message in a `--body` is enough. Paired with its control -- same command
+#     with the decoy line removed -- so the pair cannot go green together.
+run_case 2 "Bash a decoy cd in a quoted body ahead of the real one" \
+  "$(jq -nc --arg cmd "true --body \"  cd .claude/worktrees/hardening
+$(for i in $(seq 1 250); do printf '> quoted line %s\n' "$i"; done)\" ; cd $MAIN ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash the same without the decoy (control)" \
+  "$(jq -nc --arg cmd "true --body \"$(for i in $(seq 1 250); do printf '> quoted line %s\n' "$i"; done)\" ; cd $MAIN ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 12. DISTINCT tokens, which the deduplication cannot collapse and the
+#     repeated-token latency case above structurally cannot see. This is the
+#     cost shape: 2500 of them cost 18 s -- past the 10 s PreToolUse timeout,
+#     where the hook is killed and cannot emit exit 2 -- before `ls-files` was
+#     batched per directory and the deduplication learned to scale. Asserts the
+#     VERDICT here; the clock is asserted below.
+run_case 2 "Bash 1500 DISTINCT write-candidate tokens, then a real cd" \
+  "$(jq -nc --arg cmd "cd $MAIN ; gh pr comment 1 --body \"$(for i in $(seq 1 1500); do printf '> tok%s line %s\n' "$i" "$i"; done)\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 13. The clock for that shape. The existing latency case uses a REPEATED token
+#     and measures 0 s however bad the per-candidate cost gets, so it could not
+#     have caught this; distinct tokens are the discriminating input.
+__vt_body=$(for i in $(seq 1 1500); do printf '> tok%s line %s\n' "$i" "$i"; done)
+__vt_json=$(jq -nc --arg cmd "cd $MAIN ; gh pr comment 1 --body \"$__vt_body\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__vt_t0=$(date +%s)
+printf '%s' "$__vt_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__vt_t1=$(date +%s)
+__vt_secs=$((__vt_t1 - __vt_t0))
+if [ "$__vt_secs" -le 4 ]; then
+  pass=$((pass + 1))
+  printf 'ok   latency: 1500 DISTINCT candidates in %ss (budget 4s, timeout 10s)\n' "$__vt_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: 1500 DISTINCT candidates took %ss, budget 4s\n' "$__vt_secs"
+fi
+
+# 14-17. ROUND 14. Three of these are engine-parity or bound cases the suite had
+#        no shape for; the fourth is a false BLOCK, which this file had almost
+#        no coverage of at all.
+#
+# 14. A BACKSLASH IN THE WRITE TARGET. The token classes were spelled
+#     `[^[:space:]\<\>\|\&\;\(\)]`, and a backslash inside a bracket expression
+#     is an ordinary MEMBER under POSIX -- so bash 3.2 ended the token at the
+#     backslash and 5.x did not. `echo x > back\slash.md` extracted `back` under
+#     3.2, which is not a tracked file, so the gate allowed a write to one, on
+#     the only bash CI runs. Same root cause as `gate_strip_prefix`'s, six sites
+#     away. This case needs the fixture file to exist and be TRACKED, so it
+#     builds its own rather than using the shared one.
+mkdir -p "$TMPDIR/bsrepo"
+git init -q -b main "$TMPDIR/bsrepo" >/dev/null 2>&1
+printf 'x\n' > "$TMPDIR/bsrepo/back\\slash.md"
+touch "$TMPDIR/bsrepo/.markgate.yml"
+git -C "$TMPDIR/bsrepo" add -A >/dev/null 2>&1
+git -C "$TMPDIR/bsrepo" -c user.email=t@t -c user.name=t commit -q -m init >/dev/null 2>&1
+#     THE COMMAND NEEDS A DOUBLED BACKSLASH. `> back\slash.md` is
+#     `backslash.md` to bash -- quote removal, measured -- and that file is not
+#     tracked, so 0 is the right answer for it. The round-14 revision of this
+#     case asserted 2 for that spelling and was wrong about bash, not about the
+#     gate; it passed only because the fixture happened to be the one
+#     arrangement where `git ls-files` echoed the raw token back.
+run_case 2 "Bash a doubled backslash naming the tracked file" \
+  "$(jq -nc --arg cmd 'echo x > back\\slash.md' --arg cwd "$TMPDIR/bsrepo" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash a single backslash, which names a different file (control)" \
+  "$(jq -nc --arg cmd 'echo x > back\slash.md' --arg cwd "$TMPDIR/bsrepo" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash an UNTRACKED target in the same repo (control)" \
+  "$(jq -nc --arg cmd 'echo x > untracked.md' --arg cwd "$TMPDIR/bsrepo" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 15. THE PRODUCT, not just the target count. `GATE_EDIT_MAXCD` bounds `k`, but
+#     the union materialises k*n and `n` is unbounded on the over-bytes path:
+#     measured on bash 3.2 with k=19 -- UNDER the cap -- n=4000 cost 55 s
+#     against the 10 s PreToolUse timeout, where the hook is killed and cannot
+#     refuse anything. Asserts the verdict; the clock is the latency case above.
+run_case 2 "Bash k=19 cd targets under the cap with 2000 write candidates" \
+  "$(jq -nc --arg cmd "$(for i in $(seq 1 19); do printf 'cd %s/e%s ; ' "$TMPDIR" "$i"; done) true --body \"$(for i in $(seq 1 2000); do printf '> tok%s\n' "$i"; done)\" ; cd $MAIN ; echo hi > README.md" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 16. A FALSE BLOCK. `__cds` counted `cd` OCCURRENCES, so twenty-five copies of
+#     one target -- no union cost at all -- tripped the overflow and refused,
+#     with a message claiming 20 DISTINCT targets. The suite had no case for the
+#     overflow refusing something it should not.
+#     The repeated target must be the MAIN TREE and the write must be one the
+#     gate would ALLOW. Pointing it at an unrelated directory does not
+#     discriminate: the overflow refusal only fires when some base is a
+#     protected tree, so the buggy and fixed versions both answered 0.
+#     AND it must cross `GATE_EDIT_MAXBYTES`, or it takes the ordinary walk and
+#     never reaches `__union_cd_bases` at all -- the same way round 10's union
+#     pin missed its path by 200 bytes. 25 cds is ~1.5 KB, so the command is
+#     padded past 4096 B with a comment.
+run_case 0 "Bash the same cd target 25 times, then an allowed write" \
+  "$(jq -nc --arg cmd "$(for i in $(seq 1 25); do printf 'cd %s ; ' "$MAIN"; done) : '$(for i in $(seq 1 400); do printf 'pad%s ' "$i"; done)' ; echo hi > untracked-scratch.txt" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 17. THE CLOCK for the k*n product. Case 15 asserts the VERDICT, and the
+#     verdict is 2 with or without the product bound -- only the TIME differs,
+#     so 15 alone fences nothing. Measured on bash 3.2 without the bound: k=19,
+#     n=4000 cost 55 s against the 10 s PreToolUse timeout.
+__kn_cmd="$(for i in $(seq 1 19); do printf 'cd %s/e%s ; ' "$TMPDIR" "$i"; done) true --body \"$(for i in $(seq 1 2000); do printf '> tok%s\n' "$i"; done)\" ; cd $MAIN ; echo hi > README.md"
+__kn_json=$(jq -nc --arg cmd "$__kn_cmd" --arg cwd "$WT" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__kn_t0=$(date +%s)
+printf '%s' "$__kn_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__kn_t1=$(date +%s)
+__kn_secs=$((__kn_t1 - __kn_t0))
+if [ "$__kn_secs" -le 4 ]; then
+  pass=$((pass + 1))
+  printf 'ok   latency: 19 cd targets x 2000 candidates in %ss (budget 4s, timeout 10s)\n' "$__kn_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: 19 cd targets x 2000 candidates took %ss, budget 4s\n' "$__kn_secs"
+fi
+
+# 18-21. ROUND 15. Two blockers, both introduced by the round-14 commit, and
+#        both invisible to an exit-code-only assertion.
+#
+# 18. THE OVERFLOW REFUSAL NEVER PRINTED. `__cds` is `local` to
+#     `__union_cd_bases`; the heredoc reading it runs at top level, so under
+#     `set -u` every overflow aborted -- and bash's abort status is 2, the same
+#     code the refusal uses, so case 15 was green on a crash. Asserted by TEXT.
+run_case_text 2 "too many distinct" "Bash overflow refuses WITH its message" \
+  "$(jq -nc --arg cmd "$(for i in $(seq 1 25); do printf 'cd %s/d%s ; ' "$MAIN" "$i"; done) cd $MAIN ; : '$(for i in $(seq 1 400); do printf 'pad%s ' "$i"; done)' ; echo hi > README.md" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 19-21. A BACKSLASH IN THE TARGET, where bash's quote removal makes the write
+#     land on a DIFFERENT, tracked file. `echo hi > READ\ME.md` really writes
+#     `README.md` (measured). The gate looked for a file named `READ\ME.md`,
+#     did not find one, and allowed it; `origin/main` refused. Round 14 fixed
+#     only the token BOUNDARY, and its case used a fixture literally named
+#     `back\slash.md` -- the one arrangement where `git ls-files` happens to
+#     echo the raw token back, so it passed while this stayed open. The fixture
+#     here is a plain `README.md`, which is what makes these discriminate.
+run_case_text 2 "tracked" "Bash a backslash before a letter in the target" \
+  "$(jq -nc --arg cmd 'echo hi > READ\ME.md' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case_text 2 "tracked" "Bash a leading backslash in the target" \
+  "$(jq -nc --arg cmd 'echo hi > \README.md' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash a backslash target that is NOT tracked (control)" \
+  "$(jq -nc --arg cmd 'echo hi > SCRAT\CH.txt' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 22-25. THE OVER-SIZE SCAN. A security review confirmed `git ls-files` dies
+#        with E2BIG past ~20000 pathspecs, and `2>/dev/null` turned that into
+#        "not tracked" for a whole directory -- so the batched call is chunked
+#        now. Chasing that surfaced the bigger one: the over-bytes scan consumes
+#        its input with `${__rest#*...}`, which is QUADRATIC, and 329 KB with
+#        6000 distinct `>` targets cost 28.3 s on bash 3.2 against the 10 s
+#        PreToolUse timeout, where the hook is killed and every gate on the call
+#        is disarmed. The scan now refuses past `GATE_EDIT_MAXSCAN` instead.
+#
+#        Three defects were found INSIDE that fix, and all three are pinned
+#        here because none was visible from the verdict alone:
+#          - skipping the scan leaves `candidates` empty, and the early
+#            `exit 0` for "no candidates" then ALLOWED the command -- a 0.05 s
+#            fail-open replacing a 28 s one;
+#          - `${arr[@]}` on an empty array aborts under `set -u` on bash 3.2
+#            (rc=1, neither allow nor block) in unrelated repositories;
+#          - the refusal headline still said "too many distinct cd targets".
+__big_body=$(for i in $(seq 1 6000); do printf '> padpadpadpadpadpadpadpadpadpadpadpadpadpad%s\n' "$i"; done)
+run_case_text 2 "too large to analyse" "Bash a 300 KB command in the main tree refuses" \
+  "$(jq -nc --arg cmd "true --body \"$__big_body\" ; echo hi > out.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash the same 300 KB command from a feature worktree" \
+  "$(jq -nc --arg cmd "true --body \"$__big_body\" ; echo hi > out.txt" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash the same 300 KB command in a repo with no .markgate.yml" \
+  "$(jq -nc --arg cmd "true --body \"$__big_body\" ; echo hi > out.txt" --arg cwd "$TMPDIR" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 25. The clock: the refusal has to be produced FAST, or it is produced after
+#     the hook has already been killed. This is the assertion the verdict cases
+#     above cannot make.
+__os_json=$(jq -nc --arg cmd "true --body \"$__big_body\" ; echo hi > out.txt" --arg cwd "$MAIN" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__os_t0=$(date +%s)
+printf '%s' "$__os_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__os_t1=$(date +%s)
+__os_secs=$((__os_t1 - __os_t0))
+if [ "$__os_secs" -le 4 ]; then
+  pass=$((pass + 1))
+  printf 'ok   latency: a 300 KB command refused in %ss (budget 4s, timeout 10s)\n' "$__os_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
+fi
+
+CASE_FLOOR=102
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  fail=$((fail + 1))
+  printf 'not ok case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+fi
 echo "----"
 echo "passed=$pass failed=$fail"
 [[ "$fail" -eq 0 ]]
