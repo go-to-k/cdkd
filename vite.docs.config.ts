@@ -30,6 +30,7 @@ const navigation: SsgNavigationGroup[] = [
     title: 'Features',
     items: [
       { title: 'Wait Modes', path: '/wait-modes' },
+      { title: 'Provisioning Layers', path: '/provisioning-layers' },
       { title: 'Rollback', path: '/rollback' },
       { title: 'Drift Detection', path: '/drift' },
       { title: 'Orphan vs Destroy', path: '/orphan-vs-destroy' },

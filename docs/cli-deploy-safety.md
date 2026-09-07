@@ -37,6 +37,15 @@ cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resol
 | `--allow-unaddressed` | deploy | Exit 0 instead of 2 when the deploy left a resource alive that it no longer tracks. |
 | `--no-cfn-fallback` | deploy, diff | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. |
 
+## Which routing flag, when
+
+Four of the flags above decide **which provisioning layer manages a resource** —
+cdkd's hand-written SDK provider or the Cloud Control API. They are easy to
+confuse, and the choice usually starts from what you want rather than from a
+flag name, so the decision map lives with the concept:
+[Provisioning Layers](provisioning-layers.md#choosing-a-flag). This page owns
+the per-flag detail each row links to.
+
 ## `--allow-unsupported-types` (deploy + destroy)
 
 cdkd rejects genuinely-unsupported resource types at **pre-flight** — before
@@ -163,7 +172,7 @@ properties.
 | Situation | Recommended action |
 | --- | --- |
 | Fresh deploy, template uses a silent-drop property | Default auto-route via Cloud Control — no flag needed |
-| Existing Cloud-Control-managed resource, want to stay there | Default routing is sticky — no flag needed |
+| Existing Cloud-Control-managed resource, want to stay there | Default routing is sticky — no flag needed, unless the type is exempt from stickiness ([`--pin-cc-api`](#pin-cc-api-deploy)) |
 | Existing SDK-managed resource, new silent-drop property appears | Default re-routes through Cloud Control; use this flag to stay on SDK |
 | You explicitly want SDK semantics and accept the drop | This flag |
 | The property is security-meaningful | Do not use the flag — let the auto-route close the drop |
@@ -303,12 +312,19 @@ resource.
 
 ### Going back to the SDK provider
 
-Once a resource is `provisionedBy: 'cc-api'` it stays there. A later cdkd
-release that wires the property you originally needed does not migrate it back
-— sticky state is what stops resources ping-ponging between layers on every
-release. Use
+Once a resource is `provisionedBy: 'cc-api'` it normally stays there. A later
+cdkd release that wires the property you originally needed does not by itself
+migrate it back — sticky state is what stops resources ping-ponging between
+layers on every release. Use
 [`--recreate-via-sdk-provider`](#recreate-via-sdk-provider-deploy) to move it
 back deliberately.
+
+The exception is a type carrying an `'sdk-coverage'` exemption from the sticky
+rule, for which the return happens automatically, in place, and without a
+recreate — see [`--pin-cc-api`](#pin-cc-api-deploy) and
+[State Management](state-management.md#version-7-adds-provisionedby-v7-writers).
+Check which case applies before reaching for the flag; the recreate is
+destructive and the automatic return is not.
 
 ### Nested stacks
 

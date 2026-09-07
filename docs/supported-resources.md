@@ -22,6 +22,10 @@ cdkd uses a hybrid approach:
 - **Cloud Control API** — fallback for any resource type without a
   dedicated SDK Provider. Requires async polling.
 
+The layer is chosen per resource and per deploy, not fixed by the type alone —
+a property this table's SDK Provider does not cover sends that one resource
+through Cloud Control. See [Provisioning Layers](provisioning-layers.md).
+
 If a resource type has no SDK Provider AND AWS reports it as
 `ProvisioningType: NON_PROVISIONABLE` (Tier 3 — Cloud Control API cannot
 manage it), cdkd **rejects it at pre-flight** before any resource is touched,
