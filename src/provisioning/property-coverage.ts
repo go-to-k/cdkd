@@ -93,3 +93,56 @@ export function unsupportedPropertyIssueUrl(resourceType: string, property: stri
   const title = encodeURIComponent(`Support property ${resourceType}.${property}`);
   return `https://github.com/go-to-k/cdkd/issues/new?title=${title}&labels=resource-support`;
 }
+
+/**
+ * Identify top-level template properties this type's committed CFn schema
+ * snapshot does not know about at all — present in neither
+ * `coverage.handled` nor `coverage.silentDrop` (issue
+ * [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
+ *
+ * The complement of {@link findSilentDropProperties}, which deliberately
+ * PASSES these through: a property absent from the schema is indistinguishable
+ * at deploy time from a user typo or an `addPropertyOverride` escape hatch, so
+ * it cannot drive a routing decision. That tolerance is correct for routing
+ * and wrong for silence — the routing table is built offline from
+ * `tests/fixtures/cfn-schemas/*.json`, so every property AWS publishes AFTER
+ * that snapshot lands here, and on the SDK route it reaches neither AWS nor an
+ * error while the deploy reports success. That is the issue
+ * [#614](https://github.com/go-to-k/cdkd/issues/614) failure class arriving
+ * through the one input the #614 machinery cannot observe.
+ *
+ * **Why a warn built on this has no false-positive mode.** An SDK provider
+ * writes only what it declares in `handledProperties`, so a top-level property
+ * in neither set does not reach AWS under ANY of the three readings — a
+ * post-snapshot AWS addition, a typo, or a deliberate `addPropertyOverride`.
+ * "This value will not reach AWS" is true in all three, so the caller does not
+ * have to guess intent, and at deploy time it could not: cdkd holds only the
+ * template and the baked-in table. Firing on a typo is a feature rather than
+ * noise — CloudFormation would have REJECTED that typo, so today's silence is
+ * strictly the worst of the three behaviors.
+ *
+ * Deliberately NOT gated on the snapshot's age: the statement is true whatever
+ * `generatedAt` says, and an age gate would trade the typo visibility away for
+ * a wall-clock dependence.
+ *
+ * Returns `[]` for Tier 2 / Custom / unknown types (no coverage record — Cloud
+ * Control forwards the full property map, so nothing is dropped) and sorts
+ * alphabetically, mirroring {@link findSilentDropProperties}. The CALLER is
+ * responsible for firing only when the resource actually resolves to the SDK
+ * route; see `ProviderRegistry.reportSilentDropDecisions`.
+ */
+export function findUnrecognizedProperties(
+  resourceType: string,
+  templateProperties: Record<string, unknown> | undefined
+): string[] {
+  if (!templateProperties) return [];
+  const coverage = getPropertyCoverage(resourceType);
+  if (!coverage) return [];
+  const unrecognized: string[] = [];
+  for (const prop of Object.keys(templateProperties)) {
+    if (coverage.handled.has(prop)) continue;
+    if (coverage.silentDrop.has(prop)) continue;
+    unrecognized.push(prop);
+  }
+  return unrecognized.sort((a, b) => a.localeCompare(b));
+}

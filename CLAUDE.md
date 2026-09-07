@@ -171,7 +171,7 @@ the entry. Contract and the forward-only cutoff in that file's header, enforced 
 - `cdk-local` - Local-emulation engine (`--from-cfn-stack` dispatcher + state-source plumbing). cdkd's `src/cli/commands/local-state-source.ts` is a shim that injects the S3-backed `--from-state` factory via `cdk-local`'s `extraStateProviders` hook.
 - `graphlib` - DAG construction
 - `archiver` - ZIP packaging for file assets
-- `adm-zip` - ZIP unpacking for the `AWS::CodeCommit::Repository` `Code` seed (issue #1066)
+- `adm-zip` - ZIP unpacking for the `AWS::CodeCommit::Repository` `Code` seed (issue #1066), and for AWS's public CloudFormation schema bundle in `scripts/refresh-cfn-schemas.mjs --from-zip` (issue #2718 — build-time only, not bundled by `vp pack`)
 - `chokidar` - File watcher backing `cdkd local start-api --watch`
 - `yaml` - CFn-aware YAML codec for `cdkd export` / `cdkd import --migrate-from-cloudformation` (preserves `!Ref` / `!GetAtt` / `!Sub` shorthand intrinsics on round-trip — see [src/cli/yaml-cfn.ts](src/cli/yaml-cfn.ts))
 

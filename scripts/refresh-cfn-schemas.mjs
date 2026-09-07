@@ -33,8 +33,10 @@ import {
   DescribeTypeCommand,
 } from '@aws-sdk/client-cloudformation';
 import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import AdmZip from 'adm-zip';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -587,6 +589,344 @@ async function withRetry(fn) {
   throw lastErr;
 }
 
+/** Capture date, `YYYY-MM-DD`. @returns {string} */
+function today() {
+  // Date only, so an unchanged schema produces an unchanged fixture (a full
+  // timestamp would churn the git diff on every refresh).
+  return /** @type {string} */ (new Date().toISOString().split('T')[0]);
+}
+
+/**
+ * Build the committed fixture object from one raw registry schema.
+ *
+ * THE one place the fixture shape is defined, shared by both capture sources
+ * (`DescribeType` and the public schema bundle). That sharing is load-bearing
+ * rather than tidiness: a second capture path formatting even one field
+ * differently would rewrite every fixture the other source had produced, and
+ * the resulting phantom diff is indistinguishable from real AWS drift — which
+ * is precisely the signal the zip mode exists to compute. Measured before the
+ * split: with the extractors shared, 114 of the 132 comparable fixtures
+ * captured from the public bundle are BYTE-IDENTICAL to their
+ * `DescribeType`-captured selves, and the 18 that differ are all real AWS
+ * changes (issue [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
+ *
+ * @param {string} schemaJson
+ * @param {string} resourceType
+ * @param {string} generatedAt `YYYY-MM-DD`
+ * @returns {{resourceType: string, generatedAt: string, properties: string[], readOnlyProperties: string[], createOnlyProperties: string[], primaryIdentifier: string[]} & Record<string, unknown>}
+ */
+export function buildFixture(schemaJson, resourceType, generatedAt) {
+  const nestedProperties = extractNestedPropertyNames(schemaJson);
+  const nestedPropertyPaths = extractNestedPropertyPaths(schemaJson, resourceType);
+  const definitionShapes = extractDefinitionShapes(schemaJson);
+  const definitionRequired = extractDefinitionRequired(schemaJson);
+  return {
+    resourceType,
+    generatedAt,
+    properties: extractTopLevelProperties(schemaJson),
+    readOnlyProperties: extractReadOnlyProperties(schemaJson),
+    createOnlyProperties: extractCreateOnlyProperties(schemaJson),
+    primaryIdentifier: extractPrimaryIdentifier(schemaJson),
+    // Omitted entirely when the type has no nested property (keeps
+    // scalar-only fixtures byte-stable vs the pre-#1373 shape).
+    ...(Object.keys(nestedProperties).length > 0 ? { nestedProperties } : {}),
+    // The PER-PATH twin (issue #1464), emitted alongside the flattened
+    // capture rather than replacing it — see
+    // {@link extractNestedPropertyPaths}. Same omit-when-empty rule, so a
+    // scalar-only fixture keeps its pre-#1464 byte shape.
+    ...(Object.keys(nestedPropertyPaths).length > 0 ? { nestedPropertyPaths } : {}),
+    // `#top` is always present, so this field only stays out for a
+    // fixture with no properties at all.
+    ...(Object.keys(definitionShapes).length > 0 ? { definitionShapes } : {}),
+    // The required-ness capture (issue #1800). Same omit-when-empty rule as
+    // the two above — but here the omission is common rather than degenerate:
+    // a type whose schema requires nothing anywhere legitimately has no
+    // section at all.
+    ...(Object.keys(definitionRequired).length > 0 ? { definitionRequired } : {}),
+  };
+}
+
+/**
+ * Serialize a fixture to its on-disk bytes. Kept beside {@link buildFixture}
+ * for the same reason: the byte form is part of the shape.
+ *
+ * @param {Record<string, unknown>} fixture
+ * @returns {string}
+ */
+export function serializeFixture(fixture) {
+  return JSON.stringify(fixture, null, 2) + '\n';
+}
+
+/**
+ * Whether a freshly captured fixture differs from the committed one in any
+ * way OTHER than `generatedAt`.
+ *
+ * `generatedAt` is excluded because the refresh stamps it on every type it
+ * captures, so including it would report all ~134 types as drifted every run.
+ * Measured on the first real cycle: 132 fixtures rewritten, **114 of them
+ * differing in `generatedAt` alone** — 86% of the diff carrying no
+ * information. A scheduled job whose change signal counted that would open a
+ * no-op PR every cycle, and a PR that is noise every time is a PR nobody
+ * reads on the cycle that matters.
+ *
+ * Compared through the SERIALIZED form rather than a structural deep-equal, so
+ * the predicate answers exactly the question the caller acts on ("would
+ * writing this change the file?") and cannot disagree with the write.
+ * `committedText` being `undefined` (no fixture on disk yet) counts as
+ * drifted.
+ *
+ * @param {Record<string, unknown>} candidate
+ * @param {string | undefined} committedText
+ * @returns {boolean}
+ */
+export function fixtureDiffersIgnoringDate(candidate, committedText) {
+  if (committedText === undefined) return true;
+  /** @type {Record<string, unknown>} */
+  let committed;
+  try {
+    committed = JSON.parse(committedText);
+  } catch {
+    // An unparseable committed fixture is drift by definition — rewriting it
+    // is the remedy, and reporting "unchanged" would leave it corrupt forever.
+    return true;
+  }
+  const anchor = committed['generatedAt'];
+  // Stamp the CANDIDATE with the committed date rather than deleting the field
+  // from both: deleting changes key ORDER in the serialized form on one side
+  // only, which would report every fixture as drifted.
+  return (
+    serializeFixture({ ...candidate, generatedAt: anchor }) !==
+    serializeFixture({ ...committed, generatedAt: anchor })
+  );
+}
+
+/**
+ * The public, unauthenticated CloudFormation registry schema bundle.
+ *
+ * Every registry schema AWS publishes, in one zip, with no AWS identity
+ * involved — which is what makes an unattended scheduled refresh possible at
+ * all. The `DescribeType` path this script was built on needs credentials with
+ * `cloudformation:DescribeType`, and provisioning a CI role for that was the
+ * prerequisite that made a cron job expensive enough not to adopt (issue
+ * [#2718](https://github.com/go-to-k/cdkd/issues/2718)); measured 2026-09-07 at
+ * 2,989,693 bytes / 1729 type schemas, carrying exactly the sections the
+ * extractors above read.
+ *
+ * Not a REPLACEMENT for the `DescribeType` path: the bundle does not carry
+ * every type cdkd registers a provider for (measured: `AWS::BedrockAgentCore::Browser`
+ * and `AWS::BedrockAgentCore::CodeInterpreter` have no entry), so those types
+ * keep the authenticated path as their only refresh route.
+ */
+const PUBLIC_SCHEMA_ZIP_URL =
+  'https://schema.cloudformation.us-east-1.amazonaws.com/CloudformationSchema.zip';
+
+/**
+ * Floor on the number of entries the bundle must carry before ANY of it is
+ * believed. Measured 2026-09-07 at 1729; the floor is deliberately far below
+ * that, because its job is not to track AWS's type count but to refuse a
+ * truncated or replaced artifact that still unzips.
+ *
+ * This is the failure this guard exists for: a partially downloaded zip whose
+ * central directory happens to parse yields FEWER entries, every missing entry
+ * reads as "this type is not in the bundle", the skip path leaves those
+ * fixtures untouched, and the run reports **no drift** — a green cycle that
+ * looked at almost nothing. Aborting is the only safe answer, because "we
+ * captured less than we thought" is indistinguishable downstream from "AWS
+ * changed nothing".
+ */
+const MIN_ZIP_ENTRIES = 1000;
+
+/**
+ * Ceiling on the fraction of REGISTERED types that may be absent from the
+ * bundle before the run aborts.
+ *
+ * The same failure one level up: a naming-convention or layout change in the
+ * bundle (an added prefix directory, a different case rule) would make every
+ * lookup miss while the zip itself is perfectly well-formed and passes
+ * {@link MIN_ZIP_ENTRIES}. Every type would take the legitimate skip path and
+ * the cycle would report a confident zero. Measured today: 2 of 134 absent =
+ * 1.5%, so 10% leaves room for AWS to retire a handful of types without
+ * tripping, while a wholesale miss still stops the run.
+ */
+const MAX_MISSING_TYPE_RATIO = 0.1;
+
+/**
+ * Convert a CFn resource type to its entry name in the public schema bundle.
+ * `AWS::Lambda::Function` → `aws-lambda-function.json`. Note this is NOT
+ * {@link fixtureFilename}'s convention (which preserves case and is the
+ * committed file name) — the two namespaces are unrelated and must not be
+ * folded together.
+ *
+ * @param {string} type
+ * @returns {string}
+ */
+export function zipEntryName(type) {
+  return type.toLowerCase().replace(/::/g, '-') + '.json';
+}
+
+/**
+ * Refresh fixtures from an already-extracted map of bundle entries.
+ *
+ * Split from the download and the filesystem so the whole decision table is
+ * unit-testable without a network or a zip on disk. WRITES ONLY DRIFTED
+ * FIXTURES (see {@link fixtureDiffersIgnoringDate}) and returns the summary
+ * the scheduled job reports.
+ *
+ * A registered type with no bundle entry is SKIPPED with its committed fixture
+ * left byte-identical — never blanked. That distinction is the whole point:
+ * treating absence as "this type now has no properties" would empty
+ * `properties`, turn every one of the provider's `handledProperties`
+ * declarations into a bogus entry, and destroy silent-drop routing for the
+ * type — converting a missing input into a silent behavior change on the
+ * deploy path.
+ *
+ * @param {object} args
+ * @param {ReadonlyMap<string, string>} args.entries bundle entry name → schema JSON
+ * @param {readonly string[]} args.types registered resource types
+ * @param {string} args.fixturesDir
+ * @param {string} args.generatedAt
+ * @param {(path: string, text: string) => void} args.writeFixture
+ * @param {(path: string) => string | undefined} args.readFixture
+ * @returns {{drifted: string[], unchanged: string[], missing: string[], failed: Array<{type: string, error: string}>}}
+ */
+export function refreshFixturesFromEntries({
+  entries,
+  types,
+  fixturesDir,
+  generatedAt,
+  writeFixture,
+  readFixture,
+}) {
+  if (entries.size < MIN_ZIP_ENTRIES) {
+    throw new Error(
+      `Schema bundle carries only ${entries.size} entries (floor ${MIN_ZIP_ENTRIES}) — ` +
+        'refusing to refresh from a bundle this small. A truncated or replaced artifact ' +
+        'that still unzips would make every type look absent and the run report no drift.'
+    );
+  }
+  const missing = types.filter((t) => !entries.has(zipEntryName(t)));
+  const missingRatio = types.length === 0 ? 0 : missing.length / types.length;
+  if (missingRatio > MAX_MISSING_TYPE_RATIO) {
+    throw new Error(
+      `${missing.length} of ${types.length} registered types have no entry in the schema ` +
+        `bundle (${(missingRatio * 100).toFixed(1)}%, ceiling ` +
+        `${(MAX_MISSING_TYPE_RATIO * 100).toFixed(0)}%) — refusing to refresh. This is the ` +
+        'shape an entry-naming or layout change takes, and it would otherwise read as ' +
+        `"AWS changed nothing". First few: ${missing.slice(0, 5).join(', ')}`
+    );
+  }
+
+  /** @type {string[]} */ const drifted = [];
+  /** @type {string[]} */ const unchanged = [];
+  /** @type {Array<{type: string, error: string}>} */ const failed = [];
+  for (const resourceType of types) {
+    const schemaJson = entries.get(zipEntryName(resourceType));
+    if (schemaJson === undefined) continue; // Already collected in `missing`.
+    const path = join(fixturesDir, fixtureFilename(resourceType));
+    try {
+      const candidate = buildFixture(schemaJson, resourceType, generatedAt);
+      if (!fixtureDiffersIgnoringDate(candidate, readFixture(path))) {
+        unchanged.push(resourceType);
+        continue;
+      }
+      writeFixture(path, serializeFixture(candidate));
+      drifted.push(resourceType);
+    } catch (err) {
+      failed.push({
+        type: resourceType,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { drifted, unchanged, missing, failed };
+}
+
+/**
+ * Read a schema bundle into an entry-name → JSON map.
+ *
+ * @param {Buffer} zipBuffer
+ * @returns {Map<string, string>}
+ */
+export function readSchemaBundle(zipBuffer) {
+  const zip = new AdmZip(zipBuffer);
+  /** @type {Map<string, string>} */
+  const entries = new Map();
+  for (const entry of zip.getEntries()) {
+    if (entry.isDirectory) continue;
+    if (!entry.entryName.endsWith('.json')) continue;
+    // Basename only: the bundle is flat today, and keying on the full path
+    // would make a future wrapper directory read as "every type is absent"
+    // rather than as the same set of types one level down.
+    const name = entry.entryName.slice(entry.entryName.lastIndexOf('/') + 1);
+    entries.set(name, entry.getData().toString('utf8'));
+  }
+  return entries;
+}
+
+/**
+ * Download the public schema bundle.
+ *
+ * @param {string} url
+ * @returns {Promise<Buffer>}
+ */
+async function downloadSchemaBundle(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`GET ${url} failed: HTTP ${resp.status} ${resp.statusText}`);
+  }
+  return Buffer.from(await resp.arrayBuffer());
+}
+
+/**
+ * `--from-zip` driver: capture every registered type from the public schema
+ * bundle (or a local copy) and rewrite only the fixtures that actually
+ * drifted.
+ *
+ * @param {readonly string[]} types
+ * @param {string | undefined} localZipPath
+ * @returns {Promise<number>} process exit code
+ */
+async function refreshFromZip(types, localZipPath) {
+  const source = localZipPath ?? PUBLIC_SCHEMA_ZIP_URL;
+  console.log(`Reading CFn schema bundle from ${source}`);
+  const buffer = localZipPath
+    ? await readFile(localZipPath)
+    : await downloadSchemaBundle(PUBLIC_SCHEMA_ZIP_URL);
+  const entries = readSchemaBundle(buffer);
+  console.log(`Bundle carries ${entries.size} type schema(s)`);
+
+  const summary = refreshFixturesFromEntries({
+    entries,
+    types,
+    fixturesDir: FIXTURES_DIR,
+    generatedAt: today(),
+    writeFixture: (path, text) => writeFileSync(path, text, 'utf8'),
+    readFixture: (path) => (existsSync(path) ? readFileSync(path, 'utf8') : undefined),
+  });
+
+  console.log('');
+  console.log(
+    `${summary.drifted.length} drifted, ${summary.unchanged.length} unchanged, ` +
+      `${summary.missing.length} not in the bundle`
+  );
+  for (const type of summary.drifted) console.log(`  drifted:  ${type}`);
+  if (summary.missing.length > 0) {
+    console.log('');
+    console.log(
+      'No entry in the public bundle — fixture left untouched; refresh these with the ' +
+        'authenticated DescribeType path:'
+    );
+    for (const type of summary.missing) console.log(`  ${type}`);
+  }
+  if (summary.failed.length > 0) {
+    console.error('');
+    console.error(`${summary.failed.length} type(s) failed to capture:`);
+    for (const f of summary.failed) console.error(`  - ${f.type}: ${f.error}`);
+    return 2;
+  }
+  return 0;
+}
+
 /**
  * Process a single resource type: fetch schema, parse, write fixture.
  * Returns the outcome for the summary report.
@@ -603,43 +943,10 @@ async function processType(client, resourceType) {
     if (!resp.Schema) {
       return { type: resourceType, ok: false, error: 'DescribeType returned no Schema field' };
     }
-    const properties = extractTopLevelProperties(resp.Schema);
-    const readOnlyProperties = extractReadOnlyProperties(resp.Schema);
-    const createOnlyProperties = extractCreateOnlyProperties(resp.Schema);
-    const primaryIdentifier = extractPrimaryIdentifier(resp.Schema);
-    const nestedProperties = extractNestedPropertyNames(resp.Schema);
-    const nestedPropertyPaths = extractNestedPropertyPaths(resp.Schema, resourceType);
-    const definitionShapes = extractDefinitionShapes(resp.Schema);
-    const definitionRequired = extractDefinitionRequired(resp.Schema);
-    const fixture = {
-      resourceType,
-      // YYYY-MM-DD only so an unchanged schema produces an unchanged fixture
-      // (full timestamp would churn the git diff on every refresh).
-      generatedAt: new Date().toISOString().split('T')[0],
-      properties,
-      readOnlyProperties,
-      createOnlyProperties,
-      primaryIdentifier,
-      // Omitted entirely when the type has no nested property (keeps
-      // scalar-only fixtures byte-stable vs the pre-#1373 shape).
-      ...(Object.keys(nestedProperties).length > 0 ? { nestedProperties } : {}),
-      // The PER-PATH twin (issue #1464), emitted alongside the flattened
-      // capture rather than replacing it — see
-      // {@link extractNestedPropertyPaths}. Same omit-when-empty rule, so a
-      // scalar-only fixture keeps its pre-#1464 byte shape.
-      ...(Object.keys(nestedPropertyPaths).length > 0 ? { nestedPropertyPaths } : {}),
-      // `#top` is always present, so this field only stays out for a
-      // fixture with no properties at all.
-      ...(Object.keys(definitionShapes).length > 0 ? { definitionShapes } : {}),
-      // The required-ness capture (issue #1800). Same omit-when-empty rule as
-      // the two above — but here the omission is common rather than degenerate:
-      // a type whose schema requires nothing anywhere legitimately has no
-      // section at all.
-      ...(Object.keys(definitionRequired).length > 0 ? { definitionRequired } : {}),
-    };
+    const fixture = buildFixture(resp.Schema, resourceType, today());
     const path = join(FIXTURES_DIR, fixtureFilename(resourceType));
-    await writeFile(path, JSON.stringify(fixture, null, 2) + '\n', 'utf8');
-    return { type: resourceType, ok: true, propertyCount: properties.length };
+    await writeFile(path, serializeFixture(fixture), 'utf8');
+    return { type: resourceType, ok: true, propertyCount: fixture.properties.length };
   } catch (err) {
     return {
       type: resourceType,
@@ -676,9 +983,15 @@ async function main() {
   const args = process.argv.slice(2);
   const usage =
     'Usage: node scripts/refresh-cfn-schemas.mjs [type-filter] [--only-missing]\n' +
+    '       node scripts/refresh-cfn-schemas.mjs --from-zip[=<local.zip>]\n' +
     '  type-filter     substring (or exact) match against registered resource types;\n' +
     '                  WITHOUT it the FULL registered set (~135 types) is re-fetched\n' +
-    '  --only-missing  fetch only types with no fixture file yet\n';
+    '  --only-missing  fetch only types with no fixture file yet\n' +
+    "  --from-zip      capture from AWS's PUBLIC schema bundle instead of DescribeType\n" +
+    '                  (no AWS credentials needed) and rewrite ONLY the fixtures that\n' +
+    '                  actually drifted, ignoring generatedAt-only churn. Optionally\n' +
+    '                  takes a local zip path instead of downloading. This is the mode\n' +
+    '                  the scheduled refresh workflow runs.\n';
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(usage);
     return;
@@ -688,16 +1001,47 @@ async function main() {
   // absent positional meant "no filter" and all ~135 fixtures churned.
   // Single-dash args are guarded too: a `-x` typo is a flag attempt, not a
   // type filter.
-  const unknownFlags = args.filter((a) => a.startsWith('-') && a !== '--only-missing');
+  const unknownFlags = args.filter(
+    (a) => a.startsWith('-') && a !== '--only-missing' && !a.startsWith('--from-zip')
+  );
   if (unknownFlags.length > 0) {
     process.stderr.write(`Unknown flag(s): ${unknownFlags.join(', ')}\n${usage}`);
     process.exit(1);
   }
   const typeFilter = args.find((a) => !a.startsWith('--'));
   const onlyMissing = args.includes('--only-missing');
+  const fromZipArg = args.find((a) => a === '--from-zip' || a.startsWith('--from-zip='));
 
   const source = await readFile(REGISTER_PROVIDERS_PATH, 'utf8');
   const allRegisteredTypes = extractRegisteredTypes(source);
+
+  if (fromZipArg) {
+    // The zip source is whole-set by construction: its whole job is to answer
+    // "did ANYTHING drift", and a filtered run would answer that question
+    // about a subset while looking like it answered it about the tree.
+    // Refuse the combination rather than silently honoring one of the two.
+    if (typeFilter !== undefined || onlyMissing) {
+      process.stderr.write(
+        '--from-zip captures the full registered set and cannot be combined with a ' +
+          `type filter or --only-missing.\n${usage}`
+      );
+      process.exit(1);
+    }
+    await mkdir(FIXTURES_DIR, { recursive: true });
+    const localZipPath = fromZipArg.startsWith('--from-zip=')
+      ? fromZipArg.slice('--from-zip='.length)
+      : undefined;
+    if (localZipPath !== undefined && localZipPath.length === 0) {
+      // An empty value is a caller bug (`--from-zip=$PATH` with PATH unset);
+      // silently falling back to the network would refresh from a source the
+      // caller did not name.
+      process.stderr.write(`--from-zip= requires a path when the '=' form is used.\n${usage}`);
+      process.exit(1);
+    }
+    process.exitCode = await refreshFromZip(allRegisteredTypes, localZipPath);
+    return;
+  }
+
   let types = allRegisteredTypes;
   if (typeFilter) {
     types = types.filter((t) => t === typeFilter || t.includes(typeFilter));

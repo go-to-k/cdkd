@@ -2037,14 +2037,29 @@ This dumps every unaccounted property per type into `tests/fixtures/cfn-schemas/
 
 ### Workflow when AWS publishes new properties
 
-AWS adds properties to existing resource types fairly regularly. Surface them on schedule:
+AWS adds properties to existing resource types fairly regularly — measured at roughly **3 writable properties per month** across the whole Tier 1 surface. Until a property is in the fixture, cdkd does not merely leave it unwired: it **silently drops it**, because the SDK-vs-Cloud-Control routing table is derived offline from these fixtures and a property absent from them produces no `silentDrop` entry to auto-route on. That is the issue [#614](https://github.com/go-to-k/cdkd/issues/614) failure class arriving through the one input the #614 machinery cannot see (issue [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
 
-1. Periodically (manually) run `node scripts/refresh-cfn-schemas.mjs` to refresh ALL fixtures.
-2. `git diff tests/fixtures/cfn-schemas/` shows the new properties added by AWS.
-3. The next `vp test run property-coverage` run will fail naming the newly-unaccounted properties.
+Two mechanisms cover it.
+
+**Monthly, automatically.** `.github/workflows/cfn-schema-refresh.yml` runs `vp run gen:cfn-schemas-from-zip` on the 2nd of each month and, on drift, opens a PR carrying the mechanical regeneration. It reads AWS's **public** schema bundle, so no AWS credentials and no CI IAM role are involved — the prerequisite that kept this manual. Only fixtures that actually changed are rewritten (`generatedAt`-only churn is excluded from the comparison), so the PR diff is the real drift.
+
+That PR is **allowed to land red**, and the red is the hand-off rather than a bug. The job runs only the mechanical chain and hand-classifies nothing, so two classes still need you:
+
+1. A **removed or renamed** property turns a matching `handledProperties` / `unhandledByDesign` declaration into a bogus entry — retire the declaration or add a `bogusTolerated` rationale (see below).
+2. `audit:nested-key-coverage:check` reports **divergences, not staleness** — a new nested key on a `NESTED_KEY_TARGETS` type needs a provider fix or a `NESTED_KEY_ALLOW_LIST` entry with a rationale.
+
+Newly unaccounted writable properties land in `_todo-backfill.json`; fold them into the standing backfill umbrella (issue [#609](https://github.com/go-to-k/cdkd/issues/609)) rather than filing one issue each. Types the public bundle does not carry are skipped with their fixtures left untouched and still need the authenticated path below.
+
+**On demand, by hand** — to pull a refresh forward, or for a type the bundle lacks:
+
+1. Run `vp run gen:cfn-schemas-from-zip` (public bundle, no credentials), or `node scripts/refresh-cfn-schemas.mjs '<AWS::Service::Type>'` for one type via `cloudformation:DescribeType`.
+2. `git diff tests/fixtures/cfn-schemas/` shows what AWS changed.
+3. The next `vp test run property-coverage` run fails naming the newly-unaccounted properties.
 4. Triage each: wire it through, mark `unhandledByDesign`, or backfill (with follow-up).
 
-The script is **not automated** today. The `cloudformation:DescribeType` API is throttled per-account, and committing a recurring CI cron would require credentials. For now this stays an on-demand operator step; see the issue thread for the open design question on CI automation.
+There is deliberately **no CI staleness check** on `main`. It would go red whenever AWS publishes a property — noise on a schedule nobody controls, the same reasoning `gen:aws-cli-removals` carries in `vite.config.ts`. A scheduled job whose red is confined to its own PR is the shape that argument leaves open.
+
+**Between cycles**, a user is not unprotected: a top-level template property absent from the snapshot produces a deploy-time **warning** naming the property, saying it will not reach AWS, and offering both remedies (fix the spelling, or report it). It stays a warning rather than an error or an auto-route — the drop may be intended, and routing on an unrecognized property would let a typo trigger the currently one-way `cc-api` state flip. Suppress a known-accepted one with `--allow-unsupported-properties <Type>:<Prop>`.
 
 ### "Bogus" entries and the tolerance list
 

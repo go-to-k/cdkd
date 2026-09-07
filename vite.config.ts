@@ -433,6 +433,27 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/refresh-aws-cli-removals.ts --check',
         cache: false,
       },
+      // Re-captures every registered type's CFn schema fixture from AWS's
+      // PUBLIC schema bundle — no AWS credentials — rewriting ONLY the fixtures
+      // that actually drifted (`generatedAt`-only churn excluded). This is what
+      // `.github/workflows/cfn-schema-refresh.yml` runs monthly; issue #2718.
+      //
+      // NOT in `gen:all-matrices` and NOT a `--check` in CI, for the reason
+      // written above `gen:aws-cli-removals`: the committed capture is the
+      // oracle, and a staleness check on main would go red whenever AWS
+      // publishes a property — noise on a schedule nobody controls. That
+      // argument is about reddening MAIN; a scheduled job whose red is confined
+      // to its own PR, on a cadence this repo chose, is the shape it leaves
+      // open. Run it by hand to pull a refresh forward between cycles.
+      //
+      // Types the public bundle does not carry (measured: the two
+      // `AWS::BedrockAgentCore::*` ones) are skipped with their fixtures left
+      // untouched and still need `node scripts/refresh-cfn-schemas.mjs
+      // '<AWS::Service::Type>'`, which uses the authenticated DescribeType path.
+      'gen:cfn-schemas-from-zip': {
+        command: 'node scripts/refresh-cfn-schemas.mjs --from-zip',
+        cache: false,
+      },
       'gen:nested-key-coverage': {
         command: 'node --experimental-strip-types scripts/gen-nested-key-coverage.ts',
         cache: false,
