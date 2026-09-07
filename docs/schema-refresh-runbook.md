@@ -23,7 +23,8 @@ why the job is allowed to fail — is in
 | A pull request, CI green | Read the diff, squash merge. |
 | A pull request, CI red | Something needs a decision — the PR names which class. |
 | A pull request saying the nested-key check failed unreadably | Read that job's log; the other sections still hold. |
-| A comment on an open pull request | New drift was added to it. Same two classes. |
+| A comment on an open pull request | New drift was added to it. Same classes. |
+| A section naming a failed CI check | That check's own guidance is in the PR; its findings are not covered by the other sections. |
 
 The job keeps **at most one pull request open**. While one is open, later runs
 push the new drift onto that same branch and comment with what it added, so
@@ -86,12 +87,24 @@ Red is the hand-off, not a defect. The pull request names which class fired, on
 which type, which provider lines mention it, and what the AWS SDK still models —
 so the research is already done and what is left is the decision.
 
-Three classes reach it. Two need a judgement and have their own sections below.
-The third is mechanical: a **stale `bogusTolerated` rationale** — AWS re-added a
-property a provider had written off as gone from the schema, so the rationale is
-now false. Delete that entry and account for the property normally
-(`handledProperties` if the provider wires it, `unhandledByDesign` with a reason
-if it does not). `vp test run property-coverage` names every entry involved.
+Two of them need a judgement and have their own sections below: a **removed or
+renamed property**, and a **nested-key divergence**.
+
+The rest are CI checks that read the schema fixtures, and the pull request gives
+each one that failed its own section with the commands to settle it — so this
+page does not enumerate them. Two are worth knowing about because a plain
+schema **addition** reaches them, which is the shape easiest to wave through:
+
+| Check | What an addition did |
+| --- | --- |
+| `property-coverage` | AWS re-added a property a provider had written off with a `bogusTolerated` rationale, so the rationale is now false |
+| `audit:sdk-attr-coverage:check` | A new read-only `*Arn` / `*Url` on a type that had none, which a cross-resource `Fn::GetAtt` cannot resolve |
+| `audit:enrichment-coverage:check` | A new computed attribute on a Cloud-Control type that nothing populates on read |
+
+A fourth section, **"Fixtures this report could not read"**, means the
+comparison itself failed for those types — neither their removals nor their
+additions are accounted for anywhere in the pull request, so read the refresh
+job's log.
 
 ### A property was removed or renamed
 

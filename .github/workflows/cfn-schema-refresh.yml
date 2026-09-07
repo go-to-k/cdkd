@@ -245,17 +245,34 @@ jobs:
           # "no decision needed". Its red is reached by an ordinary schema
           # ADDITION (AWS re-adding a property a provider wrote off), which is
           # what makes the silence expensive.
-          if CDKD_GENERATE_BACKFILL=true vp test run property-coverage; then
-            property_coverage_rc=0
-          else
-            property_coverage_rc=$?
-            echo "::notice::property-coverage is red — classification is needed on this PR"
-          fi
+          # EVERY fixture-driven CI check runs here, and every red is COLLECTED
+          # rather than tolerated. Each of these reads
+          # `tests/fixtures/cfn-schemas/` and hard-fails CI, and two of the
+          # three are reddened by a pure schema ADDITION — the shape a reader is
+          # most likely to wave through. `property-coverage`'s status was
+          # discarded for six review rounds and its red rendered as "nothing
+          # needs a decision"; the other two were found the round after.
+          #
+          # Adding a fourth is a line here and a `CHECK_GUIDANCE` row in
+          # scripts/diagnose-schema-refresh.mjs. The list is fenced against that
+          # table by tests/unit/scripts/cfn-schema-refresh-workflow.test.ts.
+          failed_checks=""
+          run_check() {
+            name="$1"
+            shift
+            if "$@"; then return 0; fi
+            failed_checks="${failed_checks:+${failed_checks},}${name}"
+            echo "::notice::${name} is red — a decision is needed on this PR"
+          }
+          run_check property-coverage \
+            env CDKD_GENERATE_BACKFILL=true vp test run property-coverage
+          run_check audit:sdk-attr-coverage:check vp run audit:sdk-attr-coverage:check
+          run_check audit:enrichment-coverage:check vp run audit:enrichment-coverage:check
           # Through the environment FILE, not a shell variable: each `run:` is
           # its own shell, so a plain assignment here is simply gone by the
-          # Diagnose step — and `readNumArg`'s absent-flag arm defaults to 0,
-          # so losing it would have restored the exact silence this fixes.
-          echo "PROPERTY_COVERAGE_RC=${property_coverage_rc}" >> "${GITHUB_ENV}"
+          # Diagnose step — and an absent `--failed-checks` reads as "nothing
+          # failed", so losing it would restore the exact silence this fixes.
+          echo "FAILED_CHECKS=${failed_checks}" >> "${GITHUB_ENV}"
           vp run gen:all-matrices
           vp run format
 
@@ -289,7 +306,7 @@ jobs:
           node scripts/diagnose-schema-refresh.mjs \
             --nested-key-log /tmp/nested-key.log \
             --nested-key-rc "${nested_key_rc}" \
-            --property-coverage-rc "${PROPERTY_COVERAGE_RC}" \
+            --failed-checks "${FAILED_CHECKS}" \
             --skipped-log /tmp/skipped.log > /tmp/diagnosis.md
 
       - name: Publish the refresh

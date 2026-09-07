@@ -63,6 +63,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
 
 /**
+ * Distinguishes "this fixture is not in HEAD" (nothing to compare — a brand-new
+ * capture) from "reading it FAILED". Both used to be `undefined`, and the
+ * second is a fact the report must state rather than skip.
+ */
+export const UNREADABLE = Symbol('unreadable');
+
+/**
  * @typedef {import('./diagnose-schema-refresh.d.mts').NestedKeyDivergence} NestedKeyDivergence
  * @typedef {import('./diagnose-schema-refresh.d.mts').SdkLagRow} SdkLagRow
  * @typedef {import('./diagnose-schema-refresh.d.mts').DiagnosisInput} DiagnosisInput
@@ -596,7 +603,63 @@ export function parseDeclaredProperties(generatedSource) {
  *
  * The input shape lives in the sibling `.d.mts` and is named here rather than
  * restated field by field: the per-field `@param` list was a second copy, and
- * it went stale twice — silently, since nothing in CI type-checks `scripts/**`.
+ * it went stale twice — silently, since nothing in CI type-checks `scripts/**
+ * What to do about each CI check a schema refresh can turn red.
+ *
+ * Keyed by the `vp run` task name, so the workflow and this table name the same
+ * thing. Every entry here is a check that READS `tests/fixtures/cfn-schemas/`
+ * and hard-fails CI, which is what makes its silence expensive: two of the
+ * three are reddened by a pure schema ADDITION, the shape a reader is most
+ * likely to wave through.
+ *
+ * A check absent from this table still gets a section — naming it and saying
+ * there is no guidance beats the silence that shipped for six rounds.
+ */
+/** @type {Record<string, string[]>} */
+export const CHECK_GUIDANCE = {
+  'property-coverage': [
+    'Most often AWS RE-ADDED a property a provider had written off with a',
+    '`bogusTolerated` rationale in `tests/fixtures/cfn-schemas/_todo-backfill.json`.',
+    'The rationale said the schema no longer lists it; it does again, so the',
+    'rationale is now wrong and retiring it is a judgement.',
+    '',
+    '```bash',
+    'vp test run property-coverage',
+    '```',
+    '',
+    'Delete the stale entry and account for the property normally —',
+    '`handledProperties` if the provider wires it, `unhandledByDesign` with a',
+    'reason if it does not.',
+  ],
+  'audit:sdk-attr-coverage:check': [
+    'A new READ-ONLY `*Arn` or `*Url` attribute on a type that had none. A',
+    'cross-resource `Fn::GetAtt` reads the cached attribute, so an uncached one',
+    'hard-fails the resolver rather than falling back.',
+    '',
+    '```bash',
+    'vp run audit:sdk-attr-coverage:check',
+    '```',
+    '',
+    'Cache the attribute in the provider under its CFn name, or — if the type',
+    'is Cloud-Control-routed — check whether its `primaryIdentifier` already',
+    'covers it.',
+  ],
+  'audit:enrichment-coverage:check': [
+    'A new computed attribute on a pure Cloud-Control type that',
+    '`enrichResourceAttributes` does not populate — the silent-drop class on the',
+    'READ side.',
+    '',
+    '```bash',
+    'vp run audit:enrichment-coverage:check',
+    '```',
+    '',
+    'Add the attribute to that type\'s `case` in',
+    '`src/provisioning/cloud-control-provider.ts`, or allow-list it with a',
+    'rationale if AWS does not return it.',
+  ],
+};
+
+/**`.
  *
  * @param {DiagnosisInput} input
  * @returns {string}
@@ -608,7 +671,7 @@ export function renderDiagnosis(input) {
     readOnlyAddedCount = 0,
     divergences,
     nestedKeyUnparsed = false,
-    propertyCoverageFailed = false,
+    failedChecks = [],
     unreadable = [],
     skipped,
     sdkLag,
@@ -625,7 +688,7 @@ export function renderDiagnosis(input) {
     removed.length === 0 &&
     divergences.length === 0 &&
     !nestedKeyUnparsed &&
-    !propertyCoverageFailed &&
+    failedChecks.length === 0 &&
     unreadable.length === 0
   ) {
     lines.push('Nothing in this refresh needs a decision — additions only.', '');
@@ -747,32 +810,28 @@ export function renderDiagnosis(input) {
     );
   }
 
-  if (propertyCoverageFailed) {
-    // Reached by a pure schema ADDITION, which is the ordinary refresh shape:
-    // the coverage test fails when AWS RE-ADDS a property some provider had
-    // written off in `bogusTolerated`. Measured against the live tree, 12 such
-    // properties across 10 types are one AWS addition away from this. Removing
-    // a hand-written rationale is a judgment, so it is a hand-off — and until
-    // this section existed the report called that same property "no decision
-    // needed" and posted it to the backfill umbrella as newly unaccounted.
+  if (failedChecks.length > 0) {
+    // A LIST rather than a flag per check, because the flag-per-check shape
+    // recurred once per review round: `property-coverage`'s red was discarded
+    // for six of them, and closing that left `sdk-attr-coverage` and
+    // `enrichment-coverage` — both fixture-driven, both CI-blocking, both
+    // reachable by an ordinary schema ADDITION — reporting nothing. The next
+    // one is a row in `CHECK_GUIDANCE` and a line in the workflow.
+    lines.push('### CI checks that FAILED — a decision is needed', '');
+    for (const check of failedChecks) {
+      const guidance = CHECK_GUIDANCE[check];
+      lines.push(`#### \`${renderName(check)}\``, '');
+      lines.push(
+        ...(guidance ?? [
+          'This report carries no guidance for that check — read its job log.',
+          'Whatever it names is NOT covered by the sections below.',
+        ]),
+        ''
+      );
+    }
     lines.push(
-      '### The property-coverage check FAILED — a decision is needed',
-      '',
-      'Most often this is AWS RE-ADDING a property that a provider had written',
-      'off with a `bogusTolerated` rationale in',
-      '`tests/fixtures/cfn-schemas/_todo-backfill.json`. The rationale said the',
-      'schema no longer lists it; the schema lists it again, so the rationale is',
-      'now wrong and retiring it is a judgment this job will not make for you.',
-      '',
-      '```bash',
-      '# Names every entry the check is unhappy about.',
-      'vp test run property-coverage',
-      '```',
-      '',
-      'Delete the stale `bogusTolerated` entry and account for the property',
-      'normally — `handledProperties` if the provider wires it, `unhandledByDesign`',
-      'with a reason if it does not. **Any property named there is NOT covered by',
-      'the sections below**, whichever one it appears in.',
+      '**Anything those checks name is NOT covered by the sections below**,',
+      'whichever section it appears in.',
       ''
     );
   }
@@ -823,7 +882,15 @@ export function renderDiagnosis(input) {
       'refresh itself is the place to look — a fixture it half-wrote reads like',
       'this here.',
       '',
-      ...unreadable.map((/** @type {string} */ f) => `- ${renderName(f.replace(/\.json$/, ''))}`),
+      // `refresh-cfn-schemas.mjs` writes `AWS::S3::Bucket` as `AWS-S3-Bucket.json`,
+      // and `renderName`'s class excludes `-` — so rendering the raw stem put
+      // all 134 possible names through the rejection placeholder and the
+      // maintainer got a count with no types. Restored to the type spelling,
+      // which is also what every other section renders.
+      ...unreadable.map(
+        (/** @type {string} */ f) =>
+          `- ${renderName(f.replace(/\.json$/, '').replace(/-/g, '::'))}`
+      ),
       ''
     );
   }
@@ -1083,7 +1150,7 @@ function divergenceProcedure(divergences, sdkLag) {
  * Read a type's committed fixture from git, or `undefined` when it is new.
  *
  * @param {string} relPath
- * @returns {string | undefined}
+ * @returns {string | undefined | typeof UNREADABLE}
  */
 function committedVersion(relPath) {
   try {
@@ -1092,8 +1159,18 @@ function committedVersion(relPath) {
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
     });
-  } catch {
-    return undefined;
+  } catch (/** @type {any} */ error) {
+    // "not in HEAD" is a brand-new fixture and means nothing to compare. Any
+    // OTHER failure — git absent, a broken repo, the 32 MB buffer exceeded — is
+    // this report failing to read, and collapsing the two made every fixture
+    // look new and the whole refresh look clean. Measured: every file
+    // undefined yields the clean verdict, over a step that only runs when
+    // drift exists.
+    const stderr = String(error?.stderr ?? '');
+    if (/does not exist|exists on disk, but not in|unknown revision|invalid object/i.test(stderr)) {
+      return undefined;
+    }
+    return UNREADABLE;
   }
 }
 
@@ -1160,7 +1237,7 @@ export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag)
  *
  * @param {{
  *   files: string[],
- *   committedOf: (file: string) => string | undefined,
+ *   committedOf: (file: string) => string | undefined | typeof UNREADABLE,
  *   currentOf: (file: string) => string,
  *   providerFiles: Map<string, string>,
  *   declared: Map<string, Set<string>>,
@@ -1188,6 +1265,10 @@ export function collectFixtureDeltas({
 
   for (const file of files) {
       const committed = committedOf(file);
+      if (committed === UNREADABLE) {
+        unreadable.push(file);
+        continue;
+      }
       if (committed === undefined) continue; // Brand-new fixture: nothing to compare.
       let delta;
       let resourceType;
@@ -1245,6 +1326,32 @@ export function collectFixtureDeltas({
   return { removed, writableAdded, readOnlyAddedCount, unreadable };
 }
 
+/**
+ * The coverage table, refusing a MISSING module rather than reading it as empty.
+ *
+ * `parseDeclaredProperties('')` returns an empty map without throwing — the
+ * by-hand case — so the caller's `existsSync(...) ? read : ''` turned an absent
+ * file into "no provider declares anything", which filters every removal away
+ * and renders the clean verdict. Measured on a real
+ * `AWS::Route53::RecordSet.GeoProximityLocation` removal.
+ *
+ * Split out of `main()` so the refusal is reachable from a test; every other
+ * refusal in this file already was.
+ *
+ * @param {string} [repoRoot]
+ * @returns {Map<string, Set<string>>}
+ */
+export function loadDeclaredProperties(repoRoot = REPO_ROOT) {
+  const generatedPath = join(repoRoot, 'src/provisioning/property-coverage.generated.ts');
+  if (!existsSync(generatedPath)) {
+    throw new Error(
+      `${generatedPath} is missing — refusing to report which removals need a decision ` +
+        'from a coverage table that was never read.'
+    );
+  }
+  return parseDeclaredProperties(readFileSync(generatedPath, 'utf8'));
+}
+
 function main() {
   const args = process.argv.slice(2);
   const readArg = (/** @type {string} */ flag) => {
@@ -1268,11 +1375,7 @@ function main() {
   // `gen-property-coverage.ts` writes `handled` VERBATIM from the declaration
   // and does not intersect it with the fixture, so a property AWS just removed
   // is still listed there — which is exactly the "now bogus" condition.
-  const declared = parseDeclaredProperties(
-    existsSync(join(REPO_ROOT, 'src/provisioning/property-coverage.generated.ts'))
-      ? readFileSync(join(REPO_ROOT, 'src/provisioning/property-coverage.generated.ts'), 'utf8')
-      : ''
-  );
+  const declared = loadDeclaredProperties();
 
   const { removed, writableAdded, readOnlyAddedCount, unreadable } = collectFixtureDeltas({
     files: readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.json') && !f.startsWith('_')),
@@ -1291,6 +1394,10 @@ function main() {
   // every manual invocation is not a safety property. The risk the absent arm
   // carries — the WORKFLOW dropping the flag — is guarded where the evidence
   // still exists, by the workflow test asserting it passes the variable.
+  const readArgValue = (/** @type {string} */ flag) => {
+    const i = args.indexOf(flag);
+    return i === -1 || i + 1 >= args.length ? '' : args[i + 1];
+  };
   const readNumArg = (/** @type {string} */ flag) => {
     const i = args.indexOf(flag);
     if (i === -1) return 0;
@@ -1308,7 +1415,12 @@ function main() {
     readArg('--nested-key-log'),
     readNumArg('--nested-key-rc')
   );
-  const propertyCoverageFailed = readNumArg('--property-coverage-rc') !== 0;
+  // Comma-separated task names, so a fourth check is a workflow line and a
+  // `CHECK_GUIDANCE` row rather than another flag and another render branch.
+  const failedChecks = readArgValue('--failed-checks')
+    .split(',')
+    .map((c) => c.trim())
+    .filter((c) => c !== '');
   const divergences = nestedKey.divergences;
   const skipped = readArg('--skipped-log')
     .split('\n')
@@ -1329,7 +1441,7 @@ function main() {
       readOnlyAddedCount,
       divergences,
       nestedKeyUnparsed: nestedKey.unparsedFailure,
-      propertyCoverageFailed,
+      failedChecks,
       unreadable,
       skipped,
       sdkLag,

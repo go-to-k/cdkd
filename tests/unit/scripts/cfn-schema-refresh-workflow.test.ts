@@ -20,7 +20,10 @@
  * had exactly those two holes.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { CHECK_GUIDANCE } from '../../../scripts/diagnose-schema-refresh.mjs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +40,33 @@ const workflow = readFileSync(WORKFLOW_PATH, 'utf8');
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const parsed: any = parseYaml(workflow);
+
+  const steps: Array<{
+    name?: string;
+    if?: string;
+    run?: string;
+    uses?: string;
+    env?: Record<string, string>;
+  }> =
+    parsed.jobs.refresh.steps;
+  const byName = (name: string) => {
+    const step = steps.find((s) => s.name === name);
+    expect(step, `no step named ${JSON.stringify(name)} — it was renamed or deleted`).toBeDefined();
+    return step!;
+  };
+
+  /**
+   * A step's shell with `#` comment lines removed. Load-bearing for the
+   * NEGATIVE assertions below: this workflow's comments deliberately QUOTE
+   * the wrong forms in order to explain why they are wrong (`git diff
+   * --quiet`, a bare `--force-with-lease`), so a naive `not.toContain` reads
+   * the explanation as the defect and fails on correct code.
+   */
+  const shellOf = (name: string) =>
+    byName(name)
+      .run!.split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
 
 /**
  * The task the workflow invokes to do the capture. Named here as a literal
@@ -74,33 +104,6 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
    * simply stops opening PRs, on a cadence nobody is watching.
    */
   describe('step wiring', () => {
-    const steps: Array<{
-      name?: string;
-      if?: string;
-      run?: string;
-      uses?: string;
-      env?: Record<string, string>;
-    }> =
-      parsed.jobs.refresh.steps;
-    const byName = (name: string) => {
-      const step = steps.find((s) => s.name === name);
-      expect(step, `no step named ${JSON.stringify(name)} — it was renamed or deleted`).toBeDefined();
-      return step!;
-    };
-
-    /**
-     * A step's shell with `#` comment lines removed. Load-bearing for the
-     * NEGATIVE assertions below: this workflow's comments deliberately QUOTE
-     * the wrong forms in order to explain why they are wrong (`git diff
-     * --quiet`, a bare `--force-with-lease`), so a naive `not.toContain` reads
-     * the explanation as the defect and fails on correct code.
-     */
-    const shellOf = (name: string) =>
-      byName(name)
-        .run!.split('\n')
-        .filter((l) => !/^\s*#/.test(l))
-        .join('\n');
-
     it('refreshes and probes drift UNCONDITIONALLY, gating only the publish', () => {
       // Load-bearing since the job stopped skipping: an open PR must not stop
       // the refresh, or every new AWS addition waits for that PR to merge —
@@ -375,20 +378,46 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       );
     });
 
-    it('captures the property-coverage status and carries it ACROSS steps', () => {
+    it('collects EVERY fixture-driven check, and the guidance table knows them all', () => {
+      // The list lives in the workflow and the guidance in the script, with
+      // nothing joining them — which is how `sdk-attr-coverage` and
+      // `enrichment-coverage` went unreported for eight rounds while
+      // `property-coverage` was being fixed. A fourth check added to one side
+      // and not the other fails here.
+      const regen = shellOf('Regenerate the derived artifacts');
+      const collected = [...regen.matchAll(/^\s*run_check (\S+)/gm)].map((m) => m[1]!);
+      expect(collected.length, 'no run_check invocations found').toBeGreaterThanOrEqual(3);
+      expect(new Set(collected)).toEqual(new Set(Object.keys(CHECK_GUIDANCE)));
+      // And each one really is fixture-driven — the property that makes a
+      // schema refresh able to redden it.
+      for (const check of collected) {
+        const task = check.replace(/^audit:/, '').replace(/:check$/, '');
+        const script = ['gen-' + task + '.ts', task + '.ts'].find((f) =>
+          existsSync(join(REPO_ROOT, 'scripts', f))
+        );
+        if (!script) continue; // property-coverage is a vitest run, not a script.
+        expect(
+          readFileSync(join(REPO_ROOT, 'scripts', script), 'utf8'),
+          `${check} does not read the fixtures — why is it in this list?`
+        ).toContain('cfn-schemas');
+      }
+    });
+
+    it('carries the failed-check list ACROSS steps', () => {
       // `|| echo` stops `set -e` aborting and nothing else, so the red never
       // reached the diagnosis — a failing coverage check rendered as "nothing
       // needs a decision". Two separate mistakes are pinned here: `$?` after a
       // `||` compound is the ECHO's status, and a shell variable does not
       // survive into the next `run:` at all.
       const regen = shellOf('Regenerate the derived artifacts');
-      expect(regen).toMatch(/if CDKD_GENERATE_BACKFILL=true vp test run property-coverage; then/);
-      expect(regen).toContain('property_coverage_rc=$?');
-      expect(regen, 'the status dies with this step\u2019s shell').toMatch(
-        /echo "PROPERTY_COVERAGE_RC=\$\{property_coverage_rc\}" >> "\$\{GITHUB_ENV\}"/
+      // A shell variable does not survive into the next `run:` at all, and an
+      // absent `--failed-checks` reads as "nothing failed" — so losing it here
+      // restores the exact silence this mechanism removes.
+      expect(regen, 'the list dies with this step\u2019s shell').toMatch(
+        /echo "FAILED_CHECKS=\$\{failed_checks\}" >> "\$\{GITHUB_ENV\}"/
       );
       const diagnose = shellOf('Diagnose what needs a decision');
-      expect(diagnose).toMatch(/--property-coverage-rc "\$\{PROPERTY_COVERAGE_RC\}"/);
+      expect(diagnose).toMatch(/--failed-checks "\$\{FAILED_CHECKS\}"/);
     });
 
     it('pins the cross-file literals the shell greps for', () => {
@@ -495,32 +524,81 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).not.toMatch(/git commit -m "(feat|fix|perf)\(/);
   });
 
-  it('tolerates a red backfill regeneration instead of aborting before the PR exists', () => {
-    // A removed property leaves a bogus declaration no generator can retire, so
-    // that step is EXPECTED to fail on some cycles. Letting it stop the run
-    // would suppress the very PR through which the human finds out.
-    //
-    // The INVARIANT, not the spelling: under `set -e` the invocation must sit
-    // somewhere a non-zero status is not fatal. `||` and an `if` condition both
-    // qualify; a bare command does not. This case pinned the `||` text, and the
-    // status-capturing rewrite that kept the invariant reddened it.
-    // `shellOf` belongs to the step-wiring block; the comment strip matters
-    // here for the same reason it does there — a `#` line naming the command
-    // would satisfy every assertion below.
-    const regen = workflow
-      .split('\n')
-      .filter((l) => !/^\s*#/.test(l))
-      .join('\n');
-    const invocation = /CDKD_GENERATE_BACKFILL=true vp test run property-coverage/;
-    expect(regen).toMatch(invocation);
-    const line = regen.split('\n').find((l) => invocation.test(l))!;
-    expect(line, 'the step aborts before the PR exists').toMatch(
-      /(^\s*if\s|\|\|\s*(\\)?$|\|\|\s*\S)/
-    );
-    // And it still runs under strict mode — the tolerance is scoped to this one
-    // command, not bought by relaxing the whole step.
-    expect(regen).toContain('set -euo pipefail');
-  });
+  it('RUNS the regenerate step with every check red, and still reaches the end', () => {
+    // Executed, not pattern-matched. Two rewrites of this case pinned a
+    // SPELLING — first `||`, then `||`-or-`if` — and each time a rewrite that
+    // preserved the invariant reddened it. The invariant is behavioural: under
+    // `set -euo pipefail` a failing check must not abort the step, and every
+    // failure must reach `$GITHUB_ENV`. So the real shell runs, with the four
+    // commands it invokes stubbed.
+    const shell = shellOf('Regenerate the derived artifacts');
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-regen-'));
+    try {
+      const envFile = join(dir, 'github-env');
+      // Fails the CHECKS only. A stub that failed everything would abort on
+      // `gen:all-matrices` instead — which is correct behaviour and would have
+      // made this case pass for the wrong reason.
+      const vp = [
+        '#!/bin/sh',
+        'case "$*" in',
+        '  *audit:*:check|*"test run property-coverage"*) exit 1 ;;',
+        '  *) exit 0 ;;',
+        'esac',
+      ].join('\n');
+      writeFileSync(join(dir, 'vp'), `${vp}\n`, { mode: 0o755 });
+      // `env VAR=x vp ...` — drop the assignments and re-exec.
+      writeFileSync(
+        join(dir, 'env'),
+        '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in *=*) shift ;; *) break ;; esac; done\nexec "$@"\n',
+        { mode: 0o755 }
+      );
+      writeFileSync(
+        join(dir, 'run.sh'),
+        `export PATH="${dir}:$PATH"\nexport GITHUB_ENV="${envFile}"\n${shell}\necho REACHED_END\n`
+      );
+      const out = execFileSync('bash', [join(dir, 'run.sh')], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(out, 'a failing check aborted the step').toContain('REACHED_END');
+      const written = readFileSync(envFile, 'utf8');
+      // Every check that failed is collected, comma-separated, none lost.
+      const line = written.split('\n').find((l) => l.startsWith('FAILED_CHECKS='))!;
+      expect(line, 'the failed list never reached GITHUB_ENV').toBeDefined();
+      const collected = line.slice('FAILED_CHECKS='.length).split(',').filter(Boolean);
+      expect(new Set(collected)).toEqual(new Set(Object.keys(CHECK_GUIDANCE)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('RUNS the regenerate step with every check green, and collects nothing', () => {
+    // The success arm, which was unpinned: hard-coding a failure there would
+    // make every green cycle render "a decision is needed".
+    const shell = shellOf('Regenerate the derived artifacts');
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-regen-ok-'));
+    try {
+      const envFile = join(dir, 'github-env');
+      writeFileSync(join(dir, 'vp'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      writeFileSync(
+        join(dir, 'env'),
+        '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in *=*) shift ;; *) break ;; esac; done\nexec "$@"\n',
+        { mode: 0o755 }
+      );
+      writeFileSync(
+        join(dir, 'run.sh'),
+        `export PATH="${dir}:$PATH"\nexport GITHUB_ENV="${envFile}"\n${shell}\n`
+      );
+      execFileSync('bash', [join(dir, 'run.sh')], { encoding: 'utf8' });
+      const written = readFileSync(envFile, 'utf8');
+      expect(written).toContain('FAILED_CHECKS=');
+      expect(written.split('\n').find((l) => l.startsWith('FAILED_CHECKS='))).toBe(
+        'FAILED_CHECKS='
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it('denies permissions at the top level and grants them per job', () => {
     expect(workflow).toMatch(/^permissions: \{\}$/m);

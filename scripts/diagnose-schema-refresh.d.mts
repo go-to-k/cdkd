@@ -77,7 +77,7 @@ export interface DiagnosisInput {
   sdkLag?: SdkLagRow[];
   divergences: NestedKeyDivergence[];
   nestedKeyUnparsed?: boolean;
-  propertyCoverageFailed?: boolean;
+  failedChecks?: string[];
   unreadable?: string[];
   skipped: string[];
 }
@@ -104,9 +104,11 @@ export declare function buildSdkLag(
     installed: string
   ) => { installed: string; latest: string; behind: boolean } | undefined
 ): SdkLagRow[];
+export declare const UNREADABLE: unique symbol;
+export declare const CHECK_GUIDANCE: Record<string, string[]>;
 export declare function collectFixtureDeltas(input: {
   files: string[];
-  committedOf: (file: string) => string | undefined;
+  committedOf: (file: string) => string | undefined | typeof UNREADABLE;
   currentOf: (file: string) => string;
   providerFiles: Map<string, string>;
   declared: Map<string, Set<string>>;
@@ -127,3 +129,4 @@ export declare function collectFixtureDeltas(input: {
   readOnlyAddedCount: number;
   unreadable: string[];
 };
+export declare function loadDeclaredProperties(repoRoot?: string): Map<string, Set<string>>;

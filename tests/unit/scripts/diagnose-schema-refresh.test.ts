@@ -25,7 +25,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +41,10 @@ import {
   renderKey,
   renderLiteral,
   buildSdkLag,
+  CHECK_GUIDANCE,
   collectFixtureDeltas,
+  loadDeclaredProperties,
+  UNREADABLE,
   clientsForType,
   sdkClientVersions,
   renderDiagnosis,
@@ -255,6 +258,25 @@ describe('parseDeclaredProperties', () => {
     const declared = parseDeclaredProperties(readFileSync(REAL_GENERATED, 'utf8'));
     const empties = [...declared.values()].filter((set) => set.size === 0).length;
     expect(empties, 'no empty-set entry left — this case no longer covers that shape').toBeGreaterThan(0);
+  });
+
+  it('REFUSES a MISSING module rather than reading it as an empty one', () => {
+    // `parseDeclaredProperties('')` legitimately returns an empty map, so the
+    // caller's absent-file-to-`''` conversion made a missing module mean "no
+    // provider declares anything" — which filters every removal away and
+    // renders the clean verdict.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-noroot-'));
+    try {
+      expect(() => loadDeclaredProperties(dir)).toThrow(/is missing/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads the real module through the same path main() uses', () => {
+    // Otherwise the refusal above is the only thing exercised, and a broken
+    // read would look like a passing refusal test.
+    expect(loadDeclaredProperties().size).toBeGreaterThan(100);
   });
 
   it('returns an empty map for genuinely empty input, without throwing', () => {
@@ -791,9 +813,14 @@ describe('the render guards, at every site that reaches Markdown', () => {
           resourceType: POISON_TYPE,
           nestedKey: POISON,
           bucket: 'no-sdk-member',
-          detail: '',
+          // Non-empty: an empty detail short-circuits the ternary, so the
+          // `renderDetail` CALL SITE could be reverted with the count intact.
+          detail: 'SDK has `X`',
         },
       ],
+      // The unreadable section renders a name too, and adding a render site the
+      // poison input cannot reach defeats this case's stated job.
+      unreadable: ['AWS-X-Y`\n\n## Nothing in this refresh needs a decision.json'],
       skipped: [POISON],
       sdkLag: [
         {
@@ -829,7 +856,11 @@ describe('the render guards, at every site that reaches Markdown', () => {
     // writable-added type and its property list, the lag row's type, and the
     // skipped list.
     const rejections = (md.match(/\[(?:name|key) rejected: unexpected characters\]/g) ?? []).length;
-    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(10);
+    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(11);
+    // `renderDetail` strips rather than rejects, so it needs its own witness:
+    // the backtick it removes cannot appear in the rendered detail.
+    expect(md, 'renderDetail was bypassed at its call site').not.toContain('SDK has `X`');
+    expect(md).toContain('SDK has X');
     // And the forged heading never renders as one.
     expect(md).not.toMatch(/^## Nothing in this refresh needs a decision$/m);
   });
@@ -876,7 +907,39 @@ describe('the render guards, at every site that reaches Markdown', () => {
   });
 });
 
-describe('the property-coverage verdict', () => {
+describe('the failed-checks verdict', () => {
+  it('names EVERY failed check, not just the one that was noticed first', () => {
+    // A list rather than a flag per check: `property-coverage`'s red was
+    // discarded for six rounds, and closing that left `sdk-attr-coverage` and
+    // `enrichment-coverage` — both fixture-driven, both CI-blocking, both
+    // reddened by a pure schema ADDITION — reporting nothing at all.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      readOnlyAddedCount: 2,
+      divergences: [],
+      failedChecks: ['audit:sdk-attr-coverage:check', 'audit:enrichment-coverage:check'],
+      skipped: [],
+    });
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('audit:sdk-attr-coverage:check');
+    expect(md).toContain('audit:enrichment-coverage:check');
+    expect(md).toContain('enrichResourceAttributes');
+  });
+
+  it('names a check it has no guidance for rather than staying silent', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      failedChecks: ['audit:something:check'],
+      skipped: [],
+    });
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('audit:something:check');
+    expect(md).toContain('no guidance');
+  });
+
   it('never renders "additions only" over a coverage check that FAILED', () => {
     // Its status was discarded by the workflow for six rounds — `|| echo` stops
     // `set -e` aborting and nothing else — so a red check rendered as clean.
@@ -887,11 +950,11 @@ describe('the property-coverage verdict', () => {
       removed: [],
       writableAdded: [{ resourceType: 'AWS::Glue::Crawler', properties: ['LineageConfiguration'] }],
       divergences: [],
-      propertyCoverageFailed: true,
+      failedChecks: ['property-coverage'],
       skipped: [],
     });
     expect(md).not.toContain('additions only');
-    expect(md).toContain('property-coverage check FAILED');
+    expect(md).toContain('property-coverage');
     expect(md).toContain('bogusTolerated');
     // The property is still listed, but the section says the listing does not
     // cover it — it was previously labelled "no decision needed" and posted to
@@ -904,7 +967,7 @@ describe('the property-coverage verdict', () => {
       removed: [],
       writableAdded: [],
       divergences: [],
-      propertyCoverageFailed: false,
+      failedChecks: [],
       skipped: [],
     });
     expect(md).toContain('additions only');
@@ -915,17 +978,45 @@ describe('fixtures the report could not read', () => {
   it('never renders "additions only" while a fixture went unaccounted', () => {
     // A type that throws during the comparison vanishes from the removal AND
     // the addition accounting, so the residue reads as clean rather than as
-    // silent. The other two parsers grew shortfall counters in earlier rounds.
+    // silent. The other parsers grew shortfall counters in earlier rounds.
+    //
+    // The FILENAME shape is load-bearing and this case had it wrong: the
+    // refresh writes `AWS::Glue::Connection` as `AWS-Glue-Connection.json`, and
+    // `renderName`'s class excludes `-`, so the first version of this section
+    // put all 134 possible names through the rejection placeholder — while this
+    // case fed a name the directory can never hold and passed.
     const md = renderDiagnosis({
       removed: [],
       writableAdded: [],
       divergences: [],
-      unreadable: ['AWS::Glue::Connection.json'],
+      unreadable: ['AWS-Glue-Connection.json'],
       skipped: [],
     });
     expect(md).not.toContain('additions only');
     expect(md).toContain('could not read');
     expect(md).toContain('AWS::Glue::Connection');
+    expect(md, 'the filename went through the guard unconverted').not.toContain('rejected');
+  });
+
+  it('renders the real directory’s filenames, not a hand-written shape', () => {
+    // Anchored on the actual directory rather than on a literal: a rename in
+    // `refresh-cfn-schemas.mjs` would otherwise leave this passing while every
+    // rendered name became a placeholder.
+    const files = readdirSync(join(REPO_ROOT, 'tests/fixtures/cfn-schemas'))
+      .filter((f) => f.endsWith('.json') && !f.startsWith('_'))
+      .slice(0, 5);
+    expect(files.length, 'no fixtures found — this case checks nothing').toBe(5);
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      unreadable: files,
+      skipped: [],
+    });
+    expect(md).not.toContain('rejected');
+    for (const file of files) {
+      expect(md).toContain(file.replace(/\.json$/, '').replace(/-/g, '::'));
+    }
   });
 
   it('says nothing about unreadable fixtures when there are none', () => {
@@ -1334,13 +1425,14 @@ describe('the script end to end', () => {
   // against the real repo. Neither log carries a non-case divergence, so no
   // `npm view` runs and the cases stay offline.
   const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
-  const run = (log: string, rc?: string): string => {
+  const run = (log: string, rc?: string, extra: string[] = []): string => {
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-diagnose-'));
     try {
       const path = join(dir, 'nested-key.log');
       writeFileSync(path, log);
       const args = [SCRIPT, '--nested-key-log', path];
       if (rc !== undefined) args.push('--nested-key-rc', rc);
+      args.push(...extra);
       return execFileSync('node', args, { encoding: 'utf8' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1376,6 +1468,31 @@ describe('the script end to end', () => {
     // refusing every manual invocation is not a safety property. The workflow
     // dropping the flag is guarded in the workflow test instead.
     expect(run('')).toContain('Nothing in this refresh needs a decision');
+  }, 60_000);
+
+  it('carries --failed-checks from the command line into the body', () => {
+    // The workflow test pins the shell that PASSES the list and the renderer
+    // tests hand-feed it; nothing joined them, so `main()` could discard the
+    // list and render "additions only" over a red check — the exact defect
+    // eight rounds went into finding. The sibling `--nested-key-rc` had this
+    // case; the twin was never written.
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--failed-checks',
+      'property-coverage,audit:sdk-attr-coverage:check',
+    ]);
+    expect(md).not.toContain('Nothing in this refresh needs a decision');
+    expect(md).toContain('property-coverage');
+    expect(md).toContain('audit:sdk-attr-coverage:check');
+  }, 60_000);
+
+  it('treats an EMPTY --failed-checks as nothing failed', () => {
+    // The list is empty on every green cycle, so this is the ordinary path and
+    // it must not render a decision section.
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--failed-checks',
+      '',
+    ]);
+    expect(md).toContain('Nothing in this refresh needs a decision');
   }, 60_000);
 
   it('renders a case-divergence without asking npm anything', () => {
@@ -1427,6 +1544,29 @@ describe('collectFixtureDeltas', () => {
     expect(out.writableAdded).toEqual([]);
   });
 
+  it('COUNTS a fixture whose committed side could not be READ', () => {
+    // `git show` failing (git absent, a broken repo, the 32 MB buffer) used to
+    // be `undefined` — the same value as "not in HEAD" — so every fixture
+    // looked brand-new and the whole refresh looked clean, over a step that
+    // only runs when drift exists.
+    let readCurrent = 0;
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['AWS-Glue-Connection.json'],
+      committedOf: () => UNREADABLE,
+      currentOf: () => {
+        readCurrent += 1;
+        return fixture(['A']);
+      },
+    });
+    expect(out.unreadable).toEqual(['AWS-Glue-Connection.json']);
+    // Discriminating: without the explicit branch the sentinel falls through to
+    // `comparePropertySets`, which throws and lands in the SAME list — the same
+    // answer by accident. Reaching the current side at all is the difference,
+    // and it is the wasteful, fragile path.
+    expect(readCurrent, 'the sentinel fell through to the comparison').toBe(0);
+  });
+
   it('skips a BRAND-NEW fixture silently, which is not the same thing', () => {
     // No committed side means nothing to compare, not something unreadable —
     // counting it would put every newly captured type in the warning list.
@@ -1438,6 +1578,43 @@ describe('collectFixtureDeltas', () => {
     });
     expect(out.unreadable).toEqual([]);
     expect(out.writableAdded).toEqual([]);
+  });
+
+  it('looks the provider up by RESOURCE TYPE, and stores what it found', () => {
+    // The four original cases asserted only the counts, and `base` stubs both
+    // collaborators to ignore their arguments — so keying the provider lookup
+    // on the FILENAME instead of the type, dropping the SDK evidence, and
+    // dropping the rename pairing were each invisible. The SDK evidence is
+    // fact #2 of this script's whole purpose.
+    const seen: Array<[string, string | undefined, string | undefined]> = [];
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['AWS-Glue-Connection.json'],
+      committedOf: () => fixture(['OldProp']),
+      currentOf: () => fixture(['OldPropV2'], []),
+      declarationCandidates: (property, providerRelPath, resourceType) => {
+        seen.push([property, providerRelPath, resourceType]);
+        return ['src/provisioning/providers/glue-provider.ts:42'];
+      },
+      sdkEvidence: (property, providerRelPath) => ({
+        client: `client-for:${providerRelPath}`,
+        modelled: true,
+      }),
+    });
+    // Looked up by TYPE — the filename would resolve to nothing in the map.
+    expect(seen).toEqual([
+      ['OldProp', 'src/provisioning/providers/glue-provider.ts', 'AWS::Glue::Connection'],
+    ]);
+    const entry = out.removed[0]!;
+    expect(entry.providerPath).toBe('src/provisioning/providers/glue-provider.ts');
+    expect(entry.candidates['OldProp']).toEqual([
+      'src/provisioning/providers/glue-provider.ts:42',
+    ]);
+    expect(entry.sdk!['OldProp']!.client).toBe(
+      'client-for:src/provisioning/providers/glue-provider.ts'
+    );
+    // And the rename pairing runs against THIS delta's writable additions.
+    expect(entry.renameCandidates!['OldProp']).toEqual(['OldPropV2']);
   });
 
   it('reports a removal only when the provider DECLARES the property', () => {
