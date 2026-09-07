@@ -20,7 +20,10 @@ export declare function comparePropertySets(
   committedJson: string,
   refreshedJson: string
 ): { removed: string[]; added: string[]; writableAdded: string[] };
-export declare function parseNestedKeyDivergences(checkOutput: string): {
+export declare function parseNestedKeyDivergences(
+  checkOutput: string,
+  exitCode?: number
+): {
   divergences: NestedKeyDivergence[];
   unparsedFailure: boolean;
 };
@@ -73,3 +76,11 @@ export declare function clientsForType(
   resourceType: string,
   rows: Array<{ client: string; version: string }>
 ): Array<{ client: string; version: string }>;
+export declare function buildSdkLag(
+  divergences: Array<{ resourceType: string; bucket: string }>,
+  clientsFor: (resourceType: string) => Array<{ client: string; version: string }>,
+  versionLag?: (
+    client: string,
+    installed: string
+  ) => { installed: string; latest: string; behind: boolean } | undefined
+): SdkLagRow[];

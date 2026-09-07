@@ -263,11 +263,16 @@ jobs:
           # exit code one step up).
           set +e
           vp run audit:nested-key-coverage:check > /tmp/nested-key.log 2>&1
+          nested_key_rc=$?
           set -e
           # The skip list is the tail of the refresh log, after its own header.
           sed -n '/No entry in the public bundle/,$p' /tmp/refresh.log > /tmp/skipped.log || true
+          # The STATUS as well as the text: an empty log, a `task not found` and
+          # an OOM kill all carry no announcement to grep for, and all three
+          # rendered "additions only" over a checker that never ran.
           node scripts/diagnose-schema-refresh.mjs \
             --nested-key-log /tmp/nested-key.log \
+            --nested-key-rc "${nested_key_rc}" \
             --skipped-log /tmp/skipped.log > /tmp/diagnosis.md
 
       - name: Publish the refresh

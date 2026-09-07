@@ -24,7 +24,9 @@
  * makes.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -38,6 +40,7 @@ import {
   renderDetail,
   renderKey,
   renderLiteral,
+  buildSdkLag,
   clientsForType,
   sdkClientVersions,
   renderDiagnosis,
@@ -123,6 +126,35 @@ describe('parseNestedKeyDivergences', () => {
     }
   });
 
+  it('flags a PARTIAL parse, not only a total one', () => {
+    // The same correction `parseDeclaredProperties` needed one round earlier,
+    // in the sibling parser: gated on `length === 0`, a producer change
+    // touching SOME lines dropped them and the report rendered the survivors
+    // with no warning. Two of these five parse strictly; three do not.
+    const out = parseNestedKeyDivergences(
+      [
+        'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.',
+        '  AWS::ECS::Service: someKey [case-divergence]',
+        '  AWS::Glue::Connection: OAuth2Props [no-sdk-member]',
+        '  AWS::S3::Bucket: a key with spaces [no-sdk-member]',
+        '  AWS::S3::Bucket: Some.Key [newBucket]',
+        '  AWS::S3::Bucket: Other.Key [no-sdk-member] (detail).',
+      ].join('\n')
+    );
+    expect(out.divergences.length).toBe(2);
+    expect(out.unparsedFailure, 'three findings were dropped silently').toBe(true);
+  });
+
+  it('flags a checker that failed with NO announcement at all, via its exit code', () => {
+    // An empty log, a `task not found` and an OOM kill carry nothing to grep
+    // for, and all three rendered "additions only" over a checker that never
+    // ran. The status is the other half of the question.
+    for (const output of ['', 'error: task "audit:nested-key-coverage:check" not found\n']) {
+      expect(parseNestedKeyDivergences(output, 1).unparsedFailure, `rc=1: ${output}`).toBe(true);
+      expect(parseNestedKeyDivergences(output, 0).unparsedFailure, `rc=0: ${output}`).toBe(false);
+    }
+  });
+
   it('does not flag a failure when it DID read findings out of one', () => {
     const out = parseNestedKeyDivergences(
       'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.\n' +
@@ -191,6 +223,27 @@ describe('parseDeclaredProperties', () => {
     // member emptied all 134 sets with no refusal at all, which filters every
     // removal away and renders "nothing needs a decision" over a red check.
     const mutated = readFileSync(REAL_GENERATED, 'utf8').replaceAll('handled:', 'handledProps:');
+    expect(() => parseDeclaredProperties(mutated)).toThrow(/recognised the declaration shape/);
+  });
+
+  it('REFUSES a PARTIAL shortfall, not only a total collapse', () => {
+    // The motivating measurement was partial — 131 of 134 parsed, three
+    // swallowed and two credited with a neighbour's properties — and a guard
+    // reading `recognised === 0` covers none of that while passing the
+    // total-collapse case above. One entry is enough to refuse.
+    const real = readFileSync(REAL_GENERATED, 'utf8');
+    // Inside an ENTRY, not the first occurrence in the file: the module has 135
+    // `handled:` occurrences and 134 entries, because the type declaration
+    // carries one too. Renaming that one changes no entry, and this case failed
+    // green-side until it did — the same off-by-one the parser itself has to
+    // get right.
+    const firstEntry = real.search(/\[\s*'AWS::[\w:]+',\s*\{/);
+    expect(firstEntry, 'no type entry found').toBeGreaterThan(-1);
+    const at = real.indexOf('handled:', firstEntry);
+    expect(at, 'the generated module no longer uses this shape').toBeGreaterThan(-1);
+    const mutated = real.slice(0, at) + 'handledProps:' + real.slice(at + 'handled:'.length);
+    // Still overwhelmingly parseable — this is not a collapse.
+    expect(parseDeclaredProperties(real).size).toBeGreaterThan(100);
     expect(() => parseDeclaredProperties(mutated)).toThrow(/recognised the declaration shape/);
   });
 
@@ -394,6 +447,12 @@ describe('pairRenames', () => {
     expect(pairRenames('GeoProximityLocation', ['GeoProximityLocationV2'])).toEqual([
       'GeoProximityLocationV2',
     ]);
+  });
+
+  it('refuses an empty name rather than pairing it with everything', () => {
+    // `''.endsWith('')` is true, so an empty needle matched every addition and
+    // would have claimed each one a rename of a nameless property.
+    expect(pairRenames('', ['Alpha', 'Beta'])).toEqual([]);
   });
 
   it('does NOT pair an unrelated addition', () => {
@@ -708,33 +767,53 @@ describe('the render guards, at every site that reaches Markdown', () => {
   // the rejections, so a reverted site is a failing count rather than a case
   // nobody wrote.
   const POISON = 'Foo`\n\n## Nothing in this refresh needs a decision';
+  // `resourceType` reaches Markdown in four more places, and main() takes it
+  // verbatim from the fixture the bundle wrote.
+  const POISON_TYPE = 'AWS::X::Y`\n\n## Nothing in this refresh needs a decision';
 
   it('rejects a hostile name in every position a bundle-derived name reaches', () => {
     const md = renderDiagnosis({
       removed: [
         {
-          resourceType: 'AWS::Glue::Connection',
+          resourceType: POISON_TYPE,
           properties: [POISON],
           candidates: { [POISON]: [] },
           renameCandidates: { [POISON]: [POISON] },
           providerPath: 'src/provisioning/providers/glue-provider.ts',
         },
       ],
-      writableAdded: [{ resourceType: 'AWS::Glue::Connection', properties: [POISON] }],
+      writableAdded: [{ resourceType: POISON_TYPE, properties: [POISON] }],
       divergences: [
         {
-          resourceType: 'AWS::Glue::Connection',
+          resourceType: POISON_TYPE,
           nestedKey: POISON,
           bucket: 'no-sdk-member',
           detail: '',
         },
       ],
       skipped: [POISON],
+      sdkLag: [
+        {
+          resourceType: POISON_TYPE,
+          client: '@aws-sdk/client-glue',
+          installed: '3.0.0',
+          latest: '3.1.0',
+          behind: true,
+        },
+      ],
     });
-    // The removal bullet, the rename bullet, the writable-added bullet, the
-    // divergence line and the skipped list: five sites, five rejections.
+    // Every position, both halves. The `resourceType` positions were fed a
+    // CLEAN value at first, so three of them could be reverted to raw
+    // interpolation individually with the count still 5 — and `resourceType` is
+    // the one main() reads straight out of the fixture (`JSON.parse(committed)
+    // .resourceType ?? file`), unconstrained.
+    //
+    // Sites, in render order: the removal's type heading and its property
+    // bullet, the rename bullet, the divergence line's type and its key, the
+    // writable-added type and its property list, the lag row's type, and the
+    // skipped list.
     const rejections = (md.match(/\[(?:name|key) rejected: unexpected characters\]/g) ?? []).length;
-    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(5);
+    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(9);
     // And the forged heading never renders as one.
     expect(md).not.toMatch(/^## Nothing in this refresh needs a decision$/m);
   });
@@ -818,11 +897,17 @@ describe('sdkClientVersions', () => {
     // The lag question has no member to look up, and asking `sdkModelsMember`
     // with a name that matches nothing answered with the provider's FIRST
     // import — right only by coincidence.
-    const rows = sdkClientVersions(
-      'src/provisioning/providers/route53-provider.ts',
-      REPO_ROOT
-    );
-    expect(rows.length).toBeGreaterThan(0);
+    // `asg-provider.ts`, not a single-client provider: it imports
+    // `@aws-sdk/client-auto-scaling` and `@aws-sdk/client-ec2` at DIFFERENT
+    // installed versions. With one row in hand a mispairing is unobservable —
+    // pinning `version` to `rows[0]`'s left this green against
+    // `route53-provider.ts`.
+    const rows = sdkClientVersions('src/provisioning/providers/asg-provider.ts', REPO_ROOT);
+    expect(rows.length, 'asg-provider no longer imports two clients').toBeGreaterThan(1);
+    expect(
+      new Set(rows.map((r) => r.version)).size,
+      'the two clients now share a version — this case can no longer see a mispairing'
+    ).toBeGreaterThan(1);
     for (const { client, version } of rows) {
       expect(client).toMatch(/^@aws-sdk\/client-/);
       const onDisk = JSON.parse(
@@ -869,6 +954,44 @@ describe('the SDK-lag section', () => {
     expect(md).toContain('UNKNOWN, not ruled out');
   });
 
+  it('keeps the UNKNOWN caveat when EVERY lookup failed', () => {
+    // npm unreachable from CI is the ordinary way that happens, and gating the
+    // whole block on having rows made the report go silent about SDK lag
+    // exactly when it knew least — which reads as ruled out.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [divergence],
+      skipped: [],
+      sdkLag: [],
+    });
+    expect(md).toContain('Nothing could be read');
+    expect(md).toContain('UNKNOWN, not ruled out');
+  });
+
+  it('does not attribute a lag verdict to a client that is not the type’s own', () => {
+    // `clientsForType` falls back to every imported client when none matches,
+    // so a row can name `@aws-sdk/client-sts` for a Logs divergence. Saying
+    // "ruled out here" over it claims something about the wrong service.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [{ ...divergence, resourceType: 'AWS::Logs::LogGroup' }],
+      skipped: [],
+      sdkLag: [
+        {
+          resourceType: 'AWS::Logs::LogGroup',
+          client: '@aws-sdk/client-sts',
+          installed: '3.0.0',
+          latest: '3.0.0',
+          behind: false,
+        },
+      ],
+    });
+    expect(md).toContain("not the type's own");
+    expect(md).not.toContain('ruled out here');
+  });
+
   it('rejects a version string that is not one', () => {
     // The anchor is the whole guard: without `$`, `npm view` output carrying a
     // trailing line would be reported as the published version.
@@ -897,9 +1020,26 @@ describe('clientsForType', () => {
     ]);
   });
 
-  it('matches a service whose client name drops the separators', () => {
-    const apigw = [{ client: '@aws-sdk/client-apigatewayv2', version: '3.1.0' }];
-    expect(clientsForType('AWS::ApiGatewayV2::Stage', apigw)).toEqual(apigw);
+  it('matches a service whose client name carries SEPARATORS the type does not', () => {
+    // `@aws-sdk/client-apigatewayv2` was the first pick here and it has no
+    // separator, so deleting the separator strip left this green — the
+    // fallback-to-every-row arm returned the same single-element array the
+    // match arm would have. Two REAL pairs, and a second row that only the
+    // match arm can exclude.
+    const separated = [
+      { client: '@aws-sdk/client-ec2', version: '3.1018.0' },
+      { client: '@aws-sdk/client-auto-scaling', version: '3.1045.0' },
+    ];
+    expect(clientsForType('AWS::AutoScaling::AutoScalingGroup', separated)).toEqual([
+      { client: '@aws-sdk/client-auto-scaling', version: '3.1045.0' },
+    ]);
+    const route53 = [
+      { client: '@aws-sdk/client-sts', version: '3.0.0' },
+      { client: '@aws-sdk/client-route-53', version: '3.1.0' },
+    ];
+    expect(clientsForType('AWS::Route53::HostedZone', route53)).toEqual([
+      { client: '@aws-sdk/client-route-53', version: '3.1.0' },
+    ]);
   });
 
   it('falls back to EVERY row rather than to none when nothing matches', () => {
@@ -909,4 +1049,111 @@ describe('clientsForType', () => {
     expect(clientsForType('AWS::Made::Up', rows)).toEqual(rows);
     expect(clientsForType('', rows)).toEqual(rows);
   });
+});
+
+describe('buildSdkLag', () => {
+  const glue = { resourceType: 'AWS::Glue::Connection', bucket: 'no-sdk-member' };
+  const clientsFor = () => [
+    { client: '@aws-sdk/client-sts', version: '3.0.0' },
+    { client: '@aws-sdk/client-glue', version: '3.1.0' },
+  ];
+  const lag = (client: string, installed: string) => ({
+    installed,
+    latest: '9.9.9',
+    behind: true,
+  });
+
+  it('narrows to the type’s own client, so an unrelated import is not reported', () => {
+    expect(buildSdkLag([glue], clientsFor, lag)).toEqual([
+      {
+        resourceType: 'AWS::Glue::Connection',
+        client: '@aws-sdk/client-glue',
+        installed: '3.1.0',
+        latest: '9.9.9',
+        behind: true,
+      },
+    ]);
+  });
+
+  it('emits ONE row per (type, client) however many divergences land on it', () => {
+    // Several divergences on one type is the ordinary case, and a repeated row
+    // reads as several findings.
+    expect(buildSdkLag([glue, glue, glue], clientsFor, lag)).toHaveLength(1);
+  });
+
+  it('asks each client at most once', () => {
+    const asked: string[] = [];
+    buildSdkLag(
+      [glue, { resourceType: 'AWS::Glue::Crawler', bucket: 'no-sdk-member' }],
+      clientsFor,
+      (client, installed) => {
+        asked.push(client);
+        return { installed, latest: '9.9.9', behind: true };
+      }
+    );
+    // `npm view` is a network call; two types sharing a client must not pay twice.
+    expect(asked).toEqual(['@aws-sdk/client-glue']);
+  });
+
+  it('never asks anything for a case-divergence', () => {
+    const asked: string[] = [];
+    const rows = buildSdkLag(
+      [{ resourceType: 'AWS::ECS::Service', bucket: 'case-divergence' }],
+      clientsFor,
+      (client, installed) => {
+        asked.push(client);
+        return { installed, latest: '9.9.9', behind: true };
+      }
+    );
+    // There is no judgement in a case divergence, so it justifies no lookup.
+    expect(asked).toEqual([]);
+    expect(rows).toEqual([]);
+  });
+
+  it('drops a client whose lag could not be read, rather than inventing a row', () => {
+    expect(buildSdkLag([glue], clientsFor, () => undefined)).toEqual([]);
+  });
+});
+
+describe('the script end to end', () => {
+  // `main()` had no coverage at all, and the two defects review found in the
+  // lag path were both reachable only through it. These spawn the real binary
+  // against the real repo. Neither log carries a non-case divergence, so no
+  // `npm view` runs and the cases stay offline.
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+  const run = (log: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-diagnose-'));
+    const path = join(dir, 'nested-key.log');
+    writeFileSync(path, log);
+    return execFileSync('node', [SCRIPT, '--nested-key-log', path], { encoding: 'utf8' });
+  };
+
+  it('reports a clean refresh as clean', () => {
+    const md = run('nested-key-coverage: OK — 0 divergences\n');
+    expect(md).toContain('Nothing in this refresh needs a decision');
+  }, 60_000);
+
+  it('carries an unreadable checker failure all the way to the body', () => {
+    // The wiring from `parseNestedKeyDivergences`'s flag to the rendered
+    // section is one line in main(), and it was the sole production path of the
+    // whole feature.
+    const md = run(
+      'nested-key-coverage: FAIL — stale NESTED_KEY_ALLOW_LIST entr(ies) match no audited key\n'
+    );
+    expect(md).toContain('FAILED in a mode this report cannot read');
+    expect(md).not.toContain('Nothing in this refresh needs a decision — additions only');
+  }, 60_000);
+
+  it('renders a case-divergence without asking npm anything', () => {
+    const md = run(
+      'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.\n' +
+        '  AWS::ECS::Service: someKey [case-divergence] (SDK models `SomeKey`)\n'
+    );
+    expect(md).toContain('AWS::ECS::Service');
+    expect(md).toContain('someKey');
+    expect(md).toContain('case-divergence');
+    // The lag section is the network-touching one and a case divergence must
+    // not reach it.
+    expect(md).not.toContain('Installed vs published');
+  }, 60_000);
 });

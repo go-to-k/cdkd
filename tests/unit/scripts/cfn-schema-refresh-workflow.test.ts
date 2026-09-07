@@ -287,12 +287,16 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     it('gives every step that runs a pipeline a pipefail before it', () => {
       // The generalisation of the defect above, so the next pipeline added to
       // any step cannot reintroduce it silently.
+      // Through `shellOf`, not raw `run`: the Refresh step's own comment says
+      // "`set -o pipefail` is REQUIRED here", which put the token at index 10
+      // and left this case green with the real `set -o pipefail` DELETED. That
+      // is the exact vacuity `shellOf` exists to remove.
       for (const step of steps) {
-        const run = step.run;
-        if (!run) continue;
-        const pipeAt = run.search(/\S \| \S|\|\s*\n/);
+        if (!step.name || !step.run) continue;
+        const shell = shellOf(step.name);
+        const pipeAt = shell.search(/\S \| \S|\|\s*\n/);
         if (pipeAt === -1) continue;
-        const at = run.indexOf('pipefail');
+        const at = shell.indexOf('pipefail');
         expect(at, `${step.name}: runs a pipeline with no pipefail`).toBeGreaterThan(-1);
         expect(at, `${step.name}: pipefail is set after its first pipeline`).toBeLessThan(pipeAt);
       }
@@ -348,6 +352,23 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(guardAt).toBeLessThan(linkAt);
       // And the comment still fires outside that guard.
       expect(publish.indexOf('${BACKFILL_UMBRELLA}')).toBeGreaterThan(linkAt);
+    });
+
+    it('passes the checker’s EXIT CODE, not only its output', () => {
+      // Text alone was not enough: an empty log, a `task not found` and an OOM
+      // kill all carry no announcement to grep for, and each rendered
+      // "additions only" over a checker that never ran.
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(diagnose).toContain('nested_key_rc=$?');
+      expect(diagnose).toContain('--nested-key-rc');
+      // Captured immediately after the invocation: any command in between
+      // overwrites `$?` and the status becomes that command's.
+      const lines = diagnose.split('\n').map((l) => l.trim());
+      const runAt = lines.findIndex((l) => l.startsWith('vp run audit:nested-key-coverage:check'));
+      expect(runAt).toBeGreaterThan(-1);
+      expect(lines[runAt + 1], '$? is captured after some other command ran').toBe(
+        'nested_key_rc=$?'
+      );
     });
 
     it('pins the cross-file literals the shell greps for', () => {

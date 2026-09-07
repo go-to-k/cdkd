@@ -51,13 +51,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
 
 /**
+ * @typedef {import('./diagnose-schema-refresh.d.mts').NestedKeyDivergence} NestedKeyDivergence
+ * @typedef {import('./diagnose-schema-refresh.d.mts').SdkLagRow} SdkLagRow
+ * @typedef {{client: string, modelled: boolean, version?: string, consulted?: string[]}} SdkEvidence
+ * @typedef {{resourceType: string, properties: string[], candidates: Record<string, string[]>, sdk?: Record<string, SdkEvidence | undefined>, renameCandidates?: Record<string, string[]>, providerPath?: string}} RemovedEntry
+ * @typedef {{resourceType: string, properties: string[]}} AddedEntry
+ */
+
+
+/**
  * Every way `gen-nested-key-coverage.ts --check` announces a failure.
  *
  * Both spellings are load-bearing: `FAIL` prefixes its four blocking verdicts
  * (divergences, and the three stale-list refusals) and `failed` prefixes the
  * crash path. A run that says either of these and yields no parsed finding must
  * never render as clean. Fenced against the producer by
- * `tests/unit/scripts/cfn-schema-refresh-workflow.test.ts`, which greps both
+ * `tests/unit/scripts/diagnose-schema-refresh.test.ts`, which greps both
  * spellings out of `gen-nested-key-coverage.ts` — nothing else joins the two
  * files, and a reword there would otherwise make this pattern silently inert.
  */
@@ -116,10 +125,17 @@ export function comparePropertySets(committedJson, refreshedJson) {
  * reported as `unparsed`: the caller renders a section naming it rather than
  * either throwing the diagnosis away or claiming the refresh is clean.
  *
+ * The EXIT CODE is the other half, and text alone was not enough: an empty log,
+ * a `task not found`, and an OOM kill all carry no announcement, so all three
+ * rendered "Nothing in this refresh needs a decision — additions only" over a
+ * checker that never ran.
+ *
  * @param {string} checkOutput
+ * @param {number} [exitCode] the checker's own status; non-zero with nothing
+ *   parsed is a failure however it worded itself
  * @returns {{divergences: Array<{resourceType: string, nestedKey: string, bucket: string, detail: string}>, unparsedFailure: boolean}}
  */
-export function parseNestedKeyDivergences(checkOutput) {
+export function parseNestedKeyDivergences(checkOutput, exitCode = 0) {
   /** @type {Array<{resourceType: string, nestedKey: string, bucket: string, detail: string}>} */
   const divergences = [];
   for (const raw of checkOutput.split('\n')) {
@@ -138,8 +154,23 @@ export function parseNestedKeyDivergences(checkOutput) {
       detail: m[4] ?? '',
     });
   }
+  // A SHORTFALL, not only zero — the same correction `parseDeclaredProperties`
+  // needed one round earlier, in the sibling parser, for the same reason: with
+  // the flag gated on `divergences.length === 0`, a producer change touching
+  // SOME lines drops them silently and the report renders the survivors in a
+  // confident tone. Measured on a five-finding log with three deviating rows:
+  // two parsed, three dropped, no warning.
+  //
+  // The loose count is deliberately looser than the strict one — it asks "was
+  // this line TRYING to be a finding", which is what makes a shortfall visible
+  // at all. A line the loose pattern also misses is invisible to both, and that
+  // residual is what `--nested-key-rc` covers from the other side.
+  const looksLikeFinding = checkOutput
+    .split('\n')
+    .filter((raw) => /^AWS::\S+:/.test(raw.trim())).length;
   const unparsedFailure =
-    divergences.length === 0 && NESTED_KEY_FAILURE_RE.test(checkOutput);
+    divergences.length < looksLikeFinding ||
+    (divergences.length === 0 && (exitCode !== 0 || NESTED_KEY_FAILURE_RE.test(checkOutput)));
   return { divergences, unparsedFailure };
 }
 
@@ -328,42 +359,6 @@ export function sdkModelsMember(property, providerRelPath, repoRoot = REPO_ROOT)
 }
 
 /**
- * Whether the installed SDK client is behind what npm publishes.
- *
- * This settles ONE branch of the divergence decision outright: if the installed
- * client is already the latest, "the SDK merely lags the service" is eliminated
- * and the remaining reading is that the service genuinely lacks the member.
- * When it IS behind, the honest answer is "bump and re-check" — NOT "bumping
- * would fix it", which cannot be answered by a name lookup. Measured while
- * building this: the four live `AWS::Glue::Connection` divergences carry names
- * that ARE present in both the installed and the latest client, because the
- * checker's finding is about a specific INTERFACE's members, not about the name
- * existing somewhere. A grep-level "the newer SDK has it" would have
- * contradicted the checker and been wrong.
- *
- * Network-dependent by nature, so every failure degrades to `undefined` and the
- * caller simply says nothing — a diagnosis must never fail the job it describes.
- *
- * @param {string} client
- * @param {string | undefined} installed
- * @param {(pkg: string) => string} [viewLatest] injectable for tests
- * @returns {{installed: string, latest: string, behind: boolean} | undefined}
- */
-/**
- * Every AWS SDK client a provider imports, with its installed version.
- *
- * Split out of {@link sdkModelsMember} because the version-lag question has no
- * member to look up: the caller wants "which clients could this type's provider
- * be lagging on", and asking `sdkModelsMember` with a name that matches nothing
- * answered with `consulted[0]` — the FIRST import, which is right only by
- * coincidence on a provider importing several (17 of 78 serve more than one
- * type, and `ec2-provider.ts` imports several clients).
- *
- * @param {string | undefined} providerRelPath
- * @param {string} [repoRoot]
- * @returns {Array<{client: string, version: string}>}
- */
-/**
  * The imported clients that plausibly serve a resource type, best-effort.
  *
  * A provider imports more than the service it provisions — `@aws-sdk/client-sts`
@@ -390,6 +385,20 @@ export function clientsForType(resourceType, rows) {
   return matched.length > 0 ? matched : rows;
 }
 
+/**
+ * Every AWS SDK client a provider imports, with its installed version.
+ *
+ * Split out of {@link sdkModelsMember} because the version-lag question has no
+ * member to look up: the caller wants "which clients could this type's provider
+ * be lagging on", and asking `sdkModelsMember` with a name that matches nothing
+ * answered with `consulted[0]` — the FIRST import, which is right only by
+ * coincidence on a provider importing several (17 of 78 serve more than one
+ * type, and `ec2-provider.ts` imports several clients).
+ *
+ * @param {string | undefined} providerRelPath
+ * @param {string} [repoRoot]
+ * @returns {Array<{client: string, version: string}>}
+ */
 export function sdkClientVersions(providerRelPath, repoRoot = REPO_ROOT) {
   if (!providerRelPath) return [];
   const abs = join(repoRoot, providerRelPath);
@@ -417,6 +426,28 @@ export function sdkClientVersions(providerRelPath, repoRoot = REPO_ROOT) {
   return out;
 }
 
+/**
+ * Whether the installed SDK client is behind what npm publishes.
+ *
+ * This settles ONE branch of the divergence decision outright: if the installed
+ * client is already the latest, "the SDK merely lags the service" is eliminated
+ * and the remaining reading is that the service genuinely lacks the member.
+ * When it IS behind, the honest answer is "bump and re-check" — NOT "bumping
+ * would fix it", which cannot be answered by a name lookup. Measured while
+ * building this: the four live `AWS::Glue::Connection` divergences carry names
+ * that ARE present in both the installed and the latest client, because the
+ * checker's finding is about a specific INTERFACE's members, not about the name
+ * existing somewhere. A grep-level "the newer SDK has it" would have
+ * contradicted the checker and been wrong.
+ *
+ * Network-dependent by nature, so every failure degrades to `undefined` and the
+ * caller simply says nothing — a diagnosis must never fail the job it describes.
+ *
+ * @param {string} client
+ * @param {string | undefined} installed
+ * @param {(pkg: string) => string} [viewLatest] injectable for tests
+ * @returns {{installed: string, latest: string, behind: boolean} | undefined}
+ */
 export function sdkVersionLag(client, installed, viewLatest = defaultViewLatest) {
   if (!installed) return undefined;
   let latest;
@@ -533,11 +564,12 @@ export function parseDeclaredProperties(generatedSource) {
  * accepts that risk.
  *
  * @param {object} input
- * @param {Array<{resourceType: string, properties: string[], candidates: Record<string, string[]>, sdk?: Record<string, {client: string, modelled: boolean, version?: string} | undefined>, renameCandidates?: Record<string, string[]>, providerPath?: string}>} input.removed
- * @param {Array<{resourceType: string, properties: string[]}>} input.writableAdded
+ * @param {RemovedEntry[]} input.removed
+ * @param {AddedEntry[]} input.writableAdded
  * @param {number} [input.readOnlyAddedCount]
- * @param {{client: string, resourceType: string, installed: string, latest: string, behind: boolean}} [input.sdkLag]
- * @param {Array<{resourceType: string, bucket: string, line: string}>} input.divergences
+ * @param {SdkLagRow[]} [input.sdkLag]
+ * @param {boolean} [input.nestedKeyUnparsed]
+ * @param {NestedKeyDivergence[]} input.divergences
  * @param {string[]} input.skipped
  * @returns {string}
  */
@@ -839,7 +871,7 @@ export function renderDetail(text) {
  * saying what to run has not handed the work over, it has handed over a
  * question. Each line is something the reader can paste.
  *
- * @param {Array<{resourceType: string, properties: string[]}>} removed
+ * @param {RemovedEntry[]} removed
  * @returns {string[]}
  */
 function removedProcedure(removed) {
@@ -876,7 +908,8 @@ function removedProcedure(removed) {
  * The steps that settle a nested-key divergence, including the one question the
  * evidence cannot answer on its own: whether the installed SDK simply lags.
  *
- * @param {Array<{resourceType: string, bucket: string, line: string}>} divergences
+ * @param {NestedKeyDivergence[]} divergences
+ * @param {SdkLagRow[]} [sdkLag]
  * @returns {string[]}
  */
 function divergenceProcedure(divergences, sdkLag) {
@@ -884,22 +917,34 @@ function divergenceProcedure(divergences, sdkLag) {
   /** @type {string[]} */
   const lagLines = [];
   const lags = sdkLag ?? [];
-  if (hasMissing && lags.length > 0) {
+  if (hasMissing) {
     // One line per (type, client) rather than one line for the whole section.
     // A single line covering "the first divergent type" left every other
     // divergence's SDK-lag reading unstated while reading like a verdict, and
     // the client it named came from the provider's FIRST import.
+    // Emitted even when EVERY lookup failed (npm unreachable from CI is the
+    // ordinary way that happens). Gating the whole block on having rows meant
+    // the report went silent about SDK lag exactly when it knew least, and a
+    // report that says nothing reads as ruled out.
     lagLines.push('', '**Installed vs published, for the divergent types above:**', '');
     for (const l of lags) {
+      // `clientsForType` falls back to every imported client when none matches
+      // the type's service, so a row can name a client that does not serve the
+      // type at all. Saying "ruled out here" over `@aws-sdk/client-sts` would
+      // attribute a verdict to the wrong service.
+      const own = l.client.replace('@aws-sdk/client-', '').replace(/-/g, '') ===
+        (l.resourceType.split('::')[1] ?? '').toLowerCase();
+      const scope = own ? 'here' : "for that client, which is not the type's own";
       lagLines.push(
         l.behind
           ? `- ${renderName(l.resourceType)} — \`${l.client}\` is ${l.installed}, npm ` +
-            `publishes ${l.latest}. The SDK-lag reading is LIVE here: bump and re-check ` +
+            `publishes ${l.latest}. The SDK-lag reading is LIVE ${scope}: bump and re-check ` +
             'before allow-listing anything.'
           : `- ${renderName(l.resourceType)} — \`${l.client}\` is ${l.installed}, which is ` +
-            'current, so the SDK-lag reading is ruled out here.'
+            `current, so the SDK-lag reading is ruled out ${scope}.`
       );
     }
+    if (lags.length === 0) lagLines.push('- Nothing could be read.');
     lagLines.push(
       '',
       'A type absent from that list is one whose client could not be read — its',
@@ -956,6 +1001,50 @@ function committedVersion(relPath) {
   }
 }
 
+/**
+ * The version-lag rows for a set of divergences, one per (type, client).
+ *
+ * Extracted from `main()` because everything here was reachable only through
+ * it, and `main()` has no unit coverage: the composition of
+ * {@link clientsForType} with {@link sdkClientVersions}, the per-client memo,
+ * the de-duplication, and the `case-divergence` skip were all unfalsifiable
+ * while each PIECE was pinned. Two review rounds found real defects in exactly
+ * this code (the first-import client, then an unrelated `client-sts` row), both
+ * by running the script rather than by a test.
+ *
+ * Both collaborators are injected so a test needs no network: `npm view` is the
+ * only outbound call in this file and it lives behind `versionLag`.
+ *
+ * @param {Array<{resourceType: string, bucket: string}>} divergences
+ * @param {(resourceType: string) => Array<{client: string, version: string}>} clientsFor
+ * @param {(client: string, installed: string) => {installed: string, latest: string, behind: boolean} | undefined} [versionLag]
+ * @returns {Array<{resourceType: string, client: string, installed: string, latest: string, behind: boolean}>}
+ */
+export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag) {
+  /** @type {Array<{resourceType: string, client: string, installed: string, latest: string, behind: boolean}>} */
+  const out = [];
+  /** @type {Map<string, {installed: string, latest: string, behind: boolean} | undefined>} */
+  const byClient = new Map();
+  const emitted = new Set();
+  for (const d of divergences) {
+    // A case divergence needs no judgement — the SDK models the key under
+    // another capitalisation — so it never justifies a network call.
+    if (d.bucket === 'case-divergence') continue;
+    for (const { client, version } of clientsForType(d.resourceType, clientsFor(d.resourceType))) {
+      if (!byClient.has(client)) byClient.set(client, versionLag(client, version));
+      const lag = byClient.get(client);
+      // One row per (type, client): several divergences routinely land on the
+      // same type, and repeating its row reads as several findings.
+      const key = `${d.resourceType}\u0000${client}`;
+      if (lag && !emitted.has(key)) {
+        emitted.add(key);
+        out.push({ resourceType: d.resourceType, client, ...lag });
+      }
+    }
+  }
+  return out;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const readArg = (/** @type {string} */ flag) => {
@@ -985,9 +1074,9 @@ function main() {
       : ''
   );
 
-  /** @type {Array<{resourceType: string, properties: string[], candidates: Record<string, string[]>, sdk: Record<string, {client: string, modelled: boolean} | undefined>}>} */
+  /** @type {RemovedEntry[]} */
   const removed = [];
-  /** @type {Array<{resourceType: string, properties: string[]}>} */
+  /** @type {AddedEntry[]} */
   const writableAdded = [];
   let readOnlyAddedCount = 0;
 
@@ -1014,7 +1103,7 @@ function main() {
     if (actionable.length > 0) {
       /** @type {Record<string, string[]>} */
       const candidates = {};
-      /** @type {Record<string, {client: string, modelled: boolean, version?: string} | undefined>} */
+      /** @type {Record<string, SdkEvidence | undefined>} */
       const sdk = {};
       /** @type {Record<string, string[]>} */
       const renameCandidates = {};
@@ -1044,7 +1133,16 @@ function main() {
     }
   }
 
-  const nestedKey = parseNestedKeyDivergences(readArg('--nested-key-log'));
+  const readNumArg = (/** @type {string} */ flag) => {
+    const i = args.indexOf(flag);
+    if (i === -1 || i + 1 >= args.length) return 0;
+    const n = Number(args[i + 1]);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const nestedKey = parseNestedKeyDivergences(
+    readArg('--nested-key-log'),
+    readNumArg('--nested-key-rc')
+  );
   const divergences = nestedKey.divergences;
   const skipped = readArg('--skipped-log')
     .split('\n')
@@ -1056,29 +1154,7 @@ function main() {
   // first import. Each distinct client is asked once; the failure of any single
   // lookup is silent by construction and shows up as an absent row, which the
   // rendered section names as UNKNOWN rather than ruled out.
-  /** @type {Array<{resourceType: string, client: string, installed: string, latest: string, behind: boolean}>} */
-  const sdkLag = [];
-  /** @type {Map<string, {installed: string, latest: string, behind: boolean} | undefined>} */
-  const lagByClient = new Map();
-  const emitted = new Set();
-  for (const d of divergences) {
-    if (d.bucket === 'case-divergence') continue;
-    const rows = clientsForType(
-      d.resourceType,
-      sdkClientVersions(providerFiles.get(d.resourceType))
-    );
-    for (const { client, version } of rows) {
-      if (!lagByClient.has(client)) lagByClient.set(client, sdkVersionLag(client, version));
-      const lag = lagByClient.get(client);
-      // One row per (type, client): several divergences routinely land on the
-      // same type, and repeating its row reads as several findings.
-      const key = `${d.resourceType}\u0000${client}`;
-      if (lag && !emitted.has(key)) {
-        emitted.add(key);
-        sdkLag.push({ resourceType: d.resourceType, client, ...lag });
-      }
-    }
-  }
+  const sdkLag = buildSdkLag(divergences, (t) => sdkClientVersions(providerFiles.get(t)));
 
   process.stdout.write(
     renderDiagnosis({
