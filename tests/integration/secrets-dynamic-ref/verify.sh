@@ -189,9 +189,42 @@ mask() {
 # the output that explains it.
 diag_output() { # diag_output <text>
   local text="$1"
-  if printf '%s' "${text}" | grep -qF "${EXPECTED_PASSWORD}" \
-    || printf '%s' "${text}" | grep -qF "${EXPECTED_SECURE}" \
-    || printf '%s' "${text}" | grep -qF "${EXPECTED_USERNAME}"; then
+  # Bash substring tests, never `printf '%s' "${text}" | grep -q`, for the
+  # one decision that must not be wrong in the "no match" direction: a false
+  # negative here PRINTS the secret. That pipeline shape DOES report false
+  # negatives (issue #2582), and no content check in this file is a
+  # `printf | grep` pipeline: this helper and Guard 1b use `[[ == * ]]`
+  # tests, every other check on a CAPTURED value is a here-string
+  # `grep -q <needle> <<< "${text}"`, the three checks that read a FILE grep
+  # the file, and the one surviving pipeline is the canonical `gone_probe`
+  # block above, which
+  # `tests/unit/scripts/integ-verify-probe-not-found.test.ts` requires
+  # verbatim and whose input is one short AWS error line. The mechanism as
+  # pinned on bash 5.2.21 / GNU grep 3.11 / Linux 5.15: bash's BUILTIN
+  # `printf` writes a multi-line argument in several write-family calls
+  # (baseline-subtracted `/proc/<pid>/io` syscw deltas of the writing bash,
+  # reader never writing: the 13-line plan text -> 8, thirteen one-character lines -> 13,
+  # a 10 KB single line -> 3, a 60 KB single line -> 15; one call per short
+  # line and one per 4 KB within a line fits all but the plan text's 8),
+  # `grep -q` (GNU 3.11 here) exits at the first matching complete line and
+  # closes the pipe, and a write the printf subshell still has pending after
+  # that takes SIGPIPE --
+  # `PIPESTATUS` reads `141 0`, and under `set -o pipefail` the pipeline is
+  # 141: `if !` takes the FAIL branch (a false FAIL; seen live twice on this
+  # fixture, on Guard 1b's premise and on the `SKIPPED` plan guard, each
+  # over a captured log that visibly carried the text) and a leak check
+  # `if printf | grep -qF "${EXPECTED_PASSWORD}"` skips it -- a silent PASS
+  # over a leak. A scheduling race: the needle must sit on a line before the
+  # last one, and the miss rate per invocation measured 0-2.2 % on a 1 KB,
+  # 13-line capture (67/3000, 31/2000, 6/2000, 0/2000 in different load
+  # windows). A single-line payload did not race at any size tried,
+  # consistent with grep waiting for the newline or EOF before matching, so
+  # the writer was done before the reader closed -- which is why a 5 MB
+  # single-line probe answers `0 0` on every build tried. An external
+  # `/usr/bin/printf`, a here-string and a `[[ == * ]]` test never missed.
+  if [[ "${text}" == *"${EXPECTED_PASSWORD}"* ]] \
+    || [[ "${text}" == *"${EXPECTED_SECURE}"* ]] \
+    || [[ "${text}" == *"${EXPECTED_USERNAME}"* ]]; then
     echo "      output: <WITHHELD — it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
@@ -276,6 +309,143 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+
+# The synthesized template cdkd's own synth wrote. Read by Guard 1b just below
+# and by the DB_DSN_LITERAL premise guards later; the Phase 1b deploy
+# re-synthesizes it, so from there on it is the probe deploy's synth.
+SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
+
+# --- Phase 1b: a probe deploy whose ONE extra output fails to resolve -----
+# Issue #2728: `CDKD_TEST_OUTPUT_LEAK=true` declares `OutputFailureLeak`, whose
+# `Fn::Sub` variable resolves the secret's `password` key and whose body uses
+# that VALUE as the JSON key of a second reference to the same secret -- the
+# resolver's own `key '<password>' not found in secret` error, carrying the
+# plaintext, is what the deploy engine reports. Nothing else changes, so this
+# is a no-change deploy in which only the outputs pass does work; the engine
+# warns, skips the output (and, on that no-change path, also says it is
+# keeping the previously persisted outputs), and exits 0. The log is CAPTURED
+# and NOT shown: the line under test is the one that would carry the password
+# on a masking regression, so it reaches the terminal only through
+# `diag_output`, which withholds it when it carries a secret -- on a failing
+# deploy too (the substitution's status is node's; without the branch, `set
+# -e` would abort with the log captured and never printed). `--verbose` so
+# the resolver's own `Resolving dynamic reference:` echo of the assembled
+# reference -- masked by the same fix -- is emitted and inside the whole-log
+# negative below. The output is declared for THIS deploy only -- see the
+# stack for why it must not stay (the unchanged-stack `diff --fail` guard
+# later).
+echo "==> Phase 1b: CDKD_TEST_OUTPUT_LEAK probe deploy (issue #2728)"
+if ! DEPLOY_OUT_LEAK=$(CDKD_TEST_OUTPUT_LEAK=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the CDKD_TEST_OUTPUT_LEAK probe deploy exited non-zero -- under the default arm the failing output is warned about and skipped, and the deploy exits 0 (issue #2728)" >&2
+  diag_output "${DEPLOY_OUT_LEAK}"
+  exit 1
+fi
+
+# Guard 1b, premise first: the probe deploy's own synth carried the output in
+# EXACTLY the shape the arm needs -- an `Fn::Sub` `[body, variables]` pair
+# whose body is the Secrets Manager reference to THIS run's secret with
+# `${Pw}` as its JSON key (so the resolved password becomes the failing
+# lookup's key and the resolver's error names it) and whose `Pw` variable is
+# the same secret's `password` reference. Compared by equality, not by
+# shape: a gate that silently stopped declaring it, a CDK token turning the
+# body into an `Fn::Join` object, `${Pw}` anywhere but the key position (a
+# valid key with the password appended fails naming a literal, never the
+# password), or a look-alike that is not a `{{resolve:secretsmanager:...}}`
+# reference at all would each leave the greps below with no arm behind them.
+if [ ! -f "${SYNTH_TEMPLATE}" ]; then
+  echo "FAIL: premise: no synthesized template at ${SYNTH_TEMPLATE} after the probe deploy" >&2
+  exit 1
+fi
+LEAK_SHAPE=$(jq -r --arg secret "${SECRET_NAME}" '.Outputs.OutputFailureLeak.Value
+  | if . == null then "absent"
+    elif type != "object" then "not-an-intrinsic"
+    else .["Fn::Sub"] end
+  | if . == null then "absent"
+    elif (type == "array" and length == 2
+          and .[0] == ("{{resolve:secretsmanager:" + $secret + ":SecretString:${Pw}}}")
+          and .[1].Pw == ("{{resolve:secretsmanager:" + $secret + ":SecretString:password}}")) then "Fn::Sub"
+    elif . == "not-an-intrinsic" then "not-an-intrinsic"
+    else "other" end' "${SYNTH_TEMPLATE}")
+if [ "${LEAK_SHAPE}" != "Fn::Sub" ]; then
+  echo "FAIL: premise: OutputFailureLeak synthesized as '${LEAK_SHAPE}', not an Fn::Sub [body ending in :SecretString:\${Pw}}}, {Pw: <password reference>}] -- the #2728 output-failure arm is not what this deploy exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: OutputFailureLeak is an Fn::Sub over the password reference (${LEAK_SHAPE})"
+# The warn is the sentinel that the arm ran at all -- a deploy that resolved
+# the output, or skipped it silently, would pass the negative assertions
+# below for free, so its absence is a FAIL. Bash substring tests rather than
+# `printf | grep -qF`: the first live run of this guard failed this premise
+# on `grep -qF` over a captured log that visibly carried the warn -- the
+# `printf | grep -q` SIGPIPE race `diag_output`'s comment pins (the warn sits
+# on an early line of a multi-line log, the shape that races).
+if [[ "${DEPLOY_OUT_LEAK}" != *"Failed to resolve output OutputFailureLeak"* ]]; then
+  echo "FAIL: premise: the probe deploy did not warn 'Failed to resolve output OutputFailureLeak' -- the #2728 output-failure arm did not run" >&2
+  diag_output "${DEPLOY_OUT_LEAK}"
+  exit 1
+fi
+# The warn LINE alone (the first one), with the colour codes stripped, so the
+# two checks below read exactly what a terminal shows for it.
+OUTPUT_FAILURE_WARN=""
+while IFS= read -r line || [ -n "${line}" ]; do
+  if [[ "${line}" == *"Failed to resolve output OutputFailureLeak"* ]]; then
+    OUTPUT_FAILURE_WARN=$(printf '%s' "${line}" | sed 's/\x1b\[[0-9;]*m//g')
+    break
+  fi
+done <<< "${DEPLOY_OUT_LEAK}"
+if [ -z "${OUTPUT_FAILURE_WARN}" ]; then
+  # Distinct from "carries no mask" below, and a consistency check rather
+  # than a reachable failure: the premise above proved the newline-free
+  # substring is in the log, so the loop must find it on one line -- this
+  # branch fires only if the loop and the premise disagree about the text.
+  echo "FAIL: the 'Failed to resolve output OutputFailureLeak' warn is in the probe deploy's log but could not be isolated as one line (issue #2728)" >&2
+  diag_output "${DEPLOY_OUT_LEAK}"
+  exit 1
+fi
+if [[ "${OUTPUT_FAILURE_WARN}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: the output-failure warn carries the resolved password in plaintext (issue #2728)" >&2
+  exit 1
+fi
+# ...and nowhere else in the probe deploy's `--verbose` log either: a line
+# that carried the password ahead of the warn would otherwise pass the
+# single-line check above. What this covers of the resolver side of the fix
+# is its `Resolving dynamic reference:` debug echo of the assembled reference
+# (the password as the JSON key), pinned positively next -- the throttle-retry
+# label needs a throttle and the SSM unrecognized-`Type` warn an SSM shape,
+# neither of which this deploy produces; those are unit-pinned only.
+if [[ "${DEPLOY_OUT_LEAK}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: the probe deploy's log carries the resolved password in plaintext somewhere (issue #2728)" >&2
+  exit 1
+fi
+# The fixture's other two secrets as well: the `--verbose` log spans the
+# comparison pass's SecureString lookup and every resolved-intrinsic echo,
+# so the negative is over everything this deploy resolved, not the one
+# value the #2728 shape exposes.
+if [[ "${DEPLOY_OUT_LEAK}" == *"${EXPECTED_SECURE}"* ]] || [[ "${DEPLOY_OUT_LEAK}" == *"${EXPECTED_USERNAME}"* ]]; then
+  echo "FAIL: the probe deploy's --verbose log carries the SecureString value or the username in plaintext somewhere (issue #2728)" >&2
+  exit 1
+fi
+# The resolver echoed the second lookup, masked: the premise that the echo is
+# in the log at all (a resolver that stopped emitting it would pass the
+# negative above for free), and that the key position reads `***`.
+if [[ "${DEPLOY_OUT_LEAK}" != *"Resolving dynamic reference: secretsmanager:${SECRET_NAME}:SecretString:***"* ]]; then
+  echo "FAIL: the probe deploy's --verbose log carries no masked 'Resolving dynamic reference: secretsmanager:${SECRET_NAME}:SecretString:***' echo of the assembled reference (issue #2728)" >&2
+  diag_output "${DEPLOY_OUT_LEAK}"
+  exit 1
+fi
+if [[ "${OUTPUT_FAILURE_WARN}" != *"***"* ]]; then
+  echo "FAIL: the output-failure warn carries no mask -- expected the password replaced by '***' (issue #2728)" >&2
+  diag_output "${OUTPUT_FAILURE_WARN}"
+  exit 1
+fi
+echo "    OK: the OutputFailureLeak resolution failure was reported masked (#2728)"
+# The line itself, through `diag_output`: the guards above reject the
+# password, and the helper withholds a line carrying any of the fixture's
+# three secrets, so nothing this echo prints can be one.
+diag_output "${OUTPUT_FAILURE_WARN}"
 
 # --- Assertion: dynamic references resolved on the deployed Lambda ----
 echo "==> Reading consumer Lambda env vars from AWS (GetFunctionConfiguration)"
@@ -478,7 +648,9 @@ fi
 # one, and an intrinsic-shaped leaf takes a different (skeleton) path that
 # cannot fix this defect, so the assertion below would then fail for the wrong
 # reason (or pass for one, if a later change made it whole-token).
-SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
+# `SYNTH_TEMPLATE` is defined right after Phase 1 (Guard 1b reads it first);
+# the probe deploy re-synthesizes `cdk.out`, so what it names from here on is
+# the probe deploy's synth -- the same resource shapes, one output more.
 if [ ! -f "${SYNTH_TEMPLATE}" ]; then
   echo "FAIL: premise: no synthesized template at ${SYNTH_TEMPLATE} to check DB_DSN_LITERAL's shape" >&2
   exit 1
@@ -575,7 +747,7 @@ fi
 # secrets in templates), out of scope for the dynamic-reference fix — and
 # redacting it would be the cross-resource false-positive the per-resource
 # scoping deliberately avoids. grep -q so the plaintext is never echoed.
-if printf '%s' "${LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<< "${LAMBDA_ENV}"; then
   echo "FAIL: the resolved secret plaintext LEAKED into the Lambda's persisted env (dynamic-ref disclosure)" >&2
   redaction_fail=1
 else
@@ -584,7 +756,7 @@ fi
 # Same guard for the decrypted SecureString (issue #1901). Unlike the
 # secretsmanager case there is no sibling resource legitimately holding this
 # value, so the whole STATE document is scanned, not just the Lambda's env.
-if printf '%s' "${STATE_JSON}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${STATE_JSON}"; then
   echo "FAIL: the decrypted SecureString value LEAKED into persisted state (issue #1901)" >&2
   redaction_fail=1
 else
@@ -596,7 +768,7 @@ fi
 # the username and must likewise be stored as its expression. Scoped to
 # LAMBDA_ENV, not the whole state: the DynRefSecret resource's OWN SecretString
 # legitimately contains it (same rationale as the password grep above).
-if printf '%s' "${LAMBDA_ENV}" | grep -qF "${EXPECTED_USERNAME}"; then
+if grep -qF "${EXPECTED_USERNAME}" <<< "${LAMBDA_ENV}"; then
   echo "FAIL: the whole-secret reference's resolved value LEAKED into the Lambda's persisted env" >&2
   redaction_fail=1
 else
@@ -620,11 +792,11 @@ DIFF_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}"
   --region "${REGION}" --fail 2>&1)
 DIFF_RC=$?
 set -e
-if printf '%s' "${DIFF_OUT}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<< "${DIFF_OUT}"; then
   echo "FAIL: 'cdkd diff' output leaked the resolved secret plaintext" >&2
   exit 1
 fi
-if printf '%s' "${DIFF_OUT}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${DIFF_OUT}"; then
   echo "FAIL: 'cdkd diff' output leaked the decrypted SecureString value (issue #1901)" >&2
   exit 1
 fi
@@ -642,15 +814,15 @@ echo "    OK: diff reports no changes (secret + SecureString compare expression-
 echo "==> Asserting 'cdkd scrub --dry-run' finds nothing on the freshly-deployed stack"
 SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --dry-run 2>&1)
-if printf '%s' "${SCRUB_OUT}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<< "${SCRUB_OUT}"; then
   echo "FAIL: 'cdkd scrub' output leaked the resolved secret plaintext" >&2
   exit 1
 fi
-if printf '%s' "${SCRUB_OUT}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${SCRUB_OUT}"; then
   echo "FAIL: 'cdkd scrub' output leaked the decrypted SecureString value (issue #1901)" >&2
   exit 1
 fi
-if printf '%s' "${SCRUB_OUT}" | grep -qiE 'no plaintext secrets|nothing to scrub'; then
+if grep -qiE 'no plaintext secrets|nothing to scrub' <<< "${SCRUB_OUT}"; then
   echo "    OK: scrub --dry-run reports the deployed state is already clean"
 else
   echo "FAIL: scrub --dry-run should report nothing to scrub on a freshly-deployed stack" >&2
@@ -704,7 +876,7 @@ echo "    OK: premise: the deploy keyed the Export.Name alias under '${STACK}-fu
 # the unit suite (tests/unit/cli/commands/scrub-export-name-collision.test.ts),
 # not by this run.
 for NAME_FALLBACK in "could not be resolved during scrub" "did not fully resolve during scrub"; do
-  if printf '%s' "${SCRUB_OUT}" | grep -qF "${NAME_FALLBACK}"; then
+  if grep -qF "${NAME_FALLBACK}" <<< "${SCRUB_OUT}"; then
     echo "FAIL: scrub's name loop fell back to the value scan on the intrinsic Export.Name (#2531 arm): '${NAME_FALLBACK}'" >&2
     diag_output "${SCRUB_OUT}"
     exit 1
@@ -769,9 +941,9 @@ drop_live_env() { # drop_live_env <key>
 # the SecureString one, which has no sibling resource legitimately holding it.
 assert_no_plaintext() { # assert_no_plaintext "<what>" "<text>"
   local what="$1" text="$2" leaked=0
-  printf '%s' "${text}" | grep -qF "${EXPECTED_PASSWORD}" && leaked=1
-  printf '%s' "${text}" | grep -qF "${EXPECTED_SECURE}" && leaked=1
-  printf '%s' "${text}" | grep -qF "${EXPECTED_USERNAME}" && leaked=1
+  grep -qF "${EXPECTED_PASSWORD}" <<< "${text}" && leaked=1
+  grep -qF "${EXPECTED_SECURE}" <<< "${text}" && leaked=1
+  grep -qF "${EXPECTED_USERNAME}" <<< "${text}" && leaked=1
   if [ "${leaked}" -ne 0 ]; then
     echo "FAIL: ${what} leaked a resolved secret plaintext" >&2
     exit 1
@@ -813,14 +985,14 @@ if [ "${DRIFT_RC}" -eq 0 ]; then
   exit 1
 fi
 assert_no_plaintext "'cdkd drift' on a drifted secret leaf" "${DRIFT_OUT}"
-if ! printf '%s' "${DRIFT_OUT}" | grep -qF "Environment.Variables.SECRET_PASSWORD"; then
+if ! grep -qF "Environment.Variables.SECRET_PASSWORD" <<< "${DRIFT_OUT}"; then
   echo "FAIL: 'cdkd drift' did not name the drifted secret env var" >&2
   diag_output "${DRIFT_OUT}"
   exit 1
 fi
 # The state side of the diff must be the EXPRESSION (not the value it resolves
 # to, and not a blind mask).
-if ! printf '%s' "${DRIFT_OUT}" | grep -qF "{{resolve:secretsmanager:"; then
+if ! grep -qF "{{resolve:secretsmanager:" <<< "${DRIFT_OUT}"; then
   echo "FAIL: the drift report's state side is not the {{resolve:...}} expression" >&2
   diag_output "${DRIFT_OUT}"
   exit 1
@@ -832,11 +1004,11 @@ echo "    OK: the console edit is reported, with the expression on the state sid
 # value at a path known to carry a secret that is not what the reference
 # resolves to today" — so the AWS side of such a diff is masked. This sentinel
 # is the stand-in for the rotated case, which needs no rotation to express.
-if printf '%s' "${DRIFT_OUT}" | grep -qF "${DRIFT_SENTINEL}"; then
+if grep -qF "${DRIFT_SENTINEL}" <<< "${DRIFT_OUT}"; then
   echo "FAIL: 'cdkd drift' printed the AWS-current value at a secret-bearing path verbatim" >&2
   exit 1
 fi
-if ! printf '%s' "${DRIFT_OUT}" | grep -qF '***'; then
+if ! grep -qF '***' <<< "${DRIFT_OUT}"; then
   echo "FAIL: 'cdkd drift' did not mask the AWS side of the drifted secret path" >&2
   diag_output "${DRIFT_OUT}"
   exit 1
@@ -900,13 +1072,13 @@ fi
 assert_no_plaintext "'cdkd drift --accept --dry-run'" "${ACCEPT_PLAN_OUT}"
 # The body really is all-SKIPPED, from the command's own mouth — a second
 # reading of the premise above, taken from the output being asserted on.
-if ! printf '%s' "${ACCEPT_PLAN_OUT}" | grep -qF "SKIPPED"; then
+if ! grep -qF "SKIPPED" <<< "${ACCEPT_PLAN_OUT}"; then
   echo "FAIL: the --accept plan printed no SKIPPED line, so its header is not being read over an all-refused body" >&2
   diag_output "${ACCEPT_PLAN_OUT}"
   exit 1
 fi
 # POSITIVE marker: only the fixed binary emits this header.
-if ! printf '%s' "${ACCEPT_PLAN_OUT}" | grep -qF "no accepted values will be written to cdkd state for"; then
+if ! grep -qF "no accepted values will be written to cdkd state for" <<< "${ACCEPT_PLAN_OUT}"; then
   echo "FAIL: the --accept plan did not say that no accepted values will be written" >&2
   diag_output "${ACCEPT_PLAN_OUT}"
   exit 1
@@ -915,14 +1087,14 @@ fi
 # `nothing`: the real run over this same input takes the lock, bumps
 # lastModified and rewrites the bag through the positioned re-redaction, so a
 # plan promising an untouched state.json would be false the other way round.
-if ! printf '%s' "${ACCEPT_PLAN_OUT}" | grep -qF "positioned re-redaction"; then
+if ! grep -qF "positioned re-redaction" <<< "${ACCEPT_PLAN_OUT}"; then
   echo "FAIL: the --accept plan did not name the positioned re-redaction the run still writes" >&2
   diag_output "${ACCEPT_PLAN_OUT}"
   exit 1
 fi
 # NEGATIVE: the pre-change header. Paired with the two positives above so this
 # arm cannot go green by asserting absences over an empty output.
-if printf '%s' "${ACCEPT_PLAN_OUT}" | grep -qF "Plan (--accept): update cdkd state for"; then
+if grep -qF "Plan (--accept): update cdkd state for" <<< "${ACCEPT_PLAN_OUT}"; then
   echo "FAIL: the --accept plan still promises 'update cdkd state for' over an all-refused body" >&2
   diag_output "${ACCEPT_PLAN_OUT}"
   exit 1
@@ -945,7 +1117,7 @@ if [ "${ACCEPT_REFUSE_RC}" -ne 0 ]; then
   exit 1
 fi
 assert_no_plaintext "'cdkd drift --accept' on a masked path" "${ACCEPT_REFUSE_OUT}"
-if ! printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "not accepting"; then
+if ! grep -qF "not accepting" <<< "${ACCEPT_REFUSE_OUT}"; then
   echo "FAIL: --accept did not say it was refusing the secret-bearing path" >&2
   diag_output "${ACCEPT_REFUSE_OUT}"
   exit 1
@@ -954,12 +1126,12 @@ fi
 # per-change warning asserted just above says nothing was accepted, so the
 # summary must agree. A pre-change binary counts `driftedOutcomes.length` here
 # and prints `accepted drift on 1 resource(s)` directly under that warning.
-if ! printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "0 resource(s) accepted"; then
+if ! grep -qF "0 resource(s) accepted" <<< "${ACCEPT_REFUSE_OUT}"; then
   echo "FAIL: --accept did not report 0 resource(s) accepted after refusing every drifted change" >&2
   diag_output "${ACCEPT_REFUSE_OUT}"
   exit 1
 fi
-if printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "accepted drift on"; then
+if grep -qF "accepted drift on" <<< "${ACCEPT_REFUSE_OUT}"; then
   echo "FAIL: --accept claimed it accepted drift in the same run it refused every change" >&2
   diag_output "${ACCEPT_REFUSE_OUT}"
   exit 1
@@ -968,7 +1140,7 @@ fi
 # honest wording rather than `nothing was written`: the summary is still
 # prefixed by the state-updated line. Without this, the two assertions above
 # would both be satisfied by a run that had silently stopped writing.
-if ! printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "State updated for ${STACK} (${REGION})"; then
+if ! grep -qF "State updated for ${STACK} (${REGION})" <<< "${ACCEPT_REFUSE_OUT}"; then
   echo "FAIL: --accept did not report the state write it still performs" >&2
   diag_output "${ACCEPT_REFUSE_OUT}"
   exit 1
@@ -976,11 +1148,11 @@ fi
 echo "    OK: the summary reports 0 resource(s) accepted over the write it still made"
 REFUSED_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null)
-if printf '%s' "${REFUSED_STATE}" | grep -qF "${DRIFT_SENTINEL}"; then
+if grep -qF "${DRIFT_SENTINEL}" <<< "${REFUSED_STATE}"; then
   echo "FAIL: --accept persisted the injected value at a secret-bearing path" >&2
   exit 1
 fi
-if printf '%s' "${REFUSED_STATE}" | grep -qF '"***"'; then
+if grep -qF '"***"' <<< "${REFUSED_STATE}"; then
   echo "FAIL: --accept persisted the MASK into state.json" >&2
   exit 1
 fi
@@ -1050,11 +1222,11 @@ POST_REVERT_ENV=$(printf '%s' "${POST_REVERT_STATE}" \
   | jq -c '.state.resources | to_entries[]
              | select(.value.resourceType=="AWS::Lambda::Function")
              | .value.observedProperties.Environment.Variables' | head -1)
-if printf '%s' "${POST_REVERT_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<< "${POST_REVERT_ENV}"; then
   echo "FAIL: --revert persisted the resolved secret into the observed baseline" >&2
   exit 1
 fi
-if printf '%s' "${POST_REVERT_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${POST_REVERT_STATE}"; then
   echo "FAIL: --revert persisted the decrypted SecureString value into state" >&2
   exit 1
 fi
@@ -1098,7 +1270,7 @@ if [ "${DRIFT_RC}" -ne 0 ]; then
   exit 1
 fi
 assert_no_plaintext "'cdkd drift' on an absent secret-bearing property" "${DRIFT_OUT}"
-if printf '%s' "${DRIFT_OUT}" | grep -qF "Environment.Variables.SECRET_PASSWORD"; then
+if grep -qF "Environment.Variables.SECRET_PASSWORD" <<< "${DRIFT_OUT}"; then
   echo "FAIL: 'cdkd drift' named a property it cannot read back as drifted" >&2
   exit 1
 fi
@@ -1198,7 +1370,7 @@ PREFIX_SEED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
 }
 # Fail loudly rather than seeding nothing: every assertion below would pass
 # vacuously against an unmodified record.
-if ! printf '%s' "${PREFIX_SEED}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if ! grep -qF "${EXPECTED_PASSWORD}" <<< "${PREFIX_SEED}"; then
   echo "FAIL: the pre-fix seed did not take — no plaintext in the patched document" >&2
   exit 1
 fi
@@ -1230,15 +1402,15 @@ if [ "$(printf '%s' "${POST_ACCEPT_ENV}" | jq -r '.DRIFT_EXTRA // empty')" != "c
   echo "FAIL: --accept did not record the out-of-band env addition" >&2
   exit 1
 fi
-if printf '%s' "${POST_ACCEPT_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<< "${POST_ACCEPT_ENV}"; then
   echo "FAIL: --accept persisted the resolved secret plaintext into state.json" >&2
   exit 1
 fi
-if printf '%s' "${POST_ACCEPT_ENV}" | grep -qF "${EXPECTED_USERNAME}"; then
+if grep -qF "${EXPECTED_USERNAME}" <<< "${POST_ACCEPT_ENV}"; then
   echo "FAIL: --accept persisted the whole-secret plaintext into state.json" >&2
   exit 1
 fi
-if printf '%s' "${POST_ACCEPT_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${POST_ACCEPT_STATE}"; then
   echo "FAIL: --accept persisted the decrypted SecureString value into state.json" >&2
   exit 1
 fi
@@ -1414,13 +1586,13 @@ esac
 # state — same rationale as Guard 5 above: the DynRefSecret resource's OWN
 # SecretString legitimately holds the fixture's hardcoded password, which is out
 # of scope for the dynamic-reference (consumer-side) disclosure this fix targets.
-if printf '%s' "${RB_LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<< "${RB_LAMBDA_ENV}"; then
   echo "FAIL: post-rollback the Lambda's persisted env leaked the resolved secret plaintext" >&2
   exit 1
 fi
 # The SecureString has no such sibling holding it legitimately, so scan the
 # WHOLE post-rollback state document (issue #1901).
-if printf '%s' "${RB_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${RB_STATE}"; then
   echo "FAIL: post-rollback state leaked the decrypted SecureString value (issue #1901)" >&2
   exit 1
 fi
@@ -1524,7 +1696,7 @@ RO_PASSWORD_STAGED=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SECRET_PASSWORD_STAG
 refresh_fail=0
 # The staleness guard's payoff: the sentinel is only gone if this command
 # actually re-read AWS and rewrote the bag.
-if printf '%s' "${RO_OBSERVED}" | grep -q 'STALE-SENTINEL'; then
+if grep -q 'STALE-SENTINEL' <<< "${RO_OBSERVED}"; then
   echo "FAIL: refresh-observed did not rewrite observedProperties — the staleness sentinel survived" >&2
   echo "      (every redaction assertion below would have passed on the deploy-time bag)" >&2
   refresh_fail=1
@@ -1613,13 +1785,13 @@ fi
 # the fixture's hardcoded password, so the password grep is scoped to the
 # consumer Lambda's observed bag, while the decrypted SecureString has no such
 # sibling and the WHOLE state document is scanned for it.
-if printf '%s' "${RO_OBSERVED}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<< "${RO_OBSERVED}"; then
   echo "FAIL: refresh-observed persisted the DECRYPTED secret into observedProperties (#1926)" >&2
   refresh_fail=1
 else
   echo "    OK: no resolved secret plaintext in the refreshed observed bag"
 fi
-if printf '%s' "${RO_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${RO_STATE}"; then
   echo "FAIL: refresh-observed persisted the decrypted SecureString into state (#1926)" >&2
   refresh_fail=1
 else
@@ -1743,7 +1915,7 @@ else
   orphan_fail=1
 fi
 # WHOLE-DOCUMENT: the decrypted SecureString has no legitimate home in state.
-if printf '%s' "${F2_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${F2_STATE}"; then
   echo "FAIL: the decrypted SecureString survived at a position the source does not carry (#2012)" >&2
   orphan_fail=1
 else
@@ -1945,7 +2117,7 @@ else
   residual_fail=1
 fi
 # WHOLE-DOCUMENT: over-redacting a public leaf may never come with a disclosure.
-if printf '%s' "${F3_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${F3_STATE}"; then
   echo "FAIL: the decrypted SecureString survived the #2036 residual phase (#1926)" >&2
   residual_fail=1
 else
@@ -2133,7 +2305,7 @@ esac
 # which the DynRefSecret resource genuinely holds (the reason Guard 5 scopes ITS
 # password grep to the Lambda's env). That is why the MIXED leaf was built on
 # the SecureString: it makes this assertion available.
-if printf '%s' "${G_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+if grep -qF "${EXPECTED_SECURE}" <<< "${G_STATE}"; then
   echo "FAIL: a plain deploy persisted the decrypted SecureString into state (#1926)" >&2
   deploy_redaction_fail=1
 else
@@ -2195,7 +2367,7 @@ if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --
 elif ! SECRET_DELETED_DATE=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
     --region "${REGION}" --query 'DeletedDate' --output text 2>&1); then
   # TOCTOU: the secret can vanish between gone_probe and this requery.
-  printf '%s' "${SECRET_DELETED_DATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<< "${SECRET_DELETED_DATE}" \
     && SECRET_DELETED_DATE="GONE" \
     || { echo "FAIL: describe-secret requery undetermined: ${SECRET_DELETED_DATE}" >&2; exit 1; }
 fi

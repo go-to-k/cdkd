@@ -59,12 +59,27 @@ Index of every area: [code-layout.md](code-layout.md).
     `scrubResourceRecord(record, secrets)` (redacts one `ResourceState`'s
     `properties` / `attributes` / `observedProperties`, shared by the deploy
     save choke point and `cdkd scrub`), and `maskSecretsInText(text, secrets)`
-    (secret value → `***` for log / error output).
+    (secret value → `***` for log / error output). The resolver's own log
+    lines go through its private `maskSecretsForLog(text, context)`, which
+    masks against `context.inheritedSecrets` FIRST and then
+    `context.recordedSecretValues` (issue #1903 round 2: on a nested-stack
+    child the parent-decrypted parameter plaintext is in the inherited bag
+    only, until a `{Ref: <Param>}` resolution copies it across). The sites
+    issue #2728 added to it: the `Resolving dynamic reference:` debug echoes of the
+    Secrets Manager and SSM lookups, both `sendWithThrottleRetry` labels, the
+    SSM unrecognized-`Type` warn and the `Unsupported dynamic reference
+    service:` warn — every one of which can print an ASSEMBLED token, because
+    `resolveSub` / `resolveJoin` re-enter `resolveDynamicReferences` with the
+    assembled string. `DeployEngine.handleOutputResolutionFailure` masks the
+    same two bags in the same order, the text with `maskSecretsInText` and
+    the strict arm's `cause` with `maskSecretsInError`.
   - **`maskSecretsInError(error, secrets)`** (issue #2038) is the object-level
     twin: a CLONE of EVERY link in the error's `cause` CHAIN, each with its
     own masked `message` — `formatError` renders
-    `Caused by: <cause.message>` and `handleError` logs the error OBJECT, so
-    no string-site masking can close that sink. **The CHAIN, not just the top
+    `Caused by: <cause.message>` for a `CdkdError`'s direct cause and
+    `handleError` logs that rendering (ONE level; a plain `Error` renders as
+    name + message, its `cause` untouched), so no string-site masking of
+    the top link alone can close that sink. **The CHAIN, not just the top
     link**: a provider wrapping an AWS failure in a generic sentence leaves
     the plaintext ONE link down, where a top-level-only mask hits its
     identity-return and hands back an unsafe object — the contract is that

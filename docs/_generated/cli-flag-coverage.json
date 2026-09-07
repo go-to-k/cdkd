@@ -1204,6 +1204,7 @@
         "remove-protection",
         "rollback-sqs-cooldown",
         "s3-lifecycle",
+        "secrets-dynamic-ref",
         "stepfunctions",
         "tags-propagation",
         "throttle-wide-dag"
