@@ -142,6 +142,14 @@ export function findUnrecognizedProperties(
   for (const prop of Object.keys(templateProperties)) {
     if (coverage.handled.has(prop)) continue;
     if (coverage.silentDrop.has(prop)) continue;
+    // A whole-bag intrinsic is not a property name. `Properties: { 'Fn::If':
+    // [...] }` is legal CloudFormation (and what `CfnInclude` / a raw
+    // `addOverride` can produce), and the resolver expands it into real
+    // properties later — so reporting `Fn::If` as "not in the schema" would be
+    // the one FALSE warn this predicate can emit. Skipped by prefix rather
+    // than by an enumerated list: every intrinsic in this position is spelled
+    // `Fn::*`, and a new one must not become a false warn the day AWS adds it.
+    if (prop.startsWith('Fn::')) continue;
     unrecognized.push(prop);
   }
   return unrecognized.sort((a, b) => a.localeCompare(b));

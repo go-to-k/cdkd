@@ -82,6 +82,19 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       return step!;
     };
 
+    /**
+     * A step's shell with `#` comment lines removed. Load-bearing for the
+     * NEGATIVE assertions below: this workflow's comments deliberately QUOTE
+     * the wrong forms in order to explain why they are wrong (`git diff
+     * --quiet`, a bare `--force-with-lease`), so a naive `not.toContain` reads
+     * the explanation as the defect and fails on correct code.
+     */
+    const shellOf = (name: string) =>
+      byName(name)
+        .run!.split('\n')
+        .filter((l) => !/^\s*#/.test(l))
+        .join('\n');
+
     it('gates the refresh, the drift probe and the PR on NO open refresh PR', () => {
       for (const name of ['Refresh fixtures from the public schema bundle', 'Detect drift']) {
         expect(byName(name).if).toBe("steps.open_pr.outputs.number == ''");
@@ -127,6 +140,45 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       const guard = byName('Look for an open refresh PR');
       expect(guard.run).toContain('headRepositoryOwner');
       expect(guard.run).toContain('github.repository_owner');
+    });
+
+    it('detects drift with a form that SEES untracked files, and fails closed', () => {
+      const drift = shellOf('Detect drift');
+      // `git diff --quiet` is blind to untracked files, so a newly-registered
+      // type's brand-new fixture would be captured and then discarded.
+      expect(drift).toContain('git status --porcelain');
+      expect(drift).not.toContain('git diff --quiet');
+      // Assigned on its own line: `set -e` does not fire inside an `if`
+      // condition, so the inline `$( )` form swallows a git failure as
+      // "no drift" — fail-open, which is what the sibling guard refuses.
+      expect(drift).toMatch(/changes=\$\(git status --porcelain/);
+      expect(drift).toContain('set -euo pipefail');
+    });
+
+    it('regenerates under set -e so a failed generator cannot open a half-done PR', () => {
+      expect(byName('Regenerate the derived artifacts').run).toContain('set -euo pipefail');
+    });
+
+    it('pushes with an EXPLICIT token, since credentials are not persisted', () => {
+      const push = shellOf('Open the refresh PR');
+      expect(push).toContain('x-access-token:${GH_TOKEN}');
+      // A bare `git push origin` would fail: the checkout persists no auth.
+      expect(push).not.toMatch(/git push\s+origin\s/);
+    });
+
+    it('re-dispatch uses the EXPLICIT force-with-lease form, not the bare one', () => {
+      // A bare `--force-with-lease` compares against a remote-TRACKING ref,
+      // and there is none here (checkout fetches one ref at depth 1; the push
+      // target is an anonymous URL). Git then expects the branch NOT to exist
+      // — while `force` is set only when ls-remote proved it does — so the
+      // push is rejected `(stale info)` in exactly the case it exists for.
+      const push = shellOf('Open the refresh PR');
+      expect(push).toContain('--force-with-lease=refs/heads/');
+      expect(push).not.toMatch(/--force-with-lease(?!=)/);
+    });
+
+    it('narrows the open-PR search to the bot author so the limit cannot be flooded', () => {
+      expect(byName('Look for an open refresh PR').run).toContain('--author');
     });
 
     it('fails the open-PR guard closed rather than open on a gh error', () => {

@@ -50,11 +50,13 @@ import {
   mkdirSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildFixture,
+  downloadSchemaBundle,
   fixtureDiffersIgnoringDate,
   readSchemaBundle,
   refreshFixturesFromEntries,
@@ -429,7 +431,16 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
    * section alone.
    */
   const BASE = {
-    properties: { A: { type: 'string' }, Cfg: { $ref: '#/definitions/Cfg' } },
+    properties: {
+      A: { type: 'string' },
+      Cfg: { $ref: '#/definitions/Cfg' },
+      // An INLINE object, deliberately not a `$ref` definition: adding a member
+      // under it moves `nestedProperties` / `nestedPropertyPaths` WITHOUT
+      // touching `definitionShapes`, which only classifies `#top` and each
+      // NAMED definition. Without it, every nested variant also moved
+      // `definitionShapes` and no case pinned the nested sections at all.
+      Obj: { type: 'object', properties: { P1: { type: 'string' } } },
+    },
     readOnlyProperties: ['/properties/A'],
     createOnlyProperties: ['/properties/A'],
     primaryIdentifier: ['/properties/A'],
@@ -439,7 +450,17 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
     },
   };
 
-  /** Each variant changes exactly ONE captured section relative to BASE. */
+  /**
+   * Each variant changes the NAMED section, and — where isolation is possible
+   * — only that one. Measured, not assumed.
+   *
+   * `properties` is NOT isolable by construction and the table does not
+   * pretend otherwise: `definitionShapes` carries a `#top` entry whose keys ARE
+   * the top-level property names, so any change to `properties` necessarily
+   * moves `definitionShapes` too. That is a property of the capture, not a
+   * weakness of the case — what matters is that no OTHER section can stand in
+   * for the one under test, which the isolated variants below establish.
+   */
   const VARIANTS: Array<{ section: string; mutate: (s: typeof BASE) => Record<string, unknown> }> = [
     { section: 'properties', mutate: (s) => ({ ...s, properties: { ...s.properties, B: { type: 'string' } } }) },
     { section: 'readOnlyProperties', mutate: (s) => ({ ...s, readOnlyProperties: [] }) },
@@ -447,10 +468,12 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
     { section: 'primaryIdentifier', mutate: (s) => ({ ...s, primaryIdentifier: [] }) },
     {
       section: 'nestedProperties / nestedPropertyPaths',
+      // Measured to move ONLY those two sections (see the note on `Obj`).
       mutate: (s) => ({
         ...s,
-        definitions: {
-          Cfg: { ...s.definitions.Cfg, properties: { Inner: { type: 'string' }, Extra: { type: 'string' } } },
+        properties: {
+          ...s.properties,
+          Obj: { type: 'object', properties: { P1: { type: 'string' }, P2: { type: 'string' } } },
         },
       }),
     },
@@ -528,6 +551,38 @@ describe('serializeFixture matches the committed corpus byte-for-byte', () => {
     }
     expect(mismatched, 'serializeFixture no longer reproduces these committed fixtures').toEqual([]);
   });
+
+  /**
+   * The round trip above preserves whatever order each FILE already has, so it
+   * cannot see `buildFixture` reordering the object it returns — which would
+   * rewrite all 134 fixtures on the next refresh for no semantic reason. This
+   * pins the emitted order directly.
+   */
+  it('buildFixture emits its keys in the committed canonical order', () => {
+    const built = buildFixture(
+      JSON.stringify({
+        properties: { A: { type: 'string' }, Obj: { type: 'object', properties: { P: {} } } },
+        readOnlyProperties: ['/properties/A'],
+        createOnlyProperties: ['/properties/A'],
+        primaryIdentifier: ['/properties/A'],
+        required: ['A'],
+      }),
+      'AWS::Test::Type',
+      '2026-01-01'
+    );
+    expect(Object.keys(built)).toEqual([
+      'resourceType',
+      'generatedAt',
+      'properties',
+      'readOnlyProperties',
+      'createOnlyProperties',
+      'primaryIdentifier',
+      'nestedProperties',
+      'nestedPropertyPaths',
+      'definitionShapes',
+      'definitionRequired',
+    ]);
+  });
 });
 
 describe('CLI argument handling', () => {
@@ -570,10 +625,16 @@ describe('CLI argument handling', () => {
    * it must not have touched the committed corpus.
    */
   function fixtureCorpusDigest(): string {
-    return readdirSync(FIXTURES_DIR)
-      .filter((f) => f.endsWith('.json'))
-      .map((f) => `${f}:${readFileSync(join(FIXTURES_DIR, f), 'utf8').length}`)
-      .join('|');
+    // CONTENT-hashed, not byte-length. The incident this guards is a
+    // fall-through refresh rewriting every fixture's `generatedAt` — and a
+    // date is always 10 characters, so a length-based digest passes over a
+    // fully rewritten corpus, i.e. it would be blind to precisely the case it
+    // exists for.
+    const h = createHash('sha256');
+    for (const f of readdirSync(FIXTURES_DIR).filter((n) => n.endsWith('.json')).sort()) {
+      h.update(f).update('\0').update(readFileSync(join(FIXTURES_DIR, f)));
+    }
+    return h.digest('hex');
   }
   const corpusBefore = fixtureCorpusDigest();
   afterAll(() => {
@@ -591,7 +652,21 @@ describe('CLI argument handling', () => {
   });
 
   it('rejects an unrelated unknown flag', () => {
-    expect(run(['-x']).status).toBe(1);
+    // The STDERR assertion is load-bearing. With the guard deleted, `-x` does
+    // not start with `--`, so it becomes the positional type filter, matches
+    // no registered type, and `main` exits 1 anyway — a status-only assertion
+    // passes for entirely the wrong reason and never touches the guard.
+    const r = run(['-x']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('Unknown flag(s): -x');
+  });
+
+  it('refuses an EMPTY positional rather than falling through to a full refresh', () => {
+    // `refresh.mjs "$TYPE"` with TYPE unset. Same fall-through payload as the
+    // `--from-zipX` case: ~135 live DescribeType calls and a rewritten corpus.
+    const r = run(['']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('Empty argument');
   });
 
   it('rejects --from-zip= with an empty value rather than silently downloading', () => {
@@ -607,12 +682,99 @@ describe('CLI argument handling', () => {
   });
 
   it('refuses --from-zip combined with --only-missing', () => {
-    expect(run(['--from-zip', '--only-missing']).status).toBe(1);
+    // Status-only would pass here on regression by performing a live bundle
+    // download and then failing for some other reason; the message pins that
+    // the REFUSAL is what happened.
+    const r = run(['--from-zip', '--only-missing']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('cannot be combined');
   });
 
   it('--help exits 0 and documents the zip mode', () => {
     const r = run(['--help']);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('--from-zip');
+  });
+});
+
+describe('download and decompression bounds', () => {
+  /**
+   * Round 2 found these controls had NO test at all: deleting the cumulative
+   * cap, the `content-length` pre-check, and `redirect: 'error'` each passed
+   * the whole suite. They are the only thing standing between an
+   * un-checksummable third-party artifact and an unattended monthly job, so
+   * "present in the source" is not enough.
+   */
+  function resp(overrides: Record<string, unknown> = {}) {
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => null },
+      body: (async function* () {
+        yield Buffer.from('x');
+      })(),
+      ...overrides,
+    };
+  }
+
+  it('refuses a bundle whose declared content-length is over the cap', async () => {
+    const fetchImpl = async () =>
+      resp({ headers: { get: () => String(200 * 1024 * 1024) } }) as never;
+    await expect(downloadSchemaBundle('http://x', fetchImpl)).rejects.toThrow(/declares .* over the/);
+  });
+
+  it('bounds a chunked body that declares NO content-length', async () => {
+    // The case a post-hoc `arrayBuffer()` check cannot catch: with no declared
+    // length there is nothing to pre-check, so the bound must be enforced as
+    // the bytes arrive or the runner is exhausted first.
+    let emitted = 0;
+    const fetchImpl = async () =>
+      resp({
+        headers: { get: () => null },
+        body: (async function* () {
+          for (;;) {
+            emitted += 1;
+            yield Buffer.alloc(8 * 1024 * 1024, 0x61);
+          }
+        })(),
+      }) as never;
+    await expect(downloadSchemaBundle('http://x', fetchImpl)).rejects.toThrow(/mid-download/);
+    // Bounded, not merely rejected after consuming everything.
+    expect(emitted).toBeLessThan(20);
+  });
+
+  it('accepts a small well-formed body', async () => {
+    const fetchImpl = async () => resp() as never;
+    expect((await downloadSchemaBundle('http://x', fetchImpl)).toString()).toBe('x');
+  });
+
+  it('names the redirect refusal rather than surfacing a bare fetch failure', async () => {
+    const fetchImpl = async () => {
+      throw new TypeError('fetch failed');
+    };
+    await expect(downloadSchemaBundle('http://x', fetchImpl)).rejects.toThrow(/redirect is refused/);
+  });
+
+  it('refuses a non-ok response', async () => {
+    const fetchImpl = async () => resp({ ok: false, status: 403, statusText: 'Forbidden' }) as never;
+    await expect(downloadSchemaBundle('http://x', fetchImpl)).rejects.toThrow(/HTTP 403/);
+  });
+
+  it('refuses a zip whose entries expand past the cap, before extracting them', () => {
+    // Many small entries, which is the real bomb shape — one huge entry is the
+    // easy case. Built with genuinely compressible content so the ZIP stays
+    // small while the declared uncompressed total is large.
+    const zip = new AdmZip();
+    for (let i = 0; i < 80; i++) {
+      zip.addFile(`aws-test-t${i}.json`, Buffer.alloc(1024 * 1024, 0x61));
+    }
+    expect(() => readSchemaBundle(zip.toBuffer())).toThrow(/expands past the/);
+  });
+
+  it('reads a normal bundle without tripping the cap', () => {
+    const zip = new AdmZip();
+    zip.addFile('aws-lambda-function.json', Buffer.from('{"properties":{}}'));
+    expect(readSchemaBundle(zip.toBuffer()).size).toBe(1);
   });
 });

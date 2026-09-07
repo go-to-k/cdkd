@@ -884,7 +884,17 @@ export function readSchemaBundle(zipBuffer) {
     if (!entry.entryName.endsWith('.json')) continue;
     // Running total rather than a per-entry cap: the bomb shape is many small
     // entries, not one big one, and `getData()` materializes each in full.
-    uncompressed += entry.header.size;
+    //
+    // The counter is `max(size, compressedSize)`, and the `compressedSize` arm
+    // is what closes a real hole. adm-zip passes `maxOutputLength: header.size`
+    // to `inflateRawSync` ONLY when that size is > 0, so an entry DECLARING 0
+    // gets no inflate bound at all while contributing 0 here — a few
+    // compressed MB then expand to gigabytes before dying on a CRC check, past
+    // the allocation. Counting the compressed bytes instead keeps such an entry
+    // bounded by what it actually costs to ship. (A header lying SMALL is
+    // already safe: zlib throws at `maxOutputLength`. One lying LARGE is
+    // already safe: this check runs BEFORE `getData()`.)
+    uncompressed += Math.max(entry.header.size, entry.header.compressedSize);
     if (uncompressed > MAX_BUNDLE_BYTES) {
       throw new Error(
         `Schema bundle expands past the ${MAX_BUNDLE_BYTES}-byte cap — refusing to continue.`
@@ -909,32 +919,64 @@ export function readSchemaBundle(zipBuffer) {
  * @param {string} url
  * @returns {Promise<Buffer>}
  */
-async function downloadSchemaBundle(url) {
+export async function downloadSchemaBundle(url, fetchImpl = fetch) {
   // `redirect: 'error'` rather than the default `follow`: this runs unattended
   // in CI with a write-scoped token in the job, and a redirect would let the
   // response come from a host nobody reviewed. There is no integrity check
   // available to fall back on (see MAX_BUNDLE_BYTES), so the origin is the
   // only thing pinnable, and a legitimate redirect here would be a change
   // worth noticing rather than following.
-  const resp = await fetch(url, { redirect: 'error' });
+  let resp;
+  try {
+    resp = await fetchImpl(url, { redirect: 'error' });
+  } catch (err) {
+    // A `redirect: 'error'` rejection surfaces as a bare `TypeError: fetch
+    // failed`, naming neither the URL nor the reason — which would read as a
+    // network blip rather than as "the endpoint started redirecting", the one
+    // thing this mode exists to notice. (Measured 2026-09-07: the real
+    // endpoint answers 200 with 0 redirects.)
+    throw new Error(
+      `GET ${url} failed (a redirect is refused on purpose — this job pins the origin ` +
+        `because the bundle carries no checksum): ${
+          err instanceof Error ? err.message : String(err)
+        }`
+    );
+  }
   if (!resp.ok) {
     throw new Error(`GET ${url} failed: HTTP ${resp.status} ${resp.statusText}`);
   }
-  const declared = Number(resp.headers.get('content-length') ?? '0');
+  // The header is a CLAIM, checked only to fail FAST. `Number('')` is 0 and
+  // `Number(garbage)` is NaN, so an absent or malformed header compares false
+  // and falls through to the streaming bound below rather than passing a
+  // check it never really satisfied.
+  const declared = Number(resp.headers.get('content-length') ?? '');
   if (declared > MAX_BUNDLE_BYTES) {
     throw new Error(
       `Schema bundle declares ${declared} bytes, over the ${MAX_BUNDLE_BYTES} cap — refusing to download.`
     );
   }
-  const buffer = Buffer.from(await resp.arrayBuffer());
-  // Checked again after the fact: `content-length` is a claim, and a chunked
-  // response carries none at all.
-  if (buffer.byteLength > MAX_BUNDLE_BYTES) {
-    throw new Error(
-      `Schema bundle is ${buffer.byteLength} bytes, over the ${MAX_BUNDLE_BYTES} cap — refusing to parse.`
-    );
+  if (!resp.body) {
+    throw new Error(`GET ${url} returned no body.`);
   }
-  return buffer;
+  // STREAMED with a running total, NOT `await resp.arrayBuffer()`. That call
+  // buffers the whole body before any size can be inspected, so a chunked
+  // response — which carries no `content-length` at all — would exhaust the
+  // runner before a post-hoc check could look at it. A bound has to sit where
+  // the bytes ARRIVE, not after they have all arrived.
+  /** @type {Buffer[]} */
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of resp.body) {
+    const buf = Buffer.from(chunk);
+    total += buf.byteLength;
+    if (total > MAX_BUNDLE_BYTES) {
+      throw new Error(
+        `Schema bundle exceeded the ${MAX_BUNDLE_BYTES}-byte cap mid-download — aborting.`
+      );
+    }
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
 }
 
 /**
@@ -1084,6 +1126,16 @@ async function main() {
   );
   if (unknownFlags.length > 0) {
     process.stderr.write(`Unknown flag(s): ${unknownFlags.join(', ')}\n${usage}`);
+    process.exit(1);
+  }
+  // An EMPTY positional is refused rather than ignored. `refresh.mjs "$TYPE"`
+  // with `TYPE` unset yields `['']`, which is not caught by the flag filter
+  // (`''.startsWith('-')` is false), leaves `typeFilter` falsy, and so falls
+  // through to a FULL authenticated refresh of every registered type — the
+  // same caller-bug shape the `--from-zip=` guard below refuses, one argument
+  // position over.
+  if (args.some((a) => a === '')) {
+    process.stderr.write(`Empty argument — did a shell variable expand to nothing?\n${usage}`);
     process.exit(1);
   }
   const typeFilter = args.find((a) => !a.startsWith('--'));

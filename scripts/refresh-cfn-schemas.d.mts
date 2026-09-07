@@ -53,3 +53,7 @@ export declare function refreshFixturesFromEntries(args: {
   missing: string[];
   failed: Array<{ type: string; error: string }>;
 };
+export declare function downloadSchemaBundle(
+  url: string,
+  fetchImpl?: (url: string, init?: unknown) => Promise<unknown>
+): Promise<Buffer>;

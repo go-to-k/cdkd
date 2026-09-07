@@ -120,7 +120,11 @@ jobs:
           # "open refresh PR" and skip. The silent-drop class this whole job
           # exists to watch would then go unwatched indefinitely, with no
           # alert, which is strictly worse than the job not existing.
+          # `--author` narrows to the bot's own PRs, so the `--limit` window
+          # cannot be pushed past by unrelated open PRs — without it, >100
+          # newer PRs hide the bot's own and the guard opens a duplicate.
           number=$(gh pr list --state open --limit 100 \
+            --author "app/github-actions" \
             --json number,headRefName,headRepositoryOwner \
             --jq '[.[]
                    | select(.headRepositoryOwner.login == "${{ github.repository_owner }}")
@@ -150,12 +154,18 @@ jobs:
           # blind to UNTRACKED files, and the refresh CREATES a fixture for a
           # registered type that has none yet (an absent fixture counts as
           # drift). That capture would then be silently discarded.
-          if [ -z "$(git status --porcelain -- tests/fixtures/cfn-schemas/)" ]; then
+          #
+          # Assigned on its own line, NOT inlined into `if [ -z "$(...)" ]`:
+          # `set -e` does not fire inside an `if` condition, so the inline form
+          # swallows a git failure as "no drift" — fail-OPEN, contradicting the
+          # fail-closed guard two steps up. A standalone assignment aborts.
+          changes=$(git status --porcelain -- tests/fixtures/cfn-schemas/)
+          if [ -z "${changes}" ]; then
             echo "drifted=false" >> "$GITHUB_OUTPUT"
             echo "No fixture drift — nothing to do."
           else
             echo "drifted=true" >> "$GITHUB_OUTPUT"
-            git status --porcelain -- tests/fixtures/cfn-schemas/
+            echo "${changes}"
             git --no-pager diff --stat -- tests/fixtures/cfn-schemas/
           fi
 
@@ -169,6 +179,11 @@ jobs:
       - name: Regenerate the derived artifacts
         if: steps.drift.outputs.drifted == 'true'
         run: |
+          # The one multi-command step that previously lacked this: a failing
+          # `gen:property-coverage` was swallowed and the PR opened on a
+          # half-regenerated tree. The `|| echo` line below is deliberately
+          # exempt — that failure IS the designed hand-off.
+          set -euo pipefail
           vp run gen:property-coverage
           CDKD_GENERATE_BACKFILL=true vp test run property-coverage || \
             echo "::notice::property-coverage is red — classification is needed on this PR"
@@ -187,10 +202,20 @@ jobs:
           # WITHOUT deleting its branch would otherwise die on a non-fast-forward
           # push. The branch is bot-owned and its PR is gone, so replacing it is
           # correct; `--force-with-lease` still refuses if it moved under us.
+          #
+          # The EXPLICIT `<ref>:<sha>` form is required, not a style choice. A
+          # bare `--force-with-lease` compares against a REMOTE-TRACKING ref,
+          # and there is none here: checkout fetches only the triggering ref at
+          # depth 1, and the push target is an anonymous URL with no fetch
+          # refspec. Git then expects the ref NOT to exist — while `force` is
+          # set only on the path where `ls-remote` just proved it does — so the
+          # push is rejected `(stale info)` every time, i.e. the recovery path
+          # would fail in exactly the case it exists for.
           force=""
-          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
-            echo "Branch ${branch} already exists remotely — replacing it (its PR is not open)."
-            force="--force-with-lease"
+          existing_sha=$(git ls-remote --heads origin "${branch}" | cut -f1)
+          if [ -n "${existing_sha}" ]; then
+            echo "Branch ${branch} already exists remotely at ${existing_sha} — replacing it (its PR is not open)."
+            force="--force-with-lease=refs/heads/${branch}:${existing_sha}"
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

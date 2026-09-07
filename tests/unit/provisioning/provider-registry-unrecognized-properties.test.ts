@@ -110,6 +110,20 @@ describe('findUnrecognizedProperties (issue #2718)', () => {
     );
   });
 
+  it('does NOT report a whole-bag intrinsic — the one false warn it could emit', () => {
+    // `Properties: { 'Fn::If': [...] }` is legal CloudFormation (and what
+    // `CfnInclude` / a raw `addOverride` can produce). The resolver expands it
+    // into real properties later, so calling `Fn::If` "not in the schema"
+    // would be a warn about something that is not a property at all.
+    expect(
+      findUnrecognizedProperties(fx.resourceType, { 'Fn::If': ['C', {}, {}] })
+    ).toEqual([]);
+    // Still reports a real unknown sitting beside one.
+    expect(
+      findUnrecognizedProperties(fx.resourceType, { 'Fn::If': ['C', {}, {}], [UNKNOWN_PROP]: 1 })
+    ).toEqual([UNKNOWN_PROP]);
+  });
+
   it('returns [] for undefined properties', () => {
     expect(findUnrecognizedProperties(fx.resourceType, undefined)).toEqual([]);
   });
@@ -216,24 +230,29 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
       STICKY_CC_MIGRATION_EXEMPT.size,
       'STICKY_CC_MIGRATION_EXEMPT is empty — this case can no longer discriminate'
     ).toBeGreaterThanOrEqual(1);
-    const exemptType = [...STICKY_CC_MIGRATION_EXEMPT].find((t) =>
-      PROPERTY_COVERAGE_BY_TYPE.has(t)
-    );
-    expect(
-      exemptType,
-      'no STICKY_CC_MIGRATION_EXEMPT type is in the Tier 1 coverage table, so the ' +
-        'sticky-exempt warn path is unreachable from this suite'
-    ).toBeDefined();
-    const { registry, warn } = makeRegistry();
-    registry.validateResourceProperties([
-      {
-        logicalId: 'MyResource',
-        resourceType: exemptType!,
-        properties: { [UNKNOWN_PROP]: 1 },
-        provisionedBy: 'cc-api',
-      },
-    ]);
-    expect(unknownWarns(warn)).toHaveLength(1);
+    // EVERY member is exercised, not just the first: a `find` would leave a
+    // newly added exempt type silently uncovered. And each must be in the
+    // Tier 1 table — an exempt type that left it makes this path unreachable,
+    // which is the loud failure the earlier hardcoded name gave us for free.
+    for (const type of STICKY_CC_MIGRATION_EXEMPT) {
+      expect(
+        PROPERTY_COVERAGE_BY_TYPE.has(type),
+        `${type} is STICKY_CC_MIGRATION_EXEMPT but not in the Tier 1 coverage ` +
+          'table, so the sticky-exempt warn path is unreachable for it'
+      ).toBe(true);
+    }
+    for (const exemptType of STICKY_CC_MIGRATION_EXEMPT) {
+      const { registry, warn } = makeRegistry();
+      registry.validateResourceProperties([
+        {
+          logicalId: 'MyResource',
+          resourceType: exemptType,
+          properties: { [UNKNOWN_PROP]: 1 },
+          provisionedBy: 'cc-api',
+        },
+      ]);
+      expect(unknownWarns(warn), `no warn for sticky-exempt ${exemptType}`).toHaveLength(1);
+    }
   });
 
   it('is suppressed by --allow-unsupported-properties for that exact key', () => {
