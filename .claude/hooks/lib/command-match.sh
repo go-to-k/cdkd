@@ -832,7 +832,7 @@ gate_segments_raw() {
     # resolves them against the base as it stood when the enclosing command ran
     # -- earlier than the truth when a `cd` precedes the substitution ON THE
     # SAME LINE, which is the LOUD direction, and never later.
-    function drain_extra(   out, rounds, batch, nlines, elines, ei, flushed, nf, fl, fi, saved_q, saved_ignore) {
+    function drain_extra(   out, rounds, batch, nlines, elines, ei, flushed, nf, fl, fi, saved_q) {
       # `q` IS GLOBAL AND LIVE ACROSS LINES. It carries "this line ended inside
       # a quoted span", which is what stops each line of a multi-line
       # `--body "..."` being promoted to a segment start. Draining a body runs
@@ -1607,7 +1607,11 @@ gate_dequote_structural() {
   if [ -n "$rest" ]; then GATE_STRUCT_SEG="$out $rest"; else GATE_STRUCT_SEG="$out"; fi
   return 0
 }
-# gate_segments_marked <cmd>
+# gate_segments_marked <cmd> [recursion-depth]
+#
+# `recursion-depth` is internal: the `bash -c` arm passes depth+1 to itself and
+# stops at `GATE_MARK_MAXDEPTH` (default 4). Callers pass one argument.
+# Tunables read here: GATE_MARK_MAXSEG, GATE_MARK_MAXDEPTH, GATE_MARK_MAXINLINE.
 #
 # One segment per line, exactly as `gate_segments` emits them, each prefixed
 # with `0\t` or `1\t` -- 1 when the segment came from inside a plain SUBSHELL,
@@ -1615,7 +1619,7 @@ gate_dequote_structural() {
 # that reads `gate_segments` has to change. That is a weaker statement than the
 # one this comment used to make, and the weaker one is the true one --
 # `gate_segments` itself is NOT byte-identical to origin/main. It differs on a
-# 28 of the differential's 239 inputs (11.7%) -- mostly from the per-line drain, which
+# part of the differential's inputs -- mostly from the per-line drain, which
 # changes segment ORDER, plus the escaped-space refusal in `_gate_struct_next`.
 # NO COUNT IS WRITTEN HERE: one stood as "9" until a reviewer re-ran it and got
 # 28, and the attribution beside it named `close_paren`, which this branch no

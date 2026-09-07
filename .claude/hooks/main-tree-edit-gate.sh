@@ -119,7 +119,7 @@ fi
 # the fix for it. 200 pairs is 20 `cd`s against 10 write targets, well past any
 # hand-written command.
 __union_cd_bases() {
-  local __n __i __b __rest __rounds=0 __maxrounds
+  local __n __i __b __rest __rounds=0 __budget __take
   __n=${#candidates[@]}
   [ "$__n" -gt 0 ] || return 0
   # THE CAP BOUNDS ROUNDS, AND NEVER TO ZERO. It used to test
@@ -132,11 +132,21 @@ __union_cd_bases() {
   # rc=0 with the tracked file really overwritten, against rc=2 at 51 lines and
   # rc=2 on origin/main.
   #
-  # At least one round always runs; past that the product stays near MAXPAIRS,
-  # which is what the bound is for (each pair costs a filesystem probe -- 5000
-  # measured at 40 s, 200 at 2 s).
-  __maxrounds=$(( ${GATE_EDIT_MAXPAIRS:-200} / __n ))
-  [ "$__maxrounds" -ge 1 ] || __maxrounds=1
+  # THE CAP IS ON WORK ADDED, NOT ON ROUNDS. A rounds cap of `MAXPAIRS / n`
+  # floored at 1 does not bound anything when `n` is large: the division is 0,
+  # the floor makes it 1, and that one round copies ALL n candidates, so the
+  # total is 2n and grows without limit. Measured through the real hook on a
+  # `gh pr comment --body` holding one `cd` mention and N blockquote lines --
+  # every `>` is a candidate -- HEAD ran 4.6 s / 9.2 s / 13.8 s at N = 300 / 600
+  # / 900 against 2.3 / 4.6 / 7.0 for the same input on origin/main. Past 10 s
+  # the hook is killed and cannot emit exit 2, so the rounds cap turned one
+  # fail-open into a worse one at a MORE reachable threshold.
+  #
+  # Adding `min(n, MAXPAIRS - added)` per round keeps the total at n + MAXPAIRS
+  # -- the n the command already carried, plus a bounded contribution -- while
+  # still guaranteeing the first round runs, which is what stops the cap being
+  # used as an off-switch (the defect this replaced).
+  __budget=${GATE_EDIT_MAXPAIRS:-200}
   __rest="$cmd"
   # THE VERB IS UNQUOTED HERE TOO. A bare-literal `cd` misses `"cd"`, `'cd'` and
   # `\cd` -- the precise spellings go-to-k/cdkd#2614 closed, and which the
@@ -150,11 +160,18 @@ __union_cd_bases() {
     __b=$(gate_unquote "${BASH_REMATCH[2]}")
     __rest="${__rest#*"${BASH_REMATCH[0]}"}"
     case "$__b" in *'$'* | *'`'*) continue ;; /*) ;; *) __b="$base_dir/$__b" ;; esac
-    for ((__i = 0; __i < __n; __i++)); do
+    # `__take` is the round's share of the remaining budget, and it is at least
+    # 1 on the FIRST round however large `__n` is -- the union must never do
+    # nothing, which is the whole reason this function exists.
+    __take=$__n
+    [ "$__take" -le "$__budget" ] || __take=$__budget
+    [ "$__take" -ge 1 ] || { [ "$__rounds" -eq 0 ] && __take=1 || break; }
+    for ((__i = 0; __i < __take; __i++)); do
       candidates+=("${candidates[$__i]}"); cand_bases+=("$__b")
     done
+    __budget=$((__budget - __take))
     __rounds=$((__rounds + 1))
-    [ "$__rounds" -ge "$__maxrounds" ] && break
+    [ "$__budget" -gt 0 ] || break
   done
 }
 
@@ -438,6 +455,10 @@ esac
 [[ ${#candidates[@]} -eq 0 ]] && exit 0
 
 # --- Helpers ---------------------------------------------------------------
+# Memo for `is_protected_path`, keyed on the candidate's parent directory. See
+# the comment at its use site for why this is a linear scan and not a hash.
+__pp_dir=(); __pp_canon=(); __pp_branch=(); __pp_top=()
+__pp_lsf_key=""; __pp_lsf_tracked=1
 canonicalize_dir() {
   local p="$1"
   if [[ -d "$p" ]]; then (cd "$p" 2>/dev/null && pwd -P) || printf '%s' "${p%/}"
@@ -457,18 +478,51 @@ is_protected_path() {
   local abs="$raw"
   [[ "$abs" != /* ]] && abs="$base/$abs"
   # Directory to query git from = the file's parent (must exist).
-  local dir; dir=$(dirname "$abs")
+  # `${abs%/*}` rather than `dirname`: this runs ONCE PER CANDIDATE, and a
+  # command can carry hundreds (every `>` is one), so a fork here is a fork
+  # times N. `abs` is absolute by construction above, so the only special case
+  # is a file directly under the root.
+  local dir="${abs%/*}"
+  [[ -n "$dir" ]] || dir=/
   [[ -d "$dir" ]] || return 1
-  # Canonicalize the parent dir (macOS /tmp -> /private/tmp etc.) and
-  # rebuild the absolute path so the later `rel` prefix-strip against
-  # the (also-canonical) worktree top matches.
-  dir=$(canonicalize_dir "$dir")
-  abs="$dir/$(basename "$abs")"
-  # Which worktree + branch?
-  local branch; branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
+  # MEMOISED PER PARENT DIRECTORY. Canonicalising and asking git for the branch
+  # and the toplevel is 1 subshell + 2 `git` per candidate, and candidates
+  # overwhelmingly SHARE a parent -- so without this the cost is linear in
+  # candidates when it is really linear in distinct directories. Measured on a
+  # `gh pr comment --body` holding 900 blockquote lines, all of which are
+  # candidates: 7.15 s before, and that is on origin/main, i.e. the shape was
+  # already within 3 s of the 10 s PreToolUse timeout that disarms every gate.
+  #
+  # bash 3.2 has no associative arrays, and a linear scan is right anyway: the
+  # number of DISTINCT parent directories in one command is one or two, so the
+  # scan is shorter than the hash it would replace.
+  local __ci=0 __hit=-1
+  while [ "$__ci" -lt "${#__pp_dir[@]}" ]; do
+    [ "${__pp_dir[$__ci]}" = "$dir" ] && { __hit=$__ci; break; }
+    __ci=$((__ci + 1))
+  done
+  local canon branch top
+  if [ "$__hit" -ge 0 ]; then
+    canon="${__pp_canon[$__hit]}"; branch="${__pp_branch[$__hit]}"; top="${__pp_top[$__hit]}"
+  else
+    canon=$(canonicalize_dir "$dir")
+    branch=$(git -C "$canon" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+    if [ -n "$branch" ]; then
+      top=$(git -C "$canon" rev-parse --show-toplevel 2>/dev/null) || top=""
+      [ -n "$top" ] && top=$(canonicalize_dir "$top")
+    else
+      top=""
+    fi
+    __pp_dir+=("$dir"); __pp_canon+=("$canon"); __pp_branch+=("$branch"); __pp_top+=("$top")
+  fi
+  # A cached MISS is a miss: an empty branch or toplevel means the dir is not in
+  # a git repo (or git failed), which is the same `return 1` the uncached path
+  # took. Storing it is what keeps a repeated miss from re-forking.
+  [ -n "$branch" ] || return 1
+  [ -n "$top" ] || return 1
+  dir="$canon"
+  abs="$dir/${abs##*/}"
   [[ "$branch" == "main" || "$branch" == "master" ]] || return 1
-  local top; top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 1
-  top=$(canonicalize_dir "$top")
   # Repo opt-in scope (issue #1259): only repos following the worktree +
   # markgate convention get main-tree edit protection. Unrelated repos
   # (a personal blog on main, a scratch clone) are the user's own
@@ -480,8 +534,27 @@ is_protected_path() {
   case "$abs" in
     "$top"/.claude/worktrees/*) return 1 ;;
   esac
-  # Tracked file?  -> always protected.
-  if git -C "$dir" ls-files --error-unmatch -- "$abs" >/dev/null 2>&1; then
+  # Tracked file? -> always protected.
+  #
+  # ONE-ENTRY MEMO, because this is the last per-candidate fork and it cannot be
+  # keyed on the directory like the one above -- `ls-files` asks about the FILE.
+  # A single slot is the right size: the shape that makes this expensive is the
+  # SAME token repeated (a quoted `--body` where every `>` yields the same
+  # candidate word), which a one-entry cache collapses to a single call, while a
+  # command with genuinely distinct write targets carries few of them. A larger
+  # cache would be a linear scan per candidate, i.e. quadratic on exactly the
+  # input this is here to make cheap.
+  if [ "$__pp_lsf_key" = "$dir|$abs" ]; then
+    __pp_lsf_tracked=$__pp_lsf_tracked
+  else
+    if git -C "$dir" ls-files --error-unmatch -- "$abs" >/dev/null 2>&1; then
+      __pp_lsf_tracked=0
+    else
+      __pp_lsf_tracked=1
+    fi
+    __pp_lsf_key="$dir|$abs"
+  fi
+  if [ "$__pp_lsf_tracked" = 0 ]; then
     PROTECT_BRANCH="$branch"; PROTECT_TOP="$top"; PROTECT_KIND="tracked"
     return 0
   fi

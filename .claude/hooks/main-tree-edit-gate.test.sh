@@ -582,7 +582,32 @@ run_case 0 "Bash deeply nested sh -c around a cd, then a write" \
   "$(jq -nc --arg cmd "$(printf 'sh -c %.0s' $(seq 1 300))cd $MAIN ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
-CASE_FLOOR=82
+# 10. LATENCY, and it is a gate-bypass case rather than a performance one: past
+#     the 10 s PreToolUse timeout the hook is KILLED and cannot emit exit 2, so
+#     every gate goes quiet at once. Every `>` is a write candidate, so a
+#     `--body` holding N blockquote lines carries N of them, and each used to
+#     cost a `dirname` fork plus a subshell plus two `git` calls. Measured on
+#     900 such lines: origin/main 7.15 s, this branch 13.79 s before the union
+#     cap was bounded by WORK rather than by rounds, 8.86 s after, and 0.17 s
+#     once the per-parent-directory memo landed. The budget is deliberately far
+#     under the timeout and far over the measured cost, so this fails on a
+#     return of the per-candidate forks, not on a slow machine.
+__lat_body=$(awk 'BEGIN{printf "cd /tmp\n"; for(i=0;i<900;i++) printf "> quoted line %d\n", i}')
+__lat_json=$(jq -nc --arg cmd "gh pr comment 1 --body \"$__lat_body\"" --arg cwd "$MAIN" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__lat_t0=$(date +%s)
+printf '%s' "$__lat_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__lat_t1=$(date +%s)
+__lat_secs=$((__lat_t1 - __lat_t0))
+if [ "$__lat_secs" -le 4 ]; then
+  pass=$((pass + 1))
+  printf 'ok   latency: 900 write candidates in %ss (budget 4s, timeout 10s)\n' "$__lat_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: 900 write candidates took %ss, budget 4s\n' "$__lat_secs"
+fi
+
+CASE_FLOOR=83
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'not ok case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
