@@ -21,3 +21,41 @@ export declare function extractDefinitionShapes(
 export declare function extractDefinitionRequired(
   schemaJson: string
 ): Record<string, string[]>;
+export declare function buildFixture(
+  schemaJson: string,
+  resourceType: string,
+  generatedAt: string
+): {
+  resourceType: string;
+  generatedAt: string;
+  properties: string[];
+  readOnlyProperties: string[];
+  createOnlyProperties: string[];
+  primaryIdentifier: string[];
+} & Record<string, unknown>;
+export declare function serializeFixture(fixture: Record<string, unknown>): string;
+export declare function fixtureDiffersIgnoringDate(
+  candidate: Record<string, unknown>,
+  committedText: string | undefined
+): boolean;
+export declare function zipEntryName(type: string): string;
+export declare function readSchemaBundle(zipBuffer: Buffer): Map<string, string>;
+export declare function refreshFixturesFromEntries(args: {
+  entries: ReadonlyMap<string, string>;
+  types: readonly string[];
+  fixturesDir: string;
+  generatedAt: string;
+  writeFixture: (path: string, text: string) => void;
+  readFixture: (path: string) => string | undefined;
+}): {
+  drifted: string[];
+  unchanged: string[];
+  missing: string[];
+  failed: Array<{ type: string; error: string }>;
+};
+export declare function downloadSchemaBundle(
+  url: string,
+  fetchImpl?: (url: string, init?: unknown) => Promise<unknown>
+): Promise<Buffer>;
+export declare const MAX_DOWNLOAD_BYTES: number;
+export declare const MAX_UNCOMPRESSED_BYTES: number;

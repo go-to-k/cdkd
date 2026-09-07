@@ -1223,6 +1223,8 @@ The `property-coverage` test will fail until the new type's schema fixture exist
 node scripts/refresh-cfn-schemas.mjs --only-missing
 ```
 
+That path uses `cloudformation:DescribeType` and needs AWS credentials. `vp run gen:cfn-schemas-from-zip` reads AWS's public schema bundle instead and needs none, but captures every registered type rather than only the missing one — it is what the daily refresh workflow runs (issue [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
+
 Then classify every unaccounted property into `handledProperties` (if wired) or `unhandledByDesign` (if intentionally skipped, with a one-line rationale). See [`handledProperties` against the CFn schema](provider-rules.md#handledproperties-against-the-cfn-schema) for the full workflow.
 
 ### Step 6: Create Tests

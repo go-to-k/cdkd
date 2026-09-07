@@ -3,7 +3,12 @@ import { CloudControlProvider } from './cloud-control-provider.js';
 import { CustomResourceProvider } from './providers/custom-resource-provider.js';
 import { getLogger } from '../utils/logger.js';
 import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
-import { findActionableSilentDrops, findSilentDropProperties } from './property-coverage.js';
+import {
+  findActionableSilentDrops,
+  findSilentDropProperties,
+  findUnrecognizedProperties,
+  unsupportedPropertyIssueUrl,
+} from './property-coverage.js';
 import {
   buildMutuallyExclusiveMessage,
   findMutuallyExclusiveViolations,
@@ -107,7 +112,9 @@ export interface AutoRouteHit {
  *   bare schedule name as physicalId, and the state properties carry
  *   GroupName, so the SDK provider addresses existing records correctly.
  */
-const STICKY_CC_MIGRATION_EXEMPT: ReadonlySet<string> = new Set(['AWS::Scheduler::Schedule']);
+export const STICKY_CC_MIGRATION_EXEMPT: ReadonlySet<string> = new Set([
+  'AWS::Scheduler::Schedule',
+]);
 
 export class ProviderRegistry {
   private logger = getLogger().child('ProviderRegistry');
@@ -554,7 +561,6 @@ export class ProviderRegistry {
   ): void {
     for (const { logicalId, resourceType, properties, provisionedBy } of resources) {
       const drops = findSilentDropProperties(resourceType, properties);
-      if (drops.length === 0) continue;
 
       const overridden: string[] = [];
       const autoRouted: string[] = [];
@@ -604,7 +610,100 @@ export class ProviderRegistry {
             `override to route this resource via Cloud Control API instead.`
         );
       }
+
+      this.reportUnrecognizedProperties(logicalId, resourceType, properties, {
+        provisionedBy,
+        autoRouted: autoRouted.length > 0,
+      });
     }
+  }
+
+  /**
+   * Warn about top-level template properties this type's committed CFn schema
+   * snapshot does not know about, on resources that resolve to the SDK route
+   * (issue [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
+   *
+   * The gap this closes: {@link getProviderFor} decides SDK-vs-Cloud-Control
+   * from `property-coverage.generated.ts`, built offline from the schema
+   * fixtures, and there is no runtime `DescribeType` on that path. So a
+   * property AWS publishes AFTER the fixture snapshot produces no
+   * `silentDrop` entry, does not auto-route to Cloud Control, and is dropped
+   * with the deploy reporting success — the issue
+   * [#614](https://github.com/go-to-k/cdkd/issues/614) failure class reached
+   * through the one input the #614 machinery cannot observe. The scheduled
+   * fixture-refresh job is the FIX (the property enters the fixture and the
+   * existing auto-route handles it); this warn is what protects a user
+   * deploying BETWEEN refresh cycles.
+   *
+   * Fires only on the SDK route, which is where the drop actually happens.
+   * The two Cloud-Control routes both forward the full property map verbatim,
+   * so the property does reach AWS there and a warn would be false:
+   * - `provisionedBy: 'cc-api'` from existing state (sticky rule 2 of
+   *   {@link getProviderFor}), minus the `STICKY_CC_MIGRATION_EXEMPT` types
+   *   that deliberately re-route back to their SDK provider;
+   * - an actionable silent drop auto-routing this deploy (`autoRouted`).
+   *
+   * The route test MIRRORS `getProviderFor` rather than re-deriving it — the
+   * two answering differently is the only way this warn can be wrong about a
+   * resource, and it is not decidable from the message.
+   *
+   * **Known divergence, in the SAFE direction.** This runs on the template's
+   * RAW properties (`deploy-engine.ts` calls `validateResourceProperties`
+   * pre-flight) while `getProviderFor` runs on RESOLVED ones. So a silent-drop
+   * key present only behind an `Fn::If` that resolves to `AWS::NoValue` makes
+   * `autoRouted` true here and suppresses the warn, while the real route ends
+   * up on the SDK provider and does drop the unrecognized property. The result
+   * is a MISSING warn, never a false one — which is the right direction for an
+   * advisory line, and why this is documented rather than fixed by resolving
+   * twice. `getProviderFor` remains the authority on routing; nothing here
+   * changes a routing decision.
+   *
+   * Suppressed per `<Type>:<Prop>` by `--allow-unsupported-properties`, whose
+   * meaning ("accept the silent drop, stay on the SDK path") is exactly this
+   * case; deliberately no new flag. Warn rather than error because the drop
+   * may be intended, and deliberately NOT an auto-route: flipping to
+   * Cloud Control on an UNRECOGNIZED property would let a typo trigger the
+   * currently one-way `cc-api` state flip (issue
+   * [#2719](https://github.com/go-to-k/cdkd/issues/2719)), and CC would reject
+   * the unknown key anyway.
+   */
+  private reportUnrecognizedProperties(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown> | undefined,
+    route: { provisionedBy?: 'sdk' | 'cc-api' | undefined; autoRouted: boolean }
+  ): void {
+    const stickyCc =
+      route.provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType);
+    if (stickyCc || route.autoRouted) return;
+
+    const unrecognized = findUnrecognizedProperties(resourceType, properties).filter(
+      (property) => !this.allowedUnsupportedProperties.has(`${resourceType}:${property}`)
+    );
+    if (unrecognized.length === 0) return;
+
+    const propList = unrecognized.join(', ');
+    const overrideHint = unrecognized.map((p) => `${resourceType}:${p}`).join(',');
+    const one = unrecognized.length === 1;
+    // Every reading is NAMED with its own remedy, because the code cannot tell
+    // them apart and a line that names only some of them misdirects the reader
+    // into the wrong fix. The read-only arm is not hypothetical: the coverage
+    // generator excludes `readOnlyProperties` from `silentDrop`, so a template
+    // that sets an ATTRIBUTE (`AWS::IAM::Role.Arn`) lands in this bucket, and
+    // telling that user "AWS published it after our snapshot — report it"
+    // would be plainly false.
+    this.logger.warn(
+      `${logicalId} (${resourceType}): ${propList} ${one ? 'is' : 'are'} not in cdkd's CFn ` +
+        `schema snapshot for this type, so ${one ? 'it' : 'they'} will NOT reach AWS — ` +
+        `the deploy will still report success. Anything of these shapes looks the same ` +
+        `here: a misspelled name (fix the spelling); a read-only attribute, which is not ` +
+        `settable on any engine (remove it); or a property AWS published after cdkd's ` +
+        `snapshot, which cdkd should be routing via Cloud Control — please report that one: ` +
+        `${unsupportedPropertyIssueUrl(resourceType, unrecognized[0]!)}` +
+        `${one ? '' : ` (link is for ${unrecognized[0]!})`}. ` +
+        `If the drop is intended — an addPropertyOverride escape hatch — silence this via ` +
+        `--allow-unsupported-properties ${overrideHint}.`
+    );
   }
 
   /**

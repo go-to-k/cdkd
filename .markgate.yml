@@ -257,6 +257,14 @@ gates:
       - ".claude/hooks/**"
       - ".github/workflows/ci.yml"
       - ".github/workflows/pr-inherit-issue-labels.yml"
+      # cfn-schema-refresh-workflow.test.ts reads this workflow as TEXT and
+      # pins its load-bearing properties (the branch prefix shared by the
+      # open-PR guard and the branch construction, the `chore(` commit prefix
+      # that keeps the bot off the release PR, the SHA pins, the absence of any
+      # AWS credential step). Listed for the same reason as the two workflows
+      # above: a checker INPUT outside this scope is a marker that reads fresh
+      # while the thing it certifies has changed (issue #2718).
+      - ".github/workflows/cfn-schema-refresh.yml"
       # release-please-v0.test.ts reads all three: the config's
       # bump-minor-pre-major, the manifest's 0.x version, and the release
       # workflow's publish-job guard (the two layers that keep an accidental
