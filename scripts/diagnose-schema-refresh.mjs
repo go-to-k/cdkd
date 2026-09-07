@@ -1447,20 +1447,43 @@ function main() {
   // through to the permissive arms and rendered the clean verdict. A guard
   // covering fewer spellings than its subject accepts is the shape this whole
   // file kept producing.
+  /** @type {string[]} */
   const unknown = [];
+  /** @type {string[]} */
+  const repeated = [];
+  const seen = new Set();
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (KNOWN_FLAGS.some((flag) => a.startsWith(`${flag}=`))) continue;
-    if (KNOWN_FLAGS.includes(a)) {
-      // Its value is consumed only if it could BE one. A dash-leading token is
-      // not a value here — that is the same rule `rawArg` applies — so
-      // consuming it blindly would let `--failed-checks --skipped-log <path>`
-      // swallow the second flag and report the PATH as the unknown argument.
-      const next = args[i + 1];
-      if (next !== undefined && !next.startsWith('-')) i += 1;
+    // One classification per token, so the glued and space spellings take the
+    // SAME path — an earlier revision `continue`d on the glued form before the
+    // repeat check and `--nested-key-rc=0 --nested-key-rc=3` still rendered
+    // clean.
+    const flag = KNOWN_FLAGS.find((f) => a === f || a.startsWith(`${f}=`));
+    if (flag === undefined) {
+      unknown.push(a);
       continue;
     }
-    unknown.push(a);
+    // A REPEAT is not a valid invocation: `rawArg` takes the FIRST match, so
+    // the later value is silently discarded — which rendered the clean verdict
+    // over an rc=3 checker, the last argv shape that still reached a confident
+    // answer.
+    if (seen.has(flag)) repeated.push(flag);
+    seen.add(flag);
+    if (a === flag) {
+      // Its value is consumed only if it could BE one. A dash-leading token is
+      // not a value here — the same rule `rawArg` applies — so consuming it
+      // blindly would let `--failed-checks --skipped-log <path>` swallow the
+      // second flag and report the PATH as the unknown argument.
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith('-')) i += 1;
+    }
+  }
+  if (repeated.length > 0) {
+    throw new Error(
+      `flag(s) given more than once: ${[...new Set(repeated)].join(', ')} — only the first ` +
+        'would have been read. Refusing to report from an invocation this script did not ' +
+        'understand.'
+    );
   }
   if (unknown.length > 0) {
     throw new Error(

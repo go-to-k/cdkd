@@ -24,7 +24,7 @@
  * makes.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -1577,11 +1577,24 @@ describe('the script end to end', () => {
     // readers and 0 — "the checker succeeded" — for the status one. Only the
     // workflow's space form held it shut, and the fence for that accepted
     // `--skipped-log=...` as well.
-    const glued = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+    // All THREE readers, each through its own flag — the title said "every
+    // reader" while only `readArgValue` was exercised, so a per-reader
+    // regression would have passed.
+    const list = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
       '--failed-checks=property-coverage',
     ]);
-    expect(glued).toContain('property-coverage');
-    expect(glued).not.toContain('Nothing in this refresh needs a decision');
+    expect(list).toContain('property-coverage');
+    expect(list).not.toContain('Nothing in this refresh needs a decision');
+
+    // `readNumArg`: a non-zero status with nothing parsed is a failure.
+    const status = run('', undefined, ['--nested-key-rc=2']);
+    expect(status).toContain('could not read');
+
+    // `readArg`: a path that does not exist is refused, not read as empty.
+    const path = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--skipped-log=/no/such/path.log',
+    ]);
+    expect(path).toContain('which does not exist');
   }, 60_000);
 
   it('refuses a SINGLE-dash token where a value was expected', () => {
@@ -1674,6 +1687,22 @@ describe('the script end to end', () => {
       '/dev/null',
     ]);
     expect(md).not.toContain('unrecognized flag');
+  }, 60_000);
+
+  it('refuses a flag given more than once, in every spelling', () => {
+    // `rawArg` takes the FIRST match, so the later value is silently discarded
+    // — `--nested-key-rc 0 --nested-key-rc 3` rendered the clean verdict over
+    // an rc=3 checker. It was the last argv shape that still reached a
+    // confident answer.
+    for (const argv of [
+      ['--nested-key-rc', '0', '--nested-key-rc', '3'],
+      ['--nested-key-rc=0', '--nested-key-rc=3'],
+      ['--nested-key-rc', '0', '--nested-key-rc=3'],
+    ]) {
+      const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, argv);
+      expect(md, `accepted ${argv.join(' ')}`).toContain('given more than once');
+      expect(md).not.toContain('Nothing in this refresh needs a decision');
+    }
   }, 60_000);
 
   it('renders a case-divergence without asking npm anything', () => {
@@ -1979,4 +2008,28 @@ describe('the script\u2019s own synopsis', () => {
     }
   });
 
+});
+
+describe('the sibling type declarations', () => {
+  it('type-checks on their own', () => {
+    // Nothing in CI type-checks `scripts/**`: `tsconfig.json` includes only
+    // `src/**` + `types/**`, and `tsconfig.test.json` takes `scripts/**\/*.ts`,
+    // not `.d.mts`. A duplicated `KNOWN_FLAGS` declaration therefore sat in
+    // this file until review found it by running tsc by hand — and
+    // `skipLibCheck` hides exactly that class.
+    const out = spawnSync(
+      'npx',
+      [
+        'tsc',
+        '--ignoreConfig',
+        '--noEmit',
+        '--skipLibCheck',
+        'false',
+        join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'),
+      ],
+      { encoding: 'utf8' }
+    );
+    expect(`${out.stdout}${out.stderr}`.trim(), 'the declarations do not type-check').toBe('');
+    expect(out.status).toBe(0);
+  }, 120_000);
 });
