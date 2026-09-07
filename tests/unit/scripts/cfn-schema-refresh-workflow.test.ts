@@ -170,12 +170,85 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(publish).toContain('--body-file /tmp/pr-body.md');
     });
 
-    it('folds new writable properties into the backfill umbrella without failing the job', () => {
+    it('REGENERATES the umbrella checklist from the coverage map', () => {
+      // Appending cannot express a type that was ticked off and later regained
+      // a property: the `[x]` row stays checked and a second row appears for
+      // the same type. Dedup does not fix that — the append model is wrong. The
+      // map is the campaign's stated completion criterion, so the block is
+      // rendered from it and a type reappears or disappears on its own.
       const publish = shellOf('Publish the refresh');
-      expect(publish).toContain('gh issue comment');
-      // The PR is the load-bearing output; losing it because an issue comment
+      // Rendered in the TOKENLESS step — the script spawns `npm`, and a spawn
+      // in the token-holding step inherits its environment. Publish only reads
+      // the file. This is the property an earlier round established and this
+      // redesign briefly broke.
+      expect(shellOf('Diagnose what needs a decision')).toContain('--umbrella-checklist');
+      expect(publish, 'a script spawn is back in the token-holding step').not.toContain(
+        'diagnose-schema-refresh.mjs'
+      );
+      expect(publish).toContain('/tmp/checklist.md');
+      expect(publish).toContain('gh issue edit');
+      expect(publish, 'the split-destination comment is back').not.toContain('gh issue comment');
+      // The PR is the load-bearing output; losing it because an issue write
       // failed would be the wrong trade, and the list is in the PR body too.
-      expect(publish).toMatch(/gh issue comment[\s\S]*?\|\|/);
+      expect(publish).toMatch(/gh issue edit[\s\S]*?\|\|/);
+    });
+
+    it('writes only BETWEEN the markers, never the whole body', () => {
+      // Everything outside them is human-written provenance — which PR closed
+      // which slice — that cannot be recomputed. Rewriting the body wholesale
+      // would destroy exactly what the consolidation preserved.
+      const publish = shellOf('Publish the refresh');
+      const step = steps.find((st) => st.name === 'Publish the refresh')!;
+      expect(step.env?.['MARKER_BEGIN']).toMatch(/^<!-- BEGIN generated/);
+      expect(step.env?.['MARKER_END']).toBe('<!-- END generated -->');
+      // The two halves of the splice: everything up to BEGIN, and everything
+      // from END onward. Asserted as the sed ranges themselves rather than by
+      // exact escaping, which differs between the YAML and the shell.
+      expect(publish).toContain('${MARKER_BEGIN}');
+      expect(publish).toContain('${MARKER_END}');
+      expect(publish, 'the head half of the splice is gone').toMatch(/sed -n "1,/);
+      expect(publish, 'the tail half of the splice is gone').toMatch(
+        /"\$\{U\}" >> "\$\{N\}"/
+      );
+      // And the generated rows land BETWEEN the two halves, not appended after.
+      const headAt = publish.indexOf('> "${N}"');
+      const rowsAt = publish.indexOf('cat /tmp/checklist.md >> "${N}"');
+      const tailAt = publish.indexOf('"${U}" >> "${N}"');
+      expect(headAt).toBeGreaterThan(-1);
+      expect(rowsAt, 'the rows are not spliced between the halves').toBeGreaterThan(headAt);
+      expect(tailAt).toBeGreaterThan(rowsAt);
+    });
+
+    it('refuses when the umbrella carries no marker pair', () => {
+      // Without them there is nowhere to write without guessing which part of
+      // the body is generated, and guessing means overwriting a human's notes.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toMatch(
+        /if grep -Fq "\$\{MARKER_BEGIN\}" "\$\{U\}" && grep -Fq "\$\{MARKER_END\}" "\$\{U\}"; then/
+      );
+      const elseAt = publish.indexOf('carries no ${MARKER_BEGIN}');
+      expect(elseAt, 'the missing-marker case does not announce itself').toBeGreaterThan(-1);
+      expect(publish.slice(elseAt)).not.toMatch(/gh issue edit/);
+    });
+
+    it('never writes a body it could not first read', () => {
+      // The redirect truncates the file BEFORE gh runs, so an unchained recipe
+      // whose `view` fails replaces the umbrella's WHOLE body. Same shape and
+      // reasoning as .claude/hooks/issue-dup-check-gate.sh's recipe.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toMatch(
+        /if gh issue view "\$\{umbrella\}" --json body -q \.body > "\$\{U\}" && \[ -s "\$\{U\}" \]; then/
+      );
+      const elseAt = publish.indexOf('Could not read backfill umbrella');
+      expect(elseAt).toBeGreaterThan(-1);
+      expect(publish.slice(elseAt)).not.toMatch(/gh issue edit/);
+    });
+
+    it('does not rewrite an unchanged body', () => {
+      // Regeneration is idempotent, so a cycle whose checklist is already
+      // current must not touch the issue at all.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toMatch(/if cmp -s "\$\{U\}" "\$\{N\}"; then/);
     });
 
     it('keeps the drift probe between the refresh and the regeneration', () => {
@@ -348,20 +421,6 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(publish, 'the baseline is still read off the remote').not.toMatch(
         /base_sha=\$\(git ls-remote/
       );
-    });
-
-    it('guards the umbrella comment\u2019s PR link on the number having resolved', () => {
-      // The comment itself is deliberately unguarded — the list is worth posting
-      // even when the number lookup failed. What must be guarded is the LINK,
-      // which would otherwise read `pull/` and point at the repo's PR index.
-      const publish = shellOf('Publish the refresh');
-      const guardAt = publish.search(/if \[ -n "\$\{pr_number:?-?\}" \]/);
-      const linkAt = publish.indexOf('/pull/${pr_number}');
-      expect(guardAt, 'the PR link is emitted with no PR-number guard').toBeGreaterThan(-1);
-      expect(linkAt).toBeGreaterThan(-1);
-      expect(guardAt).toBeLessThan(linkAt);
-      // And the comment still fires outside that guard.
-      expect(publish.indexOf('${BACKFILL_UMBRELLA_LABEL}')).toBeGreaterThan(linkAt);
     });
 
     it('passes the checker’s EXIT CODE, not only its output', () => {
@@ -571,11 +630,14 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         'No entry in the public bundle'
       );
       expect(diagnose).toContain('No entry in the public bundle');
-      const heading = '### Writable properties AWS added';
+      // The umbrella list is no longer extracted from the diagnosis text by
+      // `sed`, so that heading is not a cross-file contract any more — the
+      // checklist is rendered from the coverage module by the script itself.
+      // What IS shared is the flag name.
       expect(
         readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8')
-      ).toContain(heading);
-      expect(shellOf('Publish the refresh')).toContain(heading);
+      ).toContain('--umbrella-checklist');
+      expect(diagnose).toContain('--umbrella-checklist');
     });
 
     it('resolves the backfill umbrella by LABEL, never by a hardcoded number', () => {
@@ -602,7 +664,10 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // silent-wrong-destination failure this whole job exists to avoid.
       const shell = shellOf('Publish the refresh');
       expect(shell).toMatch(/--label "\$\{BACKFILL_UMBRELLA_LABEL\}"/);
-      expect(shell).toMatch(/if \[ "\$\{umbrella_count\}" = "1" \]; then/);
+      // The count gate, whatever else is ANDed onto it (the rows file must
+      // also be non-empty). Pinning the `; then` suffix broke the moment that
+      // arm was added — a spelling pin, not the invariant.
+      expect(shell).toMatch(/if \[ "\$\{umbrella_count\}" = "1" \]/);
       // And the non-1 branch warns rather than picking one.
       // The lookup must not abort the step: it runs under `set -euo pipefail`
       // AFTER the PR exists, and this step's contract is that the umbrella fold
@@ -613,7 +678,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       );
       const elseAt = shell.indexOf('Expected exactly one OPEN issue');
       expect(elseAt, 'the ambiguous case does not announce itself').toBeGreaterThan(-1);
-      expect(shell.slice(elseAt)).not.toMatch(/gh issue comment/);
+      expect(shell.slice(elseAt)).not.toMatch(/gh issue (edit|comment)/);
     });
 
     it('re-checks the PR is still OPEN before pushing onto its branch', () => {
