@@ -602,6 +602,60 @@ function destroyIncludeScope(): string[] {
   return out;
 }
 
+/**
+ * A FOURTH copy of one half of that gate: the BASENAMES the hook's own header
+ * comment lists under `"strict-delete" files (...)`.
+ *
+ * It is not a copy of the whole scope -- the header splits the gate into three
+ * buckets and this enumerates only the STRICT one -- so it is compared against
+ * `strict_delete` alone rather than against the merged activation set. That is
+ * the point: WHICH BUCKET a file sits in is a decision with a measured
+ * consequence (a hunk-filtered `provider-registry.ts` is a fail-open for the
+ * routing edits it was added for, go-to-k/cdkd#2720), and a header that names
+ * the wrong bucket teaches the next reader the wrong one.
+ *
+ * Why it needs a fence at all, when four other copies of this gate's scope
+ * already have one: none of the extractors above reads a hook HEADER, so this
+ * enumeration went stale in exactly the shape the docblock at the top of this
+ * file admits ("a sixth copy added without being wired in here is likewise
+ * invisible"). Measured on go-to-k/cdkd#2720: `provider-registry.ts` was added
+ * to `strict_delete`, every assertion in this file passed, and the header three
+ * dozen lines above still listed six files. It was caught by a human reading
+ * the diff -- which is the thing this file exists to stop relying on.
+ *
+ * BASENAMES, not paths, because that is what the header writes. Comparing on
+ * basenames is safe here only because `strict_delete` names no two files
+ * sharing one, which is ASSERTED below rather than assumed.
+ */
+function destroyStrictBasenamesFromHookHeader(): string[] {
+  const m = /^# - "strict-delete" files \(((?:[a-z0-9-]+\.ts(?:,\s*(?:\n#\s+)?)?)+)\):/m.exec(
+    read(DESTROY_HOOK),
+  );
+  expect(
+    m,
+    'integ-destroy-gate.sh: could not find the header\'s `# - "strict-delete" files (a.ts, ' +
+      'b.ts, ...):` enumeration. The anchor was reworded, or an entry is no longer a bare ' +
+      '`<name>.ts`. This REFUSES rather than returning [], which would compare equal to an ' +
+      'empty expectation and pass having compared nothing.',
+  ).not.toBeNull();
+  const out = m![1]
+    .replace(/\n#\s+/g, ' ')
+    .split(/,\s+/)
+    .map((e) => e.trim())
+    .filter((e) => e !== '');
+  assertFloor(out, 'integ-destroy-gate.sh header strict-delete enumeration', 5);
+  return out;
+}
+
+/** The basenames `strict_delete` itself matches -- the executable side. */
+function destroyStrictBasenamesFromPattern(): string[] {
+  const m = /^\s*strict_delete='([^']+)'$/m.exec(read(DESTROY_HOOK));
+  expect(m, "integ-destroy-gate.sh: no strict_delete='...' assignment found").not.toBeNull();
+  const paths = expandFiniteEre(m![1], 'integ-destroy-gate.sh strict_delete');
+  assertFloor(paths, 'integ-destroy-gate.sh strict_delete', 5);
+  return paths.map((p) => p.slice(p.lastIndexOf('/') + 1));
+}
+
 // ---------------------------------------------------------------------------
 // Broad-SET test-name list
 // ---------------------------------------------------------------------------
@@ -826,6 +880,28 @@ describe('integ-destroy hook activation and marker scope name the same files', (
     expect(missing, 'these integ-destroy scope entries name paths that no longer exist').toEqual(
       [],
     );
+  });
+
+  it("the hook's own header enumerates exactly the files strict_delete matches", () => {
+    const fromPattern = destroyStrictBasenamesFromPattern();
+    // The basename comparison is only sound while no two strict paths share
+    // one. Asserted, not assumed: a future `src/a/x.ts` + `src/b/x.ts` pair
+    // would make a missing header entry invisible.
+    expect(
+      new Set(fromPattern).size,
+      'two strict_delete paths now share a basename, so comparing the header on basenames ' +
+        'can no longer see a dropped entry -- compare on full paths instead',
+    ).toBe(fromPattern.length);
+
+    const fromHeader = destroyStrictBasenamesFromHookHeader();
+    expect(
+      canonical(fromHeader),
+      "integ-destroy-gate.sh's header comment disagrees with its own `strict_delete` pattern " +
+        'about which files are STRICT. The pattern is what runs; the header is what the next ' +
+        'reader believes. Which BUCKET a file sits in is a load-bearing decision -- a file ' +
+        'documented as strict but actually hunk-filtered is a fail-open for every change whose ' +
+        'diff text carries none of the delete vocabulary -- so the two must agree.',
+    ).toEqual(canonical(fromPattern));
   });
 });
 
