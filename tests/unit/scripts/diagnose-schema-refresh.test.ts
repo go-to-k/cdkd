@@ -1595,6 +1595,33 @@ describe('the script end to end', () => {
     expect(md).not.toContain('-property-coverage');
   }, 60_000);
 
+  it('refuses a dash-leading value in the GLUED spelling too', () => {
+    // The glued branch returned before the dash test, so
+    // `--failed-checks=-property-coverage` fabricated exactly the check the
+    // space-form guard was written to kill. Both spellings were added to the
+    // same function in the same round and never crossed; the case that came
+    // with them covered glued-clean and space-dash, never glued-dash.
+    for (const spelling of ['--failed-checks=-property-coverage', '--failed-checks=--skipped-log']) {
+      const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [spelling]);
+      expect(md, `accepted ${spelling}`).toContain('was given with no value');
+      expect(md).not.toContain('no guidance');
+    }
+  }, 60_000);
+
+  it('does not answer a check name inherited from Object.prototype', () => {
+    // A plain object literal answers for `constructor` / `toString` /
+    // `valueOf` with a FUNCTION, which the spread cannot iterate — collapsing
+    // the whole diagnosis to the generic failure line instead of rendering an
+    // unknown check.
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--failed-checks',
+      'constructor',
+    ]);
+    expect(md).toContain('constructor');
+    expect(md).toContain('no guidance');
+    expect(md).not.toContain('failed to run');
+  }, 60_000);
+
   it('refuses a log path that is a DIRECTORY, naming the cause', () => {
     // It passes `existsSync` and throws `EISDIR` inside `readFileSync`, which
     // collapsed the whole report to the generic one-line failure. Every other

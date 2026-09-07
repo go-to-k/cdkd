@@ -487,7 +487,20 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       const close = guidance.indexOf('```', open + 1);
       expect(open, 'the guidance no longer carries a command block').toBeGreaterThan(-1);
       expect(close, 'the command block is unterminated').toBeGreaterThan(open);
-      const command = guidance.slice(open + 1, close).map((l) => l.trim());
+      // Exactly one: the fence reads the FIRST block, and a second one renders
+      // into the PR body just as visibly while being fenced by nothing.
+      expect(
+        guidance.filter((l) => l.trim().startsWith('```')).length,
+        'more than one command block — only the first is fenced'
+      ).toBe(2);
+      // LEADING whitespace only. Trimming both ends stripped a trailing space
+      // AFTER the backslash before testing it — and `\ ` + newline is not a
+      // continuation in bash, so the pasted command stops there. Measured: one
+      // trailing space dropped five of the seven filters while the fence stayed
+      // green, which is the failure this fence exists for. A trailing space in
+      // a JS string literal is invisible in review and `vp fmt` does not see
+      // inside one.
+      const command = guidance.slice(open + 1, close).map((l) => l.replace(/^\s+/, ''));
       expect(command[0], 'the block does not start with the invocation').toBe('vp test run \\');
 
       // Every line but the last continues, or the shell ends the command there.
@@ -524,7 +537,11 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // when the PR arrives. The table is prose; nothing else reads it.
       const runbook = readFileSync(join(REPO_ROOT, 'docs/schema-refresh-runbook.md'), 'utf8');
       for (const check of Object.keys(CHECK_GUIDANCE)) {
-        expect(runbook, `the runbook does not name ${check}`).toContain(check);
+        // The TABLE ROW, not the file. `property-coverage` also appears in two
+        // `vp test run` code blocks, so a whole-file `toContain` stayed green
+        // with its row deleted — and its row is the one most likely to be
+        // edited. The other three were bound only by coincidence.
+        expect(runbook, `the runbook table does not name ${check}`).toContain(`| \`${check}\` |`);
       }
     });
 

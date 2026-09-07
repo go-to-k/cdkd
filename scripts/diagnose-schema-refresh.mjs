@@ -844,7 +844,11 @@ export function renderDiagnosis(input) {
     // one is a row in `CHECK_GUIDANCE` and a line in the workflow.
     lines.push('### CI checks that FAILED — a decision is needed', '');
     for (const check of failedChecks) {
-      const guidance = CHECK_GUIDANCE[check];
+      // `Object.hasOwn`, not a bare lookup: a plain object literal answers for
+      // `constructor` / `toString` / `valueOf` with a FUNCTION, which the
+      // spread below cannot iterate — collapsing the whole diagnosis to the
+      // generic failure line rather than rendering an unknown check.
+      const guidance = Object.hasOwn(CHECK_GUIDANCE, check) ? CHECK_GUIDANCE[check] : undefined;
       // `renderKey`, not `renderName`: a task name carries hyphens and
       // `renderName`'s class excludes them, so every heading rendered as the
       // rejection placeholder — the section that exists to say WHICH check
@@ -1379,7 +1383,7 @@ export function collectFixtureDeltas({
     if (delta.writableAdded.length > 0) {
       writableAdded.push({ resourceType, properties: delta.writableAdded });
     }
-    }
+  }
 
   return { removed, writableAdded, readOnlyAddedCount, unreadable };
 }
@@ -1431,8 +1435,15 @@ function main() {
    * fabricated a failed check named `-property-coverage`.
    */
   const rawArg = (/** @type {string} */ flag) => {
+    // BOTH spellings take the dash test. The glued branch returned early and
+    // skipped it, so `--failed-checks=-property-coverage` fabricated exactly
+    // the check the space-form guard was written to kill — the two halves were
+    // added to this function in the same round and never crossed.
     const glued = args.find((a) => a.startsWith(`${flag}=`));
-    if (glued !== undefined) return glued.slice(flag.length + 1);
+    if (glued !== undefined) {
+      const value = glued.slice(flag.length + 1);
+      return /^-/.test(value) ? null : value;
+    }
     const i = args.indexOf(flag);
     if (i === -1) return undefined;
     const value = args[i + 1];
