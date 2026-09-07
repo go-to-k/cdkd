@@ -1,9 +1,11 @@
+import { marked } from 'marked';
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  fencedQuote,
   MAX_REPORT,
   NON_ENGLISH_RE,
   containsNonEnglish,
@@ -367,5 +369,106 @@ describe('the CLI, as the workflow invokes it', () => {
     // is the failure mode a CI port is most likely to reintroduce.
     expect(runCli('{ not json').status).toBe(2);
     expect(runCli({ kind: 'nonsense', number: 1, body: '' }).status).toBe(2);
+  });
+});
+
+describe('attacker text cannot become Markdown in the comment the bot posts', () => {
+  // The report is posted as a comment BY THE REPOSITORY'S BOT, and any GitHub
+  // account can open the issue that triggers it. The offending line used to be
+  // embedded in an inline code span, which one backtick closes -- so a body
+  // line could publish live links, real @mentions and `owner/repo#N` backlinks
+  // under the repo's own identity. Found (with a working PoC) by the security
+  // review of go-to-k/cdkd#2717, after the SAME finding was filed a round
+  // earlier as a minor and deferred.
+  //
+  // The fence must be LONGER than the longest backtick run in the text --
+  // a fixed ``` fence is escapable by a payload containing ```.
+  const escapes = (quoted: string): boolean => {
+    const ls = quoted.split('\n');
+    if (ls.length !== 3) return true; // forged extra rows
+    const fence = ls[0];
+    return [...ls[1].matchAll(/`+/g)].some((m) => m[0].length >= fence.length);
+  };
+
+  it.each([
+    ['a single backtick closing the span', 'harmless \u65E5 ` **X** [c](https://e.example) @o `'],
+    ['a triple fence', '\u65E5 ``` **X** [c](https://e.example)'],
+    ['a quadruple fence', '\u65E5 ```` **X** @o'],
+    ['a newline forging a second report row', '\u65E5 X\nharmless - `body` line 9: **FAKE**'],
+    ['a bare carriage return', '\u65E5 A\rB'],
+  ])('contains %s', (_name, payload) => {
+    expect(escapes(fencedQuote(payload))).toBe(false);
+  });
+
+  it('keeps the offending text readable rather than deleting it', () => {
+    // Containment must not become redaction -- the maintainer has to SEE what
+    // tripped the check in order to fix it.
+    expect(fencedQuote('\u65E5 hello')).toContain('hello');
+  });
+
+  it('folds a multi-line payload to ONE line, so one offence is one row', () => {
+    expect(fencedQuote('a\nb\nc').split('\n')).toHaveLength(3);
+  });
+});
+
+describe('the RENDERED report contains attacker text (marked, not string shapes)', () => {
+  // The source-level cases above assert the fence is well formed. They cannot
+  // see what a Markdown renderer does with it, and that gap was real: indenting
+  // the fence to keep it inside its list item is invisible to a string
+  // assertion, and the go-to-k/cdkd#2717 review found the un-indented version
+  // terminating the list so every offender became its own <ul>.
+  //
+  // `marked` is already a devDependency, used by `rule-file-payload.test.ts`
+  // for the same reason — answer "what does a READER see" by rendering, not by
+  // pattern-matching the source.
+  const render = (text: string): string =>
+    marked.parse(
+      formatReport({ kind: 'issue', number: 1, title: 't', body: 'x', labels: [] }, [
+        { field: 'body', line: 1, characters: ['U+65E5'], text },
+      ]),
+    ) as string;
+
+  // Anything the payload could turn into LIVE markup, looked for OUTSIDE the
+  // code block. Searching the whole document is what made a first probe report
+  // a false leak: `onerror` appears as escaped text inside `<pre><code>`, which
+  // is exactly the containment working.
+  const liveMarkupOutsideCode = (html: string): boolean =>
+    /<a |<img |<script|href=|onerror=/.test(html.replace(/<pre><code>[\s\S]*?<\/code><\/pre>/g, ''));
+
+  it.each([
+    ['a backtick closing the span', 'a backtick + link + mention'],
+    ['a triple fence', 'triple fence + link'],
+    ['a quadruple fence with an img tag', 'quad fence + img onerror'],
+    ['a CommonMark autolink', 'autolink'],
+    ['a tilde fence', 'tilde fence'],
+    ['only backticks', 'all backticks'],
+    ['an HTML breakout attempt', 'code/pre close + script'],
+    ['a forged list item', 'newline + list marker + link'],
+  ])('publishes no live markup for %s', (_name, kind) => {
+    const CJK = String.fromCodePoint(0x65e5);
+    const payloads: Record<string, string> = {
+      'a backtick + link + mention': `x ${CJK} \` **B** [c](https://e.example) @o \``,
+      'triple fence + link': `${CJK} \`\`\` **B** [c](https://e.example)`,
+      'quad fence + img onerror': `${CJK} \`\`\`\` <img src=x onerror=alert(1)>`,
+      autolink: `${CJK} <https://e.example>`,
+      'tilde fence': `${CJK} ~~~ **B**`,
+      'all backticks': '\`\`\`\`\`\`',
+      'code/pre close + script': `${CJK} </code></pre><script>alert(1)</script>`,
+      'newline + list marker + link': `${CJK}\n\n- forged [c](https://e.example)`,
+    };
+    expect(liveMarkupOutsideCode(render(payloads[kind]!))).toBe(false);
+  });
+
+  it('keeps every offender in ONE list', () => {
+    const CJK = String.fromCodePoint(0x65e5);
+    const html = marked.parse(
+      formatReport({ kind: 'issue', number: 1, title: 't', body: 'x', labels: [] }, [
+        { field: 'body', line: 1, characters: ['U+65E5'], text: `${CJK} a` },
+        { field: 'title', line: 1, characters: ['U+65E5'], text: `${CJK} b` },
+      ]),
+    ) as string;
+    const found = html.slice(html.indexOf('Found:'), html.indexOf('(hiragana'));
+    expect((found.match(/<ul>/g) ?? []).length, 'one list, not one per offender').toBe(1);
+    expect((found.match(/<li>/g) ?? []).length).toBe(2);
   });
 });

@@ -558,40 +558,62 @@ describe('--check-settings, the CLI mode the squash-subsumption audit runs', () 
   });
 });
 
-describe('an admin-only setting the token cannot SEE is not a violation', () => {
-  // Measured in CI 2026-09-07: GitHub returns `squash_merge_commit_title` and
-  // `_message` only to a token with admin on the repo, so a workflow's
-  // GITHUB_TOKEN reads null for BOTH however the repo is configured. The first
-  // version treated that as the premise being broken and red the PR -- a check
-  // reporting on an input it cannot see. The merge-method booleans ARE readable
-  // by any token, so those still decide.
+describe('settings the token cannot SEE are reported as unverified, never as a verdict', () => {
+  // MEASURED 2026-09-07, and the first version of this block encoded the
+  // opposite: `gh api repos/aws/aws-cdk` (no admin) returns null for ALL FIVE
+  // fields, not just the two admin-gated title/message ones. The premise these
+  // cases used to assert -- "the merge-method booleans ARE readable by any
+  // token, so those still decide" -- is false, and it made the CI audit
+  // vacuous while printing "merge methods are squash-only": an unearned pass,
+  // worse than the wrong-red it replaced. Readability is all-or-nothing now.
   const CI_TOKEN_VIEW = {
     squash_merge_commit_title: null,
     squash_merge_commit_message: null,
+    allow_merge_commit: null,
+    allow_rebase_merge: null,
+    allow_squash_merge: null,
+  } as unknown as Parameters<typeof checkSquashSubsumption>[0];
+
+  const ADMIN_VIEW = {
+    squash_merge_commit_title: 'PR_TITLE',
+    squash_merge_commit_message: 'BLANK',
     allow_merge_commit: false,
     allow_rebase_merge: false,
     allow_squash_merge: true,
   } as unknown as Parameters<typeof checkSquashSubsumption>[0];
 
-  it('reports unreadable rather than a violation', () => {
+  it("reports unreadable, not a violation, on CI's actual view", () => {
     const r = checkSquashSubsumption(CI_TOKEN_VIEW);
-    expect(r.ok).toBe(true);
     expect(r.unreadable).toBe(true);
+    expect(r.ok).toBe(true);
     expect(r.violations).toEqual([]);
   });
 
-  it('STILL fails on a readable violation while the title settings are invisible', () => {
-    // The half CI can enforce must keep working: re-enabling merge commits is
-    // visible to any token, and it breaks the premise on its own.
-    const r = checkSquashSubsumption({
-      ...CI_TOKEN_VIEW,
-      allow_merge_commit: true,
-    } as unknown as Parameters<typeof checkSquashSubsumption>[0]);
+  it('treats a PARTIALLY readable response as unreadable too', () => {
+    // The dangerous middle: if some fields arrive and others do not, the ones
+    // that arrived must not be used to pronounce on the premise -- a partial
+    // answer is not a smaller answer, it is an unknown one.
+    for (const missing of [
+      'squash_merge_commit_title',
+      'squash_merge_commit_message',
+      'allow_merge_commit',
+      'allow_rebase_merge',
+    ] as const) {
+      const partial = { ...ADMIN_VIEW, [missing]: null } as typeof ADMIN_VIEW;
+      expect(checkSquashSubsumption(partial).unreadable, `${missing} absent`).toBe(true);
+    }
+  });
+
+  it('STILL fails a real violation once the settings ARE readable', () => {
+    // The audit must not become permanently toothless: with an admin token the
+    // full premise is enforced, which is what `/verify-pr` runs.
+    const r = checkSquashSubsumption({ ...ADMIN_VIEW, allow_merge_commit: true });
+    expect(r.unreadable).toBe(false);
     expect(r.ok).toBe(false);
     expect(r.violations.join(' ')).toContain('allow_merge_commit');
   });
 
-  it('does not claim it verified the title settings when it could not see them', () => {
+  it('does not claim it verified anything when it could not see the settings', () => {
     const f = join(mkdtempSync(join(tmpdir(), 'ptps-ci-')), 'repo-settings.json');
     writeFileSync(f, JSON.stringify(CI_TOKEN_VIEW));
     const r = spawnSync(
@@ -604,7 +626,9 @@ describe('an admin-only setting the token cannot SEE is not a violation', () => 
       { encoding: 'utf8', timeout: 30_000 },
     );
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('NOT checked');
-    expect(r.stdout).not.toContain('premise holds (PR_TITLE');
+    expect(r.stdout).toContain('NOT VERIFIED');
+    // The exact wording that used to be printed on this input, and was a lie.
+    expect(r.stdout).not.toContain('merge methods are squash-only');
+    expect(r.stdout).not.toContain('premise holds');
   });
 });

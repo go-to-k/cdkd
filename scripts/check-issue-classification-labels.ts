@@ -109,7 +109,7 @@
  *     label never applied -- so an `edited` event re-applies it. This is why
  *     the workflow does NOT trigger on `unlabeled`: re-adding a label the
  *     moment it is removed would be a fight nobody can win. Stated in
- *     `.claude/rules/layout-scripts.md` rather than left to be discovered.
+ *     `.claude/rules/layout-ci-checks.md` rather than left to be discovered.
  *
  * Run: `node scripts/check-issue-classification-labels.ts <subject.json> [--json|--comment]`
  *

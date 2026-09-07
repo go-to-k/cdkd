@@ -261,8 +261,11 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['layout-provisioning.md', 92],
   ['layout-scrub.md', 1], // literal list: EXACT, see below
   ['layout-scripts.md', 38],
-  // Its globs are the six CI checkers, the shared subject module, the
-  // allow-list, the three workflows and the eight suites -- 18 paths.
+  // Its `paths:` frontmatter lists 16 globs -- the six CI checkers, the shared
+  // subject module, the allow-list, the three workflows and five suites. The
+  // FLOOR is the reach (files matched), which is not the glob count; read it
+  // off this assertion's failure message rather than from this comment, which
+  // an earlier revision already got wrong.
   ['layout-ci-checks.md', 15],
   ['layout-utils.md', 19],
   ['provider-aws-response-reads.md', 65],
@@ -375,7 +378,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // caps pull against each other: go-to-k/cdkd#2719 split `state-schema.md` to
   // get UNDER this one and left 96 B of headroom, which a single index row then
   // consumed. The FLOOR is what still catches a glob narrowing.
-  ['src/state/s3-state-backend.ts', 43_000, 58_000],         // measured  57,019 (55,319 before go-to-k/cdkd#2719's satellite and go-to-k/cdkd#2717's index row)
+  ['src/state/s3-state-backend.ts', 43_000, 58_000],         // measured  57,019 on 2026-09-07 (55,319 before go-to-k/cdkd#2719's satellite and go-to-k/cdkd#2717's index row)
   // The representative path for state-version-purge.md, whose two-file glob
   // (the purge and its replication-gap detector, issue
   // go-to-k/cdkd#2447) matches nothing else. Without this row the satellite
@@ -391,8 +394,8 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // caps pull against each other: go-to-k/cdkd#2719 split `state-schema.md` to
   // get UNDER this one and left 96 B of headroom, which a single index row then
   // consumed. The FLOOR is what still catches a glob narrowing.
-  ['src/types/state.ts', 43_000, 58_000],                    // measured  57,019 (55,319 before go-to-k/cdkd#2719's satellite and go-to-k/cdkd#2717's index row)
-  ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  37,848 (was 34,889 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
+  ['src/types/state.ts', 43_000, 58_000],                    // measured  57,019 on 2026-09-07 (55,319 before go-to-k/cdkd#2719's satellite and go-to-k/cdkd#2717's index row)
+  ['src/synthesis/synthesizer.ts', 30_000, 40_000], // measured 39_197 on 2026-09-07 (803 B under the cap, not the 2,152 an earlier figure implied)
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
   // failed this row for a reason unrelated to itself -- the same argument that
@@ -447,22 +450,24 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // the thing it would have loaded is gone. A floor left high would have
   // demanded prose about deleted files.
   //
-  // Each new floor is ~12% under its re-measurement, this file's convention;
-  // the measurement beside each row is from 2026-09-07 on this branch.
+  // Each new floor sits under its re-measurement with room to spare (16-23% after hooks.md's later
+  // growth -- the widest is the pr-title-check.yml row at 23.2%, not the ~12% an earlier revision of this
+  // comment derived from figures taken before that growth). The number beside
+  // each row is a DATED snapshot; re-derive rather than trust it.
   // ---------------------------------------------------------------------
   // Representative path for the CI-checks satellite. A WORKFLOW path, not a
   // `scripts/` one: `layout-scripts.md`'s glob is `scripts/**`, so every checker
   // under it loads BOTH files and the payload there is the sum -- which measures
   // the split not happening. `.github/workflows/pr-title-check.yml` is matched by
   // the satellite alone, so a glob narrowed there shows up as a DROP here.
-  ['.github/workflows/pr-title-check.yml', 12_000, 20_000], // measured 13,720
-  ['.claude/hooks/issue-deferral-criteria-gate.sh', 59_000, 120_000], // measured 67_767 (was 68_000 before go-to-k/cdkd#2717)
-  ['.claude/hooks/branch-gate.sh', 62_000, 140_000], // measured 70_902 (was 74_000 before go-to-k/cdkd#2717)
+  ['.github/workflows/pr-title-check.yml', 12_000, 20_000], // measured 15_633 on 2026-09-07
+  ['.claude/hooks/issue-deferral-criteria-gate.sh', 59_000, 120_000], // measured 72_384 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
+  ['.claude/hooks/branch-gate.sh', 62_000, 140_000], // measured 75_240 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
   // than the cap being raised -- a cap that moves when it fires is not a cap.
-  ['.claude/hooks/lib/command-match.sh', 64_000, 140_000], // measured 72_908 (was 76_000 before go-to-k/cdkd#2717)
+  ['.claude/hooks/lib/command-match.sh', 64_000, 140_000], // measured 77_246 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
   // The four `integ-*` gates were the heaviest UNBUDGETED paths once
   // `gate-sibling-repos.md` split out of hooks.md: this row is the only one
   // that names them, so without it the satellite sits under no budget at all
@@ -470,14 +475,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // Deliberately NOT added to the command-match row above: that path already
   // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
   // adding a third file would spend down to about 1 KB.
-  ['.claude/hooks/integ-local-gate.sh', 64_000, 140_000], // measured 73_511 (was 76_000 before go-to-k/cdkd#2717)
+  ['.claude/hooks/integ-local-gate.sh', 64_000, 140_000], // measured 77_849 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
   // The cwd-race detector's entry moved out of hooks.md when the #2363
   // widening pushed that file past the 120,000 B per-file cap (the #2236
   // precedent). This path is the representative one for the satellite
   // (its two globs are the hook and its .test.sh, per the REACH_FLOORS
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
-  ['.claude/hooks/main-tree-git-cwd-detector.sh', 61_000, 140_000], // measured 70_187 (was 73_000 before go-to-k/cdkd#2717)
+  ['.claude/hooks/main-tree-git-cwd-detector.sh', 61_000, 140_000], // measured 74_525 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
   // main-tree-edit-gate's entry, and its main-tree-dirty-detector backstop,
   // moved out of hooks.md on 2026-09-05 when go-to-k/cdkd#2614's entry took
   // that file to 80,352 B -- past the 80,000 B per-file cap, which had only
@@ -488,7 +493,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // file's convention -- the first draft said 40_000, 51% under, and a floor
   // that loose cannot notice the satellite going dark, because hooks.md alone
   // is 78,437 B and satisfies it unaided.
-  ['.claude/hooks/main-tree-edit-gate.sh', 56_000, 95_000], // measured 63_858 (was 72_000 before go-to-k/cdkd#2717)
+  ['.claude/hooks/main-tree-edit-gate.sh', 56_000, 95_000], // measured 68_196 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the
@@ -496,7 +501,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // globs are the hook and its suite, per the REACH_FLOORS entry above);
   // without this row the satellite would sit under no budget at all. Payload is
   // hooks.md + hooks-main-tree-branch.md.
-  ['.claude/hooks/main-tree-branch-gate.sh', 70_000, 152_000], // measured 80_406 (was 82_000 before go-to-k/cdkd#2717)
+  ['.claude/hooks/main-tree-branch-gate.sh', 70_000, 152_000], // measured 84_744 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
   //   The comment here read "measured 124,200" and the payload was already
   //   124,758 when it was written -- 558 B behind on the day it shipped, because
   //   the satellite kept being edited after the figure was taken. Re-measured at
@@ -511,7 +516,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // pushed that file to 122,559 B, past the same cap. Representative path for
   // the satellite (its four globs are the two hooks and their suites, per the
   // REACH_FLOORS entry above). Payload is hooks.md + hooks-stop.md.
-  ['.claude/hooks/stop-warn.sh', 65_000, 140_000], // measured 74_589 (was 77_000 before go-to-k/cdkd#2717)
+  ['.claude/hooks/stop-warn.sh', 65_000, 140_000], // measured 78_927 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -527,7 +532,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // what the satellite convention rests on, so this path's payload grows by a
   // row every time a satellite is added -- the ceiling tracks that, and the
   // FLOOR is what still catches a glob narrowing.
-  ['src/assets/asset-storage.ts', 34_000, 49_000],               // measured  48,139 (asset-bucket-region.md, issue #2240; was 43,787 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md, and 46,764 before go-to-k/cdkd#2717's index row)
+  ['src/assets/asset-storage.ts', 34_000, 49_000],               // measured  48,113 on 2026-09-07 (asset-bucket-region.md, issue #2240; was 43,787 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md, and 46,764 before go-to-k/cdkd#2717's index row)
   // proxy-support.md's glob names three literal files (issue #2388); without a
   // row here the satellite would sit under no budget, which is the state the
   // 2026-08-25 review probe showed a rule file can reach unnoticed.

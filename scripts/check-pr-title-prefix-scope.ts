@@ -354,31 +354,46 @@ export function checkSquashSubsumption(s: RepoMergeSettings): {
   // WARNING, and never a violation. The audit still does its job wherever a
   // token can see the fields (a maintainer's `/verify-pr`, a PAT-carrying
   // workflow); what it must not do is red every PR on a permission boundary.
-  // The two booleans below are public and readable by any token, so they are
-  // still checked here and are what CI actually enforces.
-  // SKIP the two invisible fields; do NOT return early. An early return here
-  // also skipped the merge-method booleans, which ARE readable by any token --
-  // so a repo that re-enabled merge commits passed while its title settings
-  // happened to be invisible. That is the exact half this check still enforces
-  // in CI, and the case asserting it caught the regression immediately.
-  const unreadable =
-    s.squash_merge_commit_title == null && s.squash_merge_commit_message == null;
+  // READABILITY IS ALL-OR-NOTHING, and the previous revision got this wrong in
+  // the direction that looks green. It skipped only the two title/message
+  // fields, on the stated premise that "the merge-method booleans ARE readable
+  // by any token". MEASURED 2026-09-07, that premise is FALSE: GitHub nulls
+  // ALL FIVE fields for a token without admin.
+  //
+  //   gh api repos/aws/aws-cdk   -> every field null      (no admin)
+  //   gh api repos/go-to-k/cdkd  -> false/false/PR_TITLE  (admin)
+  //
+  // So in CI `allow_merge_commit === true` was never true, no violation could
+  // ever be raised, and the job printed "merge methods are squash-only" -- an
+  // UNEARNED PASS. That is strictly worse than the failure it replaced: the
+  // first bug red a PR wrongly and was noticed in minutes; this one would have
+  // reported a premise as holding forever without ever testing it.
+  //
+  // A field is EVIDENCE only when it arrives as the type it should be. Anything
+  // else -- null, undefined, absent -- means the token could not see it, and a
+  // check that cannot see its input reports that, never a verdict.
+  const seen =
+    typeof s.allow_merge_commit === 'boolean' &&
+    typeof s.allow_rebase_merge === 'boolean' &&
+    s.squash_merge_commit_title != null &&
+    s.squash_merge_commit_message != null;
+  const unreadable = !seen;
   const violations: string[] = [];
-  if (!unreadable && s.squash_merge_commit_title !== 'PR_TITLE') {
+  if (seen && s.squash_merge_commit_title !== 'PR_TITLE') {
     violations.push(
       `squash_merge_commit_title is '${s.squash_merge_commit_title}', expected 'PR_TITLE'. ` +
         `Under COMMIT_OR_PR_TITLE a single-commit PR squashes under that COMMIT's subject, ` +
         `so a mislabelled commit reaches release-please without passing through the PR title.`,
     );
   }
-  if (!unreadable && s.squash_merge_commit_message !== 'BLANK') {
+  if (seen && s.squash_merge_commit_message !== 'BLANK') {
     violations.push(
       `squash_merge_commit_message is '${s.squash_merge_commit_message}', expected 'BLANK'. ` +
         `COMMIT_MESSAGES concatenates every branch commit message into the squash body, ` +
         `which release-please also parses (BREAKING CHANGE / footers).`,
     );
   }
-  if (s.allow_merge_commit === true || s.allow_rebase_merge === true) {
+  if (seen && (s.allow_merge_commit === true || s.allow_rebase_merge === true)) {
     violations.push(
       `allow_merge_commit=${s.allow_merge_commit} allow_rebase_merge=${s.allow_rebase_merge}: ` +
         `a non-squash merge lands each branch commit on main under its OWN subject, ` +
@@ -451,10 +466,10 @@ export function main(argv: readonly string[]): number {
     const r = checkSquashSubsumption(settings);
     if (r.unreadable) {
       process.stdout.write(
-        '::warning::this token cannot read squash_merge_commit_title / _message ' +
-          '(GitHub returns them only to an admin token), so the squash-subsumption ' +
-          'audit checked only the merge-method booleans. Run it with a token that ' +
-          'can see them -- `/verify-pr` does -- to audit the full premise.\n',
+        '::warning::squash-subsumption NOT VERIFIED: this token cannot read the ' +
+          'repository merge settings (GitHub returns ALL of them only to an admin ' +
+          'token), so this step checked nothing. It is a reminder, not enforcement. ' +
+          'The audit runs for real in `/verify-pr`.\n',
       );
     }
     if (!r.ok) {
@@ -463,8 +478,10 @@ export function main(argv: readonly string[]): number {
     }
     process.stdout.write(
       r.unreadable
-        ? 'squash-subsumption: merge methods are squash-only. The title/message ' +
-          'settings were NOT checked -- this token cannot see them.\n'
+        ? 'squash-subsumption: NOT VERIFIED. This token cannot read the merge ' +
+          'settings (GitHub returns them only to an admin token), so NOTHING ' +
+          'about the premise was checked here. The audit that does check it runs ' +
+          'in `/verify-pr`, with a token that can see them.\n'
         : 'squash-subsumption premise holds (PR_TITLE / BLANK / squash-only).\n',
     );
     return 0;

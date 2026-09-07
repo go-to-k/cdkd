@@ -252,6 +252,15 @@ describe('the shipped allow-list and the check\'s own sources', () => {
     'scripts/check-pr-internal-labels.ts',
     'tests/unit/scripts/pr-non-english-text.test.ts',
     'tests/unit/scripts/pr-internal-labels.test.ts',
+    // The body-side half of the family, added by go-to-k/cdkd#2717 and missed
+    // by the first version of this list. All four are clean today, so the gap
+    // was latent -- but the two TEST files are exactly where someone pastes a
+    // fixture character, and the cost of that is every later PR touching them
+    // being unopenable until an allow-list entry is added.
+    'scripts/check-gh-body-english.ts',
+    'scripts/gh-subject.ts',
+    'tests/unit/scripts/gh-body-english.test.ts',
+    'tests/unit/scripts/non-english-class-sync.test.ts',
   ])('%s carries no character in the blocked class', (rel) => {
     const path = join(REPO_ROOT, rel);
     expect(existsSync(path)).toBe(true);

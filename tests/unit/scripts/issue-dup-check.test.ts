@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   MARKER_RE_LINE,
   MARKER_RE_LOOSE,
@@ -13,6 +13,14 @@ import {
   isMintEvent,
 } from '../../../scripts/check-issue-dup-check.js';
 import { parseSubject } from '../../../scripts/gh-subject.js';
+
+// This suite SPAWNS `.ts` entry points -- `runCli` below, and the
+// mint-reachability block -- paying Node startup plus type stripping per
+// call. Vitest's 5 s default is an IN-PROCESS bound, so these pass locally
+// and time out on a loaded CI runner: the go-to-k/cdkd#2553 shape
+// `.claude/rules/testing.md` makes categorical. The five sibling suites got
+// this in the same change and this one was missed (go-to-k/cdkd#2717 review).
+vi.setConfig({ testTimeout: 60_000 });
 
 /**
  * Port of `.claude/hooks/issue-dup-check-gate.test.sh` (60 cases), for the CI
@@ -126,6 +134,23 @@ describe('the anchored marker', () => {
     // newline but `grep` is line-based, so it could never match one. In a JS
     // regex with `m` it could, which would be silently more permissive.
     expect(diagnose('Some defect.\n\n  \nDup-checkX: no\n')).not.toBe('present');
+  });
+
+  it('does NOT accept a marker indented with a non-space Unicode blank', () => {
+    // THIS is what the `[ \t]` vs `[[:space:]]` translation actually decides,
+    // and the case above does not: its fixture is `Dup-checkX:`, which contains
+    // no `dup-check:` at all, so it passes under ANY space class (measured --
+    // widening both classes to `\s` left the whole suite green). A no-break
+    // space is `\s` and is not `[ \t]`, so it discriminates: a body must not be
+    // able to carry a marker the reader does not see as one.
+    expect(diagnose(`Some defect.\n\n\u00A0Dup-check: ${SEARCHED}\n`)).not.toBe('present');
+  });
+
+  it('still accepts the ordinary space and TAB indents', () => {
+    // The paired positive, so the case above cannot be satisfied by a class
+    // that rejects everything.
+    expect(diagnose(`Some defect.\n\n  Dup-check: ${SEARCHED}\n`)).toBe('present');
+    expect(diagnose(`Some defect.\n\n\tDup-check: ${SEARCHED}\n`)).toBe('present');
   });
 
   it('is not a global regex', () => {

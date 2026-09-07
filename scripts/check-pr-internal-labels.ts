@@ -316,6 +316,21 @@ export function selfProbe(): string[] {
 // talks to git and to the GitHub Actions environment.
 // --------------------------------------------------------------------------
 
+/**
+ * Read a path at the PR head, with the SUBMODULE exemption.
+ *
+ * A mode-160000 gitlink is not a blob: `git show <sha>:<path>` answers
+ * `fatal: bad object`, and treating that as "unreadable" would refuse an honest
+ * PR that adds a submodule. There is no text in a gitlink to scan, so skipping
+ * it loses no coverage -- unlike a genuinely unreadable file, which the caller
+ * refuses. Kept identical to the sibling in `check-pr-non-english-text.ts`.
+ */
+function readAtHead(headSha: string, file: string): string | null {
+  const mode = gitOrNull(['ls-tree', headSha, '--', file])?.trim().split(/\s+/)[0];
+  if (mode === '160000') return '';
+  return gitOrNull(['show', `${headSha}:${file}`]);
+}
+
 function git(args: string[]): string {
   // `core.quotePath=false` on EVERY call, set here because this wrapper is the
   // one choke point. Without it git C-quotes any path outside ASCII --
@@ -411,11 +426,23 @@ export function main(env: NodeJS.ProcessEnv = process.env): number {
   }
 
   const inScope = scope.scannable.filter(shouldScan);
-  const offenders = scanChangedFiles(
-    scope.scannable,
-    (f) => gitOrNull(['show', `${scope.headSha}:${f}`]),
-    (f) => gitOrNull(['diff', '--unified=0', scope.mergeBase, scope.headSha, '--', f]),
-  );
+  // Both halves of the sibling's fix, which an earlier revision claimed to have
+  // applied here and had not (go-to-k/cdkd#2717 review): the reader goes through
+  // `readAtHead`, so a SUBMODULE gitlink is exempted by mode rather than
+  // throwing, and the refusal is CAUGHT and reported as `::error::` instead of
+  // escaping `main()` as a stack trace that discards the offenders already
+  // collected.
+  let offenders: Offender[];
+  try {
+    offenders = scanChangedFiles(
+      scope.scannable,
+      (f) => readAtHead(scope.headSha, f),
+      (f) => gitOrNull(['diff', '--unified=0', scope.mergeBase, scope.headSha, '--', f]),
+    );
+  } catch (err) {
+    console.error(`::error::${(err as Error).message}`);
+    return 1;
+  }
 
   console.log(
     `Scanned ${inScope.length} user-facing doc(s) of ${scope.scannable.length} changed file(s).`,

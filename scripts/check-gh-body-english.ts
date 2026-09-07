@@ -70,10 +70,10 @@
  *   - TIMING, and it is not a small difference. The hook refused BEFORE the
  *     text reached GitHub. This runs after: on a PR the failing check blocks
  *     the merge, but on an issue or a comment the text is already public and
- *     the check can only report it. `.claude/rules/layout-scripts.md` records this rather than
+ *     the check can only report it. `.claude/rules/layout-ci-checks.md` records this rather than
  *     leaving it to be discovered.
  *   - Release notes (`gh release create --notes` / `--notes-file`) were in the
- *     hook's verb set and are NOT covered here. See `.claude/rules/layout-scripts.md`.
+ *     hook's verb set and are NOT covered here. See `.claude/rules/layout-ci-checks.md`.
  *
  * Run: `node scripts/check-gh-body-english.ts <subject.json>`
  * Exit 0 = clean, 1 = offenders found (report on stdout), 2 = could not run.
@@ -180,6 +180,26 @@ const KIND_LABEL: Record<Subject['kind'], string> = {
 };
 
 /**
+ * Quote attacker text so it cannot become Markdown.
+ *
+ * A fenced block, with a fence LONGER than the longest backtick run in the
+ * text -- which is what CommonMark requires to make the content uninterpreted,
+ * and is why this is not simply "escape the backticks". Inside such a fence
+ * nothing is a link, a mention, an image or a heading. Newlines are folded to
+ * spaces first, so one offending line stays one line and cannot forge extra
+ * report rows.
+ *
+ * `\r` is stripped for the same reason a newline is: a lone CR renders as a
+ * line break in some clients and would split the row visually.
+ */
+export function fencedQuote(text: string): string {
+  const flat = text.replace(/[\r\n]+/g, ' ');
+  const longestRun = Math.max(0, ...[...flat.matchAll(/`+/g)].map((m) => m[0].length));
+  const fence = '`'.repeat(Math.max(3, longestRun + 1));
+  return `${fence}\n${flat}\n${fence}`;
+}
+
+/**
  * The refusal, carrying the hook's own wording. Markdown, because on an issue
  * or a comment this is posted as a review comment rather than only logged --
  * the workflow's only way to be visible on a surface with no check run.
@@ -196,7 +216,30 @@ export function formatReport(subject: Subject, offenders: Offender[]): string {
   lines.push('Found:');
   lines.push('');
   for (const o of offenders) {
-    lines.push(`- \`${o.field}\` line ${o.line}: ${o.characters.join(' ')} — \`${o.text}\``);
+    // The offending line is NOT embedded as Markdown. It is attacker text --
+    // any GitHub account can open an issue -- and this report is posted as a
+    // comment by the repository's own bot, so anything that escapes the span
+    // is arbitrary Markdown published under the repo's identity: live links,
+    // real @mentions, and `owner/repo#N` backlinks attributed to this repo.
+    // A backtick closes an inline code span, which is one character.
+    //
+    // Reported and reproduced by the security review of go-to-k/cdkd#2717 --
+    // and flagged as a MINOR one round earlier, deferred, then escalated with
+    // a working PoC. `o.characters` needs no treatment (a closed Unicode set);
+    // `o.text` does.
+    lines.push(`- \`${o.field}\` line ${o.line}: ${o.characters.join(' ')} —`);
+    lines.push('');
+    // INDENTED two spaces so the fence stays INSIDE the list item. At column 0
+    // it terminates the list, and each offender renders as its own single-item
+    // <ul> (go-to-k/cdkd#2717 review). Two spaces is enough for a `- ` marker
+    // and does not add a code block's worth of leading whitespace.
+    lines.push(
+      fencedQuote(o.text)
+        .split('\n')
+        .map((l) => `  ${l}`)
+        .join('\n'),
+    );
+    lines.push('');
   }
   lines.push('');
   lines.push('(hiragana / katakana / kanji / Chinese / hangul / CJK punctuation)');

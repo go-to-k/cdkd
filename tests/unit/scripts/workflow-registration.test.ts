@@ -102,9 +102,48 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
   it.each(EXPECTED.map((e) => [e.file, e] as const))(
     '%s still invokes each script it exists to run',
     (_name, expected) => {
-      const raw = readFileSync(join(REPO_ROOT, '.github/workflows', expected.file), 'utf8');
+      // The INVOCATION, parsed out of `jobs.*.steps[].run` -- not a substring of
+      // the file. `toContain` on the raw text was satisfied by each script's own
+      // path appearing in the workflow's HEADER COMMENT, so deleting every
+      // `node scripts/check-*` line left all six assertions green (measured,
+      // go-to-k/cdkd#2717 review). That is the same dead-fence class this file's
+      // checkout-ref case was already rewritten for -- twice in one file, which
+      // is why the rule is now: parse the structure, never grep the document.
+      const doc = wf(expected.file);
+      const jobs = doc['jobs'] as Record<string, { steps?: Array<Record<string, unknown>> }>;
+      const runs = Object.values(jobs)
+        .flatMap((j) => j.steps ?? [])
+        .map((st) => String(st['run'] ?? ''))
+        .join('\n')
+        // Shell COMMENTS inside a `run:` block are prose too, and the comment
+        // can start MID-LINE. Two rounds of this: the first version of this
+        // assertion was satisfied by the workflow's YAML header comment; the
+        // fix for that dropped only WHOLE-line `#` comments, and
+        // `true; # node scripts/check-issue-dup-check.ts subject.json` kept it
+        // green against the real workflow while the check never ran (measured,
+        // go-to-k/cdkd#2717 review). Truncate at `#` instead.
+        //
+        // A `#` inside a quoted string would be truncated too. That direction is
+        // safe: it can only make this assertion FAIL on a legitimate command,
+        // which is loud, never pass on a missing one.
+        .split('\n')
+        .map((l) => l.replace(/#.*$/, ''))
+        .join('\n');
       for (const script of expected.scripts) {
-        expect(raw, `${expected.file} must invoke ${script}`).toContain(script);
+        // `node [flags] <script>` on ONE run line. The flags vary and that is
+        // fine -- `pr-content-checks.yml` passes `--experimental-strip-types`
+        // where `pr-title-check.yml` relies on Node 24 stripping by default --
+        // but `node` and the path must appear together in an executed command,
+        // which is exactly what a raw-text `toContain` could not tell apart
+        // from a mention in a comment.
+        const invoked = new RegExp(
+          String.raw`(^|\n)[^\n]*\bnode\b[^\n]*\s${script.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\s|$)`,
+          'm',
+        );
+        expect(
+          invoked.test(runs),
+          `${expected.file} must RUN ${script} in a step, not merely mention it`,
+        ).toBe(true);
       }
     },
   );

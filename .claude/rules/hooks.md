@@ -35,7 +35,19 @@ Authoring a hook — why every Bash gate stays unconditional, and why an unquote
 # When a check may BLOCK at PreToolUse, and when it belongs in CI
 
 **A PreToolUse gate may block only when the harm completes at the moment of the
-action and the actor cannot undo it. Everything else goes to CI, or nowhere.**
+action AND lands somewhere the actor cannot undo it. Everything else goes to
+CI, or nowhere.**
+
+Both clauses are load-bearing, and the second is the one that was missing. The
+earlier wording already said "the actor cannot undo it" -- irreversibility was
+never implicit -- but irreversibility ALONE gets `issue-dup-check` wrong: you
+cannot un-mint an issue number or un-send its notifications, so by that test it
+should BLOCK, and it correctly moved to CI instead. What separates it from
+`pr-body-item-number` is WHOSE artifact carries the residue. A duplicate issue
+is the filer's own and closes cleanly; a bare `#N` writes a permanent
+`referenced` event on a THIRD PARTY's issue. The spec review of
+go-to-k/cdkd#2717 caught that second test deciding a disposition while only the
+first was written down.
 
 That is the stopping rule go-to-k/cdkd#2717 was opened for. The guard layer had
 reached 19% of the size of the product it guards, with 42 of 47 hooks blocking,
@@ -43,8 +55,9 @@ and every single one defensible on its own — 37 cite a concrete incident in
 their own header. What was missing was not justification for any one hook but a
 predicate that can say NO to the next one before it is written.
 
-Read the rule as a question about REVERSIBILITY, not about severity or how
-annoying the mistake is:
+Read the rule as two questions -- is the harm reversible, and whose artifact
+does it land on -- rather than as one about severity or how annoying the
+mistake is:
 
 - A bare `#N` in a published body writes a `referenced` event on a THIRD
   PARTY's issue and sends them a notification. Editing your body afterwards
@@ -65,7 +78,7 @@ merging makes the PR title the release subject), `internal-pr-labels`,
 
 **`gh-pr-edit-deprecation-gate` was deleted on a MEASUREMENT, not on the tier.**
 It blocked `gh pr edit --title` / `--body` because a Projects-classic GraphQL
-deprecation made them exit non-zero with the mutation silently unapplied. MEASURED 2026-09-07 on gh 2.92.0 against a live PR: `gh pr edit --body` exited 0 AND the body was actually replaced. The Projects-classic GraphQL deprecation that made it fail silently is FIXED upstream.
+deprecation made them exit non-zero with the mutation silently unapplied. MEASURED 2026-09-07 on gh 2.92.0 against a live PR: `gh pr edit --body` exited 0 AND the body was actually replaced. The Projects-classic GraphQL deprecation that made it fail silently is FIXED upstream. **`--title` was NOT measured** -- it is inferred from sharing the same `updatePullRequest` mutation, which is why the retraction says so rather than claiming both arms were observed.
 The gate was guarding history, exactly as its own header allowed for ("If a
 future gh release fixes the deprecation, this gate can be removed"). Every
 sentence in this repo saying that spelling fails silently was retracted in the
