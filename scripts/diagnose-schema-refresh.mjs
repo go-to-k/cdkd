@@ -1550,6 +1550,18 @@ export function assertFixtureFloor(fixtureCount, declaredCount) {
 }
 
 /**
+ * What `--umbrella-checklist` emits when the campaign is FINISHED.
+ *
+ * A zero-row render and a broken one are both "no rows", and the consuming
+ * workflow has to tell them apart: it accepts rows-or-this and refuses
+ * anything else, so a parse that produced nothing cannot be spliced in as
+ * "the campaign is over". Exported because that workflow's fence pins the two
+ * spellings against each other.
+ */
+export const UMBRELLA_EMPTY_SENTINEL =
+  '_No remaining silent-drop properties — every declared type is fully covered._';
+
+/**
  * The remaining silent-drop properties, as a checklist the umbrella issue owns.
  *
  * REGENERATED each cycle rather than appended to, and that is the whole point.
@@ -1595,6 +1607,24 @@ export function renderUmbrellaChecklist(generatedSource) {
     }
   }
   return rows;
+}
+
+/**
+ * The whole document `--umbrella-checklist` writes: the rows, or the
+ * finished-campaign sentinel when there are none.
+ *
+ * Split out of `main()` because the empty arm is otherwise UNREACHABLE from a
+ * test — the real coverage map always has rows, so a mutation deleting the
+ * sentinel survived every case (measured). The consuming workflow accepts rows
+ * OR this sentinel and refuses anything else, so the branch that chooses
+ * between them is exactly what has to be pinned.
+ *
+ * @param {string} generatedSource
+ * @returns {string}
+ */
+export function renderUmbrellaDocument(generatedSource) {
+  const rows = renderUmbrellaChecklist(generatedSource);
+  return rows.length > 0 ? rows.join('\n') : UMBRELLA_EMPTY_SENTINEL;
 }
 
 function main() {
@@ -1673,7 +1703,7 @@ function main() {
   // population, or a git object the sync's shallow clone lacks, would abort a
   // render whose own input was sitting there readable.
   if (args.includes('--umbrella-checklist')) {
-    process.stdout.write(renderUmbrellaChecklist(loadDeclaredPropertiesSource()).join('\n') + '\n');
+    process.stdout.write(renderUmbrellaDocument(loadDeclaredPropertiesSource()) + '\n');
     return;
   }
   // The third reader, and it was the last one still silent on both counts: a
@@ -1827,17 +1857,23 @@ function main() {
   const countOut = rawArg('--decision-count-out');
   if (countOut === null || countOut === '') {
     throw new Error(
-      '--decision-count-out was given with no value — refusing to leave the count unwritten ' +
-        'while reporting success, which reads to the workflow as "no decisions needed".'
+      '--decision-count-out was given with no value — there is no file to write the count to, ' +
+        'and an unwritten count is what the marking step refuses to re-mark from.'
     );
   }
-  if (countOut !== undefined) {
-    writeFileSync(
-      countOut,
-      `${countDecisions({ removed, divergences, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable })}\n`
-    );
-  }
-
+  // The REPORT goes out first, and a failure to write the count does not stop
+  // it. This ordering is load-bearing, and getting it backwards reversed the
+  // job's own stated priority: `--decision-count-out` rides on the SAME
+  // invocation that renders the PR body, so a throw here failed the Diagnose
+  // step, and Publish and Mark carry plain `if:` conditions — which GitHub
+  // ANDs with an implicit `success()` — so the drift went uncommitted and NO
+  // PR opened at all. The workflow comment two steps up says exactly why that
+  // is the wrong trade: the PR is how the human finds out.
+  //
+  // Nothing is lost by being forgiving here, because the marking step refuses
+  // an absent or empty count file rather than reading it as zero. The failure
+  // is still LOUD — it reddens that step — but it reddens it beside a PR that
+  // exists.
   process.stdout.write(
     renderDiagnosis({
       removed,
@@ -1851,6 +1887,21 @@ function main() {
       sdkLag,
     }) + '\n'
   );
+
+  if (countOut !== undefined) {
+    try {
+      writeFileSync(
+        countOut,
+        `${countDecisions({ removed, divergences, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable })}\n`
+      );
+    } catch (err) {
+      process.stderr.write(
+        `diagnose-schema-refresh: could not write the decision count to ${countOut} ` +
+          `(${err instanceof Error ? err.message : String(err)}). The marking step will refuse ` +
+          'to re-mark from a missing count.\n'
+      );
+    }
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -1867,16 +1918,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // size guard passed — splicing that sentence into the umbrella in place of
     // the entire checklist, on a green run.
     //
-    // `--decision-count-out`: swallowing left the count unwritten while
-    // reporting success, and replaced the PR body with the sentence. The
-    // refusal message this file raises for that flag says "refusing to leave
-    // the count unwritten while reporting success", which the catch made false.
-    //
-    // Both are read by a machine that cannot see the sentence, so for them the
-    // honest failure is a non-zero exit.
-    const consumedByAWorkflow = process.argv
-      .slice(2)
-      .some((a) => a === '--umbrella-checklist' || a.startsWith('--decision-count-out'));
+    // `--decision-count-out` is deliberately NOT in this set, and the reason is
+    // the whole shape of the trade. It rides on the invocation that renders the
+    // PR BODY, so exiting non-zero for it fails the Diagnose step and — through
+    // the implicit `success()` on the steps below — stops the PR from opening
+    // at all. Its unwritten count is caught one step later instead, where the
+    // marking step refuses an absent file rather than reading it as zero. The
+    // write itself is wrapped where it happens, above.
+    const consumedByAWorkflow = process.argv.slice(2).some((a) => a === '--umbrella-checklist');
     if (consumedByAWorkflow) {
       // `process.exitCode`, and no `return`: this catch sits at MODULE top
       // level, not inside a function, so a `return` here is a SyntaxError that

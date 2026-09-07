@@ -228,12 +228,12 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
         /\[ -s \/tmp\/checklist\.md \]/
       );
       expect(render, 'the shape guard is gone').toMatch(
-        /grep -q '\^- \\\[ \\\] ' \/tmp\/checklist\.md/
+        /grep -qE '\^- \\\[ \\\] \|\^_No remaining silent-drop properties' \/tmp\/checklist\.md/
       );
       // Under `set -e`, and AFTER the redirect it inspects.
       expect(render).toContain('set -euo pipefail');
       expect(render.indexOf('> /tmp/checklist.md')).toBeLessThan(
-        render.indexOf("grep -q '^- \\[ \\] ' /tmp/checklist.md")
+        render.indexOf("grep -qE '^- \\[ \\] |^_No remaining silent-drop properties'")
       );
     });
 
@@ -331,7 +331,7 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // and reasoning as .claude/hooks/issue-dup-check-gate.sh's recipe.
       const splice = shellOf(SPLICE_STEP);
       expect(splice).toMatch(
-        /gh issue view "\$\{umbrella\}" --json body -q \.body > "\$\{U\}" && \[ -s "\$\{U\}" \]/
+        /gh issue view "\$\{umbrella\}" --json body -q \.body \| tr -d '\\r' > "\$\{U\}" && \[ -s "\$\{U\}" \]/
       );
       const arm = guardArm(splice, 'Could not read backfill umbrella');
       expect(arm, 'the unreadable-body refusal falls through to the write').toContain('exit 0');

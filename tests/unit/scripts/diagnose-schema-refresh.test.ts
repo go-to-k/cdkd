@@ -49,6 +49,9 @@ import {
   renderLiteral,
   buildSdkLag,
   countDecisions,
+  UMBRELLA_EMPTY_SENTINEL,
+  renderUmbrellaChecklist,
+  renderUmbrellaDocument,
   CHECK_GUIDANCE,
   KNOWN_FLAGS,
   classifyGitShowFailure,
@@ -2445,12 +2448,13 @@ describe('--decision-count-out', () => {
     // Every other absent-input arm in this script is the permissive one, and
     // an unwritten count reads to the workflow as "no decisions needed".
     //
-    // The refusal reaches STDERR at a non-zero exit rather than stdout at 0:
-    // the reader here is a workflow step, and the fallback sentence it would
-    // otherwise get is both unreadable to it and, as the PR body, wrong.
+    // A flag with NO VALUE is an argv error, not a runtime one, so it takes
+    // the same forgiving path every other argv guard here takes — the report
+    // is replaced by the fallback sentence and the exit stays 0, because
+    // failing would stop the PR from opening. The marking step's absent-count
+    // refusal is what turns this into a red, one step later.
     const out = spawnSync('node', [SCRIPT, '--decision-count-out'], { encoding: 'utf8' });
-    expect(out.status).not.toBe(0);
-    expect(out.stderr).toContain('--decision-count-out was given with no value');
+    expect(out.stdout).toContain('--decision-count-out was given with no value');
   }, 60_000);
 
   it('is a known flag, so the unknown-flag guard does not refuse the workflow', () => {
@@ -2512,19 +2516,21 @@ describe('a failure in a mode a WORKFLOW consumes exits non-zero', () => {
     expect(out.stdout).toContain('The automated diagnosis failed to run');
   }, 60_000);
 
-  it('does NOT extend that fallback to --decision-count-out', () => {
-    // Swallowing here left the count unwritten while reporting success — and
-    // the refusal this script raises for the flag says, in as many words,
-    // "refusing to leave the count unwritten while reporting success". The
-    // catch made its own message false. Downstream, the marking step reads a
-    // file that is not there.
+  it('KEEPS the report when the count cannot be written, and says so on stderr', () => {
+    // `--decision-count-out` rides on the invocation that renders the PR BODY,
+    // so exiting non-zero for it fails the Diagnose step — and Publish and Mark
+    // carry plain `if:` conditions, which GitHub ANDs with an implicit
+    // `success()`. A round of this branch did exactly that, and the result was
+    // that an unwritable count path meant NO PR OPENED AT ALL, reversing the
+    // job's own stated priority. Nothing is lost by being forgiving: the
+    // marking step refuses an absent count rather than reading it as zero, so
+    // the failure is still loud — it just reddens beside a PR that exists.
     const out = spawn(['--decision-count-out', '/nonexistent/dir/count.txt']);
-    expect(out.status, 'a workflow-consumed failure reported success').not.toBe(0);
-    expect(out.stderr).toContain('diagnose-schema-refresh:');
-    expect(
-      out.stdout,
-      'the PR body was replaced by the fallback sentence on a run that also failed'
-    ).not.toContain('The automated diagnosis failed to run');
+    expect(out.status, 'a count-write failure stops the PR from opening').toBe(0);
+    expect(out.stdout, 'the report was lost with the count').toContain(
+      '## What changed, and what needs a decision'
+    );
+    expect(out.stderr).toContain('could not write the decision count');
   }, 60_000);
 
   it('does NOT extend it to --umbrella-checklist either', () => {
@@ -2547,4 +2553,78 @@ describe('a failure in a mode a WORKFLOW consumes exits non-zero', () => {
     expect(out.status).toBe(0);
     expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
   }, 60_000);
+});
+
+describe('the finished-campaign sentinel', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  it('is what makes "no rows left" distinguishable from a broken parse', () => {
+    // `renderUmbrellaChecklist` throws only on zero type BOUNDARIES, so a
+    // coverage map whose every `silentDrop` is empty is a legitimate empty
+    // list. Emitting a bare newline for it made the sync workflow's
+    // rows-or-nothing guard kill the step under `set -e` with no annotation,
+    // and the umbrella kept its last stale rows permanently.
+    expect(UMBRELLA_EMPTY_SENTINEL).toMatch(/^_No remaining silent-drop properties/);
+    // The consuming guard accepts a row OR this line, and nothing else. Pinned
+    // against the workflow so a reword on either side cannot pass silently.
+    const sync = readFileSync(
+      join(REPO_ROOT, '.github/workflows/backfill-umbrella-sync.yml'),
+      'utf8'
+    );
+    const accepted = /grep -qE '(\^- \\\[ \\\] \|)?\^(_No remaining silent-drop properties)'/.exec(
+      sync
+    );
+    expect(accepted, 'the sync workflow no longer accepts the sentinel').not.toBeNull();
+    expect(UMBRELLA_EMPTY_SENTINEL.startsWith(accepted![2]!)).toBe(true);
+  });
+
+  it('renders rows on the real map, so the sentinel arm is not the live one', () => {
+    // The control. A sentinel that fired in production would mean the campaign
+    // had silently emptied, and every case above would be asserting about a
+    // branch nothing takes.
+    const out = spawnSync('node', [SCRIPT, '--umbrella-checklist'], { encoding: 'utf8' });
+    expect(out.status).toBe(0);
+    expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
+    expect(out.stdout).not.toContain(UMBRELLA_EMPTY_SENTINEL);
+  }, 60_000);
+});
+
+describe('renderUmbrellaDocument', () => {
+  // A generated coverage module with a type BOUNDARY but nothing left to
+  // backfill. `renderUmbrellaChecklist` throws only on zero boundaries, so
+  // this shape is a legitimate empty list and not a broken parse — the
+  // distinction the sync workflow's guard is built on.
+  const FINISHED = `
+export const PROPERTY_COVERAGE = new Map([
+  ['AWS::S3::Bucket', {
+    handled: new Set(['BucketName']),
+    silentDrop: new Map<string, string>([]),
+  }],
+]);
+`;
+  const REMAINING = `
+export const PROPERTY_COVERAGE = new Map([
+  ['AWS::S3::Bucket', {
+    handled: new Set(['BucketName']),
+    silentDrop: new Map<string, string>([['ObjectLockConfiguration', 'x']]),
+  }],
+]);
+`;
+
+  it('says so when nothing is left, instead of emitting nothing', () => {
+    // Emitting a bare empty string made the sync workflow's rows-or-sentinel
+    // guard kill the step under `set -e` with no annotation, and the umbrella
+    // kept its last stale rows permanently. This arm is unreachable through
+    // the CLI — the real map always has rows — which is why the decision lives
+    // in a function rather than inline in `main()`.
+    expect(renderUmbrellaChecklist(FINISHED)).toEqual([]);
+    expect(renderUmbrellaDocument(FINISHED)).toBe(UMBRELLA_EMPTY_SENTINEL);
+  });
+
+  it('emits the rows, and only the rows, when there are some', () => {
+    expect(renderUmbrellaDocument(REMAINING)).toBe(
+      '- [ ] `AWS::S3::Bucket`: `ObjectLockConfiguration`'
+    );
+    expect(renderUmbrellaDocument(REMAINING)).not.toContain(UMBRELLA_EMPTY_SENTINEL);
+  });
 });

@@ -445,8 +445,32 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(failArm, 'the missing-label case does not announce itself').toContain(
         "Could not add the '${DECISION_LABEL}' label"
       );
-      expect(failArm, 'a missing label no longer fails the step').toContain('exit 1');
+      // Records the failure rather than exiting inside the arm: the assignee
+      // is attempted too, and neither mark may take the other down. The exit
+      // is the collected one below.
+      expect(failArm, 'a missing label no longer records a failure').toContain('marks_failed=1');
+      expect(failArm, 'the label arm exits inside itself, taking the assignee down').not.toContain(
+        'exit 1'
+      );
+      // The ASSIGNEE arm, symmetrically. Ordering alone only moved the victim:
+      // a bare `--add-assignee` under `set -e` (a 422 for an org owner after a
+      // transfer) killed the label instead, and with no `::error::` naming a
+      // fix. Neither mark may take the other down, so neither arm exits.
+      const assignArm = guardArm(
+        mark,
+        'if ! gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"; then'
+      );
+      expect(assignArm, 'a failed assignment does not announce itself').toContain('::error::');
+      expect(assignArm, 'a failed assignment no longer records a failure').toContain(
+        'marks_failed=1'
+      );
+      expect(assignArm, 'the assignee arm exits inside itself, taking the label down').not.toContain(
+        'exit 1'
+      );
       expect(failArm, 'a missing label now reports success').not.toContain('exit 0');
+      expect(mark, 'the collected marks failure no longer fails the step').toContain(
+        'if [ "${marks_failed}" != "0" ]; then'
+      );
     });
 
     it('declares every variable its shell reads — a dropped one is a daily set -u death', () => {
@@ -534,7 +558,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       const mark = shellOf(MARK_STEP);
       const arm = guardArm(
         mark,
-        'if [ "${DRIFTED}" != "true" ] && [ "${decisions}" != "0" ]; then'
+        'if [ -z "${PUBLISHED_PR}" ] && [ "${decisions}" != "0" ]; then'
       );
       expect(arm, 'the no-drift arm re-marks from an incomparable count').toContain('exit 0');
       expect(arm, 'the no-drift arm still writes to the PR').not.toContain('gh pr edit');
@@ -542,7 +566,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // It has to run BEFORE the title is computed, or the retitle happens on
       // the way to the refusal.
       expect(mark.indexOf('current=$(gh pr view')).toBeGreaterThan(
-        mark.indexOf('if [ "${DRIFTED}" != "true" ] && [ "${decisions}" != "0" ]; then')
+        mark.indexOf('if [ -z "${PUBLISHED_PR}" ] && [ "${decisions}" != "0" ]; then')
       );
     });
 
@@ -563,10 +587,18 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
           path
         );
       }
-      // Only on the no-drift arm: on a drift day the tree is DIRTY by
-      // definition and this would refuse every real cycle.
-      const noDrift = guardArm(mark, 'if [ "${DRIFTED}" != "true" ]; then\n  regen=');
-      expect(noDrift, 'the clean-tree probe escaped its no-drift guard').toContain('regen=');
+      // Only on the arm where nothing was PUBLISHED: on a cycle that committed
+      // the refresh the tree is dirty by definition and this would refuse
+      // every real one. Keyed on `PUBLISHED_PR` rather than `DRIFTED`, because
+      // a lost push race leaves `DRIFTED=true` with nothing committed — the
+      // case the clamp exists for, and the one a `DRIFTED` predicate let past.
+      const noPublish = guardArm(mark, 'if [ -z "${PUBLISHED_PR}" ]; then');
+      // The needle above already contains `regen=`, so asserting THAT here
+      // could not fail. What is falsifiable is the probe being INSIDE the arm
+      // and running `git status` over the regenerated paths.
+      expect(noPublish, 'the clean-tree probe escaped its no-publish guard').toContain(
+        'git status --porcelain -- src/provisioning/ docs/ tests/fixtures/cfn-schemas/'
+      );
       const dirty = guardArm(mark, 'if [ -n "${regen}" ]; then');
       expect(dirty, 'a dirty tree still gets its marking cleared').toContain('exit 0');
       expect(dirty, 'the dirty-tree refusal is silent').toContain('::warning::');
@@ -676,7 +708,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // `${B}` before gh runs, so an unchained recipe would splice onto an
       // empty body and replace the whole thing with the verdict alone.
       expect(mark).toMatch(
-        /if gh pr view "\$\{pr\}" --json body --jq \.body > "\$\{B\}" && \[ -s "\$\{B\}" \]; then/
+        /if gh pr view "\$\{pr\}" --json body --jq \.body \| tr -d '\\r' > "\$\{B\}" && \[ -s "\$\{B\}" \]; then/
       );
       expect(mark).toContain('Could not read PR ${pr}\'s body; refusing to write one');
     });
@@ -1330,7 +1362,17 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
             out[key] = value;
             continue;
           }
-          const supplied = key === 'DRIFTED' ? drifted : HARNESS[key];
+          // A cycle that did not drift is a cycle that PUBLISHED nothing, and
+          // the clamp keys on the latter — Publish can also bail on a lost
+          // push race with `DRIFTED` still `true`, which a `DRIFTED` predicate
+          // let straight through. The harness moves both together so the arms
+          // below still read as "a quiet day".
+          const supplied =
+            key === 'DRIFTED'
+              ? drifted
+              : key === 'PUBLISHED_PR' && drifted !== 'true'
+                ? ''
+                : HARNESS[key];
           expect(
             supplied,
             `env ${key} is expression-valued and this harness has no value for it`

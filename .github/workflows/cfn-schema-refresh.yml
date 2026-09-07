@@ -581,11 +581,18 @@ jobs:
           # Zero is still trustworthy: a bogus declaration keeps
           # `property-coverage` red however the diff came out, and the
           # clean-tree test below is what rules out the un-regenerated case.
-          if [ "${DRIFTED}" != "true" ] && [ "${decisions}" != "0" ]; then
-            echo "::notice::No drift this cycle and ${decisions} decision(s) still outstanding on PR ${pr} -- leaving the existing marking, which was computed against a real refresh."
+          # The predicate is "did this cycle PUBLISH", not "did AWS move".
+          # Keying on `DRIFTED` alone let the lost-push-race case through:
+          # Publish `exit 0`s without writing `pr_number` while `DRIFTED` is
+          # still `true`, so the marking would be written from a count computed
+          # over the very tree that was thrown away -- the exact case the
+          # paragraph above is about -- and the clean-tree probe below, the
+          # thing that would have caught it, was skipped.
+          if [ -z "${PUBLISHED_PR}" ] && [ "${decisions}" != "0" ]; then
+            echo "::notice::Nothing published this cycle and ${decisions} decision(s) still outstanding on PR ${pr} -- leaving the existing marking, which was computed against a refresh that landed."
             exit 0
           fi
-          if [ "${DRIFTED}" != "true" ]; then
+          if [ -z "${PUBLISHED_PR}" ]; then
             regen=$(git status --porcelain -- src/provisioning/ docs/ tests/fixtures/cfn-schemas/)
             if [ -n "${regen}" ]; then
               echo "::warning::PR ${pr} has no outstanding checks, but regenerating changed files this PR has not committed, so its own CI is still red. Leaving the marking. Run 'vp run gen:all-matrices' on the branch and push."
@@ -624,7 +631,12 @@ jobs:
           # comments -- so without this the body's own summary ages while the
           # title stays current.
           B=$(mktemp); NB=$(mktemp)
-          if gh pr view "${pr}" --json body --jq .body > "${B}" && [ -s "${B}" ]; then
+          # `tr -d '\r'` for the same reason the umbrella sync strips it: the
+          # markers are found with `grep -Fx`, and a body a human edited in the
+          # web UI is CRLF, so both counts come back 0 -- which lands on the
+          # INSERT arm below and prepends a SECOND verdict block on every
+          # cycle, the body-growth defect this splice was rewritten to remove.
+          if gh pr view "${pr}" --json body --jq .body | tr -d '\r' > "${B}" && [ -s "${B}" ]; then
             vb=$(grep -Fxn -- "${VERDICT_BEGIN}" "${B}" | cut -d: -f1 || true)
             ve=$(grep -Fxn -- "${VERDICT_END}" "${B}" | cut -d: -f1 || true)
             vb_count=$(printf '%s' "${vb}" | wc -w | tr -d ' ')
@@ -670,9 +682,22 @@ jobs:
           # idempotent, and the owner is read from the event rather than
           # hard-coded so a fork or a transfer cannot silently assign a
           # stranger.
-          gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"
+          # Both marks are ATTEMPTED, then the failures are reported together.
+          # Ordering alone only moved the victim: a bare `--add-assignee` under
+          # `set -e` -- a 422 for an org owner after a transfer, or a user who
+          # cannot be assigned -- killed the label instead, and with no
+          # `::error::` naming a fix, which the label arm at least has. Neither
+          # mark should be able to take the other down.
+          marks_failed=0
+          if ! gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"; then
+            echo "::error::Could not assign PR ${pr} to '${GITHUB_REPOSITORY_OWNER}'. This is the only mark that NOTIFIES, so the decision is now visible in list views only. An organisation owner is not assignable — set a user login if this repository was transferred."
+            marks_failed=1
+          fi
           if ! gh pr edit "${pr}" --add-label "${DECISION_LABEL}"; then
             echo "::error::Could not add the '${DECISION_LABEL}' label to PR ${pr}. Create the label once with 'gh label create needs-decision' and re-run; this job deliberately does not create it."
+            marks_failed=1
+          fi
+          if [ "${marks_failed}" != "0" ]; then
             exit 1
           fi
           echo "::notice::PR ${pr} needs ${decisions} decision(s) -- assigned, labelled and retitled."

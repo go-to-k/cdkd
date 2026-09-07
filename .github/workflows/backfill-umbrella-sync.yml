@@ -81,7 +81,13 @@ jobs:
           # misread the guard exists to prevent, reached through the guard.
           # (The script also re-throws for this mode now, so this is the second
           # of two independent stops rather than the only one.)
-          grep -q '^- \[ \] ' /tmp/checklist.md
+          #
+          # Rows OR the finished-campaign sentinel, because "no rows" is two
+          # different states: a broken parse, and a campaign that is actually
+          # over. Accepting only rows made the second unrepresentable — the
+          # step died under `set -e` with no annotation and the umbrella kept
+          # its last stale rows permanently.
+          grep -qE '^- \[ \] |^_No remaining silent-drop properties' /tmp/checklist.md
 
       - name: Splice it into the backfill umbrella
         env:
@@ -140,7 +146,16 @@ jobs:
           # redirect truncates the file BEFORE gh runs, so an unchained recipe
           # whose `view` fails would replace the umbrella's WHOLE body —
           # destroying the provenance section this design exists to preserve.
-          if ! { gh issue view "${umbrella}" --json body -q .body > "${U}" && [ -s "${U}" ]; }; then
+          # `tr -d '\r'` is not tidying. The markers are located with `grep -Fx`,
+          # which demands a byte-exact whole line, and a body edited in the
+          # GitHub WEB UI is stored with CRLF -- so the marker line is
+          # `<!-- BEGIN ... -->\r` and matches nothing. Measured on this repo, 3
+          # of the 100 most recent issue comments carry CR. Without the strip
+          # the count guard below reports 0 and 0 and asks a human to "fix the
+          # markers" that are already correct, forever -- and the recovery it
+          # names, hand-editing the issue, is what CREATES the CRLF. It also
+          # keeps the `cmp` idempotence test from seeing a phantom diff.
+          if ! { gh issue view "${umbrella}" --json body -q .body | tr -d '\r' > "${U}" && [ -s "${U}" ]; }; then
             echo "::warning::Could not read backfill umbrella #${umbrella}'s body; refusing to write one. Re-run this workflow once the issue is readable."
             exit 0
           fi

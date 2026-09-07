@@ -116,10 +116,11 @@ merge, and un-assigning it would drop it out of your assigned view at the
 moment it became mergeable. So a standing `needs-decision` means work is
 genuinely outstanding, not that nobody tidied up.
 
-On a day with no drift the count can only CLEAR the marking, never lower it.
-Removals are computed by diffing against the branch's committed fixtures, so
-with nothing to refresh that half of the count is empty by construction and a
-"2 decisions needed" PR would otherwise be retitled "1" with nothing settled.
+On a cycle that publishes nothing, the count can only CLEAR the marking — it
+never changes a non-zero one in either direction. Removals are computed by
+diffing against the branch's committed fixtures, so with nothing to refresh
+that half of the count is empty by construction and a "2 decisions needed" PR
+would otherwise be retitled "1" with nothing settled.
 The same run also refuses to clear when regenerating produces changes the
 branch has not committed — otherwise fixing a provider without running
 `vp run gen:all-matrices` would clear the label while the PR's own CI stayed
