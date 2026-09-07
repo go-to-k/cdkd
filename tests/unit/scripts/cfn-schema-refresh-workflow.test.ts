@@ -400,11 +400,12 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // Read from the event, not hard-coded, so a fork or a transfer cannot
       // silently assign a stranger.
       expect(mark, 'the assignee is hard-coded').not.toMatch(/--add-assignee "go-to-k"/);
-      // ORDER, by index — presence is satisfied by either arrangement. With the
-      // label first, a repository missing the label loses the notification too:
-      // the label failure `exit 1`s and the assignment below it never runs, so
-      // the one mark that reaches a maintainer NOT reading the PR list depended
-      // on a mark legible only to someone already reading it.
+      // ORDER, by index — presence is satisfied by either arrangement. The
+      // order is now a PREFERENCE, not the safety property: the notification
+      // goes out before anything else can fail. What makes the two marks
+      // independent is `marks_failed` above, and the first attempt at this was
+      // reordering ALONE, which only moved the victim — a bare `--add-assignee`
+      // under `set -e` killed the label instead.
       const assignAt = mark.indexOf('--add-assignee "${GITHUB_REPOSITORY_OWNER}"');
       const addLabelAt = mark.indexOf('--add-label "${DECISION_LABEL}"');
       expect(
@@ -468,25 +469,37 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         'exit 1'
       );
       expect(failArm, 'a missing label now reports success').not.toContain('exit 0');
-      expect(mark, 'the collected marks failure no longer fails the step').toContain(
-        'if [ "${marks_failed}" != "0" ]; then'
-      );
+      // Through `guardArm`, not a presence check on the whole step. The
+      // previous spelling was `expect(mark, …).toContain(<the if line>)`, which
+      // says the GUARD exists and nothing about what it does — flip its
+      // `exit 1` to `exit 0` and a run where BOTH marks failed reports green.
+      // That is the same vacuity this file's helper exists to prevent, one
+      // assertion over from where it was last found.
+      expect(
+        guardArm(mark, 'if [ "${marks_failed}" != "0" ]; then'),
+        'both marks failed and the step reported success'
+      ).toContain('exit 1');
     });
 
     it('declares every variable its shell reads — a dropped one is a daily set -u death', () => {
       // The whole `env:` block, as an EXACT object. Every entry is load-bearing
       // and none of them fails visibly: the step runs `set -euo pipefail`, so a
-      // dropped `OPEN_PR` / `DRIFTED` / `DECISION_LABEL` / marker kills it on
-      // the first unset expansion, every day, on a PR nobody is watching — and
-      // a dropped `GH_TOKEN` makes every `gh` call fail instead. A presence-only
-      // form also accepts a rewiring (`steps.drift.outputs.drifted` swapped for
+      // dropped `OPEN_PR` / `DECISION_LABEL` / marker kills it on the first
+      // unset expansion, every day, on a PR nobody is watching — and a dropped
+      // `GH_TOKEN` makes every `gh` call fail instead. A presence-only form
+      // also accepts a rewiring (`steps.publish.outputs.pr_number` swapped for
       // another step's output), which is silent in both directions.
+      //
+      // `DRIFTED` is deliberately NOT here. It was, and the clamp stopped
+      // reading it when the predicate moved to `PUBLISHED_PR` — an exact-object
+      // assertion is what makes a now-dead entry a failure rather than a line
+      // nobody notices, and the case below is what proves the shell reads every
+      // entry that IS here.
       const step = byName(MARK_STEP);
       expect(step.env).toEqual({
         GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}',
         PUBLISHED_PR: '${{ steps.publish.outputs.pr_number }}',
         OPEN_PR: '${{ steps.open_pr.outputs.number }}',
-        DRIFTED: "${{ steps.drift.outputs.drifted }}",
         DECISION_LABEL: 'needs-decision',
         VERDICT_BEGIN: '<!-- BEGIN generated: decision verdict -->',
         VERDICT_END: '<!-- END generated: decision verdict -->',
@@ -1350,12 +1363,19 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // The step's own `env:` block, with only the `${{ }}`-valued entries
       // supplied by the harness — the literals (label, markers) come from the
       // workflow, so a reworded marker is exercised rather than mirrored.
+      /** The two values of the `published` axis, named so the arms read. */
+      const PUBLISHED = '4242';
+      const NOTHING_PUBLISHED = '';
+
       const HARNESS: Record<string, string> = {
         GH_TOKEN: 'stub-token',
-        PUBLISHED_PR: '4242',
         OPEN_PR: '',
       };
-      const envFor = (drifted: string) => {
+      // `published` is the ONLY axis the step sees for this: the clamp keys on
+      // `PUBLISHED_PR`, so "AWS did not move" and "Publish lost the push race"
+      // are the same input here — which is the point of keying on it, since the
+      // retired drift-flag predicate told them apart and let the race through.
+      const envFor = (published: string) => {
         const out: Record<string, string> = {};
         for (const [key, value] of Object.entries(step.env ?? {})) {
           if (!value.includes('${{')) {
@@ -1367,12 +1387,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
           // push race with `DRIFTED` still `true`, which a `DRIFTED` predicate
           // let straight through. The harness moves both together so the arms
           // below still read as "a quiet day".
-          const supplied =
-            key === 'DRIFTED'
-              ? drifted
-              : key === 'PUBLISHED_PR' && drifted !== 'true'
-                ? ''
-                : HARNESS[key];
+          const supplied = key === 'PUBLISHED_PR' ? published : HARNESS[key];
           expect(
             supplied,
             `env ${key} is expression-valued and this harness has no value for it`
@@ -1392,7 +1407,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       writeFileSync(titleFile, BASE);
       writeFileSync(bodyFile, `${PREAMBLE}\n\n## What needs a decision\n\n- something\n`);
 
-      const run = (decisions: string, drifted: string) => {
+      const run = (decisions: string, published: string) => {
         writeFileSync(countPath!, `${decisions}\n`);
         writeFileSync(ghLog, '');
         const res = spawnSync('bash', [join(dir, 'mark.sh')], {
@@ -1408,7 +1423,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
             GH_BODY: bodyFile,
             GITHUB_REPOSITORY: 'go-to-k/cdkd',
             GITHUB_REPOSITORY_OWNER: 'go-to-k',
-            ...envFor(drifted),
+            ...envFor(published),
           },
         });
         expect(
@@ -1427,13 +1442,15 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         body.split('\n').filter((l) => l === line).length;
 
       // 1. A drift cycle carrying two decisions.
-      const two = run('2', 'true');
+      const two = run('2', PUBLISHED);
       expect(two.title).toBe(`${BASE} — 2 decisions needed`);
       expect(two.body.split('\n')[0], 'the verdict block is not at the top').toBe(begin);
       expect(two.body).toContain('2 decisions need your call');
       expect(two.body, 'the human half of the body was overwritten').toContain(PREAMBLE);
       // ORDER, observed rather than read: only the assignment notifies, so it
-      // must not sit behind a label call that `exit 1`s when the label is gone.
+      // goes first. Independence is the `marks_failed` collection, asserted
+      // statically above; this arm pins that the preference is actually
+      // honoured at runtime rather than only in the source order.
       const assignAt = two.gh.findIndex((l) => l.includes('--add-assignee'));
       const labelAt = two.gh.findIndex((l) => l.includes('--add-label'));
       expect(assignAt, 'no assignment was issued at 2 decisions').toBeGreaterThan(-1);
@@ -1442,7 +1459,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
 
       // 2. The additive path: re-marked from the title the FIRST run wrote,
       // with nothing threading the base in.
-      const one = run('1', 'true');
+      const one = run('1', PUBLISHED);
       expect(one.title).toBe(`${BASE} — 1 decision needed`);
       expect(one.body).toContain('1 decision needs your call');
       expect(one.body, 'the stale verdict survived the re-mark').not.toContain(
@@ -1454,7 +1471,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
 
       // 3. Settled. The title returns to its exact original bytes, the label
       // goes, and the assignee STAYS — it is still theirs to merge.
-      const zero = run('0', 'true');
+      const zero = run('0', PUBLISHED);
       expect(zero.title, 'the round trip did not restore the base title').toBe(BASE);
       expect(zero.body).toContain('No decisions outstanding');
       expect(count(zero.body, begin)).toBe(1);
@@ -1475,7 +1492,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // CI builds the COMMITTED tree, so clearing here would advertise green
       // over a red PR. Nothing is written at all.
       writeFileSync(join(repo, 'docs', 'regenerated.md'), 'changed\n');
-      const dirty = run('0', 'false');
+      const dirty = run('0', NOTHING_PUBLISHED);
       expect(
         dirty.gh.filter((l) => l.startsWith('pr edit') || l.startsWith('api ')),
         'the un-regenerated tree was marked anyway'
@@ -1483,11 +1500,29 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // And the same call over a CLEAN tree does proceed — without this the
       // assertion above is satisfied by any refusal, including a broken one.
       rmSync(join(repo, 'docs', 'regenerated.md'));
-      const clean = run('0', 'false');
+      const clean = run('0', NOTHING_PUBLISHED);
       expect(
         clean.gh.some((l) => l.includes('--remove-label')),
-        'the clean no-drift arm never reaches the marking'
+        'the clean no-publish arm never reaches the marking'
       ).toBe(true);
+
+      // 5. A CRLF body — what GitHub stores after any edit made in the WEB UI,
+      // which is the recovery path the workflow's own warnings tell a human to
+      // take. The markers are located with `grep -Fx`, which wants a byte-exact
+      // whole line, so without the `tr -d '\r'` both counts come back 0, the
+      // step lands on the INSERT arm and prepends a SECOND verdict block — one
+      // more per cycle, the body growth the line-number splice exists to stop.
+      //
+      // Asserted through the STEP rather than by matching the pipeline's
+      // spelling: the chain that matters is strip → locate → replace, and a
+      // regex on `tr -d` says only that one link is present.
+      const crlf = `${begin}\r\n> **9 decisions need your call.** stale\r\n${end}\r\n\r\n## Summary\r\n\r\nHuman prose.\r\n`;
+      writeFileSync(bodyFile, crlf);
+      writeFileSync(titleFile, `${BASE}\n`);
+      const crlfRun = run('2', PUBLISHED);
+      expect(count(crlfRun.body, begin), 'a CRLF body grew a second verdict block').toBe(1);
+      expect(crlfRun.body, 'the stale verdict survived a CRLF body').not.toContain('stale');
+      expect(crlfRun.body, 'the human half of a CRLF body was lost').toContain('Human prose.');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

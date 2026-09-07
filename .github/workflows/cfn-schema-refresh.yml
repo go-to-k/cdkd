@@ -512,9 +512,6 @@ jobs:
           # they are then the same number.
           PUBLISHED_PR: ${{ steps.publish.outputs.pr_number }}
           OPEN_PR: ${{ steps.open_pr.outputs.number }}
-          # Whether AWS actually moved this cycle. Load-bearing below: on the
-          # no-drift arm the count is not comparable to a published one.
-          DRIFTED: ${{ steps.drift.outputs.drifted }}
           # Pre-created in the repository rather than created here. `gh pr edit
           # --add-label` fails on a label that does not exist, and a workflow
           # that creates one on demand would also recreate a label a maintainer
@@ -582,9 +579,10 @@ jobs:
           # `property-coverage` red however the diff came out, and the
           # clean-tree test below is what rules out the un-regenerated case.
           # The predicate is "did this cycle PUBLISH", not "did AWS move".
-          # Keying on `DRIFTED` alone let the lost-push-race case through:
-          # Publish `exit 0`s without writing `pr_number` while `DRIFTED` is
-          # still `true`, so the marking would be written from a count computed
+          # An earlier revision keyed on the drift step's output instead --
+          # that env entry is gone now -- and it let the lost-push-race case
+          # through: Publish `exit 0`s without writing `pr_number` while drift
+          # is still `true`, so the marking would be written from a count computed
           # over the very tree that was thrown away -- the exact case the
           # paragraph above is about -- and the clean-tree probe below, the
           # thing that would have caught it, was skipped.
@@ -673,15 +671,16 @@ jobs:
             exit 0
           fi
 
-          # The ASSIGNEE FIRST, because it is the only one of the three that
-          # notifies. Ordered after the label, a repository missing the label
-          # lost the notification too: the label failure `exit 1`s and the
-          # assignment below it never runs, so the one mark that reaches a
-          # maintainer who is NOT reading the PR list depended on a mark that
-          # is legible only to someone already reading it. `--add-assignee` is
-          # idempotent, and the owner is read from the event rather than
-          # hard-coded so a fork or a transfer cannot silently assign a
-          # stranger.
+          # The assignee is attempted FIRST and neither mark may take the
+          # other down. Ordering alone was the first fix and it only moved the
+          # victim: with a bare `--add-assignee` under `set -e`, a 422 for an
+          # unassignable owner killed the LABEL instead, and with no
+          # `::error::` naming a fix. So the order is now a preference (the
+          # notification goes out before anything can fail) rather than the
+          # safety property — the collected `marks_failed` below is that.
+          # `--add-assignee` is idempotent, and the owner is read from the
+          # event rather than hard-coded so a fork or a transfer cannot
+          # silently assign a stranger.
           # Both marks are ATTEMPTED, then the failures are reported together.
           # Ordering alone only moved the victim: a bare `--add-assignee` under
           # `set -e` -- a 422 for an org owner after a transfer, or a user who

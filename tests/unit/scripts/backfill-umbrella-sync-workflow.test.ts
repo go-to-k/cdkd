@@ -29,7 +29,9 @@
  * to write the wrong thing or nothing at all.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -439,5 +441,85 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
         'the write swallows its own failure — a 403 would now report green'
       ).not.toMatch(/\|\||\btrue\b/);
     });
+
+    it('RUNS the splice: a CRLF body keeps its human half and gains no second block', () => {
+      // EXECUTED, not matched. Every case above reads the shell as text, and
+      // the defect this arm is about was invisible to all of them: tightening
+      // the marker match to `grep -Fx` made it byte-exact on a whole line, and
+      // a body edited in the GitHub WEB UI is stored with CRLF — so the marker
+      // reads as `<!-- BEGIN … -->\r`, both counts come back 0, and the step
+      // refuses forever over markers that are already correct. The recovery its
+      // own warning names, hand-editing the issue, is what creates the CRLF.
+      //
+      // What is asserted is the CHAIN — strip, locate, splice — rather than the
+      // spelling of any one link, which is what a regex on `tr -d` gives.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-splice-run-'));
+      try {
+        const bin = join(dir, 'bin');
+        mkdirSync(bin, { recursive: true });
+        const log = join(dir, 'gh.log');
+        const bodyFile = join(dir, 'body');
+        const listFile = join(dir, 'list');
+        const written = join(dir, 'written');
+        // A stub `gh` that answers the two reads and captures the write.
+        writeFileSync(
+          join(bin, 'gh'),
+          `#!/bin/bash
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list") cat "$GH_LIST" ;;
+  "issue view") cat "$GH_BODY" ;;
+  "issue edit")
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--body-file" ]; then cp "$2" "$GH_WRITTEN"; fi
+      shift
+    done ;;
+esac
+`,
+          { mode: 0o755 }
+        );
+        writeFileSync(listFile, JSON.stringify([{ number: 2762 }]));
+        const begin = byName(SPLICE_STEP).env!['MARKER_BEGIN']!;
+        const end = byName(SPLICE_STEP).env!['MARKER_END']!;
+        const PROVENANCE = 'PR #795 closed the first slice.';
+        writeFileSync(
+          bodyFile,
+          `## How entries arrive here\r\n\r\n${begin}\r\n- [ ] \`AWS::Old::Type\`: \`Stale\`\r\n${end}\r\n\r\n## Where the history lives\r\n\r\n${PROVENANCE}\r\n`
+        );
+        writeFileSync(join(dir, 'checklist.md'), '- [ ] `AWS::New::Type`: `Fresh`\n');
+        // `/tmp/checklist.md` is absolute in the shell, so the sandbox takes it
+        // over via TMPDIR-independent substitution rather than by writing to a
+        // path other suites share.
+        const shell = shellOf(SPLICE_STEP).split('/tmp/checklist.md').join(join(dir, 'checklist.md'));
+        writeFileSync(join(dir, 'splice.sh'), shell);
+        const res = spawnSync('bash', [join(dir, 'splice.sh')], {
+          encoding: 'utf8',
+          env: {
+            PATH: `${bin}:${process.env['PATH'] ?? ''}`,
+            HOME: dir,
+            TMPDIR: dir,
+            GH_LOG: log,
+            GH_LIST: listFile,
+            GH_BODY: bodyFile,
+            GH_WRITTEN: written,
+            BACKFILL_UMBRELLA_LABEL: byName(SPLICE_STEP).env!['BACKFILL_UMBRELLA_LABEL']!,
+            MARKER_BEGIN: begin,
+            MARKER_END: end,
+          },
+        });
+        expect(res.status, `the step exited ${res.status}: ${res.stdout}${res.stderr}`).toBe(0);
+        expect(
+          res.stdout,
+          'a CRLF body was refused as if its markers were missing'
+        ).not.toContain('must carry exactly one');
+        const out = readFileSync(written, 'utf8');
+        expect(out.split('\n').filter((l) => l === begin).length, 'a second block was spliced in').toBe(1);
+        expect(out, 'the stale row survived').not.toContain('Stale');
+        expect(out, 'the fresh rows were not written').toContain('AWS::New::Type');
+        expect(out, 'the human provenance was lost').toContain(PROVENANCE);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 60_000);
   });
 });
