@@ -20,7 +20,17 @@
  * had exactly those two holes.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { CHECK_GUIDANCE } from '../../../scripts/diagnose-schema-refresh.mjs';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +47,33 @@ const workflow = readFileSync(WORKFLOW_PATH, 'utf8');
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const parsed: any = parseYaml(workflow);
+
+  const steps: Array<{
+    name?: string;
+    if?: string;
+    run?: string;
+    uses?: string;
+    env?: Record<string, string>;
+  }> =
+    parsed.jobs.refresh.steps;
+  const byName = (name: string) => {
+    const step = steps.find((s) => s.name === name);
+    expect(step, `no step named ${JSON.stringify(name)} — it was renamed or deleted`).toBeDefined();
+    return step!;
+  };
+
+  /**
+   * A step's shell with `#` comment lines removed. Load-bearing for the
+   * NEGATIVE assertions below: this workflow's comments deliberately QUOTE
+   * the wrong forms in order to explain why they are wrong (`git diff
+   * --quiet`, a bare `--force-with-lease`), so a naive `not.toContain` reads
+   * the explanation as the defect and fails on correct code.
+   */
+  const shellOf = (name: string) =>
+    byName(name)
+      .run!.split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
 
 /**
  * The task the workflow invokes to do the capture. Named here as a literal
@@ -74,42 +111,71 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
    * simply stops opening PRs, on a cadence nobody is watching.
    */
   describe('step wiring', () => {
-    const steps: Array<{ name?: string; if?: string; run?: string; uses?: string }> =
-      parsed.jobs.refresh.steps;
-    const byName = (name: string) => {
-      const step = steps.find((s) => s.name === name);
-      expect(step, `no step named ${JSON.stringify(name)} — it was renamed or deleted`).toBeDefined();
-      return step!;
-    };
-
-    /**
-     * A step's shell with `#` comment lines removed. Load-bearing for the
-     * NEGATIVE assertions below: this workflow's comments deliberately QUOTE
-     * the wrong forms in order to explain why they are wrong (`git diff
-     * --quiet`, a bare `--force-with-lease`), so a naive `not.toContain` reads
-     * the explanation as the defect and fails on correct code.
-     */
-    const shellOf = (name: string) =>
-      byName(name)
-        .run!.split('\n')
-        .filter((l) => !/^\s*#/.test(l))
-        .join('\n');
-
-    it('gates the refresh, the drift probe and the PR on NO open refresh PR', () => {
+    it('refreshes and probes drift UNCONDITIONALLY, gating only the publish', () => {
+      // Load-bearing since the job stopped skipping: an open PR must not stop
+      // the refresh, or every new AWS addition waits for that PR to merge —
+      // and the PR that stays open longest is the RED one, exactly the window
+      // where waiting costs most.
       for (const name of ['Refresh fixtures from the public schema bundle', 'Detect drift']) {
-        expect(byName(name).if).toBe("steps.open_pr.outputs.number == ''");
+        expect(byName(name).if).toBeUndefined();
       }
-      for (const name of ['Regenerate the derived artifacts', 'Open the refresh PR']) {
+      for (const name of [
+        'Regenerate the derived artifacts',
+        'Diagnose what needs a decision',
+        'Publish the refresh',
+      ]) {
         expect(byName(name).if).toBe("steps.drift.outputs.drifted == 'true'");
       }
     });
 
-    it('gates the skip comment on the OPPOSITE condition', () => {
-      // The polarity pair. Swapping these two is the mutation the text
-      // assertions could not see.
-      expect(byName('Note the skipped cycle on the open PR').if).toBe(
+    it('switches onto the open PR branch only when one is open', () => {
+      expect(byName("Switch to the open refresh PR's branch").if).toBe(
         "steps.open_pr.outputs.number != ''"
       );
+    });
+
+    it('pushes onto an open PR ADDITIVELY — never forcing over a human commit', () => {
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('${existing_branch}');
+      expect(publish).toMatch(/recomputes the same drift/);
+      // Sliced STRUCTURALLY, not matched on one line. The earlier assertion was
+      // `/force[^\n]*\$\{existing_branch\}/`, and the real push is
+      // line-continued — so the mutation it existed to catch (adding `--force`
+      // to the existing-branch push) put the two tokens on different lines and
+      // the test stayed green.
+      const armStart = publish.indexOf('if [ -n "${existing_branch');
+      // Indentation-agnostic: the YAML block scalar strips the common indent,
+      // so the `else` arrives at two spaces, not ten.
+      const armEnd = publish.slice(armStart).search(/\n\s*else\s*\n/) + armStart;
+      expect(armStart, 'existing-branch arm not found').toBeGreaterThanOrEqual(0);
+      expect(armEnd, 'existing-branch arm has no else').toBeGreaterThan(armStart);
+      expect(publish.slice(armStart, armEnd)).not.toContain('force');
+    });
+
+    it('posts the diagnosis, on a new PR and on an updated one alike', () => {
+      const publish = shellOf('Publish the refresh');
+      // The diagnosis runs in its OWN step, before the token-holding one — it
+      // spawns npm, which inherits the environment.
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(diagnose).toContain('diagnose-schema-refresh.mjs');
+      expect(publish).not.toContain('diagnose-schema-refresh.mjs');
+      const order = steps.map((st) => st.name);
+      expect(order.indexOf('Diagnose what needs a decision')).toBeLessThan(
+        order.indexOf('Publish the refresh')
+      );
+      // Anchored to the COMMENT's own body file. `--body-file` alone was
+      // satisfied by the create path, so swapping the comment to `--body "x"`
+      // stayed green.
+      expect(publish).toMatch(/gh pr comment[\s\S]{0,120}--body-file \/tmp\/diagnosis\.md/);
+      expect(publish).toContain('--body-file /tmp/pr-body.md');
+    });
+
+    it('folds new writable properties into the backfill umbrella without failing the job', () => {
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('gh issue comment');
+      // The PR is the load-bearing output; losing it because an issue comment
+      // failed would be the wrong trade, and the list is in the PR body too.
+      expect(publish).toMatch(/gh issue comment[\s\S]*?\|\|/);
     });
 
     it('keeps the drift probe between the refresh and the regeneration', () => {
@@ -121,7 +187,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         order.indexOf('Regenerate the derived artifacts')
       );
       expect(order.indexOf('Regenerate the derived artifacts')).toBeLessThan(
-        order.indexOf('Open the refresh PR')
+        order.indexOf('Publish the refresh')
       );
     });
 
@@ -160,7 +226,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     });
 
     it('pushes with an EXPLICIT token, since credentials are not persisted', () => {
-      const push = shellOf('Open the refresh PR');
+      const push = shellOf('Publish the refresh');
       expect(push).toContain('x-access-token:${GH_TOKEN}');
       // A bare `git push origin` would fail: the checkout persists no auth.
       expect(push).not.toMatch(/git push\s+origin\s/);
@@ -172,7 +238,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // target is an anonymous URL). Git then expects the branch NOT to exist
       // — while `force` is set only when ls-remote proved it does — so the
       // push is rejected `(stale info)` in exactly the case it exists for.
-      const push = shellOf('Open the refresh PR');
+      const push = shellOf('Publish the refresh');
       expect(push).toContain('--force-with-lease=refs/heads/');
       expect(push).not.toMatch(/--force-with-lease(?!=)/);
     });
@@ -191,31 +257,359 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(guard).not.toContain('--author');
     });
 
-    it('posts the skip note ONCE per PR, not once per daily cycle', () => {
-      // Unattended and daily: without the marker check a PR left open for a
-      // month collects thirty identical comments, which trains the reader to
-      // ignore the thread.
-      const note = shellOf('Note the skipped cycle on the open PR');
-      // The marker must reach the POSTED BODY, not merely be assigned. It
-      // appears once in the shell (the `marker=` line), so a `toContain` on
-      // the name alone stays green when `${marker}` is dropped from `--body`
-      // — which is exactly the regression (every run posts again).
-      expect(note).toMatch(/--body \\\n\s*"\$\{marker\}/);
-      expect(note).toContain('cdkd-schema-refresh-skip-note');
-      expect(note).toContain('set -euo pipefail');
-      // Captured into a variable rather than piped: `grep -q` closing the pipe
-      // makes SIGPIPE the pipeline status under `pipefail`, inverting the
-      // guard on a long thread.
-      expect(note).toMatch(/comments=\$\(gh pr view/);
-      expect(note).not.toMatch(/\|\s*grep -qF/);
-    });
 
     it('stamps the branch per DAY, matching the daily cadence', () => {
       // The branch name IS the cycle's identity. At a daily cadence a
       // month-granular stamp would make every run after the first in a month
       // collide with an existing branch, sending each one down the
       // force-with-lease recovery path for no reason.
-      expect(shellOf('Open the refresh PR')).toContain('date -u +%Y-%m-%d');
+      // Anchored on the CYCLE assignment and the branch it builds, not on any
+      // `date -u +%Y-%m-%d` in the step — the commit messages carry one too, so
+      // a regression of `cycle=` back to `%Y-%m` left the old assertion green.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('cycle=$(date -u +%Y-%m-%d)');
+      expect(publish).toContain('branch="bot/cfn-schema-refresh/${cycle}"');
+    });
+
+    it('keeps the write-scoped token out of the checker and the diagnosis', () => {
+      // The diagnosis spawns `npm`, which inherits the environment; running it
+      // in the step that holds `contents: write` widens exactly the surface
+      // `persist-credentials: false` was added to close.
+      const diagnose = steps.find((st) => st.name === 'Diagnose what needs a decision')!;
+      expect(diagnose.env, 'the diagnosis step must hold no token').toBeUndefined();
+    });
+
+    it('sets pipefail on the tee\u2019d refresh, or the exit code is lost', () => {
+      // `run:` with no `shell:` is `bash -e {0}` — NOT pipefail. Without this
+      // the `tee` added for the skip list reports ITS status, and the refresh's
+      // exit 2 on a capture failure becomes "no drift" and a green run.
+      const refresh = shellOf('Refresh fixtures from the public schema bundle');
+      // Position, not presence: the token appearing anywhere in the step is
+      // satisfied by a `set -o pipefail` written AFTER the pipeline, which
+      // protects nothing. Measured — moving it below the `tee` left this green.
+      const pipefailAt = refresh.indexOf('set -o pipefail');
+      const teeAt = refresh.indexOf('tee /tmp/refresh.log');
+      expect(teeAt, 'the tee\u2019d refresh is gone \u2014 this case guards nothing').toBeGreaterThan(-1);
+      expect(pipefailAt, 'no pipefail in the refresh step').toBeGreaterThan(-1);
+      expect(pipefailAt, 'pipefail is set AFTER the pipeline it must guard').toBeLessThan(teeAt);
+    });
+
+    it('gives every step that runs a pipeline a pipefail before it', () => {
+      // The generalisation of the defect above, so the next pipeline added to
+      // any step cannot reintroduce it silently.
+      // Through `shellOf`, not raw `run`: the Refresh step's own comment says
+      // "`set -o pipefail` is REQUIRED here", which put the token at index 10
+      // and left this case green with the real `set -o pipefail` DELETED. That
+      // is the exact vacuity `shellOf` exists to remove.
+      for (const step of steps) {
+        if (!step.name || !step.run) continue;
+        const shell = shellOf(step.name);
+        const pipeAt = shell.search(/\S \| \S|\|\s*\n/);
+        if (pipeAt === -1) continue;
+        const at = shell.indexOf('pipefail');
+        expect(at, `${step.name}: runs a pipeline with no pipefail`).toBeGreaterThan(-1);
+        expect(at, `${step.name}: pipefail is set after its first pipeline`).toBeLessThan(pipeAt);
+      }
+    });
+
+    it('fails the step when a push failure is NOT a lost race', () => {
+      // A permission or branch-protection failure must not share the lost-race
+      // green exit, or the daily job lands nothing forever while reporting
+      // success.
+      const publish = shellOf('Publish the refresh');
+      // The RELATION, not the tokens. Inverting the comparison — so a real
+      // permission failure exits 0 and a real lost race exits 1, precisely the
+      // defect — left the token-presence form green, as did blanking the
+      // baseline entirely.
+      expect(publish).toMatch(/if \[ -n "\$\{now\}" \] && \[ "\$\{now\}" != "\$\{base_sha\}" \]; then/);
+      const raceAt = publish.search(/::warning::Could not push/);
+      const errAt = publish.search(/::error::Push to/);
+      expect(raceAt).toBeGreaterThan(-1);
+      expect(errAt).toBeGreaterThan(raceAt);
+      // The lost-race arm exits 0 INSIDE the moved-tip branch; the hard failure
+      // is the fall-through.
+      expect(publish.slice(raceAt, errAt)).toMatch(/exit 0/);
+      expect(publish.slice(errAt)).toMatch(/exit 1/);
+    });
+
+    it('takes the push baseline from the LOCAL base, not a remote read', () => {
+      // Reading the remote just before pushing samples it AFTER a concurrent
+      // human push, so the post-failure comparison finds the tip "unmoved" and
+      // calls a real lost race "not a lost race", exiting 1. The base the
+      // commit was built on is what a non-fast-forward is relative to.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('base_sha=$(git rev-parse HEAD)');
+      const baseAt = publish.indexOf('base_sha=$(git rev-parse HEAD)');
+      const commitAt = publish.indexOf('git commit -m "chore(schemas): additional');
+      expect(commitAt).toBeGreaterThan(-1);
+      expect(baseAt, 'the baseline is captured after the commit it describes').toBeLessThan(
+        commitAt
+      );
+      expect(publish, 'the baseline is still read off the remote').not.toMatch(
+        /base_sha=\$\(git ls-remote/
+      );
+    });
+
+    it('guards the umbrella comment\u2019s PR link on the number having resolved', () => {
+      // The comment itself is deliberately unguarded — the list is worth posting
+      // even when the number lookup failed. What must be guarded is the LINK,
+      // which would otherwise read `pull/` and point at the repo's PR index.
+      const publish = shellOf('Publish the refresh');
+      const guardAt = publish.search(/if \[ -n "\$\{pr_number:?-?\}" \]/);
+      const linkAt = publish.indexOf('/pull/${pr_number}');
+      expect(guardAt, 'the PR link is emitted with no PR-number guard').toBeGreaterThan(-1);
+      expect(linkAt).toBeGreaterThan(-1);
+      expect(guardAt).toBeLessThan(linkAt);
+      // And the comment still fires outside that guard.
+      expect(publish.indexOf('${BACKFILL_UMBRELLA}')).toBeGreaterThan(linkAt);
+    });
+
+    it('passes the checker’s EXIT CODE, not only its output', () => {
+      // Text alone was not enough: an empty log, a `task not found` and an OOM
+      // kill all carry no announcement to grep for, and each rendered
+      // "additions only" over a checker that never ran.
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(diagnose).toContain('nested_key_rc=$?');
+      // The VARIABLE, not just the flag: `--nested-key-rc 0` hard-coded would
+      // satisfy a bare flag-presence check while restoring the behaviour the
+      // flag exists to remove, and the script's absent-flag arm defaults to 0
+      // for the by-hand invocation.
+      expect(diagnose).toMatch(/--nested-key-rc "\$\{nested_key_rc\}"/);
+      // Captured immediately after the invocation: any command in between
+      // overwrites `$?` and the status becomes that command's.
+      const lines = diagnose.split('\n').map((l) => l.trim());
+      const runAt = lines.findIndex((l) => l.startsWith('vp run audit:nested-key-coverage:check'));
+      expect(runAt).toBeGreaterThan(-1);
+      expect(lines[runAt + 1], '$? is captured after some other command ran').toBe(
+        'nested_key_rc=$?'
+      );
+    });
+
+    it('collects EVERY fixture-driven check, and the guidance table knows them all', () => {
+      // The list lives in the workflow and the guidance in the script, with
+      // nothing joining them — which is how `sdk-attr-coverage` and
+      // `enrichment-coverage` went unreported for eight rounds while
+      // `property-coverage` was being fixed. A fourth check added to one side
+      // and not the other fails here.
+      const regen = shellOf('Regenerate the derived artifacts');
+      const collected = [...regen.matchAll(/^\s*run_check (\S+)/gm)].map((m) => m[1]!);
+      expect(collected.length, 'no run_check invocations found').toBeGreaterThanOrEqual(3);
+      expect(new Set(collected)).toEqual(new Set(Object.keys(CHECK_GUIDANCE)));
+      // And each one really is fixture-driven — the property that makes a
+      // schema refresh able to redden it.
+      for (const check of collected) {
+        const task = check.replace(/^audit:/, '').replace(/:check$/, '');
+        const script = ['gen-' + task + '.ts', task + '.ts'].find((f) =>
+          existsSync(join(REPO_ROOT, 'scripts', f))
+        );
+        if (!script) continue; // property-coverage is a vitest run, not a script.
+        expect(
+          readFileSync(join(REPO_ROOT, 'scripts', script), 'utf8'),
+          `${check} does not read the fixtures — why is it in this list?`
+        ).toContain('cfn-schemas');
+      }
+    });
+
+    it('covers every suite asserting silentDrop is empty, and every filter matches something', () => {
+      // BOUND, stated because an over-claimed fence is what this PR keeps
+      // producing: the derivation keys on ONE assertion spelling
+      // (`silentDrop.keys() ... toEqual([])`). The two named non-family filters
+      // are hand-listed and unfenced, and `gen-sdk-attr-coverage.test.ts`'s
+      // `findGaps(report)).toEqual([])` is zero-headroom in a different shape —
+      // substantively covered, since `audit:sdk-attr-coverage:check` runs the
+      // same predicate and is its own `run_check`, but invisible here.
+      // Five suites assert `silentDrop` is empty against the REAL coverage, so
+      // one writable property AWS adds to any of their types reds CI — while
+      // `property-coverage` under `CDKD_GENERATE_BACKFILL` absorbs the same
+      // addition and stays green. Naming one of them covered three files of the
+      // five. The family is DERIVED here so a sixth cannot be added silently.
+      const walk = (dir: string): string[] =>
+        readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+          e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]
+        );
+      // `tests/**` AND `src/**` — vitest's include covers both, and walking
+      // `tests/unit` alone would miss a family member added anywhere else.
+      const testFiles = [
+        ...walk(join(REPO_ROOT, 'tests')),
+        ...walk(join(REPO_ROOT, 'src')),
+      ].filter((f) => f.endsWith('.test.ts'));
+      const zeroHeadroom = testFiles.filter(
+        (f) =>
+          // This file CONTAINS the pattern, as the literal doing the matching —
+          // widening the walk to all of `tests/**` made the fence derive itself.
+          f !== fileURLToPath(import.meta.url) &&
+          /silentDrop\.keys\(\)[\s\S]{0,80}?toEqual\(\[\]\)/.test(readFileSync(f, 'utf8'))
+      );
+      expect(
+        zeroHeadroom.length,
+        'no zero-headroom suite found — the derivation broke, not the coverage'
+      ).toBeGreaterThanOrEqual(5);
+
+      const regen = shellOf('Regenerate the derived artifacts');
+      // Line continuations joined first: the invocation is written across two
+      // lines, so a naive per-line match finds only the `run_check` half.
+      const flat = regen
+        .replace(/\\\n\s*/g, ' ')
+        .split('\n')
+        .map((l) => l.trim())
+        .join('\n');
+      const line = flat.match(/run_check fixture-consumer-tests\s+vp test run ([^\n]*)/);
+      expect(line, 'the fixture-consumer run_check is gone').not.toBeNull();
+      const filters = line![1]!.trim().split(/\s+/).filter(Boolean);
+
+      for (const file of zeroHeadroom) {
+        const rel = file.slice(REPO_ROOT.length + 1);
+        expect(
+          filters.some((needle) => rel.includes(needle)),
+          `${rel} asserts zero headroom and no filter selects it`
+        ).toBe(true);
+      }
+
+      for (const needle of filters) {
+        // A leading dash is parsed as a FLAG, not a filter: `-props` killed the
+        // whole step with `Unknown option \`-p\``, and the substring check below
+        // passed it happily — the filter matched the filenames it was never
+        // going to be given to vitest as.
+        expect(
+          needle.startsWith('-'),
+          `filter ${JSON.stringify(needle)} starts with a dash — vitest reads it as a flag`
+        ).toBe(false);
+      }
+
+      // The guidance's PASTE-ABLE COMMAND must be these same filters. Two
+      // rounds of this fence were too weak: comparing the key SET let round 10
+      // widen the workflow while the rendered command still named three files
+      // of eleven, and comparing a token SET over the whole row let a dropped
+      // `\\` pass — after which the pasted command runs ONE filter and comes
+      // back GREEN over a real red. So the block is parsed as a command.
+      const guidance = CHECK_GUIDANCE['fixture-consumer-tests']!;
+      const open = guidance.indexOf('```bash');
+      const close = guidance.indexOf('```', open + 1);
+      expect(open, 'the guidance no longer carries a command block').toBeGreaterThan(-1);
+      expect(close, 'the command block is unterminated').toBeGreaterThan(open);
+      // Exactly one: the fence reads the FIRST block, and a second one renders
+      // into the PR body just as visibly while being fenced by nothing.
+      expect(
+        guidance.filter((l) => l.trim().startsWith('```')).length,
+        'more than one command block — only the first is fenced'
+      ).toBe(2);
+      // LEADING whitespace only. Trimming both ends stripped a trailing space
+      // AFTER the backslash before testing it — and `\ ` + newline is not a
+      // continuation in bash, so the pasted command stops there. Measured: one
+      // trailing space dropped five of the seven filters while the fence stayed
+      // green, which is the failure this fence exists for. A trailing space in
+      // a JS string literal is invisible in review and `vp fmt` does not see
+      // inside one.
+      const command = guidance.slice(open + 1, close).map((l) => l.replace(/^\s+/, ''));
+      expect(command[0], 'the block does not start with the invocation').toBe('vp test run \\');
+
+      // Every line but the last continues, or the shell ends the command there.
+      const argLines = command.slice(1);
+      argLines.forEach((line, i) => {
+        const isLast = i === argLines.length - 1;
+        expect(
+          line.endsWith('\\'),
+          `line ${i + 2} of the command ${isLast ? 'must NOT' : 'must'} continue: ${JSON.stringify(line)}`
+        ).toBe(!isLast);
+      });
+
+      const guidanceFilters = argLines.map((l) => l.replace(/\s*\\$/, '').trim());
+      expect(
+        guidanceFilters,
+        'the pasted command and the workflow run different filters'
+      ).toEqual(filters);
+
+      // And a filter matching NOTHING is a silent narrowing: vitest ignores a
+      // non-matching positional when others match, so renaming a file removes
+      // its coverage with no red anywhere.
+      for (const needle of filters) {
+        expect(
+          testFiles.some((f) => f.slice(REPO_ROOT.length + 1).includes(needle)),
+          `filter ${JSON.stringify(needle)} matches no test file`
+        ).toBe(true);
+      }
+    });
+
+    it('names every collected check in the operator runbook', () => {
+      // The last unfenced pair. `run_check` names are fenced against
+      // `CHECK_GUIDANCE`'s keys, so a fifth check is FORCED into the guidance —
+      // and was free to be left out of the page a maintainer actually opens
+      // when the PR arrives. The table is prose; nothing else reads it.
+      const runbook = readFileSync(join(REPO_ROOT, 'docs/schema-refresh-runbook.md'), 'utf8');
+      for (const check of Object.keys(CHECK_GUIDANCE)) {
+        // The TABLE ROW, not the file. `property-coverage` also appears in two
+        // `vp test run` code blocks, so a whole-file `toContain` stayed green
+        // with its row deleted — and its row is the one most likely to be
+        // edited. The other three were bound only by coincidence.
+        expect(runbook, `the runbook table does not name ${check}`).toContain(`| \`${check}\` |`);
+      }
+    });
+
+    it('carries the failed-check list ACROSS steps', () => {
+      // `|| echo` stops `set -e` aborting and nothing else, so the red never
+      // reached the diagnosis — a failing coverage check rendered as "nothing
+      // needs a decision". Two separate mistakes are pinned here: `$?` after a
+      // `||` compound is the ECHO's status, and a shell variable does not
+      // survive into the next `run:` at all.
+      const regen = shellOf('Regenerate the derived artifacts');
+      // A shell variable does not survive into the next `run:` at all, and an
+      // absent `--failed-checks` reads as "nothing failed" — so losing it here
+      // restores the exact silence this mechanism removes.
+      expect(regen, 'the list dies with this step\u2019s shell').toMatch(
+        /echo "FAILED_CHECKS=\$\{failed_checks\}" >> "\$\{GITHUB_ENV\}"/
+      );
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(diagnose).toMatch(/--failed-checks "\$\{FAILED_CHECKS\}"/);
+    });
+
+    it('pins the cross-file literals the shell greps for', () => {
+      // Producer and consumer live in different files with nothing joining
+      // them: either reword silently empties the skip list or kills the
+      // umbrella fold, with no failure anywhere.
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(readFileSync(join(REPO_ROOT, 'scripts/refresh-cfn-schemas.mjs'), 'utf8')).toContain(
+        'No entry in the public bundle'
+      );
+      expect(diagnose).toContain('No entry in the public bundle');
+      const heading = '### Writable properties AWS added';
+      expect(
+        readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8')
+      ).toContain(heading);
+      expect(shellOf('Publish the refresh')).toContain(heading);
+    });
+
+    it('names the backfill umbrella issue explicitly', () => {
+      // A typo here posts the backfill list to an unrelated issue, silently.
+      const publish = steps.find((st) => st.name === 'Publish the refresh')!;
+      expect(publish.env?.['BACKFILL_UMBRELLA']).toBe('609');
+    });
+
+    it('re-checks the PR is still OPEN before pushing onto its branch', () => {
+      // A squash merge with --delete-branch between the guard and the push
+      // would make the plain push RE-CREATE the deleted branch — an orphan ref
+      // with no PR, the class this repo has a dedicated hook for.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('--json state');
+      expect(publish).toMatch(/!= "OPEN"/);
+      // The `exit 0` is the check. Without it the comparison runs and the push
+      // proceeds anyway — inert, and the plain push then RE-CREATES the branch
+      // a merge just deleted.
+      const stateIdx = publish.indexOf('--json state');
+      const pushIdx = publish.indexOf('git push');
+      expect(stateIdx).toBeGreaterThanOrEqual(0);
+      expect(stateIdx, 'the OPEN re-check must precede the push').toBeLessThan(pushIdx);
+      expect(publish.slice(stateIdx, pushIdx)).toContain('exit 0');
+    });
+
+    it('passes the refresh skip list to the diagnosis', () => {
+      // The flag existed and nothing passed it, so the "Not refreshed" section
+      // could never render in production.
+      expect(shellOf('Refresh fixtures from the public schema bundle')).toContain('/tmp/refresh.log');
+      // The SPACE form: `--skipped-log=...` is read too now, but the workflow
+      // writes the space form and a bare `toContain` accepted either — the
+      // sibling pins for `--nested-key-rc` and `--failed-checks` already
+      // require the space form and its variable.
+      expect(shellOf('Diagnose what needs a decision')).toMatch(/--skipped-log \S/);
     });
 
     it('fails the open-PR guard closed rather than open on a gh error', () => {
@@ -252,11 +646,17 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).toContain(`branch="${BRANCH_PREFIX}`);
   });
 
-  it('skips the cycle when a refresh PR is already open, rather than pushing to it', () => {
-    // A human is expected to commit classifications onto the open branch; a bot
-    // push would race or destroy that work.
-    expect(workflow).toContain("steps.open_pr.outputs.number == ''");
+  it('UPDATES an open refresh PR rather than skipping the cycle', () => {
+    // This replaced a case asserting the opposite. Skipping was the original
+    // design, on the reasoning that a bot push would destroy a human's
+    // classification commits — but everything the job rewrites is derived and
+    // recomputed, and `bogusTolerated` is explicitly preserved across
+    // regeneration, so an additive push reflects that work rather than undoing
+    // it. Skipping cost most exactly where it hurt: a RED PR stays open
+    // longest, holding back every new AWS addition behind it.
     expect(workflow).toContain("steps.open_pr.outputs.number != ''");
+    expect(workflow).toContain('existing_branch');
+    expect(workflow).not.toContain('Note the skipped cycle');
   });
 
   /**
@@ -270,17 +670,107 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).not.toMatch(/git commit -m "(feat|fix|perf)\(/);
   });
 
-  it('tolerates a red backfill regeneration instead of aborting before the PR exists', () => {
-    // A removed property leaves a bogus declaration no generator can retire, so
-    // that step is EXPECTED to fail on some cycles. Letting it stop the run
-    // would suppress the very PR through which the human finds out.
-    expect(workflow).toMatch(/CDKD_GENERATE_BACKFILL=true vp test run property-coverage \|\|/);
-  });
+  it('RUNS the regenerate step with every check red, and still reaches the end', () => {
+    // Executed, not pattern-matched. Two rewrites of this case pinned a
+    // SPELLING — first `||`, then `||`-or-`if` — and each time a rewrite that
+    // preserved the invariant reddened it. The invariant is behavioural: under
+    // `set -euo pipefail` a failing check must not abort the step, and every
+    // failure must reach `$GITHUB_ENV`. So the real shell runs, with the four
+    // commands it invokes stubbed.
+    const shell = shellOf('Regenerate the derived artifacts');
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-regen-'));
+    try {
+      const envFile = join(dir, 'github-env');
+      // Fails the CHECKS only. A stub that failed everything would abort on
+      // `gen:all-matrices` instead — which is correct behaviour and would have
+      // made this case pass for the wrong reason. The pattern covers the audit
+      // tasks AND every `vp test run` filter: naming one filter left the newest
+      // check passing and the set assertion caught it.
+      const vp = [
+        '#!/bin/sh',
+        'case "$*" in',
+        '  *audit:*:check|*"test run"*) exit 1 ;;',
+        '  *) exit 0 ;;',
+        'esac',
+      ].join('\n');
+      writeFileSync(join(dir, 'vp'), `${vp}\n`, { mode: 0o755 });
+      // `env VAR=x vp ...` — drop the assignments and re-exec.
+      writeFileSync(
+        join(dir, 'env'),
+        '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in *=*) shift ;; *) break ;; esac; done\nexec "$@"\n',
+        { mode: 0o755 }
+      );
+      writeFileSync(
+        join(dir, 'run.sh'),
+        `export PATH="${dir}:$PATH"\nexport GITHUB_ENV="${envFile}"\n${shell}\necho REACHED_END\n`
+      );
+      const out = execFileSync('bash', [join(dir, 'run.sh')], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(out, 'a failing check aborted the step').toContain('REACHED_END');
+      const written = readFileSync(envFile, 'utf8');
+      // Every check that failed is collected, comma-separated, none lost.
+      const line = written.split('\n').find((l) => l.startsWith('FAILED_CHECKS='))!;
+      expect(line, 'the failed list never reached GITHUB_ENV').toBeDefined();
+      const collected = line.slice('FAILED_CHECKS='.length).split(',').filter(Boolean);
+      expect(new Set(collected)).toEqual(new Set(Object.keys(CHECK_GUIDANCE)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('RUNS the regenerate step with every check green, and collects nothing', () => {
+    // The success arm, which was unpinned: hard-coding a failure there would
+    // make every green cycle render "a decision is needed".
+    const shell = shellOf('Regenerate the derived artifacts');
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-regen-ok-'));
+    try {
+      const envFile = join(dir, 'github-env');
+      writeFileSync(join(dir, 'vp'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      writeFileSync(
+        join(dir, 'env'),
+        '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in *=*) shift ;; *) break ;; esac; done\nexec "$@"\n',
+        { mode: 0o755 }
+      );
+      writeFileSync(
+        join(dir, 'run.sh'),
+        `export PATH="${dir}:$PATH"\nexport GITHUB_ENV="${envFile}"\n${shell}\n`
+      );
+      execFileSync('bash', [join(dir, 'run.sh')], { encoding: 'utf8' });
+      const written = readFileSync(envFile, 'utf8');
+      expect(written).toContain('FAILED_CHECKS=');
+      expect(written.split('\n').find((l) => l.startsWith('FAILED_CHECKS='))).toBe(
+        'FAILED_CHECKS='
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it('denies permissions at the top level and grants them per job', () => {
     expect(workflow).toMatch(/^permissions: \{\}$/m);
     expect(workflow).toMatch(/^\s+contents: write$/m);
     expect(workflow).toMatch(/^\s+pull-requests: write$/m);
+    // Asserted because it was MISSING: `gh issue comment` needs `issues:
+    // write`, `pull-requests: write` covers PR comments only, and the call's
+    // own `|| echo "::warning::"` turns the resulting 403 into a green job with
+    // the umbrella silently never updated.
+    expect(workflow, 'gh issue comment cannot work without issues: write').toMatch(
+      /^\s+issues: write$/m
+    );
+
+    // Derived from the SHELL BODIES, not the raw file. Over the raw file this
+    // anti-vacuity floor was itself vacuous: the workflow header cites an
+    // `.../issues/2718` URL and the permission's own rationale comment contains
+    // the words `gh issue comment`, so deleting the real call left it green and
+    // the "guards nothing" message could never fire. An anti-vacuity guard that
+    // is vacuous is the defect class this PR is about, in the guard against it.
+    const shellBodies = steps
+      .map((st) => (st.name ? shellOf(st.name) : ''))
+      .join('\n');
+    const usesIssueApi = /gh issue |\/issues\//.test(shellBodies);
+    expect(usesIssueApi, 'no issue API call found — this assertion guards nothing').toBe(true);
   });
 
   it('pins every action to a full commit SHA', () => {
