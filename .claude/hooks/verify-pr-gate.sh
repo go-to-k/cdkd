@@ -111,7 +111,15 @@ fi
 # enter the tree it is judging has not cleared it. This was `|| exit 0` -- a
 # fail-open the delta's `git -C "$target_dir"` was working around rather than
 # closing (go-to-k/cdkd#2686 review).
-if ! cd "$target_dir" 2>/dev/null; then
+# `-P`, physical: bash's LOGICAL `cd` resolves `..` textually, so a path with a
+# `..` after a symlink can land in a DIFFERENT existing directory than the
+# physical chdir `git -C` did at line 95 -- `markgate verify` would then run in
+# one tree while `target_top` and the sentinel come from another (measured,
+# go-to-k/cdkd#2686 round-3 review). The refusal below is near-unreachable for
+# that reason -- line 95 already proved the chdir works -- but it fails CLOSED
+# like `check-gate.sh`'s `cannot_evaluate` rather than passing a tree it could
+# not enter.
+if ! cd -P "$target_dir" 2>/dev/null; then
   echo "Blocked by verify-pr-gate: cannot enter $target_dir to evaluate the marker." >&2
   exit 2
 fi
@@ -194,9 +202,10 @@ if [ -f "$target_top/.markgate-verify-pr-sha" ]; then
   #
   # KNOWN BOUNDS, stated rather than chased: the read FOLLOWS a symlink (an
   # attacker who can plant one in your worktree can do worse), and a sentinel
-  # whose sha is followed by a NUL passes, because bash cannot hold a NUL in a
-  # variable so it is dropped at assignment. Neither is reachable from the
-  # documented flow, which writes the file with `git rev-parse`.
+  # whose sha is followed by a NUL passes: `tr` now strips NUL so bash no longer
+  # warns about it on stderr, but the remaining bytes still read as the sha.
+  # Neither is reachable from the documented flow, which writes the file with
+  # `git rev-parse`.
   sentinel_bytes=$(wc -c < "$target_top/.markgate-verify-pr-sha" 2>/dev/null | tr -d '[:space:]')
   case "$sentinel_bytes" in
     '' | *[!0-9]*) sentinel_bytes=99999 ;;
@@ -205,7 +214,7 @@ if [ -f "$target_top/.markgate-verify-pr-sha" ]; then
     # Braces around the redirect: bash applies `< file` BEFORE `2>/dev/null`, so
     # a `chmod 000` sentinel otherwise leaks a "Permission denied" line onto the
     # hook's own stderr (verdict was already correct).
-    recorded_sha=$({ tr -d '[:space:]' < "$target_top/.markgate-verify-pr-sha"; } 2>/dev/null)
+    recorded_sha=$({ tr -d '[:space:]\000' < "$target_top/.markgate-verify-pr-sha"; } 2>/dev/null)
     case "$recorded_sha" in
       *[!0-9a-f]* | "") recorded_sha="" ;;
     esac

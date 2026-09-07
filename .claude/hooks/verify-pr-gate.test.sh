@@ -104,7 +104,13 @@ run_case() {
 
   local cwd_ok=1
   if [ -n "$expect_cwd" ]; then
-    if ! grep -qFx "$expect_cwd" "$CWD_TRACE_FILE" 2>/dev/null; then
+    # Compare PHYSICAL paths on both sides. The hook `cd -P`s (so a `..` after a
+    # symlink cannot land it in a different tree than git's chdir), and on macOS
+    # `/var` is a symlink to `/private/var` -- so the trace holds the resolved
+    # path while the fixture variable holds the logical one. This used to match
+    # only by coincidence (go-to-k/cdkd#2686 round-3 review).
+    local want_phys; want_phys=$(cd "$expect_cwd" 2>/dev/null && pwd -P)
+    if ! grep -qFx "${want_phys:-$expect_cwd}" "$CWD_TRACE_FILE" 2>/dev/null; then
       cwd_ok=0
     fi
   fi
@@ -337,8 +343,7 @@ printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 # the tail is junk: a read with no cap sees the junk and refuses, so this pins
 # the cap rather than merely the comparison.
 # The sha followed by junk. What refuses it is reading the file WHOLE: a capped
-# read would see only the sha. (An earlier revision called this "pins the cap"
-# and then said the opposite two lines down; the cap is gone.)
+# read would see only the sha.
 { printf '%s' "$real_sha"; printf '%*s' 60 ''; printf 'TAILJUNK'; } \
   > "$side_repo/.markgate-verify-pr-sha"
 run_case "sha followed by junk is REFUSED (whole-file read)" 2 fresh "" "$side_payload"
@@ -386,7 +391,6 @@ else
   fail=$((fail + 1)); fail_log+="FAIL missing-sentinel label: $missing_msg\n"
   printf 'FAIL missing-sentinel label\n'
 fi
-printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 
 # An UNREADABLE HEAD must block, and this is why the `[ -n "$head_sha" ]` guard

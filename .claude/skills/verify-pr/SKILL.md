@@ -380,17 +380,15 @@ COMMIT, and `check-gate` guards the commit. Both directions are explained in
 mise exec -- markgate set check
 mise exec -- markgate set docs
 
-# 2. Land this run's changes, so HEAD is final. The `|| ` guard because a CLEAN
-#    tree is normal on a re-run: `git commit && git push` exits 1 on "nothing
-#    to commit" and never pushes.
-git add -A
-git diff --cached --quiet || git commit -m "..."
-git push
-# From the repo TOP, and `--verify` -- both spellings matter; see hooks.md.
-
-# 3. Only now bind the parent, with HEAD final.
-git rev-parse --verify HEAD > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha"
-mise exec -- markgate set verify-pr
+# 2-3. Every `&&`, the `||`, `--verify` and `--show-toplevel` are all
+#    load-bearing; hooks.md says why. Do not unchain this. After a rebase the
+#    push needs `--force-with-lease`.
+git add -A \
+  && { git diff --cached --quiet || git commit -m "..."; } \
+  && git push \
+  && git rev-parse --verify HEAD \
+       > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha" \
+  && mise exec -- markgate set verify-pr
 ```
 
 **Anything that moves HEAD afterwards invalidates the binding, by design** — a

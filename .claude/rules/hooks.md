@@ -605,6 +605,14 @@ binding. The commit itself is guarded (`git diff --cached --quiet ||`) because a
 CLEAN tree is the normal case on a re-run after a rebase, where a bare
 `commit && push` chain exits 1 and never pushes.
 
+**The whole sequence is ONE `&&` chain, and unchaining it re-opens the class.**
+If a gate refuses the commit, unchained execution continues: the push sends
+nothing, and the bind records the OLD head — a green for work that was never
+committed. The `||` guard inside it is for the CLEAN tree that is normal on a
+re-run after a rebase, where a bare `commit && push` exits 1 on "nothing to
+commit" and never pushes. Both were live defects in the change that added the
+binding (go-to-k/cdkd#2686 rounds 2 and 3).
+
 The sentinel is written from the repo TOP (`$(git rev-parse --show-toplevel)/…`):
 the cwd-relative spelling run from a subdirectory writes a file the hook never
 reads, and `.gitignore`'s entry has no leading slash, so the stray copy is
