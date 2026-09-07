@@ -760,9 +760,16 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       /^\s+issues: write$/m
     );
 
-    // Derived, not a fixed list: any `gh issue`/`gh api .../issues` call in the
-    // workflow requires that scope, so a future one cannot be added without it.
-    const usesIssueApi = /gh issue |\/issues\//.test(workflow);
+    // Derived from the SHELL BODIES, not the raw file. Over the raw file this
+    // anti-vacuity floor was itself vacuous: the workflow header cites an
+    // `.../issues/2718` URL and the permission's own rationale comment contains
+    // the words `gh issue comment`, so deleting the real call left it green and
+    // the "guards nothing" message could never fire. An anti-vacuity guard that
+    // is vacuous is the defect class this PR is about, in the guard against it.
+    const shellBodies = steps
+      .map((st) => (st.name ? shellOf(st.name) : ''))
+      .join('\n');
+    const usesIssueApi = /gh issue |\/issues\//.test(shellBodies);
     expect(usesIssueApi, 'no issue API call found — this assertion guards nothing').toBe(true);
   });
 

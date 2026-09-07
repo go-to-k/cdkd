@@ -1990,17 +1990,17 @@ describe('collectFixtureDeltas', () => {
   });
 });
 
-describe('the module\u2019s own doc comments', () => {
-  it('has no JSDoc block orphaned from its declaration', () => {
-    // Inserting a helper directly above a documented function detaches that
-    // function's docblock and silently re-points it at the new one. It happened
-    // three times in one session — twice caught by `--checkJs` reporting an
-    // implicit-any on a parameter that now had no `@param`, once only by
-    // review. A block followed by another block, or by a blank line, documents
-    // nothing.
-    const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+describe('the module’s own doc comments', () => {
+  /**
+   * The orphan predicate, extracted so it can be driven with SHAPES rather than
+   * only pointed at the real file. Pointed only at the file, the rule this
+   * round widened — a one-line type annotation ATTACHES — had no case at all:
+   * the probe that exercises it restores a shape the fence now accepts, so it
+   * is green either way.
+   */
+  const orphansIn = (src: string): string[] => {
     const lines = src.split('\n');
-    const orphans: string[] = [];
+    const found: string[] = [];
     let blockStart = -1;
     let seenBlocks = 0;
     for (let i = 0; i < lines.length; i++) {
@@ -2008,35 +2008,57 @@ describe('the module\u2019s own doc comments', () => {
       if (lines[i] !== ' */') continue;
       seenBlocks += 1;
       const body = lines.slice(blockStart, i).join('\n');
-      // The FILE header documents the module, and a `@typedef`-only block
-      // documents types rather than a declaration — neither attaches to
-      // anything and both are correct as they are.
+      // The FILE header documents the module and a `@typedef`-only block
+      // documents types; neither attaches to a declaration.
       const attaches = seenBlocks > 1 && !/@typedef/.test(body);
-      const next = lines[i + 1] ?? '';
-      // A docblock must be followed by a DECLARATION — which also catches a
-      // block followed by a stray comment or by non-declaration code, not only
-      // the blank-line and stacked-block shapes.
-      //
-      // BOUND, stated because an over-claimed fence is the thing this file
-      // keeps producing: it CANNOT see an undocumented declaration slipped
-      // BETWEEN a docblock and the function it describes. That shape still
-      // reads as "block, then a declaration", and telling the intended subject
-      // from an interloper needs more than the next line — a JSDoc block does
-      // not name what it documents. `tsc --checkJs` is the real control there
-      // (it caught two of this session's three orphan incidents through an
-      // implicit-any on a parameter that had lost its `@param`); this fence
-      // covers the shapes that produce no type error at all.
-      const declares = /^(export\s+)?(async\s+)?(function|class|const|let|var)\s/.test(
-        next.trim()
-      );
-      if (attaches && !declares) {
-        orphans.push(`line ${i + 2}: ${JSON.stringify(next)}`);
-      }
+      const nextLine = (lines[i + 1] ?? '').trim();
+      const declares =
+        /^(export\s+)?(export\s+default\s+)?(async\s+)?(function|class|const|let|var)\s/.test(
+          nextLine
+        ) || /^\/\*\*.*\*\/$/.test(nextLine);
+      if (attaches && !declares) found.push(`line ${i + 2}: ${JSON.stringify(nextLine)}`);
     }
-    expect(orphans, 'a docblock is not attached to a declaration').toEqual([]);
-    // And the file really does carry docblocks — otherwise this passes on a
-    // file it never parsed.
-    expect(lines.filter((l) => l === ' */').length).toBeGreaterThan(20);
+    return found;
+  };
+
+  const withHeader = (tail: string) => ['/**', ' * header', ' */', '', tail].join('\n');
+
+  it('flags a block followed by a blank line, another block, or a comment', () => {
+    expect(orphansIn(withHeader('/**\n * doc\n */\n\nexport function f() {}'))).toHaveLength(1);
+    expect(
+      orphansIn(withHeader('/**\n * a\n */\n/**\n * b\n */\nexport function f() {}'))
+    ).toHaveLength(1);
+    expect(orphansIn(withHeader('/**\n * doc\n */\n// stray\nexport function f() {}'))).toHaveLength(
+      1
+    );
+  });
+
+  it('accepts every shape that really does attach', () => {
+    // The one-line type annotation is the ordinary JSDoc way to type a `const`.
+    // The first cut flagged it, so the module was edited to suit the fence
+    // rather than the other way round.
+    for (const tail of [
+      '/**\n * doc\n */\nexport function f() {}',
+      '/**\n * doc\n */\nfunction f() {}',
+      '/**\n * doc\n */\nexport const x = 1;',
+      '/**\n * doc\n */\nexport default function f() {}',
+      '/**\n * doc\n */\n/** @type {string} */\nexport const x = "a";',
+      '/**\n * @typedef {A} B\n */\n\nconst unrelated = 1;',
+    ]) {
+      expect(orphansIn(withHeader(tail)), `flagged an attached shape: ${tail}`).toEqual([]);
+    }
+  });
+
+  it('finds none in the real module', () => {
+    // BOUND, stated because an over-claimed fence is what this file keeps
+    // finding: it cannot see an undocumented declaration slipped BETWEEN a
+    // docblock and its function — that still reads as "block, then a
+    // declaration". Nothing else covers that shape either: `checkJs` appears in
+    // NO tsconfig and NO workflow here, so the runs that caught two of this
+    // session's orphan incidents were by hand, not a control.
+    const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+    expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
+    expect(src.split('\n').filter((l) => l === ' */').length).toBeGreaterThan(20);
   });
 });
 
@@ -2103,21 +2125,33 @@ describe('assertFixtureFloor', () => {
     expect(() => assertFixtureFloor(3, 134)).toThrow(/far short of the coverage table/);
   });
 
-  it('is CALLED by main(), before the walk it guards', () => {
-    // The function is exercised directly above; the CALL SITE lives in `main()`
-    // and no seam reaches it — `FIXTURES_DIR` is derived from the repo root, so
-    // a spawn cannot be pointed at an empty directory. A source-shape
-    // assertion is the honest cover: it catches deletion, and says plainly
-    // that it does not exercise the behaviour.
-    const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
-    const floorAt = src.indexOf('assertFixtureFloor(fixtureFiles.length');
-    // The CALL, not the definition — `collectFixtureDeltas({` matches the
-    // function's own signature first, which sits far earlier in the file.
-    const walkAt = src.indexOf('} = collectFixtureDeltas({');
-    expect(floorAt, 'main() no longer calls the floor').toBeGreaterThan(-1);
-    expect(walkAt).toBeGreaterThan(-1);
-    expect(floorAt, 'the floor is checked after the walk it guards').toBeLessThan(walkAt);
-  });
+  it('is reached by the real run — an empty fixtures dir refuses end to end', () => {
+    // Replaces a source-shape assertion that claimed "no seam reaches this
+    // call site". That was false, and the assertion could not see the call
+    // wrapped in `try {} catch {}` — which measured as printing the exact
+    // clean verdict the floor exists to prevent. `--fixtures-dir=` makes the
+    // real path testable.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-empty-fixtures-'));
+    try {
+      let out = '';
+      try {
+        out = execFileSync(
+          'node',
+          [
+            join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'),
+            `--fixtures-dir=${dir}`,
+          ],
+          { encoding: 'utf8' }
+        );
+      } catch (e) {
+        out = String((e as { stdout?: unknown }).stdout ?? '');
+      }
+      expect(out).toContain('no schema fixtures found');
+      expect(out).not.toContain('Nothing in this refresh needs a decision');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it('accepts the real tree, and does not fire when the table is empty', () => {
     // Bound to the DECLARED count rather than a constant: the two move
@@ -2129,8 +2163,9 @@ describe('assertFixtureFloor', () => {
     const declared = loadDeclaredProperties();
     expect(files.length).toBeGreaterThan(100);
     expect(() => assertFixtureFloor(files.length, declared.size)).not.toThrow();
-    // A by-hand run against an unread coverage table must not trip the ratio.
-    expect(() => assertFixtureFloor(1, 0)).not.toThrow();
+    // (`assertFixtureFloor(1, 0)` was asserted here and could not fail:
+    // `1 * 2 < 0` is false whatever the guard does. The dead `declaredCount > 0`
+    // conjunct it was written for is gone.)
   });
 });
 
@@ -2156,4 +2191,42 @@ describe('the sibling type declarations', () => {
     expect(`${out.stdout}${out.stderr}`.trim(), 'the declarations do not type-check').toBe('');
     expect(out.status).toBe(0);
   }, 120_000);
+});
+
+describe('the generated-module renderers', () => {
+  it('escapes a name that would otherwise close the literal', async () => {
+    // The fix had NO test: reverting both renderers to hand-quoting left 3041
+    // cases green. A property name comes from AWS's public bundle, and this
+    // module is executed by the refresh workflow, by the bot PR's own CI, and
+    // shipped to npm — so a name closing the literal is code execution, not a
+    // broken file.
+    const { renderHandled, renderSilentDrop } = await import(
+      '../../../scripts/gen-property-coverage.ts'
+    );
+    const hostile = "zzz', (globalThis.OWNED = 1)] // ";
+
+    const handled = renderHandled([hostile]);
+    expect(handled, 'the name closed its own literal').not.toContain("'zzz',");
+    expect(handled).toContain(JSON.stringify(hostile));
+
+    const drops = renderSilentDrop([[hostile, 'because']]);
+    expect(drops).not.toContain("['zzz',");
+    expect(drops).toContain(JSON.stringify(hostile));
+
+    // And the emitted text still PARSES as the expression it claims to be —
+    // escaping that produced invalid TypeScript would fail the build instead.
+    expect(() => new Function(`return ${handled}`)).not.toThrow();
+    expect(() => new Function(`return ${drops}`)).not.toThrow();
+  });
+
+  it('emits DOUBLE quotes, which the formatter normalises back', async () => {
+    // The committed module is regenerated in CI and diffed byte-for-byte, so
+    // the quote change `JSON.stringify` introduces must be undone by `vp run
+    // format` (`singleQuote: true`) — which the workflow and the CI staleness
+    // guard both run before diffing. Asserting the raw emission keeps that
+    // dependency visible instead of implicit.
+    const { renderHandled } = await import('../../../scripts/gen-property-coverage.ts');
+    expect(renderHandled(['Alpha'])).toContain('"Alpha"');
+    expect(renderHandled(['Alpha'])).not.toContain("'Alpha'");
+  });
 });

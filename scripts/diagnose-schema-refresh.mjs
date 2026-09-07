@@ -37,7 +37,7 @@
  *
  *   node scripts/diagnose-schema-refresh.mjs \
  *     [--nested-key-log <file>] [--nested-key-rc <status>] \
- *     [--failed-checks <a,b>] [--skipped-log <file>] > body.md
+ *     [--failed-checks <a,b>] [--skipped-log <file>] [--fixtures-dir <dir>] > body.md
  *
  * `--nested-key-log` is the captured output of
  * `vp run audit:nested-key-coverage:check` and `--nested-key-rc` its exit
@@ -47,8 +47,13 @@
  * watched succeed. `--failed-checks` is the comma-separated list of CI checks
  * that came back red — every one of them fixture-driven, and every one reached
  * by an ordinary schema ADDITION. `--skipped-log` is the tail of the refresh's
- * own output,
- * listing the types the public bundle does not carry.
+ * own output, listing the types the public bundle does not carry.
+ *
+ * `--fixtures-dir` is a TEST SEAM — it points the comparison at a scratch
+ * directory so the empty-listing refusal is reachable from a test, the same
+ * shape `gen-nested-key-coverage.ts` uses for `--providers-dir=`. Documented
+ * rather than hidden because the synopsis and the accepted flag set are fenced
+ * EQUAL, and an undocumented flag is exactly how that fence goes stale.
  *
  * Emits Markdown on stdout and always exits 0 — a diagnosis that fails must
  * not take down the PR it is describing.
@@ -1432,6 +1437,8 @@ export const KNOWN_FLAGS = [
   '--nested-key-rc',
   '--failed-checks',
   '--skipped-log',
+  // Test seam; see its use below.
+  '--fixtures-dir',
 ];
 
 /**
@@ -1460,7 +1467,9 @@ export function assertFixtureFloor(fixtureCount, declaredCount) {
         'directory this run never read.'
     );
   }
-  if (declaredCount > 0 && fixtureCount * 2 < declaredCount) {
+  // No `declaredCount > 0` guard: `fixtureCount * 2 < 0` is unreachable for a
+  // non-negative count, so it was dead code whose case could not fail.
+  if (fixtureCount * 2 < declaredCount) {
     throw new Error(
       `only ${fixtureCount} schema fixtures against ${declaredCount} declared types — ` +
         'refusing to report from a listing this far short of the coverage table.'
@@ -1597,14 +1606,22 @@ function main() {
   // is still listed there — which is exactly the "now bogus" condition.
   const declared = loadDeclaredProperties();
 
-  const fixtureFiles = readdirSync(FIXTURES_DIR).filter(
+  // `--fixtures-dir=` is a TEST SEAM, the same shape `gen-nested-key-coverage.ts`
+  // uses for `--providers-dir=`. It exists because the floor's call site was
+  // otherwise unreachable and got covered by a source-shape assertion instead —
+  // and that assertion could not see the call wrapped in `try {} catch {}`,
+  // which measured as printing the exact clean verdict the floor exists to
+  // prevent. A seam that makes the real path testable beats a fence over its
+  // spelling.
+  const fixturesDir = rawArg('--fixtures-dir') || FIXTURES_DIR;
+  const fixtureFiles = readdirSync(fixturesDir).filter(
     (f) => f.endsWith('.json') && !f.startsWith('_')
   );
   assertFixtureFloor(fixtureFiles.length, declared.size);
   const { removed, writableAdded, readOnlyAddedCount, unreadable } = collectFixtureDeltas({
     files: fixtureFiles,
     committedOf: (file) => committedVersion(`tests/fixtures/cfn-schemas/${file}`),
-    currentOf: (file) => readFileSync(join(FIXTURES_DIR, file), 'utf8'),
+    currentOf: (file) => readFileSync(join(fixturesDir, file), 'utf8'),
     providerFiles,
     declared,
   });

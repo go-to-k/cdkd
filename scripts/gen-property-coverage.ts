@@ -250,14 +250,14 @@ function stringLiteralValue(node: ts.Node | undefined): string | null {
 // literal. `renderHandled` reads provider sources rather than the bundle, so it
 // was never exposed; it takes the same treatment because the two are read as a
 // pair and the next editor should not have to work out which is which.
-const renderHandled = (handled: string[]): string => {
+export const renderHandled = (handled: string[]): string => {
   if (handled.length === 0) return 'new Set<string>()';
   return `new Set<string>([\n${handled
     .map((p) => `        ${JSON.stringify(p)},`)
     .join('\n')}\n      ])`;
 };
 
-const renderSilentDrop = (
+export const renderSilentDrop = (
   drops: Array<[string, string]>
 ): string => {
   if (drops.length === 0) return 'new Map<string, string>()';
@@ -380,7 +380,7 @@ function main(): void {
   .map(
     ([type, cov]) =>
       `  [
-    '${type}',
+    ${JSON.stringify(type)},
     {
       handled: ${renderHandled(cov.handled)},
       silentDrop: ${renderSilentDrop(cov.silentDrop)},
