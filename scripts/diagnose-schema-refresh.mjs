@@ -36,14 +36,18 @@
  * Usage (from the repo root, AFTER the refresh has written the fixtures):
  *
  *   node scripts/diagnose-schema-refresh.mjs \
- *     [--nested-key-log <file>] [--nested-key-rc <status>] [--skipped-log <file>] > body.md
+ *     [--nested-key-log <file>] [--nested-key-rc <status>] \\
+ *     [--property-coverage-rc <status>] [--skipped-log <file>] > body.md
  *
  * `--nested-key-log` is the captured output of
  * `vp run audit:nested-key-coverage:check` and `--nested-key-rc` its exit
  * status. The status is what tells a checker that FAILED silently from one that
  * found nothing, so the workflow always passes it; omitted, it is assumed to be
  * 0, which is the right default for a by-hand run against a checker you just
- * watched succeed. `--skipped-log` is the tail of the refresh's own output,
+ * watched succeed. `--property-coverage-rc` is the same for
+ * `vp test run property-coverage`, whose red is reached by an ordinary schema
+ * ADDITION re-adding a property some provider wrote off.
+ * `--skipped-log` is the tail of the refresh's own output,
  * listing the types the public bundle does not carry.
  *
  * Emits Markdown on stdout and always exits 0 — a diagnosis that fails must
@@ -61,6 +65,7 @@ const REPO_ROOT = join(__dirname, '..');
 /**
  * @typedef {import('./diagnose-schema-refresh.d.mts').NestedKeyDivergence} NestedKeyDivergence
  * @typedef {import('./diagnose-schema-refresh.d.mts').SdkLagRow} SdkLagRow
+ * @typedef {import('./diagnose-schema-refresh.d.mts').DiagnosisInput} DiagnosisInput
  * @typedef {import('./diagnose-schema-refresh.d.mts').SdkEvidence} SdkEvidence
  * @typedef {import('./diagnose-schema-refresh.d.mts').RemovedEntry} RemovedEntry
  * @typedef {import('./diagnose-schema-refresh.d.mts').AddedEntry} AddedEntry
@@ -589,31 +594,40 @@ export function parseDeclaredProperties(generatedSource) {
  * problem, silently. Evidence shortens the human's work; it does not change who
  * accepts that risk.
  *
- * @param {object} input
- * @param {RemovedEntry[]} input.removed
- * @param {AddedEntry[]} input.writableAdded
- * @param {number} [input.readOnlyAddedCount]
- * @param {SdkLagRow[]} [input.sdkLag]
- * @param {boolean} [input.nestedKeyUnparsed]
- * @param {NestedKeyDivergence[]} input.divergences
- * @param {string[]} input.skipped
+ * The input shape lives in the sibling `.d.mts` and is named here rather than
+ * restated field by field: the per-field `@param` list was a second copy, and
+ * it went stale twice — silently, since nothing in CI type-checks `scripts/**`.
+ *
+ * @param {DiagnosisInput} input
  * @returns {string}
  */
-export function renderDiagnosis({
-  removed,
-  writableAdded,
-  readOnlyAddedCount = 0,
-  divergences,
-  nestedKeyUnparsed = false,
-  skipped,
-  sdkLag,
-}) {
+export function renderDiagnosis(input) {
+  const {
+    removed,
+    writableAdded,
+    readOnlyAddedCount = 0,
+    divergences,
+    nestedKeyUnparsed = false,
+    propertyCoverageFailed = false,
+    unreadable = [],
+    skipped,
+    sdkLag,
+  } = input;
   const lines = ['## What changed, and what needs a decision', ''];
 
-  // `nestedKeyUnparsed` is part of the condition, not just a section below it:
-  // a checker that FAILED in a mode this report cannot read is the one state
-  // where "additions only" is a confident wrong answer rather than a gap.
-  if (removed.length === 0 && divergences.length === 0 && !nestedKeyUnparsed) {
+  // Both checker verdicts are part of the condition, not just sections below
+  // it: a checker that failed is the one state where "additions only" is a
+  // confident WRONG answer rather than a gap. `propertyCoverageFailed` was the
+  // sibling left out — its status was discarded by the workflow, so a red
+  // `property-coverage` rendered as clean, on the ordinary refresh shape (see
+  // its section below).
+  if (
+    removed.length === 0 &&
+    divergences.length === 0 &&
+    !nestedKeyUnparsed &&
+    !propertyCoverageFailed &&
+    unreadable.length === 0
+  ) {
     lines.push('Nothing in this refresh needs a decision — additions only.', '');
   }
 
@@ -733,6 +747,36 @@ export function renderDiagnosis({
     );
   }
 
+  if (propertyCoverageFailed) {
+    // Reached by a pure schema ADDITION, which is the ordinary refresh shape:
+    // the coverage test fails when AWS RE-ADDS a property some provider had
+    // written off in `bogusTolerated`. Measured against the live tree, 12 such
+    // properties across 10 types are one AWS addition away from this. Removing
+    // a hand-written rationale is a judgment, so it is a hand-off — and until
+    // this section existed the report called that same property "no decision
+    // needed" and posted it to the backfill umbrella as newly unaccounted.
+    lines.push(
+      '### The property-coverage check FAILED — a decision is needed',
+      '',
+      'Most often this is AWS RE-ADDING a property that a provider had written',
+      'off with a `bogusTolerated` rationale in',
+      '`tests/fixtures/cfn-schemas/_todo-backfill.json`. The rationale said the',
+      'schema no longer lists it; the schema lists it again, so the rationale is',
+      'now wrong and retiring it is a judgment this job will not make for you.',
+      '',
+      '```bash',
+      '# Names every entry the check is unhappy about.',
+      'vp test run property-coverage',
+      '```',
+      '',
+      'Delete the stale `bogusTolerated` entry and account for the property',
+      'normally — `handledProperties` if the provider wires it, `unhandledByDesign`',
+      'with a reason if it does not. **Any property named there is NOT covered by',
+      'the sections below**, whichever one it appears in.',
+      ''
+    );
+  }
+
   if (writableAdded.length > 0) {
     const count = writableAdded.reduce((n, e) => n + e.properties.length, 0);
     lines.push(
@@ -755,10 +799,31 @@ export function renderDiagnosis({
     // Named even though there is nothing to do, because they ARE visible in the
     // fixture diff and an unexplained change invites a reader to go looking.
     lines.push(
-      `### Read-only properties AWS added (${readOnlyAddedCount}) — nothing to do`,
+      `### Read-only properties AWS added (${readOnlyAddedCount}) — usually nothing to do`,
       '',
-      'Visible in the fixture diff, but AWS computes and returns these; there is',
-      'nothing for a provider to send, so they can never be a dropped value.',
+      'AWS computes and returns these, so there is nothing for a provider to send',
+      'and they can never be a dropped value. One case is not a no-op, and it is',
+      'reachable only this way: a new read-only `*Arn` or `*Url` attribute on a',
+      'type that had none makes `audit:sdk-attr-coverage:check` fail, because a',
+      'cross-resource `Fn::GetAtt` would find no cached attribute to read. If that',
+      'check is red on this PR, the cause is in this list.',
+      ''
+    );
+  }
+
+  if (unreadable.length > 0) {
+    // Distinct from "not refreshed": the bundle DID carry these, and this
+    // report could not read one side of the comparison. A type in here is
+    // absent from the removal and the addition accounting alike, so the
+    // sections above are silent about it rather than clean.
+    lines.push(
+      `### Fixtures this report could not read (${unreadable.length})`,
+      '',
+      'Neither their removals nor their additions are accounted for above. The',
+      'refresh itself is the place to look — a fixture it half-wrote reads like',
+      'this here.',
+      '',
+      ...unreadable.map((/** @type {string} */ f) => `- ${renderName(f.replace(/\.json$/, ''))}`),
       ''
     );
   }
@@ -1079,6 +1144,107 @@ export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag)
   return out;
 }
 
+/**
+ * Walk the refreshed fixtures and split them into what needs a decision.
+ *
+ * Extracted from `main()` for the reason `buildSdkLag` was: everything here was
+ * reachable only through it, `main()` has no unit coverage, and the one branch
+ * that mattered — a fixture whose comparison THREW — could be deleted with the
+ * whole suite green. That branch is not decoration: a type that throws vanishes
+ * from the removal AND the addition accounting at once, so the residue reads as
+ * "additions only" rather than as silent. It cannot be reached through a
+ * directory seam either, since `committedOf` reads git HEAD and a scratch
+ * fixture has no committed side to compare against.
+ *
+ * The readers are injected; nothing here touches the filesystem.
+ *
+ * @param {{
+ *   files: string[],
+ *   committedOf: (file: string) => string | undefined,
+ *   currentOf: (file: string) => string,
+ *   providerFiles: Map<string, string>,
+ *   declared: Map<string, Set<string>>,
+ *   declarationCandidates?: typeof findDeclarationCandidates,
+ *   sdkEvidence?: typeof sdkModelsMember,
+ * }} input
+ * @returns {{removed: RemovedEntry[], writableAdded: AddedEntry[], readOnlyAddedCount: number, unreadable: string[]}}
+ */
+export function collectFixtureDeltas({
+  files,
+  committedOf,
+  currentOf,
+  providerFiles,
+  declared,
+  declarationCandidates = findDeclarationCandidates,
+  sdkEvidence = sdkModelsMember,
+}) {
+  /** @type {RemovedEntry[]} */
+  const removed = [];
+  /** @type {AddedEntry[]} */
+  const writableAdded = [];
+  /** @type {string[]} */
+  const unreadable = [];
+  let readOnlyAddedCount = 0;
+
+  for (const file of files) {
+      const committed = committedOf(file);
+      if (committed === undefined) continue; // Brand-new fixture: nothing to compare.
+      let delta;
+      let resourceType;
+      try {
+        delta = comparePropertySets(committed, currentOf(file));
+        resourceType = JSON.parse(committed).resourceType ?? file;
+      } catch {
+        // An unparseable side is the refresh's problem, not the report's — but it
+        // is COUNTED, because a type that vanishes here vanishes from the removal
+        // AND the addition accounting, and the residue can be "additions only".
+        // The other two parsers grew shortfall counters in earlier rounds; this
+        // one was the last silent skip.
+        unreadable.push(file);
+        continue;
+      }
+
+      readOnlyAddedCount += delta.added.length - delta.writableAdded.length;
+
+      const providerRelPath = providerFiles.get(resourceType);
+      const declaredHere = declared.get(resourceType) ?? new Set();
+      const actionable = delta.removed.filter((/** @type {string} */ p) => declaredHere.has(p));
+      if (actionable.length > 0) {
+        /** @type {Record<string, string[]>} */
+        const candidates = {};
+        /** @type {Record<string, SdkEvidence | undefined>} */
+        const sdk = {};
+        /** @type {Record<string, string[]>} */
+        const renameCandidates = {};
+        for (const property of actionable) {
+          candidates[property] = declarationCandidates(property, providerRelPath, resourceType);
+          sdk[property] = sdkEvidence(property, providerRelPath);
+          // Writable additions that plausibly ARE this property renamed —
+          // one name containing the other. Unconditional pairing asserted a
+          // rename for every unrelated addition, and with two removals and one
+          // addition it claimed both, of which at most one can be true.
+          // Read-only additions are excluded outright: a declaration cannot
+          // target one, so "point the declaration at the new name" would just
+          // produce the next bogus entry.
+          renameCandidates[property] = pairRenames(property, delta.writableAdded);
+        }
+        removed.push({
+          resourceType,
+          properties: actionable,
+          candidates,
+          sdk,
+          renameCandidates,
+          providerPath: providerRelPath,
+        });
+      }
+      if (delta.writableAdded.length > 0) {
+        writableAdded.push({ resourceType, properties: delta.writableAdded });
+      }
+    }
+
+  return { removed, writableAdded, readOnlyAddedCount, unreadable };
+}
+
 function main() {
   const args = process.argv.slice(2);
   const readArg = (/** @type {string} */ flag) => {
@@ -1108,64 +1274,13 @@ function main() {
       : ''
   );
 
-  /** @type {RemovedEntry[]} */
-  const removed = [];
-  /** @type {AddedEntry[]} */
-  const writableAdded = [];
-  let readOnlyAddedCount = 0;
-
-  for (const file of readdirSync(FIXTURES_DIR).filter(
-    (f) => f.endsWith('.json') && !f.startsWith('_')
-  )) {
-    const relPath = `tests/fixtures/cfn-schemas/${file}`;
-    const committed = committedVersion(relPath);
-    if (committed === undefined) continue; // Brand-new fixture: nothing to compare.
-    let delta;
-    let resourceType;
-    try {
-      delta = comparePropertySets(committed, readFileSync(join(FIXTURES_DIR, file), 'utf8'));
-      resourceType = JSON.parse(committed).resourceType ?? file;
-    } catch {
-      continue; // An unparseable side is the refresh's problem, not the report's.
-    }
-
-    readOnlyAddedCount += delta.added.length - delta.writableAdded.length;
-
-    const providerRelPath = providerFiles.get(resourceType);
-    const declaredHere = declared.get(resourceType) ?? new Set();
-    const actionable = delta.removed.filter((/** @type {string} */ p) => declaredHere.has(p));
-    if (actionable.length > 0) {
-      /** @type {Record<string, string[]>} */
-      const candidates = {};
-      /** @type {Record<string, SdkEvidence | undefined>} */
-      const sdk = {};
-      /** @type {Record<string, string[]>} */
-      const renameCandidates = {};
-      for (const property of actionable) {
-        candidates[property] = findDeclarationCandidates(property, providerRelPath, resourceType);
-        sdk[property] = sdkModelsMember(property, providerRelPath);
-        // Writable additions that plausibly ARE this property renamed —
-        // one name containing the other. Unconditional pairing asserted a
-        // rename for every unrelated addition, and with two removals and one
-        // addition it claimed both, of which at most one can be true.
-        // Read-only additions are excluded outright: a declaration cannot
-        // target one, so "point the declaration at the new name" would just
-        // produce the next bogus entry.
-        renameCandidates[property] = pairRenames(property, delta.writableAdded);
-      }
-      removed.push({
-        resourceType,
-        properties: actionable,
-        candidates,
-        sdk,
-        renameCandidates,
-        providerPath: providerRelPath,
-      });
-    }
-    if (delta.writableAdded.length > 0) {
-      writableAdded.push({ resourceType, properties: delta.writableAdded });
-    }
-  }
+  const { removed, writableAdded, readOnlyAddedCount, unreadable } = collectFixtureDeltas({
+    files: readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.json') && !f.startsWith('_')),
+    committedOf: (file) => committedVersion(`tests/fixtures/cfn-schemas/${file}`),
+    currentOf: (file) => readFileSync(join(FIXTURES_DIR, file), 'utf8'),
+    providerFiles,
+    declared,
+  });
 
   // An UNREADABLE status is not a successful one: a mistyped value used to
   // return 0 — "the checker succeeded" — silently restoring the behaviour where
@@ -1193,6 +1308,7 @@ function main() {
     readArg('--nested-key-log'),
     readNumArg('--nested-key-rc')
   );
+  const propertyCoverageFailed = readNumArg('--property-coverage-rc') !== 0;
   const divergences = nestedKey.divergences;
   const skipped = readArg('--skipped-log')
     .split('\n')
@@ -1213,6 +1329,8 @@ function main() {
       readOnlyAddedCount,
       divergences,
       nestedKeyUnparsed: nestedKey.unparsedFailure,
+      propertyCoverageFailed,
+      unreadable,
       skipped,
       sdkLag,
     }) + '\n'

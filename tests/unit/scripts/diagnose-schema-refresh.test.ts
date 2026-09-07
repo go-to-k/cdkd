@@ -41,6 +41,7 @@ import {
   renderKey,
   renderLiteral,
   buildSdkLag,
+  collectFixtureDeltas,
   clientsForType,
   sdkClientVersions,
   renderDiagnosis,
@@ -875,6 +876,89 @@ describe('the render guards, at every site that reaches Markdown', () => {
   });
 });
 
+describe('the property-coverage verdict', () => {
+  it('never renders "additions only" over a coverage check that FAILED', () => {
+    // Its status was discarded by the workflow for six rounds — `|| echo` stops
+    // `set -e` aborting and nothing else — so a red check rendered as clean.
+    // The trigger is a pure schema ADDITION: the test fails when AWS RE-ADDS a
+    // property some provider wrote off in `bogusTolerated`, and 12 such
+    // properties across 10 types are one AWS addition away from it.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [{ resourceType: 'AWS::Glue::Crawler', properties: ['LineageConfiguration'] }],
+      divergences: [],
+      propertyCoverageFailed: true,
+      skipped: [],
+    });
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('property-coverage check FAILED');
+    expect(md).toContain('bogusTolerated');
+    // The property is still listed, but the section says the listing does not
+    // cover it — it was previously labelled "no decision needed" and posted to
+    // the backfill umbrella as newly unaccounted.
+    expect(md).toContain('NOT covered by');
+  });
+
+  it('renders the clean verdict when the coverage check passed', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      propertyCoverageFailed: false,
+      skipped: [],
+    });
+    expect(md).toContain('additions only');
+  });
+});
+
+describe('fixtures the report could not read', () => {
+  it('never renders "additions only" while a fixture went unaccounted', () => {
+    // A type that throws during the comparison vanishes from the removal AND
+    // the addition accounting, so the residue reads as clean rather than as
+    // silent. The other two parsers grew shortfall counters in earlier rounds.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      unreadable: ['AWS::Glue::Connection.json'],
+      skipped: [],
+    });
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('could not read');
+    expect(md).toContain('AWS::Glue::Connection');
+  });
+
+  it('says nothing about unreadable fixtures when there are none', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      unreadable: [],
+      skipped: [],
+    });
+    expect(md).toContain('additions only');
+    expect(md).not.toContain('could not read');
+  });
+});
+
+describe('the read-only additions section', () => {
+  it('does not promise a read-only addition is always a no-op', () => {
+    // A new read-only `*Arn`/`*Url` on a type that had none fails
+    // `audit:sdk-attr-coverage:check`, and that is reachable ONLY through a
+    // read-only addition — so "nothing to do" was a verdict a blocking critic
+    // contradicts. 92 of the 134 audited types have no Arn attribute today.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      readOnlyAddedCount: 3,
+      divergences: [],
+      skipped: [],
+    });
+    expect(md).toContain('usually nothing to do');
+    expect(md).toContain('sdk-attr-coverage');
+  });
+});
+
 describe('the unparsed-failure verdict', () => {
   it('never renders "additions only" over a checker that said it failed', () => {
     // Both wrong answers shipped: throwing discarded the whole diagnosis,
@@ -1306,4 +1390,77 @@ describe('the script end to end', () => {
     // not reach it.
     expect(md).not.toContain('Installed vs published');
   }, 60_000);
+});
+
+describe('collectFixtureDeltas', () => {
+  const base = {
+    providerFiles: new Map([['AWS::Glue::Connection', 'src/provisioning/providers/glue-provider.ts']]),
+    declared: new Map([['AWS::Glue::Connection', new Set(['OldProp'])]]),
+    declarationCandidates: () => [],
+    sdkEvidence: () => undefined,
+  };
+  // The REAL fixture shape, checked against `tests/fixtures/cfn-schemas/`:
+  // `properties` is an array of bare names and `readOnlyProperties` likewise.
+  // The first draft of this helper used an object map and `/properties/X`
+  // paths, and every case reported an empty delta — a fixture that does not
+  // encode what its consumer reads proves nothing about the consumer.
+  const fixture = (props: string[], readOnly: string[] = []) =>
+    JSON.stringify({
+      resourceType: 'AWS::Glue::Connection',
+      properties: props,
+      readOnlyProperties: readOnly,
+    });
+
+  it('COUNTS a fixture whose comparison threw, rather than skipping it', () => {
+    // The branch that could be deleted with the whole suite green. A type that
+    // throws vanishes from the removal AND the addition accounting at once, so
+    // the residue reads as "additions only" rather than as silent — and the
+    // renderer, which IS pinned, never sees that it happened.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['broken.json'],
+      committedOf: () => '{ not json',
+      currentOf: () => fixture(['A']),
+    });
+    expect(out.unreadable).toEqual(['broken.json']);
+    expect(out.removed).toEqual([]);
+    expect(out.writableAdded).toEqual([]);
+  });
+
+  it('skips a BRAND-NEW fixture silently, which is not the same thing', () => {
+    // No committed side means nothing to compare, not something unreadable —
+    // counting it would put every newly captured type in the warning list.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['new.json'],
+      committedOf: () => undefined,
+      currentOf: () => fixture(['A']),
+    });
+    expect(out.unreadable).toEqual([]);
+    expect(out.writableAdded).toEqual([]);
+  });
+
+  it('reports a removal only when the provider DECLARES the property', () => {
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['glue.json'],
+      committedOf: () => fixture(['OldProp', 'Undeclared']),
+      currentOf: () => fixture([]),
+    });
+    expect(out.removed).toHaveLength(1);
+    expect(out.removed[0]!.properties).toEqual(['OldProp']);
+  });
+
+  it('splits an addition by whether it is settable', () => {
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['glue.json'],
+      committedOf: () => fixture([]),
+      currentOf: () => fixture(['Settable', 'ComputedArn'], ['ComputedArn']),
+    });
+    expect(out.writableAdded).toEqual([
+      { resourceType: 'AWS::Glue::Connection', properties: ['Settable'] },
+    ]);
+    expect(out.readOnlyAddedCount).toBe(1);
+  });
 });

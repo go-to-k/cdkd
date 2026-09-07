@@ -21,7 +21,7 @@ why the job is allowed to fail — is in
 | --- | --- |
 | No pull request | Nothing. Most days are this. |
 | A pull request, CI green | Read the diff, squash merge. |
-| A pull request, CI red | Two classes need a decision — the PR names which. |
+| A pull request, CI red | Something needs a decision — the PR names which class. |
 | A pull request saying the nested-key check failed unreadably | Read that job's log; the other sections still hold. |
 | A comment on an open pull request | New drift was added to it. Same two classes. |
 
@@ -82,10 +82,16 @@ a typical cycle most additions are read-only.
 
 ## A red pull request
 
-Red is the hand-off, not a defect. Exactly two classes reach it, and the pull
-request names which fired, on which type, which provider lines mention it, and
-what the AWS SDK still models — so the research is already done and what is
-left is the decision.
+Red is the hand-off, not a defect. The pull request names which class fired, on
+which type, which provider lines mention it, and what the AWS SDK still models —
+so the research is already done and what is left is the decision.
+
+Three classes reach it. Two need a judgement and have their own sections below.
+The third is mechanical: a **stale `bogusTolerated` rationale** — AWS re-added a
+property a provider had written off as gone from the schema, so the rationale is
+now false. Delete that entry and account for the property normally
+(`handledProperties` if the provider wires it, `unhandledByDesign` with a reason
+if it does not). `vp test run property-coverage` names every entry involved.
 
 ### A property was removed or renamed
 

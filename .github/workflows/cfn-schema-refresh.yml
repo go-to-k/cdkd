@@ -238,8 +238,24 @@ jobs:
           # exempt — that failure IS the designed hand-off.
           set -euo pipefail
           vp run gen:property-coverage
-          CDKD_GENERATE_BACKFILL=true vp test run property-coverage || \
+          # The status is CAPTURED, not merely tolerated. `|| echo` already stops
+          # `set -e` aborting, and for six rounds that was all it did — the red
+          # never reached the diagnosis, so a failing coverage check rendered as
+          # "nothing needs a decision" and the offending property was listed as
+          # "no decision needed". Its red is reached by an ordinary schema
+          # ADDITION (AWS re-adding a property a provider wrote off), which is
+          # what makes the silence expensive.
+          if CDKD_GENERATE_BACKFILL=true vp test run property-coverage; then
+            property_coverage_rc=0
+          else
+            property_coverage_rc=$?
             echo "::notice::property-coverage is red — classification is needed on this PR"
+          fi
+          # Through the environment FILE, not a shell variable: each `run:` is
+          # its own shell, so a plain assignment here is simply gone by the
+          # Diagnose step — and `readNumArg`'s absent-flag arm defaults to 0,
+          # so losing it would have restored the exact silence this fixes.
+          echo "PROPERTY_COVERAGE_RC=${property_coverage_rc}" >> "${GITHUB_ENV}"
           vp run gen:all-matrices
           vp run format
 
@@ -273,6 +289,7 @@ jobs:
           node scripts/diagnose-schema-refresh.mjs \
             --nested-key-log /tmp/nested-key.log \
             --nested-key-rc "${nested_key_rc}" \
+            --property-coverage-rc "${PROPERTY_COVERAGE_RC}" \
             --skipped-log /tmp/skipped.log > /tmp/diagnosis.md
 
       - name: Publish the refresh

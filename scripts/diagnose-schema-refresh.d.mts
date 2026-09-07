@@ -44,7 +44,7 @@ export declare function sdkModelsMember(
   property: string,
   providerRelPath: string | undefined,
   repoRoot?: string
-): { client: string; modelled: boolean; version?: string; consulted?: string[] } | undefined;
+): SdkEvidence | undefined;
 export declare function sdkClientVersions(
   providerRelPath: string | undefined,
   repoRoot?: string
@@ -70,15 +70,18 @@ export interface AddedEntry {
   resourceType: string;
   properties: string[];
 }
-export declare function renderDiagnosis(input: {
+export interface DiagnosisInput {
   removed: RemovedEntry[];
   writableAdded: AddedEntry[];
   readOnlyAddedCount?: number;
   sdkLag?: SdkLagRow[];
   divergences: NestedKeyDivergence[];
   nestedKeyUnparsed?: boolean;
+  propertyCoverageFailed?: boolean;
+  unreadable?: string[];
   skipped: string[];
-}): string;
+}
+export declare function renderDiagnosis(input: DiagnosisInput): string;
 export declare function sdkVersionLag(
   client: string,
   installed: string | undefined,
@@ -101,3 +104,26 @@ export declare function buildSdkLag(
     installed: string
   ) => { installed: string; latest: string; behind: boolean } | undefined
 ): SdkLagRow[];
+export declare function collectFixtureDeltas(input: {
+  files: string[];
+  committedOf: (file: string) => string | undefined;
+  currentOf: (file: string) => string;
+  providerFiles: Map<string, string>;
+  declared: Map<string, Set<string>>;
+  declarationCandidates?: (
+    property: string,
+    providerRelPath: string | undefined,
+    resourceType?: string,
+    repoRoot?: string
+  ) => string[];
+  sdkEvidence?: (
+    property: string,
+    providerRelPath: string | undefined,
+    repoRoot?: string
+  ) => SdkEvidence | undefined;
+}): {
+  removed: RemovedEntry[];
+  writableAdded: AddedEntry[];
+  readOnlyAddedCount: number;
+  unreadable: string[];
+};

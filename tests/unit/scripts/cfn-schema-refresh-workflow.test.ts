@@ -375,6 +375,22 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       );
     });
 
+    it('captures the property-coverage status and carries it ACROSS steps', () => {
+      // `|| echo` stops `set -e` aborting and nothing else, so the red never
+      // reached the diagnosis — a failing coverage check rendered as "nothing
+      // needs a decision". Two separate mistakes are pinned here: `$?` after a
+      // `||` compound is the ECHO's status, and a shell variable does not
+      // survive into the next `run:` at all.
+      const regen = shellOf('Regenerate the derived artifacts');
+      expect(regen).toMatch(/if CDKD_GENERATE_BACKFILL=true vp test run property-coverage; then/);
+      expect(regen).toContain('property_coverage_rc=$?');
+      expect(regen, 'the status dies with this step\u2019s shell').toMatch(
+        /echo "PROPERTY_COVERAGE_RC=\$\{property_coverage_rc\}" >> "\$\{GITHUB_ENV\}"/
+      );
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(diagnose).toMatch(/--property-coverage-rc "\$\{PROPERTY_COVERAGE_RC\}"/);
+    });
+
     it('pins the cross-file literals the shell greps for', () => {
       // Producer and consumer live in different files with nothing joining
       // them: either reword silently empties the skip list or kills the
@@ -483,7 +499,27 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     // A removed property leaves a bogus declaration no generator can retire, so
     // that step is EXPECTED to fail on some cycles. Letting it stop the run
     // would suppress the very PR through which the human finds out.
-    expect(workflow).toMatch(/CDKD_GENERATE_BACKFILL=true vp test run property-coverage \|\|/);
+    //
+    // The INVARIANT, not the spelling: under `set -e` the invocation must sit
+    // somewhere a non-zero status is not fatal. `||` and an `if` condition both
+    // qualify; a bare command does not. This case pinned the `||` text, and the
+    // status-capturing rewrite that kept the invariant reddened it.
+    // `shellOf` belongs to the step-wiring block; the comment strip matters
+    // here for the same reason it does there — a `#` line naming the command
+    // would satisfy every assertion below.
+    const regen = workflow
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
+    const invocation = /CDKD_GENERATE_BACKFILL=true vp test run property-coverage/;
+    expect(regen).toMatch(invocation);
+    const line = regen.split('\n').find((l) => invocation.test(l))!;
+    expect(line, 'the step aborts before the PR exists').toMatch(
+      /(^\s*if\s|\|\|\s*(\\)?$|\|\|\s*\S)/
+    );
+    // And it still runs under strict mode — the tolerance is scoped to this one
+    // command, not bought by relaxing the whole step.
+    expect(regen).toContain('set -euo pipefail');
   });
 
   it('denies permissions at the top level and grants them per job', () => {
