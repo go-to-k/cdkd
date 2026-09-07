@@ -118,6 +118,11 @@ fi
 # disappears -- the same failure the union exists to prevent, arriving through
 # the fix for it. 200 pairs is 20 `cd`s against 10 write targets, well past any
 # hand-written command.
+# Declared HERE, above the function that writes them: the helper block further
+# down is defined AFTER `__union_cd_bases` is CALLED, so initialising there left
+# `__union_overflow` unbound at the first call and the hook exited 1 -- neither
+# allow nor block.
+__cd_targets=(); __union_overflow=0
 __union_cd_bases() {
   # NO CAP. Every candidate gets every raw-text `cd` target as an extra base.
   #
@@ -141,7 +146,7 @@ __union_cd_bases() {
   # `cd` targets, which is small in any command a person or an agent writes, and
   # is work that has to happen anyway -- a distinct target genuinely needs its
   # own check.
-  local __n __i __b __rest
+  local __n __i __b __rest __cds=0
   __n=${#candidates[@]}
   [ "$__n" -gt 0 ] || return 0
   __rest="$cmd"
@@ -157,9 +162,40 @@ __union_cd_bases() {
     __b=$(gate_unquote "${BASH_REMATCH[2]}")
     __rest="${__rest#*"${BASH_REMATCH[0]}"}"
     case "$__b" in *'$'* | *'`'*) continue ;; /*) ;; *) __b="$base_dir/$__b" ;; esac
+    # EVERY target is RECORDED, even past the bound; only the UNION stops. The
+    # recording is a text scan and costs nothing, and the overflow refusal below
+    # needs the full list -- checking only what was unioned asks about the first
+    # `k` targets and misses the real one when it comes last, which is exactly
+    # where a padded command puts it. Measured: without this the n*k shape went
+    # rc 2 -> 0, i.e. the bound meant to be fail-closed was a fail-open.
+    __cd_targets+=("$__b")
+    __cds=$((__cds + 1))
+    # `if`, never a trailing `[ ... ] && x`. Under a caller's `set -e` a false
+    # test as the LAST command of a loop body aborts the FUNCTION -- the trap
+    # this repo already records for `gate_segments`' emit. Here it ended the
+    # scan silently, so `__union_overflow` was never set, the refusal below
+    # never ran, and the n*k shape measured rc=0 where it had been 2.
+    if [ "$__union_overflow" != 1 ]; then
     for ((__i = 0; __i < __n; __i++)); do
       candidates+=("${candidates[$__i]}"); cand_bases+=("$__b")
     done
+    # THE BOUND IS FAIL-CLOSED, which is the whole difference from the cap this
+    # replaced. `n` write candidates against `k` distinct `cd` targets is n*k
+    # pairs however cleverly they are stored, and deduplication cannot help when
+    # both sets are genuinely distinct: measured on bash 3.2, `cd /tmp/dN && echo
+    # a > /tmp/dN/fN` repeated, 200 copies (8 KB) cost 9.8 s and 250 cost 22 s,
+    # against a 10 s PreToolUse timeout after which the hook is KILLED and
+    # returns 142 -- neither allow nor block, so every gate on that call is
+    # disarmed.
+    #
+    # Three earlier versions bounded the work and SKIPPED the rest, and each
+    # left a hole in the allowing direction. Refusing instead cannot: over the
+    # bound the command is not analysed, so it is not permitted either. The
+    # limit is far above any real command -- 20 distinct `cd` targets in one
+    # Bash call -- and the refusal names it, so a legitimate outlier is a loud,
+    # actionable message rather than a silent pass.
+      if [ "$__cds" -ge "${GATE_EDIT_MAXCD:-20}" ]; then __union_overflow=1; fi
+    fi
   done
 }
 
@@ -201,13 +237,24 @@ __dedupe_candidates() {
     while IFS=$'\x1e' read -r __c __b; do
       [ -n "$__c" ] || continue
       __oc+=("$__c"); __ob+=("$__b")
+    # `LC_ALL=C`: under a UTF-8 locale `sort` ABORTS on an invalid byte
+    # ("Illegal byte sequence") and, on glibc, collates keys that differ only in
+    # punctuation as EQUAL -- which silently drops a pair, and a dropped pair is
+    # a write nobody checks. Byte ordering is all this needs.
     done < <(
       for ((__i = 0; __i < ${#candidates[@]}; __i++)); do
         printf '%s\x1e%s\n' "${candidates[$__i]}" "${cand_bases[$__i]:-$base_dir}"
-      done | sort -u
+      done | LC_ALL=C sort -u
     )
   fi
-  candidates=("${__oc[@]}"); cand_bases=("${__ob[@]}")
+  # NEVER ASSIGN FROM A POSSIBLY-EMPTY ARRAY. `("${__oc[@]}")` on an empty array
+  # is an unbound-variable abort under `set -u` on bash 3.2 -- rc 127, which is
+  # neither allow nor block, i.e. a fail-open. If the pass produced nothing,
+  # leave the originals alone: deduplication is an optimisation and skipping it
+  # is always safe.
+  if [ "${#__oc[@]}" -gt 0 ]; then
+    candidates=("${__oc[@]}"); cand_bases=("${__ob[@]}")
+  fi
 }
 
 input=$(cat 2>/dev/null || true)
@@ -492,8 +539,8 @@ esac
 # --- Helpers ---------------------------------------------------------------
 # Memo for `is_protected_path`, keyed on the candidate's parent directory. See
 # the comment at its use site for why this is a linear scan and not a hash.
-__pp_dir=(); __pp_canon=(); __pp_branch=(); __pp_top=()
-__pp_lsf_key=""; __pp_lsf_tracked=1
+__pp_dir=(); __pp_branch=(); __pp_top=()
+__pp_lsf_tracked=1
 canonicalize_dir() {
   local p="$1"
   if [[ -d "$p" ]]; then (cd "$p" 2>/dev/null && pwd -P) || printf '%s' "${p%/}"
@@ -505,6 +552,23 @@ canonicalize_dir() {
 # by both the decision and the batch primer below -- the recurring defect in this
 # area has been two copies of one predicate drifting apart.
 __NC_DIR=""; __NC_ABS=""
+__canon_dirs=(); __canon_vals=()
+# Answers in a GLOBAL, never on stdout. A caller writing `x=$(__canon_memo ...)`
+# forks a subshell on EVERY call however cheap the function is -- and this one
+# runs per candidate, so a 2500-token command paid 10000 forks and took 10.4 s
+# against the 10 s PreToolUse timeout. The memo was added to REMOVE forks; the
+# calling convention put them back.
+__CANON=""
+__canon_memo() { # <dir> -> __CANON
+  local d="$1" i=0
+  while [ "$i" -lt "${#__canon_dirs[@]}" ]; do
+    if [ "${__canon_dirs[$i]}" = "$d" ]; then __CANON="${__canon_vals[$i]}"; return 0; fi
+    i=$((i + 1))
+  done
+  local c; c=$(canonicalize_dir "$d")
+  __canon_dirs+=("$d"); __canon_vals+=("$c")
+  __CANON="$c"
+}
 __norm_candidate() {
   local raw="$1" base="${2:-$base_dir}" abs dir
   raw="${raw%\"}"; raw="${raw#\"}"; raw="${raw%\'}"; raw="${raw#\'}"
@@ -520,103 +584,178 @@ __norm_candidate() {
   [[ -n "$abs" ]] || abs=/
   dir="${abs%/*}"
   [[ -n "$dir" ]] || dir=/
-  __NC_DIR="$dir"; __NC_ABS="$abs"
+  [[ -d "$dir" ]] || return 1
+  # CANONICALISE HERE, so every consumer keys on the same string. It was done in
+  # `is_protected_path` and not here, and the two then disagreed: the primer was
+  # handed the CANONICAL dir while this function yielded the RAW one, so the
+  # comparison never matched, `paths` stayed empty, and every candidate came
+  # back "not tracked". The `tracked` arm was dead and only `new-source-file`
+  # still refused -- which is invisible in a fixture whose files all sit under
+  # `docs/` or `src/`, and on macOS every `mktemp -d` is a symlinked path, so
+  # the suite ran that way and still reported 88/0.
+  __canon_memo "$dir"; dir="$__CANON"
+  __NC_DIR="$dir"; __NC_ABS="$dir/${abs##*/}"
   return 0
 }
 
 # One `git ls-files` for a directory, covering every candidate that resolves
 # into it. Idempotent; the result is a \x1f-delimited set of absolute paths.
-__pp_lsf_dirs=(); __pp_lsf_set=(); __pp_lsf_idx=0
-__prime_tracked() {
-  local d="$1" i=0 paths=() line
-  while [ "$i" -lt "${#__pp_lsf_dirs[@]}" ]; do
-    [ "${__pp_lsf_dirs[$i]}" = "$d" ] && { __pp_lsf_idx=$i; return 0; }
-    i=$((i + 1))
-  done
+__pp_lsf_dirs=(); __pp_lsf_set=(); __pp_lsf_idx=0; __pp_lsf_primed=0
+# ONE PASS OVER THE CANDIDATES, not one pass per directory.
+#
+# The first version primed lazily and re-scanned the whole candidate array for
+# each distinct parent, so the work was candidates x directories. With 1500
+# distinct tokens that measured 5 s against this suite's 4 s budget -- caught by
+# the latency case added in the previous round, which is the only reason it did
+# not ship. Bucketing in a single pass makes it candidates + directories, and
+# still one `git ls-files` per directory.
+__prime_all_tracked() {
+  [ "$__pp_lsf_primed" = 0 ] || return 0
+  __pp_lsf_primed=1
+  # PARALLEL ARRAYS, never a growing string. Accumulating each directory's paths
+  # by appending to `lists[$j]` is quadratic -- 1500 paths of ~60 bytes copies a
+  # buffer that reaches 90 KB, 1500 times -- and bash 3.2, the only bash CI has,
+  # is far slower at it than 5.x: the suite measured 1.5 s under 5.x and 5 s
+  # under 3.2 against a 4 s budget. Two flat arrays plus a filtering pass per
+  # DIRECTORY is O(candidates x directories) with no copying, and the number of
+  # distinct directories in one command is one or two.
+  local i j d
+  local dirs=() all_dir=() all_abs=()
   for ((i = 0; i < ${#candidates[@]}; i++)); do
     __norm_candidate "${candidates[$i]}" "${cand_bases[$i]:-$base_dir}" || continue
-    [ "$__NC_DIR" = "$d" ] && paths+=("$__NC_ABS")
+    all_dir+=("$__NC_DIR"); all_abs+=("$__NC_ABS")
+    local hit=-1
+    for ((j = 0; j < ${#dirs[@]}; j++)); do
+      if [ "${dirs[$j]}" = "$__NC_DIR" ]; then hit=$j; break; fi
+    done
+    if [ "$hit" -lt 0 ]; then dirs+=("$__NC_DIR"); fi
   done
-  local set=$'\x1f'
-  if [ "${#paths[@]}" -gt 0 ]; then
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      case "$line" in /*) ;; *) line="$d/$line" ;; esac
-      set="$set$line"$'\x1f'
-    # NO `--full-name`, and no post-processing: with `-C "$d"` git reports the
-    # tracked subset RELATIVE TO `$d`, which is exactly what the loop above
-    # re-absolutises. A first draft piped through `sed` to prepend the toplevel,
-    # which was both redundant and tripped `unresolved-target-class`'s fence 1 --
-    # it forbids a `-C` inside a grep/sed/awk expression, because that is the
-    # shape of a hook hand-rolling its own target-directory scan.
-    done < <(git -C "$d" ls-files -- "${paths[@]}" 2>/dev/null)
-  fi
-  __pp_lsf_dirs+=("$d"); __pp_lsf_set+=("$set")
+  for ((j = 0; j < ${#dirs[@]}; j++)); do
+    d="${dirs[$j]}"
+    local paths=() line set=$'\x1f'
+    for ((i = 0; i < ${#all_dir[@]}; i++)); do
+      if [ "${all_dir[$i]}" = "$d" ]; then paths+=("${all_abs[$i]}"); fi
+    done
+    if [ "${#paths[@]}" -gt 0 ]; then
+      # `core.quotePath=false` and `-z`. By default git QUOTES any path with a
+      # non-ASCII, control or backslash character -- `"uni-\303\274n.md"` --
+      # which never matches the raw path the membership test looks for, so a
+      # tracked file with such a name was ALLOWED. The `--error-unmatch` form
+      # this replaced read an exit code and was immune; batching made the OUTPUT
+      # load-bearing, so the output has to be literal. `-z` also removes the
+      # newline-in-filename question entirely.
+      #
+      # NO `--full-name`: with `-C "$d"` git reports the tracked subset RELATIVE
+      # TO `$d`, which is what the loop re-absolutises. A first draft piped
+      # through `sed` to prepend the toplevel, which was redundant and tripped
+      # `unresolved-target-class` fence 1 -- it forbids a `-C` inside a
+      # grep/sed/awk expression, the shape of a hook hand-rolling its own
+      # target-directory scan.
+      while IFS= read -r -d '' line; do
+        [ -n "$line" ] || continue
+        case "$line" in /*) ;; *) line="$d/$line" ;; esac
+        set="$set$line"$'\x1f'
+      done < <(git -C "$d" -c core.quotePath=false ls-files -z -- "${paths[@]}" 2>/dev/null)
+    fi
+    __pp_lsf_dirs+=("$d"); __pp_lsf_set+=("$set")
+  done
+}
+
+__prime_tracked() {
+  local d="$1" i=0
+  __prime_all_tracked
+  while [ "$i" -lt "${#__pp_lsf_dirs[@]}" ]; do
+    if [ "${__pp_lsf_dirs[$i]}" = "$d" ]; then __pp_lsf_idx=$i; return 0; fi
+    i=$((i + 1))
+  done
+  # A directory nobody bucketed has no tracked candidates by construction.
+  __pp_lsf_dirs+=("$d"); __pp_lsf_set+=($'\x1f')
   __pp_lsf_idx=$(( ${#__pp_lsf_dirs[@]} - 1 ))
+}
+
+# Is this directory inside an OPTED-IN worktree that is on main/master?
+#
+# Separate from `is_protected_path` on purpose. That function decides about a
+# FILE and, since the tracked test was batched, only knows about files in the
+# candidate list -- so probing it with a synthetic path (`.markgate.yml`) came
+# back "not tracked", fell through to the source-dir arm, and answered NO for a
+# real main tree. The overflow refusal asks a different question, so it gets its
+# own predicate; both share the per-directory memo, so this costs no new forks.
+__base_is_protected_tree() {
+  local d="$1" i=0 branch top
+  [ -d "$d" ] || return 1
+  __canon_memo "$d"; d="$__CANON"
+  while [ "$i" -lt "${#__pp_dir[@]}" ]; do
+    if [ "${__pp_dir[$i]}" = "$d" ]; then
+      branch="${__pp_branch[$i]}"; top="${__pp_top[$i]}"
+      [ -n "$branch" ] || return 1
+      [ -n "$top" ] || return 1
+      [ "$branch" = main ] || [ "$branch" = master ] || return 1
+      [ -f "$top/.markgate.yml" ] || return 1
+      PROTECT_BRANCH="$branch"; PROTECT_TOP="$top"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+  if [ -n "$branch" ]; then
+    top=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) || top=""
+    if [ -n "$top" ]; then __canon_memo "$top"; top="$__CANON"; fi
+  else
+    top=""
+  fi
+  __pp_dir+=("$d"); __pp_branch+=("$branch"); __pp_top+=("$top")
+  [ -n "$branch" ] || return 1
+  [ -n "$top" ] || return 1
+  [ "$branch" = main ] || [ "$branch" = master ] || return 1
+  [ -f "$top/.markgate.yml" ] || return 1
+  PROTECT_BRANCH="$branch"; PROTECT_TOP="$top"
+  return 0
 }
 
 is_protected_path() {
   # echo "BLOCK <reason>" on stderr-worthy hit, else nothing.
-  local raw="$1" base="${2:-$base_dir}"
-  # Strip surrounding quotes.
-  raw="${raw%\"}"; raw="${raw#\"}"; raw="${raw%\'}"; raw="${raw#\'}"
-  # Skip unresolvable tokens (variables / globs / process-subst).
-  case "$raw" in
-    *'$'* | *'*'* | *'?'* | *'['* | '/dev/'* | '-') return 1 ;;
-  esac
-  # Absolutize relative to base_dir.
-  local abs="$raw"
-  [[ "$abs" != /* ]] && abs="$base/$abs"
-  # Directory to query git from = the file's parent (must exist).
-  # `${abs%/*}` rather than `dirname`: this runs ONCE PER CANDIDATE, and a
-  # command can carry hundreds (every `>` is one), so a fork here is a fork
-  # times N. `abs` is absolute by construction above, so the only special case
-  # is a file directly under the root.
-  # Strip a trailing slash first: `dirname a/b/c/` is `a/b`, while `${x%/*}`
-  # on the same input yields `a/b/c` -- which then exists as a directory, so the
-  # candidate resolved to itself and the gate ALLOWED it. Not reachable through
-  # a redirect (bash refuses `> dir/`), but the divergence is real and measured.
-  abs="${abs%/}"
-  local dir="${abs%/*}"
-  [[ -n "$dir" ]] || dir=/
-  [[ -d "$dir" ]] || return 1
-  # MEMOISED PER PARENT DIRECTORY. Canonicalising and asking git for the branch
-  # and the toplevel is 1 subshell + 2 `git` per candidate, and candidates
-  # overwhelmingly SHARE a parent -- so without this the cost is linear in
-  # candidates when it is really linear in distinct directories. Measured on a
-  # `gh pr comment --body` holding 900 blockquote lines, all of which are
-  # candidates: 7.15 s before, and that is on origin/main, i.e. the shape was
-  # already within 3 s of the 10 s PreToolUse timeout that disarms every gate.
+  # ONE normaliser, shared with `__prime_tracked`. This function used to carry
+  # its own copy, and the two disagreed about canonicalisation, which killed the
+  # `tracked` arm outright. A second copy of one predicate is the recurring
+  # defect in this file, not an incidental one.
+  __norm_candidate "$1" "${2:-$base_dir}" || return 1
+  local dir="$__NC_DIR" abs="$__NC_ABS"
+  # MEMOISED PER PARENT DIRECTORY. Asking git for the branch and the toplevel is
+  # 2 `git` per candidate, and candidates overwhelmingly SHARE a parent -- so
+  # without this the cost is linear in candidates when it is really linear in
+  # distinct directories. Measured on a `gh pr comment --body` holding 900
+  # blockquote lines, all of which are candidates: 7.15 s before, and that is on
+  # origin/main, i.e. the shape was already within 3 s of the 10 s PreToolUse
+  # timeout that disarms every gate.
   #
   # bash 3.2 has no associative arrays, and a linear scan is right anyway: the
   # number of DISTINCT parent directories in one command is one or two, so the
-  # scan is shorter than the hash it would replace.
+  # scan is shorter than the hash it would replace. `dir` arrives canonical from
+  # the normaliser, so it is the key.
   local __ci=0 __hit=-1
   while [ "$__ci" -lt "${#__pp_dir[@]}" ]; do
     [ "${__pp_dir[$__ci]}" = "$dir" ] && { __hit=$__ci; break; }
     __ci=$((__ci + 1))
   done
-  local canon branch top
+  local branch top
   if [ "$__hit" -ge 0 ]; then
-    canon="${__pp_canon[$__hit]}"; branch="${__pp_branch[$__hit]}"; top="${__pp_top[$__hit]}"
+    branch="${__pp_branch[$__hit]}"; top="${__pp_top[$__hit]}"
   else
-    canon=$(canonicalize_dir "$dir")
-    branch=$(git -C "$canon" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+    branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
     if [ -n "$branch" ]; then
-      top=$(git -C "$canon" rev-parse --show-toplevel 2>/dev/null) || top=""
-      [ -n "$top" ] && top=$(canonicalize_dir "$top")
+      top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top=""
+      if [ -n "$top" ]; then __canon_memo "$top"; top="$__CANON"; fi
     else
       top=""
     fi
-    __pp_dir+=("$dir"); __pp_canon+=("$canon"); __pp_branch+=("$branch"); __pp_top+=("$top")
+    __pp_dir+=("$dir"); __pp_branch+=("$branch"); __pp_top+=("$top")
   fi
   # A cached MISS is a miss: an empty branch or toplevel means the dir is not in
   # a git repo (or git failed), which is the same `return 1` the uncached path
   # took. Storing it is what keeps a repeated miss from re-forking.
   [ -n "$branch" ] || return 1
   [ -n "$top" ] || return 1
-  dir="$canon"
-  abs="$dir/${abs##*/}"
   [[ "$branch" == "main" || "$branch" == "master" ]] || return 1
   # Repo opt-in scope (issue #1259): only repos following the worktree +
   # markgate convention get main-tree edit protection. Unrelated repos
@@ -669,6 +808,35 @@ is_protected_path() {
 # Dedupe LAST, after both bounded paths have unioned their bases in, so it sees
 # the final pair set. Cheap when there is nothing to collapse.
 __dedupe_candidates
+
+# THE OVERFLOW REFUSES, and it refuses only where the gate could ever apply.
+# `__union_cd_bases` stops after `GATE_EDIT_MAXCD` distinct `cd` targets rather
+# than analysing an n*k product that would outlive the 10 s PreToolUse timeout.
+# Stopping is not permitting: the command was not analysed, so it is not
+# allowed. But this hook fires on EVERY Bash call in ANY repo, so a blanket
+# refusal would be a false block in unrelated trees -- the check below asks only
+# the bounded question "is any base a protected main tree", which the
+# per-directory memo answers without new forks.
+if [ "${__union_overflow:-0}" = 1 ]; then
+  for __ov in "${__cd_targets[@]:-$base_dir}" "$base_dir"; do
+    if __base_is_protected_tree "$__ov"; then
+      cat >&2 <<EOF
+Blocked by main-tree-edit-gate: too many distinct \`cd\` targets to analyse safely.
+
+  distinct cd targets: over ${GATE_EDIT_MAXCD:-20}
+  worktree:            $PROTECT_TOP  (on $PROTECT_BRANCH)
+  tool:                $tool
+
+Resolving every write target against every \`cd\` in this command would take
+longer than the 10 s PreToolUse budget, after which this hook is killed and
+cannot refuse anything -- so it refuses now rather than guessing.
+
+Split the command: run the \`cd\`-heavy part on its own, then the write.
+EOF
+      exit 2
+    fi
+  done
+fi
 
 __i=0
 for c in "${candidates[@]}"; do
