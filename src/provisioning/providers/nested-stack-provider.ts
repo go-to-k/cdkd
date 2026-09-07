@@ -579,9 +579,11 @@ export class NestedStackProvider implements ResourceProvider {
         // decide scoping for you. No count is written in this paragraph,
         // because a count is the part that rots.
         //
-        // `recreateTargets` and `onCurrentStateLoaded` SELF-SCOPE, so
-        // inheriting them is inert: the first matches only while deploying its
-        // own `stackName`, the second (the prefix-migration gate) returns early
+        // `recreateTargets`, `pinCcApi` and `onCurrentStateLoaded` SELF-SCOPE,
+        // so inheriting them is inert: the first two match only while deploying
+        // their own `stackName` (`pinCcApi` gained that shape in issue #2719
+        // for exactly this reason -- it started as a bare logical-id Set), the
+        // third (the prefix-migration gate) returns early
         // on a stack-name mismatch. The child deploys as `<parent>~<logicalId>`
         // and CDK's stack-name rule bars `~`, so neither can match in a
         // descendant. `parentStackInfo` and `eventRecorder` are stack-named but
@@ -604,7 +606,10 @@ export class NestedStackProvider implements ResourceProvider {
         // `--allow-unsupported-properties` allow-lists, keyed by resource TYPE
         // and `Type:Property` -- a per-type opt-in whose meaning does not
         // change between stacks. What #2567 was about is a per-STACK identifier
-        // deciding a destructive action, and that is `recreateTargets` alone.
+        // deciding an action, and there are now two: `recreateTargets` (a
+        // destructive one) and `pinCcApi` (issue #2719 -- a routing one, which
+        // is quieter and therefore easier to get wrong: a pin that matches in
+        // the wrong stack produces no output at all).
         ...(parentCtx.options ?? {}),
         // Always overwrite (never spread-inherit) parameters: the parent's
         // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,

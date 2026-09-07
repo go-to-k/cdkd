@@ -82,7 +82,7 @@ import type { LockManager } from '../state/lock-manager.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
-import { ProviderRegistry } from '../provisioning/provider-registry.js';
+import { ProviderRegistry, STICKY_CC_MIGRATION_EXEMPT } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
 import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
 import {
@@ -390,6 +390,28 @@ export interface DeployEngineOptions {
    * present in the named stack's cdkd state on entry. When `undefined`, the
    * engine behaves exactly as before #615 / #651.
    */
+  /**
+   * `--pin-cc-api` targets (issue #2719): logical ids that decline the
+   * automatic return to their SDK provider and stay on the Cloud Control
+   * route for this deploy.
+   *
+   * Logical ids live HERE rather than on the registry because the registry is
+   * type-scoped and knows nothing about logical ids; the engine resolves
+   * membership and passes the answer down as a boolean.
+   *
+   * SELF-SCOPED by `stackName`, exactly like `recreateTargets` and for the
+   * same reason: this object is spread into every nested child engine, and a
+   * logical id is unique only WITHIN one template. Without the scope, pinning
+   * `Topic` in the parent would also pin a `Topic` in any nested child that
+   * happens to use the id -- silently, since a pin produces no output. Caught
+   * by `tests/unit/provisioning/nested-stack-option-boundary-audit.test.ts`,
+   * which is why the shape is a record rather than a bare Set.
+   */
+  pinCcApi?: {
+    /** The stack these ids were validated against — the ONLY stack they apply to. */
+    stackName: string;
+    logicalIds: ReadonlySet<string>;
+  };
   recreateTargets?: {
     /** The stack the ids below were validated against — the ONLY stack they apply to. */
     stackName: string;
@@ -698,10 +720,21 @@ class InterruptedError extends Error {
  * delegate and the routing-inference logic is directly unit-testable
  * without standing up a full DeployEngine harness.
  */
+/** The only two fields {@link deriveLabelRouting} reads off a state record. */
+export type LabelRoutingState = Partial<Pick<ResourceState, 'provisionedBy' | 'properties'>>;
+
 export function deriveLabelRouting(
   change: ResourceChange,
-  existingState: ResourceState | undefined,
-  registry: Pick<ProviderRegistry, 'getProviderFor'>
+  // Only these two fields are read, and BOTH optional, which is what the
+  // function already assumes (`existingState?.provisionedBy`,
+  // `existingState?.properties`). Saying so lets `peekRoutingForLabel` pass the
+  // recreate hint as a real object instead of an `as ResourceState` cast over
+  // four missing required fields -- a cast that also typechecked clean for
+  // `{}`, and whose replacement immediately caught that the hint record has no
+  // `properties`, which is exactly the mirror `replaceDecision` needs.
+  existingState: LabelRoutingState | undefined,
+  registry: Pick<ProviderRegistry, 'getProviderFor'>,
+  forceCcApi = false
 ): 'sdk' | 'cc-api' | undefined {
   try {
     if (change.changeType === 'DELETE') {
@@ -709,8 +742,28 @@ export function deriveLabelRouting(
     }
     const decision = registry.getProviderFor({
       resourceType: change.resourceType,
-      properties: change.desiredProperties,
+      // `?? {}` matches the dispatch's `change.desiredProperties || {}`. Safe
+      // today only because `DiffCalculator` always populates the field, which
+      // is the kind of "safe because of somewhere else" that made the
+      // diff-renderer copy of this same normalization a real bug.
+      properties: change.desiredProperties ?? {},
       provisionedBy: existingState?.provisionedBy,
+      // Issue #2719: the label must be computed from the SAME inputs as the
+      // dispatch, or it describes a decision that will not be taken. Both were
+      // omitted in the first revision of this change.
+      //
+      // The live case is `--pin-cc-api`: the dispatch forces Cloud Control and,
+      // without `forceCcApi` here, the label computed `sdk` and dropped the
+      // `[CC API]` tag from a resource still going through Cloud Control. NOT
+      // `--recreate-via-cc-api`, which an earlier revision of this comment
+      // cited: that flag is refused at pre-flight on a record already `cc-api`
+      // (`blockedAlreadyCcApi`), and on a record that says `'sdk'` the
+      // exemption never engages. Note the scope of that claim -- it is about
+      // THIS label path. The dispatch's own replacement site DOES feed
+      // `forceCcApi` from `recreateViaCcApi`, deliberately and load-bearingly;
+      // what does not reach here is `recreateTargets`.
+      previousProperties: existingState?.properties,
+      forceCcApi,
     });
     return decision.provisionedBy;
   } catch {
@@ -1830,12 +1883,18 @@ export class DeployEngine {
       // #2608's sibling site, found by that fix's sweep). Unlike the UPDATE
       // capture, this site has no routing DECISION to bind to — the record is
       // all there is — so it re-derives, and that is not an identity for a
-      // `STICKY_CC_MIGRATION_EXEMPT` type: `AWS::Scheduler::Schedule` stamped
-      // `cc-api` deliberately lands on its SDK provider. Accepted here rather
-      // than papered over: for that ONE type the SDK provider is the correct
-      // reader (the exemption exists because its CC routing is broken and both
-      // layers store the same physicalId), so the re-derivation lands on the
-      // right provider for the right reason.
+      // `STICKY_CC_MIGRATION_EXEMPT` type: one stamped `cc-api` can
+      // deliberately land on its SDK provider. Accepted here rather than
+      // papered over, and the reason is now per MODE (issue #2719):
+      //   - `'cc-broken'` (`AWS::Scheduler::Schedule`): the SDK provider IS the
+      //     correct reader — the exemption exists because CC cannot address the
+      //     resource — and both layers store the same physicalId.
+      //   - `'sdk-coverage'` (`AWS::SNS::Topic`): this site passes NO property
+      //     bags, so the flip predicate's no-properties gate refuses, and the
+      //     re-derivation stays on Cloud Control. That is load-bearing rather
+      //     than incidental: the capture must read through the layer that
+      //     WROTE the resource, and this deploy has not flipped it yet.
+      // Either way the re-derivation lands on the right provider.
       //
       // One more consequence, audited rather than accidental: the sticky arm
       // returns BEFORE `isSupportedResourceType`, so a `cc-api`-stamped record
@@ -3490,9 +3549,18 @@ export class DeployEngine {
     const resourceType = change.resourceType;
 
     const renderer = getLiveRenderer();
+    // The SAME question the dispatch asks (`propertyDrivenReplacement ||
+    // recreateFlagged`), computed once and used by BOTH the verb and the
+    // routing tag. Splitting it is what produced three rounds of one class:
+    // the tag was fixed to include the flag half while the verb kept the
+    // property half alone, so a `--recreate-via-*` target whose property change
+    // does not itself force a replacement still rendered `Updating` over a
+    // destroy + recreate.
+    const labelRecreateDirection = this.recreateDirectionFor(stackName, logicalId);
     const needsReplacement =
-      change.changeType === 'UPDATE' &&
-      (change.propertyChanges?.some((pc) => pc.requiresReplacement) ?? false);
+      (change.changeType === 'UPDATE' &&
+        (change.propertyChanges?.some((pc) => pc.requiresReplacement) ?? false)) ||
+      labelRecreateDirection !== undefined;
     const verb =
       change.changeType === 'CREATE'
         ? 'Creating'
@@ -3514,7 +3582,14 @@ export class DeployEngine {
     // here matches the real decision in `provisionResourceBody`. Errors
     // here never surface — if routing inference fails, we drop the tag
     // and the real `getProviderFor` call later will re-evaluate.
-    const labelRouting = this.peekRoutingForLabel(change, stateResources[logicalId]);
+    const labelRouting = this.peekRoutingForLabel(
+      change,
+      stateResources[logicalId],
+      stackName,
+      logicalId,
+      needsReplacement,
+      labelRecreateDirection
+    );
     const routingTag = labelRouting === 'cc-api' ? ' [CC API]' : '';
     const baseLabel = `${verb} ${logicalId} (${resourceType})${routingTag}`;
     renderer.addTask(logicalId, baseLabel);
@@ -3769,11 +3844,99 @@ export class DeployEngine {
     }
   }
 
+  /**
+   * Is this resource pinned to Cloud Control for this deploy (`--pin-cc-api`)?
+   *
+   * ONE implementation, called by the update dispatch and by the progress
+   * label. They carried separate copies of this expression for one revision,
+   * and a mutation probe caught the predictable result: neutering the LABEL's
+   * copy left every test green, because the only cases that existed exercised
+   * the dispatch's. Same shape as the duplicated flip predicate this lane
+   * already collapsed once.
+   *
+   * SCOPED BY STACK, like `recreateTargets`. `NestedStackProvider.runChildDeploy`
+   * spreads the parent's options into every child engine, and a logical id is
+   * unique only within one template, so an unscoped set would pin a same-named
+   * resource in a stack the user never named — silently, since a pin produces
+   * no output of its own.
+   */
+  private isPinnedToCcApi(stackName: string, logicalId: string): boolean {
+    return (
+      this.options.pinCcApi?.stackName === stackName &&
+      this.options.pinCcApi.logicalIds.has(logicalId)
+    );
+  }
+
+  /**
+   * The `--recreate-via-*` direction for this resource, or `undefined`.
+   *
+   * Stack-scoped for the same reason as {@link isPinnedToCcApi}, and extracted
+   * for a sharper one: the LABEL and the DISPATCH were computing "is this a
+   * replacement" from DIFFERENT expressions. The dispatch asks
+   * `propertyDrivenReplacement || recreateFlagged`; the label asked only the
+   * property half. So a `--recreate-via-*` target whose property change does
+   * not itself force a replacement took the label's non-replacement path and
+   * was routed from the state record, while the dispatch routed it from the
+   * flag -- mislabelling in BOTH directions, and rendering `Updating` over a
+   * destroy + recreate.
+   *
+   * Three review rounds fixed three instances of that one class (the pin, then
+   * the sticky inputs, then this) by subtracting one input at a time from the
+   * label. The class closes by asking the same QUESTION at both sites instead.
+   */
+  private recreateDirectionFor(stackName: string, logicalId: string): 'sdk' | 'cc-api' | undefined {
+    const targets =
+      this.options.recreateTargets?.stackName === stackName
+        ? this.options.recreateTargets
+        : undefined;
+    if (targets === undefined) return undefined;
+    if (targets.viaCcApi.has(logicalId)) return 'cc-api';
+    if (targets.viaSdkProvider.has(logicalId)) return 'sdk';
+    return undefined;
+  }
+
   private peekRoutingForLabel(
     change: ResourceChange,
-    existingState: ResourceState | undefined
+    existingState: ResourceState | undefined,
+    stackName: string,
+    logicalId: string,
+    needsReplacement = false,
+    recreateDirection?: 'sdk' | 'cc-api'
   ): 'sdk' | 'cc-api' | undefined {
-    return deriveLabelRouting(change, existingState, this.providerRegistry);
+    // The pin is resolved HERE rather than inside `deriveLabelRouting` because
+    // that function is exported and unit-tested without an engine; keeping it
+    // free of `this.options` is what lets it be called with a plain registry.
+    // `needsReplacement` already folds in the flag half -- the caller computes
+    // it once so the VERB and this tag cannot disagree, which is the whole
+    // lesson of {@link recreateDirectionFor}'s docstring.
+    if (needsReplacement) {
+      // Mirror `replaceDecision` argument for argument: it routes the NEW
+      // physical resource, so it passes NO `previousProperties` (stickiness
+      // exists to spare an EXISTING resource from churn, and a replacement is
+      // not that), the recreate hint as `provisionedBy`, and `forceCcApi` only
+      // for the CC direction. Passing `existingState: undefined` drops the
+      // record-derived inputs in one move, since `deriveLabelRouting` derives
+      // both from it.
+      // The synthetic record carries ONLY `provisionedBy`, which is exactly the
+      // mirror: `deriveLabelRouting` derives `provisionedBy` and
+      // `previousProperties` from this argument, so a record with the hint and
+      // no `properties` reproduces `replaceDecision`'s
+      // `{ ...(hint && { provisionedBy: hint }) }` with no `previousProperties`.
+      const hintRecord =
+        recreateDirection === undefined ? undefined : { provisionedBy: recreateDirection };
+      return deriveLabelRouting(
+        change,
+        hintRecord,
+        this.providerRegistry,
+        recreateDirection === 'cc-api'
+      );
+    }
+    return deriveLabelRouting(
+      change,
+      existingState,
+      this.providerRegistry,
+      this.isPinnedToCcApi(stackName, logicalId)
+    );
   }
 
   /**
@@ -4534,6 +4697,13 @@ export class DeployEngine {
             resourceType,
             properties: resolvedProps,
             ...(recreateDirectionHint && { provisionedBy: recreateDirectionHint }),
+            // Issue #2719: `--recreate-via-cc-api` passes `provisionedBy:
+            // 'cc-api'` as a HINT, and for a type with an `'sdk-coverage'`
+            // exemption the sticky-escape would read that hint and divert the
+            // resource straight back to the SDK provider -- turning the user's
+            // explicit "recreate this through Cloud Control" into a no-op.
+            // Pinning here is what keeps the flag meaning what it says.
+            ...(recreateViaCcApi && { forceCcApi: true }),
           });
           const replaceProvider = replaceDecision.provider;
           const replaceProps =
@@ -5018,7 +5188,55 @@ export class DeployEngine {
             resourceType,
             properties: resolvedProps,
             provisionedBy: currentResource.provisionedBy,
+            // Issue #2719: the RECORD's bag, not the diff's current side. It is
+            // the resolved desired bag of the last successful deploy, so a
+            // property applied under Cloud Control and since deleted from the
+            // template is still visible here -- which is the one case a
+            // desired-only flip condition gets wrong (see
+            // `GetProviderForInput.previousProperties`).
+            previousProperties: currentResource.properties,
+            ...(this.isPinnedToCcApi(stackName, logicalId) && { forceCcApi: true }),
           });
+          if (updateDecision.sdkMigration === true) {
+            // The ONLY reader of `sdkMigration`, and the reason the field
+            // exists: without it this deploy moves a live resource between
+            // provisioning layers and says so only at debug level. It fires
+            // once, because the record says 'sdk' from this write on.
+            //
+            // The wording is per MODE, because the two flips happen for
+            // opposite reasons and only one of them can be declined. A first
+            // revision printed the coverage sentence for both and told a
+            // 'cc-broken' user to pass `--pin-cc-api`, which that mode
+            // deliberately ignores -- recommending a flag that silently no-ops
+            // is the same class of defect as the typo this lane just closed.
+            // Exhaustive rather than a ternary: a THIRD mode added later would
+            // otherwise inherit the coverage wording AND a `--pin-cc-api`
+            // suggestion, which is precisely the wrong-remedy defect this
+            // per-mode split exists to fix. `exemptMode` cannot be undefined
+            // here — `sdkMigration` is set only after `wouldReturnToSdkProvider`
+            // found an entry in this same table — but the default arm keeps
+            // that from being load-bearing.
+            const exemptMode = STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode;
+            const preserved = 'The physical id is preserved';
+            let message: string;
+            switch (exemptMode) {
+              case 'cc-broken':
+                message =
+                  `${logicalId} (${resourceType}): moving to the SDK provider — Cloud ` +
+                  `Control cannot manage this type correctly. ${preserved}, and this ` +
+                  `routing is not optional.`;
+                break;
+              case 'sdk-coverage':
+                message =
+                  `${logicalId} (${resourceType}): returning to the SDK provider — cdkd now ` +
+                  `covers every property this resource uses. ${preserved}; pass ` +
+                  `--pin-cc-api ${logicalId} to decline this for a deploy.`;
+                break;
+              default:
+                message = `${logicalId} (${resourceType}): moving to the SDK provider. ${preserved}.`;
+            }
+            this.logger.info(message);
+          }
           const updateProvider = updateDecision.provider;
           const updateProps =
             updateDecision.provisionedBy === 'cc-api'
@@ -5046,10 +5264,17 @@ export class DeployEngine {
           // Bound from the decision rather than re-derived with
           // `getProviderFor({ resourceType, provisionedBy: resultProvisionedBy })`:
           // that re-read is NOT an identity for every type. A
-          // `STICKY_CC_MIGRATION_EXEMPT` type (`AWS::Scheduler::Schedule`)
-          // asked for `provisionedBy: 'cc-api'` deliberately falls through to
-          // its SDK provider, so the re-read would reintroduce exactly the
-          // mismatch it was meant to close. The property-driven replacement
+          // `STICKY_CC_MIGRATION_EXEMPT` type asked for
+          // `provisionedBy: 'cc-api'` can deliberately fall through to its SDK
+          // provider. That is the `'cc-broken'` case (`AWS::Scheduler::Schedule`),
+          // whose escape is unconditional, so the re-read would reintroduce
+          // exactly the mismatch it was meant to close.
+          //
+          // NOT the `'sdk-coverage'` case, despite the symmetry: this re-read
+          // passes NO property bags, and that mode's flip requires both of
+          // them, so it would refuse. An earlier revision of this comment said
+          // the opposite and contradicted its own sibling at the
+          // observed-capture site, which relies on that same no-bags refusal. The property-driven replacement
           // twin above passes `replaceProvider` for the same reason.
           let captureProvider = updateProvider;
           try {

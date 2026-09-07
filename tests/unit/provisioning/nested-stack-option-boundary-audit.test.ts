@@ -42,6 +42,7 @@ const NESTED_STACK_PROVIDER = readFileSync(
 const AUDITED_MEMBERS = [
   // --- names a stack, or a resource in one (the audit's subject) -------------
   'recreateTargets', // self-scoped: matched only while deploying its `stackName`
+  'pinCcApi', // self-scoped: same shape and same reason as recreateTargets (#2719)
   'onCurrentStateLoaded', // self-scoped: the prefix gate returns early on a mismatch
   'parentStackInfo', // overwritten by the spread site, must describe THIS child
   'eventRecorder', // carries the top-level run's stack name, by design

@@ -268,9 +268,14 @@ function describeJsonKeys(document: string): string {
  *     `disableCcApiFallback` is not read on that path. The poisoned pre-guard
  *     state record the issue is about is precisely a record that already says
  *     `cc-api`, so it would still arrive here. Only adding the type to
- *     `STICKY_CC_MIGRATION_EXEMPT` would divert it -- and that set is reserved
- *     for types whose CC routing is BROKEN, which would then send the
- *     silent-drop property back down the dropping path on the next deploy.
+ *     `STICKY_CC_MIGRATION_EXEMPT` would divert it. Since issue #2719 that
+ *     table admits two modes, and NEITHER helps here: `'cc-broken'` is for
+ *     types Cloud Control cannot manage, and `'sdk-coverage'` diverts a
+ *     resource only when its property bags carry no actionable silent drop --
+ *     which is the opposite of this case by construction. Were a type somehow
+ *     admitted anyway, the divert would send the silent-drop property back
+ *     down the dropping path on the next deploy; the property gate is what
+ *     prevents it.
  *
  * So the confirmation belongs where the delete is actually issued. The set is
  * a set rather than an `if` because the hazard is not S3-specific in kind: any

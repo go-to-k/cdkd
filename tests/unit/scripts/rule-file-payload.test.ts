@@ -271,6 +271,10 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['provider-property-fidelity.md', 65],
   ['provider-replay-and-refusals.md', 65],
   ['provider-resource-identity.md', 65],
+  // Exactly one path by design: this satellite was split OUT of state-schema.md
+  // (go-to-k/cdkd#2719) because its detail pushed src/types/state.ts over the
+  // per-path budget, and a wider glob here would re-create that. EXACT.
+  ['provisioning-sticky-routing.md', 1],
   ['providers.md', 92],
   ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
@@ -346,6 +350,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/cli/commands/import.ts', 63_000, 80_000],            // measured  72,035
   ['src/utils/ip-protocol.ts', 83_000, 105_000],             // measured  95,005
   ['src/provisioning/cloud-control-provider.ts', 67_500, 105_000], // measured 94,925
+  // The representative path for provisioning-sticky-routing.md, whose single
+  // glob is exactly this file (go-to-k/cdkd#2719). Without a budgeted path the
+  // satellite would be bounded by nothing but the per-file cap.
+  ['src/provisioning/provider-registry.ts', 62_000, 105_000], // measured 87,763
   // 55_000 -> 57_000 (both rows): `code-layout.md` gained an index row for
   // `layout-scrub.md` (issue #2274), and that file is in EVERY payload, so a
   // cap with 100 B of headroom fails for a reason unrelated to the path it
@@ -945,7 +953,9 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 48; // + hooks-deferral-criteria.md (go-to-k/cdkd#2707): hooks.md
+const CORPUS_FILE_COUNT = 49; // + provisioning-sticky-routing.md (go-to-k/cdkd#2719): state-schema.md
+// shed its sticky-routing detail to a one-path satellite after src/types/state.ts
+// went 708 B over its 57,000 B budget. Previously 48; // + hooks-deferral-criteria.md (go-to-k/cdkd#2707): hooks.md
                               //  crossed the per-file cap AGAIN, and the tell was a CI-only
                               //  failure -- the branch measured 79,289 B locally and 80,671 B
                               //  merged, because main had grown the same file meanwhile. Read a

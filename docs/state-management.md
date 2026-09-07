@@ -518,21 +518,44 @@ check — the same decision it got before v7 existed. Only a recorded
 `'cc-api'` pins. v7+ writers (`cdkd deploy` and `cdkd import` alike) emit the
 field explicitly so the decision is durable across deploys.
 
-The field is **sticky**: once a resource is `'cc-api'`, a later SDK-provider
-backfill does NOT migrate it back, because that would mean physical-ID churn
-(destroy + recreate) on every backfill release. **The stickiness has a narrow
-exemption**, `STICKY_CC_MIGRATION_EXEMPT` in
+The field is **sticky by default**: once a resource is `'cc-api'`, a later
+SDK-provider backfill does not by itself migrate it back, because doing that
+unconditionally would mean physical-ID churn (destroy + recreate) on every
+backfill release. **The stickiness has narrow exemptions**, listed in
+`STICKY_CC_MIGRATION_EXEMPT` in
 [`src/provisioning/provider-registry.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/provider-registry.ts) —
 consult the constant rather than a list here, since its membership changes.
-A type is admitted only when its Cloud Control routing is **broken** (not merely
-slower) AND the SDK provider addresses the resource by the SAME physicalId the
-CC path stored, so the re-route costs no churn and the record flips to
-`'sdk'` transparently on its next write. Without the exemption, pinning such a
-record to `cc-api` would keep the bug alive for every pre-existing resource.
-`AWS::Scheduler::Schedule` (a schedule in a custom `ScheduleGroup` is
-unaddressable via Cloud Control) is
-the member today. So a `provisionedBy: 'cc-api'` record is NOT proof the
-resource will keep being managed through Cloud Control.
+
+Every entry must satisfy the same hard requirement: **the SDK provider
+addresses the resource by the SAME physicalId the Cloud Control path stored**,
+so the re-route costs no churn and the record flips to `'sdk'` transparently on
+its next write. That parity is a per-type empirical fact, not an argument, so
+each entry names an integration fixture that OBSERVED it on a live resource;
+a unit test refuses an entry whose fixture does not exist or has never run.
+
+Entries then differ in WHY they were admitted, and the difference decides how
+conditional the escape is:
+
+- **`'cc-broken'`** — Cloud Control cannot correctly manage the type at all, so
+  staying pinned keeps a live bug alive. The escape is unconditional.
+  `AWS::Scheduler::Schedule` (a schedule in a custom `ScheduleGroup` is
+  unaddressable via Cloud Control) is the member today.
+- **`'sdk-coverage'`** — Cloud Control manages the type correctly and is merely
+  slower; cdkd has since gained full property coverage. The escape is
+  conditional on **this resource**: it happens only on a mutating deploy where
+  neither the template's property bag nor the recorded one carries a property
+  cdkd would silently drop. Reading the recorded bag too is what keeps a
+  *removal* deploy correct — a property applied under Cloud Control and since
+  deleted from the template still needs Cloud Control to unset it, so the flip
+  waits one deploy. `AWS::SNS::Topic` is the member today.
+
+When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
+resource `[returning to SDK provider]`, and `--pin-cc-api
+<LogicalId>` declines it for that deploy. A `'cc-broken'` entry ignores the
+pin — honoring it would re-pin the resource to a handler that cannot manage it.
+
+So a `provisionedBy: 'cc-api'` record is NOT proof the resource will keep being
+managed through Cloud Control.
 
 `cdkd destroy` reads the field to pick the delete path, `cdkd drift` to pick
 `readCurrentState`, and `cdkd state show` displays it

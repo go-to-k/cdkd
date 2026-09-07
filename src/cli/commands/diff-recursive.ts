@@ -26,7 +26,16 @@ import {
   type AssetRedirectMap,
 } from '../../assets/asset-redirect.js';
 import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
+import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
+
+/**
+ * The one spelling of the routing token for a resource leaving Cloud Control
+ * (issue #2719). A literal, because `collectCcApiRoutes` writes it and
+ * `annotateRouting` special-cases it, and the integ fixture greps for it --
+ * three places that must agree on a string.
+ */
+export const SDK_MIGRATION_TOKEN = 'returning to SDK provider';
 
 const logger = getLogger().child('DiffRecursive');
 
@@ -1012,7 +1021,7 @@ const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
  * recurse through their own templates rather than carrying CC-routable
  * properties on the parent's row.
  */
-function collectCcApiRoutes(
+export function collectCcApiRoutes(
   template: CloudFormationTemplate,
   state: StackState
 ): Map<string, string[]> {
@@ -1034,8 +1043,36 @@ function collectCcApiRoutes(
     // `getProviderFor` rule 2 (sticky). Surface the tag with the
     // distinguishing `sticky` token so the user can tell this case apart
     // from a fresh auto-route.
-    if (state.resources[logicalId]?.provisionedBy === 'cc-api') {
-      hits.set(logicalId, ['sticky']);
+    const record = state.resources[logicalId];
+    if (record?.provisionedBy === 'cc-api') {
+      // ...unless the type is exempt AND this resource's own property bags say
+      // the flip is safe, in which case the next op leaves Cloud Control
+      // instead of staying on it (issue #2719). Before that check existed this
+      // arm read the record alone, so `AWS::Scheduler::Schedule` -- exempt
+      // since issue #961 -- was rendered `[via CC API: sticky]` while
+      // `getProviderFor` routed it to the SDK provider: the annotation stated
+      // the opposite of what the deploy would do.
+      // No allow-set is threaded, matching the `findActionableSilentDrops` call
+      // above and for the same structural reason: `cdkd diff` has no
+      // `--allow-unsupported-properties` flag, so there is nothing to thread.
+      // Inert today (an admitted `'sdk-coverage'` type has an empty silentDrop
+      // map, so the allow set cannot change the answer) and it would diverge
+      // from the deploy only for a future exempt type with a real drop — which
+      // the admission bar in docs/provider-rules.md already discourages.
+      const leaving = wouldReturnToSdkProvider({
+        resourceType: resource.Type,
+        // `?? {}` matches the engine's `change.desiredProperties || {}`
+        // (deploy-engine.ts). Without it a template resource with NO
+        // `Properties` block passes `undefined`, the predicate's
+        // no-desired-bag gate returns false, and the annotation prints
+        // `sticky` for a resource the deploy will flip -- the exact
+        // inverse-of-truth this arm was changed to stop printing, one level
+        // above the shared predicate. Reachable by removing the last property
+        // from a cc-api-recorded resource.
+        desiredProperties: resource.Properties ?? {},
+        previousProperties: record.properties,
+      });
+      hits.set(logicalId, [leaving ? SDK_MIGRATION_TOKEN : 'sticky']);
     }
   }
   return hits;
@@ -1294,6 +1331,14 @@ export function renderChangeLines(
   const annotateRouting = (logicalId: string): string => {
     const props = ccApiRoutes?.get(logicalId);
     if (!props || props.length === 0) return '';
+    // The migration token describes a resource LEAVING Cloud Control, so it
+    // cannot wear the `via CC API:` prefix the other tokens share -- that
+    // read `[via CC API: returning to SDK provider]`, which says both things
+    // at once. It is the only token that is a whole phrase rather than a
+    // property name, hence the special case rather than a prefix variable.
+    if (props.length === 1 && props[0] === SDK_MIGRATION_TOKEN) {
+      return ` [${SDK_MIGRATION_TOKEN}]`;
+    }
     return ` [via CC API: ${props.join(', ')}]`;
   };
 

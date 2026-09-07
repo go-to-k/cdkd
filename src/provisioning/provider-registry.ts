@@ -36,6 +36,23 @@ export interface ProviderRoutingDecision {
   provider: ResourceProvider;
   provisionedBy: ProvisionedBy;
   ccRouteReason?: { properties: string[] };
+  /**
+   * Set when rule 2 sent a resource whose state record says `'cc-api'` BACK to
+   * its SDK provider (issue #2719).
+   *
+   * ONE reader: `deploy-engine.ts`'s update dispatch, which turns it into the
+   * info line that tells the user a live resource moved between provisioning
+   * layers. `cdkd diff` does NOT read it — it has no routing decision to read,
+   * only a template and a state record, so it re-derives the same answer
+   * through {@link wouldReturnToSdkProvider}. An earlier revision of this
+   * comment claimed both surfaces read it while neither did, and the field was
+   * dead in production with five test assertions pinning it.
+   *
+   * Absent on every other path, including a resource that was already `'sdk'`:
+   * this marks a TRANSITION, and the record says `'sdk'` from the next write
+   * on, so it fires once.
+   */
+  sdkMigration?: true;
 }
 
 /**
@@ -49,6 +66,33 @@ export interface GetProviderForInput {
   resourceType: string;
   properties?: Record<string, unknown> | undefined;
   provisionedBy?: ProvisionedBy | undefined;
+  /**
+   * The property bag on the resource's EXISTING state record -- the resolved
+   * desired bag of its last successful deploy, not a Cloud Control read-back,
+   * so it carries no CC-only keys.
+   *
+   * Load-bearing for the `'sdk-coverage'` exemption (issue #2719) and for one
+   * case only: the REMOVAL deploy. A resource carries silent-drop property `P`
+   * applied under CC; the user deletes `P` from the template. The desired bag
+   * is now clean, so a desired-only condition would route THAT deploy to the
+   * SDK provider -- which cannot unset `P` -- silently skipping the removal,
+   * which is the exact bug the auto-route exists to prevent. Under CC the same
+   * deploy patches `P` away correctly, and the NEXT deploy flips. Convergent,
+   * one deploy late, never wrong.
+   */
+  previousProperties?: Record<string, unknown> | undefined;
+  /**
+   * Suppress the `'sdk-coverage'` exemption for this call, keeping the sticky
+   * CC route. Set by `--pin-cc-api` and -- required for correctness -- by
+   * `--recreate-via-cc-api`, whose whole purpose is to force the CC layer:
+   * without this the exemption would divert that explicit request straight
+   * back to the SDK provider and the flag would silently no-op.
+   *
+   * Deliberately ignored by `'cc-broken'` entries: honoring a pin there would
+   * keep a broken CC handler managing the resource, which is the bug those
+   * entries exist to escape.
+   */
+  forceCcApi?: boolean | undefined;
 }
 
 /**
@@ -92,29 +136,178 @@ export interface AutoRouteHit {
  * that case into a clear pre-flight error.
  */
 /**
+ * How a type escapes the sticky `provisionedBy: 'cc-api'` routing rule.
+ *
+ * - `'cc-broken'` -- the CC handler CANNOT correctly manage the resource, so
+ *   keeping existing state pinned to cc-api keeps a live bug alive. The
+ *   fall-through is UNCONDITIONAL: no property check, and `forceCcApi` is
+ *   ignored, because pinning here would be pinning to the broken handler.
+ * - `'sdk-coverage'` -- CC routing WORKS, it is merely slower; the SDK
+ *   provider has since been backfilled (issue #609) to cover the properties
+ *   this resource actually uses. The fall-through is CONDITIONAL on that being
+ *   true of the resource in hand, and suppressible with `forceCcApi`.
+ */
+export type StickyExemptMode = 'cc-broken' | 'sdk-coverage';
+
+/**
+ * One type's admission to the sticky-CC exemption, with the evidence that
+ * admitted it.
+ *
+ * The fields are not documentation. `tests/unit/provisioning/
+ * sticky-exempt-registry.test.ts` requires `integFixture` to name a directory
+ * that EXISTS under `tests/integration/` and to have at least one row in
+ * `docs/_generated/integ-last-run.tsv` -- so an entry added before its parity
+ * arm was ever run against real AWS fails the unit suite. That is the whole
+ * mechanism behind "evidence rather than assumption": physicalId parity is an
+ * empirical per-type fact about what the CC handler mints as `Identifier`
+ * versus what the SDK provider stores as `physicalId`, and it is FALSE in
+ * general (composite ids, ARN-vs-name divergences). Asserting it from provider
+ * source is not the same as observing it on a live resource.
+ */
+export interface StickyExemptEntry {
+  mode: StickyExemptMode;
+  /** What both layers store as physicalId, in words, for a reviewer. */
+  physicalIdForm: string;
+  /** The issue that admitted this type. */
+  issue: string;
+  /** The integ fixture whose run OBSERVED the parity. Must exist and have run. */
+  integFixture: string;
+}
+
+/**
  * Types exempt from the sticky `provisionedBy: 'cc-api'` routing rule.
  *
- * The sticky rule exists to avoid physical-ID churn when an SDK provider is
- * backfilled for a type Cloud Control was already managing fine. These types
- * are different: their CLOUD CONTROL ROUTING IS BROKEN, so keeping existing
- * state pinned to cc-api would keep the bug alive for every pre-existing
- * resource. Only add a type here when BOTH hold:
+ * The sticky rule (rule 2 in `getProviderFor`) exists to avoid physical-ID
+ * churn when an SDK provider is backfilled for a type Cloud Control was
+ * already managing fine. Both exemption modes are narrow escapes from it; see
+ * `StickyExemptMode` for which applies when.
  *
- * 1. the CC handler cannot correctly manage the resource (not a perf choice),
- * 2. the SDK provider uses the SAME physicalId the CC path stored, so the
- *    re-route is churn-free and the record flips to `provisionedBy: 'sdk'`
- *    transparently on its next state write.
- *
- * - AWS::Scheduler::Schedule (issue #961): a schedule in a custom
- *   ScheduleGroup is unaddressable via CC (the handlers resolve the bare-Name
- *   identifier against the DEFAULT group) — CC UPDATE fails NotFound and CC
- *   DELETE silently no-ops, orphaning a live schedule. Both paths stored the
- *   bare schedule name as physicalId, and the state properties carry
- *   GroupName, so the SDK provider addresses existing records correctly.
+ * Condition 2 -- physicalId parity -- is a hard requirement in BOTH modes and
+ * is what makes a flip churn-free. It is also why this is a curated table
+ * rather than a predicate: an automatic flip keyed on "the type has coverage"
+ * would assert parity for types nobody measured.
  */
-export const STICKY_CC_MIGRATION_EXEMPT: ReadonlySet<string> = new Set([
-  'AWS::Scheduler::Schedule',
+export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> = new Map([
+  [
+    'AWS::Scheduler::Schedule',
+    {
+      // A schedule in a custom ScheduleGroup is unaddressable via CC (the
+      // handlers resolve the bare-Name identifier against the DEFAULT group)
+      // -- CC UPDATE fails NotFound and CC DELETE silently no-ops, orphaning a
+      // live schedule. Broken, not slow.
+      mode: 'cc-broken' as const,
+      physicalIdForm:
+        'both layers store the bare schedule name; the state properties carry ' +
+        'GroupName, so the SDK provider addresses existing records correctly',
+      issue: 'https://github.com/go-to-k/cdkd/issues/961',
+      integFixture: 'scheduler-custom-group',
+    },
+  ],
+  [
+    'AWS::SNS::Topic',
+    {
+      // The first 'sdk-coverage' member (issue #2719). CC manages topics
+      // correctly -- it is only slower -- so this is the mode that had no
+      // members before: the type's silentDrop map is empty (issue #609
+      // backfill), so a resource using it takes the SDK path on a fresh
+      // deploy, and there was no way for one already pinned to cc-api to
+      // follow it there short of a destroy + recreate.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the topic ARN: the schema primaryIdentifier is ' +
+        'TopicArn and SnsTopicProvider.create records the CreateTopic TopicArn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/2719',
+      integFixture: 'cc-to-sdk-reroute',
+    },
+  ],
 ]);
+
+/**
+ * Would a resource recorded as `provisionedBy: 'cc-api'` return to its SDK
+ * provider on its next mutating deploy?
+ *
+ * THE one implementation of the flip condition. `ProviderRegistry.getProviderFor`
+ * rule 2 and `cdkd diff`'s routing annotation both call it, which is the point:
+ * an earlier revision had the registry and the renderer carrying separate
+ * copies, and a mutation probe caught it -- changing "check BOTH property bags"
+ * to "check the desired one twice" in the registry copy left the whole suite
+ * green, because the only test of that condition exercised the OTHER copy. Two
+ * implementations of one predicate means the tests can only ever pin one.
+ *
+ * It answers the EXEMPTION question only, deliberately not the whole routing
+ * question: whether an SDK provider is registered for the type is knowable
+ * only from a registry. A `true` means "the sticky rule will not hold this
+ * resource", not "the SDK provider will run it" -- which is why `getProviderFor`
+ * falls THROUGH to rules 3-5 rather than returning a provider from rule 2, and
+ * why the diff token this drives says the resource is LEAVING Cloud Control
+ * rather than naming its destination.
+ *
+ * The gates, in order:
+ *
+ * 1. Not exempt -> false. The sticky rule holds, as it always did.
+ * 2. `'cc-broken'` -> true, unconditionally. Its CC handler cannot manage the
+ *    resource at all, so no property bag would make staying correct, and a pin
+ *    is deliberately not consulted: honoring one would pin the resource to the
+ *    broken handler.
+ * 3. `forceCcApi` -> false. `--pin-cc-api`, and `--recreate-via-cc-api`, whose
+ *    explicit "use Cloud Control" would otherwise be silently reversed here.
+ * 4. NO PROPERTIES, NO FLIP. A call with no template bag cannot establish
+ *    anything about the resource. This single rule is what makes destroy,
+ *    rollback deletes, the observed-capture re-derivation and the legacy
+ *    `getProvider()` conservative for free rather than by four special cases,
+ *    and it confines the flip to a mutating deploy -- the only moment the CC
+ *    latency is actually paid, so exactly where issue #609's benefit lives.
+ * 5. An ABSENT recorded bag is UNKNOWN, not empty, and blocks the flip. A
+ *    caller holding a state record but not passing its bag is indistinguishable
+ *    here from one with no record, and guessing "clean" would reopen the
+ *    removal-deploy hole through the one door this exists to close.
+ * 6. BOTH bags clean of actionable silent drops. See
+ *    `GetProviderForInput.previousProperties` for why the desired bag alone is
+ *    not enough.
+ */
+export interface ReturnToSdkInput {
+  resourceType: string;
+  desiredProperties?: Record<string, unknown> | undefined;
+  previousProperties?: Record<string, unknown> | undefined;
+  allowedUnsupportedProperties?: ReadonlySet<string> | undefined;
+  forceCcApi?: boolean | undefined;
+  /**
+   * The exemption table. Defaults to the shipped one; overridable ONLY so
+   * tests can supply a synthetic entry.
+   *
+   * This is injecting DATA, not swapping the logic under test -- every gate
+   * below runs unchanged, and the shipped table stays covered by the cases
+   * that omit this. It exists because the both-bags condition is otherwise
+   * unreachable: an admitted `'sdk-coverage'` type has an EMPTY silentDrop map
+   * by construction (that is why it was admitted), so `findActionableSilentDrops`
+   * returns [] for every bag and the loop cannot discriminate. Measured -- with
+   * the shipped table only, mutating the loop to read the desired bag twice, or
+   * the recorded bag twice, left the whole suite green. The removal-deploy
+   * case is the single most important thing this predicate does; it does not
+   * get to be the untested one.
+   */
+  exemptions?: ReadonlyMap<string, StickyExemptEntry> | undefined;
+}
+
+export function wouldReturnToSdkProvider(input: ReturnToSdkInput): boolean {
+  const {
+    resourceType,
+    desiredProperties,
+    previousProperties,
+    allowedUnsupportedProperties = new Set<string>(),
+    forceCcApi = false,
+    exemptions = STICKY_CC_MIGRATION_EXEMPT,
+  } = input;
+  const exemption = exemptions.get(resourceType);
+  if (exemption === undefined) return false;
+  if (exemption.mode === 'cc-broken') return true;
+  if (forceCcApi) return false;
+  if (desiredProperties === undefined) return false;
+  if (previousProperties === undefined) return false;
+  return [desiredProperties, previousProperties].every(
+    (bag) => findActionableSilentDrops(resourceType, bag, allowedUnsupportedProperties).length === 0
+  );
+}
 
 export class ProviderRegistry {
   private logger = getLogger().child('ProviderRegistry');
@@ -224,16 +417,29 @@ export class ProviderRegistry {
     //    since gained coverage. Avoids physical-ID churn / destroy+recreate
     //    cycles on every backfill release.
     //
-    //    Exemption: types in STICKY_CC_MIGRATION_EXEMPT re-route to their SDK
-    //    provider even when state says cc-api — reserved for types where the
-    //    CC routing is BROKEN (not merely slower) and the migration is
-    //    physical-ID-stable, so existing state transparently flips to
-    //    provisionedBy: 'sdk' on its next write.
-    if (provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType)) {
-      this.logger.debug(
-        `Routing ${resourceType} via Cloud Control (state-recorded provisionedBy=cc-api)`
-      );
-      return { provider: this.cloudControlProvider, provisionedBy: 'cc-api' };
+    //    Two exemptions escape it and differ in how conditional they are — see
+    //    STICKY_CC_MIGRATION_EXEMPT and {@link wouldReturnToSdkProvider}. Both
+    //    FALL THROUGH to rules 3-5 rather than returning an SDK provider here,
+    //    so the re-route is decided by the same matrix as a fresh resource:
+    //    a type whose provider was unregistered between releases degrades to
+    //    the CC route (rule 6) instead of throwing, and a 'cc-broken' type
+    //    whose bag has silent drops still auto-routes (rule 5).
+    let returningToSdk = false;
+    if (provisionedBy === 'cc-api') {
+      const canReturn = wouldReturnToSdkProvider({
+        resourceType,
+        desiredProperties: properties,
+        previousProperties: input.previousProperties,
+        allowedUnsupportedProperties: this.allowedUnsupportedProperties,
+        forceCcApi: input.forceCcApi === true,
+      });
+      if (!canReturn) {
+        this.logger.debug(
+          `Routing ${resourceType} via Cloud Control (state-recorded provisionedBy=cc-api)`
+        );
+        return { provider: this.cloudControlProvider, provisionedBy: 'cc-api' };
+      }
+      returningToSdk = true;
     }
 
     // 3-5. SDK Provider registered: silent-drop check decides between SDK
@@ -248,6 +454,17 @@ export class ProviderRegistry {
       if (actionableDrops.length === 0) {
         // No silent drops, or every drop is in the allow set → SDK Provider.
         this.logger.debug(`Using specific SDK provider for ${resourceType}`);
+        if (returningToSdk) {
+          // The only place `sdkMigration` is set. It marks a TRANSITION, so it
+          // is attached here rather than to every SDK decision: the state
+          // record says 'sdk' from the next write on, and this branch is not
+          // reached again for the same resource.
+          this.logger.debug(
+            `${resourceType} is returning to its SDK provider from a ` +
+              `state-recorded cc-api route; physical id is preserved`
+          );
+          return { provider: specificProvider, provisionedBy: 'sdk', sdkMigration: true };
+        }
         return { provider: specificProvider, provisionedBy: 'sdk' };
       }
       // The CC auto-route target must actually be able to manage the type.

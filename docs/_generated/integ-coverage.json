@@ -5183,6 +5183,7 @@
       "resourceType": "AWS::SNS::Topic",
       "integs": [
         "bench-sdk",
+        "cc-to-sdk-reroute",
         "cloudtrail-trail",
         "cloudwatch",
         "codecommit",
@@ -5221,6 +5222,10 @@
       "signals": {
         "bench-sdk": [
           "l2"
+        ],
+        "cc-to-sdk-reroute": [
+          "l2",
+          "literal"
         ],
         "cloudtrail-trail": [
           "l2"

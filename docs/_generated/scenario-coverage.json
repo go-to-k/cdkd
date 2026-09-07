@@ -555,6 +555,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-to-sdk-reroute",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ci-cd",
       "annotated": true,
       "scenarios": []
@@ -2806,6 +2811,7 @@
     "bucket-deployment",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "cc-to-sdk-reroute",
     "cloudtrail-trail",
     "codebuild-project",
     "codedeploy-lambda-deployment-group",
