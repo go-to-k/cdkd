@@ -410,7 +410,14 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       }
     });
 
-    it('covers EVERY zero-headroom suite, and every filter matches something', () => {
+    it('covers every suite asserting silentDrop is empty, and every filter matches something', () => {
+      // BOUND, stated because an over-claimed fence is what this PR keeps
+      // producing: the derivation keys on ONE assertion spelling
+      // (`silentDrop.keys() ... toEqual([])`). The two named non-family filters
+      // are hand-listed and unfenced, and `gen-sdk-attr-coverage.test.ts`'s
+      // `findGaps(report)).toEqual([])` is zero-headroom in a different shape —
+      // substantively covered, since `audit:sdk-attr-coverage:check` runs the
+      // same predicate and is its own `run_check`, but invisible here.
       // Five suites assert `silentDrop` is empty against the REAL coverage, so
       // one writable property AWS adds to any of their types reds CI — while
       // `property-coverage` under `CDKD_GENERATE_BACKFILL` absorbs the same
@@ -420,9 +427,18 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
           e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]
         );
-      const testFiles = walk(join(REPO_ROOT, 'tests/unit')).filter((f) => f.endsWith('.test.ts'));
-      const zeroHeadroom = testFiles.filter((f) =>
-        /silentDrop\.keys\(\)[\s\S]{0,80}?toEqual\(\[\]\)/.test(readFileSync(f, 'utf8'))
+      // `tests/**` AND `src/**` — vitest's include covers both, and walking
+      // `tests/unit` alone would miss a family member added anywhere else.
+      const testFiles = [
+        ...walk(join(REPO_ROOT, 'tests')),
+        ...walk(join(REPO_ROOT, 'src')),
+      ].filter((f) => f.endsWith('.test.ts'));
+      const zeroHeadroom = testFiles.filter(
+        (f) =>
+          // This file CONTAINS the pattern, as the literal doing the matching —
+          // widening the walk to all of `tests/**` made the fence derive itself.
+          f !== fileURLToPath(import.meta.url) &&
+          /silentDrop\.keys\(\)[\s\S]{0,80}?toEqual\(\[\]\)/.test(readFileSync(f, 'utf8'))
       );
       expect(
         zeroHeadroom.length,
@@ -459,6 +475,28 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
           `filter ${JSON.stringify(needle)} starts with a dash — vitest reads it as a flag`
         ).toBe(false);
       }
+
+      // The GUIDANCE BODY must hand out these same filters. Nothing fenced a
+      // row's contents — only the key SET — so round 10 widened the workflow
+      // and left the rendered command naming three files of eleven: a red from
+      // one of the four uncovered family members printed a paste-able command
+      // that comes back GREEN. The report's own silence, inside the fix for it.
+      const guidance = CHECK_GUIDANCE['fixture-consumer-tests']!;
+      const inGuidance = guidance
+        .join('\n')
+        .split('\n')
+        .map((l) => l.replace(/\\$/, '').trim())
+        .filter((l) => l !== '' && !l.startsWith('```') && !l.startsWith('vp test run'));
+      for (const needle of filters) {
+        expect(
+          inGuidance,
+          `the rendered command omits ${JSON.stringify(needle)} — it will come back green`
+        ).toContain(needle);
+      }
+      // And no EXTRA filter in the guidance either: one the workflow does not
+      // run is a command whose red the job never collected.
+      const guidanceFilters = inGuidance.filter((l) => !l.includes(' '));
+      expect(new Set(guidanceFilters)).toEqual(new Set(filters));
 
       // And a filter matching NOTHING is a silent narrowing: vitest ignores a
       // non-matching positional when others match, so renaming a file removes

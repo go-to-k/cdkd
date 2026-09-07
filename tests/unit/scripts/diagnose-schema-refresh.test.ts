@@ -1544,6 +1544,32 @@ describe('the script end to end', () => {
     expect(md).toContain('--failed-checks was given with no value');
   }, 60_000);
 
+  it('refuses a log path that does not exist', () => {
+    // The third arg reader was the last one still silent on both counts. A
+    // missing `--skipped-log` returned `''`, the section is omitted when empty,
+    // and an unread log is then byte-identical to "everything was refreshed" —
+    // with no companion status flag to rescue it, unlike `--nested-key-log`.
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--skipped-log',
+      '/no/such/path.log',
+    ]);
+    expect(md).toContain('which does not exist');
+    expect(md).not.toContain('Nothing in this refresh needs a decision');
+  }, 60_000);
+
+  it('refuses a flag consumed as another flag’s value', () => {
+    // `undefined` is only the TRAILING spelling of "no value". A following FLAG
+    // is the same mistake and was read as the value: this fabricated a failed
+    // check literally named `--skipped-log`, rendered with "no guidance".
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--failed-checks',
+      '--skipped-log',
+      '/dev/null',
+    ]);
+    expect(md).toContain('--failed-checks was given with no value');
+    expect(md).not.toContain('no guidance');
+  }, 60_000);
+
   it('renders a case-divergence without asking npm anything', () => {
     const md = run(
       'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.\n' +

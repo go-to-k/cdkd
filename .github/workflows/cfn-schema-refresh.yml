@@ -279,16 +279,28 @@ jobs:
           # contents. They run under ci.yml's whole-suite job, not under any
           # audit task, so a schema change reddens CI with nothing in the
           # diagnosis to explain it.
-          # `props.test`, covering a FAMILY: five suites carry the same
-          # zero-headroom assertion (`silentDrop` must be empty), so naming one
-          # of them covered three files of five, and one writable property added
-          # to any of six types would have redded CI with nothing in the
-          # diagnosis. Not `-props` — vitest parses a leading dash as a FLAG and
-          # the step dies with `Unknown option \`-p\``. The filter set is fenced
-          # against the real family, and against that shape, by
-          # tests/unit/scripts/cfn-schema-refresh-workflow.test.ts.
+          # Every member of the zero-headroom FAMILY, named. Five suites assert
+          # `silentDrop` is empty against the real coverage, so one writable
+          # property AWS adds to any of their types reds CI while
+          # `property-coverage` absorbs the same addition and stays green —
+          # naming one of them covered 1 of the 5.
+          #
+          # Named rather than matched by `props.test`, which also selects four
+          # unrelated suites and would attribute their red to a schema decision
+          # that does not exist. Naming is only safe because the fence in
+          # tests/unit/scripts/cfn-schema-refresh-workflow.test.ts DERIVES the
+          # family and fails when a sixth appears. Not `-props` either: vitest
+          # parses a leading dash as a FLAG and the step dies with
+          # `Unknown option \`-p\``.
           run_check fixture-consumer-tests \
-            vp test run mutually-exclusive-properties ecs-deployment-configuration-subfield props.test
+            vp test run \
+              mutually-exclusive-properties \
+              ecs-deployment-configuration-subfield \
+              apigatewayv2-integration-props \
+              apigatewayv2-stage-route-props \
+              appsync-graphqlapi-config-props \
+              appsync-resolver-datasource-props \
+              ecs-service-config-props
           # Through the environment FILE, not a shell variable: each `run:` is
           # its own shell, so a plain assignment here is simply gone by the
           # Diagnose step — and an absent `--failed-checks` reads as "nothing

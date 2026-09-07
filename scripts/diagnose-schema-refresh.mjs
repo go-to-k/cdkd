@@ -624,16 +624,26 @@ export const CHECK_GUIDANCE = {
   ],
   'fixture-consumer-tests': [
     'A unit test that reads the schema fixtures directly and asserts something',
-    'about their contents — a mutually-exclusive-properties rule naming a',
-    'property that is gone, or an ECS subfield list the capture no longer',
-    'matches.',
+    'about their contents. Most assert that a type has NO silently dropped',
+    'property — zero headroom, so one writable property AWS adds to that type',
+    'reds CI while the coverage check absorbs the same addition. The rest assert',
+    'a specific rule or subfield list still matches the capture.',
     '',
     '```bash',
-    'vp test run mutually-exclusive-properties ecs-deployment-configuration-subfield ecs-service-config-props',
+    'vp test run \\',
+    '  mutually-exclusive-properties \\',
+    '  ecs-deployment-configuration-subfield \\',
+    '  apigatewayv2-integration-props \\',
+    '  apigatewayv2-stage-route-props \\',
+    '  appsync-graphqlapi-config-props \\',
+    '  appsync-resolver-datasource-props \\',
+    '  ecs-service-config-props',
     '```',
     '',
-    'Each asserts a fact about a specific type. Read what it names and decide',
-    'whether the rule or the assertion is what AWS just invalidated.',
+    'Read what it names and decide whether the rule or the assertion is what AWS',
+    'just invalidated. That command is the workflow\'s own filter list, fenced',
+    'equal to it — a narrower one comes back GREEN over a real red, which is how',
+    'this row was wrong for a round.',
   ],
   'audit:enrichment-coverage:check': [
     'A new computed attribute on a pure Cloud-Control type that',
@@ -1321,8 +1331,8 @@ export function collectFixtureDeltas({
       // `**[name rejected]**` as the heading — the same shape as the two render
       // sites rounds 8 and 9 fixed. The declared-property lookup misses either
       // way, but a legible heading says which type it missed for.
-      resourceType =
-        JSON.parse(committed).resourceType ?? file.replace(/\.json$/, '').replace(/-/g, '::');
+        resourceType =
+          JSON.parse(committed).resourceType ?? file.replace(/\.json$/, '').replace(/-/g, '::');
       } catch {
         // An unparseable side is the refresh's problem, not the report's — but it
         // is COUNTED, because a type that vanishes here vanishes from the removal
@@ -1402,11 +1412,22 @@ export function loadDeclaredProperties(repoRoot = REPO_ROOT) {
 
 function main() {
   const args = process.argv.slice(2);
+  // The third reader, and it was the last one still silent on both counts: a
+  // flag with no value AND a path that does not exist both returned `''`.
+  // `--nested-key-log` is rescued by its `--nested-key-rc` companion, but
+  // `--skipped-log` has none and the section is omitted when empty — so an
+  // unread log was byte-identical to "everything was refreshed".
   const readArg = (/** @type {string} */ flag) => {
     const i = args.indexOf(flag);
-    if (i === -1 || i + 1 >= args.length) return '';
+    if (i === -1) return '';
     const path = args[i + 1];
-    return existsSync(path) ? readFileSync(path, 'utf8') : '';
+    if (path === undefined || path.startsWith('--')) {
+      throw new Error(`${flag} was given with no value — refusing to report from an unread file.`);
+    }
+    if (!existsSync(path)) {
+      throw new Error(`${flag} names ${path}, which does not exist — refusing to report from an unread file.`);
+    }
+    return readFileSync(path, 'utf8');
   };
 
   const providerFiles = mapTypesToProviderFiles(
@@ -1448,8 +1469,11 @@ function main() {
   const readArgValue = (/** @type {string} */ flag) => {
     const i = args.indexOf(flag);
     if (i === -1) return '';
+    // `undefined` is only the TRAILING spelling. A following FLAG is the same
+    // mistake and read as a value: `--failed-checks --skipped-log <f>`
+    // fabricated a failed check named `--skipped-log`.
     const raw = args[i + 1];
-    if (raw === undefined) {
+    if (raw === undefined || raw.startsWith('--')) {
       throw new Error(`${flag} was given with no value — refusing to report from an unread list.`);
     }
     return raw;
