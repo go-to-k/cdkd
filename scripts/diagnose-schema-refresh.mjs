@@ -36,7 +36,15 @@
  * Usage (from the repo root, AFTER the refresh has written the fixtures):
  *
  *   node scripts/diagnose-schema-refresh.mjs \
- *     [--coverage-log <file>] [--nested-key-log <file>] > body.md
+ *     [--nested-key-log <file>] [--nested-key-rc <status>] [--skipped-log <file>] > body.md
+ *
+ * `--nested-key-log` is the captured output of
+ * `vp run audit:nested-key-coverage:check` and `--nested-key-rc` its exit
+ * status. The status is what tells a checker that FAILED silently from one that
+ * found nothing, so the workflow always passes it; omitted, it is assumed to be
+ * 0, which is the right default for a by-hand run against a checker you just
+ * watched succeed. `--skipped-log` is the tail of the refresh's own output,
+ * listing the types the public bundle does not carry.
  *
  * Emits Markdown on stdout and always exits 0 — a diagnosis that fails must
  * not take down the PR it is describing.
@@ -133,10 +141,10 @@ export function comparePropertySets(committedJson, refreshedJson) {
  * @param {string} checkOutput
  * @param {number} [exitCode] the checker's own status; non-zero with nothing
  *   parsed is a failure however it worded itself
- * @returns {{divergences: Array<{resourceType: string, nestedKey: string, bucket: string, detail: string}>, unparsedFailure: boolean}}
+ * @returns {{divergences: NestedKeyDivergence[], unparsedFailure: boolean}}
  */
 export function parseNestedKeyDivergences(checkOutput, exitCode = 0) {
-  /** @type {Array<{resourceType: string, nestedKey: string, bucket: string, detail: string}>} */
+  /** @type {NestedKeyDivergence[]} */
   const divergences = [];
   for (const raw of checkOutput.split('\n')) {
     const line = raw.trim();
@@ -309,7 +317,7 @@ export function findDeclarationCandidates(
  * @param {string} property
  * @param {string | undefined} providerRelPath
  * @param {string} [repoRoot]
- * @returns {{client: string, modelled: boolean, version?: string, consulted?: string[]} | undefined}
+ * @returns {SdkEvidence | undefined}
  *   `undefined` when no client could be determined — the honest answer, not a guess
  */
 export function sdkModelsMember(property, providerRelPath, repoRoot = REPO_ROOT) {
@@ -391,11 +399,16 @@ export function clientsForType(resourceType, rows) {
   // A provider importing exactly ONE client leaves nothing for the name test to
   // disambiguate — that client IS the type's own, whatever it is called. This
   // arm is what keeps the hedge off the services whose client is named
-  // differently: measured over the 134 registered types, the name test matches
-  // 119, this arm settles 10 more (`AWS::Events::Rule` /
-  // `@aws-sdk/client-eventbridge` among them), and 3 are genuinely ambiguous —
-  // a provider importing several clients, none named for the service.
-  return rows.map((r) => ({ ...r, matched: rows.length === 1 }));
+  // differently: of the 134 registered types, 2 reach no client at all and of
+  // the remaining 132 the name test matches 119, this arm settles 10 more
+  // (`AWS::Events::Rule` / `@aws-sdk/client-eventbridge` among them, all 10
+  // verified to be the service's own), and 3 are genuinely ambiguous — a
+  // provider importing several clients, none named for the service.
+  //
+  // `service` empty means the type name did not parse, and one row must NOT be
+  // asserted to match it: unreachable from a divergence line today, but the
+  // arm would be claiming a match it never tested.
+  return rows.map((r) => ({ ...r, matched: service !== '' && rows.length === 1 }));
 }
 
 /**
@@ -701,7 +714,7 @@ export function renderDiagnosis({
     // is honest — both were tried, and the second is the exact silent-clean
     // verdict the whole job exists to prevent.
     lines.push(
-      '### The nested-key check FAILED in a mode this report cannot read',
+      '### The nested-key check reported something this report could not read',
       '',
       'It failed, or dropped findings, without printing lines this parser could',
       'read. That is one of its non-divergence refusals (a stale',
@@ -709,8 +722,9 @@ export function renderDiagnosis({
       'real decision, and each exactly what a schema refresh causes), a change to',
       'its output format, or a checker that never ran at all (a missing task, a',
       'crash, an OOM kill — the case its exit code is the only evidence of).',
-      '**Read the failing job log before merging**; the sections below are still',
-      'accurate for everything other than nested keys.',
+      '**Read that job\u2019s log before merging.** Any nested-key divergences listed',
+      'above are the ones that DID parse, so treat that list as incomplete; every',
+      'other section is unaffected.',
       '',
       '```bash',
       'vp run audit:nested-key-coverage:check',
@@ -1164,8 +1178,15 @@ function main() {
   // still exists, by the workflow test asserting it passes the variable.
   const readNumArg = (/** @type {string} */ flag) => {
     const i = args.indexOf(flag);
-    if (i === -1 || i + 1 >= args.length) return 0;
-    const n = Number(args[i + 1]);
+    if (i === -1) return 0;
+    // A flag that IS present must carry a readable value. `Number('')` and
+    // `Number(' ')` are both 0 — "the checker succeeded" — so the empty, the
+    // whitespace and the trailing-flag spellings all failed OPEN while only
+    // NaN failed closed. Three spellings of the same defect this file has now
+    // shipped twice.
+    const raw = args[i + 1];
+    if (raw === undefined || raw.trim() === '') return 1;
+    const n = Number(raw);
     return Number.isFinite(n) ? n : 1;
   };
   const nestedKey = parseNestedKeyDivergences(

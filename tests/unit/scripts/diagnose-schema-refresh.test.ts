@@ -641,6 +641,7 @@ describe('renderDiagnosis', () => {
           installed: '3.9.0',
           latest: '3.9.0',
           behind: false,
+          matched: true,
         },
       ],
     });
@@ -666,6 +667,7 @@ describe('renderDiagnosis', () => {
           installed: '3.1018.0',
           latest: '3.1127.0',
           behind: true,
+          matched: true,
         },
       ],
     });
@@ -799,6 +801,19 @@ describe('the render guards, at every site that reaches Markdown', () => {
           installed: '3.0.0',
           latest: '3.1.0',
           behind: true,
+          matched: true,
+        },
+        {
+          // The RULED-OUT arm, which is the ordinary case — an installed client
+          // that is current. It renders its own `resourceType`, and with only
+          // the `behind: true` row here that interpolation could be reverted to
+          // raw with nothing noticing. Two arms, two poisoned rows.
+          resourceType: POISON_TYPE,
+          client: '@aws-sdk/client-ec2',
+          installed: '3.0.0',
+          latest: '3.0.0',
+          behind: false,
+          matched: true,
         },
       ],
     });
@@ -813,7 +828,7 @@ describe('the render guards, at every site that reaches Markdown', () => {
     // writable-added type and its property list, the lag row's type, and the
     // skipped list.
     const rejections = (md.match(/\[(?:name|key) rejected: unexpected characters\]/g) ?? []).length;
-    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(9);
+    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(10);
     // And the forged heading never renders as one.
     expect(md).not.toMatch(/^## Nothing in this refresh needs a decision$/m);
   });
@@ -873,7 +888,7 @@ describe('the unparsed-failure verdict', () => {
       skipped: [],
     });
     expect(md).not.toContain('additions only');
-    expect(md).toContain('FAILED in a mode this report cannot read');
+    expect(md).toContain('could not read');
     expect(md).toContain('audit:nested-key-coverage:check');
     // The rest of the report is still rendered — that is the whole point of not
     // throwing.
@@ -945,6 +960,7 @@ describe('the SDK-lag section', () => {
           installed: '3.9.0',
           latest: '3.9.0',
           behind: false,
+          matched: true,
         },
       ],
     });
@@ -1077,6 +1093,27 @@ describe('clientsForType', () => {
     expect(clientsForType('', rows)).toEqual(hedged);
   });
 
+  it('matches the service name EXACTLY, not by prefix', () => {
+    // `startsWith` is equivalent on today's tree — every widening it causes is
+    // a single-client provider the next arm settles anyway — so nothing caught
+    // it. It bites where a client suffix is a proper superstring of the service
+    // segment, and then the renderer says "here" about the wrong client.
+    const rows = [
+      { client: '@aws-sdk/client-s3-control', version: '3.1.0' },
+      { client: '@aws-sdk/client-sts', version: '3.0.0' },
+    ];
+    expect(clientsForType('AWS::S3::Bucket', rows).every((r) => !r.matched)).toBe(true);
+  });
+
+  it('does not settle a single client against a type name that did not parse', () => {
+    // The arm reasons "one client, nothing to disambiguate" — which is only
+    // true once there IS a service to disambiguate against.
+    const one = [{ client: '@aws-sdk/client-eventbridge', version: '3.1.0' }];
+    expect(clientsForType('', one)).toEqual([
+      { client: '@aws-sdk/client-eventbridge', version: '3.1.0', matched: false },
+    ]);
+  });
+
   it('settles a SINGLE-client provider even when the name test cannot', () => {
     // The name test is a heuristic, and reading its failure as "wrong client"
     // was a regression: 13 of the 134 registered types are served by a client
@@ -1114,8 +1151,15 @@ describe('clientsForType', () => {
       if (clientsForType(type, rows)[0]!.matched) settled++;
       else hedged++;
     }
-    expect(settled, 'the client match stopped resolving').toBeGreaterThan(100);
+    // BOTH bounds are on `hedged`, and that is the correction: every type with
+    // a client increments exactly one counter, so `settled + hedged` is a
+    // constant and `settled > 100` could never be the failing assertion —
+    // `hedged <= 6` already implies it. The floor the old comment promised was
+    // asserted by neither line, and `matched: true` unconditionally gave
+    // {settled: 132, hedged: 0} while passing both.
+    expect(settled + hedged, 'no type reached a client at all').toBeGreaterThan(100);
     expect(hedged, 'more types went ambiguous than the measurement found').toBeLessThanOrEqual(6);
+    expect(hedged, 'nothing hedges any more — the flag stopped discriminating').toBeGreaterThan(0);
   });
 });
 
@@ -1231,7 +1275,7 @@ describe('the script end to end', () => {
     const md = run(
       'nested-key-coverage: FAIL — stale NESTED_KEY_ALLOW_LIST entr(ies) match no audited key\n'
     );
-    expect(md).toContain('FAILED in a mode this report cannot read');
+    expect(md).toContain('could not read');
     expect(md).not.toContain('Nothing in this refresh needs a decision — additions only');
   }, 60_000);
 
@@ -1239,7 +1283,11 @@ describe('the script end to end', () => {
     // Both arms of the flag reader used to return 0 — "the checker succeeded" —
     // so a mistyped value silently restored the behaviour where a checker that
     // never ran renders as "additions only".
-    expect(run('', 'not-a-number')).toContain('FAILED in a mode this report cannot read');
+    for (const unreadable of ['not-a-number', '', ' ']) {
+      expect(run('', unreadable), `read as success: ${JSON.stringify(unreadable)}`).toContain(
+        'could not read'
+      );
+    }
     // The ABSENT flag stays 0 on purpose: this script is also run by hand, and
     // refusing every manual invocation is not a safety property. The workflow
     // dropping the flag is guarded in the workflow test instead.

@@ -14,8 +14,12 @@ export interface SdkLagRow {
   installed: string;
   latest: string;
   behind: boolean;
-  /** Whether `clientsForType` matched this client to the type's own service. */
-  matched?: boolean;
+  /**
+   * Whether the client was resolved to the type's own service. REQUIRED, not
+   * optional: an omitted flag reads as `!== false` and renders the confident
+   * "here", which is the fail-open direction a round-4 fix already shipped once.
+   */
+  matched: boolean;
 }
 export declare const NESTED_KEY_FAILURE_RE: RegExp;
 export declare function comparePropertySets(
