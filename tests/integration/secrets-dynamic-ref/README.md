@@ -54,6 +54,18 @@ covers the optional-trailing-field grammar.
 ## What verify.sh asserts
 
 1. Deploy the stack with the local cdkd binary.
+   - Phase 1b (issue [#2728](https://github.com/go-to-k/cdkd/issues/2728)):
+     one more deploy under `CDKD_TEST_OUTPUT_LEAK=true`, which declares an
+     `OutputFailureLeak` output whose `Fn::Sub` variable resolves the secret's
+     `password` and whose body uses that value as the JSON key of a second
+     reference — the resolver's own `key '<password>' not found` error. Guard
+     1b pins the synthesized shape (premise), that the deploy warned
+     `Failed to resolve output OutputFailureLeak` (the sentinel that the arm
+     ran), that the warn carries `***` and not the password, that the whole
+     `--verbose` log is password-free, and that the resolver's own
+     `Resolving dynamic reference:` echo of the assembled reference is in it
+     with `***` in the key position. The output is gated so the
+     unchanged-stack `diff --fail` guard later never sees it.
 2. Read the consumer Lambda's env vars via `GetFunctionConfiguration`.
 3. For each env var: it is **not** still a literal `{{resolve:...}}` token, AND
    it equals the known expected value. A wrong-or-literal value FAILS with

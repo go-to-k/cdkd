@@ -263,5 +263,37 @@ export class SecretsDynamicRefStack extends cdk.Stack {
       value: fn.functionName,
       exportName: cdk.Fn.sub('${AWS::StackName}-function-name'),
     });
+    // An output whose resolution FAILS inside the resolver with the resolved
+    // password in the error text (issue #2728): the `Fn::Sub` variable
+    // resolves the secret's `password` key, and the body uses that VALUE as
+    // the JSON key of a second reference to the same secret. The lookup
+    // succeeds and the resolver's own `key '<password>' not found in secret`
+    // error is what the deploy engine reports -- masked, since #2728. Under
+    // the default (non-strict) arm the deploy warns, skips this output and
+    // still succeeds; verify.sh asserts the warn carries `***` and not the
+    // password. No other fixture makes an output resolution fail with a
+    // SECRET in the error text (`getatt-fallback-guard` fails `BadOutput`
+    // under `--strict-getatt` on a GetAtt miss, which names no secret).
+    //
+    // GATED on `CDKD_TEST_OUTPUT_LEAK` and declared ONLY for the one probe
+    // deploy verify.sh runs right after Phase 1 (a no-change deploy, so the
+    // outputs pass runs and nothing else does). It cannot stay declared: the
+    // deploy skips it (no state key), while `cdkd diff` resolves outputs with
+    // `skipDynamicReferences`, under which the body assembles WITHOUT
+    // throwing -- so the unchanged-stack `diff --fail` guard later in this
+    // fixture would report a phantom `ADD` for it. An Output is not an AWS
+    // resource, so declaring it for one deploy deletes nothing afterwards.
+    //
+    // `literalSecretName` (the account CONCRETE) rather than `secretName`: a
+    // CDK token in an `Fn.sub` body synthesizes the body as an `Fn::Join`
+    // OBJECT, which is not the `[string, variables]` shape CloudFormation --
+    // or cdkd's `resolveSub` -- takes.
+    if (process.env.CDKD_TEST_OUTPUT_LEAK === 'true') {
+      new cdk.CfnOutput(this, 'OutputFailureLeak', {
+        value: cdk.Fn.sub(`{{resolve:secretsmanager:${literalSecretName}:SecretString:\${Pw}}}`, {
+          Pw: `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}`,
+        }),
+      });
+    }
   }
 }

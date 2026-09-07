@@ -7012,7 +7012,7 @@ export class IntrinsicFunctionResolver {
       let cacheable = true;
 
       if (service === 'secretsmanager') {
-        resolved = await this.resolveSecretsManagerReference(inner);
+        resolved = await this.resolveSecretsManagerReference(inner, context);
       } else if (service === 'ssm') {
         // On the comparison path fetch the parameter WITHOUT decryption: a
         // `SecureString` then comes back as its encrypted blob, so the type can
@@ -7020,7 +7020,7 @@ export class IntrinsicFunctionResolver {
         // `StringList` are unaffected by the flag, so the value is the same one
         // the deploy path would resolve and is safe to cache and substitute.
         const decrypt = context?.skipDynamicReferences !== true;
-        const param = await this.resolveSSMReference(parts, decrypt);
+        const param = await this.resolveSSMReference(parts, decrypt, 'ssm', context);
         // The FRESH response is authoritative, so a definitive public verdict
         // both clears `isSecret` and RETRACTS a stale memo. Without the
         // retraction the verdict could only ever be raised, so one transient
@@ -7077,7 +7077,7 @@ export class IntrinsicFunctionResolver {
         // resolving it would record a public value as a redaction needle over
         // that disagreement. `markNonRetryable` because the parameter's type
         // is not something a retry can change.
-        const param = await this.resolveSSMReference(parts, true, 'ssm-secure');
+        const param = await this.resolveSSMReference(parts, true, 'ssm-secure', context);
         if (!param.secure) {
           // `secure` is false only for the two PUBLIC types the predicate
           // names, so `type` is a definitive `String` / `StringList` here.
@@ -7092,7 +7092,17 @@ export class IntrinsicFunctionResolver {
         isSecret = true;
         resolved = param.value;
       } else {
-        this.logger.warn(`Unsupported dynamic reference service: ${service}`);
+        // Masked like the lookup echoes above (issue #2728, review round 1):
+        // `service` is whatever sits before the first `:` of the ASSEMBLED
+        // token, and `resolveSub` re-enters this method with the assembled
+        // string — a body of `{{resolve:${Pw}}}` over a variable that
+        // resolved a secret makes `service` BE that plaintext, on a `warn`
+        // emitted at default verbosity. (The `continue` then leaves the
+        // literal span in the value, which redaction's strictly-inside
+        // carve-out spares into `state.json` — issue #2743.)
+        this.logger.warn(
+          this.maskSecretsForLog(`Unsupported dynamic reference service: ${service}`, context)
+        );
         continue;
       }
 
@@ -7161,7 +7171,14 @@ export class IntrinsicFunctionResolver {
    * runs when no mid-string ":SecretString:" delimiter is present, so the json-key / version
    * forms are unaffected.)
    */
-  private async resolveSecretsManagerReference(inner: string): Promise<string> {
+  private async resolveSecretsManagerReference(
+    inner: string,
+    // For the two log lines below only (issue #2728): a reference ASSEMBLED
+    // by `Fn::Sub` / `Fn::Join` from a value this pass resolved out of a
+    // secret carries that plaintext in its secret id / JSON key, and the
+    // debug echo and the retry label would print it.
+    context?: ResolverContext
+  ): Promise<string> {
     // inner = "secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID"
     // Remove the "secretsmanager:" prefix
     const afterService = inner.substring('secretsmanager:'.length);
@@ -7224,7 +7241,10 @@ export class IntrinsicFunctionResolver {
     }
 
     this.logger.debug(
-      `Resolving dynamic reference: secretsmanager:${secretId}:SecretString:${jsonKey}:${versionStage}:${versionId}`
+      this.maskSecretsForLog(
+        `Resolving dynamic reference: secretsmanager:${secretId}:SecretString:${jsonKey}:${versionStage}:${versionId}`,
+        context
+      )
     );
 
     // Region-sensitive, and the reason issue #1957 is a security defect rather
@@ -7240,7 +7260,7 @@ export class IntrinsicFunctionResolver {
 
     const response = await this.sendWithThrottleRetry(
       () => client.send(command),
-      `secretsmanager:${secretId}`
+      this.maskSecretsForLog(`secretsmanager:${secretId}`, context)
     );
     const secretString = response.SecretString;
 
@@ -7462,7 +7482,9 @@ export class IntrinsicFunctionResolver {
     // The spelling being resolved — `ssm` or, since issue #2482, `ssm-secure`.
     // Log-only: it names the reference in the debug / retry / warning lines so
     // an `ssm-secure` lookup is not reported as an `ssm` one.
-    service: 'ssm' | 'ssm-secure' = 'ssm'
+    service: 'ssm' | 'ssm-secure' = 'ssm',
+    // For the log lines only (issue #2728) — see `resolveSecretsManagerReference`.
+    context?: ResolverContext
   ): Promise<{ value: string; secure: boolean; type: string | undefined }> {
     const parameterName = parts.slice(1).join(':');
 
@@ -7470,7 +7492,9 @@ export class IntrinsicFunctionResolver {
       throw new Error(`Dynamic reference: ${service} PARAMETER_NAME is required`);
     }
 
-    this.logger.debug(`Resolving dynamic reference: ${service}:${parameterName}`);
+    this.logger.debug(
+      this.maskSecretsForLog(`Resolving dynamic reference: ${service}:${parameterName}`, context)
+    );
 
     // Region-sensitive in BOTH of its outputs: the value, and the `Type` this
     // method reports back. A region-B `SecureString` classified against a
@@ -7484,7 +7508,7 @@ export class IntrinsicFunctionResolver {
 
     const response = await this.sendWithThrottleRetry(
       () => client.send(command),
-      `${service}:${parameterName}`
+      this.maskSecretsForLog(`${service}:${parameterName}`, context)
     );
     const paramValue = response.Parameter?.Value;
 
@@ -7528,11 +7552,16 @@ export class IntrinsicFunctionResolver {
       // (parameter, type) per resolver — see `warnedUnrecognizedSsmTypes`.
       this.warnedUnrecognizedSsmTypes.add(`${parameterName}\u0000${String(paramType)}`);
       const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
+      // Masked like the debug echo above (issue #2728): the name may have
+      // been assembled from a value this pass resolved out of a secret.
       this.logger.warn(
-        `SSM parameter '${parameterName}' reported an unrecognized Type ${reported} — treating ` +
-          `its value as a secret, so cdkd will persist the {{resolve:${service}:...}} expression rather ` +
-          `than the resolved value. Declare the parameter as String / StringList if it is ` +
-          `public config.`
+        this.maskSecretsForLog(
+          `SSM parameter '${parameterName}' reported an unrecognized Type ${reported} — treating ` +
+            `its value as a secret, so cdkd will persist the {{resolve:${service}:...}} expression rather ` +
+            `than the resolved value. Declare the parameter as String / StringList if it is ` +
+            `public config.`,
+          context
+        )
       );
     }
     return { value: paramValue, secure, type: paramType };

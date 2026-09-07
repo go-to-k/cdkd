@@ -6542,13 +6542,72 @@ export class DeployEngine {
    * the deploy instead of silently publishing nothing (which breaks downstream
    * `Fn::ImportValue` consumers with "export not found" long after this deploy
    * exits 0).
+   *
+   * The error is masked on both arms (issue
+   * [#2728](https://github.com/go-to-k/cdkd/issues/2728)). The resolver's own
+   * failures echo the offending reference token, a secret id / JSON key, or
+   * an SSM parameter name, and `resolveSub` / `resolveJoin` re-enter
+   * `resolveDynamicReferences` with the ASSEMBLED string — so a reference
+   * built out of a value this same pass resolved from a secret puts that
+   * plaintext into the echoed field (a JSON key assembled from the resolved
+   * password says `key '<password>' not found`).
+   *
+   * TWO bags, the inherited one first, the same pair the resolver's
+   * `maskSecretsForLog` masks against and for the same reason (issue #1903
+   * round 2): on a nested-stack child the parent-decrypted parameter
+   * plaintext is in `inheritedSecrets` and not in the pass map until a
+   * `{Ref: <Param>}` resolution copies it across. No shape reaching this
+   * handler before that copy has been constructed (every `${Param}` route
+   * goes through `resolveRef`, which records), so the inherited bag is
+   * defense in depth here — but two masking sites in one flow must not argue
+   * opposite sides of the same question. `secrets` is the outputs pass's own
+   * map: everything recorded before this handler runs, an `Export.Name`
+   * resolution's entries included (its `finally` merges them back before the
+   * `catch` reaches here). What a still-pending concurrent part would have
+   * recorded is outside both — issue #2563's late write, the same bound every
+   * other masking site in this engine has.
+   *
+   * The strict arm's `cause` is masked as an OBJECT, through
+   * `maskSecretsInError` — a clone of each `Error` link `errorCauseChain`
+   * reaches (`ERROR_CAUSE_MASK_MAX_DEPTH` links, a cycle stops it; a
+   * non-`Error` cause is kept verbatim), symbols included, so
+   * `isMarkedNonRetryable`'s non-enumerable marker survives (the same reason
+   * `provisionResource` uses it). No sink on the deploy path renders past
+   * one level today (`formatError` prints `Caused by:` for a `CdkdError`'s
+   * direct cause only), but that is a property of reachability, not of the
+   * sinks: `cdkd scrub`'s `describeFailure` renders a chain, and is safe
+   * because its boundary masks with this same helper and it walks the same
+   * bounded `errorCauseChain`. Masking here gives a renderer within that
+   * bound nothing to leak. A thrown STRING is masked as text; any other
+   * non-`Error` value is not threaded as a cause at all (it would travel
+   * unmasked, and `markNonRetryable` cannot have marked it).
    */
   private handleOutputResolutionFailure(
     error: unknown,
     outputKey: string,
-    outputs: Record<string, unknown>
+    outputs: Record<string, unknown>,
+    secrets: RecordedSecretValues,
+    inheritedSecrets: RecordedSecretValues
   ): void {
+    // `error.message || error.name`, not `String(error)`: the latter prefixes
+    // the class name, which usually said nothing the message did not, and
+    // masking one text keeps the two arms reporting the same thing. The name
+    // is kept as the fallback because it is the strictly-better half of the
+    // prefix: `new Error()` has an empty message, and an AWS SDK error often
+    // carries its code in the NAME over a generic message.
+    let detail = error instanceof Error ? error.message || error.name : String(error);
+    for (const bag of [inheritedSecrets, secrets]) detail = maskSecretsInText(detail, bag);
     if (this.options.strictGetAtt) {
+      // The cause is masked on THIS arm only: `maskSecretsInError` clones the
+      // whole chain and reads each link's `stack` accessor (a V8 trace
+      // materialization per link), and the warn arm below never uses it.
+      let cause: unknown = error;
+      for (const bag of [inheritedSecrets, secrets]) {
+        cause =
+          typeof cause === 'string'
+            ? maskSecretsInText(cause, bag)
+            : maskSecretsInError(cause, bag);
+      }
       // `cause` is load-bearing, not decoration (issue #1874 review). The
       // non-retryable marker is a NON-ENUMERABLE symbol on the original error,
       // so re-wrapping without a cause DROPS it — while inlining the refusal's
@@ -6561,16 +6620,21 @@ export class DeployEngine {
       // child `deploy()`, passes through `NestedStackProvider.create`, and
       // lands in the PARENT's `withRetry` — so a nested stack would re-run a
       // whole child deploy plus rollback per retry on a path that can never
-      // succeed. `isMarkedNonRetryable` walks the `.cause` chain, so threading
-      // the cause preserves the marker.
+      // succeed. `isMarkedNonRetryable` walks the `.cause` chain, and the
+      // masked clone carries the marker (see the doc comment), so threading
+      // the cause preserves it. A thrown value that is neither an `Error`
+      // nor a string is NOT threaded: `maskSecretsInError` hands it back by
+      // identity, unmasked, and `markNonRetryable` marks `Error` instances
+      // only, so such a value carries no marker this code could have put on
+      // it — threading it would buy nothing and could carry plaintext.
       throw new Error(
-        `Failed to resolve output ${outputKey}: ${error instanceof Error ? error.message : String(error)} ` +
+        `Failed to resolve output ${outputKey}: ${detail} ` +
           `(--strict-getatt promotes output resolution failures to deploy errors; ` +
           `drop the flag to warn and skip the output instead)`,
-        { cause: error }
+        cause instanceof Error || typeof cause === 'string' ? { cause } : {}
       );
     }
-    this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);
+    this.logger.warn(`Failed to resolve output ${outputKey}: ${detail}`);
     outputs[outputKey] = undefined;
   }
 
@@ -6608,6 +6672,14 @@ export class DeployEngine {
       stackName
     );
 
+    // The two bags the failure sites below mask against (issue #2728).
+    // `buildResolverContext` always sets `recordedSecretValues`, so that `??`
+    // is for the TYPE (which leaves it optional) and is never taken; the
+    // inherited bag is set on a nested-stack child engine only, so that one
+    // IS taken on every top-level stack.
+    const outputsPassSecrets = context.recordedSecretValues ?? EMPTY_SECRETS;
+    const outputsPassInherited = context.inheritedSecrets ?? EMPTY_SECRETS;
+
     // The names this deploy PUBLISHES. Owns keys in both this bag and the
     // position-source bag below, and is the set an export alias must not land
     // on (issue #1919).
@@ -6643,7 +6715,13 @@ export class DeployEngine {
         try {
           outputs[outputKey] = await this.resolver.resolve(output.Value, context);
         } catch (error) {
-          this.handleOutputResolutionFailure(error, outputKey, outputs);
+          this.handleOutputResolutionFailure(
+            error,
+            outputKey,
+            outputs,
+            outputsPassSecrets,
+            outputsPassInherited
+          );
         }
       }
 
@@ -6726,7 +6804,16 @@ export class DeployEngine {
             // positions.
           }
         } catch (error) {
-          this.handleOutputResolutionFailure(error, outputKey, outputs);
+          // The pass map, AFTER the `finally` above merged the name's own
+          // entries into it — the needle for a plaintext the failed name
+          // resolution itself recorded.
+          this.handleOutputResolutionFailure(
+            error,
+            outputKey,
+            outputs,
+            outputsPassSecrets,
+            outputsPassInherited
+          );
           continue;
         }
         if (typeof exportName !== 'string') continue;
