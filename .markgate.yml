@@ -430,7 +430,9 @@ gates:
       # `getProviderFor` picks the provider that DELETES the resource, not just
       # the one that creates it: `deploy-engine.ts` reads it for the plain
       # delete and for a replacement's old-resource delete, `destroy-runner.ts`
-      # for every `cdkd destroy`, and `rollback-executor.ts` at seven sites. So
+      # for every `cdkd destroy`, and `rollback-executor.ts` at seven sites
+      # (`grep -c 'getProviderFor({' src/deployment/rollback-executor.ts` -- a
+      # plain `grep getProviderFor` counts two comment mentions as well). So
       # the routing decision reroutes the delete path for every resource in a
       # template at once. It sits in the STRICT half of the hook rather than
       # the hunk-filtered half, and that is measured rather than assumed: the
