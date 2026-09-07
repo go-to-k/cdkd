@@ -476,27 +476,35 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         ).toBe(false);
       }
 
-      // The GUIDANCE BODY must hand out these same filters. Nothing fenced a
-      // row's contents — only the key SET — so round 10 widened the workflow
-      // and left the rendered command naming three files of eleven: a red from
-      // one of the four uncovered family members printed a paste-able command
-      // that comes back GREEN. The report's own silence, inside the fix for it.
+      // The guidance's PASTE-ABLE COMMAND must be these same filters. Two
+      // rounds of this fence were too weak: comparing the key SET let round 10
+      // widen the workflow while the rendered command still named three files
+      // of eleven, and comparing a token SET over the whole row let a dropped
+      // `\\` pass — after which the pasted command runs ONE filter and comes
+      // back GREEN over a real red. So the block is parsed as a command.
       const guidance = CHECK_GUIDANCE['fixture-consumer-tests']!;
-      const inGuidance = guidance
-        .join('\n')
-        .split('\n')
-        .map((l) => l.replace(/\\$/, '').trim())
-        .filter((l) => l !== '' && !l.startsWith('```') && !l.startsWith('vp test run'));
-      for (const needle of filters) {
+      const open = guidance.indexOf('```bash');
+      const close = guidance.indexOf('```', open + 1);
+      expect(open, 'the guidance no longer carries a command block').toBeGreaterThan(-1);
+      expect(close, 'the command block is unterminated').toBeGreaterThan(open);
+      const command = guidance.slice(open + 1, close).map((l) => l.trim());
+      expect(command[0], 'the block does not start with the invocation').toBe('vp test run \\');
+
+      // Every line but the last continues, or the shell ends the command there.
+      const argLines = command.slice(1);
+      argLines.forEach((line, i) => {
+        const isLast = i === argLines.length - 1;
         expect(
-          inGuidance,
-          `the rendered command omits ${JSON.stringify(needle)} — it will come back green`
-        ).toContain(needle);
-      }
-      // And no EXTRA filter in the guidance either: one the workflow does not
-      // run is a command whose red the job never collected.
-      const guidanceFilters = inGuidance.filter((l) => !l.includes(' '));
-      expect(new Set(guidanceFilters)).toEqual(new Set(filters));
+          line.endsWith('\\'),
+          `line ${i + 2} of the command ${isLast ? 'must NOT' : 'must'} continue: ${JSON.stringify(line)}`
+        ).toBe(!isLast);
+      });
+
+      const guidanceFilters = argLines.map((l) => l.replace(/\s*\\$/, '').trim());
+      expect(
+        guidanceFilters,
+        'the pasted command and the workflow run different filters'
+      ).toEqual(filters);
 
       // And a filter matching NOTHING is a silent narrowing: vitest ignores a
       // non-matching positional when others match, so renaming a file removes
@@ -506,6 +514,17 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
           testFiles.some((f) => f.slice(REPO_ROOT.length + 1).includes(needle)),
           `filter ${JSON.stringify(needle)} matches no test file`
         ).toBe(true);
+      }
+    });
+
+    it('names every collected check in the operator runbook', () => {
+      // The last unfenced pair. `run_check` names are fenced against
+      // `CHECK_GUIDANCE`'s keys, so a fifth check is FORCED into the guidance —
+      // and was free to be left out of the page a maintainer actually opens
+      // when the PR arrives. The table is prose; nothing else reads it.
+      const runbook = readFileSync(join(REPO_ROOT, 'docs/schema-refresh-runbook.md'), 'utf8');
+      for (const check of Object.keys(CHECK_GUIDANCE)) {
+        expect(runbook, `the runbook does not name ${check}`).toContain(check);
       }
     });
 
@@ -569,7 +588,11 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // The flag existed and nothing passed it, so the "Not refreshed" section
       // could never render in production.
       expect(shellOf('Refresh fixtures from the public schema bundle')).toContain('/tmp/refresh.log');
-      expect(shellOf('Diagnose what needs a decision')).toContain('--skipped-log');
+      // The SPACE form: `--skipped-log=...` is read too now, but the workflow
+      // writes the space form and a bare `toContain` accepted either — the
+      // sibling pins for `--nested-key-rc` and `--failed-checks` already
+      // require the space form and its variable.
+      expect(shellOf('Diagnose what needs a decision')).toMatch(/--skipped-log \S/);
     });
 
     it('fails the open-PR guard closed rather than open on a gh error', () => {

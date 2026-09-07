@@ -55,7 +55,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -642,8 +642,8 @@ export const CHECK_GUIDANCE = {
     '',
     'Read what it names and decide whether the rule or the assertion is what AWS',
     'just invalidated. That command is the workflow\'s own filter list, fenced',
-    'equal to it — a narrower one comes back GREEN over a real red, which is how',
-    'this row was wrong for a round.',
+    'equal to it line by line — a narrower one comes back GREEN over a real red,',
+    'which is how this row was wrong for a round, twice.',
   ],
   'audit:enrichment-coverage:check': [
     'A new computed attribute on a pure Cloud-Control type that',
@@ -1316,69 +1316,69 @@ export function collectFixtureDeltas({
   let readOnlyAddedCount = 0;
 
   for (const file of files) {
-      const committed = committedOf(file);
-      if (committed === UNREADABLE) {
-        unreadable.push(file);
-        continue;
-      }
-      if (committed === undefined) continue; // Brand-new fixture: nothing to compare.
-      let delta;
-      let resourceType;
-      try {
-        delta = comparePropertySets(committed, currentOf(file));
-        // The filename stem converted back, never the raw stem: it is hyphenated
+    const committed = committedOf(file);
+    if (committed === UNREADABLE) {
+      unreadable.push(file);
+      continue;
+    }
+    if (committed === undefined) continue; // Brand-new fixture: nothing to compare.
+    let delta;
+    let resourceType;
+    try {
+      delta = comparePropertySets(committed, currentOf(file));
+      // The filename stem converted back, never the raw stem: it is hyphenated
       // and `renderName` rejects hyphens, so the fallback rendered
       // `**[name rejected]**` as the heading — the same shape as the two render
       // sites rounds 8 and 9 fixed. The declared-property lookup misses either
       // way, but a legible heading says which type it missed for.
-        resourceType =
-          JSON.parse(committed).resourceType ?? file.replace(/\.json$/, '').replace(/-/g, '::');
-      } catch {
-        // An unparseable side is the refresh's problem, not the report's — but it
-        // is COUNTED, because a type that vanishes here vanishes from the removal
-        // AND the addition accounting, and the residue can be "additions only".
-        // The other two parsers grew shortfall counters in earlier rounds; this
-        // one was the last silent skip.
-        unreadable.push(file);
-        continue;
-      }
+      resourceType =
+        JSON.parse(committed).resourceType ?? file.replace(/\.json$/, '').replace(/-/g, '::');
+    } catch {
+      // An unparseable side is the refresh's problem, not the report's — but it
+      // is COUNTED, because a type that vanishes here vanishes from the removal
+      // AND the addition accounting, and the residue can be "additions only".
+      // The other two parsers grew shortfall counters in earlier rounds; this
+      // one was the last silent skip.
+      unreadable.push(file);
+      continue;
+    }
 
-      readOnlyAddedCount += delta.added.length - delta.writableAdded.length;
+    readOnlyAddedCount += delta.added.length - delta.writableAdded.length;
 
-      const providerRelPath = providerFiles.get(resourceType);
-      const declaredHere = declared.get(resourceType) ?? new Set();
-      const actionable = delta.removed.filter((/** @type {string} */ p) => declaredHere.has(p));
-      if (actionable.length > 0) {
-        /** @type {Record<string, string[]>} */
-        const candidates = {};
-        /** @type {Record<string, SdkEvidence | undefined>} */
-        const sdk = {};
-        /** @type {Record<string, string[]>} */
-        const renameCandidates = {};
-        for (const property of actionable) {
-          candidates[property] = declarationCandidates(property, providerRelPath, resourceType);
-          sdk[property] = sdkEvidence(property, providerRelPath);
-          // Writable additions that plausibly ARE this property renamed —
-          // one name containing the other. Unconditional pairing asserted a
-          // rename for every unrelated addition, and with two removals and one
-          // addition it claimed both, of which at most one can be true.
-          // Read-only additions are excluded outright: a declaration cannot
-          // target one, so "point the declaration at the new name" would just
-          // produce the next bogus entry.
-          renameCandidates[property] = pairRenames(property, delta.writableAdded);
-        }
-        removed.push({
-          resourceType,
-          properties: actionable,
-          candidates,
-          sdk,
-          renameCandidates,
-          providerPath: providerRelPath,
-        });
+    const providerRelPath = providerFiles.get(resourceType);
+    const declaredHere = declared.get(resourceType) ?? new Set();
+    const actionable = delta.removed.filter((/** @type {string} */ p) => declaredHere.has(p));
+    if (actionable.length > 0) {
+      /** @type {Record<string, string[]>} */
+      const candidates = {};
+      /** @type {Record<string, SdkEvidence | undefined>} */
+      const sdk = {};
+      /** @type {Record<string, string[]>} */
+      const renameCandidates = {};
+      for (const property of actionable) {
+        candidates[property] = declarationCandidates(property, providerRelPath, resourceType);
+        sdk[property] = sdkEvidence(property, providerRelPath);
+        // Writable additions that plausibly ARE this property renamed —
+        // one name containing the other. Unconditional pairing asserted a
+        // rename for every unrelated addition, and with two removals and one
+        // addition it claimed both, of which at most one can be true.
+        // Read-only additions are excluded outright: a declaration cannot
+        // target one, so "point the declaration at the new name" would just
+        // produce the next bogus entry.
+        renameCandidates[property] = pairRenames(property, delta.writableAdded);
       }
-      if (delta.writableAdded.length > 0) {
-        writableAdded.push({ resourceType, properties: delta.writableAdded });
-      }
+      removed.push({
+        resourceType,
+        properties: actionable,
+        candidates,
+        sdk,
+        renameCandidates,
+        providerPath: providerRelPath,
+      });
+    }
+    if (delta.writableAdded.length > 0) {
+      writableAdded.push({ resourceType, properties: delta.writableAdded });
+    }
     }
 
   return { removed, writableAdded, readOnlyAddedCount, unreadable };
@@ -1417,15 +1417,43 @@ function main() {
   // `--nested-key-log` is rescued by its `--nested-key-rc` companion, but
   // `--skipped-log` has none and the section is omitted when empty — so an
   // unread log was byte-identical to "everything was refreshed".
-  const readArg = (/** @type {string} */ flag) => {
+  /**
+   * The raw value of a flag, in either spelling, or `undefined` when absent.
+   *
+   * `--flag=value` was invisible to all three readers: `args.indexOf(flag)`
+   * returns -1, so a mistyped invocation fell through to each reader's
+   * absent-flag arm — `''` for the log readers and 0 ("the checker succeeded")
+   * for the status one. Only the workflow's space form held it shut, and the
+   * fence for THAT accepted `--skipped-log=...` too.
+   *
+   * A value that is itself a flag is no value at all, in either dash spelling:
+   * the guard covered `--x` only, so `--failed-checks -property-coverage`
+   * fabricated a failed check named `-property-coverage`.
+   */
+  const rawArg = (/** @type {string} */ flag) => {
+    const glued = args.find((a) => a.startsWith(`${flag}=`));
+    if (glued !== undefined) return glued.slice(flag.length + 1);
     const i = args.indexOf(flag);
-    if (i === -1) return '';
-    const path = args[i + 1];
-    if (path === undefined || path.startsWith('--')) {
+    if (i === -1) return undefined;
+    const value = args[i + 1];
+    return value === undefined || /^-/.test(value) ? null : value;
+  };
+
+  const readArg = (/** @type {string} */ flag) => {
+    const path = rawArg(flag);
+    if (path === undefined) return '';
+    if (path === null || path === '') {
       throw new Error(`${flag} was given with no value — refusing to report from an unread file.`);
     }
     if (!existsSync(path)) {
-      throw new Error(`${flag} names ${path}, which does not exist — refusing to report from an unread file.`);
+      throw new Error(
+        `${flag} names ${path}, which does not exist — refusing to report from an unread file.`
+      );
+    }
+    if (statSync(path).isDirectory()) {
+      throw new Error(
+        `${flag} names ${path}, which is a directory — refusing to report from an unread file.`
+      );
     }
     return readFileSync(path, 'utf8');
   };
@@ -1467,27 +1495,17 @@ function main() {
   // distinction `readNumArg` draws, and its twin here fails open the same way:
   // an empty list reads as "nothing failed".
   const readArgValue = (/** @type {string} */ flag) => {
-    const i = args.indexOf(flag);
-    if (i === -1) return '';
-    // `undefined` is only the TRAILING spelling. A following FLAG is the same
-    // mistake and read as a value: `--failed-checks --skipped-log <f>`
-    // fabricated a failed check named `--skipped-log`.
-    const raw = args[i + 1];
-    if (raw === undefined || raw.startsWith('--')) {
+    const raw = rawArg(flag);
+    if (raw === undefined) return '';
+    if (raw === null) {
       throw new Error(`${flag} was given with no value — refusing to report from an unread list.`);
     }
     return raw;
   };
   const readNumArg = (/** @type {string} */ flag) => {
-    const i = args.indexOf(flag);
-    if (i === -1) return 0;
-    // A flag that IS present must carry a readable value. `Number('')` and
-    // `Number(' ')` are both 0 — "the checker succeeded" — so the empty, the
-    // whitespace and the trailing-flag spellings all failed OPEN while only
-    // NaN failed closed. Three spellings of the same defect this file has now
-    // shipped twice.
-    const raw = args[i + 1];
-    if (raw === undefined || raw.trim() === '') return 1;
+    const raw = rawArg(flag);
+    if (raw === undefined) return 0;
+    if (raw === null || raw.trim() === '') return 1;
     const n = Number(raw);
     return Number.isFinite(n) ? n : 1;
   };

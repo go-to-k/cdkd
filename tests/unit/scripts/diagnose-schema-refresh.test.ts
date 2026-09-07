@@ -1570,6 +1570,42 @@ describe('the script end to end', () => {
     expect(md).not.toContain('no guidance');
   }, 60_000);
 
+  it('reads the --flag=value spelling too, in every reader', () => {
+    // `args.indexOf(flag)` returns -1 for the glued form, so a mistyped
+    // invocation fell through to each reader's ABSENT arm: `''` for the log
+    // readers and 0 — "the checker succeeded" — for the status one. Only the
+    // workflow's space form held it shut, and the fence for that accepted
+    // `--skipped-log=...` as well.
+    const glued = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--failed-checks=property-coverage',
+    ]);
+    expect(glued).toContain('property-coverage');
+    expect(glued).not.toContain('Nothing in this refresh needs a decision');
+  }, 60_000);
+
+  it('refuses a SINGLE-dash flag consumed as a value', () => {
+    // The guard covered `--x` only, while the workflow comment eight lines from
+    // it warns about exactly the single-dash spelling (`-props`). This
+    // fabricated a failed check rendered as `#### \`-property-coverage\``.
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--failed-checks',
+      '-property-coverage',
+    ]);
+    expect(md).toContain('was given with no value');
+    expect(md).not.toContain('-property-coverage');
+  }, 60_000);
+
+  it('refuses a log path that is a DIRECTORY, naming the cause', () => {
+    // It passes `existsSync` and throws `EISDIR` inside `readFileSync`, which
+    // collapsed the whole report to the generic one-line failure. Every other
+    // refusal here names what was wrong.
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--skipped-log',
+      tmpdir(),
+    ]);
+    expect(md).toContain('which is a directory');
+  }, 60_000);
+
   it('renders a case-divergence without asking npm anything', () => {
     const md = run(
       'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.\n' +
