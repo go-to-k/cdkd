@@ -658,6 +658,60 @@ else
   exit 1
 fi
 
+# Guard 7b (issue #2531): that scrub run resolved an INTRINSIC `Export.Name`
+# through the outputs pass's name loop -- the arm that resolves each name
+# through its own view of the pass map. Two PREMISES first, then the one
+# assertion the scrub output can carry.
+#
+# Premise 1, from the synthesized template: the name must be the `Fn::Sub`
+# intrinsic the stack declares, with the stack-name placeholder in its body
+# (a plain string never enters that arm, and an arbitrary object is not a
+# name scrub can resolve to the deploy's key), or the assertion below would
+# pass over an arm scrub never ran.
+EXPORT_NAME_SHAPE=$(jq -r '.Outputs.FunctionNameExport.Export.Name
+  | if . == null then "absent"
+    elif (type == "object" and (keys == ["Fn::Sub"]) and (.["Fn::Sub"] | type == "string") and (.["Fn::Sub"] | contains("${AWS::StackName}"))) then "Fn::Sub"
+    else type end' "${SYNTH_TEMPLATE}")
+if [ "${EXPORT_NAME_SHAPE}" != "Fn::Sub" ]; then
+  echo "FAIL: premise: FunctionNameExport's Export.Name synthesized as '${EXPORT_NAME_SHAPE}', not an Fn::Sub over \${AWS::StackName} -- scrub's name-loop arm (#2531) is not what this run exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: FunctionNameExport's Export.Name is an intrinsic (${EXPORT_NAME_SHAPE})"
+# Premise 2, DEPLOY-side: the deploy keyed the alias under the resolved name,
+# so the key scrub's name loop has to reproduce exists in `state.outputs`.
+# This measures the deploy, not the scrub: the only scrub in this fixture is
+# `--dry-run`, which writes no state, so the key could not have changed under
+# it -- and a clean stack writes nothing under a non-dry-run scrub either.
+EXPORT_ALIAS=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null | jq -r --arg k "${STACK}-function-name" '.state.outputs[$k] // empty')
+# The value is not echoed on failure: the key is the function name here, but
+# a mis-keyed bag could hold any output's value, and this file prints no
+# state value it has not checked.
+if [ "${EXPORT_ALIAS}" != "${FN_NAME}" ]; then
+  echo "FAIL: premise: state.outputs['${STACK}-function-name'] does not hold the function name (${#EXPORT_ALIAS} characters found) -- the deploy did not key the alias under the resolved Export.Name, so there is no key for scrub's name loop to reproduce" >&2
+  exit 1
+fi
+echo "    OK: premise: the deploy keyed the Export.Name alias under '${STACK}-function-name'"
+# The assertion: the name loop has three ways of falling back to the value
+# scan, and two of them warn at default verbosity -- a resolution that THREW
+# (`could not be resolved during scrub`, its error text masked) and one that
+# came back with a placeholder still in it (`did not fully resolve during
+# scrub`, which echoes nothing).
+# What this pins is the ABSENCE of both warnings on an intrinsic name the
+# premises above prove entered the arm. The third fallback, a resolution
+# returning a NON-STRING, is silent and has no observable here; it and the
+# resolution itself -- that the name went through the view -- are pinned by
+# the unit suite (tests/unit/cli/commands/scrub-export-name-collision.test.ts),
+# not by this run.
+for NAME_FALLBACK in "could not be resolved during scrub" "did not fully resolve during scrub"; do
+  if printf '%s' "${SCRUB_OUT}" | grep -qF "${NAME_FALLBACK}"; then
+    echo "FAIL: scrub's name loop fell back to the value scan on the intrinsic Export.Name (#2531 arm): '${NAME_FALLBACK}'" >&2
+    diag_output "${SCRUB_OUT}"
+    exit 1
+  fi
+done
+echo "    OK: scrub's name loop took the intrinsic Export.Name without either name-resolution fallback warning (#2531)"
+
 # --- Phase 1d: `cdkd drift` and the secret expressions (issue #1914) -------
 # The drift command is state-driven, so its baseline is the REDACTED record —
 # `{{resolve:...}}` expressions — while `readCurrentState` returns the resolved
