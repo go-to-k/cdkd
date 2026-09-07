@@ -262,6 +262,19 @@ const theme = defineTheme({
     '  background: color-mix(in srgb, var(--octc-color-primary) 14%, transparent);',
     '  box-shadow: none;',
     '}',
+    // The on-page outline (`aside.toc`) is `display: none` in the core
+    // stylesheet and re-enabled only inside `@media (min-width: 1440px)`, so a
+    // 1280 or 1366 laptop -- the common sizes -- got no outline at all, on
+    // pages like troubleshooting.md that carry 60 headings. Lower it to
+    // 1280px. The chrome then costs 244px of sidebar plus the 17rem the core
+    // block reserves on the right, leaving ~764px for an 860px-max column:
+    // the text narrows slightly rather than colliding. Restate BOTH
+    // declarations -- `display` alone would float the outline over the text,
+    // since the reserve lives in the same block being widened.
+    '@media (min-width: 1280px) {',
+    '  .toc { display: block; }',
+    '  .main--with-toc { padding-right: 17rem; }',
+    '}',
   ].join('\n'),
 });
 

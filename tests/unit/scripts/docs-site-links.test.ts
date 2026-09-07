@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, relative } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
+import { oxSlug, stripFences } from '../../ox-slug.js';
 
 // The docs/ tree is published as the cdkd.dev site (vite.docs.config.ts, Ox
 // Content SSG). Two link classes broke silently before this fence existed:
@@ -37,44 +38,6 @@ const walkMarkdown = (dir: string): string[] => {
 const handWrittenDocs = walkMarkdown(DOCS).filter(
   (f) => !relative(DOCS, f).startsWith('_generated')
 );
-
-// Line-state fence tracking rather than a column-0 regex: docs/ carries
-// list-indented fences (e.g. state-management.md, troubleshooting.md) whose
-// contents must not surface as phantom headings or links.
-const stripFences = (markdown: string): string => {
-  const out: string[] = [];
-  let fence: string | null = null;
-  for (const line of markdown.split('\n')) {
-    const m = /^ {0,3}(```+|~~~+)/.exec(line);
-    if (fence) {
-      if (m && m[1].startsWith(fence[0]) && m[1].length >= fence.length) fence = null;
-      continue;
-    }
-    if (m) {
-      fence = m[1];
-      continue;
-    }
-    out.push(line);
-  }
-  return out.join('\n');
-};
-
-// Ox Content's heading-permalink slug, derived from the built site's actual
-// ids (e.g. "Teardown (`cdkd bootstrap --destroy`, issue #1010)" →
-// "teardown-cdkd-bootstrap-destroy-issue-1010", "`--no-wait`" → "no-wait",
-// "pre-v0.94.0" → "pre-v0-94-0"): lowercase, every non-alphanumeric run
-// becomes one hyphen, leading/trailing hyphens dropped. NOTE this differs
-// from GitHub's slugger (which preserves consecutive hyphens); the site is
-// the rendering that matters.
-const oxSlug = (heading: string): string =>
-  heading
-    // Inline markdown links contribute their TEXT to the site's id, not
-    // their URL: "Bounded growth (issue [#885](https://...))" renders as
-    // id="bounded-growth-issue-885" (read off the built site).
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
 
 const headingSlugsOf = (file: string): Set<string> => {
   const slugs = new Set<string>();
