@@ -137,8 +137,10 @@ eventually touches:
 - `src/deployment/rollback-executor.ts` — the failed-deploy reverse walk.
 - `src/analyzer/dag-builder.ts` — the dependency graph plus its implicit edges.
 - `src/analyzer/template-parser.ts` — template parsing.
-- `src/provisioning/register-providers.ts` — the provider registry (every new
+- `src/provisioning/register-providers.ts` — the registration table (every new
   provider touches it).
+- `src/provisioning/provider-registry.ts` — the SDK-vs-Cloud-Control routing
+  decision every resource in every template passes through, delete included.
 - `src/cli/commands/deploy.ts` — the deploy entrypoint.
 - `src/cli/commands/destroy.ts` — the destroy entrypoint.
 - `src/cli/commands/destroy-runner.ts` — the destroy orchestration behind it.

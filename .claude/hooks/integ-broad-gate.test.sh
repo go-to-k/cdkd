@@ -235,6 +235,27 @@ run_case "block: gh pr merge touches rollback-executor.ts (#2042)" 2 \
   '{"tool_input":{"command":"gh pr merge 330 --squash"},"cwd":"."}' \
   '{"files":[{"path":"src/deployment/rollback-executor.ts"}]}'
 
+# issue #2720: the routing decision. `register-providers.ts` decides which
+# types HAVE an SDK provider; `provider-registry.ts` decides which provider
+# actually runs EVERY resource in EVERY template -- the multi-resource blast
+# radius this gate exists for.
+run_case "block: gh pr merge touches provider-registry.ts (#2720)" 2 \
+  '{"tool_input":{"command":"gh pr merge 360 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/provisioning/provider-registry.ts"}]}'
+
+# The sibling it shares an alternation group with must still block on its own,
+# so folding the two into `(provider-registry|register-providers)` cannot drop
+# either alternative unnoticed.
+run_case "block: gh pr merge touches register-providers.ts" 2 \
+  '{"tool_input":{"command":"gh pr merge 370 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/provisioning/register-providers.ts"}]}'
+
+# Near-miss control: the group is anchored at both ends, so a provisioning
+# sibling starting with the same stem is out of scope.
+run_case "pass: gh pr merge touches provider-registry-helpers.ts (not in scope)" 0 \
+  '{"tool_input":{"command":"gh pr merge 380 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/provisioning/provider-registry-helpers.ts"}]}'
+
 # Near-miss control for the widened alternation. `retry|retryable-errors`
 # must stay anchored at both ends: a sibling whose basename merely STARTS
 # with `retry` is not in scope, and neither is the unit test for one of the

@@ -427,6 +427,21 @@ gates:
       # resource and re-creates the old one — so this is delete logic by any
       # reading. Found unscoped while fixing issue #2042, not named by it.
       - "src/deployment/rollback-executor.ts"
+      # `getProviderFor` picks the provider that DELETES the resource, not just
+      # the one that creates it: `deploy-engine.ts` reads it for the plain
+      # delete and for a replacement's old-resource delete, `destroy-runner.ts`
+      # for every `cdkd destroy`, and `rollback-executor.ts` at seven sites. So
+      # the routing decision reroutes the delete path for every resource in a
+      # template at once. It sits in the STRICT half of the hook rather than
+      # the hunk-filtered half, and that is measured rather than assumed: the
+      # filter looks for `delete|rollback|...` on a changed line, and a routing
+      # change does not write those words — five realistic edits across three
+      # shapes (a type added to `STICKY_CC_MIGRATION_EXEMPT`, the sticky
+      # predicate replaced, a returned `provisionedBy` flipped) matched the
+      # filter 0 times, while a control line naming `deleteProvider` matched.
+      # Hunk-filtering it would have been a fail-open for exactly the changes
+      # it was added for (issue #2720).
+      - "src/provisioning/provider-registry.ts"
 
   pr-review:
     hash: files

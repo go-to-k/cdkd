@@ -119,6 +119,7 @@ Run each check and report pass/fail:
      - `src/analyzer/dag-builder.ts`
      - `src/analyzer/template-parser.ts`
      - `src/provisioning/register-providers.ts`
+     - `src/provisioning/provider-registry.ts`
      - `src/deployment/retry.ts`
      - `src/deployment/retryable-errors.ts`
      - `src/deployment/rollback-executor.ts`
@@ -145,7 +146,7 @@ Run each check and report pass/fail:
      stacks unlike your fixture (the PR #348 / issue #343 incident).
      ```bash
      # Detection: only fires when the diff actually touches cross-cutting code.
-     if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'; then
+     if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/(provider-registry|register-providers)\.ts$'; then
        echo "Cross-cutting code touched — broad integ required (bench-cdk-sample / lambda / microservices / drift-revert)."
        # Then run the broad integ via /run-integ and confirm 0 errors / 0 orphans.
      fi

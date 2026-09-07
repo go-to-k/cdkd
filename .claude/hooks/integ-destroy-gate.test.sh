@@ -305,6 +305,31 @@ stage_filter_change "src/deployment/rollback-executor.ts" "const REPLAY_LIMIT = 
 run_case "diff filter: rollback-executor.ts is delete-touching (#2042)" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+# issue #2720: the SDK-vs-Cloud-Control routing decision. `getProviderFor`
+# picks the provider that DELETES a resource -- deploy-engine's plain delete
+# and its replacement old-delete, destroy-runner, and five sites in
+# rollback-executor all read it -- so a routing regression reroutes DELETE for
+# every resource in a template at once.
+#
+# STRICT rather than hunk-filtered, and this case is the evidence: the content
+# line below is a realistic routing edit (a type added to the sticky-exemption
+# set) and carries NONE of the delete-symbol vocabulary. Under the filtered
+# bucket it would pass through -- a fail-open for exactly the change the gate
+# was added for. Measured before the move: five such mutations matched the
+# symbol filter 0 times, while a control line naming `deleteProvider` matched.
+stage_filter_change "src/provisioning/provider-registry.ts" \
+  "const STICKY_CC_MIGRATION_EXEMPT = new Set(['AWS::Scheduler::Schedule']);"
+run_case "diff filter: provider-registry.ts is delete-touching (#2720)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# Near-miss control for the #2720 entry: the pattern is anchored at BOTH ends,
+# so a provisioning sibling whose basename merely STARTS with the scoped one is
+# out of scope. Without this, a loose `provider-registry.*` would satisfy the
+# case above while silently gating unrelated files.
+stage_filter_change "src/provisioning/provider-registry-helpers.ts" "export const NOOP = 1;"
+run_case "diff filter: provider-registry-helpers.ts passes through (#2720 anchor)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 
 # --- CROSS-REPO GATE NAMING (go-to-k/cdkd#2236) ---
 #

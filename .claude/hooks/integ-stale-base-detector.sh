@@ -189,7 +189,7 @@ branch=$(git -C "$cwd" branch --show-current 2>/dev/null || true)
 # revision computed `--name-only | grep -c` and then printed "N of those
 # COMMITS", so one commit touching five provider files reported "5 of those
 # commits" against a "1 commit(s) behind" line one line above.
-scope_re='^src/provisioning/providers/|^src/provisioning/(cloud-control-provider|region-check)\.ts$|^src/cli/commands/(destroy|destroy-runner|deploy)\.ts$|^src/deployment/(deploy-engine|retry|retryable-errors|rollback-executor|intrinsic-function-resolver)\.ts$|^src/analyzer/(dag-builder|template-parser|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/provisioning/register-providers\.ts$'
+scope_re='^src/provisioning/providers/|^src/provisioning/(cloud-control-provider|region-check|provider-registry)\.ts$|^src/cli/commands/(destroy|destroy-runner|deploy)\.ts$|^src/deployment/(deploy-engine|retry|retryable-errors|rollback-executor|intrinsic-function-resolver)\.ts$|^src/analyzer/(dag-builder|template-parser|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/provisioning/register-providers\.ts$'
 in_scope=$(git -C "$cwd" diff --name-only HEAD...origin/main 2>/dev/null | grep -cE "$scope_re" || true)
 case "$in_scope" in ''|*[!0-9]*) in_scope=0 ;; esac
 

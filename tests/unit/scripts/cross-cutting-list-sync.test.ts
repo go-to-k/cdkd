@@ -181,6 +181,7 @@ const CROSS_CUTTING_PIN = [
   'src/deployment/retry.ts',
   'src/deployment/retryable-errors.ts',
   'src/deployment/rollback-executor.ts',
+  'src/provisioning/provider-registry.ts',
   'src/provisioning/register-providers.ts',
 ];
 
@@ -207,6 +208,7 @@ const CONTENTION_PIN = [
   'src/deployment/retry.ts',
   'src/deployment/retryable-errors.ts',
   'src/deployment/rollback-executor.ts',
+  'src/provisioning/provider-registry.ts',
   'src/provisioning/register-providers.ts',
 ];
 
@@ -227,6 +229,7 @@ const DESTROY_SCOPE_PIN = [
   'src/deployment/retryable-errors.ts',
   'src/deployment/rollback-executor.ts',
   'src/provisioning/cloud-control-provider.ts',
+  'src/provisioning/provider-registry.ts',
   'src/provisioning/providers/**',
   'src/provisioning/region-check.ts',
 ];
