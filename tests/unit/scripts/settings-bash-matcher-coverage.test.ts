@@ -153,9 +153,20 @@ describe('.claude/settings.json PreToolUse gate reachability', () => {
 
   it('registers the gates that must see both command spellings', () => {
     // Catches gate REMOVAL, which neither assertion above would notice.
-    // These three are the ones go-to-k/cdkd#2016 named as lacking a `cd` twin in
-    // the sibling repo.
-    const mustBeCoarse = ['check-gate', 'verify-pr-gate', 'non-english-text-gate'];
+    // go-to-k/cdkd#2016 named three gates as lacking a `cd` twin in the sibling
+    // repo, and this list was those three. The third, `non-english-text-gate`,
+    // was RETIRED by go-to-k/cdkd#2717 -- its subject is the PR DIFF, which a CI
+    // job reads directly, so it moved to `.github/workflows/` where a check
+    // cannot go silently inert the way that hook measurably did.
+    //
+    // It is REPLACED here rather than dropped, because the list's job is to be a
+    // floor of at least three: a two-name list shrinks the thing that catches a
+    // removal every time a removal happens, which is the one direction this
+    // assertion must not move. `ci-green-gate` is the substitute -- it is a
+    // merge-time refusal whose absence puts red on `main`, the same severity
+    // class as the other two, and it takes a command spelling (`gh pr merge`)
+    // that the `cd <worktree> && ...` form reaches exactly as #2016 described.
+    const mustBeCoarse = ['check-gate', 'verify-pr-gate', 'ci-green-gate'];
 
     const coarseGates = new Set<string>();
     for (const entry of preToolUseEntries()) {

@@ -654,9 +654,14 @@ check "...while still telling the user what is true" "yes" \
 # Raise it when cases are added; never lower it to make a red run green.
 CASE_FLOOR=77
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  # `ran` is captured BEFORE the increment below: `fail=$((fail + 1))` runs first,
+  # so interpolating `$((pass + fail))` after it reports one case MORE than ran and
+  # prints the self-contradicting "only N cases ran, expected at least N"
+  # (go-to-k/cdkd#2717 chased that message for a real 545-vs-546 shortfall).
+  ran=$((pass + fail))
   fail=$((fail + 1))
-  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least 77\n"
-  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+  fail_log+="FAIL case floor: only $ran cases ran, expected at least $CASE_FLOOR\n"
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$ran" "$CASE_FLOOR"
 fi
 printf '\nPass: %d  Fail: %d\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then

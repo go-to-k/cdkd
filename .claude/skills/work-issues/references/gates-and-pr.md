@@ -78,9 +78,11 @@ touching `tests/**`, run `vp run typecheck:test` and read ITS rc (that split
 is why `/check` step 2 lists it separately).
 
 All green, then commit (conventional-commit; `fix:` for a user-visible fix,
-`chore:` for `.claude/**` / tooling — `commit-prefix-scope-gate` blocks a
-`fix:`/`feat:` commit with no `src/**` change). `check-gate` requires fresh
-markers. Push, open the PR with `Closes #<n>`.
+`chore:` for `.claude/**` / tooling). The prefix that MATTERS is the PR
+TITLE's: squash-merging makes it the subject release-please reads, and since
+go-to-k/cdkd#2717 a `fix:`/`feat:` title with no `src/**` change is refused in
+CI on every push. `check-gate` requires fresh markers. Push, open the PR with
+`Closes #<n>`.
 
 **A cluster of full-suite failures that pass in isolation is a HOST-LOAD
 artifact, not a regression.** Tests that spawn subprocesses or inherit the 5 s

@@ -66,4 +66,4 @@ Run all quality checks and create a GitHub PR if everything passes.
 - Do NOT create a PR if any `/verify-pr` check fails
 - Always push before creating the PR
 - If the branch has no commits ahead of main, warn and stop
-- `gh pr edit` may fail silently (e.g., Projects Classic deprecation). After updating a PR, verify the result with `gh pr view`. If `gh pr edit` fails, fall back to `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH`
+- **Verify a PR update landed, with `gh pr view` — but not for the reason this line used to give.** `gh pr edit` failed SILENTLY on a Projects-classic GraphQL deprecation, exiting non-zero with the mutation unapplied. MEASURED 2026-09-07 on gh 2.92.0 against a live PR: it exits 0 and the body IS replaced, so the deprecation is fixed upstream and the gate that blocked the spelling is gone (go-to-k/cdkd#2717). Reading back is still worth one command — a wrong `--body-file` path or a shell-eaten backtick writes the wrong body just as quietly, and neither is a gh bug. `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -F body=@<file>` remains the better spelling for a body full of backticks, since `@<file>` is read verbatim

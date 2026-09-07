@@ -73,8 +73,10 @@ function hookScripts(): string[] {
   // ONE pathspec, not two. A git pathspec's `*` crosses `/`, so
   // `.claude/hooks/*.sh` already returns everything under `lib/` — a second
   // `.claude/hooks/lib/*.sh` call duplicated 7 entries AND made the floor below
-  // unable to notice it going dead (106 -> 99 is still over any floor worth
-  // writing). Measured: 99, 7, and 0 files outside the 99.
+  // unable to notice it going dead (a duplicated total is still over any floor
+  // worth writing). Measured 2026-09-07 with the ONE-pathspec form:
+  // `git ls-files '.claude/hooks/*.sh'` returns 81, of which 2 are the frozen
+  // `lib/testdata/` snapshots, leaving 79.
   //
   // `lib/testdata/` is excluded deliberately: those are FROZEN snapshots of a
   // past `command-match.sh`, kept byte-stable as differential-test input. A live
@@ -183,13 +185,31 @@ describe('a shell fixture never drops its teardown handler', () => {
     // set from the 99 total, while silently dropping all 48 `*.test.sh` —
     // including `pr-review-gate.test.sh`, the file this class was added for. So
     // the two sub-populations that can independently vanish are floored
-    // independently, from counts measured on 2026-09-06. The pathspec returns
-    // 99; `hookScripts()` drops the 2 frozen `lib/testdata/` snapshots, so the
-    // floored population is 97 = 48 `*.test.sh` + 38 `*-gate.sh` + 11 others.
+    // independently.
+    //
+    // BOTH FLOORS LOWERED BY go-to-k/cdkd#2717, which retired ten gates and
+    // their suites — the deliberate-drop case, not a glob that stopped matching.
+    //
+    // RE-DERIVED from the tree rather than carried, with the ONE-pathspec form
+    // `hookScripts()` above mandates (a git pathspec's `*` crosses `/`, so the
+    // second pathspec adds nothing -- ONE invocation dedupes, it was two separate
+    // calls that double-counted): `git ls-files
+    // '.claude/hooks/*.sh'` minus `lib/testdata/` gives 79 = 39 `*.test.sh` +
+    // 29 `*-gate.sh` + 11 others. An earlier
+    // revision of this comment said 40 and 30, and built a story on it -- that
+    // the `-gate.sh` floor "failed at EQUALITY (30 is not > 30)". It did not;
+    // 29 is simply below 30, an ordinary shortfall. The wrong number produced a
+    // wrong explanation, which is the argument for deriving rather than
+    // recalling (go-to-k/cdkd#2717 review).
+    //
+    // The floors sit ~10% under, so they still red on the thing this fence is
+    // for -- a PATHSPEC that silently stops matching takes a class to 0 -- while
+    // not re-firing on the next legitimate deletion. Growth is the direction
+    // this fence has no opinion about.
     const hooks = hookScripts();
     expect(verifyScripts().length).toBeGreaterThan(50);
-    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(40);
-    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(30);
+    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(35);
+    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(26);
     const counts = scripts.map((p) => trapActions(readFileSync(join(REPO_ROOT, p), 'utf-8'), 'EXIT'));
     expect(counts.filter((a) => a.length > 0).length).toBeGreaterThan(20);
     // ...and the legitimate re-installers are SEEN rather than parsed away. If

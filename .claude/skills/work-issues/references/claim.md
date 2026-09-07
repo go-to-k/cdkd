@@ -69,9 +69,9 @@ body.
 (`--add-label severity:<v> --add-label effort:<v>`, and `--remove-label` the
 one a correction supersedes — every open issue carries one since the sweep, and
 adding without removing leaves TWO, which §3's query picks between arbitrarily)
-— a body stating a `Severity:` / `Effort:` value the labels do not carry is
-refused by
-`.claude/hooks/issue-classification-label-gate.sh`. A lane labels on touch,
+— a body stating a `Severity:` / `Effort:` value the labels do not carry has
+the label APPLIED in CI since go-to-k/cdkd#2717 (it only reports when body and
+label contradict). Label anyway: a lane labels on touch,
 holding the evidence, and never sweeps the backlog — a BULK sweep is the
 maintainer's call. Label BEFORE the lane's PR exists: that is what makes the
 PR inherit them (the workflow reads them at PR open).

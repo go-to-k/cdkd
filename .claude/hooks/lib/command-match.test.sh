@@ -1041,29 +1041,46 @@ want_cd "" "prose carrier: no cd before the verb resolves to nothing" \
 # `non-english-text-gate` scans the full content of every file a PR touches with
 # no allow-list, so adding a case there makes the PR carrying the fix unopenable.
 # This one needs no non-English text at all -- it asserts an exit code.
+#
+# RE-POINTED by go-to-k/cdkd#2717, which retired `gh-body-english-gate.sh` to
+# CI. The subject was that hook and the constant it consumed
+# (`GATE_RE_GH_PROSE_CARRIER`); it is now `pr-body-item-number-gate.sh` and
+# `GATE_RE_GH_BODY_CARRIER`, chosen because that gate survives, sources this
+# library, and fails CLOSED on the same shape. The PROPERTY under test is
+# unchanged: a library that is otherwise complete but predates a constant the
+# gate interpolates must make the gate REFUSE, not wave the command through.
+#
+# The old form guarded on `[ -f .../gh-body-english-gate.sh ]`, so deleting that
+# hook made these two cases SILENTLY SKIP -- the count fell 596 -> 594 and the
+# only symptom was the mid-file CASE_FLOOR, whose own message is off by one and
+# read "only 546 cases ran, expected at least 546". A guard that turns a missing
+# subject into a skip is the vacuous-pass shape `.claude/rules/testing.md`
+# warns about; the file is now REQUIRED, so a future retirement reds here with
+# the reason instead of quietly shrinking the suite.
 _gate_hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ -f "$_gate_hook_dir/gh-body-english-gate.sh" ]; then
+if [ ! -f "$_gate_hook_dir/pr-body-item-number-gate.sh" ]; then
+  fail=$((fail + 1))
+  printf 'FAIL %s\n' "fail-closed fixture: pr-body-item-number-gate.sh is gone -- re-point this case at another surviving gate that sources the library, do not delete it"
+  fail_log+="FAIL fail-closed fixture: pr-body-item-number-gate.sh is missing; the fail-closed arm is now unfenced\n"
+else
   _fc_tmp="$(mktemp -d)"
   mkdir -p "$_fc_tmp/lib"
-  cp "$_gate_hook_dir/gh-body-english-gate.sh" "$_fc_tmp/"
-  # A library that is otherwise COMPLETE and merely predates the constant. A
-  # truncated one would trip the `declare -F` guard instead, and the case would
-  # pass for the wrong reason.
-  grep -v '^GATE_RE_GH_PROSE_CARRIER=' "$_gate_hook_dir/lib/command-match.sh" \
+  cp "$_gate_hook_dir/pr-body-item-number-gate.sh" "$_fc_tmp/"
+  grep -v '^GATE_RE_GH_BODY_CARRIER=' "$_gate_hook_dir/lib/command-match.sh" \
     > "$_fc_tmp/lib/command-match.sh"
   _fc_payload='{"cwd":"/tmp","tool_name":"Bash","session_id":"fc","tool_input":{"command":"gh issue create --title x --body y"}}'
-  printf '%s' "$_fc_payload" | bash "$_fc_tmp/gh-body-english-gate.sh" >/dev/null 2>&1
+  printf '%s' "$_fc_payload" | bash "$_fc_tmp/pr-body-item-number-gate.sh" >/dev/null 2>&1
   _fc_rc=$?
   if [ "$_fc_rc" -eq 2 ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: a library without GATE_RE_GH_PROSE_CARRIER refuses"
+    pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: a library without GATE_RE_GH_BODY_CARRIER refuses"
   else
-    fail=$((fail + 1)); printf 'FAIL %s\n' "fail-closed: a library without GATE_RE_GH_PROSE_CARRIER refuses"
+    fail=$((fail + 1)); printf 'FAIL %s\n' "fail-closed: a library without GATE_RE_GH_BODY_CARRIER refuses"
     fail_log+="FAIL fail-closed arm: expected rc=2, got rc=$_fc_rc\n"
   fi
   # Polarity: the SAME fixture with the constant present must pass the command
   # through (rc=0), or the case above would pass on any breakage at all.
   cp "$_gate_hook_dir/lib/command-match.sh" "$_fc_tmp/lib/command-match.sh"
-  printf '%s' "$_fc_payload" | bash "$_fc_tmp/gh-body-english-gate.sh" >/dev/null 2>&1
+  printf '%s' "$_fc_payload" | bash "$_fc_tmp/pr-body-item-number-gate.sh" >/dev/null 2>&1
   _fc_rc=$?
   if [ "$_fc_rc" -eq 0 ]; then
     pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: the same fixture WITH the constant passes an english body"
@@ -1852,9 +1869,14 @@ fi
 
 CASE_FLOOR=546
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  # `ran` is captured BEFORE the increment below: `fail=$((fail + 1))` runs first,
+  # so interpolating `$((pass + fail))` after it reports one case MORE than ran and
+  # prints the self-contradicting "only N cases ran, expected at least N"
+  # (go-to-k/cdkd#2717 chased that message for a real 545-vs-546 shortfall).
+  ran=$((pass + fail))
   fail=$((fail + 1))
-  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least $CASE_FLOOR\n"
-  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+  fail_log+="FAIL case floor: only $ran cases ran, expected at least $CASE_FLOOR\n"
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$ran" "$CASE_FLOOR"
 fi
 echo
 # --- gate_utf8_lenient: the RFC 3629 well-formedness table -------------------

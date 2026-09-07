@@ -26,9 +26,10 @@ import { dirname, join } from 'node:path';
  *   - label names CONTAINING SPACES (`good first issue`), which a built-up
  *     `-f labels[]=...` argument string splits mid-name -- the reason the
  *     payload is JSON
- *   - `Closes (#N)`, the paren form, which does NOT auto-close and which
- *     `.claude/hooks/closes-paren-form-gate.sh` refuses at merge. Matching it
- *     here would paper over that gate
+ *   - `Closes (#N)`, the paren form, which does NOT auto-close. Matching it
+ *     here would paper over a real defect in the PR body. (A merge-time hook
+ *     used to refuse it too; that gate is retired to CI by go-to-k/cdkd#2717,
+ *     so this workflow's silence is now the only signal)
  *   - a closing reference to a PULL REQUEST number, filtered by `gh issue
  *     view` failing on it rather than by a second API call
  *   - a full issue URL in THIS repo (matched) vs one in another repo (not),

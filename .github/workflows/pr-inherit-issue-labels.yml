@@ -64,9 +64,10 @@ jobs:
           # GitHub's auto-close grammar: a closing keyword, then a parens-FREE
           # `#N`, the qualified `owner/repo#N`, or a full issue URL -- the last
           # two for THIS repo only. The `Closes (#N)` paren form
-          # is deliberately NOT matched -- it does not auto-close either, and
-          # `.claude/hooks/closes-paren-form-gate.sh` refuses a merge that uses
-          # it, so matching it here would paper over that gate.
+          # is deliberately NOT matched -- it does not auto-close either, so
+          # matching it here would paper over a real defect in the PR body.
+          # (A merge-time hook used to refuse that form; it is
+          # retired to CI by go-to-k/cdkd#2717.)
           #
           # The qualified form is load-bearing, not a nicety: this repo's own
           # convention asks for `owner/repo#N` in published artifacts, so it is

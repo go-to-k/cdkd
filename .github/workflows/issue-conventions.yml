@@ -1,0 +1,362 @@
+name: Issue conventions
+
+# The CI replacement for three retired PreToolUse bash hooks:
+#
+#   .claude/hooks/gh-body-english-gate.sh            -> scripts/check-gh-body-english.ts
+#   .claude/hooks/issue-classification-label-gate.sh -> scripts/check-issue-classification-labels.ts
+#   .claude/hooks/issue-dup-check-gate.sh            -> scripts/check-issue-dup-check.ts
+#
+# Each hook was 371-551 lines with a 380-916 line suite, and almost all of that
+# was ONE problem: a PreToolUse hook receives the raw SHELL COMMAND TEXT of a
+# `gh` invocation and has to find the body inside it -- heredocs, `--body-file`,
+# `-F`, `--field body=@`, glued flags, quoting, ANSI-C `$'...'`. A workflow
+# triggered on `issues` / `issue_comment` / `pull_request` receives the body
+# DIRECTLY. The shell parsing is deleted, not translated; the DETECTION LOGIC is
+# ported faithfully. Each script's header records what it preserved, what it
+# dropped, and what got weaker or stronger.
+#
+# ## THE TEXT IS NEVER INTERPOLATED INTO A SHELL COMMAND
+#
+# Following `.github/workflows/pr-inherit-issue-labels.yml`: an issue or PR body
+# is attacker-controlled text, so it is fetched SERVER-SIDE with `gh ... --json`
+# and handed to the checker as a JSON file. `${{ github.event.issue.body }}` is
+# never written anywhere in this file. Only NUMBERS and the repository name
+# cross into shell, through `env:`, quoted.
+#
+# ## `pull_request` vs `pull_request_target` -- the security decision
+#
+# This uses `pull_request`, and the sibling `pr-inherit-issue-labels.yml` uses
+# `pull_request_target`. They differ because their OUTPUTS differ, not by
+# accident:
+#
+#   - that workflow WRITES (it adds labels to the PR). A fork PR's
+#     `pull_request` token is read-only, so the write would silently no-op on
+#     exactly the PRs a maintainer did not open -- a workflow that works only
+#     for the trusted case, which is the shape that reads as working while doing
+#     nothing. It needs `pull_request_target`'s write token, and it is safe
+#     there only because it executes nothing from the head.
+#   - this job only has to say NO. A failing check run is its entire output, it
+#     needs no write permission at all, and a `pull_request` check appears on
+#     the PR and can be a required status check. `pull_request_target` would
+#     hand a WRITE token and the base repo's secrets to a workflow whose whole
+#     job is to refuse -- strictly more privilege for strictly no capability.
+#     Least privilege says `pull_request`.
+#
+# The residual `pull_request` normally carries is that on a fork PR the default
+# checkout is the MERGE ref, so the PR could ship a modified copy of the very
+# checker that judges it. That is closed by the checkout ref chosen in the
+# `english-pr` job below, which picks base for a FORK and head for a same-repo
+# branch -- read the rationale there, it is the authority; pinning base
+# unconditionally was tried and made the job unrunnable on the PR that adds a
+# checker. The PR body still comes from the API either way. The PR's own version
+# of `scripts/**` is covered by the unit suite in `ci.yml`, where it belongs.
+#
+# `synchronize` is in the PR trigger list even though a push cannot change a
+# body or a title. Required status checks are evaluated against the HEAD SHA, so
+# a check that does not re-run on a new commit leaves the PR waiting on a status
+# that will never arrive. `pr-title-check.yml` carries the same four types for
+# the same reason.
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+# Least privilege at the top; every job narrows or extends it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-conventions-${{ github.event_name }}-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.event.comment.id || 'x' }}
+  cancel-in-progress: true
+
+jobs:
+  # --- 1. English-only, on the ISSUE surfaces -------------------------------
+  # Split from the PR job below ONLY so the permission sets can differ: this one
+  # posts a comment (an issue has no check-run surface a human will look at),
+  # the PR one does not and stays read-only.
+  english-issue:
+    name: English-only (issue / comment)
+    # The Bot exclusion is not tidiness. The other two jobs POST COMMENTS, and a
+    # comment is an `issue_comment: created` event -- so without it this job
+    # scans its own siblings' output on every violation. That output is English
+    # and would pass, which is exactly what makes it dangerous: it costs a run
+    # per comment and reads as fine until one of those comments QUOTES an
+    # offending body back at the author, at which point the check fails on text
+    # it wrote itself and the author cannot clear it.
+    if: >-
+      (github.event_name == 'issues' || github.event_name == 'issue_comment') &&
+      github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    # `issue_comment: created` fires for ANY user's comment on ANY issue, and the
+    # concurrency group keys on the comment id, so parallel comments never
+    # coalesce -- this is the job an outsider can actually spawn at will.
+    # The default timeout is 360 minutes; cap it (go-to-k/cdkd#2717 review).
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        with:
+          # Node 24 strips type annotations, so `node scripts/*.ts` runs the
+          # TypeScript directly. `run-install: false` because the checkers
+          # import nothing outside node: builtins -- deliberately, so this
+          # workflow cannot be blocked by a lockfile problem.
+          node-version: "24"
+          cache: false
+          run-install: false
+
+      - name: Build the subject document
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          set -euo pipefail
+          # Server-side fetch, per the header. `--argjson` so a NUMBER that is
+          # not a number fails loudly here instead of becoming jq program text.
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
+              | jq --argjson n "$NUMBER" \
+                  '{kind:"issue_comment", number:$n, body:.body, labels:[]}' > subject.json
+          else
+            gh issue view "$NUMBER" -R "$REPO" --json title,body,labels \
+              | jq --argjson n "$NUMBER" \
+                  '{kind:"issue", number:$n, title:.title, body:.body,
+                    labels:[.labels[].name]}' > subject.json
+          fi
+
+      - name: Check for non-English text
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          set -uo pipefail
+          rc=0
+          node scripts/check-gh-body-english.ts subject.json > report.md || rc=$?
+          cat report.md
+          [ "$rc" = "0" ] && exit 0
+          # rc 2 is "could not evaluate", never "clean". A checker that did not
+          # look has not passed, and mapping the two together is the fail-open
+          # the retired hooks' own load guards existed to prevent.
+          [ "$rc" = "1" ] || exit "$rc"
+          # Comment only on the CREATING action. On an `edited` event the job
+          # still fails, but re-posting the same report on every keystroke-save
+          # would be spam; the comment from the original event still stands.
+          if [ "$ACTION" = "opened" ] || [ "$ACTION" = "created" ]; then
+            gh api "repos/$REPO/issues/$NUMBER/comments" -F body=@report.md --silent
+          fi
+          exit 1
+
+  # --- 2. English-only, on the PR surface -----------------------------------
+  # No write permission, by design: the failing check run IS the output, and it
+  # blocks the merge. See the `pull_request` decision in the header.
+  english-pr:
+    name: English-only (pull request)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # The default timeout is 360 minutes and every one of these jobs is spawned
+    # by an event any GitHub user can raise, so each carries a cap
+    # (go-to-k/cdkd#2717 review). The comment-volume argument applies to
+    # `english-issue` alone -- see there.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # SAME-REPO PR -> the head; FORK PR -> the base.
+          #
+          # Two requirements pull opposite ways and both are real. TRUST: a fork
+          # PR must not supply the checker that judges it -- edit the script to
+          # `process.exit(0)`, or add your own file to the allow-list, and every
+          # required check reports green while the violation ships. BOOTSTRAP:
+          # pinning base unconditionally means the PR that ADDS a checker runs a
+          # base that does not contain it, so the job dies with
+          # ERR_MODULE_NOT_FOUND and can never go green -- which would also red
+          # every future PR that adds or renames one.
+          #
+          # Fork-ness resolves both: a same-repo branch is pushed by someone who
+          # already has write access, so taking the checker from the head grants
+          # them nothing they do not have; a fork author has no such access, and
+          # for them the base copy is the only trustworthy one. The CONTENT under
+          # test always comes from `$HEAD_SHA` inside the scripts either way, so
+          # this decides only WHICH CHECKER runs, never WHAT is checked.
+          #
+          # Both halves were review findings on go-to-k/cdkd#2717: the security
+          # pass caught the head checkout, and the fix for it introduced the
+          # bootstrap failure the code pass then caught.
+          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository
+            && github.event.pull_request.head.sha
+            || github.event.pull_request.base.sha }}
+
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        with:
+          node-version: "24"
+          cache: false
+          run-install: false
+
+      - name: Check the PR title and body for non-English text
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr view "$NUMBER" -R "$REPO" --json title,body,labels \
+            | jq --argjson n "$NUMBER" \
+                '{kind:"pull_request", number:$n, title:.title, body:.body,
+                  labels:[.labels[].name]}' > subject.json
+          node scripts/check-gh-body-english.ts subject.json
+
+  # --- 3. Severity / Effort labels -----------------------------------------
+  # The one check that FIXES instead of refusing: it derives the label from the
+  # body and applies it. It reports, and never writes, when the body and an
+  # EXISTING label contradict each other.
+  #
+  # `unlabeled` is deliberately NOT a trigger: re-applying a label the moment a
+  # human removes it is a fight nobody can win. The cost is that an `edited`
+  # event cannot tell a deliberately-removed label from one never applied, and
+  # will re-add it. Recorded in `.claude/rules/layout-scripts.md`.
+  classification-labels:
+    name: Severity / Effort labels
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    # The default timeout is 360 minutes and every one of these jobs is spawned
+    # by an event any GitHub user can raise, so each carries a cap
+    # (go-to-k/cdkd#2717 review). The comment-volume argument applies to
+    # `english-issue` alone -- see there.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        with:
+          node-version: "24"
+          cache: false
+          run-install: false
+
+      - name: Derive and apply the classification labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          set -uo pipefail
+          # Labels are read back from the API rather than from the event
+          # payload: an `edited` payload can be a moment behind a label a
+          # parallel workflow (pr-inherit-issue-labels, a triage action) just
+          # set, and acting on a stale list is how a "conflict" gets reported
+          # against a label that agrees.
+          gh issue view "$NUMBER" -R "$REPO" --json title,body,labels \
+            | jq --argjson n "$NUMBER" \
+                '{kind:"issue", number:$n, title:.title, body:.body,
+                  labels:[.labels[].name]}' > subject.json || exit 2
+
+          rc=0
+          node scripts/check-issue-classification-labels.ts subject.json --json \
+            > decisions.json || rc=$?
+          [ "$rc" = "0" ] || [ "$rc" = "1" ] || { cat decisions.json; exit "$rc"; }
+
+          jq -r '.decisions[] | "\(.field): body says \(.stated) -> \(.label) [\(.action)]"' \
+            decisions.json
+
+          add=$(jq -r '.apply[]' decisions.json)
+          if [ -n "$add" ]; then
+            echo "Applying: $(printf '%s' "$add" | tr '\n' ' ')"
+            # A JSON payload rather than repeated `-f labels[]=...`, matching
+            # pr-inherit-issue-labels.yml: label names in this repo contain
+            # spaces, and word-splitting a built-up argument string drops them
+            # mid-name. ADD-ONLY -- nothing is ever removed.
+            printf '%s\n' "$add" \
+              | jq -R -s '{labels: (split("\n") | map(select(length > 0)))}' \
+              | gh api --method POST "repos/$REPO/issues/$NUMBER/labels" --input - --silent
+          fi
+
+          if [ "$rc" = "1" ]; then
+            # A contradiction. Report it; never overwrite a label a human chose.
+            # The comment body is a MODE of the same script, so the message and
+            # the verdict cannot drift apart.
+            node scripts/check-issue-classification-labels.ts subject.json --comment \
+              > conflict.md || true
+            cat conflict.md
+            if [ "$ACTION" = "opened" ]; then
+              gh api "repos/$REPO/issues/$NUMBER/comments" -F body=@conflict.md --silent
+            fi
+            exit 1
+          fi
+
+  # --- 4. Dup-check line ----------------------------------------------------
+  # STRICTLY WEAKER than the hook it replaces, and that is stated rather than
+  # hidden: the hook refused `gh issue create`, so a duplicate was never minted.
+  # By the time this runs the issue exists and is already counted, so the
+  # comment has to ask for a fold-and-close rather than a fold-instead-of-file.
+  #
+  # `opened` ONLY, mirroring the hook: `gh issue edit` and `gh issue comment`
+  # were deliberately not gated, because folding a finding into an existing
+  # issue is the outcome this steers toward and taxing it would penalise the
+  # cheap path while leaving the costly one free.
+  dup-check:
+    name: Dup-check line
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    # The default timeout is 360 minutes and every one of these jobs is spawned
+    # by an event any GitHub user can raise, so each carries a cap
+    # (go-to-k/cdkd#2717 review). The comment-volume argument applies to
+    # `english-issue` alone -- see there.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        with:
+          node-version: "24"
+          cache: false
+          run-install: false
+
+      - name: Require a Dup-check line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          # Passed so the SCRIPT decides what mints an issue, not only the `if:`
+          # above. Both encoded the rule until the go-to-k/cdkd#2717 test review:
+          # `isMintEvent` was exported and asserted in four directions with no
+          # call site, so its cases passed whatever this workflow did, while the
+          # rule that actually ran lived in an expression no test reads. The
+          # `if:` stays as a cheap filter that avoids spawning a runner; the
+          # script is the authority, and it is the half under test.
+          EVENT_NAME: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          set -uo pipefail
+          gh issue view "$NUMBER" -R "$REPO" --json title,body,labels \
+            | jq --argjson n "$NUMBER" \
+                '{kind:"issue", number:$n, title:.title, body:.body,
+                  labels:[.labels[].name]}' > subject.json || exit 2
+
+          rc=0
+          node scripts/check-issue-dup-check.ts subject.json > comment.md || rc=$?
+          cat comment.md
+          [ "$rc" = "0" ] && exit 0
+          [ "$rc" = "1" ] || exit "$rc"
+          gh api "repos/$REPO/issues/$NUMBER/comments" -F body=@comment.md --silent
+          exit 1

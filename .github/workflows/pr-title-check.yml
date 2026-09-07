@@ -1,5 +1,27 @@
 name: PR Title Check
 
+# TWO checks on the PR title, both of which exist because `gh pr merge --squash`
+# uses the TITLE as the squashed commit subject and release-please parses that
+# subject on `main` to decide the version bump and the CHANGELOG entry.
+#
+#   1. `shape`  — the title is a conventional commit of a known type.
+#                 (pre-existing job, unchanged)
+#   2. `prefix-scope` — a release-triggering type (`feat:` / `fix:`) is backed by
+#                 at least one changed file under `src/**`. This is the CI port of
+#                 the deleted `.claude/hooks/pr-title-prefix-scope-gate.sh` and
+#                 `.claude/hooks/commit-prefix-scope-gate.sh`; the full rationale,
+#                 including why ONE title check subsumes the per-commit one under
+#                 this repo's squash-only settings, is in
+#                 scripts/check-pr-title-prefix-scope.ts.
+#
+# The trigger list covers every event that can invalidate a verdict, which is the
+# thing the PreToolUse hooks could not do — they fired once, at `gh pr create`:
+#   opened      — the PR appears
+#   edited      — the title changed (including from the web UI, which never
+#                 touches `gh` and so was invisible to the hook)
+#   synchronize — a new push changed the DIFF, so a title that was correct when
+#                 the PR opened can stop being correct without anyone retyping it
+#   reopened    — the verdict has to stand again on a PR brought back
 on:
   pull_request:
     types:
@@ -10,6 +32,10 @@ on:
 
 permissions:
   pull-requests: write
+
+concurrency:
+  group: pr-title-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -33,3 +59,105 @@ jobs:
             chore
             revert
           requireScope: false
+
+  prefix-scope:
+    runs-on: ubuntu-latest
+    # Narrower than the workflow-level block: this job only READS. Nothing from
+    # the head is executed: the checkout is pinned to the BASE commit (see the
+    # step below), and the two PR-controlled inputs (title, file list) are
+    # fetched server-side with `gh` and passed as data, never interpolated into
+    # a shell.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # BASE, not the merge ref. The default checkout resolves to
+      # `refs/pull/N/merge`, which CONTAINS the head's copy of this job's own
+      # checker -- so a fork PR could replace `scripts/check-pr-title-prefix-scope.ts`
+      # with `process.exit(0)` and pass its own check. The comment above used to
+      # claim nothing from the head is executed; that was factually wrong, and
+      # the security review of go-to-k/cdkd#2717 caught it. This job needs no
+      # head content at all: the file list comes from the API below.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # SAME-REPO PR -> the head; FORK PR -> the base.
+          #
+          # Two requirements pull opposite ways and both are real. TRUST: a fork
+          # PR must not supply the checker that judges it -- edit the script to
+          # `process.exit(0)`, or add your own file to the allow-list, and every
+          # required check reports green while the violation ships. BOOTSTRAP:
+          # pinning base unconditionally means the PR that ADDS a checker runs a
+          # base that does not contain it, so the job dies with
+          # ERR_MODULE_NOT_FOUND and can never go green -- which would also red
+          # every future PR that adds or renames one.
+          #
+          # Fork-ness resolves both: a same-repo branch is pushed by someone who
+          # already has write access, so taking the checker from the head grants
+          # them nothing they do not have; a fork author has no such access, and
+          # for them the base copy is the only trustworthy one. The CONTENT under
+          # test always comes from `$HEAD_SHA` inside the scripts either way, so
+          # this decides only WHICH CHECKER runs, never WHAT is checked.
+          #
+          # Both halves were review findings on go-to-k/cdkd#2717: the security
+          # pass caught the head checkout, and the fix for it introduced the
+          # bootstrap failure the code pass then caught.
+          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository
+            && github.event.pull_request.head.sha
+            || github.event.pull_request.base.sha }}
+
+      # Node 24 strips type annotations, so `node scripts/*.ts` runs directly
+      # (CLAUDE.md -> Node.js Version). The check imports node builtins only, so
+      # `run-install: false` and no cache: there is nothing to install and no
+      # lockfile to key a cache on.
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        with:
+          node-version: "24"
+          cache: false
+          run-install: false
+
+      # The changed-file list is the 3-dot diff (`origin/main...HEAD`) — what the
+      # branch ADDS over the merge base. `pulls/{n}/files` is exactly that set:
+      # the same one `gh pr diff` and the "Files changed" tab show, and the one
+      # the squash commit ships. Taken from the API rather than from a local
+      # `git diff` on purpose — `actions/checkout` fetches depth 1 by default, so
+      # a local 3-dot diff would need the full history refetched to be correct,
+      # and a WRONG file list here fails open (a diff that looks empty passes).
+      # `--paginate` because the endpoint pages at 100 and a truncated list is
+      # the same fail-open.
+      - name: "feat:/fix: title must be backed by a src/** change"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+            --jq '.[].filename' > changed-files.txt
+          echo "Changed files ($(grep -c . changed-files.txt || true)):"
+          cat changed-files.txt
+          node scripts/check-pr-title-prefix-scope.ts --files-from changed-files.txt
+
+      # The premise that let the per-commit gate be deleted, asserted rather than
+      # assumed. These settings live in the GitHub UI, outside the repo: flipping
+      # `squash_merge_commit_title` to COMMIT_OR_PR_TITLE, or the message to
+      # COMMIT_MESSAGES, or re-enabling merge/rebase, silently puts branch commit
+      # subjects back in front of release-please where nothing checks them.
+      #
+      # A transport failure warns instead of failing — `gh` being unreachable is
+      # not evidence the settings changed, and this arm must not red a PR for a
+      # network blip. The CHECK itself above never fails open this way.
+      - name: squash-only subsumption premise still holds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          if ! gh api "repos/$REPO" \
+            --jq '{squash_merge_commit_title, squash_merge_commit_message, allow_merge_commit, allow_rebase_merge, allow_squash_merge}' \
+            > repo-settings.json; then
+            echo "::warning::could not read repository merge settings; skipping the subsumption audit."
+            exit 0
+          fi
+          set -e
+          node scripts/check-pr-title-prefix-scope.ts --check-settings repo-settings.json

@@ -361,7 +361,8 @@ run_case "a clean body file the command does not rewrite still passes" 0 \
 
 # --- The CONTROLS for the fallback. The first attempt at go-to-k/cdkd#2397
 # scanned the WHOLE COMMAND when the body file could not be read, copying
-# `issue-dup-check-gate.sh`. That is safe for THAT gate and not for this one:
+# `issue-dup-check-gate.sh` (retired to CI by go-to-k/cdkd#2717). That was safe for THAT gate and is
+# not for this one:
 # it needs one anchored marker to be PRESENT, so extra text can only make it
 # pass, while this gate objects to content it FINDS, so extra text makes it
 # BLOCK. Both of these are ordinary commands and both went from 0 to 2 under
@@ -512,7 +513,8 @@ run_case "the >f&& redirect spelling is still extracted and blocked" 2 \
   "$(jq -cn --arg c "$AND_BAD" '{tool_input:{command:$c}}')"
 
 # --- HEREDOC TERMINATOR MATCHING follows bash, not intuition, and both halves
-# are load-bearing. The twin `gh-body-english-gate.test.sh` has carried these
+# are load-bearing. The twin `gh-body-english-gate.test.sh` (retired to CI by go-to-k/cdkd#2717)
+# carried these
 # two and this suite had none, while both hooks advertise the extraction as
 # deliberately identical -- so only the twin that HAS the case could detect a
 # regression in the line they share.
@@ -551,7 +553,8 @@ run_case "a tab-indented terminator DOES end a <<- body" 0 \
 # text. Widening the strip to `\s` ends the extraction at that line and leaves
 # the rest of the submitted body unscanned. Measured through the real hooks with
 # `s/^\t+//` widened to `s/^\s+//`: rc 2 -> rc 0 in both this gate and
-# gh-body-english-gate, and every other case in both suites stayed green.
+# gh-body-english-gate (retired to CI by go-to-k/cdkd#2717), and every other case in both suites
+# stayed green at the time of that measurement.
 SPACED="$TMPDIR_FIX/spaced-eof.md"
 SPACED_BAD="cat > $SPACED <<-EOF
 	# Title

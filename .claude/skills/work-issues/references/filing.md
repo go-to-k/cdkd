@@ -151,27 +151,14 @@ gh issue create -t 'fix(provider): ...' \
   --label severity:high --label effort:large
 ```
 
-**The path is LITERAL because a `$VAR` one cannot be filed at all.**
-`issue-dup-check-gate` reads the command TEXT at PreToolUse time, before any of
-it has run, and refuses a `--body-file` path containing `$` or a backtick
-outright: it cannot open such a file to look for the `Dup-check:` line, and it
-fails closed rather than guessing. Measured 2026-08-31 by driving the hook with
-each payload: the `B=$(mktemp)` + `--body-file "$B"` spelling this section used
-to print returns **rc=2 in all three repos** (cdkd, cdk-local, cdk-real-drift),
-so the body it so carefully writes is never filed; the literal-path form above
-returns **rc=0** from every gate that sees it — `issue-dup-check-gate`,
-`issue-classification-label-gate`, and cdkd's `gh-body-english-gate` and
-`gated-command-preamble-gate`. Deleting just the `Dup-check:` line from the
-literal form returns rc=2 again, so that rc=0 is the gate passing a good
-command, not the gate failing to look.
-
-**The FOLD recipe above keeps `mktemp`, and that asymmetry is the gate set, not
-taste.** Folding runs `gh issue edit`, which `issue-dup-check-gate` does not
-match at all, and the classification gate falls back to reading the command
-text when a path is unresolvable — measured rc=0 from both, same day, same
-driver. Folding also NEEDS a unique file it reads back, which a hand-written
-name cannot promise; minting only needs a name no concurrent lane will reuse,
-which the substituted slug gives.
+**The path no longer has to be LITERAL** (go-to-k/cdkd#2717). `issue-dup-check-gate`
+refused a `--body-file` path holding a `$` or backtick — it could not open one
+to look for the `Dup-check:` line and failed closed (measured 2026-08-31:
+`B=$(mktemp)` + `--body-file "$B"` was rc=2 in all three repos). That gate is
+retired to CI and the restriction went with it: re-measured 2026-09-07, all
+four surviving body-reading gates return **rc=0** for the `$VAR` form, so
+`mktemp` is safe on the mint path too. An old transcript's rc=2 was true of a
+gate set that no longer exists — do not re-derive the rule from it.
 
 **The `&&` on the `cat` line is the same load-bearing chaining the FOLD recipe
 uses**, one scale down: an unchained `cat` that fails (unwritable path, full
@@ -201,11 +188,14 @@ once the body states the line THAT is the value. Only these two get labels:
 `Session-fit` is re-decided at claim (a stale label is worse than none), and
 `Estimate` is free-form. The same applies at §4's CLAIM, where an old packed
 body is rewritten into the four-line shape — carry `--add-label` on that
-`gh issue edit`. Enforced by
-`.claude/hooks/issue-classification-label-gate.sh`, which refuses a
-`gh issue create` / `gh issue edit` whose body states a value the labels do
-not carry; `gh issue comment` is not gated. A folded checklist row carries no
-classification of its own — write the severity into the row's text.
+`gh issue edit`. Checked in CI (`.github/workflows/`, go-to-k/cdkd#2717) rather
+than by a PreToolUse refusal: the workflow reads the body on `issues`
+`opened` / `edited` and APPLIES the matching label, which is strictly more than
+the retired `issue-classification-label-gate.sh` could do — that one could only
+refuse. It reports instead of applying only when the body and an existing label
+CONTRADICT, since overwriting a deliberate human label is the one case where
+applying is wrong. A folded checklist row carries no classification of its own
+— write the severity into the row's text.
 
 **This is not a filing threshold, and it must never be used as one.** §10-0 is
 explicit that `filed <= closed` is not a target and an unfiled finding is
@@ -214,13 +204,15 @@ written down, only WHERE. An open issue then counts one unresolved root cause
 instead of one unfixed site — root causes are bounded by the codebase, sites
 by types x properties, so that is the number that can converge.
 
-Enforced by `.claude/hooks/issue-dup-check-gate.sh`, which refuses
-`gh issue create` without the `Dup-check:` line — the same refusal covers
-`gh api repos/<o>/<r>/issues`, which mints an issue through the REST verb.
-`gh issue edit` and `gh issue comment` are deliberately NOT gated BY THAT
-GATE: folding is the outcome it steers toward, so taxing the cheap path would
-defeat it (the classification-label gate makes the opposite call about `edit`
-for the opposite reason; the two are independent). Folding is not CHEAPER than
+Checked in CI (go-to-k/cdkd#2717): the workflow reads a newly opened issue and
+comments when the `Dup-check:` line is missing. **This is strictly weaker than
+the refusal it replaces, and the trade is recorded rather than hidden** — the
+retired `issue-dup-check-gate.sh` stopped the issue from existing, while CI can
+only ask for the line once it does. It was accepted because a duplicate issue
+closes cleanly and leaves no residue on anyone else's artifact, which is the
+criterion go-to-k/cdkd#2717 settled on for what may block at PreToolUse. The
+threat model is unchanged and is what actually carries the rule: it is
+FORGETTING the search, not defeating a gate. Folding is not CHEAPER than
 minting (one command vs three); the gate makes minting non-free rather than
 folding cheap. Two consequences: a folded row carries no `Session-fit` /
 `Severity`, so §3's ranking cannot see it, and `gh issue edit` passes through

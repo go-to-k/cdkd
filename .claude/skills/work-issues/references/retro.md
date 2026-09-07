@@ -263,8 +263,8 @@ B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
 git fetch origin && git switch -c "$B" origin/main
 ```
 
-- `chore:` prefix — `.claude/**` is not `src/**`; `commit-prefix-scope-gate`
-  blocks `fix:` / `feat:` here.
+- `chore:` prefix — `.claude/**` is not `src/**`; CI refuses a `fix:` / `feat:`
+  PR TITLE here (go-to-k/cdkd#2717).
 - Scope does not exempt you from the markers (CLAUDE.md, "Before every
   commit") — a fresh worktree starts with none, and `/verify-pr` sets all
   three in one pass; run it before the commit. A

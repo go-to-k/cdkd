@@ -289,16 +289,19 @@ Run each check and report pass/fail:
     - **Auto-close audit**: read the PR body; for every `(#N)` parens-form
       reference adjacent to a close keyword, the merge will NOT auto-close —
       rewrite to parens-free `Closes #N` or add a manual `gh issue close <N>`
-      step. (`closes-paren-form-gate.sh` already blocks the merge; this
-      catches it before the attempt.)
+      step. This is now the ONLY check for it: go-to-k/cdkd#2717 retired
+      `closes-paren-form-gate.sh`, whose harm (an issue left open) is one
+      query to detect and one command to fix after the fact.)
 
 11. **PR title + body freshness** (skip if no PR exists yet — `/create-pr`
     writes them from scratch)
     - Follow-up commits routinely stale both. **Title**: confirm it describes
       the union of commits; update via
-      `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."`
-      (NOT `gh pr edit --title`, which fails silently — see
-      `gh-pr-edit-deprecation-gate.sh`).
+      `gh pr edit --title "..."`, or the equivalent
+      `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."`.
+      (`gh pr edit` used to fail SILENTLY on a Projects-classic GraphQL
+      deprecation, and a gate blocked it. MEASURED 2026-09-07 on gh 2.92.0 against a live PR: `gh pr edit --body` exited 0 AND the body was actually replaced. The Projects-classic GraphQL deprecation that made it fail silently is FIXED upstream, so
+      both spellings work and the gate is gone.)
     - **Body**: if the PR has >1 commit, the initial body is almost certainly
       stale. Compare `gh pr view <PR> --json body -q .body` against the final
       diff; flag bullets describing reverted behavior or removed checks,
@@ -313,8 +316,9 @@ Run each check and report pass/fail:
      EOF
      gh api repos/{owner}/{repo}/pulls/{number} -X PATCH --field "body=@/tmp/pr-body.md" -q '.html_url'
      ```
-     (`gh pr edit --body` may fail with the Projects-classic deprecation —
-     use the `gh api PATCH` form.) Verify with
+     (Either spelling works since the deprecation was fixed upstream; the
+     `gh api PATCH` form is kept here because `-F body=@<file>` reads the file
+     verbatim, which sidesteps shell-escaping a body full of backticks.) Verify with
      `gh pr view <PR> --json body -q .body | head -5`.
 
 ## Output
