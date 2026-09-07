@@ -97,20 +97,27 @@
  * - A `Ref` to a `NoEcho` PARAMETER substituted into an export name is recorded
  *   nowhere: `NoEcho` is outside cdkd's dynamic-reference secret model
  *   entirely, so nothing here can see it.
- * - `evaluateConditions` runs BEFORE any bag is built, in both the deploy engine
- *   and `cdkd scrub`, and records into a map its caller discards while still
- *   WARMING the resolver's dynamic-reference cache — so a PINNED reference
- *   (`secretsmanager`, or a definitive `SecureString`) first reached from a
- *   `Conditions` entry is invisible to every later bag. Narrowed by #1933: an
- *   UNPINNED ssm value is not cached, so it is no longer reachable this way,
- *   and a pinned one still carries its verdict on the cache entry — the residual
- *   is now only that the conditions pass's own recorded VALUES are discarded. Scoped to that ONE caller: `resolveParameters` routes through
- *   `resolveSSMParameter`, not `resolveDynamicReferences`, so it warms no cache
- *   (an earlier revision of this note claimed otherwise). Merging a conditions
- *   map into an outputs bag would make a condition's secret a redaction NEEDLE
- *   over outputs — the cross-contamination the per-bag design exists to
- *   prevent — so the fix belongs on the resolver's cache-hit arm (i.e. with
- *   #1901's classification), not here. Named rather than closed.
+ * - In the DEPLOY ENGINE, `evaluateConditions` runs before any bag is built and
+ *   records into a map that caller discards, while still WARMING the resolver's
+ *   dynamic-reference cache — so a PINNED reference (`secretsmanager`, or a
+ *   definitive `SecureString`) first reached from a `Conditions` entry is
+ *   invisible to every later bag. Narrowed by #1933: an UNPINNED ssm value is
+ *   not cached, so it is no longer reachable this way, and a pinned one still
+ *   carries its verdict on the cache entry — the residual is now only that the
+ *   conditions pass's own recorded VALUES are discarded. Scoped to that ONE
+ *   caller: `resolveParameters` routes through `resolveSSMParameter`, not
+ *   `resolveDynamicReferences`, so it warms no cache (an earlier revision of
+ *   this note claimed otherwise). The fix belongs on the resolver's cache-hit
+ *   arm (i.e. with #1901's classification), not here. Named rather than closed.
+ *
+ *   **NOT true of `cdkd scrub`, and an earlier revision of this bullet said it
+ *   was** (corrected with issue #2748). `scrub.ts` hands `evaluateConditions`
+ *   its OUTPUTS bag deliberately, so there a condition's secret IS a redaction
+ *   needle over outputs — over-redaction of state, which is scrub's purpose,
+ *   not the cross-contamination this bullet warns about. Since #2748,
+ *   `evaluateConditions` invents a PRIVATE map only when its caller brought
+ *   none, so what must not leak is the map this function INVENTS; a caller's
+ *   own bag stays that caller's choice.
  * - The refusal errs the other way for `Fn::Select` / `Fn::Split`, whose
  *   DISCARDED elements are still resolved: a secret in an unused element lands
  *   in the name's map and suppresses a working export. Fail-safe and warned, so

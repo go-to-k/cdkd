@@ -123,23 +123,20 @@ function ctx(template: CloudFormationTemplate, overrides: Partial<ResolverContex
 }
 
 /**
- * Every WARN / INFO / ERROR line this pass emitted, joined.
+ * EVERY line this pass emitted, at every level, joined.
  *
- * DEBUG IS DELIBERATELY EXCLUDED, and the exclusion is the point rather than a
- * convenience. `resolveSecretsManagerReference`'s
- * `Resolving dynamic reference: secretsmanager:<id>:SecretString:<key>` echo
- * prints the ASSEMBLED key -- the resolved password -- and on this base it is
- * still unmasked. That is issue #2728's site, not this one's: it is a
- * `logger.debug`, so it needs `--verbose` to be seen, and the fix for it is in
- * flight on go-to-k/cdkd#2742. Widening this negative to `debug` would make
- * this file fail on `main` and pass only once ANOTHER pull request merges,
- * which is a cross-PR dependency dressed up as coverage.
- *
- * What this lane owns is the DEFAULT-verbosity sink, so that is what the
- * negative covers. When go-to-k/cdkd#2742 lands, add `mockLoggerDebug` here.
+ * `debug` IS included, and that is the strongest half of these negatives. The
+ * resolver's `Resolving dynamic reference: secretsmanager:<id>:SecretString:<key>`
+ * echo prints the ASSEMBLED key -- the resolved password -- and issue #2728
+ * masked it (further down this same file). An earlier revision of this helper
+ * excluded `debug` because that fix was still in flight on another PR, and
+ * widening the negative then would have made this file pass only once that PR
+ * merged. It has, so the exclusion is gone: the mask now covers a
+ * `--verbose` run too, and these cases prove it, because the private bag this
+ * suite exercises is the context those echoes are masked against.
  */
-function nonDebugLogLines(): string {
-  const spies = [mockLoggerWarn, mockLoggerInfo, mockLoggerError];
+function allLogLines(): string {
+  const spies = [mockLoggerWarn, mockLoggerInfo, mockLoggerError, mockLoggerDebug];
   return spies
     .flatMap((spy) => (spy.mock.calls as unknown[][]).map((call) => call.map(String).join(' ')))
     .join('\n');
@@ -170,8 +167,8 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     expect(conditionWarns()[0]).toBe(
       `Failed to evaluate condition Leak: Dynamic reference: key '***' not found in secret '${SECRET_ID}', assuming false`
     );
-    // ...and nowhere else a default-verbosity run would show.
-    expect(nonDebugLogLines()).not.toContain(PASSWORD);
+    // ...and nowhere else, at ANY level.
+    expect(allLogLines()).not.toContain(PASSWORD);
     // Behaviour preserved: a failed condition is still downgraded to false.
     expect(conditions['Leak']).toBe(false);
   });
@@ -206,7 +203,7 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
       inheritedSecrets: new Map([[inheritedOnly, '{{resolve:ssm-secure:/parent/param}}']]) as RecordedSecretValues,
     });
 
-    await resolver.evaluateConditions(context);
+    const conditions = await resolver.evaluateConditions(context);
 
     expect(conditionWarns()).toHaveLength(1);
     // The pass map stayed empty, so only the inherited bag could have masked it.
@@ -214,7 +211,9 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     expect(conditionWarns()[0]).toBe(
       `Failed to evaluate condition Inherited: Dynamic reference: key '***' not found in secret '${SECRET_ID}', assuming false`
     );
-    expect(nonDebugLogLines()).not.toContain(inheritedOnly);
+    expect(allLogLines()).not.toContain(inheritedOnly);
+    // Behaviour, like every sibling case: a failed condition is still false.
+    expect(conditions['Inherited']).toBe(false);
   });
 
   it('leaves a message that names nothing recorded exactly as it was', async () => {
@@ -269,10 +268,11 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     expect(conditionWarns()[0]).toBe(
       `Failed to evaluate condition Leak: Dynamic reference: key '***' not found in secret '${SECRET_ID}', assuming false`
     );
-    expect(nonDebugLogLines()).not.toContain(PASSWORD);
-    // The private bag must NOT be handed back: `outputs-export-alias.ts` records
-    // why a conditions bag must not reach an outputs bag. The caller's context
-    // is untouched, so nothing downstream inherits a condition's needles.
+    expect(allLogLines()).not.toContain(PASSWORD);
+    // The map this function INVENTS must not be handed back. (Not the wider
+    // claim an earlier revision made here -- `cdkd scrub` deliberately hands
+    // this pass its OUTPUTS bag, so a caller's own bag reaching outputs is that
+    // caller's choice.) The caller's context is untouched below.
     expect((context as { recordedSecretValues?: unknown }).recordedSecretValues).toBeUndefined();
     expect(conditions['Leak']).toBe(false);
   });
@@ -319,7 +319,7 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     expect(conditionWarns()[0]).toBe(
       `Failed to evaluate condition InheritedOnly: Dynamic reference: key '***' not found in secret '${SECRET_ID}', assuming false`
     );
-    expect(nonDebugLogLines()).not.toContain(inheritedOnly);
+    expect(allLogLines()).not.toContain(inheritedOnly);
     // The private map went into the spread copy, not the caller's object.
     expect((context as { recordedSecretValues?: unknown }).recordedSecretValues).toBeUndefined();
     expect(conditions['InheritedOnly']).toBe(false);
@@ -341,7 +341,7 @@ describe('evaluateConditions masks the resolver error it renders (issue #2748)',
     expect(conditionWarns()[0]).toBe(
       'Failed to evaluate condition Leak: raw rejection naming ***, assuming false'
     );
-    expect(nonDebugLogLines()).not.toContain(PASSWORD);
+    expect(allLogLines()).not.toContain(PASSWORD);
     expect(conditions['Leak']).toBe(false);
   });
 });

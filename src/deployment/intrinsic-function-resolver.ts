@@ -2643,9 +2643,9 @@ export class IntrinsicFunctionResolver {
         // lookup fail NAMING that plaintext (`key '<password>' not found in
         // secret '<id>'`, thrown unmasked by construction because every other
         // consumer of that throw masks at ITS own boundary). Same class as the
-        // lookup echoes issue #2728 covers (still OPEN; its fix is in flight),
-        // and this sink was missed there because it lives in a different method
-        // and renders ANY error, not only a lookup echo. Residual: a plaintext
+        // lookup echoes issue #2728 closed further down this file, and this sink
+        // was missed there because it lives in a different method and renders
+        // ANY error, not only a lookup echo. Residual: a plaintext
         // shorter than `MIN_NEEDLE_LENGTH` (4) is embedded here rather than
         // whole, so no needle matches it and it still prints.
         this.logger.warn(
