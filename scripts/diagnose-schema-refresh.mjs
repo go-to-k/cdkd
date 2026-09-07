@@ -36,18 +36,18 @@
  * Usage (from the repo root, AFTER the refresh has written the fixtures):
  *
  *   node scripts/diagnose-schema-refresh.mjs \
- *     [--nested-key-log <file>] [--nested-key-rc <status>] \\
- *     [--property-coverage-rc <status>] [--skipped-log <file>] > body.md
+ *     [--nested-key-log <file>] [--nested-key-rc <status>] \
+ *     [--failed-checks <a,b>] [--skipped-log <file>] > body.md
  *
  * `--nested-key-log` is the captured output of
  * `vp run audit:nested-key-coverage:check` and `--nested-key-rc` its exit
  * status. The status is what tells a checker that FAILED silently from one that
  * found nothing, so the workflow always passes it; omitted, it is assumed to be
  * 0, which is the right default for a by-hand run against a checker you just
- * watched succeed. `--property-coverage-rc` is the same for
- * `vp test run property-coverage`, whose red is reached by an ordinary schema
- * ADDITION re-adding a property some provider wrote off.
- * `--skipped-log` is the tail of the refresh's own output,
+ * watched succeed. `--failed-checks` is the comma-separated list of CI checks
+ * that came back red — every one of them fixture-driven, and every one reached
+ * by an ordinary schema ADDITION. `--skipped-log` is the tail of the refresh's
+ * own output,
  * listing the types the public bundle does not carry.
  *
  * Emits Markdown on stdout and always exits 0 — a diagnosis that fails must
@@ -1414,8 +1414,43 @@ export function loadDeclaredProperties(repoRoot = REPO_ROOT) {
   return parseDeclaredProperties(readFileSync(generatedPath, 'utf8'));
 }
 
+/**
+ * Every flag this script accepts, in the order the synopsis lists them.
+ *
+ * EXPORTED so the header docblock and the argument readers cannot drift apart:
+ * the synopsis documented `--property-coverage-rc` for two rounds after
+ * `--failed-checks` replaced it, and with no unknown-flag guard, following the
+ * script's own documented usage produced
+ * "Nothing in this refresh needs a decision — additions only" over a red
+ * `property-coverage` — the verdict six rounds went into closing, reached
+ * through the documentation.
+ */
+export const KNOWN_FLAGS = [
+  '--nested-key-log',
+  '--nested-key-rc',
+  '--failed-checks',
+  '--skipped-log',
+];
+
 function main() {
   const args = process.argv.slice(2);
+
+  // An unrecognised flag must NOT silently fall through: every reader's
+  // absent-flag arm is the permissive one (`''` for the logs, "nothing failed"
+  // for the check list), so a typo, a retired flag or a single-dash spelling
+  // all render as clean. Same guard, and the same reasoning, as the sibling
+  // producer `refresh-cfn-schemas.mjs` carries.
+  const unknown = args.filter(
+    (a) =>
+      a.startsWith('-') &&
+      !KNOWN_FLAGS.some((flag) => a === flag || a.startsWith(`${flag}=`))
+  );
+  if (unknown.length > 0) {
+    throw new Error(
+      `unrecognized flag(s): ${unknown.join(', ')} — known flags are ${KNOWN_FLAGS.join(', ')}. ` +
+        'Refusing to report from an invocation this script did not understand.'
+    );
+  }
   // The third reader, and it was the last one still silent on both counts: a
   // flag with no value AND a path that does not exist both returned `''`.
   // `--nested-key-log` is rescued by its `--nested-key-rc` companion, but

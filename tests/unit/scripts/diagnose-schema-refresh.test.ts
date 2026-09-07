@@ -42,6 +42,7 @@ import {
   renderLiteral,
   buildSdkLag,
   CHECK_GUIDANCE,
+  KNOWN_FLAGS,
   classifyGitShowFailure,
   collectFixtureDeltas,
   loadDeclaredProperties,
@@ -1591,8 +1592,11 @@ describe('the script end to end', () => {
       '--failed-checks',
       '-property-coverage',
     ]);
-    expect(md).toContain('was given with no value');
-    expect(md).not.toContain('-property-coverage');
+    // Refused — by the unknown-flag guard, which sees the token first and names
+    // it. Before either guard existed this fabricated a check rendered as
+    // `#### \`-property-coverage\``.
+    expect(md).toContain('unrecognized flag');
+    expect(md).not.toContain('#### ');
   }, 60_000);
 
   it('refuses a dash-leading value in the GLUED spelling too', () => {
@@ -1606,6 +1610,15 @@ describe('the script end to end', () => {
       expect(md, `accepted ${spelling}`).toContain('was given with no value');
       expect(md).not.toContain('no guidance');
     }
+    // The SPACE form now trips the unknown-flag guard first, which is the
+    // stronger refusal — it names the offending token rather than the flag
+    // that swallowed it. Either refusal is correct; neither may render clean.
+    const spaced = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--failed-checks',
+      '-property-coverage',
+    ]);
+    expect(spaced).toContain('unrecognized flag');
+    expect(spaced).not.toContain('no guidance');
   }, 60_000);
 
   it('does not answer a check name inherited from Object.prototype', () => {
@@ -1631,6 +1644,27 @@ describe('the script end to end', () => {
       tmpdir(),
     ]);
     expect(md).toContain('which is a directory');
+  }, 60_000);
+
+  it('refuses an unrecognised flag instead of rendering a clean verdict', () => {
+    // Every reader's absent-flag arm is the permissive one, so a typo, a
+    // retired flag and a single-dash spelling all rendered as clean.
+    for (const bad of ['--property-coverage-rc', '--failed-check', '-failed-checks']) {
+      const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [bad, 'x']);
+      expect(md, `accepted ${bad}`).toContain('unrecognized flag');
+      expect(md).not.toContain('Nothing in this refresh needs a decision');
+    }
+  }, 60_000);
+
+  it('accepts every flag it documents, in both spellings', () => {
+    // The inverse: a guard that refused a REAL flag would be caught here
+    // rather than in the workflow.
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+      '--failed-checks=property-coverage',
+      '--skipped-log',
+      '/dev/null',
+    ]);
+    expect(md).not.toContain('unrecognized flag');
   }, 60_000);
 
   it('renders a case-divergence without asking npm anything', () => {
@@ -1885,4 +1919,40 @@ describe('the module\u2019s own doc comments', () => {
     // file it never parsed.
     expect(lines.filter((l) => l === ' */').length).toBeGreaterThan(20);
   });
+});
+
+describe('the script\u2019s own synopsis', () => {
+  const SRC = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+  const header = SRC.slice(0, SRC.indexOf(' */'));
+
+  it('documents exactly the flags it accepts', () => {
+    // It documented `--property-coverage-rc` for two rounds after
+    // `--failed-checks` replaced it, and named `--failed-checks` nowhere — so
+    // following the script's OWN usage produced "additions only" over a red
+    // check, the verdict six rounds went into closing, reached through the
+    // documentation. Both directions, so a new flag cannot ship undocumented
+    // and a retired one cannot linger.
+    const documented = [...header.matchAll(/`?(--[a-z][a-z-]*)`?/g)].map((m) => m[1]!);
+    expect(new Set(documented), 'the synopsis and the accepted set disagree').toEqual(
+      new Set(KNOWN_FLAGS)
+    );
+  });
+
+  it('has a synopsis that would actually paste', () => {
+    // Line 39 ended `\\`, which terminates the command in bash and passes a
+    // literal backslash — the same class the guidance's command block is
+    // fenced for, one file over and unfenced.
+    const lines = header.split('\n');
+    const start = lines.findIndex((l) => l.includes('node scripts/diagnose-schema-refresh.mjs'));
+    expect(start, 'the synopsis no longer shows the invocation').toBeGreaterThan(-1);
+    for (let i = start; i < lines.length; i++) {
+      const body = lines[i]!.replace(/^\s*\*\s?/, '');
+      if (body.trim() === '') break;
+      const continues = body.endsWith('\\');
+      if (continues) {
+        expect(body.endsWith('\\\\'), `line ${i + 1} ends in a DOUBLED backslash`).toBe(false);
+      }
+    }
+  });
+
 });
