@@ -609,6 +609,13 @@ CLEAN tree is the normal case on a re-run after a rebase, where a bare
 refuses the commit, unchained execution continues, the push sends nothing, and
 the bind records the OLD head — a green for work that was never committed.
 
+The re-bind after a rebase is written out as the two COMMANDS rather than cited
+as "the last N lines". A count into a wrapped `&&` block goes stale the moment
+anyone reflows it, and the miscount executes: `> <sentinel> && markgate set
+verify-pr` is a bare redirect bash accepts, which TRUNCATES the sentinel to zero
+bytes, exits 0, and lets the marker be set — a block whose cause is off-screen.
+Measured (go-to-k/cdkd#2686 round-5 review).
+
 The sentinel is written from the repo TOP (`$(git rev-parse --show-toplevel)/…`):
 the cwd-relative spelling run from a subdirectory writes a file the hook never
 reads, and `.gitignore`'s entry has no leading slash, so the stray copy is

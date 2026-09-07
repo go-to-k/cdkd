@@ -370,20 +370,15 @@ After all checks pass, record THREE markers via
 of `/check` and `/check-docs`, so its success implies all three. Use
 `mise exec` (cdkd pins markgate via mise):
 
-**Order matters and is not arbitrary** — the `verify-pr` marker is bound to a
-COMMIT, and `check-gate` guards the commit. Both directions are explained in
-[.claude/rules/hooks.md](../../rules/hooks.md).
-
 ```bash
 # 1. Children FIRST: `check-gate` blocks the commit below unless both are
 #    fresh, and step 2 exists for runs that changed files in their scope.
 mise exec -- markgate set check
 mise exec -- markgate set docs
 
-# 2. Land the changes, then 3. BIND (the last two lines). Every `&&`, the
-#    `||`, `--verify` and `--show-toplevel` are load-bearing; hooks.md says
-#    why. Do not unchain this. After a rebase the push needs
-#    `--force-with-lease`.
+# 2. Land the changes, then 3. BIND. Every `&&`, the `||`, `--verify` and
+#    `--show-toplevel` are load-bearing; hooks.md says why. Do not unchain
+#    this. After a rebase the push needs `--force-with-lease`.
 git add -A \
   && { git diff --cached --quiet || git commit -m "..."; } \
   && git push \
@@ -392,17 +387,25 @@ git add -A \
   && mise exec -- markgate set verify-pr
 ```
 
-**Anything that moves HEAD afterwards invalidates the binding, by design** — a
-rebase or force-push before merge (which `ship.md` prescribes) needs the last
-two lines above repeated once the tree is final: the sentinel write and
-`markgate set verify-pr`, NOT the whole chain, whose plain `git push` is
-rejected non-fast-forward on exactly that path.
+**Anything that moves HEAD afterwards invalidates the binding, by design.** After
+a rebase or force-push (which `ship.md` prescribes), repeat the BIND -- still
+chained -- once the tree is final:
 
-**The sentinel is the binding, and `markgate verify` does not enforce it**
-(issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). Why, and why it is
-bound to the local HEAD rather than the PR's, is in
+```bash
+git rev-parse --verify HEAD > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha" \
+  && mise exec -- markgate set verify-pr
+```
+
+That suffices only if the tree is UNCHANGED; with changes to commit, re-run the
+full chain with `--force-with-lease`. hooks.md: why it is named, not counted.
+
+**The sentinel is the binding, `markgate verify` does not enforce it, and the
+ORDER above is forced from two directions** — the marker is bound to a COMMIT,
+and `check-gate` guards that commit. All of it, including why the binding is to
+the local HEAD rather than the PR's, is in
 [.claude/rules/hooks.md](../../rules/hooks.md) → "Two gates bind their marker to
-a COMMIT" — read it before touching either half.
+a COMMIT" (issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). Read it
+before touching either half.
 
 The `verify-pr` marker is what `.claude/hooks/verify-pr-gate.sh` consults for
 `gh pr create` / `gh pr merge`. It is settable ONLY by this skill — setting it
