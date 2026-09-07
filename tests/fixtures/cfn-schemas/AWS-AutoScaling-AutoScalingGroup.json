@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AutoScaling::AutoScalingGroup",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-07",
   "properties": [
     "AutoScalingGroupARN",
     "AutoScalingGroupName",
@@ -92,6 +92,7 @@
       "BurstablePerformance",
       "Cpu",
       "CpuManufacturers",
+      "DistributionSegments",
       "ExcludedInstanceTypes",
       "ImageId",
       "InstanceFamily",
@@ -123,6 +124,7 @@
       "SpotInstancePools",
       "SpotMaxPrice",
       "SpotMaxPricePercentageOverLowestPrice",
+      "TargetCapacityTypes",
       "TotalLocalStorageGB",
       "VCpuCount",
       "Version",
@@ -188,6 +190,8 @@
     ],
     "MixedInstancesPolicy": [
       "InstancesDistribution",
+      "InstancesDistribution.DistributionSegments",
+      "InstancesDistribution.DistributionSegments.TargetCapacityTypes",
       "InstancesDistribution.OnDemandAllocationStrategy",
       "InstancesDistribution.OnDemandBaseCapacity",
       "InstancesDistribution.OnDemandPercentageAboveBaseCapacity",
@@ -402,6 +406,7 @@
     "InstancesDistribution": {
       "OnDemandAllocationStrategy": "scalar",
       "OnDemandBaseCapacity": "scalar",
+      "DistributionSegments": "array",
       "OnDemandPercentageAboveBaseCapacity": "scalar",
       "SpotInstancePools": "scalar",
       "SpotAllocationStrategy": "scalar",
@@ -478,6 +483,9 @@
     "CapacityReservationSpecification": {
       "CapacityReservationPreference": "scalar",
       "CapacityReservationTarget": "object"
+    },
+    "DistributionSegment": {
+      "TargetCapacityTypes": "array"
     }
   },
   "definitionRequired": {
@@ -523,6 +531,9 @@
     ],
     "CapacityReservationSpecification": [
       "CapacityReservationPreference"
+    ],
+    "DistributionSegment": [
+      "TargetCapacityTypes"
     ]
   }
 }

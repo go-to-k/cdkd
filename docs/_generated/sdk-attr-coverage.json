@@ -3,8 +3,8 @@
   "summary": {
     "classifiedCount": 134,
     "covered": 42,
-    "noArnAttr": 92,
-    "gap": 0,
+    "noArnAttr": 91,
+    "gap": 1,
     "knownGap": 0
   },
   "types": [
@@ -46,9 +46,16 @@
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Api",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
-      "gaps": []
+      "bucket": "gap",
+      "arnAttributes": [
+        {
+          "name": "ExecuteApiArn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "ExecuteApiArn"
+      ]
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Authorizer",

@@ -1,21 +1,18 @@
 {
   "resourceType": "AWS::DocDB::DBSubnetGroup",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-07",
   "properties": [
     "DBSubnetGroupDescription",
     "DBSubnetGroupName",
-    "Id",
     "SubnetIds",
     "Tags"
   ],
-  "readOnlyProperties": [
-    "Id"
-  ],
+  "readOnlyProperties": [],
   "createOnlyProperties": [
     "DBSubnetGroupName"
   ],
   "primaryIdentifier": [
-    "Id"
+    "DBSubnetGroupName"
   ],
   "nestedProperties": {
     "Tags": [
@@ -31,7 +28,6 @@
   },
   "definitionShapes": {
     "#top": {
-      "Id": "scalar",
       "DBSubnetGroupName": "scalar",
       "DBSubnetGroupDescription": "scalar",
       "SubnetIds": "array",

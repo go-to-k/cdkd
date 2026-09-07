@@ -25,12 +25,19 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 - Shape pass — explicitly handled in provider: **40**
 - Shape pass — allow-listed (does NOT block CI): **7**
 - **Array-vs-wrapper divergences (blocks CI): 0**
-- **Definition-member-missing divergences (blocks CI): 0**
+- **Definition-member-missing divergences (blocks CI): 4**
 - Shape pass — ambiguous (visible, non-blocking): **0**
 
-## Divergences
+## Divergences — BLOCKS CI
 
-None. Every audited nested CFn key either matches an SDK member spelling or is explicitly named by its provider — and on a fresh-object target, its SDK member is also WRITTEN somewhere in the provider.
+Each key below is templated by CFn but never reaches AWS: either it maps to no SDK member at all, or (for a fresh-object target) the SDK member exists and the provider never writes it. Add the CFn->SDK conversion to the provider (naming the CFn spelling, and WRITING the SDK member), or add a `NESTED_KEY_ALLOW_LIST` entry with a rationale in scripts/gen-nested-key-coverage.ts.
+
+| Resource type | CFn nested key / path | Bucket | SDK detail |
+| --- | --- | --- | --- |
+| `AWS::Glue::Connection` | `BasicAuthenticationCredentials` | definition-member-missing | SDK interface `AuthenticationConfiguration` has no `BasicAuthenticationCredentials` member |
+| `AWS::Glue::Connection` | `CustomAuthenticationCredentials` | definition-member-missing | SDK interface `AuthenticationConfiguration` has no `CustomAuthenticationCredentials` member |
+| `AWS::Glue::Connection` | `AuthorizationCodeProperties` | definition-member-missing | SDK interface `OAuth2Properties` has no `AuthorizationCodeProperties` member |
+| `AWS::Glue::Connection` | `OAuth2Credentials` | definition-member-missing | SDK interface `OAuth2Properties` has no `OAuth2Credentials` member |
 
 ## Allow-listed pass-throughs
 

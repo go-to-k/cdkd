@@ -440,6 +440,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RoleArn',
       ]),
       silentDrop: new Map<string, string>([
+        ['CapacityProviderConfiguration', 'not yet implemented by cdkd'],
         ['FilesystemConfigurations', 'not yet implemented by cdkd'],
         ['RequestHeaderConfiguration', 'not yet implemented by cdkd'],
         ['Tags', 'not yet implemented by cdkd'],
@@ -612,6 +613,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
         ],
         ['EvaluationWindow', 'not yet implemented by cdkd'],
+        ['WarmUpConfiguration', 'not yet implemented by cdkd'],
       ]),
     },
   ],
@@ -1537,7 +1539,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Glue::Connection',
     {
       handled: new Set<string>(['CatalogId', 'ConnectionInput']),
-      silentDrop: new Map<string, string>(),
+      silentDrop: new Map<string, string>([['Tags', 'not yet implemented by cdkd']]),
     },
   ],
   [

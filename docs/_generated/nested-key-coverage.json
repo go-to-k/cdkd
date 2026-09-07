@@ -13,7 +13,7 @@
     "shapeHandled": 40,
     "shapeAllowListed": 7,
     "arrayVsWrapper": 0,
-    "definitionMemberMissing": 0,
+    "definitionMemberMissing": 4,
     "shapeAmbiguous": 0
   },
   "targets": [
@@ -5838,7 +5838,40 @@
           "bucket": "same-spelling"
         }
       ],
-      "shapeEntries": [],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "BasicAuthenticationCredentials",
+          "definition": "AuthenticationConfiguration",
+          "pass": "definition",
+          "bucket": "definition-member-missing",
+          "sdkDetail": "SDK interface `AuthenticationConfiguration` has no `BasicAuthenticationCredentials` member"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "CustomAuthenticationCredentials",
+          "definition": "AuthenticationConfiguration",
+          "pass": "definition",
+          "bucket": "definition-member-missing",
+          "sdkDetail": "SDK interface `AuthenticationConfiguration` has no `CustomAuthenticationCredentials` member"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "AuthorizationCodeProperties",
+          "definition": "OAuth2Properties",
+          "pass": "definition",
+          "bucket": "definition-member-missing",
+          "sdkDetail": "SDK interface `OAuth2Properties` has no `AuthorizationCodeProperties` member"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "OAuth2Credentials",
+          "definition": "OAuth2Properties",
+          "pass": "definition",
+          "bucket": "definition-member-missing",
+          "sdkDetail": "SDK interface `OAuth2Properties` has no `OAuth2Credentials` member"
+        }
+      ],
       "shapeCleanCount": 3,
       "unmatchedDefinitions": [],
       "usedSegmentRenames": [],

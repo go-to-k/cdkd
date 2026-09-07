@@ -33,6 +33,7 @@
       "PlacementGroup"
     ],
     "AWS::BedrockAgentCore::Runtime": [
+      "CapacityProviderConfiguration",
       "FilesystemConfigurations",
       "RequestHeaderConfiguration",
       "Tags"
@@ -42,7 +43,8 @@
       "AggregationConfigurations"
     ],
     "AWS::CloudWatch::Alarm": [
-      "EvaluationWindow"
+      "EvaluationWindow",
+      "WarmUpConfiguration"
     ],
     "AWS::CodeBuild::Project": [
       "ResourceAccessRole",
@@ -145,6 +147,9 @@
       "SnapshotArns"
     ],
     "AWS::ElasticLoadBalancingV2::Listener": [
+      "Tags"
+    ],
+    "AWS::Glue::Connection": [
       "Tags"
     ],
     "AWS::Kinesis::Stream": [
