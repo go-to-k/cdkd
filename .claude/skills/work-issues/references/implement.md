@@ -91,15 +91,14 @@ main checkout passes is evidence about the TREE first.
 ### 5-b. Sweep the class, not the instance
 
 **Before fixing, ask whether the defect has SIBLING SITES — and sweep them in
-THIS lane rather than filing them.** Most defects here are a CLASS. Once the
-root cause is named, grep the shape across the repo. Rules, each bought by a
-measured miss:
+THIS lane rather than filing them.** Most are a CLASS: once the root cause is
+named, grep the shape across the repo. Rules, each bought by a measured miss:
 
 - **Query for the PRECONDITION minus the REMEDY, never the remedy alone.**
   A grep for a MISSING thing returns only the sites that already have it:
 
   ```bash
-  # WRONG -- finds only the providers that already validate.
+  # WRONG -- only the providers that already validate.
   grep -rln "validateDesiredProperties" src/provisioning/providers/
   # RIGHT -- eligibility minus remedy.
   for f in $(grep -rln "implements ResourceProvider" src/provisioning/providers/); do
@@ -107,68 +106,63 @@ measured miss:
   done
   ```
 
-  Measured in go-to-k/cdk-local (2026-08-27): the remedy-shaped grep saw 5 of
-  12 eligible sites. This repo's defects are often missing entries (an absent
-  `handledProperties` row, a provider with no validation arm) — invisible to
-  a grep for what they lack.
-- **A count derived from the instance you happened to hit is not a count** —
-  the same run sized a deferred residue "one site, ~30 min"; the class was
-  seven. `Effort` / `Estimate` are what a future session budgets from.
-- **A FIX ROUND owes the same sweep, and that is where it gets skipped**:
-  the fix lands on one call site while a sibling keeps the defect, usually
-  shipping a comment asserting completeness. Measured FIVE times on two lanes
+  go-to-k/cdk-local (2026-08-27): the remedy-shaped grep saw 5 of 12 eligible
+  sites. This repo's defects are often missing entries (an absent
+  `handledProperties` row, a provider with no validation arm) — invisible to a
+  grep for what they lack.
+- **A count from the instance you happened to hit is not a count** — one run
+  sized a residue "one site, ~30 min"; the class was seven. `Effort` /
+  `Estimate` are what a future session budgets from.
+- **A FIX ROUND owes the same sweep, and that is where it gets skipped**: the
+  fix lands on one call site while a sibling keeps the defect, usually shipping
+  a comment claiming completeness. Measured FIVE times on two lanes
   in one day (the 2-arg `Fn::Sub` check missing the bare-string arm one line
-  over; a redaction fixing update/delete but not create; one enumeration
-  completed while a second in the same file — and a third on the same LINE —
-  kept the defect). Every one found by enumerating readers with grep, none by
-  re-reading the diff. **So does a SWEEP, over its OWN output** — re-run the
-  predicate on the diff the sweep produced (go-to-k/cdkd#2662: three of a
-  run's ten false-guarantee comments were added or left by a sweep meant to
-  end that class). After writing a fix:
+  over; a redaction fixing update/delete but not create; one enumeration done
+  while a second in the same file — and a third on the same LINE — kept the
+  defect). All found by enumerating readers with grep, none by re-reading the
+  diff. **So does a SWEEP, over its OWN output** — re-run the predicate on the
+  diff the sweep produced (go-to-k/cdkd#2662: three of a run's ten
+  false-guarantee comments were added or left by a sweep meant to end that
+  class). After writing a fix:
 
   ```bash
-  # Derive the population from the CODE, not from the files your diff touched.
-  grep -rn "<the field / helper / message you just changed>" src/ | grep -v test
+  # Derive the population from the CODE, not the files your diff touched.
+  grep -rn "<the field / helper / message you changed>" src/ | grep -v test
   ```
 
-  The cheap tell: a diff touching ONE site whose message says "every", "all",
+  Cheap tell: a diff touching ONE site whose message says "every", "all",
   "never" or "only" — derive the population or drop the quantifier.
-- **Grep for the SHAPE, not for a NAME** — a name finds only the copies you
-  already knew about (go-to-k/cdkd#2176: grepping `maskDeep` found four
-  copies and shipped "four" everywhere; there were SIX, two spelled
-  `maskLeaf*`). Grep a structural line the copies must share; confirm by name
-  second.
-- **Count the population BEFORE you fix, assert the count afterwards** —
-  re-deriving from the post-fix tree cannot detect a copy the sweep never saw.
-  A fix that REMOVES a behaviour owes a SECOND population: the assertions
-  that the behaviour happens, which do not go red when it stops
-  (`references/verify.md` §8-d).
+- **Grep for the SHAPE, not a NAME** — a name finds only the copies you knew
+  about (go-to-k/cdkd#2176: `maskDeep` found four and shipped "four"; there
+  were SIX, two spelled `maskLeaf*`). Grep a structural line every copy must
+  share; confirm by name second.
+- **Count the population BEFORE you fix, assert it afterwards** — the post-fix
+  tree cannot show a copy the sweep never saw. A fix REMOVING a behaviour owes
+  a SECOND population: the assertions that it happens, which do not go red when
+  it stops (`references/verify.md` §8-d).
 - **A sweep's number is unearned until you paste the command that produced
   it, and re-run that command before you ship** — one claimed "88 hits across
-  13 files" and the reviewer's grep returned 47. A count RELAYED from a
-  subagent is the same failure without even a command (FOUR published in one
-  run, every one wrong — "nine sites", grep found 78), and the tell is
-  grammatical: a number arriving as a WORD was counted by an agent, one
-  arriving as OUTPUT by a machine. Run the query
-  yourself, put its output in the text, and give the number one of
-  `references/verify.md` §8-g's three dispositions before it ships.
-- **Grep the repo for the SYMPTOM before deriving a fix** — something may
-  already have solved the same QUESTION (the SDK region-redirect mechanism a
-  lane spent a real-AWS round trip rediscovering already sat verbatim in
-  `src/utils/aws-region-resolver.ts`).
-- **Grep the ISSUE NUMBER — a third sweep with a different key.** Closing an
-  issue falsifies every comment that CITES it, and the dangerous ones are
-  deliberate NON-assertions carrying neither shape nor symptom
+  13 files"; the reviewer's grep returned 47. A count RELAYED from a subagent
+  is the same failure without a command (FOUR published in one run, all wrong),
+  and AGREEING with one is not corroboration: on go-to-k/cdkd#2719 a subagent
+  and I both published "five sites" where `grep -c` said seven. The tell is grammatical — a number
+  arriving as a WORD was counted by an agent, as OUTPUT by a machine. Give it
+  one of `references/verify.md` §8-g's three dispositions before shipping.
+- **Grep the SYMPTOM before deriving a fix** — the same QUESTION may already
+  be answered (a lane spent a real-AWS round trip rediscovering the SDK
+  region-redirect mechanism sitting verbatim in `src/utils/aws-region-resolver.ts`).
+- **Grep the ISSUE NUMBER — a third key.** Closing an issue falsifies every
+  comment CITING it; the dangerous ones are deliberate NON-assertions carrying
+  neither shape nor symptom
   (`git grep -n "<issue number>" -- src tests docs .claude`). Measured on
   go-to-k/cdkd#2466 closing go-to-k/cdkd#2421: four live citations, including
   a "deliberately NOT asserted" bullet in a fixture that already synthesized —
   adding the assertion cost nothing and found a SECOND failure mode. Such a
   non-assertion is usually the cheapest high-value test in the change.
 
-**A defect the sweep turns up that this lane is NOT fixing gets FILED — rules
-in `references/filing.md` (§5-f)**: N sites of one root cause is ONE issue,
-the dup-check window, the `Severity` / `Effort` labels. Read it at the moment
-the sweep produces something this lane will not close.
+**A defect the sweep turns up that this lane is NOT fixing gets FILED —
+`references/filing.md` (§5-f)**: N sites of one root cause is ONE issue, the
+dup-check window, the `Severity` / `Effort` labels.
 
 ### 5-c. The fix itself
 
@@ -233,6 +227,11 @@ the separator is just `git diff`.
 nothing). An inverse replace is a second edit; Python's `str.replace('', x)`
 matches between every character and rewrote an 11 KB file to 838 KB, scoring
 the three probes AFTER it against a corrupted subject.
+
+**Probe the CALLER too — a probed callee says nothing about its wiring.**
+go-to-k/cdkd#2719: a predicate with eight probed gates, and deleting the line
+FEEDING it one of two inputs left 1,442 tests green. Delete each argument the
+call site passes and assert the ARGUMENTS; an outcome re-tests only the callee.
 
 **A mutation probe proves a test discriminates only if it changes the value
 the test READS.** Four vacuous tests shipped in one day, all one shape: the

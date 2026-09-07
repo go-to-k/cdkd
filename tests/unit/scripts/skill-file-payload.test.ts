@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 173_304,
-    largest: { file: 'implement.md', bytes: 28_727 },
-    runnerUp: { file: 'verify.md', bytes: 28_187 },
+    corpusBytes: 173_925,
+    largest: { file: 'implement.md', bytes: 28_743 },
+    runnerUp: { file: 'verify.md', bytes: 28_516 },
   },
 };
 
