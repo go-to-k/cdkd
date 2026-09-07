@@ -1,5 +1,15 @@
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import {
+  readFileSync,
+  readdirSync,
+  existsSync,
+  statSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -173,7 +183,118 @@ const NON_READ_LITERALS: ReadonlyMap<string, string> = new Map([
     '.mise.toml',
     'source-control-bytes.test.ts passes it to isBinaryPath() as a dotfile-with-a-non-binary-extension case — the file is never opened',
   ],
+  [
+    '.claude/settings.local.json',
+    'settings-bash-first-optout.test.ts passes it to `git check-ignore -v` and `git ls-files` as an ARGUMENT — the file is never opened, and it exists only on a checkout whose developer created it',
+  ],
 ]);
+
+/**
+ * Carve-out entries that may be ABSENT on disk. The fence below demands that
+ * every other entry still exists, so a deleted file cannot leave a dead
+ * exemption behind; an entry here is exempt from that demand on ONE
+ * condition, which the fence checks instead: git must ignore the path. A
+ * per-developer file is exactly the shape that is a live literal on every
+ * checkout while existing on only some of them (issue #2751: with the file
+ * present the main assertion named it as a missing include entry, while a
+ * checkout without it — CI included — never saw the failure). Tying the
+ * exemption to `git check-ignore` rather than to a bare flag means a TRACKED
+ * file cannot be listed here to dodge the existence check.
+ */
+const OPTIONAL_ON_DISK: ReadonlySet<string> = new Set(['.claude/settings.local.json']);
+
+/**
+ * Whether the checkout at `root` ignores `rel` BY ITS OWN `.gitignore`.
+ *
+ * Four things are deliberate:
+ *  - WITHOUT `--no-index`: with the index consulted, a TRACKED file is
+ *    reported as not ignored even when a pattern matches it, which is the
+ *    property the optional-on-disk qualifier rests on.
+ *  - `-v`, and only the TOP-LEVEL `.gitignore` counts as the source.
+ *    `git check-ignore` also honours the developer's global excludes file,
+ *    `.git/info/exclude` and any NESTED `.gitignore`, and names whichever
+ *    won in the source column. A `-q` verdict is therefore green on a
+ *    machine whose global ignore lists the path while CI, which has no such
+ *    file, reads the repo alone (`settings-bash-first-optout.test.ts` closed
+ *    this same hole for its own read). The top-level file is the specific
+ *    one demanded because it is the only one inside `.markgate.yml`'s
+ *    `check` include: a rule moved to `.claude/.gitignore` would stale
+ *    nothing, so the fence must not accept it. `core.excludesFile` is
+ *    pointed at `/dev/null` too, though that changes no verdict the source
+ *    column does not already decide — the global file is the lowest
+ *    precedence source, so when it wins it is also what the column names.
+ *  - The exit status is inspected: 1 means "not ignored"; anything else
+ *    (128 for "not a git repository" or a bad pathspec, or git missing) is
+ *    rethrown rather than read as a verdict, so a broken invocation cannot
+ *    satisfy an assertion that expects `false`.
+ *  - A NEGATED pattern is refused: `check-ignore -v` exits 0 and prints the
+ *    matching `!pattern` line for a path a negation UN-ignores (`-q` exits 1
+ *    there), so the pattern column is read and a leading `!` is "not
+ *    ignored" — otherwise a `!.claude/settings.local.json` line in the repo's
+ *    `.gitignore` would still read as ignored here.
+ */
+function gitIgnores(rel: string, root: string = REPO_ROOT): boolean {
+  let out: string;
+  try {
+    out = execFileSync(
+      'git',
+      ['-C', root, '-c', 'core.excludesFile=/dev/null', 'check-ignore', '-v', '--', rel],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  } catch (error) {
+    if ((error as { status?: unknown }).status === 1) return false;
+    throw error;
+  }
+  // `<source>:<line>:<pattern>\t<path>` — the source must be the repo's own
+  // TOP-LEVEL `.gitignore` (not `.git/info/exclude`, a global file, or a
+  // nested `.gitignore`, each of which git names in this column when it
+  // wins), and the pattern must not be a negation.
+  const m = /^\.gitignore:\d+:([^\t]*)\t/.exec(out.trimEnd());
+  return m !== null && !m[1].startsWith('!');
+}
+
+/**
+ * The carve-out fence's verdict, as a pure function over injected predicates
+ * so the rules can be pinned with controlled inputs rather than only against
+ * whatever this checkout happens to contain. Returns one message per
+ * violated rule. Per entry: it needs a stated reason (the carve-out is a
+ * judgement a future reader re-checks, so an entry without one says
+ * nothing), and then ONE of two mutually exclusive branches — an OPTIONAL
+ * entry must be ignored through the repo's TOP-LEVEL `.gitignore`, the one
+ * reason it may be absent, whether or not it exists; any other entry must
+ * exist on disk, so a deleted file leaves no dead exemption behind. Then,
+ * over the optional set: every optional path must be a carve-out entry (the
+ * set qualifies the map, it is not a second list).
+ */
+function carveOutFenceProblems(
+  entries: ReadonlyMap<string, string>,
+  optional: ReadonlySet<string>,
+  exists: (rel: string) => boolean,
+  ignored: (rel: string) => boolean,
+): string[] {
+  const problems: string[] = [];
+  for (const [rel, why] of entries) {
+    if (why.length <= 20) problems.push(`${rel} needs a stated reason`);
+    if (optional.has(rel)) {
+      if (!ignored(rel))
+        problems.push(
+          // Both halves are load-bearing, and each was once wrong on its own.
+          // "git does not ignore it" alone misdiagnoses a rule moved to a
+          // nested `.gitignore`, which git honours and names in the source
+          // column; naming only the top-level file misdiagnoses the arm this
+          // qualifier exists to catch, a TRACKED file that the top-level
+          // pattern DOES match and the index refuses.
+          `${rel} is listed as optional on disk but git does not ignore it through the top-level .gitignore (a tracked file is never ignored)`,
+        );
+    } else if (!exists(rel)) {
+      problems.push(`${rel} no longer exists`);
+    }
+  }
+  for (const rel of optional) {
+    if (!entries.has(rel)) problems.push(`${rel} is optional on disk but not a carve-out entry`);
+  }
+  return problems;
+}
 
 function record(targets: Map<string, string[]>, rel: string, file: string): void {
   const list = targets.get(rel) ?? [];
@@ -721,11 +842,25 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
 
   it('the non-read carve-out list stays exactly what was measured, and every entry is still LIVE', () => {
     // Direction 1 — it cannot grow silently into a blanket suppressor.
-    expect([...NON_READ_LITERALS.keys()].sort()).toEqual(['.mise.toml', 'assets/cdk-vs-cdkd.gif']);
-    for (const [rel, why] of NON_READ_LITERALS) {
-      expect(why.length, `${rel} needs a stated reason`).toBeGreaterThan(20);
-      expect(existsSync(join(REPO_ROOT, rel)), `${rel} still exists`).toBe(true);
-    }
+    expect([...NON_READ_LITERALS.keys()].sort()).toEqual([
+      '.claude/settings.local.json',
+      '.mise.toml',
+      'assets/cdk-vs-cdkd.gif',
+    ]);
+    // The three per-entry rules, evaluated against THIS checkout through the
+    // same function the controlled cases below pin.
+    // The optional set is pinned exactly too: emptying it is green on a
+    // checkout that has the file and red only on one that does not — the
+    // developer-vs-CI split verdict this very entry exists to remove.
+    expect([...OPTIONAL_ON_DISK].sort()).toEqual(['.claude/settings.local.json']);
+    expect(
+      carveOutFenceProblems(
+        NON_READ_LITERALS,
+        OPTIONAL_ON_DISK,
+        (rel) => existsSync(join(REPO_ROOT, rel)),
+        (rel) => gitIgnores(rel),
+      ),
+    ).toEqual([]);
 
     // Direction 2 — and it cannot outlive the literal it exempts. Without this,
     // deleting or rewriting the exempted literal leaves a dead entry that
@@ -742,6 +877,140 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
       dead,
       `${dead.join(', ')} no longer occurs as a path literal in tests/unit, so the carve-out exempts nothing and would silently suppress a future real read of the same path. Drop the entry.`,
     ).toEqual([]);
+  });
+
+  it('a per-developer literal is carved out of the bare-literal population (issue #2751)', () => {
+    // This case does not vary the file's presence, and does not need to: a
+    // directory-shaped literal is never stat'ed by `extractBareTargets` (only
+    // root-shaped ones are), so whether this checkout has the file cannot
+    // change the population. What the case pins is the carve-out itself —
+    // the literal is seen uncarved, named to its reader, and absent carved —
+    // which is what keeps the main assertion below from flipping with a
+    // developer's local settings.
+    const rel = '.claude/settings.local.json';
+    const uncarved = extractBareTargets(false);
+    expect(uncarved.has(rel), `${rel} no longer occurs as a path literal in tests/unit`).toBe(true);
+    expect(uncarved.get(rel), 'the literal is read where the carve-out reason says it is').toContain(
+      'tests/unit/scripts/settings-bash-first-optout.test.ts',
+    );
+    expect(extractBareTargets().has(rel), `${rel} reaches the population despite the carve-out`).toBe(false);
+    expect(extractJoinTargets().has(rel), `${rel} is also built through the JOIN idiom, which the carve-out does not cover`).toBe(false);
+  });
+
+  it('the carve-out fence rules hold with the file present, absent, and under each invalid qualifier', () => {
+    const entries = new Map([
+      ['a/tracked.txt', 'a pure-function argument, twenty-plus characters of reason'],
+      ['b/local.json', 'a per-developer file handed to git as an argument, never opened'],
+    ]);
+    const optional = new Set(['b/local.json']);
+    const ignoredSet = new Set(['b/local.json']);
+    const ignored = (rel: string) => ignoredSet.has(rel);
+    const existsWith = (present: Set<string>) => (rel: string) => present.has(rel);
+
+    // The optional entry is fine present or absent, as long as git ignores it.
+    expect(carveOutFenceProblems(entries, optional, existsWith(new Set(['a/tracked.txt', 'b/local.json'])), ignored)).toEqual([]);
+    expect(carveOutFenceProblems(entries, optional, existsWith(new Set(['a/tracked.txt'])), ignored)).toEqual([]);
+    // A non-optional entry that vanished is a dead exemption.
+    expect(carveOutFenceProblems(entries, optional, existsWith(new Set(['b/local.json'])), ignored)).toEqual([
+      'a/tracked.txt no longer exists',
+    ]);
+    // An optional entry git does not ignore is refused even when it exists —
+    // the flag alone buys nothing.
+    expect(carveOutFenceProblems(entries, optional, existsWith(new Set(['a/tracked.txt', 'b/local.json'])), () => false)).toEqual([
+      'b/local.json is listed as optional on disk but git does not ignore it through the top-level .gitignore (a tracked file is never ignored)',
+    ]);
+    // An optional path that is not a carve-out entry is refused.
+    expect(
+      carveOutFenceProblems(entries, new Set(['b/local.json', 'c/stray.txt']), existsWith(new Set(['a/tracked.txt'])), ignored),
+    ).toEqual(['c/stray.txt is optional on disk but not a carve-out entry']);
+    // A reason too short to say anything is refused.
+    expect(carveOutFenceProblems(new Map([['a/tracked.txt', 'short']]), new Set(), () => true, ignored)).toEqual([
+      'a/tracked.txt needs a stated reason',
+    ]);
+  });
+
+  it('gitIgnores reads the index and the repo .gitignore only: tracked-but-matching, exclude-only and negated paths read as not ignored', () => {
+    // Built in a throwaway repo rather than asserted against this checkout,
+    // because this checkout has no tracked file that also matches an ignore
+    // rule — and that case is the guarantee the qualifier rests on: a tracked
+    // file cannot be listed as optional on disk to dodge the existence check.
+    // Two isolations, and they are separate: `gitIgnores` overrides
+    // `core.excludesFile` for its own invocation (measured:
+    // `GIT_CONFIG_GLOBAL=/dev/null` leaves the XDG excludes file active,
+    // `-c core.excludesFile=/dev/null` does not), and the `git init` below
+    // disables `init.templateDir` so this repo does not inherit the
+    // developer's template. `.git/info/` is created only BY that template, so
+    // it is created here explicitly rather than assumed: git-secrets' install
+    // instructions set `init.templateDir` globally, and on such a machine the
+    // write below failed with ENOENT while CI, on the default template,
+    // stayed green — the developer-red / CI-green split this file exists to
+    // remove (`.claude/hooks/stop-warn.test.sh:60-63` records the same trap).
+    // A GLOBAL-only rule still cannot be exercised through the helper, which
+    // overrides that file, so that arm rests on the source check alone. Setup
+    // failures surface: stderr is piped into the thrown error, not discarded.
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-scope-fence-'));
+    try {
+      const git = (...args: string[]) =>
+        execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      git('-c', 'init.templateDir=', 'init', '-q');
+      mkdirSync(join(root, '.git', 'info'), { recursive: true });
+      mkdirSync(join(root, 'nested'), { recursive: true });
+      writeFileSync(join(root, '.gitignore'), '*.local.json\n!keep.local.json\n');
+      writeFileSync(join(root, 'nested', '.gitignore'), 'nested-only.txt\n');
+      writeFileSync(join(root, 'nested', 'nested-only.txt'), '{}');
+      writeFileSync(join(root, 'tracked.local.json'), '{}');
+      writeFileSync(join(root, 'untracked.local.json'), '{}');
+      writeFileSync(join(root, 'keep.local.json'), '{}');
+      writeFileSync(join(root, 'excluded-only.txt'), '{}');
+      writeFileSync(join(root, '.git', 'info', 'exclude'), 'excluded-only.txt\n');
+      git('add', '-f', '--', 'tracked.local.json');
+      expect(gitIgnores('tracked.local.json', root), 'tracked, though the pattern matches').toBe(false);
+      expect(gitIgnores('untracked.local.json', root), 'untracked and matching the repo .gitignore').toBe(true);
+      expect(gitIgnores('excluded-only.txt', root), 'ignored only by .git/info/exclude, which is not the repo\'s rule').toBe(false);
+      // `check-ignore -v` exits 0 here and prints the `!keep.local.json` line;
+      // the negation must read as NOT ignored.
+      expect(gitIgnores('keep.local.json', root), 'un-ignored by a negated pattern').toBe(false);
+      // A NESTED `.gitignore` wins and is named in the source column. It is
+      // refused for the reason the JSDoc gives: only the top-level file is
+      // inside the `check` include, so a rule moved down there would stale
+      // nothing.
+      expect(gitIgnores('nested/nested-only.txt', root), 'ignored by a nested .gitignore, not the top-level one').toBe(
+        false,
+      );
+      expect(gitIgnores('.gitignore', root), 'untracked, matching nothing').toBe(false);
+      // A broken invocation is an error, not a verdict.
+      expect(() => gitIgnores('anything', join(root, 'no-such-dir'))).toThrow();
+      // ...and the fence's message on the arm this qualifier exists to catch,
+      // driven by the REAL predicate rather than an injected `() => false`:
+      // a TRACKED file listed as optional is refused, and the message must
+      // not blame the top-level `.gitignore`, which does match it.
+      //
+      // Keyed on the path THIS repo ignores and the throwaway repo TRACKS, so
+      // the `root` binding is load-bearing: at `REPO_ROOT` the same call
+      // answers `true`, so the actual result becomes `[]` and this
+      // unchanged expectation fails. A path this repo
+      // does not ignore either (`tracked.local.json`) would answer `false`
+      // both ways and leave `root` free to drop.
+      mkdirSync(join(root, '.claude'), { recursive: true });
+      writeFileSync(join(root, '.claude', 'settings.local.json'), '{}');
+      git('add', '-f', '--', '.claude/settings.local.json');
+      expect(gitIgnores('.claude/settings.local.json', root), 'tracked here, ignored in the real repo').toBe(false);
+      expect(
+        carveOutFenceProblems(
+          new Map([['.claude/settings.local.json', 'a reason long enough to pass the floor']]),
+          new Set(['.claude/settings.local.json']),
+          () => true,
+          (rel) => gitIgnores(rel, root),
+        ),
+      ).toEqual([
+        '.claude/settings.local.json is listed as optional on disk but git does not ignore it through the top-level .gitignore (a tracked file is never ignored)',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    // ...and on this checkout, the one optional entry is ignored by the repo's
+    // own `.gitignore`, which is what CI sees too.
+    expect(gitIgnores('.claude/settings.local.json'), 'the per-developer settings file is ignored by this repo').toBe(true);
   });
 
   it('every existing out-of-tree read target is inside the check include', () => {

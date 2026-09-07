@@ -308,7 +308,12 @@ gates:
       # Without this entry, deleting that line reds the suite while a
       # `check` marker recorded a moment earlier still verifies FRESH.
       # `check-scope-checker-inputs.test.ts` cannot see it: the read goes
-      # through `git check-ignore`, not a literal read target.
+      # through `git check-ignore`, not a literal read target. The path that
+      # test passes to git, `.claude/settings.local.json`, IS a literal that
+      # checker sees, and it is deliberately NOT here: it is a per-developer
+      # gitignored file, never opened by the suite, carved out in the checker's
+      # NON_READ_LITERALS and listed in its OPTIONAL_ON_DISK set, which lets it
+      # be absent as long as this repo's .gitignore covers it (issue #2751).
       - ".gitignore"
       # This file itself (the go-to-k/cdk-local#623 sibling, handled in the
       # same session): the gate's own definition decides what the marker
