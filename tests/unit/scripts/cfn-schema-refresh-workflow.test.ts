@@ -9,14 +9,19 @@
  * load-bearing rather than cosmetic are pinned, and each case below says which
  * failure it is about.
  *
- * The file is read as TEXT rather than parsed as YAML on purpose, matching
- * `tests/unit/scripts/release-please-v0.test.ts` and
- * `pr-inherit-issue-labels.test.ts`: the assertions are about the literal shell
- * and the literal `uses:` pins, and a YAML round-trip would let a semantically
- * equivalent but differently spelled step pass.
+ * The file is read BOTH ways, because each view is blind where the other sees.
+ * TEXT (matching `release-please-v0.test.ts` and `pr-inherit-issue-labels.test.ts`)
+ * is right for the literal shell and the literal `uses:` pins, which YAML
+ * flattens into an opaque string. STRUCTURE is right for step wiring: a
+ * text-only suite passes when a whole step is deleted, and passes when the two
+ * `if:` polarities are swapped so the job refreshes only while a PR is already
+ * open — both silent, both leaving the job to simply stop opening PRs on a
+ * cadence nobody watches. An earlier revision of this file was text-only and
+ * had exactly those two holes.
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,6 +30,13 @@ const WORKFLOW_PATH = join(REPO_ROOT, '.github', 'workflows', 'cfn-schema-refres
 const VITE_CONFIG_PATH = join(REPO_ROOT, 'vite.config.ts');
 
 const workflow = readFileSync(WORKFLOW_PATH, 'utf8');
+/**
+ * The same file as STRUCTURE. Both views are kept: the text one asserts the
+ * literal shell (which YAML flattens into an opaque string), the parsed one
+ * asserts step wiring (which text cannot see at all).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const parsed: any = parseYaml(workflow);
 
 /**
  * The task the workflow invokes to do the capture. Named here as a literal
@@ -47,8 +59,81 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     // the schedule on an inactive repo, and the only way to exercise the job
     // before its first scheduled fire.
     expect(workflow).toMatch(/^\s*schedule:$/m);
-    expect(workflow).toMatch(/^\s*- cron: "[^"]+"$/m);
     expect(workflow).toMatch(/^\s*workflow_dispatch:$/m);
+    // The cron is pinned LITERALLY. A `"[^"]+"` shape assertion accepts
+    // `* * * * *`, i.e. a job firing every minute with `contents: write` —
+    // the opposite of the monthly cadence the design argued for, and green.
+    expect(parsed.on.schedule).toEqual([{ cron: '37 4 2 * *' }]);
+  });
+
+  /**
+   * Parsed as YAML, unlike the assertions above. The text form cannot see
+   * STRUCTURE: it happily passes when a whole step is deleted, or when the two
+   * `if:` conditions are swapped so the job runs the refresh only while a PR
+   * is already open and comments only when none is. Both are silent — the job
+   * simply stops opening PRs, on a monthly cadence nobody is watching.
+   */
+  describe('step wiring', () => {
+    const steps: Array<{ name?: string; if?: string; run?: string; uses?: string }> =
+      parsed.jobs.refresh.steps;
+    const byName = (name: string) => {
+      const step = steps.find((s) => s.name === name);
+      expect(step, `no step named ${JSON.stringify(name)} — it was renamed or deleted`).toBeDefined();
+      return step!;
+    };
+
+    it('gates the refresh, the drift probe and the PR on NO open refresh PR', () => {
+      for (const name of ['Refresh fixtures from the public schema bundle', 'Detect drift']) {
+        expect(byName(name).if).toBe("steps.open_pr.outputs.number == ''");
+      }
+      for (const name of ['Regenerate the derived artifacts', 'Open the refresh PR']) {
+        expect(byName(name).if).toBe("steps.drift.outputs.drifted == 'true'");
+      }
+    });
+
+    it('gates the skip comment on the OPPOSITE condition', () => {
+      // The polarity pair. Swapping these two is the mutation the text
+      // assertions could not see.
+      expect(byName('Note the skipped cycle on the open PR').if).toBe(
+        "steps.open_pr.outputs.number != ''"
+      );
+    });
+
+    it('keeps the drift probe between the refresh and the regeneration', () => {
+      const order = steps.map((s) => s.name).filter(Boolean) as string[];
+      expect(order.indexOf('Refresh fixtures from the public schema bundle')).toBeLessThan(
+        order.indexOf('Detect drift')
+      );
+      expect(order.indexOf('Detect drift')).toBeLessThan(
+        order.indexOf('Regenerate the derived artifacts')
+      );
+      expect(order.indexOf('Regenerate the derived artifacts')).toBeLessThan(
+        order.indexOf('Open the refresh PR')
+      );
+    });
+
+    it('checks out WITHOUT persisting the write-scoped token', () => {
+      const checkout = steps.find((s) => s.uses?.startsWith('actions/checkout@')) as
+        | { with?: Record<string, unknown> }
+        | undefined;
+      expect(checkout, 'no checkout step found').toBeDefined();
+      expect(checkout!.with?.['persist-credentials']).toBe(false);
+    });
+
+    it('filters the open-PR guard to branches in THIS repo, not forks', () => {
+      // Without the owner filter any GitHub user can permanently disable this
+      // job by opening a never-closed fork PR whose head branch matches the
+      // bot prefix.
+      const guard = byName('Look for an open refresh PR');
+      expect(guard.run).toContain('headRepositoryOwner');
+      expect(guard.run).toContain('github.repository_owner');
+    });
+
+    it('fails the open-PR guard closed rather than open on a gh error', () => {
+      // Without `set -e`, a gh transport failure leaves the output empty, which
+      // reads as "no open PR" and opens a competing one.
+      expect(byName('Look for an open refresh PR').run).toContain('set -euo pipefail');
+    });
   });
 
   it('invokes the capture through the Vite+ task, and that task exists', () => {

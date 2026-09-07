@@ -112,7 +112,9 @@ export interface AutoRouteHit {
  *   bare schedule name as physicalId, and the state properties carry
  *   GroupName, so the SDK provider addresses existing records correctly.
  */
-const STICKY_CC_MIGRATION_EXEMPT: ReadonlySet<string> = new Set(['AWS::Scheduler::Schedule']);
+export const STICKY_CC_MIGRATION_EXEMPT: ReadonlySet<string> = new Set([
+  'AWS::Scheduler::Schedule',
+]);
 
 export class ProviderRegistry {
   private logger = getLogger().child('ProviderRegistry');
@@ -645,6 +647,17 @@ export class ProviderRegistry {
    * two answering differently is the only way this warn can be wrong about a
    * resource, and it is not decidable from the message.
    *
+   * **Known divergence, in the SAFE direction.** This runs on the template's
+   * RAW properties (`deploy-engine.ts` calls `validateResourceProperties`
+   * pre-flight) while `getProviderFor` runs on RESOLVED ones. So a silent-drop
+   * key present only behind an `Fn::If` that resolves to `AWS::NoValue` makes
+   * `autoRouted` true here and suppresses the warn, while the real route ends
+   * up on the SDK provider and does drop the unrecognized property. The result
+   * is a MISSING warn, never a false one — which is the right direction for an
+   * advisory line, and why this is documented rather than fixed by resolving
+   * twice. `getProviderFor` remains the authority on routing; nothing here
+   * changes a routing decision.
+   *
    * Suppressed per `<Type>:<Prop>` by `--allow-unsupported-properties`, whose
    * meaning ("accept the silent drop, stay on the SDK path") is exactly this
    * case; deliberately no new flag. Warn rather than error because the drop
@@ -671,16 +684,25 @@ export class ProviderRegistry {
 
     const propList = unrecognized.join(', ');
     const overrideHint = unrecognized.map((p) => `${resourceType}:${p}`).join(',');
+    const one = unrecognized.length === 1;
+    // Every reading is NAMED with its own remedy, because the code cannot tell
+    // them apart and a line that names only some of them misdirects the reader
+    // into the wrong fix. The read-only arm is not hypothetical: the coverage
+    // generator excludes `readOnlyProperties` from `silentDrop`, so a template
+    // that sets an ATTRIBUTE (`AWS::IAM::Role.Arn`) lands in this bucket, and
+    // telling that user "AWS published it after our snapshot — report it"
+    // would be plainly false.
     this.logger.warn(
-      `${logicalId} (${resourceType}): ${propList} ${
-        unrecognized.length === 1 ? 'is' : 'are'
-      } not in cdkd's CFn schema snapshot for this type, so ${
-        unrecognized.length === 1 ? 'it' : 'they'
-      } will NOT reach AWS and the deploy will still report success. ` +
-        `Either the name is misspelled, or AWS published the property after ` +
-        `cdkd's snapshot was taken — in which case please report it: ` +
-        `${unsupportedPropertyIssueUrl(resourceType, unrecognized[0]!)}. ` +
-        `Silence this via --allow-unsupported-properties ${overrideHint}.`
+      `${logicalId} (${resourceType}): ${propList} ${one ? 'is' : 'are'} not in cdkd's CFn ` +
+        `schema snapshot for this type, so ${one ? 'it' : 'they'} will NOT reach AWS — ` +
+        `the deploy will still report success. Anything of these shapes looks the same ` +
+        `here: a misspelled name (fix the spelling); a read-only attribute, which is not ` +
+        `settable on any engine (remove it); or a property AWS published after cdkd's ` +
+        `snapshot, which cdkd should be routing via Cloud Control — please report that one: ` +
+        `${unsupportedPropertyIssueUrl(resourceType, unrecognized[0]!)}` +
+        `${one ? '' : ` (link is for ${unrecognized[0]!})`}. ` +
+        `If the drop is intended — an addPropertyOverride escape hatch — silence this via ` +
+        `--allow-unsupported-properties ${overrideHint}.`
     );
   }
 

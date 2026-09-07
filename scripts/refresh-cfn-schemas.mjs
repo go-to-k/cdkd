@@ -33,7 +33,7 @@ import {
   DescribeTypeCommand,
 } from '@aws-sdk/client-cloudformation';
 import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import AdmZip from 'adm-zip';
@@ -751,6 +751,19 @@ const MIN_ZIP_ENTRIES = 1000;
 const MAX_MISSING_TYPE_RATIO = 0.1;
 
 /**
+ * Cap on the downloaded bundle, and on the cumulative UNCOMPRESSED bytes read
+ * out of it. Measured 2026-09-07 at 2,989,693 compressed / 13,991,910
+ * uncompressed, so 64 MB is ~4.5x headroom on the uncompressed side.
+ *
+ * AWS publishes no checksum or signature for this artifact, so it cannot be
+ * pinned by content — TLS plus the origin host is the whole trust story. That
+ * makes a decompression bound the only defence against a bundle that unzips
+ * into far more than it claims, and the floors above cannot serve: both run
+ * AFTER extraction, so a zip bomb exhausts memory before either is consulted.
+ */
+const MAX_BUNDLE_BYTES = 64 * 1024 * 1024;
+
+/**
  * Convert a CFn resource type to its entry name in the public schema bundle.
  * `AWS::Lambda::Function` → `aws-lambda-function.json`. Note this is NOT
  * {@link fixtureFilename}'s convention (which preserves case and is the
@@ -804,8 +817,22 @@ export function refreshFixturesFromEntries({
         'that still unzips would make every type look absent and the run report no drift.'
     );
   }
+  // An EMPTY type list is the third shape of the same collapse the two floors
+  // below guard, and it slips past both: a missing ratio of 0/0 clears the
+  // ceiling, the entry floor is about the bundle rather than the population,
+  // and the run returns four empty arrays that the workflow reads as "no
+  // drift" — forever, silently. Reachable without anyone touching this file:
+  // `extractRegisteredTypes` scrapes `register-providers.ts` with a regex, so
+  // a refactor of how providers are registered empties it.
+  if (types.length === 0) {
+    throw new Error(
+      'No registered resource types to refresh — refusing to report "no drift" over an ' +
+        'empty population. Check that extractRegisteredTypes still matches ' +
+        'src/provisioning/register-providers.ts.'
+    );
+  }
   const missing = types.filter((t) => !entries.has(zipEntryName(t)));
-  const missingRatio = types.length === 0 ? 0 : missing.length / types.length;
+  const missingRatio = missing.length / types.length;
   if (missingRatio > MAX_MISSING_TYPE_RATIO) {
     throw new Error(
       `${missing.length} of ${types.length} registered types have no entry in the schema ` +
@@ -851,12 +878,25 @@ export function readSchemaBundle(zipBuffer) {
   const zip = new AdmZip(zipBuffer);
   /** @type {Map<string, string>} */
   const entries = new Map();
+  let uncompressed = 0;
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) continue;
     if (!entry.entryName.endsWith('.json')) continue;
+    // Running total rather than a per-entry cap: the bomb shape is many small
+    // entries, not one big one, and `getData()` materializes each in full.
+    uncompressed += entry.header.size;
+    if (uncompressed > MAX_BUNDLE_BYTES) {
+      throw new Error(
+        `Schema bundle expands past the ${MAX_BUNDLE_BYTES}-byte cap — refusing to continue.`
+      );
+    }
     // Basename only: the bundle is flat today, and keying on the full path
     // would make a future wrapper directory read as "every type is absent"
-    // rather than as the same set of types one level down.
+    // rather than as the same set of types one level down. It also means an
+    // entry named `../../x.json` contributes only a map KEY — no write path is
+    // ever built from it (fixture paths come from the repo's own registered
+    // type list), so traversal is closed by construction rather than by a
+    // sanitizer that could be bypassed.
     const name = entry.entryName.slice(entry.entryName.lastIndexOf('/') + 1);
     entries.set(name, entry.getData().toString('utf8'));
   }
@@ -870,11 +910,31 @@ export function readSchemaBundle(zipBuffer) {
  * @returns {Promise<Buffer>}
  */
 async function downloadSchemaBundle(url) {
-  const resp = await fetch(url);
+  // `redirect: 'error'` rather than the default `follow`: this runs unattended
+  // in CI with a write-scoped token in the job, and a redirect would let the
+  // response come from a host nobody reviewed. There is no integrity check
+  // available to fall back on (see MAX_BUNDLE_BYTES), so the origin is the
+  // only thing pinnable, and a legitimate redirect here would be a change
+  // worth noticing rather than following.
+  const resp = await fetch(url, { redirect: 'error' });
   if (!resp.ok) {
     throw new Error(`GET ${url} failed: HTTP ${resp.status} ${resp.statusText}`);
   }
-  return Buffer.from(await resp.arrayBuffer());
+  const declared = Number(resp.headers.get('content-length') ?? '0');
+  if (declared > MAX_BUNDLE_BYTES) {
+    throw new Error(
+      `Schema bundle declares ${declared} bytes, over the ${MAX_BUNDLE_BYTES} cap — refusing to download.`
+    );
+  }
+  const buffer = Buffer.from(await resp.arrayBuffer());
+  // Checked again after the fact: `content-length` is a claim, and a chunked
+  // response carries none at all.
+  if (buffer.byteLength > MAX_BUNDLE_BYTES) {
+    throw new Error(
+      `Schema bundle is ${buffer.byteLength} bytes, over the ${MAX_BUNDLE_BYTES} cap — refusing to parse.`
+    );
+  }
+  return buffer;
 }
 
 /**
@@ -900,7 +960,15 @@ async function refreshFromZip(types, localZipPath) {
     types,
     fixturesDir: FIXTURES_DIR,
     generatedAt: today(),
-    writeFixture: (path, text) => writeFileSync(path, text, 'utf8'),
+    // tmp + rename, matching every sibling generator (`gen-unsupported-types.ts`):
+    // an interrupted direct write leaves a truncated fixture, and while the NEXT
+    // run's `JSON.parse` catch would rewrite it, any CI job in between reads a
+    // corrupt file.
+    writeFixture: (path, text) => {
+      const tmp = `${path}.tmp`;
+      writeFileSync(tmp, text, 'utf8');
+      renameSync(tmp, path);
+    },
     readFixture: (path) => (existsSync(path) ? readFileSync(path, 'utf8') : undefined),
   });
 
@@ -1001,8 +1069,18 @@ async function main() {
   // absent positional meant "no filter" and all ~135 fixtures churned.
   // Single-dash args are guarded too: a `-x` typo is a flag attempt, not a
   // type filter.
+  // `!a.startsWith('--from-zip')` was WRONG here and re-opened the exact hole
+  // the unknown-flag guard exists to close: `--from-zipX` passed the filter,
+  // then matched neither `fromZipArg` (which tests `=== '--from-zip'` or the
+  // `=` form) nor the positional `typeFilter` (which skips `--` args), so the
+  // run fell through to a FULL authenticated DescribeType refresh of every
+  // registered type — rewriting all ~135 fixtures' `generatedAt` from a typo.
   const unknownFlags = args.filter(
-    (a) => a.startsWith('-') && a !== '--only-missing' && !a.startsWith('--from-zip')
+    (a) =>
+      a.startsWith('-') &&
+      a !== '--only-missing' &&
+      a !== '--from-zip' &&
+      !a.startsWith('--from-zip=')
   );
   if (unknownFlags.length > 0) {
     process.stderr.write(`Unknown flag(s): ${unknownFlags.join(', ')}\n${usage}`);

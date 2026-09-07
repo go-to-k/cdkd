@@ -38,9 +38,18 @@
  * missing from a real type's real property list", not "the refresh reproduces
  * AWS's schema".
  */
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, afterAll } from 'vite-plus/test';
 import AdmZip from 'adm-zip';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+} from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,9 +85,16 @@ function bundleWith(entries: Record<string, unknown>, filler = FILLER_ENTRIES): 
   return map;
 }
 
+/** Every scratch dir this file made, removed in `afterAll` rather than leaked. */
+const scratchDirs: string[] = [];
+afterAll(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 /** A scratch fixtures dir plus recording read/write seams. */
 function scratchDir() {
   const dir = mkdtempSync(join(tmpdir(), 'cdkd-schema-refresh-'));
+  scratchDirs.push(dir);
   const writes: Array<{ path: string; text: string }> = [];
   return {
     dir,
@@ -264,6 +280,29 @@ describe('refreshFixturesFromEntries — skips and floors', () => {
     expect(readFileSync(path, 'utf8')).toBe(original);
   });
 
+  /**
+   * The third shape of the same collapse, and the one that slips past BOTH
+   * floors: an empty population makes the missing ratio 0/0, the entry floor
+   * is about the bundle rather than the types, and the run returns four empty
+   * arrays the workflow reads as "no drift" — forever, silently. Reachable
+   * without touching the capture code at all, since `extractRegisteredTypes`
+   * scrapes `register-providers.ts` with a regex that a refactor can empty.
+   */
+  it('aborts on an EMPTY type list rather than reporting no drift', () => {
+    const { dir, writeFixture, readFixture, writes } = scratchDir();
+    expect(() =>
+      refreshFixturesFromEntries({
+        entries: bundleWith({}),
+        types: [],
+        fixturesDir: dir,
+        generatedAt: '2026-09-07',
+        writeFixture,
+        readFixture,
+      })
+    ).toThrow(/No registered resource types/);
+    expect(writes).toEqual([]);
+  });
+
   it('aborts on a bundle below the entry floor, writing nothing', () => {
     const { dir, writeFixture, readFixture, writes } = scratchDir();
     expect(() =>
@@ -374,5 +413,206 @@ describe('readSchemaBundle', () => {
       zipOf({ 'README.txt': 'hi', 'aws-s3-bucket.json': '{"properties":{}}' })
     );
     expect([...entries.keys()]).toEqual(['aws-s3-bucket.json']);
+  });
+});
+
+describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
+  /**
+   * The gap this closes: every drift case elsewhere in this file differs only
+   * in `properties`, so narrowing the comparison to `candidate.properties`
+   * passed the acceptance case, its byte-identity control twin, and all five
+   * unit cases. A signal blind to a section is a section that can change under
+   * a monthly job reporting "no drift" — the exact failure mode the job exists
+   * to prevent, one level down.
+   *
+   * One case per section `buildFixture` emits, each a MINIMAL edit to that
+   * section alone.
+   */
+  const BASE = {
+    properties: { A: { type: 'string' }, Cfg: { $ref: '#/definitions/Cfg' } },
+    readOnlyProperties: ['/properties/A'],
+    createOnlyProperties: ['/properties/A'],
+    primaryIdentifier: ['/properties/A'],
+    required: ['A'],
+    definitions: {
+      Cfg: { type: 'object', required: ['Inner'], properties: { Inner: { type: 'string' } } },
+    },
+  };
+
+  /** Each variant changes exactly ONE captured section relative to BASE. */
+  const VARIANTS: Array<{ section: string; mutate: (s: typeof BASE) => Record<string, unknown> }> = [
+    { section: 'properties', mutate: (s) => ({ ...s, properties: { ...s.properties, B: { type: 'string' } } }) },
+    { section: 'readOnlyProperties', mutate: (s) => ({ ...s, readOnlyProperties: [] }) },
+    { section: 'createOnlyProperties', mutate: (s) => ({ ...s, createOnlyProperties: [] }) },
+    { section: 'primaryIdentifier', mutate: (s) => ({ ...s, primaryIdentifier: [] }) },
+    {
+      section: 'nestedProperties / nestedPropertyPaths',
+      mutate: (s) => ({
+        ...s,
+        definitions: {
+          Cfg: { ...s.definitions.Cfg, properties: { Inner: { type: 'string' }, Extra: { type: 'string' } } },
+        },
+      }),
+    },
+    {
+      section: 'definitionShapes',
+      mutate: (s) => ({
+        ...s,
+        definitions: {
+          Cfg: { ...s.definitions.Cfg, properties: { Inner: { type: 'array', items: { type: 'string' } } } },
+        },
+      }),
+    },
+    {
+      section: 'definitionRequired',
+      mutate: (s) => ({ ...s, definitions: { Cfg: { ...s.definitions.Cfg, required: [] } } }),
+    },
+  ];
+
+  const committed = serializeFixture(
+    buildFixture(JSON.stringify(BASE), 'AWS::Test::Type', '2026-01-01')
+  );
+
+  it('reports NO drift for the unmutated base (the control for the table below)', () => {
+    const candidate = buildFixture(JSON.stringify(BASE), 'AWS::Test::Type', '2099-12-31');
+    expect(fixtureDiffersIgnoringDate(candidate, committed)).toBe(false);
+  });
+
+  for (const { section, mutate } of VARIANTS) {
+    it(`reports drift when ${section} changes`, () => {
+      const candidate = buildFixture(
+        JSON.stringify(mutate(BASE)),
+        'AWS::Test::Type',
+        // Same date as the committed side, so the ONLY difference is the
+        // section under test.
+        '2026-01-01'
+      );
+      expect(fixtureDiffersIgnoringDate(candidate, committed)).toBe(true);
+    });
+  }
+
+  it('the base actually populates every section it claims to exercise', () => {
+    // Without this the table above could be asserting over sections the base
+    // never emits, and each case would pass for the wrong reason.
+    const built = buildFixture(JSON.stringify(BASE), 'AWS::Test::Type', '2026-01-01');
+    for (const key of [
+      'properties',
+      'readOnlyProperties',
+      'createOnlyProperties',
+      'primaryIdentifier',
+      'nestedProperties',
+      'nestedPropertyPaths',
+      'definitionShapes',
+      'definitionRequired',
+    ]) {
+      expect(built, `buildFixture emitted no ${key}`).toHaveProperty(key);
+    }
+  });
+});
+
+describe('serializeFixture matches the committed corpus byte-for-byte', () => {
+  /**
+   * Every other comparison in this file is serialize-vs-serialize, so changing
+   * `serializeFixture` to minified output — or dropping the trailing newline —
+   * passes the whole suite while the next refresh rewrites all 134 committed
+   * files for no reason. This is the one assertion anchored to what is
+   * actually on disk, and it pins key ORDER as well as formatting.
+   */
+  it('round-trips every committed fixture unchanged', () => {
+    const files = readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.json') && !f.startsWith('_'));
+    expect(files.length, 'no committed fixtures found — the corpus path is wrong').toBeGreaterThan(100);
+    const mismatched: string[] = [];
+    for (const file of files) {
+      const text = readFileSync(join(FIXTURES_DIR, file), 'utf8');
+      if (serializeFixture(JSON.parse(text)) !== text) mismatched.push(file);
+    }
+    expect(mismatched, 'serializeFixture no longer reproduces these committed fixtures').toEqual([]);
+  });
+});
+
+describe('CLI argument handling', () => {
+  /**
+   * `main()` is not exported, so these run the real binary. The first case is
+   * a REGRESSION probe: `--from-zipX` once passed the unknown-flag filter,
+   * matched neither the zip mode nor the positional type filter, and fell
+   * through to a FULL authenticated DescribeType refresh of every registered
+   * type — rewriting ~135 fixtures from a typo, which is exactly what that
+   * guard was added to prevent.
+   */
+  function run(args: string[]) {
+    // The environment is SCRUBBED of AWS credentials, and that is a safety
+    // requirement rather than hygiene. These cases exercise argument REFUSAL,
+    // so the day a refusal regresses the run falls through to the real
+    // DescribeType path — and on a developer or CI machine that has
+    // credentials, it would issue ~135 live AWS calls and REWRITE all 134
+    // committed fixtures. Measured, not hypothetical: it happened here while
+    // probing this very guard, and the resulting fixture churn was
+    // indistinguishable from a real refresh.
+    //
+    // With credentials removed the fall-through fails fast and writes nothing
+    // (`processType` only writes on a successful response), so a regression
+    // shows up as the assertion below failing rather than as a mutated tree.
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(env)) {
+      if (key.startsWith('AWS_')) delete env[key];
+    }
+    env['AWS_EC2_METADATA_DISABLED'] = 'true';
+    env['AWS_SHARED_CREDENTIALS_FILE'] = join(REPO_ROOT, 'does-not-exist-credentials');
+    env['AWS_CONFIG_FILE'] = join(REPO_ROOT, 'does-not-exist-config');
+    return spawnSync(process.execPath, [join(REPO_ROOT, 'scripts/refresh-cfn-schemas.mjs'), ...args], {
+      encoding: 'utf8',
+      env,
+    });
+  }
+
+  /**
+   * The safety net for the note above: whatever any case in this block does,
+   * it must not have touched the committed corpus.
+   */
+  function fixtureCorpusDigest(): string {
+    return readdirSync(FIXTURES_DIR)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => `${f}:${readFileSync(join(FIXTURES_DIR, f), 'utf8').length}`)
+      .join('|');
+  }
+  const corpusBefore = fixtureCorpusDigest();
+  afterAll(() => {
+    expect(
+      fixtureCorpusDigest(),
+      'a CLI case mutated the committed fixture corpus — a refusal regressed and the ' +
+        'run reached the live DescribeType path'
+    ).toBe(corpusBefore);
+  });
+
+  it('rejects a near-miss --from-zip typo instead of falling through', () => {
+    const r = run(['--from-zipX']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('Unknown flag(s): --from-zipX');
+  });
+
+  it('rejects an unrelated unknown flag', () => {
+    expect(run(['-x']).status).toBe(1);
+  });
+
+  it('rejects --from-zip= with an empty value rather than silently downloading', () => {
+    const r = run(['--from-zip=']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("requires a path when the '=' form is used");
+  });
+
+  it('refuses --from-zip combined with a type filter', () => {
+    const r = run(['--from-zip', 'AWS::Lambda::Function']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('cannot be combined');
+  });
+
+  it('refuses --from-zip combined with --only-missing', () => {
+    expect(run(['--from-zip', '--only-missing']).status).toBe(1);
+  });
+
+  it('--help exits 0 and documents the zip mode', () => {
+    const r = run(['--help']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('--from-zip');
   });
 });

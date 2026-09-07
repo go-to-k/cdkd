@@ -20,6 +20,19 @@ name: CFn schema fixture refresh
 # prerequisite is what made an unattended job adoptable at all — provisioning a
 # CI role was the cost that kept this unbuilt.
 #
+# ACCEPTED RESIDUAL: that bundle cannot be pinned by content. AWS publishes no
+# checksum or signature for it, so TLS plus the origin host is the whole trust
+# story (the fetch uses `redirect: 'error'` and a size cap for that reason).
+# The poisoning that would survive the mechanical chain is subtle: moving a
+# WRITABLE property into `readOnlyProperties` makes `gen-property-coverage.ts`
+# omit it from `silentDrop`, so the resource stays on the SDK route and the
+# property is dropped for every user of the next release — and no human reading
+# a 132-file machine-generated JSON diff would catch one moved array element.
+# Two things bound it: compromising AWS's CDN or TLS is the price of entry, and
+# a property in neither `handled` nor `silentDrop` is exactly what
+# `reportUnrecognizedProperties` warns about at deploy time, so that specific
+# shape is the one this PR's other half already surfaces to the user.
+#
 # MONTHLY, not weekly: measured drift is ~3 WRITABLE properties per month across
 # the whole Tier 1 surface (6 of the 9 additions in the sample were
 # `readOnlyProperties`, which can never become silent drops). A weekly cycle
@@ -62,6 +75,16 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # `checkout` defaults to leaving the job's token in `.git/config`,
+          # and this is the repo's first job to hold `contents: write`. The
+          # steps below run `vp install --frozen-lockfile` and the whole
+          # generator chain — arbitrary dependency and codegen code — so a
+          # persisted write token would be reachable by one compromised
+          # transitive dev dependency, and a push to `main` is what
+          # release-please publishes to npm. The final step pushes with an
+          # explicit token instead. `release.yml` already does this.
+          persist-credentials: false
 
       - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
         with:
@@ -83,12 +106,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # `set -euo pipefail` is load-bearing, not hygiene: without it a `gh`
+          # transport failure leaves `number` empty, the guard reads "no open
+          # PR", and the cycle opens a SECOND PR competing with one a human is
+          # already classifying. Failing the step is the right answer — a red
+          # scheduled run is visible, a duplicate PR is not.
+          set -euo pipefail
+          # The owner filter is what stops ANYONE from disabling this job
+          # permanently. `gh pr list` includes PRs from forks, and a fork's
+          # head branch name is chosen by whoever opened it — so without this,
+          # a stranger pushing `bot/cfn-schema-refresh/2099-01` to their fork
+          # and opening a never-closed PR makes every future cycle find an
+          # "open refresh PR" and skip. The silent-drop class this whole job
+          # exists to watch would then go unwatched indefinitely, with no
+          # alert, which is strictly worse than the job not existing.
           number=$(gh pr list --state open --limit 100 \
-            --json number,headRefName \
-            --jq '[.[] | select(.headRefName | startswith("bot/cfn-schema-refresh/"))][0].number // empty')
+            --json number,headRefName,headRepositoryOwner \
+            --jq '[.[]
+                   | select(.headRepositoryOwner.login == "${{ github.repository_owner }}")
+                   | select(.headRefName | startswith("bot/cfn-schema-refresh/"))
+                  ][0].number // empty')
           echo "number=${number}" >> "$GITHUB_OUTPUT"
           if [ -n "${number}" ]; then
-            echo "An open refresh PR already exists: #${number}"
+            echo "An open refresh PR already exists: ${number}"
           fi
 
       - name: Refresh fixtures from the public schema bundle
@@ -105,11 +145,17 @@ jobs:
         id: drift
         if: steps.open_pr.outputs.number == ''
         run: |
-          if git diff --quiet -- tests/fixtures/cfn-schemas/; then
+          set -euo pipefail
+          # `git status --porcelain`, not `git diff --quiet`: the latter is
+          # blind to UNTRACKED files, and the refresh CREATES a fixture for a
+          # registered type that has none yet (an absent fixture counts as
+          # drift). That capture would then be silently discarded.
+          if [ -z "$(git status --porcelain -- tests/fixtures/cfn-schemas/)" ]; then
             echo "drifted=false" >> "$GITHUB_OUTPUT"
             echo "No fixture drift — nothing to do."
           else
             echo "drifted=true" >> "$GITHUB_OUTPUT"
+            git status --porcelain -- tests/fixtures/cfn-schemas/
             git --no-pager diff --stat -- tests/fixtures/cfn-schemas/
           fi
 
@@ -137,6 +183,15 @@ jobs:
           set -euo pipefail
           cycle=$(date -u +%Y-%m)
           branch="bot/cfn-schema-refresh/${cycle}"
+          # A same-month re-dispatch after the previous cycle's PR was closed
+          # WITHOUT deleting its branch would otherwise die on a non-fast-forward
+          # push. The branch is bot-owned and its PR is gone, so replacing it is
+          # correct; `--force-with-lease` still refuses if it moved under us.
+          force=""
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
+            echo "Branch ${branch} already exists remotely — replacing it (its PR is not open)."
+            force="--force-with-lease"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "${branch}"
@@ -152,7 +207,12 @@ jobs:
           # give it no changelog section, so this never opens or advances the
           # standing release PR. Same reasoning as .github/dependabot.yml.
           git commit -m "chore(schemas): refresh CFn schema fixtures (${cycle})"
-          git push origin "${branch}"
+          # Explicit token: `persist-credentials: false` above means the remote
+          # carries no auth, so this is the ONE step that holds it — rather
+          # than every step in the job.
+          git push ${force} \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${branch}"
           {
             echo "Automated monthly refresh of \`tests/fixtures/cfn-schemas/*.json\` against"
             echo "AWS's public CloudFormation schema bundle."

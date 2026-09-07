@@ -13,8 +13,9 @@
  *
  * The suite is built around the fact that makes the warn safe — an SDK
  * provider writes only what it declares in `handledProperties`, so an
- * unrecognized top-level property is dropped under every reading (post-
- * snapshot AWS addition, typo, `addPropertyOverride`). Every case below is
+ * unrecognized top-level property is dropped under every reading (a
+ * post-snapshot AWS addition, a typo, a read-only attribute, or a deliberate
+ * `addPropertyOverride`). Every case below is
  * therefore about the ROUTE (does this resource actually take the SDK path?)
  * rather than about guessing intent, because intent is not decidable here and
  * the code does not try.
@@ -24,7 +25,10 @@
  * changes, which is precisely the staleness class this issue is about.
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
-import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import {
+  ProviderRegistry,
+  STICKY_CC_MIGRATION_EXEMPT,
+} from '../../../src/provisioning/provider-registry.js';
 import {
   findUnrecognizedProperties,
   PROPERTY_COVERAGE_BY_TYPE,
@@ -137,7 +141,7 @@ describe('findUnrecognizedProperties (issue #2718)', () => {
 describe('ProviderRegistry warns about unrecognized properties on the SDK route (issue #2718)', () => {
   const fx = pickRoutableFixture();
 
-  it('warns, naming the property, the consequence, and both remedies', () => {
+  it('warns, naming the property, the consequence and a remedy', () => {
     const { registry, warn } = makeRegistry();
     registry.validateResourceProperties([
       { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
@@ -148,9 +152,8 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
     expect(lines[0]).toContain(fx.resourceType);
     // The consequence, which is the whole point of the line.
     expect(lines[0]).toContain('will NOT reach AWS');
-    // Both readings are named, because neither is decidable here.
+    // One reading spot-checked here; the full set has its own case below.
     expect(lines[0]).toContain('misspelled');
-    expect(lines[0]).toContain('after');
     // The 1-click report link and the suppression flag.
     expect(lines[0]).toContain('https://github.com/go-to-k/cdkd/issues/new');
     expect(lines[0]).toContain(`--allow-unsupported-properties ${fx.resourceType}:${UNKNOWN_PROP}`);
@@ -205,17 +208,27 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
    * `getProviderFor`'s actual rule rather than to `provisionedBy` alone.
    */
   it('DOES warn for a sticky-exempt type even when state says cc-api', () => {
-    const exemptType = 'AWS::Scheduler::Schedule';
+    // DERIVED from the exported set, not hardcoded: a hardcoded name goes
+    // silently inert the day the set changes, and the guard would then be
+    // asserting about a type that is no longer exempt. The floor keeps an
+    // emptied set from making this case vacuous.
     expect(
-      PROPERTY_COVERAGE_BY_TYPE.has(exemptType),
-      `${exemptType} left the Tier 1 coverage table — repoint this test at the ` +
-        'current STICKY_CC_MIGRATION_EXEMPT member.'
-    ).toBe(true);
+      STICKY_CC_MIGRATION_EXEMPT.size,
+      'STICKY_CC_MIGRATION_EXEMPT is empty — this case can no longer discriminate'
+    ).toBeGreaterThanOrEqual(1);
+    const exemptType = [...STICKY_CC_MIGRATION_EXEMPT].find((t) =>
+      PROPERTY_COVERAGE_BY_TYPE.has(t)
+    );
+    expect(
+      exemptType,
+      'no STICKY_CC_MIGRATION_EXEMPT type is in the Tier 1 coverage table, so the ' +
+        'sticky-exempt warn path is unreachable from this suite'
+    ).toBeDefined();
     const { registry, warn } = makeRegistry();
     registry.validateResourceProperties([
       {
         logicalId: 'MyResource',
-        resourceType: exemptType,
+        resourceType: exemptType!,
         properties: { [UNKNOWN_PROP]: 1 },
         provisionedBy: 'cc-api',
       },
@@ -255,6 +268,68 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
     expect(lines[0]).toContain(`${UNKNOWN_PROP}Two`);
     // Plural agreement, so the line reads correctly in both arities.
     expect(lines[0]).toContain('are not in');
+  });
+
+
+  /**
+   * The gap that made `autoRouted: autoRouted.length > 0` mutable to
+   * `drops.length > 0` with every test still green. When the ONLY silent drop
+   * is allow-listed, the resource stays on the SDK route (that is what the
+   * flag means), so an unrecognized property alongside it IS dropped and must
+   * warn. Keyed on `drops` instead, the code would read "there were drops, so
+   * we auto-routed" and go silent on a real drop.
+   */
+  it('still warns when the only silent drop is allow-listed (resource stays on SDK)', () => {
+    const { registry, warn } = makeRegistry();
+    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.silentDropProperty}`]);
+    registry.validateResourceProperties([
+      {
+        logicalId: 'MyResource',
+        resourceType: fx.resourceType,
+        properties: { [fx.silentDropProperty]: 1, [UNKNOWN_PROP]: 1 },
+      },
+    ]);
+    expect(unknownWarns(warn)).toHaveLength(1);
+  });
+
+  it('uses singular agreement for one property', () => {
+    // Without this, flipping `is`/`are` and `it`/`they` survives every other
+    // assertion in the file.
+    const { registry, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
+    ]);
+    const line = unknownWarns(warn)[0]!;
+    expect(line).toContain(`${UNKNOWN_PROP} is not in`);
+    expect(line).toContain('it will NOT reach AWS');
+  });
+
+  it('names all four readings, each with its own remedy', () => {
+    // The code cannot tell these apart, so the line must not imply one. The
+    // read-only arm matters most: the coverage generator excludes
+    // `readOnlyProperties` from `silentDrop`, so a template setting an
+    // ATTRIBUTE lands here and "AWS published it after our snapshot" is false.
+    const { registry, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
+    ]);
+    const line = unknownWarns(warn)[0]!;
+    expect(line).toContain('misspelled');
+    expect(line).toContain('read-only attribute');
+    expect(line).toContain("published after cdkd's");
+    expect(line).toContain('addPropertyOverride');
+  });
+
+  it('links the report URL to the actual property, not a constant', () => {
+    // `unsupportedPropertyIssueUrl(type, unrecognized[0]!)` was only fenced by
+    // its HOST, so passing any constant survived.
+    const { registry, warn } = makeRegistry();
+    registry.validateResourceProperties([
+      { logicalId: 'MyResource', resourceType: fx.resourceType, properties: { [UNKNOWN_PROP]: 1 } },
+    ]);
+    expect(unknownWarns(warn)[0]!).toContain(
+      encodeURIComponent(`Support property ${fx.resourceType}.${UNKNOWN_PROP}`)
+    );
   });
 
   it('never throws for an unrecognized property — it is a warn, not a rejection', () => {
