@@ -726,8 +726,12 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     // that rides on this file's record-once modelling, since the real
     // resolver would re-record the reference in the value loop), and the
     // LATER name's resolution already sees it (its context carries the
-    // plaintext — the discriminating assertion), because the pin and the
-    // pre-pass mask against exactly that context.
+    // plaintext — the discriminating assertion). Of the later name's three
+    // readers only the resolver seam is asserted, and it is the LAST to run:
+    // the cross-region pin and the cross-stack pre-pass mask their messages
+    // against the same live map, but for this later name both ran before the
+    // release, so nothing here says what they saw. Their masking against the
+    // map they are handed is pinned by their own suites.
     stateBackend.getState.mockResolvedValue({
       state: makeState({ Leaky: UNPINNED_PLAINTEXT }),
       etag: 'etag-1',
