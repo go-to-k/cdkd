@@ -92,14 +92,16 @@ renamed property**, and a **nested-key divergence**.
 
 The rest are CI checks that read the schema fixtures, and the pull request gives
 each one that failed its own section with the commands to settle it — so this
-page does not enumerate them. Two are worth knowing about because a plain
-schema **addition** reaches them, which is the shape easiest to wave through:
+page does not enumerate them. What they have in common is worth knowing: a plain
+schema **addition** reaches every one, which is the shape easiest to wave
+through.
 
 | Check | What an addition did |
 | --- | --- |
 | `property-coverage` | AWS re-added a property a provider had written off with a `bogusTolerated` rationale, so the rationale is now false |
 | `audit:sdk-attr-coverage:check` | A new read-only `*Arn` / `*Url` on a type that had none, which a cross-resource `Fn::GetAtt` cannot resolve |
 | `audit:enrichment-coverage:check` | A new computed attribute on a Cloud-Control type that nothing populates on read |
+| `fixture-consumer-tests` | A unit test asserting something about a specific type's schema no longer matches the capture |
 
 A fourth section, **"Fixtures this report could not read"**, means the
 comparison itself failed for those types — neither their removals nor their

@@ -42,6 +42,7 @@ import {
   renderLiteral,
   buildSdkLag,
   CHECK_GUIDANCE,
+  classifyGitShowFailure,
   collectFixtureDeltas,
   loadDeclaredProperties,
   UNREADABLE,
@@ -928,16 +929,49 @@ describe('the failed-checks verdict', () => {
   });
 
   it('names a check it has no guidance for rather than staying silent', () => {
+    // HYPHENATED, deliberately. The first version of this case used
+    // `audit:something:check` — the one name in the file with no hyphen — so it
+    // passed the wrong guard and could not see that every real check name
+    // rendered as the rejection placeholder. A check with no guidance row has
+    // nothing else naming it, so it lost its name completely.
     const md = renderDiagnosis({
       removed: [],
       writableAdded: [],
       divergences: [],
-      failedChecks: ['audit:something:check'],
+      failedChecks: ['audit:some-new-thing:check'],
       skipped: [],
     });
     expect(md).not.toContain('additions only');
-    expect(md).toContain('audit:something:check');
+    expect(md).toContain('audit:some-new-thing:check');
     expect(md).toContain('no guidance');
+    expect(md, 'the heading went through the wrong guard').not.toContain('rejected');
+  });
+
+  it('renders every check the table knows, and every one the workflow runs', () => {
+    // A CLASS fence, because this is the third round in which a render site
+    // rejected the legitimate names it exists to show: fixture filenames, then
+    // check names. Driving the REAL name sets means a fourth site cannot be
+    // added with the wrong guard and stay green.
+    const workflow = readFileSync(
+      join(REPO_ROOT, '.github/workflows/cfn-schema-refresh.yml'),
+      'utf8'
+    );
+    const fromWorkflow = [...workflow.matchAll(/^\s*run_check (\S+)/gm)].map((m) => m[1]!);
+    const names = [...new Set([...Object.keys(CHECK_GUIDANCE), ...fromWorkflow])];
+    expect(names.length, 'no check names found — this case fences nothing').toBeGreaterThanOrEqual(4);
+    expect(
+      names.some((n) => n.includes('-')),
+      'no hyphenated name in the set — the case cannot see the defect it exists for'
+    ).toBe(true);
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      failedChecks: names,
+      skipped: [],
+    });
+    expect(md).not.toContain('rejected');
+    for (const name of names) expect(md, `${name} is not named`).toContain(name);
   });
 
   it('never renders "additions only" over a coverage check that FAILED', () => {
@@ -1567,6 +1601,56 @@ describe('collectFixtureDeltas', () => {
     expect(readCurrent, 'the sentinel fell through to the comparison').toBe(0);
   });
 
+  it('classifies real git failures: path-not-in-HEAD is new, the rest are unreadable', () => {
+    // Measured against real git output. `unknown revision` and `invalid object`
+    // are whole-REVISION failures — an unborn HEAD says
+    // `fatal: invalid object name 'HEAD'` — and matching them as "brand-new"
+    // made every fixture look new and the refresh look clean, the exact
+    // fail-open this classification closes. Neither can match a genuine
+    // path-not-in-HEAD, which says `does not exist in 'HEAD'`.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-git-'));
+    try {
+      execFileSync('git', ['init', '-q', dir]);
+      // Unborn HEAD: a whole-revision failure, NOT a missing path.
+      const unborn = (() => {
+        try {
+          execFileSync('git', ['show', 'HEAD:anything'], { cwd: dir, encoding: 'utf8' });
+          return '';
+        } catch (e) {
+          return String((e as { stderr?: unknown }).stderr ?? '');
+        }
+      })();
+      expect(unborn, 'git no longer reports an unborn HEAD this way').not.toBe('');
+      // The CLASSIFICATION, not just what git prints: matching the
+      // whole-revision wording as "brand-new" is what made a broken repository
+      // render the refresh as clean.
+      expect(classifyGitShowFailure(unborn)).toBe(UNREADABLE);
+
+      // And the genuine path-not-in-HEAD, from a repo that HAS a commit.
+      writeFileSync(join(dir, 'seed.txt'), 'x');
+      execFileSync('git', ['-C', dir, 'add', 'seed.txt']);
+      execFileSync('git', ['-C', dir, '-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-qm', 's']);
+      const missing = (() => {
+        try {
+          execFileSync('git', ['show', 'HEAD:nope.json'], { cwd: dir, encoding: 'utf8' });
+          return '';
+        } catch (e) {
+          return String((e as { stderr?: unknown }).stderr ?? '');
+        }
+      })();
+      expect(classifyGitShowFailure(missing)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('treats a git failure with no recognisable wording as unreadable', () => {
+    // ENOENT and ENOBUFS both surface with empty stderr — the safe direction is
+    // "could not read", never "brand-new".
+    expect(classifyGitShowFailure('')).toBe(UNREADABLE);
+    expect(classifyGitShowFailure('fatal: not a git repository')).toBe(UNREADABLE);
+  });
+
   it('skips a BRAND-NEW fixture silently, which is not the same thing', () => {
     // No committed side means nothing to compare, not something unreadable —
     // counting it would put every newly captured type in the warning list.
@@ -1639,5 +1723,39 @@ describe('collectFixtureDeltas', () => {
       { resourceType: 'AWS::Glue::Connection', properties: ['Settable'] },
     ]);
     expect(out.readOnlyAddedCount).toBe(1);
+  });
+});
+
+describe('the module\u2019s own doc comments', () => {
+  it('has no JSDoc block orphaned from its declaration', () => {
+    // Inserting a helper directly above a documented function detaches that
+    // function's docblock and silently re-points it at the new one. It happened
+    // three times in one session — twice caught by `--checkJs` reporting an
+    // implicit-any on a parameter that now had no `@param`, once only by
+    // review. A block followed by another block, or by a blank line, documents
+    // nothing.
+    const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+    const lines = src.split('\n');
+    const orphans: string[] = [];
+    let blockStart = -1;
+    let seenBlocks = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i]!.trim() === '/**') blockStart = i;
+      if (lines[i] !== ' */') continue;
+      seenBlocks += 1;
+      const body = lines.slice(blockStart, i).join('\n');
+      // The FILE header documents the module, and a `@typedef`-only block
+      // documents types rather than a declaration — neither attaches to
+      // anything and both are correct as they are.
+      const attaches = seenBlocks > 1 && !/@typedef/.test(body);
+      const next = lines[i + 1] ?? '';
+      if (attaches && (next.trim() === '' || next.trim() === '/**')) {
+        orphans.push(`line ${i + 2}: ${JSON.stringify(next)}`);
+      }
+    }
+    expect(orphans, 'a docblock is not attached to a declaration').toEqual([]);
+    // And the file really does carry docblocks — otherwise this passes on a
+    // file it never parsed.
+    expect(lines.filter((l) => l === ' */').length).toBeGreaterThan(20);
   });
 });

@@ -78,7 +78,6 @@ export const UNREADABLE = Symbol('unreadable');
  * @typedef {import('./diagnose-schema-refresh.d.mts').AddedEntry} AddedEntry
  */
 
-
 /**
  * Every way `gen-nested-key-coverage.ts --check` announces a failure.
  *
@@ -581,36 +580,15 @@ export function parseDeclaredProperties(generatedSource) {
 }
 
 /**
- * Render the Markdown appended to the pull-request body.
- *
- * It NAMES what fired, where, and what the SDK says about it — then stops.
- *
- * The stopping point is narrower than it first looks, and the earlier framing
- * of it here was wrong: "the tiebreaker is in neither model" ignored that AWS
- * publishes a THIRD description, the SDK, which this repo already reads. So the
- * research IS largely mechanical and is now done above; what is left to a human
- * is confirmation plus the cases the evidence cannot separate — a rename looks
- * exactly like a removal at the name level (hence this repo's hand-maintained
- * rename maps), and `no-sdk-member` cannot tell "unsupported" from "the
- * installed SDK lags the service".
- *
- * The reason to stop there is the asymmetry rather than the ambiguity: the
- * silencing option (`bogusTolerated`, `NESTED_KEY_ALLOW_LIST`) is always
- * available and always turns CI green, so anything choosing automatically under
- * uncertainty converges on it — disabling the very check that caught the
- * problem, silently. Evidence shortens the human's work; it does not change who
- * accepts that risk.
- *
- * The input shape lives in the sibling `.d.mts` and is named here rather than
- * restated field by field: the per-field `@param` list was a second copy, and
- * it went stale twice — silently, since nothing in CI type-checks `scripts/**
  * What to do about each CI check a schema refresh can turn red.
  *
- * Keyed by the `vp run` task name, so the workflow and this table name the same
- * thing. Every entry here is a check that READS `tests/fixtures/cfn-schemas/`
- * and hard-fails CI, which is what makes its silence expensive: two of the
- * three are reddened by a pure schema ADDITION, the shape a reader is most
- * likely to wave through.
+ * Keyed by the name the workflow's `run_check` reports, so the two sides name
+ * the same thing — the `vp run` task for the audits, a bare `property-coverage`
+ * for the vitest filter.
+ *
+ * Every entry READS `tests/fixtures/cfn-schemas/` and hard-fails CI, and every
+ * one of them is reddened by a pure schema ADDITION — the shape a reader is
+ * most likely to wave through, which is what makes the silence expensive.
  *
  * A check absent from this table still gets a section — naming it and saying
  * there is no guidance beats the silence that shipped for six rounds.
@@ -644,6 +622,19 @@ export const CHECK_GUIDANCE = {
     'is Cloud-Control-routed — check whether its `primaryIdentifier` already',
     'covers it.',
   ],
+  'fixture-consumer-tests': [
+    'A unit test that reads the schema fixtures directly and asserts something',
+    'about their contents — a mutually-exclusive-properties rule naming a',
+    'property that is gone, or an ECS subfield list the capture no longer',
+    'matches.',
+    '',
+    '```bash',
+    'vp test run mutually-exclusive-properties ecs-deployment-configuration-subfield ecs-service-config-props',
+    '```',
+    '',
+    'Each asserts a fact about a specific type. Read what it names and decide',
+    'whether the rule or the assertion is what AWS just invalidated.',
+  ],
   'audit:enrichment-coverage:check': [
     'A new computed attribute on a pure Cloud-Control type that',
     '`enrichResourceAttributes` does not populate — the silent-drop class on the',
@@ -659,7 +650,31 @@ export const CHECK_GUIDANCE = {
   ],
 };
 
-/**`.
+
+/**
+ * Render the Markdown appended to the pull-request body.
+ *
+ * It NAMES what fired, where, and what the SDK says about it — then stops.
+ *
+ * The stopping point is narrower than it first looks, and the earlier framing
+ * of it here was wrong: "the tiebreaker is in neither model" ignored that AWS
+ * publishes a THIRD description, the SDK, which this repo already reads. So the
+ * research IS largely mechanical and is now done above; what is left to a human
+ * is confirmation plus the cases the evidence cannot separate — a rename looks
+ * exactly like a removal at the name level (hence this repo's hand-maintained
+ * rename maps), and `no-sdk-member` cannot tell "unsupported" from "the
+ * installed SDK lags the service".
+ *
+ * The reason to stop there is the asymmetry rather than the ambiguity: the
+ * silencing option (`bogusTolerated`, `NESTED_KEY_ALLOW_LIST`) is always
+ * available and always turns CI green, so anything choosing automatically under
+ * uncertainty converges on it — disabling the very check that caught the
+ * problem, silently. Evidence shortens the human's work; it does not change who
+ * accepts that risk.
+ *
+ * The input shape lives in the sibling `.d.mts` and is named here rather than
+ * restated field by field: the per-field `@param` list was a second copy, and
+ * it went stale twice — silently, since nothing in CI type-checks `scripts/**`.
  *
  * @param {DiagnosisInput} input
  * @returns {string}
@@ -820,7 +835,12 @@ export function renderDiagnosis(input) {
     lines.push('### CI checks that FAILED — a decision is needed', '');
     for (const check of failedChecks) {
       const guidance = CHECK_GUIDANCE[check];
-      lines.push(`#### \`${renderName(check)}\``, '');
+      // `renderKey`, not `renderName`: a task name carries hyphens and
+      // `renderName`'s class excludes them, so every heading rendered as the
+      // rejection placeholder — the section that exists to say WHICH check
+      // failed naming none of them. Identical to the defect one section down,
+      // one round earlier. `renderKey` adds its own backticks.
+      lines.push(`#### ${renderKey(check)}`, '');
       lines.push(
         ...(guidance ?? [
           'This report carries no guidance for that check — read its job log.',
@@ -1147,6 +1167,24 @@ function divergenceProcedure(divergences, sdkLag) {
 }
 
 /**
+ * Whether a failed `git show HEAD:<path>` means "brand-new fixture" or "could
+ * not read".
+ *
+ * Exported because the distinction is the whole point and it was wrong: the
+ * first cut also matched `unknown revision` and `invalid object`, which are
+ * whole-REVISION failures — an unborn HEAD reports
+ * `fatal: invalid object name 'HEAD'` — so a broken repository made every
+ * fixture look brand-new and the whole refresh look clean. Neither pattern can
+ * match a genuine path-not-in-HEAD, which says `does not exist in 'HEAD'`.
+ *
+ * @param {string} stderr
+ * @returns {undefined | typeof UNREADABLE} `undefined` = not in HEAD
+ */
+export function classifyGitShowFailure(stderr) {
+  return /does not exist|exists on disk, but not in/i.test(stderr) ? undefined : UNREADABLE;
+}
+
+/**
  * Read a type's committed fixture from git, or `undefined` when it is new.
  *
  * @param {string} relPath
@@ -1166,11 +1204,15 @@ function committedVersion(relPath) {
     // look new and the whole refresh look clean. Measured: every file
     // undefined yields the clean verdict, over a step that only runs when
     // drift exists.
-    const stderr = String(error?.stderr ?? '');
-    if (/does not exist|exists on disk, but not in|unknown revision|invalid object/i.test(stderr)) {
-      return undefined;
-    }
-    return UNREADABLE;
+    //
+    // Only the PATH-shaped failures mean "brand-new fixture". `unknown
+    // revision` and `invalid object` are whole-REVISION failures — an unborn
+    // HEAD reports `fatal: invalid object name 'HEAD'` — and matching them made
+    // every fixture look new and the whole refresh look clean, which is the
+    // exact fail-open this function was changed to close. Measured: neither can
+    // ever match a genuine path-not-in-HEAD, which says
+    // `does not exist in 'HEAD'`.
+    return classifyGitShowFailure(String(error?.stderr ?? ''));
   }
 }
 

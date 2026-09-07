@@ -537,11 +537,13 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       const envFile = join(dir, 'github-env');
       // Fails the CHECKS only. A stub that failed everything would abort on
       // `gen:all-matrices` instead — which is correct behaviour and would have
-      // made this case pass for the wrong reason.
+      // made this case pass for the wrong reason. The pattern covers the audit
+      // tasks AND every `vp test run` filter: naming one filter left the newest
+      // check passing and the set assertion caught it.
       const vp = [
         '#!/bin/sh',
         'case "$*" in',
-        '  *audit:*:check|*"test run property-coverage"*) exit 1 ;;',
+        '  *audit:*:check|*"test run"*) exit 1 ;;',
         '  *) exit 0 ;;',
         'esac',
       ].join('\n');

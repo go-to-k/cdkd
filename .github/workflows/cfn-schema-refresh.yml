@@ -264,10 +264,21 @@ jobs:
             failed_checks="${failed_checks:+${failed_checks},}${name}"
             echo "::notice::${name} is red — a decision is needed on this PR"
           }
+          # The filter matches `property-coverage.test.ts` and its two siblings
+          # (`.runtime.test.ts`, `scripts/gen-property-coverage.test.ts`); all
+          # three are fixture-driven, and the guidance says to run the filter
+          # rather than naming one file, so a red in any of them lands somewhere
+          # a reader can act on.
           run_check property-coverage \
             env CDKD_GENERATE_BACKFILL=true vp test run property-coverage
           run_check audit:sdk-attr-coverage:check vp run audit:sdk-attr-coverage:check
           run_check audit:enrichment-coverage:check vp run audit:enrichment-coverage:check
+          # Unit tests that read the fixtures DIRECTLY and assert about their
+          # contents. They run under ci.yml's whole-suite job, not under any
+          # audit task, so a schema change reddens CI with nothing in the
+          # diagnosis to explain it.
+          run_check fixture-consumer-tests \
+            vp test run mutually-exclusive-properties ecs-deployment-configuration-subfield ecs-service-config-props
           # Through the environment FILE, not a shell variable: each `run:` is
           # its own shell, so a plain assignment here is simply gone by the
           # Diagnose step — and an absent `--failed-checks` reads as "nothing
