@@ -491,10 +491,11 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // another step's output), which is silent in both directions.
       //
       // `DRIFTED` is deliberately NOT here. It was, and the clamp stopped
-      // reading it when the predicate moved to `PUBLISHED_PR` — an exact-object
-      // assertion is what makes a now-dead entry a failure rather than a line
-      // nobody notices, and the case below is what proves the shell reads every
-      // entry that IS here.
+      // reading it when the predicate moved to `PUBLISHED_PR`. This literal is
+      // the only thing that notices a dead entry, and only while it disagrees:
+      // the derived case below proves READ ⇒ DECLARED, never the converse, so
+      // an entry added to both places again would go unwatched. That is exactly
+      // how `DRIFTED` survived its own retirement for a round.
       const step = byName(MARK_STEP);
       expect(step.env).toEqual({
         GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}',
@@ -1382,11 +1383,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
             out[key] = value;
             continue;
           }
-          // A cycle that did not drift is a cycle that PUBLISHED nothing, and
-          // the clamp keys on the latter — Publish can also bail on a lost
-          // push race with `DRIFTED` still `true`, which a `DRIFTED` predicate
-          // let straight through. The harness moves both together so the arms
-          // below still read as "a quiet day".
+          // Only `PUBLISHED_PR` varies; the rest come from `HARNESS`.
           const supplied = key === 'PUBLISHED_PR' ? published : HARNESS[key];
           expect(
             supplied,
@@ -1520,7 +1517,17 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       writeFileSync(bodyFile, crlf);
       writeFileSync(titleFile, `${BASE}\n`);
       const crlfRun = run('2', PUBLISHED);
-      expect(count(crlfRun.body, begin), 'a CRLF body grew a second verdict block').toBe(1);
+      // TRIMMED, because the untrimmed count is vacuous for the mutation it
+      // names: with the strip removed the duplicate block's old marker keeps
+      // its `\r`, so it is not equal to `begin` and the count is 1 either way
+      // (measured). And the written body must carry no CR at all — that is
+      // what says the strip happened rather than that one comparison happened
+      // to line up.
+      expect(
+        crlfRun.body.split('\n').filter((l) => l.trim() === begin).length,
+        'a CRLF body grew a second verdict block'
+      ).toBe(1);
+      expect(crlfRun.body, 'the CR survived into the written body').not.toContain('\r');
       expect(crlfRun.body, 'the stale verdict survived a CRLF body').not.toContain('stale');
       expect(crlfRun.body, 'the human half of a CRLF body was lost').toContain('Human prose.');
     } finally {

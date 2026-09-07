@@ -2454,10 +2454,15 @@ describe('--decision-count-out', () => {
     // failing would stop the PR from opening. The marking step's absent-count
     // refusal is what turns this into a red, one step later.
     const out = spawnSync('node', [SCRIPT, '--decision-count-out'], { encoding: 'utf8' });
-    // The STATUS, not only the text. Dropping it left the precise regression
-    // this round reverted — re-adding the flag to the re-throw set, which
-    // stops the refresh PR from opening — passing.
-    expect(out.status, 'the flag is back in the re-throw set').toBe(0);
+    // The STATUS, not only the text — and NOT for the reason first written
+    // here. Re-adding the flag to the re-throw set was measured and does not
+    // survive: that arm writes to stderr, so the `toContain` below already
+    // reds. What this catches is the arm that keeps the sentence on STDOUT and
+    // sets `process.exitCode = 1` anyway — a shape the text assertion cannot
+    // see at all, and one that stops the refresh PR from opening just as
+    // surely, since the Diagnose step's exit is what Publish's implicit
+    // `success()` reads.
+    expect(out.status, 'an argv error now fails the step, so no PR opens').toBe(0);
     expect(out.stdout).toContain('--decision-count-out was given with no value');
   }, 60_000);
 

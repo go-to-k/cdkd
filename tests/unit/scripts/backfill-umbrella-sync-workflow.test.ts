@@ -474,6 +474,11 @@ case "$1 $2" in
       if [ "$1" = "--body-file" ]; then cp "$2" "$GH_WRITTEN"; fi
       shift
     done ;;
+  # FAILS CLOSED. A fall-through returning 0 with empty stdout models a gh
+  # that answered nothing as SUCCESS -- the exact shape the step under test
+  # exists to refuse -- so the stub would hand the step the very state its
+  # guards are about and call it fine.
+  *) echo "stub gh: unmodelled subcommand: $*" >&2; exit 1 ;;
 esac
 `,
           { mode: 0o755 }

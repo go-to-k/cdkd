@@ -681,12 +681,6 @@ jobs:
           # `--add-assignee` is idempotent, and the owner is read from the
           # event rather than hard-coded so a fork or a transfer cannot
           # silently assign a stranger.
-          # Both marks are ATTEMPTED, then the failures are reported together.
-          # Ordering alone only moved the victim: a bare `--add-assignee` under
-          # `set -e` -- a 422 for an org owner after a transfer, or a user who
-          # cannot be assigned -- killed the label instead, and with no
-          # `::error::` naming a fix, which the label arm at least has. Neither
-          # mark should be able to take the other down.
           marks_failed=0
           if ! gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"; then
             echo "::error::Could not assign PR ${pr} to '${GITHUB_REPOSITORY_OWNER}'. This is the only mark that NOTIFIES, so the decision is now visible in list views only. An organisation owner is not assignable — set a user login if this repository was transferred."
