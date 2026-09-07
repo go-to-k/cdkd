@@ -86,9 +86,14 @@ describe('foldAnnotationText', () => {
     // This form can fail. The constant is EXPORTED and shared, so a future
     // consumer using `.test()` or an `.exec()` loop leaves `lastIndex` advanced;
     // seeding it here is that future, today.
+    // try/finally: the constant is module-shared, so leaving `lastIndex` at 5
+    // when the assertion throws corrupts every sibling case in this file.
     LINE_BREAKING_CHARS.lastIndex = 5;
-    expect(foldAnnotationText(`a${cp(0x0d)}b`)).toBe('a b');
-    LINE_BREAKING_CHARS.lastIndex = 0;
+    try {
+      expect(foldAnnotationText(`a${cp(0x0d)}b`)).toBe('a b');
+    } finally {
+      LINE_BREAKING_CHARS.lastIndex = 0;
+    }
   });
 });
 
@@ -307,6 +312,57 @@ describe('the rule reaches every checker that emits an annotation', () => {
     // collapsing every space run silently re-indents code and mis-aligns
     // tables inside a fence whose whole purpose is preserving them.
     expect(fencedQuote('    const x = 1;  // note')).toContain('    const x = 1;  // note');
+  });
+
+  it.each([
+    ['check-pr-non-english-text.ts'],
+    ['check-pr-internal-labels.ts'],
+    ['check-pr-closes-paren.ts'],
+    ['check-pr-title-prefix-scope.ts'],
+  ])('%s interpolates an offender field ONLY inside a format function', (file) => {
+    // The gap this closes: extracting `formatFoundRow` and unit-testing the
+    // FUNCTION says nothing about `main()` still calling it. Reverting `main()`
+    // to its old inline unmarked template, while the exported function stayed
+    // green, survived the entire suite -- and `main()`'s output is the one that
+    // reaches the log (go-to-k/cdkd#2736 round-5 review).
+    //
+    // Derived, not enumerated: every line interpolating an offender-shaped
+    // field must sit inside a `format*` function. That holds however many
+    // echoes a file grows, which is the property four rounds of hand-counting
+    // failed to keep.
+    const src = readFileSync(join(import.meta.dirname, '../../../scripts', file), 'utf8');
+    const lines = src.split('\n');
+
+    // Line ranges of every `export function format...` body, by brace depth.
+    const inFormatter: boolean[] = new Array(lines.length).fill(false);
+    for (let i = 0; i < lines.length; i++) {
+      if (!/^export function format[A-Za-z]*\(/.test(lines[i] ?? '')) continue;
+      let depth = 0;
+      let started = false;
+      for (let j = i; j < lines.length; j++) {
+        const l = lines[j] ?? '';
+        inFormatter[j] = true;
+        for (const ch of l) {
+          if (ch === '{') {
+            depth++;
+            started = true;
+          } else if (ch === '}') depth--;
+        }
+        if (started && depth <= 0) break;
+      }
+    }
+
+    const FIELD = /\$\{(?:foldAnnotationText\(|foldAnnotationRuns\()?o\.(text|file|hit|hits)\b/;
+    const stray: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i] ?? '';
+      if (/^\s*(\*|\/\/)/.test(l)) continue; // comments
+      if (FIELD.test(l) && !inFormatter[i]) stray.push(`${file}:${i + 1}: ${l.trim()}`);
+    }
+    expect(stray, 'an offender field is interpolated outside a format function').toEqual([]);
+
+    // The scan must actually SEE the formatters, or an empty `stray` is vacuous.
+    expect(inFormatter.filter(Boolean).length, `${file} has no format function body`).toBeGreaterThan(3);
   });
 
   it('the fold reaches the family half that emits no `::` at all', () => {

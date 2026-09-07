@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
@@ -458,60 +466,75 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
     expect(run, 'jq must consume the fetched PR json').toMatch(/<\s*"\$RUNNER_TEMP\/pr\.json"/);
   });
 
-  it('no workflow echoes a fork-controlled file list into the log', () => {
-    // `pr-title-check.yml` used to `cat changed-files.txt`, printing paths that
-    // arrive JSON-decoded from the API -- so a name carrying a carriage return,
-    // or one literally spelled `::error file=...::...`, forged a workflow
-    // command on every run. The listing moved into the checker, which folds it
-    // and gives every row a non-whitespace `[` prefix.
+  it('every reader of a report file is one of the two allowed readers', () => {
+    // Replaces a `cat`-forbidding regex, which was FALSE COMFORT. It matched
+    // only a line literally starting `cat <arg>`; measured as ALLOWED were
+    // `true && cat f`, `printf '%s\\n' "$(cat f)"`, `while read … < f`,
+    // `awk 1 f`, `tail -n +1 f`, `nl f`, `sed -n p f`, `tee < f` and
+    // `xargs cat` -- and the workflow list was three hand-written names, so
+    // `pr-inherit-issue-labels.yml`'s live `cat "$err"` was never scanned
+    // (go-to-k/cdkd#2736 round-5 review).
     //
-    // Re-adding the `cat` restores the vulnerability exactly, and passed the
-    // whole suite (measured, go-to-k/cdkd#2736 round-4 review). Nothing else
-    // stops a future edit reaching for it.
-    for (const file of ['pr-title-check.yml', 'pr-content-checks.yml', 'issue-conventions.yml']) {
+    // Enumerating bad spellings loses that race by construction. So this pins
+    // the PROPERTY instead: each report file has exactly two legitimate
+    // readers -- the prefixing `sed` that puts it in the LOG, and
+    // `gh api -F body=@` which posts it as a COMMENT, where the fence must
+    // render unprefixed. Any third reader is the finding, whatever it is
+    // spelled with.
+    const REPORTS = ['report.md', 'conflict.md', 'comment.md'];
+    const dir = join(import.meta.dirname, '../../../.github/workflows');
+    const offenders: string[] = [];
+
+    for (const file of readdirSync(dir).filter((f) => f.endsWith('.yml'))) {
       const doc = wf(file);
-      const jobs = doc['jobs'] as Record<string, { steps?: Array<Record<string, unknown>> }>;
+      const jobs = (doc['jobs'] ?? {}) as Record<
+        string,
+        { steps?: Array<Record<string, unknown>> }
+      >;
       const runs = Object.values(jobs)
         .flatMap((j) => j.steps ?? [])
         .map((st) => String(st['run'] ?? ''))
         .join('\n')
         .split('\n')
         .map((l) => l.replace(/#.*$/, ''))
-        .join('\n');
-      // A bare `cat` of any file. Reports go through `sed 's/^/| /'` instead,
-      // which supplies the non-whitespace prefix the runner's TRIM-START makes
-      // necessary.
-      expect(
-        runs,
-        `${file} must not cat attacker-controlled text straight into the log`,
-      ).not.toMatch(/^\s*cat\s+\S/m);
+        .filter((l) => l.trim() !== '');
+
+      for (const line of runs) {
+        for (const report of REPORTS) {
+          if (!line.includes(report)) continue;
+          const writes = new RegExp(String.raw`>\s*${report}\b`).test(line);
+          const prefixed = line.includes(`sed 's/^/| /' ${report}`);
+          const posted = new RegExp(String.raw`-F body=@${report}\b`).test(line);
+          if (!writes && !prefixed && !posted) {
+            offenders.push(`${file}: ${line.trim()}`);
+          }
+        }
+      }
     }
+    expect(offenders, 'a report file is read by something other than the log prefix or the comment post').toEqual([]);
   });
 
   it('every report a workflow prints carries a non-whitespace prefix', () => {
-    // The runner TRIM-STARTS each line before deciding whether it is a workflow
-    // command, so the reports' own two-space fence indent protects nothing: an
-    // issue body opening with `::stop-commands::` suppressed every later
-    // annotation in a job holding `issues: write`, reachable by ANY GitHub user
-    // (go-to-k/cdkd#2736 round-4 security review). The FILES stay pristine --
-    // they are posted as comments, where the fence has to render.
+    // Kept, but no longer a magic count. `toBe(4)` bound the NUMBER of `sed`
+    // occurrences, so a fifth unprefixed echo passed; the case above binds the
+    // property, and this one only asserts the prefix form is the one used.
     const doc = wf('issue-conventions.yml');
     const jobs = doc['jobs'] as Record<string, { steps?: Array<Record<string, unknown>> }>;
     const runs = Object.values(jobs)
       .flatMap((j) => j.steps ?? [])
       .map((st) => String(st['run'] ?? ''))
       .join('\n');
-    const prefixed = (runs.match(/sed 's\/\^\/\| \/'/g) ?? []).length;
-    expect(prefixed, 'each report echo must go through the prefix').toBe(4);
+    expect(runs, 'the log prefix must be the `| ` form').toContain("sed 's/^/| /'");
   });
 
   it.each([
-    ['gh exits non-zero', 'fail', false],
-    ['gh exits 0 with EMPTY stdout', 'empty', false],
-    ['gh returns valid JSON', 'ok', true],
+    ['gh exits non-zero', 'fail', false, 'gh exited non-zero'],
+    ['gh exits 0 with EMPTY stdout', 'empty', false, 'its JSON could not be read'],
+    ['the mv into place fails', 'mvfail', false, 'could not be moved into place'],
+    ['gh returns valid JSON', 'ok', true, ''],
   ])(
     'the subject build with %s: warns and exits 0, or produces a subject',
-    (_label, mode, expectSubject) => {
+    (_label, mode, expectSubject, armText) => {
       // The arms were pinned by SOURCE TEXT -- counting `exit 0`s -- which
       // proves nothing about behaviour and missed that moving the leading
       // `rm -f` to the END of the step deletes the subject right after `mv`,
@@ -545,6 +568,20 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
 
         const runnerTemp = join(dir, 'temp');
         mkdirSync(runnerTemp);
+        if (mode === 'mvfail') {
+          // A READ-ONLY directory at the destination. `rm -f` cannot remove a
+          // directory and `mv` cannot write into one it may not enter.
+          //
+          // A plain non-empty directory does NOT work, and that was the first
+          // attempt: `mv file dir` moves the file INTO the directory and
+          // SUCCEEDS, so the step exited 0 silently and the case passed for the
+          // wrong reason. Without this mode nothing executed the mv arm at all
+          // -- deleting it, and flipping its `exit 0` to `exit 1`, both passed
+          // every case (go-to-k/cdkd#2736 round-5 review).
+          mkdirSync(join(runnerTemp, 'subject.json'));
+          writeFileSync(join(runnerTemp, 'subject.json', 'keep'), 'x');
+          chmodSync(join(runnerTemp, 'subject.json'), 0o500);
+        }
         const out = execFileSync('bash', ['-c', script], {
           encoding: 'utf8',
           env: {
@@ -566,12 +603,23 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
             return false;
           }
         };
-        expect(exists(), `subject present? (${mode})`).toBe(expectSubject);
+        if (mode === 'mvfail') {
+          // The read-only directory is still there; what must NOT exist is a
+          // readable subject FILE.
+          expect(() => JSON.parse(readFileSync(subject, 'utf8'))).toThrow();
+        } else {
+          expect(exists(), `subject present? (${mode})`).toBe(expectSubject);
+        }
         if (!expectSubject) {
           // Failing OPEN means: exit 0 (execFileSync would have thrown
           // otherwise), a warning saying so, and NO subject left behind for the
           // next step to mistake for a broken checker.
           expect(out).toContain('::warning title=Auto-close form check skipped::');
+          // ARM-SPECIFIC. All arms share that prefix, so asserting only the
+          // prefix let `if ! gh …` become `if false`, and let an arm be
+          // DELETED, while every mode passed (measured, go-to-k/cdkd#2736
+          // round-5 review). The case named an arm it never reached.
+          expect(out, `the ${mode} arm must report its own cause`).toContain(armText);
         } else {
           expect(JSON.parse(readFileSync(subject, 'utf8'))).toMatchObject({
             kind: 'pull_request',
@@ -579,6 +627,13 @@ describe('the CI checks that replaced PreToolUse gates are still wired up', () =
           });
         }
       } finally {
+        // Restore write permission first, or `rmSync` cannot descend into the
+        // read-only directory the mvfail mode created.
+        try {
+          chmodSync(join(dir, 'temp', 'subject.json'), 0o700);
+        } catch {
+          /* only the mvfail mode creates it */
+        }
         rmSync(dir, { recursive: true, force: true });
       }
     },

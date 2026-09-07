@@ -524,7 +524,11 @@ export function main(env: NodeJS.ProcessEnv = process.env): number {
           'is a permanent hole in the English-only rule for that path; drop the entry when the ' +
           'file goes.',
       );
-      for (const entry of stale) console.error(`  - ${entry}`);
+      // Folded for uniformity, not because it is reachable: the allow-list is
+      // read from the BASE checkout, which a fork PR cannot write. Uniformity
+      // is the point -- a per-site judgement about reachability is what let
+      // three echoes ship raw (go-to-k/cdkd#2736 round-5 review).
+      for (const entry of stale) console.error(`  - ${foldAnnotationText(entry)}`);
       return 1;
     }
   } else {

@@ -231,8 +231,8 @@ jobs:
           if ! gh pr view "$NUMBER" -R "$REPO" --json title,body,labels \
                  > "$RUNNER_TEMP/pr.json"; then
             echo "::warning title=Auto-close form check skipped::could not read PR" \
-                 "#$NUMBER (gh exited non-zero, or its output could not be written --" \
-                 "network / auth / rate limit / disk). The parens-form auto-close" \
+                 "#$NUMBER: gh exited non-zero, or its output could not be written" \
+                 "(network / auth / rate limit / disk). The parens-form auto-close" \
                  "check did NOT run."
             exit 0
           fi
