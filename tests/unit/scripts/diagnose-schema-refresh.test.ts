@@ -32,8 +32,10 @@ import {
   findDeclarationCandidates,
   mapTypesToProviderFiles,
   parseDeclaredProperties,
+  pairRenames,
   parseNestedKeyDivergences,
   renderDiagnosis,
+  renderName,
   sdkModelsMember,
   sdkVersionLag,
 } from '../../../scripts/diagnose-schema-refresh.mjs';
@@ -97,6 +99,20 @@ describe('parseNestedKeyDivergences', () => {
       parseNestedKeyDivergences('nested-key-coverage: FAIL — nested CFn->SDK key divergence\n')
     ).toThrow(/output format changed/);
   });
+
+  it('does NOT refuse the checker’s OTHER failure modes, which print no findings', () => {
+    // Three of the checker's four FAIL modes legitimately emit no finding line.
+    // Refusing on those made main() discard the entire diagnosis — losing the
+    // removal and addition sections too — and blame a format change that had
+    // not happened.
+    for (const other of [
+      'nested-key-coverage: FAIL — stale NESTED_KEY_ALLOW_LIST entr(ies) match no audited key',
+      'nested-key-coverage: FAIL — stale segmentRenames entr(ies) no longer resolve anything',
+      'nested-key-coverage: FAIL — stale terminalRenames entr(ies): the un-renamed terminal',
+    ]) {
+      expect(parseNestedKeyDivergences(other)).toEqual([]);
+    }
+  });
 });
 
 describe('parseDeclaredProperties', () => {
@@ -107,7 +123,17 @@ describe('parseDeclaredProperties', () => {
     // whatever the parser expects, which is exactly how the `<string>` type
     // argument was missed.
     const declared = parseDeclaredProperties(readFileSync(REAL_GENERATED, 'utf8'));
-    expect(declared.size).toBeGreaterThan(100);
+    // Compared against the module's OWN entry count, not a floor. A floor of
+    // 100 was blind to the real defect: 131 of 134 parsed, three types silently
+    // absent and two credited with a NEIGHBOUR's properties, because a type
+    // whose set is `new Set<string>()` has no `[` for the lazy match to stop at.
+    const entryCount = (readFileSync(REAL_GENERATED, 'utf8').match(/\[\s*'AWS::[\w:]+',\s*\{/g) ?? [])
+      .length;
+    expect(entryCount).toBeGreaterThan(100);
+    expect(declared.size).toBe(entryCount);
+    // The two types the partial parse mis-credited, pinned by name.
+    expect(declared.get('AWS::CloudFormation::WaitConditionHandle')!.size).toBe(0);
+    expect(declared.get('AWS::BedrockAgentCore::Evaluator')!.has('EvaluatorConfig')).toBe(true);
     const route53 = declared.get('AWS::Route53::RecordSet');
     expect(route53, 'AWS::Route53::RecordSet left the generated table').toBeDefined();
     expect(route53!.has('AliasTarget')).toBe(true);
@@ -152,8 +178,12 @@ describe('findDeclarationCandidates', () => {
   it('is scoped to the provider serving the type, not the whole directory', () => {
     // The confident-wrong-answer case. Unscoped, `Id` matched 50+ lines across
     // 20 providers; scoped, it can only report the file that owns the type.
+    // `AliasTarget`, not `GeoProximityLocation`: the latter is the property this
+    // very refresh cycle removes, so following the runbook's own remedy would
+    // red this test with a message about the diagnosis script rather than about
+    // the classification.
     const hits = findDeclarationCandidates(
-      'GeoProximityLocation',
+      'AliasTarget',
       'src/provisioning/providers/route53-provider.ts',
       'AWS::Route53::RecordSet',
       REPO_ROOT
@@ -172,27 +202,35 @@ describe('findDeclarationCandidates', () => {
     // 17 provider files serve more than one type; `ec2-provider.ts` serves 15.
     // Unscoped, asking about `Tags` on one Glue type returned every `'Tags'` in
     // the file, including other Glue types' declarations.
-    const scoped = findDeclarationCandidates(
-      'Tags',
-      'src/provisioning/providers/glue-provider.ts',
-      'AWS::Glue::Connection',
-      REPO_ROOT
+    // A NON-EMPTY scoped answer, and the sibling type's line explicitly
+    // excluded. The earlier form compared lengths, and the scoped answer was
+    // `[]` — so `0 < 18` passed trivially and deleting the block's END bound
+    // left it green.
+    const type = 'AWS::Glue::Connection';
+    const file = 'src/provisioning/providers/glue-provider.ts';
+    const scoped = findDeclarationCandidates('ConnectionInput', file, type, REPO_ROOT);
+    const unscoped = findDeclarationCandidates('ConnectionInput', file, undefined, REPO_ROOT);
+    expect(scoped.length, 'the type block yielded nothing — scoping window is wrong').toBeGreaterThan(0);
+    expect(unscoped.length).toBeGreaterThanOrEqual(scoped.length);
+    // Every scoped hit must sit inside the block, i.e. at or after the type's
+    // own literal — deleting the window's END makes this fail on a later type.
+    const lines = readFileSync(join(REPO_ROOT, file), 'utf8').split('\n');
+    const start = lines.findIndex((l) => l.includes(`'${type}'`));
+    const nextType = lines.findIndex(
+      (l, i) => i > start && /'AWS::[A-Za-z0-9]+::[A-Za-z0-9]+'/.test(l)
     );
-    const unscoped = findDeclarationCandidates(
-      'Tags',
-      'src/provisioning/providers/glue-provider.ts',
-      undefined,
-      REPO_ROOT
-    );
-    expect(unscoped.length).toBeGreaterThan(5);
-    expect(scoped.length).toBeLessThan(unscoped.length);
+    for (const hit of scoped) {
+      const lineNo = Number(hit.split(':')[1]);
+      expect(lineNo).toBeGreaterThan(start);
+      if (nextType !== -1) expect(lineNo).toBeLessThanOrEqual(nextType);
+    }
   });
 });
 
 describe('sdkModelsMember', () => {
   it('consults the client the OWNING provider imports', () => {
     const evidence = sdkModelsMember(
-      'GeoProximityLocation',
+      'AliasTarget',
       'src/provisioning/providers/route53-provider.ts',
       REPO_ROOT
     );
@@ -280,6 +318,46 @@ describe('sdkVersionLag', () => {
   });
 });
 
+describe('pairRenames', () => {
+  /**
+   * The PAIRING is tested, not the renderer's reaction to a hand-fed result.
+   * The earlier case passed `renameCandidates: []` into `renderDiagnosis` and
+   * asserted no rename appeared — trivially true, and it left the actual rule
+   * unpinned: reverting it to "every writable addition is a rename" kept all 37
+   * cases green.
+   */
+  it('pairs a removal with a similarly-named addition', () => {
+    expect(pairRenames('Id', ['RepositoryId'])).toEqual(['RepositoryId']);
+    expect(pairRenames('GeoProximityLocation', ['GeoProximityLocationV2'])).toEqual([
+      'GeoProximityLocationV2',
+    ]);
+  });
+
+  it('does NOT pair an unrelated addition', () => {
+    // The surviving mutation the old test could not see: unconditional pairing
+    // told the maintainer that `Tags` and `Name` were `Id` renamed.
+    expect(pairRenames('Id', ['Tags', 'Name', 'CapacityProviderConfiguration'])).toEqual([]);
+  });
+
+  it('pairs nothing when the refresh added nothing writable', () => {
+    // Read-only additions never reach here — a declaration cannot target one.
+    expect(pairRenames('Id', [])).toEqual([]);
+  });
+});
+
+describe('renderName', () => {
+  it('rejects a name carrying Markdown rather than rendering it', () => {
+    // Property names come from an artifact this job documents as
+    // TLS-trusted-only. A crafted key can close the backtick span and forge a
+    // "nothing needs a decision" heading in the PR body and the umbrella issue
+    // comment — attacking the human-review half of that accepted residual.
+    expect(renderName('WarmUpConfiguration')).toBe('`WarmUpConfiguration`');
+    const poisoned = renderName('Foo`\n\n## Nothing in this refresh needs a decision');
+    expect(poisoned).not.toContain('##');
+    expect(poisoned).toContain('rejected');
+  });
+});
+
 describe('renderDiagnosis', () => {
   const removedEntry = {
     resourceType: 'AWS::Route53::RecordSet',
@@ -361,20 +439,6 @@ describe('renderDiagnosis', () => {
     expect(md).toContain('RepositoryId');
   });
 
-  it('does NOT call a READ-ONLY addition a rename', () => {
-    // A declaration cannot target a read-only property, so "point the
-    // declaration at the new name" would just produce the next bogus entry.
-    // The pairing is fed from writable additions only.
-    const md = renderDiagnosis({
-      removed: [{ ...removedEntry, renameCandidates: { GeoProximityLocation: [] } }],
-      writableAdded: [],
-      readOnlyAddedCount: 1,
-      divergences: [],
-      skipped: [],
-    });
-    expect(md).not.toContain('Likely a RENAME');
-  });
-
   it('does NOT claim a rename when the refresh added nothing to that type', () => {
     const md = renderDiagnosis({
       removed: [{ ...removedEntry, renameCandidates: { GeoProximityLocation: [] } }],
@@ -426,7 +490,13 @@ describe('renderDiagnosis', () => {
         { resourceType: 'AWS::Glue::Connection', bucket: 'no-sdk-member', line: 'x [no-sdk-member]' },
       ],
       skipped: [],
-      sdkLag: { client: '@aws-sdk/client-glue', installed: '3.9.0', latest: '3.9.0', behind: false },
+      sdkLag: {
+        client: '@aws-sdk/client-glue',
+        resourceType: 'AWS::Glue::Connection',
+        installed: '3.9.0',
+        latest: '3.9.0',
+        behind: false,
+      },
     });
     expect(md).toContain('is current');
     expect(md).toContain('ruled out');
@@ -443,7 +513,13 @@ describe('renderDiagnosis', () => {
         { resourceType: 'AWS::Glue::Connection', bucket: 'no-sdk-member', line: 'x [no-sdk-member]' },
       ],
       skipped: [],
-      sdkLag: { client: '@aws-sdk/client-glue', installed: '3.1018.0', latest: '3.1127.0', behind: true },
+      sdkLag: {
+        client: '@aws-sdk/client-glue',
+        resourceType: 'AWS::Glue::Connection',
+        installed: '3.1018.0',
+        latest: '3.1127.0',
+        behind: true,
+      },
     });
     expect(md).toContain('3.1018.0');
     expect(md).toContain('3.1127.0');

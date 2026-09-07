@@ -74,7 +74,13 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
    * simply stops opening PRs, on a cadence nobody is watching.
    */
   describe('step wiring', () => {
-    const steps: Array<{ name?: string; if?: string; run?: string; uses?: string }> =
+    const steps: Array<{
+      name?: string;
+      if?: string;
+      run?: string;
+      uses?: string;
+      env?: Record<string, string>;
+    }> =
       parsed.jobs.refresh.steps;
     const byName = (name: string) => {
       const step = steps.find((s) => s.name === name);
@@ -117,7 +123,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     it('pushes onto an open PR ADDITIVELY — never forcing over a human commit', () => {
       const publish = shellOf('Publish the refresh');
       expect(publish).toContain('${existing_branch}');
-      expect(publish).toMatch(/Skipping this cycle/);
+      expect(publish).toMatch(/recomputes the same drift/);
       // Sliced STRUCTURALLY, not matched on one line. The earlier assertion was
       // `/force[^\n]*\$\{existing_branch\}/`, and the real push is
       // line-continued — so the mutation it existed to catch (adding `--force`
@@ -134,13 +140,19 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
 
     it('posts the diagnosis, on a new PR and on an updated one alike', () => {
       const publish = shellOf('Publish the refresh');
-      expect(publish).toContain('diagnose-schema-refresh.mjs');
-      // Generated BEFORE the commit: the comparison against the COMMITTED
-      // fixtures is the whole source of "AWS removed this in THIS refresh".
-      expect(publish.indexOf('diagnose-schema-refresh.mjs')).toBeLessThan(
-        publish.indexOf('git commit')
+      // The diagnosis runs in its OWN step, before the token-holding one — it
+      // spawns npm, which inherits the environment.
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(diagnose).toContain('diagnose-schema-refresh.mjs');
+      expect(publish).not.toContain('diagnose-schema-refresh.mjs');
+      const order = steps.map((st) => st.name);
+      expect(order.indexOf('Diagnose what needs a decision')).toBeLessThan(
+        order.indexOf('Publish the refresh')
       );
-      expect(publish).toContain('gh pr comment');
+      // Anchored to the COMMENT's own body file. `--body-file` alone was
+      // satisfied by the create path, so swapping the comment to `--body "x"`
+      // stayed green.
+      expect(publish).toMatch(/gh pr comment[\s\S]{0,120}--body-file \/tmp\/diagnosis\.md/);
       expect(publish).toContain('--body-file /tmp/pr-body.md');
     });
 
@@ -245,6 +257,55 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(publish).toContain('branch="bot/cfn-schema-refresh/${cycle}"');
     });
 
+    it('keeps the write-scoped token out of the checker and the diagnosis', () => {
+      // The diagnosis spawns `npm`, which inherits the environment; running it
+      // in the step that holds `contents: write` widens exactly the surface
+      // `persist-credentials: false` was added to close.
+      const diagnose = steps.find((st) => st.name === 'Diagnose what needs a decision')!;
+      expect(diagnose.env, 'the diagnosis step must hold no token').toBeUndefined();
+    });
+
+    it('sets pipefail on the tee\u2019d refresh, or the exit code is lost', () => {
+      // `run:` with no `shell:` is `bash -e {0}` — NOT pipefail. Without this
+      // the `tee` added for the skip list reports ITS status, and the refresh's
+      // exit 2 on a capture failure becomes "no drift" and a green run.
+      const refresh = shellOf('Refresh fixtures from the public schema bundle');
+      expect(refresh).toContain('tee /tmp/refresh.log');
+      expect(refresh).toContain('set -o pipefail');
+    });
+
+    it('fails the step when a push failure is NOT a lost race', () => {
+      // A permission or branch-protection failure must not share the lost-race
+      // green exit, or the daily job lands nothing forever while reporting
+      // success.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('before_sha');
+      expect(publish).toMatch(/::error::/);
+      expect(publish).toMatch(/exit 1/);
+    });
+
+    it('pins the cross-file literals the shell greps for', () => {
+      // Producer and consumer live in different files with nothing joining
+      // them: either reword silently empties the skip list or kills the
+      // umbrella fold, with no failure anywhere.
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(readFileSync(join(REPO_ROOT, 'scripts/refresh-cfn-schemas.mjs'), 'utf8')).toContain(
+        'No entry in the public bundle'
+      );
+      expect(diagnose).toContain('No entry in the public bundle');
+      const heading = '### Writable properties AWS added';
+      expect(
+        readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8')
+      ).toContain(heading);
+      expect(shellOf('Publish the refresh')).toContain(heading);
+    });
+
+    it('names the backfill umbrella issue explicitly', () => {
+      // A typo here posts the backfill list to an unrelated issue, silently.
+      const publish = steps.find((st) => st.name === 'Publish the refresh')!;
+      expect(publish.env?.['BACKFILL_UMBRELLA']).toBe('609');
+    });
+
     it('re-checks the PR is still OPEN before pushing onto its branch', () => {
       // A squash merge with --delete-branch between the guard and the push
       // would make the plain push RE-CREATE the deleted branch — an orphan ref
@@ -252,13 +313,21 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       const publish = shellOf('Publish the refresh');
       expect(publish).toContain('--json state');
       expect(publish).toMatch(/!= "OPEN"/);
+      // The `exit 0` is the check. Without it the comparison runs and the push
+      // proceeds anyway — inert, and the plain push then RE-CREATES the branch
+      // a merge just deleted.
+      const stateIdx = publish.indexOf('--json state');
+      const pushIdx = publish.indexOf('git push');
+      expect(stateIdx).toBeGreaterThanOrEqual(0);
+      expect(stateIdx, 'the OPEN re-check must precede the push').toBeLessThan(pushIdx);
+      expect(publish.slice(stateIdx, pushIdx)).toContain('exit 0');
     });
 
     it('passes the refresh skip list to the diagnosis', () => {
       // The flag existed and nothing passed it, so the "Not refreshed" section
       // could never render in production.
       expect(shellOf('Refresh fixtures from the public schema bundle')).toContain('/tmp/refresh.log');
-      expect(shellOf('Publish the refresh')).toContain('--skipped-log');
+      expect(shellOf('Diagnose what needs a decision')).toContain('--skipped-log');
     });
 
     it('fails the open-PR guard closed rather than open on a gh error', () => {

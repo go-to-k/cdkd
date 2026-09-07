@@ -183,7 +183,15 @@ jobs:
       # skip list from the file. Without this the "Not refreshed" section was
       # dead code — the flag existed and nothing ever passed it.
       - name: Refresh fixtures from the public schema bundle
-        run: vp run gen:cfn-schemas-from-zip 2>&1 | tee /tmp/refresh.log
+        run: |
+          # `set -o pipefail` is REQUIRED here, not decoration: a `run:` with no
+          # `shell:` is `bash -e {0}`, which does NOT set pipefail, so the `tee`
+          # added for the skip list would report ITS status and swallow the
+          # refresh's. The refresh exits 2 on capture failures, so a bundle
+          # fetch failure would have become "no drift" and a green run — the
+          # silent watch failure this whole job exists to prevent.
+          set -o pipefail
+          vp run gen:cfn-schemas-from-zip 2>&1 | tee /tmp/refresh.log
 
       # The change signal. `refresh-cfn-schemas.mjs --from-zip` writes ONLY
       # fixtures that actually drifted (`generatedAt` excluded from the
@@ -235,6 +243,27 @@ jobs:
           vp run gen:all-matrices
           vp run format
 
+      # Split from `Publish the refresh` so the step holding the write-scoped
+      # token runs neither the checker nor the diagnosis — the latter spawns
+      # `npm`, which inherits the environment. That is the same reasoning the
+      # checkout step gives for `persist-credentials: false`; leaving them in
+      # the token step would have widened exactly the surface that closed.
+      # Both only write /tmp, which survives across steps.
+      #
+      # Generated BEFORE the commit: the comparison against the COMMITTED
+      # fixtures is the whole source of "AWS removed this in THIS refresh".
+      - name: Diagnose what needs a decision
+        if: steps.drift.outputs.drifted == 'true'
+        run: |
+          set +e
+          vp run audit:nested-key-coverage:check > /tmp/nested-key.log 2>&1
+          set -e
+          # The skip list is the tail of the refresh log, after its own header.
+          sed -n '/No entry in the public bundle/,$p' /tmp/refresh.log > /tmp/skipped.log || true
+          node scripts/diagnose-schema-refresh.mjs \
+            --nested-key-log /tmp/nested-key.log \
+            --skipped-log /tmp/skipped.log > /tmp/diagnosis.md
+
       - name: Publish the refresh
         id: publish
         if: steps.drift.outputs.drifted == 'true'
@@ -248,19 +277,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # The diagnosis is generated BEFORE committing, while the committed
-          # fixtures are still the PREVIOUS ones — that comparison is the whole
-          # source of "AWS removed this in THIS refresh".
-          set +e
-          vp run audit:nested-key-coverage:check > /tmp/nested-key.log 2>&1
-          set -e
-          # The skip list is the tail of the refresh log, after its own header.
-          sed -n '/No entry in the public bundle/,$p' /tmp/refresh.log > /tmp/skipped.log || true
-          node scripts/diagnose-schema-refresh.mjs \
-            --nested-key-log /tmp/nested-key.log \
-            --skipped-log /tmp/skipped.log > /tmp/diagnosis.md
-
           git add \
             tests/fixtures/cfn-schemas/ \
             src/provisioning/ \
@@ -279,6 +295,7 @@ jobs:
               echo "::warning::PR ${{ steps.open_pr.outputs.number }} is ${state}, not OPEN — it closed while this ran. Skipping; the next cycle recomputes."
               exit 0
             fi
+            before_sha=$(git ls-remote --heads origin "refs/heads/${existing_branch}" | awk 'NR==1{print $1}')
             # ADDITIVE commit onto the open PR's branch. Never force: a
             # non-fast-forward here means a human pushed while this ran, and
             # overwriting that is the one outcome worth losing a cycle over.
@@ -290,8 +307,18 @@ jobs:
                 --body-file /tmp/diagnosis.md
               pr_number="${{ steps.open_pr.outputs.number }}"
             else
-              echo "::warning::Could not push to ${existing_branch} — a concurrent update won. Skipping this cycle; the next run recomputes the same drift."
-              exit 0
+              # A lost RACE and a broken push are different outcomes and must
+              # not share one green exit: a permission or branch-protection
+              # failure would otherwise give a green daily job that lands
+              # nothing, forever. The remote tip moving is what distinguishes
+              # them.
+              now=$(git ls-remote --heads origin "refs/heads/${existing_branch}" | awk 'NR==1{print $1}')
+              if [ -n "${now}" ] && [ "${now}" != "${before_sha}" ]; then
+                echo "::warning::Could not push to ${existing_branch} — a concurrent update won (tip moved ${before_sha} -> ${now}). The next run recomputes the same drift."
+                exit 0
+              fi
+              echo "::error::Push to ${existing_branch} failed and the remote tip did not move — this is not a lost race."
+              exit 1
             fi
           else
             cycle=$(date -u +%Y-%m-%d)
@@ -339,7 +366,9 @@ jobs:
               sed -n '/^### Writable properties AWS added/,/^###\|^_/p' /tmp/diagnosis.md \
                 | grep '^- ' || true
               echo
-              echo "Carried by https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number}"
+              if [ -n "${pr_number:-}" ]; then
+                echo "Carried by https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number}"
+              fi
             } > /tmp/umbrella.md
             gh issue comment "${BACKFILL_UMBRELLA}" --body-file /tmp/umbrella.md \
               || echo "::warning::Could not comment on the backfill umbrella issue; the list is in the PR body."

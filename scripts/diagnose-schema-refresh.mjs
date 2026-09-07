@@ -110,7 +110,12 @@ export function parseNestedKeyDivergences(checkOutput) {
     if (!m) continue;
     out.push({ resourceType: m[1], bucket: m[2], line });
   }
-  if (out.length === 0 && /nested-key-coverage:\s*FAIL/i.test(checkOutput)) {
+  // Scoped to the DIVERGENCE failure. The checker has three other FAIL modes
+  // (stale allow-list / segmentRenames / terminalRenames) that legitimately
+  // print no finding line, and refusing on those made `main()` discard the
+  // whole diagnosis — losing the removal and addition sections too — while
+  // blaming a format change that had not happened.
+  if (out.length === 0 && /nested-key-coverage:\s*FAIL\s*—\s*nested CFn/i.test(checkOutput)) {
     throw new Error(
       'audit:nested-key-coverage:check reported FAIL but no finding line parsed — ' +
         'its output format changed. Refusing to report "nothing needs a decision" ' +
@@ -273,8 +278,8 @@ export function sdkModelsMember(property, providerRelPath, repoRoot = REPO_ROOT)
   if (clients.length === 0) return undefined;
 
   const needle = new RegExp(`\\b${property}\\b`, 'i');
-  /** @type {string | undefined} */
-  let firstVersion;
+  /** @type {Record<string, string | undefined>} */
+  const versions = {};
   /** @type {string[]} */
   const consulted = [];
   for (const client of clients) {
@@ -289,7 +294,7 @@ export function sdkModelsMember(property, providerRelPath, repoRoot = REPO_ROOT)
     } catch {
       version = undefined;
     }
-    firstVersion ??= version;
+    versions[client] = version;
     for (const file of readdirSync(modelsDir).filter((f) => f.endsWith('.d.ts'))) {
       if (needle.test(readFileSync(join(modelsDir, file), 'utf8'))) {
         return { client, modelled: true, version, consulted };
@@ -297,7 +302,11 @@ export function sdkModelsMember(property, providerRelPath, repoRoot = REPO_ROOT)
     }
   }
   if (consulted.length === 0) return undefined;
-  return { client: consulted[0], modelled: false, version: firstVersion, consulted };
+  // The version reported belongs to the client reported. Falling back to a
+  // "first version seen" would pair one client's name with another's number —
+  // the same misattribution class as the cross-service lookup this function was
+  // rewritten to close.
+  return { client: consulted[0], modelled: false, version: versions[consulted[0]], consulted };
 }
 
 /**
@@ -330,7 +339,7 @@ export function sdkVersionLag(client, installed, viewLatest = defaultViewLatest)
   } catch {
     return undefined;
   }
-  if (!/^\d+\.\d+\.\d+/.test(latest)) return undefined;
+  if (!/^\d+\.\d+\.\d+[\w.+-]*$/.test(latest)) return undefined;
   return { installed, latest, behind: latest !== installed };
 }
 
@@ -366,10 +375,37 @@ export function parseDeclaredProperties(generatedSource) {
   /** @type {Map<string, Set<string>>} */
   const declared = new Map();
   if (generatedSource.trim() === '') return declared;
-  for (const m of generatedSource.matchAll(
-    /\[\s*'([A-Z][\w:]+)'\s*,\s*\{[\s\S]*?handled:\s*new Set(?:<[^>]*>)?\(\[([\s\S]*?)\]\)/g
-  )) {
-    declared.set(m[1], new Set([...m[2].matchAll(/'([^']+)'/g)].map((x) => x[1])));
+
+  // Entries are located FIRST, then `handled:` is matched inside each one.
+  // A single pattern spanning both cannot work: a type whose set is empty is
+  // written `new Set<string>()` with no `[`, so a lazy `[\s\S]*?` skips past it
+  // and credits the NEXT type's properties. Measured against the real module:
+  // 134 entries, 131 parsed, three swallowed and two mis-credited — including
+  // `AWS::CloudFormation::WaitConditionHandle` inheriting CloudFront's. The
+  // consequence is the silent-empty class at PER-TYPE granularity: a removal on
+  // a swallowed type renders "nothing needs a decision" over a red check, and
+  // the whole-map refusal below cannot see it.
+  const boundaries = [...generatedSource.matchAll(/\[\s*'([A-Z][\w:]+)'\s*,\s*\{/g)];
+  for (let i = 0; i < boundaries.length; i++) {
+    const slice = generatedSource.slice(
+      boundaries[i].index,
+      i + 1 < boundaries.length ? boundaries[i + 1].index : undefined
+    );
+    const handled = /handled:\s*new Set(?:<[^>]*>)?\(\s*\[([\s\S]*?)\]\s*\)/.exec(slice);
+    declared.set(
+      boundaries[i][1],
+      new Set(handled ? [...handled[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : [])
+    );
+  }
+
+  // Refuses on a SHORTFALL, not just on zero. The zero-only form was blind to
+  // exactly the defect above, where 131 of 134 parsed and the report looked
+  // healthy.
+  if (declared.size !== boundaries.length || (boundaries.length === 0 && generatedSource.includes('PROPERTY_COVERAGE_BY_TYPE'))) {
+    throw new Error(
+      `property-coverage.generated.ts: parsed ${declared.size} of ${boundaries.length} ` +
+        'type entries — the shape changed. Refusing to report from a partial parse.'
+    );
   }
   if (declared.size === 0) {
     throw new Error(
@@ -402,10 +438,10 @@ export function parseDeclaredProperties(generatedSource) {
  * accepts that risk.
  *
  * @param {object} input
- * @param {Array<{resourceType: string, properties: string[], candidates: Record<string, string[]>, sdk?: Record<string, {client: string, modelled: boolean, version?: string} | undefined>, renameCandidates?: Record<string, string[]>}>} input.removed
+ * @param {Array<{resourceType: string, properties: string[], candidates: Record<string, string[]>, sdk?: Record<string, {client: string, modelled: boolean, version?: string} | undefined>, renameCandidates?: Record<string, string[]>, providerPath?: string}>} input.removed
  * @param {Array<{resourceType: string, properties: string[]}>} input.writableAdded
  * @param {number} [input.readOnlyAddedCount]
- * @param {{client: string, installed: string, latest: string, behind: boolean}} [input.sdkLag]
+ * @param {{client: string, resourceType: string, installed: string, latest: string, behind: boolean}} [input.sdkLag]
  * @param {Array<{resourceType: string, bucket: string, line: string}>} input.divergences
  * @param {string[]} input.skipped
  * @returns {string}
@@ -434,14 +470,17 @@ export function renderDiagnosis({
       ''
     );
     for (const entry of removed) {
-      lines.push(`- \`${entry.resourceType}\``);
+      lines.push(`- ${renderName(entry.resourceType)}`);
       for (const property of entry.properties) {
         const candidates = entry.candidates[property] ?? [];
         const where =
-          candidates.length === 0
-            ? 'no declaration found in the provider sources'
-            : `declared near ${candidates.map((c) => `\`${c}\``).join(', ')}`;
-        lines.push(`  - \`${property}\` — ${where}`);
+          candidates.length > 0
+            ? `declared near ${candidates.map((c) => `\`${c}\``).join(', ')}`
+            : entry.providerPath
+              ? `not found in \`${entry.providerPath}\` — the declaration may sit outside ` +
+                'the block scanned for this type'
+              : 'the provider serving this type could not be determined';
+        lines.push(`  - ${renderName(property)} — ${where}`);
 
         // A RENAME shows up as a removal and an addition on the SAME type in
         // the SAME refresh, and both sides are in hand — so say so rather than
@@ -451,7 +490,7 @@ export function renderDiagnosis({
         if (renames.length > 0) {
           lines.push(
             `    - **Likely a RENAME**: this refresh also ADDED ` +
-              `${renames.map((r) => `\`${r}\``).join(', ')} to the same type. If so, ` +
+              `${renames.map(renderName).join(', ')} to the same type. If so, ` +
               'update the declaration to the new name rather than retiring it.'
           );
         }
@@ -507,7 +546,7 @@ export function renderDiagnosis({
     );
     for (const entry of writableAdded) {
       lines.push(
-        `- \`${entry.resourceType}\`: ${entry.properties.map((p) => `\`${p}\``).join(', ')}`
+        `- ${renderName(entry.resourceType)}: ${entry.properties.map(renderName).join(', ')}`
       );
     }
     lines.push('');
@@ -532,7 +571,7 @@ export function renderDiagnosis({
       'No entry in the public bundle; these keep the authenticated path as their',
       'only refresh route and were left untouched.',
       '',
-      ...skipped.map((t) => `- \`${t}\``),
+      ...skipped.map((t) => `- ${renderName(t)}`),
       ''
     );
   }
@@ -545,6 +584,63 @@ export function renderDiagnosis({
     '_[CFn schema refresh runbook](https://github.com/go-to-k/cdkd/blob/main/docs/schema-refresh-runbook.md)._'
   );
   return lines.join('\n');
+}
+
+/**
+ * The writable additions that plausibly ARE this property under a new name.
+ *
+ * Extracted so the pairing is testable on its own: with it inline in `main()`
+ * the only tests possible hand-fed the RESULT to the renderer, which meant
+ * reverting the rule to "every addition is a rename" left the whole suite
+ * green — the defect the suite claimed to close.
+ *
+ * Name similarity, deliberately, not equality: a rename is a guess here and the
+ * report says so. Read-only additions never reach this function, because a
+ * declaration cannot target one.
+ *
+ * @param {string} property
+ * @param {readonly string[]} writableAdded
+ * @returns {string[]}
+ */
+export function pairRenames(property, writableAdded) {
+  // PREFIX or SUFFIX, case-sensitively — not substring containment. A short
+  // name substring-matches almost anything: `Id` is inside
+  // `CapacityProviderConfiguration` (via "Prov-id-er"), so containment told the
+  // maintainer an unrelated addition was `Id` renamed. PascalCase makes the
+  // ends the meaningful boundaries: `RepositoryId` ends with `Id`,
+  // `GeoProximityLocationV2` starts with `GeoProximityLocation`.
+  return writableAdded.filter(
+    (a) =>
+      a !== property &&
+      (a.startsWith(property) ||
+        a.endsWith(property) ||
+        property.startsWith(a) ||
+        property.endsWith(a))
+  );
+}
+
+/**
+ * A property or type name rendered into Markdown, or a visible refusal.
+ *
+ * Property names come from the schema bundle, which this job documents as
+ * un-checksummable and TLS-trusted only. Interpolated raw into backticks they
+ * are Markdown: a crafted key closing the span and opening a heading can forge
+ * a "Nothing in this refresh needs a decision" verdict in the PR body AND in
+ * the umbrella issue comment — which attacks the human-review half of the very
+ * residual the workflow header accepts. Anything outside the character class a
+ * real CFn property uses is replaced by a loud marker rather than dropped
+ * silently, so a poisoned name is visible instead of merely absent.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function renderName(name) {
+  // `:` is in the class because this renders resource TYPES as well as property
+  // names, and `AWS::Service::Type` is the ordinary shape — omitting it
+  // rejected every legitimate type in the "Not refreshed" list.
+  return /^[A-Za-z0-9.:]+$/.test(name)
+    ? `\`${name}\``
+    : '**[name rejected: unexpected characters]**';
 }
 
 /**
@@ -564,8 +660,8 @@ function removedProcedure(removed) {
   return [
     '<details><summary>How to settle these</summary>',
     '',
-    '1. If a **RENAME** is flagged above, take that: point the declaration at the',
-    '   new name. Nothing else is needed.',
+    '1. If a **RENAME** is flagged above it is a NAME-SIMILARITY guess, not a',
+    '   finding — confirm with step 2 before repointing the declaration.',
     '2. Otherwise confirm against the live registry — this is the API AWS serves,',
     '   not the published bundle:',
     '',
@@ -602,12 +698,14 @@ function divergenceProcedure(divergences, lag) {
     lagLines.push(
       '',
       lag.behind
-        ? `**The installed \`${lag.client}\` is ${lag.installed}; npm publishes ` +
-          `${lag.latest}.** The SDK-lag reading is LIVE — bump and re-check before ` +
-          'allow-listing anything.'
-        : `**The installed \`${lag.client}\` is ${lag.installed}, which is current.** ` +
-          'The SDK-lag reading is ruled out; what remains is that the service ' +
-          'genuinely lacks the member.',
+        ? `**For ${renderName(lag.resourceType)} only**: the installed ` +
+          `\`${lag.client}\` is ${lag.installed}; npm publishes ${lag.latest}. The ` +
+          'SDK-lag reading is LIVE — bump and re-check before allow-listing anything. ' +
+          'Divergences on other services are NOT covered by this line.'
+        : `**For ${renderName(lag.resourceType)} only**: the installed ` +
+          `\`${lag.client}\` is ${lag.installed}, which is current, so the SDK-lag ` +
+          'reading is ruled out there. Divergences on other services are NOT covered ' +
+          'by this line.',
       ''
     );
   }
@@ -725,14 +823,23 @@ function main() {
       for (const property of actionable) {
         candidates[property] = findDeclarationCandidates(property, providerRelPath, resourceType);
         sdk[property] = sdkModelsMember(property, providerRelPath);
-        // The WRITABLE additions to the same type — not every addition. A
-        // declaration cannot target a read-only property (the coverage
-        // generator skips read-only when building the silent-drop set), so
-        // pairing a removal with a read-only addition would advise "point the
-        // declaration at the new name" and produce the next bogus entry.
-        renameCandidates[property] = delta.writableAdded;
+        // Writable additions that plausibly ARE this property renamed —
+        // one name containing the other. Unconditional pairing asserted a
+        // rename for every unrelated addition, and with two removals and one
+        // addition it claimed both, of which at most one can be true.
+        // Read-only additions are excluded outright: a declaration cannot
+        // target one, so "point the declaration at the new name" would just
+        // produce the next bogus entry.
+        renameCandidates[property] = pairRenames(property, delta.writableAdded);
       }
-      removed.push({ resourceType, properties: actionable, candidates, sdk, renameCandidates });
+      removed.push({
+        resourceType,
+        properties: actionable,
+        candidates,
+        sdk,
+        renameCandidates,
+        providerPath: providerRelPath,
+      });
     }
     if (delta.writableAdded.length > 0) {
       writableAdded.push({ resourceType, properties: delta.writableAdded });
@@ -758,7 +865,7 @@ function main() {
     );
     if (evidence) {
       const lag = sdkVersionLag(evidence.client, evidence.version);
-      if (lag) sdkLag = { client: evidence.client, ...lag };
+      if (lag) sdkLag = { client: evidence.client, resourceType: firstDivergent.resourceType, ...lag };
     }
   }
 

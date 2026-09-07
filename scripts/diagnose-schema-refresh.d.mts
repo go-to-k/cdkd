@@ -31,10 +31,11 @@ export declare function renderDiagnosis(input: {
     candidates: Record<string, string[]>;
     sdk?: Record<string, { client: string; modelled: boolean; version?: string; consulted?: string[] } | undefined>;
     renameCandidates?: Record<string, string[]>;
+    providerPath?: string;
   }>;
   writableAdded: Array<{ resourceType: string; properties: string[] }>;
   readOnlyAddedCount?: number;
-  sdkLag?: { client: string; installed: string; latest: string; behind: boolean };
+  sdkLag?: { client: string; resourceType: string; installed: string; latest: string; behind: boolean };
   divergences: Array<{ resourceType: string; bucket: string; line: string }>;
   skipped: string[];
 }): string;
@@ -43,3 +44,5 @@ export declare function sdkVersionLag(
   installed: string | undefined,
   viewLatest?: (pkg: string) => string
 ): { installed: string; latest: string; behind: boolean } | undefined;
+export declare function pairRenames(property: string, writableAdded: readonly string[]): string[];
+export declare function renderName(name: string): string;
