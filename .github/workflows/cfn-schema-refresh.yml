@@ -358,10 +358,14 @@ jobs:
         if: steps.drift.outputs.drifted == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # The standing umbrella issue that collects properties still to be
-          # wired into an SDK provider. Named here rather than in the script so
-          # moving the campaign is a workflow edit, not a code change.
-          BACKFILL_UMBRELLA: "609"
+          # The LABEL that marks the standing umbrella issue, not its number.
+          # A number goes stale silently the moment the campaign moves, and it
+          # did: the first destination carried months of design discussion and
+          # participants beyond the maintainer, so a daily bot comment notified
+          # all of them. Moving it is now `gh issue edit --add-label`, and the
+          # lookup below refuses to guess when the label is not on exactly one
+          # open issue.
+          BACKFILL_UMBRELLA_LABEL: backfill-umbrella
           # Same reasoning as the switch step: no `${{ }}` inside a shell body.
           PR_NUMBER: ${{ steps.open_pr.outputs.number }}
         run: |
@@ -468,6 +472,27 @@ jobs:
                 echo "Carried by https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number}"
               fi
             } > /tmp/umbrella.md
-            gh issue comment "${BACKFILL_UMBRELLA}" --body-file /tmp/umbrella.md \
-              || echo "::warning::Could not comment on the backfill umbrella issue; the list is in the PR body."
+            # Resolve the destination by LABEL, and refuse to guess. Zero
+            # matches means the campaign has no home; two or more means nobody
+            # can say which is the running list. Posting to an arbitrary one is
+            # the silent-wrong-destination failure this job exists to avoid, so
+            # both are warnings rather than a pick — and neither undoes the PR,
+            # which carries the same list in its body.
+            # `|| true`: a bare command substitution here runs under
+            # `set -euo pipefail`, so a transient gh failure would abort the
+            # step — AFTER the PR has been created. The step's whole contract is
+            # that the umbrella fold never undoes the PR, which the previous
+            # `gh issue comment ... || echo` spelling preserved and this lookup
+            # would have quietly broken. An empty result falls through to the
+            # not-exactly-one warning below.
+            umbrella=$(gh issue list --state open --limit 100 \
+              --label "${BACKFILL_UMBRELLA_LABEL}" --json number \
+              --jq '[.[].number] | join(" ")' || true)
+            umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
+            if [ "${umbrella_count}" = "1" ]; then
+              gh issue comment "${umbrella}" --body-file /tmp/umbrella.md \
+                || echo "::warning::Could not comment on backfill umbrella #${umbrella}; the list is in the PR body."
+            else
+              echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). The list is in the PR body; label one issue to restore the running list."
+            fi
           fi

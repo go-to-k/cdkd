@@ -361,7 +361,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(linkAt).toBeGreaterThan(-1);
       expect(guardAt).toBeLessThan(linkAt);
       // And the comment still fires outside that guard.
-      expect(publish.indexOf('${BACKFILL_UMBRELLA}')).toBeGreaterThan(linkAt);
+      expect(publish.indexOf('${BACKFILL_UMBRELLA_LABEL}')).toBeGreaterThan(linkAt);
     });
 
     it('passes the checker’s EXIT CODE, not only its output', () => {
@@ -578,10 +578,42 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(shellOf('Publish the refresh')).toContain(heading);
     });
 
-    it('names the backfill umbrella issue explicitly', () => {
-      // A typo here posts the backfill list to an unrelated issue, silently.
+    it('resolves the backfill umbrella by LABEL, never by a hardcoded number', () => {
+      // A number goes stale silently the moment the campaign moves, and it did:
+      // the first destination carried months of design discussion and
+      // participants beyond the maintainer, so a daily bot comment notified all
+      // of them. The label is the indirection that makes moving it a
+      // `gh issue edit`, not a workflow edit.
       const publish = steps.find((st) => st.name === 'Publish the refresh')!;
-      expect(publish.env?.['BACKFILL_UMBRELLA']).toBe('609');
+      expect(publish.env?.['BACKFILL_UMBRELLA_LABEL']).toBe('backfill-umbrella');
+      expect(
+        publish.env?.['BACKFILL_UMBRELLA'],
+        'the hardcoded issue number is back'
+      ).toBeUndefined();
+      const shell = shellOf('Publish the refresh');
+      expect(shell, 'an issue number is hardcoded in the shell').not.toMatch(
+        /gh issue comment "?\d+/
+      );
+    });
+
+    it('refuses to guess when the label is not on exactly one open issue', () => {
+      // Zero means the campaign has no home; two or more means nobody can say
+      // which is the running list. Posting to an arbitrary one is the
+      // silent-wrong-destination failure this whole job exists to avoid.
+      const shell = shellOf('Publish the refresh');
+      expect(shell).toMatch(/--label "\$\{BACKFILL_UMBRELLA_LABEL\}"/);
+      expect(shell).toMatch(/if \[ "\$\{umbrella_count\}" = "1" \]; then/);
+      // And the non-1 branch warns rather than picking one.
+      // The lookup must not abort the step: it runs under `set -euo pipefail`
+      // AFTER the PR exists, and this step's contract is that the umbrella fold
+      // never undoes the PR. The previous `gh issue comment ... || echo`
+      // spelling preserved that; a bare command substitution would not.
+      expect(shell, 'a transient gh failure aborts the step after the PR was made').toMatch(
+        /--jq '\[\.\[\]\.number\] \| join\(" "\)' \|\| true\)/
+      );
+      const elseAt = shell.indexOf('Expected exactly one OPEN issue');
+      expect(elseAt, 'the ambiguous case does not announce itself').toBeGreaterThan(-1);
+      expect(shell.slice(elseAt)).not.toMatch(/gh issue comment/);
     });
 
     it('re-checks the PR is still OPEN before pushing onto its branch', () => {
