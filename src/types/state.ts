@@ -370,12 +370,29 @@ export interface ResourceState {
    * default — every resource pre-#614 was SDK-managed). v7 writers always
    * emit the field explicitly so the routing decision is durable.
    *
-   * The field is **sticky**: once a resource is `'cc-api'`, subsequent
-   * SDK Provider backfills (issue #609) do NOT auto-migrate it back to
-   * SDK. Avoids physical-ID churn + destroy + recreate cycles on every
-   * backfill release. User-initiated migration in either direction lives
-   * under issue #615 (`--recreate-via-cc-api`) and a future CC → SDK
-   * counterpart.
+   * The field is **sticky** BY DEFAULT: once a resource is `'cc-api'`, an
+   * SDK Provider backfill (issue #609) does not by itself migrate it back.
+   * Avoids physical-ID churn + destroy + recreate cycles on every backfill
+   * release.
+   *
+   * Three things end the stickiness, in increasing order of how much the
+   * user has to do:
+   *
+   * 1. **Automatic, per resource** (issue #2719) — the type carries an
+   *    `'sdk-coverage'` entry in `STICKY_CC_MIGRATION_EXEMPT` (measured
+   *    physicalId parity), AND neither the desired nor the recorded property
+   *    bag of THIS resource has an actionable silent drop. The next mutating
+   *    deploy writes `'sdk'` with the physical id unchanged. `--pin-cc-api`
+   *    declines it for one deploy.
+   * 2. **Automatic, per type** — a `'cc-broken'` entry (issue #961), where
+   *    Cloud Control cannot manage the type at all, so the escape is
+   *    unconditional.
+   * 3. **User-initiated, either direction** — `--recreate-via-cc-api` (issue
+   *    #615) and `--recreate-via-sdk-provider` (issue #651). Both DESTROY and
+   *    recreate, so they are the heavy option, not the routine one.
+   *
+   * This comment previously described (3)'s CC → SDK half as "a future
+   * counterpart"; it shipped in #651, and (1) has since shipped too.
    */
   provisionedBy?: 'sdk' | 'cc-api' | undefined;
 }

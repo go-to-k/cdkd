@@ -30,6 +30,7 @@ cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resol
 | `--allow-unsupported-properties <entries>` | deploy | Pin a resource to the SDK provider and accept a silently dropped property, instead of the default Cloud Control auto-route. |
 | `--recreate-via-cc-api <LogicalId>` | deploy | Destroy + recreate one resource via Cloud Control API, so a dropped property reaches AWS. |
 | `--recreate-via-sdk-provider <LogicalId>` | deploy | The reverse: destroy + recreate one resource via cdkd's SDK provider. |
+| `--pin-cc-api <LogicalId>` | deploy | Decline the automatic return to the SDK provider for one resource, keeping it on Cloud Control for this deploy. |
 | `--replace` | deploy | Replace (DELETE + CREATE) a resource whose in-place update AWS has no API for. |
 | `--force-stateful-recreation` | deploy | Bypass the [stateful-resource guard](#stateful-resource-guard) for every target in the run. |
 | `--strict-getatt` | deploy | Fail on any `Fn::GetAtt` that falls back to a physical ID, and on any unresolvable Output. |
@@ -417,6 +418,65 @@ cdkd deploy MyStack \
 - **NOT** a way to recreate a resource inside a nested stack — same scope rule
   as its forward twin. See
   [Nested stacks](#nested-stacks).
+
+## `--pin-cc-api` (deploy)
+
+`--pin-cc-api <LogicalId>` (repeatable, one flag per resource) keeps a resource
+recorded as `provisionedBy: 'cc-api'` on the Cloud Control route for this
+deploy, declining the automatic return to cdkd's SDK provider.
+
+**What it declines.** Once a resource is recorded `'cc-api'` it normally stays
+there ([state management](state-management.md) has the full rule). Types whose
+Cloud Control routing works but is merely slower can carry an `'sdk-coverage'`
+exemption, and a resource of such a type returns to the SDK provider on its
+next mutating deploy — provided neither its template properties nor its
+recorded ones carry a property cdkd would silently drop. The physical id is
+preserved; the resource is updated in place, not replaced.
+
+`cdkd diff` shows the pending change as `[returning to SDK provider]`, so it
+is visible before it happens.
+
+**When you would want it.** The flip is conditioned on that resource's own
+coverage, so declining it is a judgement about a specific deploy rather than a
+standing preference — for example wanting one deploy to go through the same
+layer as the last one while investigating something. It is deliberately
+per-deploy: pass it again next time, or stop passing it and let the flip
+happen.
+
+**It is not a way to keep a broken type on Cloud Control.** A type admitted
+because Cloud Control *cannot* manage it (`'cc-broken'`, e.g.
+`AWS::Scheduler::Schedule`) ignores the pin — honoring it would re-pin the
+resource to the handler that cannot address it, which is the bug the exemption
+exists to escape.
+
+It also has no effect on a resource already recorded `'sdk'`, and none on a
+fresh resource, which routes by the ordinary matrix.
+
+**A logical id present in no stack of the run is an error, not a no-op.** The
+flag produces no output when it works, so a typo would otherwise give you
+exactly the routing change you passed it to decline, indistinguishable from
+success. The check is run-level rather than per-stack on purpose: under
+`--all`, an id that belongs to one stack is legitimately absent from the
+others, and failing per-stack would abort the run over a correct invocation.
+It is raised before any stack deploys.
+
+`--pin-cc-api X` together with `--recreate-via-sdk-provider X` is refused —
+they are opposite requests for the same resource.
+
+Under `--all`, an id that applies to some stacks but not all is reported once,
+naming both the stacks it applies to and the ones that do not declare it — so
+you can see the flag's reach without a line per non-matching stack.
+
+A resource inside a NESTED child stack cannot be pinned from the parent's
+deploy; name it in a deploy of that child. And the pin does not apply to a
+REPLACEMENT: when a template change forces a destroy + recreate, the new
+resource routes by the ordinary matrix — the stickiness the pin declines exists
+to spare an EXISTING resource from churn, and a replacement is not that.
+
+Contrast with the two `--recreate-via-*` flags above: those DESTROY and
+recreate to change layer, so they are the heavy option and refuse a stateful
+type without `--force-stateful-recreation`. This flag changes nothing about the
+resource — only which provider issues its update.
 
 ## `--replace` (deploy)
 

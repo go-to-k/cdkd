@@ -860,6 +860,48 @@ export function parseRecreateViaSdkProviderToken(
   return [...(previous ?? []), token];
 }
 
+/**
+ * Issue [#2719] — `--pin-cc-api <logicalId>` keeps a named resource on the
+ * Cloud Control route for this deploy, suppressing the `'sdk-coverage'`
+ * sticky-exemption that would otherwise return it to its SDK provider.
+ *
+ * The lightweight counterpart to `--recreate-via-cc-api`: that one forces the
+ * CC layer by DESTROYING and recreating the resource, which is not something a
+ * user can do to a stateful resource just to decline a routing change. This
+ * one changes only which provider runs the update.
+ *
+ * Deliberately per-deploy rather than a state field. A persisted pin would be
+ * a v10 schema bump plus its migration integ, and nothing has yet shown a user
+ * needing the pin to survive a deploy they did not pass it on -- the flip is
+ * conditioned on the resource's own coverage, so the case it guards against is
+ * "I disagree with this specific deploy's routing", not a standing preference.
+ *
+ * It does NOT override a `'cc-broken'` exemption: honoring it there would pin
+ * the resource to a handler that cannot manage it, which is the bug those
+ * entries exist to escape.
+ */
+export function parsePinCcApiToken(value: string, previous: string[] | undefined): string[] {
+  const token = value.trim();
+  if (!LOGICAL_ID_FORMAT.test(token)) {
+    throw new Error(
+      `Invalid --pin-cc-api value "${value}": expected a CloudFormation logical id ` +
+        `(alphanumeric, starts with a letter, max 255 chars). One --pin-cc-api flag per ` +
+        `resource — repeat the flag for additional targets.`
+    );
+  }
+  return [...(previous ?? []), token];
+}
+
+export const pinCcApiOption = new Option(
+  '--pin-cc-api <logicalId>',
+  'Keep the named resource (by CloudFormation logical id) on the Cloud Control ' +
+    'route in this deploy, declining the automatic return to the SDK Provider ' +
+    'that a type-level sdk-coverage exemption would otherwise apply to a resource ' +
+    'recorded as provisionedBy: cc-api. Repeatable — pass the flag once per ' +
+    'resource. Has no effect on a resource already on the SDK path, and does not ' +
+    'override an exemption admitted because Cloud Control cannot manage the type.'
+).argParser(parsePinCcApiToken);
+
 export const recreateViaSdkProviderOption = new Option(
   '--recreate-via-sdk-provider <logicalId>',
   'Destroy + recreate the named resource (by CloudFormation logical id) via ' +
@@ -1117,6 +1159,7 @@ export const deployOptions = [
   allowUnsupportedPropertiesOption,
   recreateViaCcApiOption,
   recreateViaSdkProviderOption,
+  pinCcApiOption,
   forceStatefulRecreationOption,
   replaceOption,
   useCdkBootstrapAssetsOption,

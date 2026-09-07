@@ -2067,6 +2067,55 @@ A property in `handledProperties` (or `unhandledByDesign`) that is NOT in the CF
 
 The test reports these — but fixing each requires per-provider investigation that often touches the safety-net's runtime behavior. As a stopgap, the tolerance list at `tests/fixtures/cfn-schemas/_todo-backfill.json` under `bogusTolerated[<type>][<prop>]` accepts a one-line rationale per entry, the test stays green, and follow-up PRs investigate one at a time. Day-1 of issue #391 the test surfaced 10 such entries — see the rationale strings in that file for the canonical examples.
 
+## Admitting a type to the sticky-CC exemption
+
+Closing the last silent-drop gap for a type is not the end of the story for
+resources ALREADY deployed. A resource recorded `provisionedBy: 'cc-api'`
+stays on Cloud Control by default, so the backfill you just landed speeds up
+new resources only — every existing one keeps paying Cloud Control latency
+until the type is admitted to `STICKY_CC_MIGRATION_EXEMPT`
+([`src/provisioning/provider-registry.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/provider-registry.ts),
+issue [#2719](https://github.com/go-to-k/cdkd/issues/2719)).
+
+Consider admitting a type in the same PR that empties its `silentDrop` map, or
+in a small follow-up. It is not mandatory and nothing blocks a release without
+it: an un-admitted type is merely slower, which is the status quo.
+
+**The bar is physicalId parity, and it is EVIDENCE, not an argument.** Cloud
+Control mints its identifier from the schema's `primaryIdentifier`; the SDK
+provider stores whatever its `create()` returned. When those differ, a flip
+leaves cdkd addressing the resource by a string AWS does not recognise. They
+often agree — but "often" is why this needs observing rather than reasoning.
+
+To admit a type:
+
+1. Confirm the type's `silentDrop` map is empty in
+   `property-coverage.generated.ts`. A type with a real drop must not be
+   admitted; the per-resource condition would refuse every resource anyway,
+   making the entry dead weight.
+2. Read the CFn schema's `primaryIdentifier` and the provider's `create()`
+   return, and write what BOTH store into `physicalIdForm` — in words a
+   reviewer can check, not "verified".
+3. Write or extend an integ fixture that OBSERVES the flip on a live resource:
+   deploy, force the resource onto Cloud Control with `--recreate-via-cc-api`,
+   redeploy with a real property change, then assert the physical id is
+   unchanged AND the record flipped to `'sdk'`.
+   [`tests/integration/cc-to-sdk-reroute/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute/)
+   is the model.
+   **Comparing physical ids is not always sufficient** — a resource with a
+   user-supplied name keeps its id through a destroy + recreate, so that
+   fixture also attaches an out-of-band subscription cdkd does not manage and
+   asserts it survives. Without such a witness the arm cannot tell an in-place
+   update from a replacement, which is the whole claim.
+4. Add the entry naming that fixture. `tests/unit/provisioning/sticky-exempt-registry.test.ts`
+   refuses an entry whose fixture does not exist or has no row in the integ
+   ledger, so an entry cannot land before its parity arm has actually run.
+5. Run the fixture and commit the ledger row.
+
+Use `mode: 'cc-broken'` **only** when Cloud Control genuinely cannot manage the
+type (its escape is unconditional and ignores `--pin-cc-api`). A type that
+works on Cloud Control and is only slower is `'sdk-coverage'`.
+
 ## Logging
 
 - `info`: Successful operations

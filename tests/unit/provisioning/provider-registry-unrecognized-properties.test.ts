@@ -229,26 +229,38 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
    * `getProviderFor`'s actual rule rather than to `provisionedBy` alone.
    */
   it('DOES warn for a sticky-exempt type even when state says cc-api', () => {
-    // DERIVED from the exported set, not hardcoded: a hardcoded name goes
-    // silently inert the day the set changes, and the guard would then be
-    // asserting about a type that is no longer exempt. The floor keeps an
-    // emptied set from making this case vacuous.
+    // DERIVED from the exported table, not hardcoded: a hardcoded name goes
+    // silently inert the day the table changes, and the guard would then be
+    // asserting about a type that is no longer exempt.
+    //
+    // Scoped to `'cc-broken'` since issue #2719 split the table by MODE, and
+    // the scope is the assertion's premise rather than a convenience. A
+    // `'cc-broken'` type re-routes to its SDK provider UNCONDITIONALLY, which
+    // is what puts the drop back on the path this warn watches. An
+    // `'sdk-coverage'` type re-routes only when BOTH its property bags are
+    // clean, and this call site passes no recorded bag at all -- so it
+    // correctly stays on Cloud Control, where there is no cdkd-side drop to
+    // warn about. Iterating the whole table would assert the `'cc-broken'`
+    // behaviour of a mode that deliberately does not have it.
+    const ccBrokenTypes = [...STICKY_CC_MIGRATION_EXEMPT]
+      .filter(([, entry]) => entry.mode === 'cc-broken')
+      .map(([type]) => type);
     expect(
-      STICKY_CC_MIGRATION_EXEMPT.size,
-      'STICKY_CC_MIGRATION_EXEMPT is empty — this case can no longer discriminate'
+      ccBrokenTypes.length,
+      "STICKY_CC_MIGRATION_EXEMPT has no 'cc-broken' member — this case can no longer discriminate"
     ).toBeGreaterThanOrEqual(1);
     // EVERY member is exercised, not just the first: a `find` would leave a
     // newly added exempt type silently uncovered. And each must be in the
     // Tier 1 table — an exempt type that left it makes this path unreachable,
     // which is the loud failure the earlier hardcoded name gave us for free.
-    for (const type of STICKY_CC_MIGRATION_EXEMPT) {
+    for (const type of ccBrokenTypes) {
       expect(
         PROPERTY_COVERAGE_BY_TYPE.has(type),
         `${type} is STICKY_CC_MIGRATION_EXEMPT but not in the Tier 1 coverage ` +
           'table, so the sticky-exempt warn path is unreachable for it'
       ).toBe(true);
     }
-    for (const exemptType of STICKY_CC_MIGRATION_EXEMPT) {
+    for (const exemptType of ccBrokenTypes) {
       const { registry, warn } = makeRegistry();
       registry.validateResourceProperties([
         {

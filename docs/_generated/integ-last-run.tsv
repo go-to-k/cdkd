@@ -38,6 +38,7 @@ cc-api-fallback-transitions	2026-08-01T10:00:06Z	PASS	123	verify.sh	0801 regress
 cc-getatt-readback	2026-09-02T10:32:07Z	PASS	260	verify.sh	2 phases passed; 8 deleted 0 errors, 0 orphans (S3 AccessPoint, not EFS)
 cc-protection-flip	2026-07-31T03:56:21Z	PASS	1250	verify.sh	5 CC types incl. RDS/DocDB GlobalCluster shells (#1315); orph clean
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
+cc-to-sdk-reroute	2026-09-07T07:19:25Z	PASS	117	verify.sh	issue 2719 physicalId-parity arm, final run on the rebased tree. ARN identical across the flip and an unmanaged SNS subscription survived, so the resource was updated in place; --pin-cc-api held it on CC in phase 4. destroy 1 deleted / 0 errors, 0 orphans
 ci-cd	2026-08-09T14:25:56Z	PASS	57	verify.sh	issue #1386 nested sub-keys asserted live; rc ok, orph clean
 cloudfront-function-url	2026-07-31T06:11:38Z	PASS	209	verify.sh	regression run post-#1311/#1318; fire-and-forget create + delete-wait path clean; 7 del/0 err, 0 orphans
 cloudtrail-trail	2026-08-11T07:51:38Z	PASS	300	verify.sh	post-rebase onto #1575: KMSKeyId reset + CW-pair drift/revert both verified in one run; 11 del 0 err 0 orph
@@ -149,7 +150,7 @@ intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 stale
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-07T07:00:38Z	PASS	80	verify.sh	maintainer merge-gate rerun of PR 2562 (broad gate; deploy-engine.ts in scope): 9 deleted 0 errors, 0 orphans; note: this fixture does NOT sweep state object versions (no list-object-versions in its verify.sh)
+lambda	2026-09-07T07:19:25Z	PASS	83	verify.sh	issue 2719 lane: broad-set run on the final rebased tree (onto go-to-k/cdkd#2562). Supersedes the maintainer merge-gate rerun row for PR 2562 that the normalizer collapsed -- same fixture, later run, same clean result. destroy 9 deleted / 0 errors, 0 orphans
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans

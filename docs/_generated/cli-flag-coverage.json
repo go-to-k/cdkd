@@ -21,6 +21,7 @@
     "--no-rollback",
     "--no-wait",
     "--output",
+    "--pin-cc-api",
     "--prefix-user-supplied-names",
     "--profile",
     "--recreate-via-cc-api",
@@ -398,6 +399,7 @@
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute",
         "ci-cd",
         "cloudfront-function-url",
         "cloudtrail-trail",
@@ -599,6 +601,12 @@
       ]
     },
     {
+      "flag": "--pin-cc-api",
+      "integs": [
+        "cc-to-sdk-reroute"
+      ]
+    },
+    {
       "flag": "--profile",
       "integs": [
         "local-start-agentcore"
@@ -607,6 +615,7 @@
     {
       "flag": "--recreate-via-cc-api",
       "integs": [
+        "cc-to-sdk-reroute",
         "loggroup-never-expire-guard",
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
@@ -649,6 +658,7 @@
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute",
         "ci-cd",
         "cloudfront-function-url",
         "cloudtrail-trail",
@@ -937,6 +947,7 @@
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute",
         "ci-cd",
         "cloudfront-function-url",
         "cloudtrail-trail",
@@ -1224,6 +1235,7 @@
         "cc-getatt-readback",
         "cc-protection-flip",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute",
         "ci-cd",
         "cloudfront-function-url",
         "cloudtrail-trail",
@@ -1606,6 +1618,7 @@
     "--no-version-reporting",
     "--nologo",
     "--notification",
+    "--notification-endpoint",
     "--older-than",
     "--open-id-connect-provider-arn",
     "--overwrite",
@@ -1632,6 +1645,7 @@
     "--prefix",
     "--prefix-list-id",
     "--protect-configuration-id",
+    "--protocol",
     "--pull",
     "--qualifier",
     "--query",

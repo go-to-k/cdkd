@@ -180,7 +180,10 @@ the deploy / drift / destroy / state-show paths):
 
 1. Custom Resources (`Custom::*` / `AWS::CloudFormation::CustomResource`)
    → Custom Resource provider, recorded as `'sdk'`.
-2. Existing-state `provisionedBy: 'cc-api'` (sticky) → Cloud Control.
+2. Existing-state `provisionedBy: 'cc-api'` (sticky) → Cloud Control,
+   UNLESS `wouldReturnToSdkProvider` says this resource may leave (see
+   below), in which case the decision falls through to rules 3-7 and the
+   record flips to `'sdk'`.
 3. SDK Provider registered AND no silent-drop properties (after
    `--allow-unsupported-properties` filter) → SDK Provider.
 4. SDK Provider registered AND template uses silent-drop properties
@@ -191,15 +194,19 @@ the deploy / drift / destroy / state-show paths):
 6. No SDK Provider AND Cloud Control supports the type → Cloud Control.
 7. `--allow-unsupported-types` escape hatch → Cloud Control optimistically.
 
-The field is **sticky**: once a resource is `'cc-api'`, subsequent SDK
-Provider backfills (issue #609) do NOT auto-migrate it back. Avoids
-physical-ID churn + destroy + recreate cycles on every backfill
-release. Exception: types in `STICKY_CC_MIGRATION_EXEMPT`
-(`src/provisioning/provider-registry.ts` — consult the constant, its
-membership changes) re-route to their SDK provider anyway, admitted only
-when CC routing is BROKEN and the physicalId is unchanged; see
-docs/state-management.md's `version: 7` section. User-initiated CC → SDK
-migration lives under #615 (or a future counterpart). `cdkd destroy`
+The field is **sticky by default**: once a resource is `'cc-api'`, an SDK
+Provider backfill (issue #609) does not by itself migrate it back, which avoids
+physical-ID churn on every backfill release. Two narrow exemptions escape it,
+and one of them is conditional per RESOURCE rather than per type — the modes,
+the both-bags flip condition, the evidence each entry must carry, and
+`--pin-cc-api` are in
+[provisioning-sticky-routing.md](provisioning-sticky-routing.md), which loads
+when you touch the routing file itself.
+
+See docs/state-management.md's `version: 7` section. User-initiated migration
+in either direction is `--recreate-via-cc-api` (#615) and
+`--recreate-via-sdk-provider` (#651) — both destroy + recreate, so they are
+the heavy option, not the routine one. `cdkd destroy`
 consults the field to pick the
 delete path; `cdkd drift` consults it to pick `readCurrentState`;
 `cdkd state show` displays `ProvisionedBy: sdk | cc-api | (sdk, legacy default)`
