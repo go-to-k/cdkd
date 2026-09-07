@@ -2798,8 +2798,24 @@ export class IntrinsicFunctionResolver {
       throw buildUnknownIntrinsicError(unknownIntrinsicKey);
     }
 
-    // Not an intrinsic function: recursively resolve object properties
-    const resolved: Record<string, unknown> = {};
+    // Not an intrinsic function: recursively resolve object properties.
+    //
+    // `Object.create(null)`, not `{}` (issue #2767, the sweep left by #2739).
+    // The keys come from the TEMPLATE and `JSON.parse` makes `__proto__` an OWN
+    // key, so `Object.entries` yields it -- but `resolved['__proto__'] = v` on a
+    // plain object routes through the inherited setter and the key is simply
+    // ABSENT from the result, with no error and no warning. This object is what
+    // deploy hands the provider, so a free-form property bag would lose the
+    // entry silently: a custom resource's properties, ECS `DockerLabels`, a
+    // Step Functions `DefinitionSubstitutions` map. `secret-redaction.ts` builds
+    // its four comparable walks the same way, and `resolveSub`'s variable map
+    // has since #2739; this walk was the one left behind.
+    //
+    // Safe for every consumer: the module's `isPlainObject` spellings are all
+    // `typeof === 'object' && !== null && !Array.isArray`, prototype-agnostic,
+    // and the one predicate that DOES read the prototype,
+    // `secret-redaction.ts`'s `hasPlainPrototype`, accepts `null` explicitly.
+    const resolved: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [key, val] of Object.entries(obj)) {
       const resolvedVal = await this.resolveValue(val, context);
       // Skip properties that resolve to AWS::NoValue
@@ -3061,16 +3077,31 @@ export class IntrinsicFunctionResolver {
    * 3. Pseudo parameters (AWS::Region, AWS::AccountId, etc.)
    */
   private async resolveRef(logicalId: string, context: ResolverContext): Promise<unknown> {
-    // Check if it's a resource
-    const resource = context.resources[logicalId];
+    // `Object.hasOwn`, not a bare property read (issue #2767). `logicalId` is
+    // template-controlled, and a plain-object read walks the PROTOTYPE chain:
+    // `resources['constructor']` is the `Object` function, which is truthy, so
+    // this arm was TAKEN and the not-found throw at the end of this method never
+    // ran. `resolveRefValue(Object)` then reached `cfnRefValueFromPhysicalId`
+    // with an undefined physical id, fell through every `resourceType` guard,
+    // and returned `undefined` -- which `resolveSub` `String()`s, shipping the
+    // literal text `undefined` into a live property. The name now misses like
+    // any other unknown one and reaches the ordinary refusal below.
+    const resource = Object.hasOwn(context.resources, logicalId)
+      ? context.resources[logicalId]
+      : undefined;
     if (resource) {
       const refValue = this.resolveRefValue(resource);
       this.logger.debug(`Resolved Ref to resource: ${logicalId} -> ${refValue}`);
       return refValue;
     }
 
-    // Check if it's a parameter
-    if (context.parameters && logicalId in context.parameters) {
+    // Check if it's a parameter. `Object.hasOwn` for the same reason as the
+    // resource read above (issue #2767): `'constructor' in {}` is true, so the
+    // bare `in` bound this arm to an `Object.prototype` member and read the
+    // function as the parameter's value. Swept together because a name that
+    // misses the resource bag lands here next, so fixing only one moves the
+    // wrong answer one line down rather than removing it.
+    if (context.parameters && Object.hasOwn(context.parameters, logicalId)) {
       const value = context.parameters[logicalId];
       const paramDef = context.template.Parameters?.[logicalId] as ParameterDefinition | undefined;
       // Masked BEFORE the pair is recorded below, which is why it goes through
@@ -3254,7 +3285,17 @@ export class IntrinsicFunctionResolver {
       attributeName = split.attributeName;
     }
 
-    const resource = context.resources[logicalId];
+    // `Object.hasOwn` for the reason given at the `resolveRef` resource read
+    // (issue #2767): a bare read walks the prototype chain, so
+    // `Fn::GetAtt: ["constructor", "Arn"]` bound an `Object.prototype` member,
+    // skipped the refusal below, and carried a function into the attribute
+    // lookup -- where `resource.resourceType` and `resource.attributes` are both
+    // `undefined` and the failure surfaces further from its cause than this
+    // throw. Swept with the two `resolveRef` arms because a template reaches
+    // all three by the same name.
+    const resource = Object.hasOwn(context.resources, logicalId)
+      ? context.resources[logicalId]
+      : undefined;
     if (!resource) {
       // `markNonRetryable` for the reason given at the `Invalid Fn::GetAtt
       // format` throw above: `logicalId` is template-controlled and the retry
@@ -4707,6 +4748,24 @@ export class IntrinsicFunctionResolver {
       // resolves by index (`${0}`); its non-enumerable `length` is no longer
       // a variable (`${length}` used to render the count through `in`), since
       // `Object.entries` copies own ENUMERABLE keys.
+      // The FIRST element is refused on the same terms (issue #2767). It was
+      // assigned unchecked, so a non-string died further down at
+      // `template.matchAll is not a function` -- opaque, and UNMARKED, right
+      // beside a neighbouring shape that names its refusal. `crossStackSourceKey`
+      // in `secret-redaction.ts` already states that a non-string template
+      // "THROW[s] during resolution", so the reader depends on it throwing;
+      // this only makes the two shapes fail the same way. Checked BEFORE the
+      // variable map so a template that is wrong in both places reports the
+      // element a reader fixes first.
+      if (typeof templateString !== 'string') {
+        throw markNonRetryable(
+          new Error(
+            `Fn::Sub: the first element must be a template string, got ${
+              templateString === null ? 'null' : typeof templateString
+            }`
+          )
+        );
+      }
       if (typeof variableMap !== 'object' || variableMap === null) {
         throw markNonRetryable(
           new Error(

@@ -641,6 +641,22 @@ async function rewriteSubTemplate(
     cursor = start + m[0].length;
 
     // Explicit Fn::Sub var map shadows resource references.
+    //
+    // `in` over the CALLER's plain object, so it answers for an inherited name
+    // too (`'constructor' in {}` is true). Wherever the writer binds OWN keys
+    // only -- which is what issue #2739 moves `resolveSub`'s variable map to,
+    // copying it with `Object.entries` into a fresh bag -- this reader therefore
+    // shadows one placeholder more than the writer substitutes. RETAINED as the
+    // conservative direction (issue #2767, the sweep that made the two
+    // `resolveRef` bag reads own-keys): over-
+    // shadowing leaves an orphan reference in the `Fn::Sub` for the deploy
+    // engine to re-resolve, while `Object.hasOwn` here would REWRITE a
+    // placeholder the writer treats as bound, changing a live template. The
+    // population is empty either way -- `JSON.parse` builds no prototype chain
+    // and makes `__proto__` an own key -- so this is a statement of which way to
+    // be wrong, not a live divergence. `crossStackSourceKey` in
+    // `src/deployment/secret-redaction.ts` keeps the same wider test for the
+    // same reason; this is the third copy of that decision.
     if (varMap && inner in varMap) {
       out += m[0];
       continue;
