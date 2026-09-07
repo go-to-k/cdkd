@@ -6449,7 +6449,14 @@ export class DeployEngine {
         // carries the verdict beside the value, so a hit re-records a cached
         // secret, and an unclassifiable-`Type` reference is never cached at
         // all (`cacheable = false`) — it re-asks AWS and records again. The
-        // merge keeps this resolution's entries either way.
+        // merge keeps every entry this resolution recorded BEFORE the block
+        // ended. What it cannot keep is an entry recorded AFTER: `Fn::Join`
+        // resolves its parts concurrently, so a part that rejects while a
+        // secret part is still pending ends the block — and the copy in the
+        // `finally` below — before that part records into `nameSecrets`,
+        // where the entry then dies with the local. That is the residual of
+        // this copy shape (issue #2563); `cdkd scrub`'s sibling loop resolves
+        // the name through a live VIEW of its pass map instead (issue #2531).
         const nameSecrets: RecordedSecretValues = new Map();
         let exportName: unknown;
         try {

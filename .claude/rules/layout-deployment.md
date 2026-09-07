@@ -52,7 +52,12 @@ Index of every area: [code-layout.md](code-layout.md).
   (`cacheable = false`), so each resolution re-asks AWS and records again;
   since #1933 a cached secret carries its verdict beside the value and the
   hit arm re-records it too. No name resolution substitutes a plaintext
-  with nothing recorded.
+  with nothing recorded. The engine resolves an INTRINSIC `Export.Name` (a
+  literal one is never resolved) into its own map and copies the ENTRIES
+  back in a `finally` (never the resolved pairs — a name positions no leaf);
+  that copy misses an entry a still-pending `Fn::Join` part records after a
+  sibling rejected (#2563). `cdkd scrub`'s name loop resolves one through a
+  live VIEW of its pass map instead (`SharedEntriesSecrets`, #2531).
 
 - **src/deployment/dag-executor.ts** - Generic event-driven DAG dispatcher
   (schedules each resource as soon as its deps complete; no level barriers)

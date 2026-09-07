@@ -117,7 +117,19 @@ const MOVING_PLAINTEXT = 'moving-securestring-settled-value';
 const MOVING_FIRST = 'moving-securestring-first-value';
 const MOVING_EXPR = '{{resolve:ssm:/p/moving}}';
 const MOVING_EXPR_V1 = '{{resolve:ssm:/p/moving:1}}';
+// The same moving parameter spelled as a FOREIGN-region ARN. An ARN naming a
+// region other than the stack's is a `named-region` verdict for the cross-
+// region pin (`pinCrossRegionSecrets`), which resolves the token through the
+// producer region's resolver and records the entry AND the pair into the map
+// it is handed — the second recording seam inside the name loop, beside the
+// primary resolver's.
+const PRODUCER_REGION = 'eu-west-1';
+const MOVING_ARN_EXPR = `{{resolve:ssm:arn:aws:ssm:${PRODUCER_REGION}:111122223333:parameter/p/moving}}`;
 const movingResolutions = vi.hoisted(() => new Map<string, number>());
+/** What each moving spelling RETURNED, in call order — the movement itself, pinned by value. */
+const movingReturned = vi.hoisted(() => new Map<string, string[]>());
+/** Every `resolveDynamicReferences` call the pin made: the constructing region and the token. */
+const dynamicRefCalls = vi.hoisted(() => [] as Array<{ region: string; token: string }>);
 /** A join part that makes the mock throw AFTER the parts before it recorded. */
 const THROW_PART = '__THROW__';
 /** ...and one that throws `undefined`, a legal thrown value the warn path must survive. */
@@ -158,10 +170,41 @@ const contextKeysAtResolve = vi.hoisted(
 /** Conditions scrub's best-effort re-evaluation returns; per-test knob. */
 const conditionValues: { value: Record<string, boolean> } = { value: {} };
 
+/**
+ * The moving reference's resolution: entry AND pair, like the real recording
+ * seam — shared by the primary resolver's `resolve` and the pinned sibling's
+ * `resolveDynamicReferences`, so the two spellings of one parameter count
+ * their resolutions on one counter each.
+ */
+function resolveMovingInto(map: Map<string, string> | undefined, expr: string): string {
+  const n = (movingResolutions.get(expr) ?? 0) + 1;
+  movingResolutions.set(expr, n);
+  const moved = expr === MOVING_EXPR || expr === MOVING_ARN_EXPR;
+  const plaintext = moved && n === 1 ? MOVING_FIRST : MOVING_PLAINTEXT;
+  movingReturned.set(expr, [...(movingReturned.get(expr) ?? []), plaintext]);
+  map?.set(plaintext, expr);
+  if (map) recordResolvedPair(map, expr, plaintext);
+  return plaintext;
+}
+
 vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+  IntrinsicFunctionResolver: vi.fn().mockImplementation((region: string) => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockImplementation(() => Promise.resolve(conditionValues.value)),
+    // The seam the cross-region pin resolves a `named-region` token through,
+    // on the resolver built for the region the ARN names. Only the moving
+    // ARN spelling is modelled; anything else is a fixture error.
+    resolveDynamicReferences: vi
+      .fn()
+      .mockImplementation(
+        async (token: string, ctx: { recordedSecretValues?: Map<string, string> }) => {
+          dynamicRefCalls.push({ region, token });
+          if (token !== MOVING_ARN_EXPR) {
+            throw new Error(`unexpected pinned token in this fixture: ${token}`);
+          }
+          return resolveMovingInto(ctx.recordedSecretValues, token);
+        }
+      ),
     resolve: vi
       .fn()
       .mockImplementation(async (value: unknown, ctx: { recordedSecretValues?: Map<string, string> }) => {
@@ -197,15 +240,7 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
           }
           ctx.recordedSecretValues?.set(plaintext, expr);
         };
-        // The moving reference: entry AND pair, like the real recording seam.
-        const resolveMoving = (expr: string): string => {
-          const n = (movingResolutions.get(expr) ?? 0) + 1;
-          movingResolutions.set(expr, n);
-          const plaintext = expr === MOVING_EXPR && n === 1 ? MOVING_FIRST : MOVING_PLAINTEXT;
-          ctx.recordedSecretValues?.set(plaintext, expr);
-          if (ctx.recordedSecretValues) recordResolvedPair(ctx.recordedSecretValues, expr, plaintext);
-          return plaintext;
-        };
+        const resolveMoving = (expr: string): string => resolveMovingInto(ctx.recordedSecretValues, expr);
         const walk = (v: unknown): unknown => {
           if (v === MOVING_EXPR || v === MOVING_EXPR_V1) return resolveMoving(v);
           if (v === SECRET_EXPR || v === STAGED_EXPR || v === TWIN_EXPR) {
@@ -374,6 +409,8 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     conditionValues.value = {};
     alreadyRecorded.clear();
     movingResolutions.clear();
+    movingReturned.clear();
+    dynamicRefCalls.length = 0;
     contextKeysAtResolve.length = 0;
     pendingLate.release = undefined;
     stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-2') };
@@ -580,14 +617,63 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
       Whole: { Value: MOVING_EXPR_V1 },
     });
 
-    // The premise: the name loop saw the moved value, the value loop the settled one.
+    // The premise: the name loop saw the moved value, the value loop the
+    // settled one — by VALUE, since a mock returning the settled value twice
+    // would leave nothing to conflict and let a shared map pass.
     expect(movingResolutions.get(MOVING_EXPR)).toBe(2);
+    expect(movingReturned.get(MOVING_EXPR)).toEqual([MOVING_FIRST, MOVING_PLAINTEXT]);
     // ...and the collapsed slot really is the sibling's spelling — the
     // value scan of a key no source positions writes the survivor. Without
     // this guard a reorder of `Dsn` / `Whole` would let the case pass with
     // the shared map, silently.
     expect(saved!.outputs['Orphan']).toBe(MOVING_EXPR_V1);
     expect(saved!.outputs['Dsn']).toBe(`pre-${MOVING_EXPR}-post`);
+    expect(saved!.outputs['Whole']).toBe(MOVING_EXPR_V1);
+    expect(JSON.stringify(saved)).not.toContain(MOVING_PLAINTEXT);
+    expect(JSON.stringify(saved)).not.toContain(MOVING_FIRST);
+  });
+
+  it('...and the same through the CROSS-REGION PIN: a `named-region` name token resolved by the producer-region resolver leaves the pass map\'s pair for the moved token unconflicted (issue #2531)', async () => {
+    // The name loop has TWO recording seams, and the moved-value case above
+    // drives only the primary resolver's. A token whose ARN names another
+    // region never reaches `resolver.resolve`: `pinCrossRegionSecrets`
+    // resolves it first, through the resolver built for that region, and
+    // records entry and pair into the map IT is handed. Hand it the pass map
+    // and the moved value conflicts the pair exactly as the shared map did —
+    // so the pin's map argument is pinned here as the view, by the same
+    // observable: the embedded leaf keeps its own token.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({
+        Exporter: PUBLIC_VALUE,
+        Dsn: `pre-${MOVING_PLAINTEXT}-post`,
+        Whole: MOVING_PLAINTEXT,
+        Orphan: MOVING_PLAINTEXT,
+      }),
+      etag: 'etag-1',
+    });
+
+    const { saved } = await scrub({
+      Exporter: {
+        Value: PUBLIC_VALUE,
+        Export: { Name: { 'Fn::Sub': `x-${MOVING_ARN_EXPR}` } as never },
+      },
+      Dsn: { Value: `pre-${MOVING_ARN_EXPR}-post` },
+      Whole: { Value: MOVING_EXPR_V1 },
+    });
+
+    // The premise, both halves: the token went through the PIN (the producer
+    // region's resolver answered, never the stack's own — a `local` verdict
+    // would have left it to `resolve`), once for the name and once for the
+    // value, and the name saw the moved value.
+    expect(dynamicRefCalls).toEqual([
+      { region: PRODUCER_REGION, token: MOVING_ARN_EXPR },
+      { region: PRODUCER_REGION, token: MOVING_ARN_EXPR },
+    ]);
+    expect(movingResolutions.get(MOVING_ARN_EXPR)).toBe(2);
+    expect(movingReturned.get(MOVING_ARN_EXPR)).toEqual([MOVING_FIRST, MOVING_PLAINTEXT]);
+    // ...and the collapsed slot is the sibling's spelling, as above.
+    expect(saved!.outputs['Orphan']).toBe(MOVING_EXPR_V1);
+    expect(saved!.outputs['Dsn']).toBe(`pre-${MOVING_ARN_EXPR}-post`);
     expect(saved!.outputs['Whole']).toBe(MOVING_EXPR_V1);
     expect(JSON.stringify(saved)).not.toContain(MOVING_PLAINTEXT);
     expect(JSON.stringify(saved)).not.toContain(MOVING_FIRST);
@@ -617,6 +703,10 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     });
 
     const warns = logger.warn.mock.calls.map((c) => String(c[0]));
+    // This substring is ALSO an absence grep in
+    // tests/integration/secrets-dynamic-ref/verify.sh (Guard 7b), which has
+    // no sentinel of its own: a reword of the warn must update that fixture
+    // together with the assertions here, or its grep goes silently green.
     const nameWarn = warns.find((w) => w.includes('could not be resolved during scrub'));
     expect(nameWarn).toBeDefined();
     expect(nameWarn).toContain('***');
@@ -693,7 +783,15 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(secondName!.forEach).toContain(UNPINNED_PLAINTEXT);
   });
 
-  it('still warns when the name resolution throws `undefined` (a legal thrown value)', async () => {
+  it('still warns when the name resolution throws `undefined` (a legal thrown value) — a fence for the boolean `nameFailed` sentinel, not a #2531 repro', async () => {
+    // Pre-fix the warn sat inside `catch (err)` and fired for `undefined` too,
+    // so this case passes on the old code as well. What it pins is the
+    // refactor that moved the warn OUT of the catch behind a sentinel: a
+    // truthiness sentinel (`nameError !== undefined`) would skip the WARN for
+    // exactly this thrown value. The value-scan fallback would still fire —
+    // the non-string check that follows marks the bag untrusted on its own —
+    // so the warn assertion is the discriminating one; the `PublicAlpha`
+    // assertion below pins the fallback, not the sentinel.
     stateBackend.getState.mockResolvedValue({
       state: makeState({ PublicAlpha: SECRET_PLAINTEXT }),
       etag: 'etag-1',
@@ -805,6 +903,9 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     // Value-scanned, so the stored plaintext maps back to the expression that
     // produced it rather than to the owner's.
     expect(saved!.outputs['PublicAlpha']).toBe(SECRET_EXPR);
+    // Also an absence grep in tests/integration/secrets-dynamic-ref/verify.sh
+    // (Guard 7b) with no sentinel there — reword the warn and that fixture
+    // together, or its grep goes silently green.
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('did not fully resolve during scrub')
     );
