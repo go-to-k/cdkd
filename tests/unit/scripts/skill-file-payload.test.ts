@@ -130,7 +130,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // the arithmetic this record exists to replace with a measurement. Re-read
     // it from the tree after every rebase; the failure message prints the
     // number to paste.
-    corpusBytes: 173_703,
+    corpusBytes: 174_012,
     largest: { file: 'implement.md', bytes: 28_743 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },

@@ -107,7 +107,14 @@ if [[ -z "$target_top" || ! -f "$target_top/.markgate.yml" ]]; then
   exit 0
 fi
 
-cd "$target_dir" 2>/dev/null || exit 0
+# Fail CLOSED, matching `check-gate.sh`'s `cannot_evaluate`. A gate that cannot
+# enter the tree it is judging has not cleared it. This was `|| exit 0` -- a
+# fail-open the delta's `git -C "$target_dir"` was working around rather than
+# closing (go-to-k/cdkd#2686 review).
+if ! cd "$target_dir" 2>/dev/null; then
+  echo "Blocked by verify-pr-gate: cannot enter $target_dir to evaluate the marker." >&2
+  exit 2
+fi
 
 # Prefer the `.mise.toml`-pinned version via `mise exec --` so the repo's
 # canonical markgate wins over an older PATH binary; see check-gate.sh for
@@ -172,17 +179,33 @@ if [ -f "$target_top/.markgate-verify-pr-sha" ]; then
   # RESOURCE bound (a legitimate sentinel is one sha and a newline -- 41 bytes,
   # 65 for sha256), and the shape check rejects malformed content early.
   #
-  # Measured, and worth stating rather than implying: removing the size cap, the
-  # hex check, or the length check ALONE changes no verdict, because the full
-  # read already refuses every case. They are layered deliberately and none is
-  # individually load-bearing; the probes for each come back green for that
-  # reason, not because the suite is blind (go-to-k/cdkd#2686 review).
+  # Measured, and CORRECTED after a reviewer checked the claim I made here:
+  #
+  #   - the SIZE CAP is load-bearing on its own. `<sha><100 spaces>` (140 B)
+  #     refuses today and PASSES with the cap widened, because `tr` strips the
+  #     padding and what is left is a well-formed sha. An earlier revision of
+  #     this comment said removing the cap "changes no verdict" -- an untrue
+  #     claim of exactly the form this gate exists to stop, written twice in one
+  #     PR. The divergence is in the safe direction; the claim was still false.
+  #   - the HEX and LENGTH checks genuinely are redundant with the comparison:
+  #     `head_sha` is always lowercase 40-hex, so a malformed `recorded_sha`
+  #     can never compare equal. Removing either, or both, changes no verdict.
+  #     They stay because they make the REASON legible in the block message.
+  #
+  # KNOWN BOUNDS, stated rather than chased: the read FOLLOWS a symlink (an
+  # attacker who can plant one in your worktree can do worse), and a sentinel
+  # whose sha is followed by a NUL passes, because bash cannot hold a NUL in a
+  # variable so it is dropped at assignment. Neither is reachable from the
+  # documented flow, which writes the file with `git rev-parse`.
   sentinel_bytes=$(wc -c < "$target_top/.markgate-verify-pr-sha" 2>/dev/null | tr -d '[:space:]')
   case "$sentinel_bytes" in
     '' | *[!0-9]*) sentinel_bytes=99999 ;;
   esac
   if [ "$sentinel_bytes" -le 128 ]; then
-    recorded_sha=$(tr -d '[:space:]' < "$target_top/.markgate-verify-pr-sha" 2>/dev/null)
+    # Braces around the redirect: bash applies `< file` BEFORE `2>/dev/null`, so
+    # a `chmod 000` sentinel otherwise leaks a "Permission denied" line onto the
+    # hook's own stderr (verdict was already correct).
+    recorded_sha=$({ tr -d '[:space:]' < "$target_top/.markgate-verify-pr-sha"; } 2>/dev/null)
     case "$recorded_sha" in
       *[!0-9a-f]* | "") recorded_sha="" ;;
     esac
@@ -222,7 +245,16 @@ if [ "$status" -eq 0 ]; then
   # here would send the reader to `/check` for a problem no child has.
   printf "Blocked by verify-pr-gate: the \`verify-pr\` marker is fresh but bound to a different commit.\n\n" >&2
   printf "  HEAD is:          %s\n" "${head_sha:-<unreadable>}" >&2
-  printf "  marker bound to:  %s\n\n" "${recorded_sha:-<unset>}" >&2
+  # A present-but-rejected sentinel is not the same as an absent one, and the
+  # reader needs to know which: "unset" sends them to /verify-pr, "malformed"
+  # sends them to the file.
+  sentinel_label="<unset>"
+  if [ -n "$recorded_sha" ]; then
+    sentinel_label="$recorded_sha"
+  elif [ -e "$target_top/.markgate-verify-pr-sha" ]; then
+    sentinel_label="<present but unreadable or malformed>"
+  fi
+  printf "  marker bound to:  %s\n\n" "$sentinel_label" >&2
   printf "This is the second-lane case: a marker set for an earlier branch in this\nworktree, un-masked by a later \`/check\` + \`/check-docs\`. Run \`/verify-pr\`\nfor THIS branch.\n\n" >&2
 elif [ -n "$reason" ]; then
   printf "Blocked by verify-pr-gate: the \`verify-pr\` marker is stale %s.\n\n" "$reason" >&2

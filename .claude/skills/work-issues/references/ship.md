@@ -16,7 +16,11 @@ sentinel-bound gate refuses (`dead scope: include matches nothing ...`) —
 write the sentinel first (`/run-integ` step 11), never bypass. Ordering, not
 just presence: REWRITING a sentinel after its marker is set stales that
 marker, so a second broad run's `.markgate-broad-integ-test` write must be
-followed by another `markgate set integ-broad`. Never two
+followed by another `markgate set integ-broad`. **`.markgate-verify-pr-sha`
+carries the same rule from the other direction** (go-to-k/cdkd#2686): it is
+bound to a COMMIT, so the flatten / rebase / force-push this file prescribes
+below invalidates it — rewrite the sentinel and re-set `verify-pr` once the tree
+is final, or `gh pr merge` refuses mid-ship. Never two
 lanes' integs or merges concurrently; everything after the merge stays with
 the parent.
 

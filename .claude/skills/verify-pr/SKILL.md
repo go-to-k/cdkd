@@ -370,30 +370,32 @@ After all checks pass, record THREE markers via
 of `/check` and `/check-docs`, so its success implies all three. Use
 `mise exec` (cdkd pins markgate via mise):
 
-**Commit and push FIRST.** The `verify-pr` marker is bound to a COMMIT, so
-setting it and then committing moves HEAD past the binding and refuses a PR that
-is genuinely ready.
+**Order matters and is not arbitrary** — the `verify-pr` marker is bound to a
+COMMIT, and `check-gate` guards the commit. Both directions are explained in
+[.claude/rules/hooks.md](../../rules/hooks.md).
 
 ```bash
-# 1. Land this run's own changes, so HEAD is final.
-git add -A && git commit -m "..." && git push
-
-# 2. Then record the markers.
+# 1. Children FIRST: `check-gate` blocks the commit below unless both are
+#    fresh, and step 2 exists for runs that changed files in their scope.
 mise exec -- markgate set check
 mise exec -- markgate set docs
-# From the repo TOP, and `--verify`: a bare `> .markgate-verify-pr-sha` run
-# from a subdirectory writes a file the hook never reads (a permanent block
-# whose cause is off-screen), and a bare `rev-parse HEAD` prints the literal
-# string `HEAD` in a repo with no commits.
+
+# 2. Land this run's changes, so HEAD is final. The `|| ` guard because a CLEAN
+#    tree is normal on a re-run: `git commit && git push` exits 1 on "nothing
+#    to commit" and never pushes.
+git add -A
+git diff --cached --quiet || git commit -m "..."
+git push
+# From the repo TOP, and `--verify` -- both spellings matter; see hooks.md.
+
+# 3. Only now bind the parent, with HEAD final.
 git rev-parse --verify HEAD > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha"
 mise exec -- markgate set verify-pr
 ```
 
-**Anything that moves HEAD afterwards invalidates the binding, by design.** A
-rebase or a force-push before merge — which
-`.claude/skills/work-issues/references/ship.md` prescribes as the normal
-fan-out state — needs the sentinel rewritten and the marker re-set. Re-run
-`/verify-pr`, or at minimum repeat step 2 above once the tree is final.
+**Anything that moves HEAD afterwards invalidates the binding, by design** — a
+rebase or force-push before merge (which `ship.md` prescribes) needs step 3
+repeated once the tree is final.
 
 **The sentinel is the binding, and `markgate verify` does not enforce it**
 (issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). Why, and why it is

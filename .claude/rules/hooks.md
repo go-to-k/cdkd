@@ -593,6 +593,27 @@ Why each needs it:
   hour older than children four minutes old, `verify` rc=0, `gh pr create`
   unblocked.
 
+**The ORDER in `/verify-pr`'s final step is forced from two directions, and
+getting either wrong deadlocks or false-blocks.** `check-gate` refuses the
+commit unless `check` and `docs` are fresh, so those two are set FIRST — after
+the commit is too late for exactly the runs that produced changes to commit, and
+an agent facing a blocking gate starts improvising around it. The sentinel and
+`markgate set verify-pr` come LAST, after the push: written before the commit,
+HEAD moves past the binding and the next `gh pr create` refuses a PR that is
+genuinely ready. Both halves were live defects in the change that added the
+binding. The commit itself is guarded (`git diff --cached --quiet ||`) because a
+CLEAN tree is the normal case on a re-run after a rebase, where a bare
+`commit && push` chain exits 1 and never pushes.
+
+The sentinel is written from the repo TOP (`$(git rev-parse --show-toplevel)/…`):
+the cwd-relative spelling run from a subdirectory writes a file the hook never
+reads, and `.gitignore`'s entry has no leading slash, so the stray copy is
+invisible — a permanent block with an off-screen cause.
+
+Anything that moves HEAD afterwards invalidates the binding by design, including
+the flatten / rebase / force-push `work-issues/references/ship.md` prescribes
+before merge.
+
 The read uses `git rev-parse --verify HEAD`, not the bare form: in a repo with
 no commits the bare spelling prints the literal string `HEAD` on STDOUT, which
 would make the emptiness guard beside it dead code and let a sentinel containing

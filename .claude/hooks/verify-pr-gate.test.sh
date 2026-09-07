@@ -336,20 +336,57 @@ printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 # The 100-byte read cap. The sentinel's first 100 bytes are the right sha and
 # the tail is junk: a read with no cap sees the junk and refuses, so this pins
 # the cap rather than merely the comparison.
-# The sha followed by enough WHITESPACE to fill the cap, then junk beyond it.
-# Under `head -c 100` + `tr -d '[:space:]'` alone this reads as the bare sha and
-# PASSES; without the cap it reads as sha+junk and refuses -- so the cap alone
-# would decide the verdict. The shape check is what makes both refuse.
+# The sha followed by junk. What refuses it is reading the file WHOLE: a capped
+# read would see only the sha. (An earlier revision called this "pins the cap"
+# and then said the opposite two lines down; the cap is gone.)
 { printf '%s' "$real_sha"; printf '%*s' 60 ''; printf 'TAILJUNK'; } \
   > "$side_repo/.markgate-verify-pr-sha"
-run_case "sha padded past the read cap is REFUSED" 2 fresh "" "$side_payload"
+run_case "sha followed by junk is REFUSED (whole-file read)" 2 fresh "" "$side_payload"
 
-# A non-hex payload and a truncated sha, both refused by shape rather than by
-# the comparison happening to differ.
-printf '%s' "not-a-sha" > "$side_repo/.markgate-verify-pr-sha"
-run_case "non-hex sentinel REFUSED" 2 fresh "" "$side_payload"
+# THE SIZE CAP, which a reviewer proved is load-bearing on its own: the sha
+# followed by 100 spaces strips back to a well-formed sha, so ONLY the size gate
+# refuses it. Nothing covered this while the code claimed the cap changed no
+# verdict.
+{ printf '%s' "$real_sha"; printf '%*s' 100 ''; } > "$side_repo/.markgate-verify-pr-sha"
+run_case "sha padded past the SIZE CAP is REFUSED" 2 fresh "" "$side_payload"
+
+# The HEX and LENGTH checks are redundant with the comparison -- `head_sha` is
+# always lowercase 40-hex, so a malformed value can never compare equal. What
+# they buy is a legible REASON, so that is what these two assert: the block must
+# name the sentinel as malformed rather than printing the junk or claiming it is
+# unset. Inputs chosen so exactly one check catches each.
+printf '%s' "0123456789abcdef0123456789abcdef0123456z" > "$side_repo/.markgate-verify-pr-sha"
+run_case "40 chars with a non-hex byte REFUSED" 2 fresh "" "$side_payload"
+nonhex_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+if printf '%s' "$nonhex_msg" | grep -q 'present but unreadable or malformed'; then
+  pass=$((pass + 1)); printf 'OK   a malformed sentinel is named as such, not as unset\n'
+else
+  fail=$((fail + 1)); fail_log+="FAIL malformed-sentinel label: $nonhex_msg\n"
+  printf 'FAIL malformed-sentinel label\n'
+fi
+
 printf '%s' "$(printf '%s' "$real_sha" | cut -c1-12)" > "$side_repo/.markgate-verify-pr-sha"
-run_case "abbreviated sha REFUSED" 2 fresh "" "$side_payload"
+run_case "an all-hex ABBREVIATED sha REFUSED" 2 fresh "" "$side_payload"
+abbrev_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+if printf '%s' "$abbrev_msg" | grep -q 'present but unreadable or malformed'; then
+  pass=$((pass + 1)); printf 'OK   a short all-hex sentinel is named malformed, not printed raw\n'
+else
+  fail=$((fail + 1)); fail_log+="FAIL abbreviated-sentinel label: $abbrev_msg\n"
+  printf 'FAIL abbreviated-sentinel label\n'
+fi
+
+# A MISSING sentinel must still read as unset, or the label above is satisfied
+# by a hook that calls everything malformed.
+rm -f "$side_repo/.markgate-verify-pr-sha"
+missing_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+if printf '%s' "$missing_msg" | grep -q '<unset>' \
+   && ! printf '%s' "$missing_msg" | grep -q 'malformed'; then
+  pass=$((pass + 1)); printf 'OK   a MISSING sentinel is named unset, not malformed\n'
+else
+  fail=$((fail + 1)); fail_log+="FAIL missing-sentinel label: $missing_msg\n"
+  printf 'FAIL missing-sentinel label\n'
+fi
+printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 
 # An UNREADABLE HEAD must block, and this is why the `[ -n "$head_sha" ]` guard
