@@ -751,42 +751,60 @@ const MIN_ZIP_ENTRIES = 1000;
 const MAX_MISSING_TYPE_RATIO = 0.1;
 
 /**
- * Cap on the downloaded bundle, and on the cumulative UNCOMPRESSED bytes read
- * out of it. Measured 2026-09-07: 2,989,693 compressed / 13,991,910
- * uncompressed, so this leaves ~4.2x headroom on the compressed side.
+ * Cap on the DOWNLOADED bundle — the compressed bytes, nothing else. Measured
+ * 2026-09-07 at 2,989,693, so this leaves ~4.2x headroom.
  *
  * AWS publishes no checksum or signature for this artifact, so it cannot be
- * pinned by content — TLS plus the origin host is the whole trust story. That
- * makes a size bound the only defence against a bundle that expands into far
- * more than it claims, and the entry FLOOR below cannot serve: it runs after
- * extraction, so a bomb exhausts memory before it is consulted.
+ * pinned by content — TLS plus the origin host is the whole trust story, which
+ * is what makes a size bound worth having at all.
  *
- * **It also bounds the CENTRAL-DIRECTORY parse, which is why it is 12 MB
+ * **It also bounds the CENTRAL-DIRECTORY parse, and that is why it is 12 MB
  * rather than something roomier.** `new AdmZip(buffer)` builds an object per
  * directory record before any check in this module runs, so a buffer that is
- * nothing but records is the cheapest attack on the runner. Measured
- * 2026-09-07: ~8,686 bytes of heap per entry, and the smallest possible record
- * is 46 bytes plus a one-character name. The worst case is therefore
- * `MAX_BUNDLE_BYTES / 47 * 8686` — about 2.3 GB here, which survives and is
- * then refused by {@link MAX_MISSING_TYPE_RATIO}, since none of those entries
- * match a registered type. At 64 MB the same arithmetic gives ~12.4 GB, which
- * OOM-kills the job.
+ * nothing but records is the cheapest attack on the runner. adm-zip refuses a
+ * declared entry count above `(len - offset) / 46` (measured: a 1 KB buffer
+ * declaring 0xFFFF entries throws `Number of disk entries is too large`), so
+ * the buffer size genuinely bounds the count, and the worst case is
+ * `MAX_DOWNLOAD_BYTES / 46 * ~9,241` — about 2.5 GB here, which survives, with
+ * the run then refused by {@link MIN_ZIP_ENTRIES}, since a directory bomb
+ * yields almost no `.json` entries. At 64 MB the same arithmetic gives ~13 GB,
+ * which OOM-kills the job. The per-entry cost is maximized at the SMALLEST
+ * record: entries scale as `B/(46+n)` and cost as `base+n`, and since
+ * `46 < base` the product falls as the filename grows.
  *
- * A hand-rolled End-Of-Central-Directory entry-count ceiling was tried here
- * instead, and DELETED rather than fixed a third time. Two independent reviews
- * measured four working bypasses: it read `ENDTOT` where adm-zip allocates
- * from `ENDSUB`, used `ZIP64TOT` where adm-zip uses `ZIP64SUB`, gated the
- * ZIP64 path on a `0xFFFF` sentinel adm-zip never consults, and took the
- * highest EOCD where adm-zip takes the lowest. A correct version is possible —
- * both reviewers supplied one — but it mirrors adm-zip's internals, so a
- * dependency bump can silently re-open it, and it parses attacker-controlled
- * bytes to defend against attacker-controlled bytes. The arithmetic above
- * needs neither.
+ * A hand-rolled End-Of-Central-Directory entry-count ceiling was tried instead
+ * and DELETED rather than fixed a third time. Two independent reviews measured
+ * four working bypasses: it read `ENDTOT` where adm-zip allocates from
+ * `ENDSUB`, used `ZIP64TOT` where adm-zip uses `ZIP64SUB`, gated the ZIP64 path
+ * on a `0xFFFF` sentinel adm-zip never consults, and took the highest EOCD
+ * where adm-zip walks to the lowest. A correct version is possible, but it
+ * mirrors adm-zip's internals, so a dependency bump can silently re-open it,
+ * and it parses attacker-controlled bytes to defend against attacker-controlled
+ * bytes. The arithmetic above needs neither.
  *
- * RAISING THIS CONSTANT IS A SECURITY DECISION, not a capacity one; the
- * arithmetic is pinned by `tests/unit/scripts/refresh-cfn-schemas-zip.test.ts`.
+ * RAISING THIS IS A SECURITY DECISION, not a capacity one; the arithmetic is
+ * pinned by `tests/unit/scripts/refresh-cfn-schemas-zip.test.ts`.
  */
-export const MAX_BUNDLE_BYTES = 12 * 1024 * 1024;
+export const MAX_DOWNLOAD_BYTES = 12 * 1024 * 1024;
+
+/**
+ * Cap on the cumulative UNCOMPRESSED bytes read out of the bundle — a
+ * SEPARATE budget from the download, and separate for a reason learned the
+ * hard way.
+ *
+ * These were ONE constant, and lowering it to bound the directory parse
+ * silently lowered this bound below the real bundle: measured 2026-09-07, the
+ * live artifact is 2,989,693 compressed but **13,991,910 uncompressed**, so
+ * `readSchemaBundle` threw on AWS's own bundle and the monthly job would have
+ * failed every cycle — the feature dead on arrival, with the test green
+ * because it asserted headroom against the COMPRESSED number the cap was never
+ * near. The two quantities differ by ~4.7x and are bounded for different
+ * reasons: one guards the runner's parse cost, the other guards decompression.
+ * They must not share a number.
+ *
+ * 48 MB is ~3.4x the measured uncompressed total.
+ */
+export const MAX_UNCOMPRESSED_BYTES = 48 * 1024 * 1024;
 
 
 /**
@@ -918,7 +936,7 @@ export function readSchemaBundle(zipBuffer) {
     // `max(size, compressedSize)` to the running total; that is
     // MATHEMATICALLY INERT, because the sum of every entry's compressed size
     // cannot exceed the zip buffer, which the download cap already holds under
-    // MAX_BUNDLE_BYTES. So the compressed arm can never trip the cap, and the
+    // the download cap. So the compressed arm can never trip it, and the
     // only arm that can is the very field the attacker zeroes. Measured: a
     // central header with `size=0, compressedSize=4080` contributed 4 KB while
     // `getData()` materialized 4 MB — 1029x past the counter, and ~64 GiB of
@@ -926,7 +944,9 @@ export function readSchemaBundle(zipBuffer) {
     //
     // adm-zip reads the CENTRAL directory, where sizes are correct even for a
     // data-descriptor entry, so a zero here is a lie rather than a streaming
-    // artifact — and AWS's bundle contains no such entry.
+    // artifact — and AWS's bundle contains no such entry. This arm is exactly
+    // what the running total below CANNOT do: a zero-declaring entry adds
+    // nothing to it while inflating without limit.
     if (entry.header.size === 0 && entry.header.compressedSize > 0) {
       throw new Error(
         `Schema bundle entry "${entry.entryName}" declares 0 uncompressed bytes for ` +
@@ -939,9 +959,9 @@ export function readSchemaBundle(zipBuffer) {
     // Checked BEFORE `getData()`, so an entry lying LARGE is caught here and
     // one lying SMALL is caught by zlib's own `maxOutputLength`.
     uncompressed += entry.header.size;
-    if (uncompressed > MAX_BUNDLE_BYTES) {
+    if (uncompressed > MAX_UNCOMPRESSED_BYTES) {
       throw new Error(
-        `Schema bundle expands past the ${MAX_BUNDLE_BYTES}-byte cap — refusing to continue.`
+        `Schema bundle expands past the ${MAX_UNCOMPRESSED_BYTES}-byte cap — refusing to continue.`
       );
     }
     // Basename only: the bundle is flat today, and keying on the full path
@@ -967,7 +987,7 @@ export async function downloadSchemaBundle(url, fetchImpl = fetch) {
   // `redirect: 'error'` rather than the default `follow`: this runs unattended
   // in CI with a write-scoped token in the job, and a redirect would let the
   // response come from a host nobody reviewed. There is no integrity check
-  // available to fall back on (see MAX_BUNDLE_BYTES), so the origin is the
+  // available to fall back on (see MAX_DOWNLOAD_BYTES), so the origin is the
   // only thing pinnable, and a legitimate redirect here would be a change
   // worth noticing rather than following.
   let resp;
@@ -1000,9 +1020,9 @@ export async function downloadSchemaBundle(url, fetchImpl = fetch) {
   // and falls through to the streaming bound below rather than passing a
   // check it never really satisfied.
   const declared = Number(resp.headers.get('content-length') ?? '');
-  if (declared > MAX_BUNDLE_BYTES) {
+  if (declared > MAX_DOWNLOAD_BYTES) {
     throw new Error(
-      `Schema bundle declares ${declared} bytes, over the ${MAX_BUNDLE_BYTES} cap — refusing to download.`
+      `Schema bundle declares ${declared} bytes, over the ${MAX_DOWNLOAD_BYTES} cap — refusing to download.`
     );
   }
   if (!resp.body) {
@@ -1019,9 +1039,9 @@ export async function downloadSchemaBundle(url, fetchImpl = fetch) {
   for await (const chunk of resp.body) {
     const buf = Buffer.from(chunk);
     total += buf.byteLength;
-    if (total > MAX_BUNDLE_BYTES) {
+    if (total > MAX_DOWNLOAD_BYTES) {
       throw new Error(
-        `Schema bundle exceeded the ${MAX_BUNDLE_BYTES}-byte cap mid-download — aborting.`
+        `Schema bundle exceeded the ${MAX_DOWNLOAD_BYTES}-byte cap mid-download — aborting.`
       );
     }
     chunks.push(buf);

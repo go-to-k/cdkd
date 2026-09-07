@@ -58,7 +58,8 @@ import {
   buildFixture,
   downloadSchemaBundle,
   fixtureDiffersIgnoringDate,
-  MAX_BUNDLE_BYTES,
+  MAX_DOWNLOAD_BYTES,
+  MAX_UNCOMPRESSED_BYTES,
   readSchemaBundle,
   refreshFixturesFromEntries,
   serializeFixture,
@@ -849,17 +850,46 @@ describe('download and decompression bounds', () => {
    * parsing involved.
    */
   it('keeps the worst-case directory parse survivable, so raising the cap is a security decision', () => {
-    const MIN_CENTRAL_RECORD_BYTES = 47; // 46-byte header + 1-char name
-    const HEAP_BYTES_PER_ENTRY = 8686; // measured against adm-zip 0.5.x
+    const MIN_CENTRAL_RECORD_BYTES = 46; // adm-zip's own divisor
+    // 9,500 rather than my own 8,686: an independent measurement put the real
+    // cost at 9,210-9,434 B/entry, so the test asserts the CONSERVATIVE end of
+    // measured reality rather than my transcribed figure.
+    const HEAP_BYTES_PER_ENTRY = 9500;
     const worstCaseHeapBytes =
-      (MAX_BUNDLE_BYTES / MIN_CENTRAL_RECORD_BYTES) * HEAP_BYTES_PER_ENTRY;
-    // 3 GB: comfortably under a runner's memory and under Node's default
-    // old-space, so the run reaches MAX_MISSING_TYPE_RATIO and is refused
-    // there rather than being OOM-killed mid-parse.
+      (MAX_DOWNLOAD_BYTES / MIN_CENTRAL_RECORD_BYTES) * HEAP_BYTES_PER_ENTRY;
+    // 3 GB: under a runner's memory and under Node's default old-space, so the
+    // run reaches MIN_ZIP_ENTRIES and is refused there rather than OOM-killed
+    // mid-parse.
     expect(worstCaseHeapBytes).toBeLessThan(3 * 1024 * 1024 * 1024);
-    // And the cap must still clear the real bundle with headroom — a cap
-    // tightened until it refuses AWS's own artifact would fail every cycle.
-    expect(MAX_BUNDLE_BYTES).toBeGreaterThan(2 * 2_989_693);
+  });
+
+  /**
+   * The two budgets are SEPARATE, and each is asserted against the dimension it
+   * actually governs. They were one constant, and lowering it to bound the
+   * directory parse silently took the uncompressed bound below AWS's real
+   * bundle — `readSchemaBundle` threw on the live artifact and the monthly job
+   * would have failed every cycle.
+   *
+   * The fence that should have caught it did not, because it compared the cap
+   * to the COMPRESSED size (2,989,693) while the failing check compares against
+   * the UNCOMPRESSED total (13,991,910). Right constant, wrong dimension — so
+   * both are pinned here, by name.
+   */
+  it('gives each budget headroom over the REAL bundle in its own dimension', () => {
+    const REAL_COMPRESSED_BYTES = 2_989_693;
+    const REAL_UNCOMPRESSED_BYTES = 13_991_910;
+    expect(
+      MAX_DOWNLOAD_BYTES,
+      'the download cap must clear the real compressed bundle with headroom'
+    ).toBeGreaterThan(2 * REAL_COMPRESSED_BYTES);
+    expect(
+      MAX_UNCOMPRESSED_BYTES,
+      'the uncompressed cap must clear the real bundle EXPANDED — this is the ' +
+        'dimension the accumulator in readSchemaBundle compares against'
+    ).toBeGreaterThan(2 * REAL_UNCOMPRESSED_BYTES);
+    // And they must stay distinct: collapsing them back into one constant is
+    // exactly how the break happened.
+    expect(MAX_UNCOMPRESSED_BYTES).toBeGreaterThan(MAX_DOWNLOAD_BYTES);
   });
 
   it('reads a normal bundle without tripping the cap', () => {
