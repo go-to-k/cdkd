@@ -3079,9 +3079,16 @@ export async function scrubStack(
     // practice a duplicate export name across regions is already an ambiguity
     // the deploy shares.
     //
-    // `recordedSecretValues` is optional because `evaluateConditions` passes
-    // none: it is PRODUCING `conditions` (so the spread below is empty there)
-    // and records no secrets today, which this issue does not change.
+    // `recordedSecretValues` is optional because SOME callers of this helper
+    // pass none. `evaluateConditions` is NOT one of them: it is handed
+    // `outputSecrets` below, deliberately, so the condition pass has a needle
+    // map to mask against — and it DOES record into it, since the resolver
+    // writes every resolved secret into whatever bag it is given. (An earlier
+    // wording here said the conditions pass "records no secrets today", which
+    // contradicted the call twelve lines below and is corrected with issue
+    // #2748. Since that issue, `evaluateConditions` invents a PRIVATE bag when
+    // its caller brings none; this caller brings one, so it keeps this one and
+    // a condition's secret is a redaction needle over `state.outputs` here.)
     //
     // The backend handed to the RESOLVER is a memoizing VIEW, not the real one
     // (issue #2133 review). `resolveImportValue` has no lookup cache: every
