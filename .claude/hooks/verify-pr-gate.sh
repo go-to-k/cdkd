@@ -156,13 +156,47 @@ status=$?
 # to do with the marker. `target_top` is already resolved above.
 recorded_sha=""
 if [ -f "$target_top/.markgate-verify-pr-sha" ]; then
-  recorded_sha=$(head -c 100 "$target_top/.markgate-verify-pr-sha" 2>/dev/null | tr -d '[:space:]')
+  # SIZE first, then read WHOLE, then check the SHAPE. The order matters and
+  # two weaker spellings were measured wrong before this one:
+  #
+  #   `head -c 100` alone -- a sentinel of `<sha><60 spaces><junk>` reads as the
+  #   bare sha under the cap and as sha+junk without it, so the CAP decides the
+  #   verdict, not the comparison. An earlier comment here claimed truncation
+  #   "cannot turn a non-match into a match"; it is exactly what it does.
+  #
+  #   cap + shape check -- same hole: the truncated read IS a well-formed sha.
+  #   Raising the cap only moves the padding length that defeats it.
+  #
+  # What actually closes the truncation hole is reading the file WHOLE: the junk
+  # then lands in `recorded_sha` and the comparison fails. The size cap is a
+  # RESOURCE bound (a legitimate sentinel is one sha and a newline -- 41 bytes,
+  # 65 for sha256), and the shape check rejects malformed content early.
+  #
+  # Measured, and worth stating rather than implying: removing the size cap, the
+  # hex check, or the length check ALONE changes no verdict, because the full
+  # read already refuses every case. They are layered deliberately and none is
+  # individually load-bearing; the probes for each come back green for that
+  # reason, not because the suite is blind (go-to-k/cdkd#2686 review).
+  sentinel_bytes=$(wc -c < "$target_top/.markgate-verify-pr-sha" 2>/dev/null | tr -d '[:space:]')
+  case "$sentinel_bytes" in
+    '' | *[!0-9]*) sentinel_bytes=99999 ;;
+  esac
+  if [ "$sentinel_bytes" -le 128 ]; then
+    recorded_sha=$(tr -d '[:space:]' < "$target_top/.markgate-verify-pr-sha" 2>/dev/null)
+    case "$recorded_sha" in
+      *[!0-9a-f]* | "") recorded_sha="" ;;
+    esac
+    case "${#recorded_sha}" in
+      40 | 64) ;;
+      *) recorded_sha="" ;;
+    esac
+  fi
 fi
 # `--verify`, not a bare `rev-parse HEAD`: in a repo with no commits the bare
 # form prints the literal string `HEAD` on STDOUT (and the fatal on stderr), so
 # `head_sha` would be "HEAD" rather than empty and the `-n` guard below would be
 # dead code. Measured. `--verify` yields a sha or nothing.
-head_sha=$(git rev-parse --verify HEAD 2>/dev/null || echo "")
+head_sha=$(git -C "$target_dir" rev-parse --verify HEAD 2>/dev/null || echo "")
 
 if [ "$status" -eq 0 ] && [ -n "$head_sha" ] && [ "$recorded_sha" = "$head_sha" ]; then
   exit 0
@@ -177,7 +211,13 @@ fi
 reason=$("${markgate[@]}" status verify-pr 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
-if [ "$status" -eq 0 ] && [ "$recorded_sha" != "$head_sha" ]; then
+# Reaching here with a FRESH marker means the binding is what failed, whatever
+# shape it failed in. An earlier revision said `&& [ "$recorded_sha" != "$head_sha" ]`,
+# which is NOT the complement of the pass condition: with an unreadable HEAD and
+# no sentinel both are empty, `!=` is false, and a fresh marker fell through to
+# the generic "stale" text -- the exact misdirection these lines exist to
+# prevent. Measured; found by both reviews of go-to-k/cdkd#2686.
+if [ "$status" -eq 0 ]; then
   # The marker is FRESH; what is wrong is what it is bound to. Saying "stale"
   # here would send the reader to `/check` for a problem no child has.
   printf "Blocked by verify-pr-gate: the \`verify-pr\` marker is fresh but bound to a different commit.\n\n" >&2

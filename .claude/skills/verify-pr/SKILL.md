@@ -370,28 +370,36 @@ After all checks pass, record THREE markers via
 of `/check` and `/check-docs`, so its success implies all three. Use
 `mise exec` (cdkd pins markgate via mise):
 
+**Commit and push FIRST.** The `verify-pr` marker is bound to a COMMIT, so
+setting it and then committing moves HEAD past the binding and refuses a PR that
+is genuinely ready.
+
 ```bash
+# 1. Land this run's own changes, so HEAD is final.
+git add -A && git commit -m "..." && git push
+
+# 2. Then record the markers.
 mise exec -- markgate set check
 mise exec -- markgate set docs
-# Bind the marker to the commit it was earned on, BEFORE setting it.
-git rev-parse HEAD > .markgate-verify-pr-sha
+# From the repo TOP, and `--verify`: a bare `> .markgate-verify-pr-sha` run
+# from a subdirectory writes a file the hook never reads (a permanent block
+# whose cause is off-screen), and a bare `rev-parse HEAD` prints the literal
+# string `HEAD` in a repo with no commits.
+git rev-parse --verify HEAD > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha"
 mise exec -- markgate set verify-pr
 ```
 
-**The sentinel is the binding, and `markgate verify` does not enforce it**
-(issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). `verify-pr` is
-`requires: [check, docs]` with no `include:` of its own, so once set in a
-worktree it never stales by itself — it is only ever MASKED by a stale child,
-and running `/check` + `/check-docs` un-masks it. In the IN-PLACE worktree mode
-CLAUDE.md prescribes, that means lane N inherits lane N-1's green: measured
-twice, a day apart, in different worktrees. `verify-pr-gate.sh` compares the
-sentinel against the CURRENT HEAD and blocks on a mismatch — read the comment
-there before touching either half; the digest cannot see a sentinel nobody
-rewrote (the sibling gate's own comment got this wrong, issue
-[#2681](https://github.com/go-to-k/cdkd/issues/2681)).
+**Anything that moves HEAD afterwards invalidates the binding, by design.** A
+rebase or a force-push before merge — which
+`.claude/skills/work-issues/references/ship.md` prescribes as the normal
+fan-out state — needs the sentinel rewritten and the marker re-set. Re-run
+`/verify-pr`, or at minimum repeat step 2 above once the tree is final.
 
-Bound to the LOCAL HEAD rather than the PR's, because this gate also guards
-`gh pr create`, where there is no PR to ask yet.
+**The sentinel is the binding, and `markgate verify` does not enforce it**
+(issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). Why, and why it is
+bound to the local HEAD rather than the PR's, is in
+[.claude/rules/hooks.md](../../rules/hooks.md) → "Two gates bind their marker to
+a COMMIT" — read it before touching either half.
 
 The `verify-pr` marker is what `.claude/hooks/verify-pr-gate.sh` consults for
 `gh pr create` / `gh pr merge`. It is settable ONLY by this skill — setting it
@@ -399,6 +407,6 @@ by hand to bypass the gate defeats the point. If a check legitimately cannot
 pass right now, say so in the report and DO NOT set the marker — the gate
 exits non-zero so the human can decide.
 
-Then, if there are uncommitted changes from this run (lint fixes, doc
-updates), commit and push so the remote branch matches the "ready to merge"
-report. Skip the marker + commit step if any check failed.
+Skip the marker step entirely if any check failed. (The commit/push that used
+to be described here moved UP, into step 1 above — doing it after the markers
+is what invalidated the binding.)

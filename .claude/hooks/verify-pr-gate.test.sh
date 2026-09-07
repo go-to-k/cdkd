@@ -21,6 +21,13 @@ side_repo="$TMPDIR/side-repo"
 main_repo="$TMPDIR/main-repo"
 git init -q -b feature/x "$side_repo"
 git -C "$side_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+# A SECOND commit, so the "foreign" sha below is a REAL object in this repo and
+# an ANCESTOR of HEAD -- which is exactly what a previous lane's sentinel holds.
+# With `0000...0000` the two relaxations that reproduce the original defect
+# (accept any resolvable commit; accept any ancestor of HEAD) both passed 32/32
+# green: the fixture did not resemble the attack (go-to-k/cdkd#2686 test review).
+side_prev=$(git -C "$side_repo" rev-parse HEAD)
+git -C "$side_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m second
 git init -q -b main "$main_repo"
 git -C "$main_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 
@@ -270,15 +277,28 @@ side_payload='{"cwd":"'"$side_repo"'","tool_input":{"command":"gh pr create"}}'
 merge_payload='{"cwd":"'"$side_repo"'","tool_input":{"command":"gh pr merge 1 --squash"}}'
 real_sha=$(git -C "$side_repo" rev-parse HEAD)
 
+# The foreign sha is the PREVIOUS commit of this same repo: a real object, an
+# ancestor of HEAD, and reachable -- the shape a stale lane sentinel actually
+# has. A non-object like `0000...0000` lets "accept any commit that resolves"
+# and "accept any ancestor" pass, and those ARE the defect.
+printf '%s' "$side_prev" > "$side_repo/.markgate-verify-pr-sha"
+run_case "fresh marker + a REAL earlier commit REFUSED (pr create)" 2 fresh "" "$side_payload"
+run_case "fresh marker + a REAL earlier commit REFUSED (pr merge)" 2 fresh "" "$merge_payload"
+
+# And a sha that is not an object at all, so neither shape is the only one
+# covered.
 printf '%s' "0000000000000000000000000000000000000000" > "$side_repo/.markgate-verify-pr-sha"
-run_case "fresh marker + FOREIGN sha REFUSED (pr create)" 2 fresh "" "$side_payload"
-run_case "fresh marker + FOREIGN sha REFUSED (pr merge)" 2 fresh "" "$merge_payload"
+run_case "fresh marker + a NON-OBJECT sha REFUSED" 2 fresh "" "$side_payload"
 
 # The message must NOT say "stale": the marker is fresh, and sending the reader
 # to /check for a problem no child has is how a real block gets worked around.
+printf '%s' "$side_prev" > "$side_repo/.markgate-verify-pr-sha"
 foreign_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+# The LABELS must be on the right shas, not merely present: grepping that
+# `$real_sha` appears somewhere passed a full swap of both lines (measured).
 if printf '%s' "$foreign_msg" | grep -q 'bound to a different commit' \
-   && printf '%s' "$foreign_msg" | grep -q "$real_sha" \
+   && printf '%s' "$foreign_msg" | grep -qE "HEAD is: +$real_sha" \
+   && printf '%s' "$foreign_msg" | grep -qE "marker bound to: +$side_prev" \
    && ! printf '%s' "$foreign_msg" | grep -q 'marker is stale'; then
   pass=$((pass + 1)); printf 'OK   foreign-sha block names the binding, not staleness\n'
 else
@@ -299,6 +319,39 @@ run_case "fresh marker + MATCHING sha passes" 0 fresh "" "$side_payload"
 printf '%s\n' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 run_case "sentinel with a trailing newline still matches" 0 fresh "" "$side_payload"
 
+# The sentinel is read from the repo TOP, not the cwd. `gh pr create` run from a
+# subdirectory must still find it -- the hook's own comment claims this and
+# nothing tested it: reading from the cwd instead passed 32/32 (measured,
+# go-to-k/cdkd#2686 test review).
+printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
+mkdir -p "$side_repo/sub/deeper"
+sub_payload='{"cwd":"'"$side_repo"'/sub/deeper","tool_input":{"command":"gh pr create"}}'
+run_case "sentinel found from a SUBDIRECTORY" 0 fresh "" "$sub_payload"
+# And the mismatch is still caught from there, or the case above is satisfied by
+# a gate that stopped reading the sentinel at all.
+printf '%s' "$side_prev" > "$side_repo/.markgate-verify-pr-sha"
+run_case "mismatch still caught from a SUBDIRECTORY" 2 fresh "" "$sub_payload"
+printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
+
+# The 100-byte read cap. The sentinel's first 100 bytes are the right sha and
+# the tail is junk: a read with no cap sees the junk and refuses, so this pins
+# the cap rather than merely the comparison.
+# The sha followed by enough WHITESPACE to fill the cap, then junk beyond it.
+# Under `head -c 100` + `tr -d '[:space:]'` alone this reads as the bare sha and
+# PASSES; without the cap it reads as sha+junk and refuses -- so the cap alone
+# would decide the verdict. The shape check is what makes both refuse.
+{ printf '%s' "$real_sha"; printf '%*s' 60 ''; printf 'TAILJUNK'; } \
+  > "$side_repo/.markgate-verify-pr-sha"
+run_case "sha padded past the read cap is REFUSED" 2 fresh "" "$side_payload"
+
+# A non-hex payload and a truncated sha, both refused by shape rather than by
+# the comparison happening to differ.
+printf '%s' "not-a-sha" > "$side_repo/.markgate-verify-pr-sha"
+run_case "non-hex sentinel REFUSED" 2 fresh "" "$side_payload"
+printf '%s' "$(printf '%s' "$real_sha" | cut -c1-12)" > "$side_repo/.markgate-verify-pr-sha"
+run_case "abbreviated sha REFUSED" 2 fresh "" "$side_payload"
+printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
+
 # An UNREADABLE HEAD must block, and this is why the `[ -n "$head_sha" ]` guard
 # is not redundant: in a repo with no commits `git rev-parse HEAD` fails, so
 # `head_sha` is empty -- and with no sentinel `recorded_sha` is empty too.
@@ -310,6 +363,18 @@ git init -q -b main "$empty_repo"
 touch "$empty_repo/.markgate.yml"
 empty_payload='{"cwd":"'"$empty_repo"'","tool_input":{"command":"gh pr create"}}'
 run_case "fresh marker + UNREADABLE head REFUSED" 2 fresh "" "$empty_payload"
+
+# ...and must say WHY. With both shas empty the old `!=` guard was false, so a
+# FRESH marker fell through to "the marker is stale (or missing)" -- the exact
+# misdirection the branch exists to prevent (measured; both reviews found it).
+empty_msg=$(printf '%s' "$empty_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+if printf '%s' "$empty_msg" | grep -q 'bound to a different commit' \
+   && ! printf '%s' "$empty_msg" | grep -q 'marker is stale'; then
+  pass=$((pass + 1)); printf 'OK   unreadable-head block names the binding, not staleness\n'
+else
+  fail=$((fail + 1)); fail_log+="FAIL unreadable-head message: $empty_msg\n"
+  printf 'FAIL unreadable-head block message\n'
+fi
 
 # And the degenerate match the bare `git rev-parse HEAD` spelling would allow:
 # in a repo with no commits it prints the literal string `HEAD` on STDOUT, so a
