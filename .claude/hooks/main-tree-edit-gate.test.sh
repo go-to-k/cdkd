@@ -551,8 +551,20 @@ echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
 #    unioned NOTHING -- the cap became the off-switch the union exists to deny.
 #    Every `>` is a candidate, so a quoted body of markdown blockquotes reaches
 #    it with no padding at all.
-run_case 2 "Bash a 211-line quoted body starves the cd union of its budget" \
-  "$(jq -nc --arg cmd "cd $MAIN ; true --body \"$(for i in $(seq 1 211); do printf '> quoted line %s\n' "$i"; done)\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+#    THE LINE COUNT IS CHOSEN TO CROSS `GATE_EDIT_MAXBYTES`, and an earlier
+#    revision of this case did not. 211 lines is 3874 B -- UNDER the 4096 B cap
+#    -- so it took the ordinary walk and never reached `__union_cd_bases` at
+#    all: the case passed while the union was broken, which is how the round-10
+#    regression below shipped past a suite reporting 83/0. 250 lines is 4.5 KB
+#    and takes the over-bytes arm, which is the one under test.
+run_case 2 "Bash a 250-line quoted body starves the cd union of its budget" \
+  "$(jq -nc --arg cmd "cd $MAIN ; true --body \"$(for i in $(seq 1 250); do printf '> quoted line %s\n' "$i"; done)\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+#    And the round-10 shape itself: past the budget the union used to copy the
+#    array's HEAD, while the real write target is its TAIL. Measured rc 2 -> 0
+#    at N=240 with the tracked file really overwritten.
+run_case 2 "Bash a 900-line quoted body: the write is the LAST candidate" \
+  "$(jq -nc --arg cmd "cd $MAIN ; true --body \"$(for i in $(seq 1 900); do printf '> quoted line %s\n' "$i"; done)\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 # 8. The union matched a bare literal `cd`, so `"cd"` / `'cd'` / `\cd` -- the
 #    spellings go-to-k/cdkd#2614 closed on the ordinary walk -- were invisible
@@ -607,7 +619,7 @@ else
   printf 'FAIL latency: 900 write candidates took %ss, budget 4s\n' "$__lat_secs"
 fi
 
-CASE_FLOOR=83
+CASE_FLOOR=84
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'not ok case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"

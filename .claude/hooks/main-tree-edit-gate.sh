@@ -122,7 +122,7 @@ __union_cd_bases() {
   local __n __i __b __rest __rounds=0 __budget __take
   __n=${#candidates[@]}
   [ "$__n" -gt 0 ] || return 0
-  # THE CAP BOUNDS ROUNDS, AND NEVER TO ZERO. It used to test
+  # THE CAP BOUNDS WORK ADDED, AND NEVER THE FIRST ROUND. It used to test
   # `__added + __n > MAXPAIRS`, and `__added` is 0 on the first iteration -- so
   # a command that already carried more than MAXPAIRS candidates broke out
   # before unioning ANYTHING, turning the cap into the off-switch this function
@@ -160,12 +160,25 @@ __union_cd_bases() {
     __b=$(gate_unquote "${BASH_REMATCH[2]}")
     __rest="${__rest#*"${BASH_REMATCH[0]}"}"
     case "$__b" in *'$'* | *'`'*) continue ;; /*) ;; *) __b="$base_dir/$__b" ;; esac
-    # `__take` is the round's share of the remaining budget, and it is at least
-    # 1 on the FIRST round however large `__n` is -- the union must never do
-    # nothing, which is the whole reason this function exists.
+    # ROUND 0 IS UNCONDITIONAL AND COPIES EVERY CANDIDATE; only rounds 2+ draw
+    # on the budget. Taking `min(n, budget)` on the first round instead looked
+    # like the same bound and was a fail-open, because it copies the array's
+    # HEAD and the real write target is normally its TAIL -- after whatever
+    # padding made `n` large in the first place. Measured from a feature
+    # worktree with `cd <main tree>`, an N-line quoted body and a write, on the
+    # over-bytes arm: N=220 rc=2, N=240 rc=0, N=900 rc=0, with the tracked file
+    # really overwritten in both failing cases.
+    #
+    # The total is `2n + MAXPAIRS`, still linear, and it is affordable only
+    # because the per-parent-directory memo landed in the same commit -- before
+    # that a full first round cost 13.8 s at N=900 and blew the 10 s timeout.
+    # The two changes are independent and the cost argument for capping round 0
+    # no longer holds; measured after the memo, N=900 goes 0.23 s -> 0.32 s.
     __take=$__n
-    [ "$__take" -le "$__budget" ] || __take=$__budget
-    [ "$__take" -ge 1 ] || { [ "$__rounds" -eq 0 ] && __take=1 || break; }
+    if [ "$__rounds" -ne 0 ]; then
+      [ "$__take" -le "$__budget" ] || __take=$__budget
+      [ "$__take" -ge 1 ] || break
+    fi
     for ((__i = 0; __i < __take; __i++)); do
       candidates+=("${candidates[$__i]}"); cand_bases+=("$__b")
     done
@@ -482,6 +495,11 @@ is_protected_path() {
   # command can carry hundreds (every `>` is one), so a fork here is a fork
   # times N. `abs` is absolute by construction above, so the only special case
   # is a file directly under the root.
+  # Strip a trailing slash first: `dirname a/b/c/` is `a/b`, while `${x%/*}`
+  # on the same input yields `a/b/c` -- which then exists as a directory, so the
+  # candidate resolved to itself and the gate ALLOWED it. Not reachable through
+  # a redirect (bash refuses `> dir/`), but the divergence is real and measured.
+  abs="${abs%/}"
   local dir="${abs%/*}"
   [[ -n "$dir" ]] || dir=/
   [[ -d "$dir" ]] || return 1
@@ -545,7 +563,7 @@ is_protected_path() {
   # cache would be a linear scan per candidate, i.e. quadratic on exactly the
   # input this is here to make cheap.
   if [ "$__pp_lsf_key" = "$dir|$abs" ]; then
-    __pp_lsf_tracked=$__pp_lsf_tracked
+    :
   else
     if git -C "$dir" ls-files --error-unmatch -- "$abs" >/dev/null 2>&1; then
       __pp_lsf_tracked=0
