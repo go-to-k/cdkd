@@ -220,7 +220,7 @@ jobs:
           # after the first in a month collide with an existing branch.
           cycle=$(date -u +%Y-%m-%d)
           branch="bot/cfn-schema-refresh/${cycle}"
-          # A same-month re-dispatch after the previous cycle's PR was closed
+          # A same-day re-dispatch after the previous cycle's PR was closed
           # WITHOUT deleting its branch would otherwise die on a non-fast-forward
           # push. The branch is bot-owned and its PR is gone, so replacing it is
           # correct; `--force-with-lease` still refuses if it moved under us.
@@ -302,5 +302,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          # ONCE per PR, not once per cycle. At a daily cadence an unattended
+          # comment would otherwise land every day the PR stays open — a PR
+          # left for a month would collect thirty identical notes, which is
+          # the kind of noise that trains a reader to ignore the thread. The
+          # message says nothing new on repeat: drift is cumulative either way.
+          marker="<!-- cdkd-schema-refresh-skip-note -->"
+          # Captured into a variable, NOT piped into `grep -qF`. `grep -q`
+          # exits on the first match and closes the pipe, so under `pipefail`
+          # the producer's SIGPIPE (141) becomes the pipeline's status and the
+          # `if` takes the ELSE branch even though the marker WAS found —
+          # posting a duplicate. Measured: at 1 KB of comments the producer
+          # exits 0 and the guard works; at 60 KB (over the pipe buffer) it
+          # exits 141 and the guard inverts, i.e. it fails exactly on the
+          # long-lived thread this guard exists for. Same class as the `awk`
+          # note further down; this file has learned it twice now.
+          #
+          # A `gh` failure now aborts the step under `set -e` rather than
+          # reading as "not yet commented" — and even the pagination case
+          # errs toward a duplicate note, never toward silence.
+          comments=$(gh pr view "${{ steps.open_pr.outputs.number }}" --json comments \
+            --jq '.comments[].body')
+          if grep -qF "${marker}" <<<"${comments}"; then
+            echo "Skip note already present on PR ${{ steps.open_pr.outputs.number }} — not repeating it."
+            exit 0
+          fi
           gh pr comment "${{ steps.open_pr.outputs.number }}" --body \
-            "The scheduled CFn schema refresh ran while this PR was still open, so it did not push. Drift is always computed against the committed fixtures, so it is cumulative — the next run after this PR merges will pick up anything that has landed since."
+            "${marker}
+          The scheduled CFn schema refresh ran while this PR was still open, so it did not push. Drift is always computed against the committed fixtures, so it is cumulative — the next run after this PR merges will pick up everything that has landed since. This note is posted once, not once per run."

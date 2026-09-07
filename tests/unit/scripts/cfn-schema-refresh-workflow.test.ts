@@ -71,7 +71,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
    * STRUCTURE: it happily passes when a whole step is deleted, or when the two
    * `if:` conditions are swapped so the job runs the refresh only while a PR
    * is already open and comments only when none is. Both are silent — the job
-   * simply stops opening PRs, on a monthly cadence nobody is watching.
+   * simply stops opening PRs, on a cadence nobody is watching.
    */
   describe('step wiring', () => {
     const steps: Array<{ name?: string; if?: string; run?: string; uses?: string }> =
@@ -191,6 +191,24 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(guard).not.toContain('--author');
     });
 
+    it('posts the skip note ONCE per PR, not once per daily cycle', () => {
+      // Unattended and daily: without the marker check a PR left open for a
+      // month collects thirty identical comments, which trains the reader to
+      // ignore the thread.
+      const note = shellOf('Note the skipped cycle on the open PR');
+      // The marker must reach the POSTED BODY, not merely be assigned. It
+      // appears once in the shell (the `marker=` line), so a `toContain` on
+      // the name alone stays green when `${marker}` is dropped from `--body`
+      // — which is exactly the regression (every run posts again).
+      expect(note).toMatch(/--body \\\n\s*"\$\{marker\}/);
+      expect(note).toContain('cdkd-schema-refresh-skip-note');
+      expect(note).toContain('set -euo pipefail');
+      // Captured into a variable rather than piped: `grep -q` closing the pipe
+      // makes SIGPIPE the pipeline status under `pipefail`, inverting the
+      // guard on a long thread.
+      expect(note).toMatch(/comments=\$\(gh pr view/);
+      expect(note).not.toMatch(/\|\s*grep -qF/);
+    });
 
     it('stamps the branch per DAY, matching the daily cadence', () => {
       // The branch name IS the cycle's identity. At a daily cadence a
@@ -243,7 +261,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
 
   /**
    * `chore(` produces no changelog section under release-please's conventional
-   * commit rules, so a monthly bot commit never opens or advances the standing
+   * commit rules, so the bot's commits never open or advance the standing
    * release PR. Same reasoning as `.github/dependabot.yml`'s prefix choice.
    */
   it('commits and titles with a chore( prefix so it cannot advance the release PR', () => {

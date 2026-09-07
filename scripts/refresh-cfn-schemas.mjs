@@ -797,7 +797,7 @@ export const MAX_DOWNLOAD_BYTES = 12 * 1024 * 1024;
  * These were ONE constant, and lowering it to bound the directory parse
  * silently lowered this bound below the real bundle: measured 2026-09-07, the
  * live artifact is 2,989,693 compressed but **13,991,910 uncompressed**, so
- * `readSchemaBundle` threw on AWS's own bundle and the monthly job would have
+ * `readSchemaBundle` threw on AWS's own bundle and the scheduled job would have
  * failed every cycle — the feature dead on arrival, with the test green
  * because it asserted headroom against the COMPRESSED number the cap was never
  * near. The two quantities differ by ~4.7x and are bounded for different

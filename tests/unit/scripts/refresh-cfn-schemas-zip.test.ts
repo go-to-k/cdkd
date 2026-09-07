@@ -426,7 +426,7 @@ describe('fixtureDiffersIgnoringDate sees EVERY captured section', () => {
    * in `properties`, so narrowing the comparison to `candidate.properties`
    * passed the acceptance case, its byte-identity control twin, and all five
    * unit cases. A signal blind to a section is a section that can change under
-   * a monthly job reporting "no drift" — the exact failure mode the job exists
+   * a scheduled job reporting "no drift" — the exact failure mode the job exists
    * to prevent, one level down.
    *
    * One case per section `buildFixture` emits, each a MINIMAL edit to that
@@ -704,7 +704,7 @@ describe('download and decompression bounds', () => {
    * Round 2 found these controls had NO test at all: deleting the cumulative
    * cap, the `content-length` pre-check, and `redirect: 'error'` each passed
    * the whole suite. They are the only thing standing between an
-   * un-checksummable third-party artifact and an unattended monthly job, so
+   * un-checksummable third-party artifact and an unattended daily job, so
    * "present in the source" is not enough.
    */
   function resp(overrides: Record<string, unknown> = {}) {
@@ -869,7 +869,7 @@ describe('download and decompression bounds', () => {
    * The two budgets are SEPARATE, and each is asserted against the dimension it
    * actually governs. They were one constant, and lowering it to bound the
    * directory parse silently took the uncompressed bound below AWS's real
-   * bundle — `readSchemaBundle` threw on the live artifact and the monthly job
+   * bundle — `readSchemaBundle` threw on the live artifact and the scheduled job
    * would have failed every cycle.
    *
    * The fence that should have caught it did not, because it compared the cap
