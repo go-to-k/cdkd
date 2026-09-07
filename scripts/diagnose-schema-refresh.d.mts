@@ -1,0 +1,45 @@
+/**
+ * Type declarations for `diagnose-schema-refresh.mjs` (a `@ts-check` JS module),
+ * so its unit test typechecks under `tsconfig.test.json`.
+ */
+export declare function comparePropertySets(
+  committedJson: string,
+  refreshedJson: string
+): { removed: string[]; added: string[]; writableAdded: string[] };
+export declare function parseNestedKeyDivergences(
+  checkOutput: string
+): Array<{ resourceType: string; bucket: string; line: string }>;
+export declare function mapTypesToProviderFiles(source: string): Map<string, string>;
+export declare function findDeclarationCandidates(
+  property: string,
+  providerRelPath: string | undefined,
+  resourceType?: string,
+  repoRoot?: string
+): string[];
+export declare function sdkModelsMember(
+  property: string,
+  providerRelPath: string | undefined,
+  repoRoot?: string
+): { client: string; modelled: boolean; version?: string; consulted?: string[] } | undefined;
+export declare function parseDeclaredProperties(
+  generatedSource: string
+): Map<string, Set<string>>;
+export declare function renderDiagnosis(input: {
+  removed: Array<{
+    resourceType: string;
+    properties: string[];
+    candidates: Record<string, string[]>;
+    sdk?: Record<string, { client: string; modelled: boolean; version?: string; consulted?: string[] } | undefined>;
+    renameCandidates?: Record<string, string[]>;
+  }>;
+  writableAdded: Array<{ resourceType: string; properties: string[] }>;
+  readOnlyAddedCount?: number;
+  sdkLag?: { client: string; installed: string; latest: string; behind: boolean };
+  divergences: Array<{ resourceType: string; bucket: string; line: string }>;
+  skipped: string[];
+}): string;
+export declare function sdkVersionLag(
+  client: string,
+  installed: string | undefined,
+  viewLatest?: (pkg: string) => string
+): { installed: string; latest: string; behind: boolean } | undefined;

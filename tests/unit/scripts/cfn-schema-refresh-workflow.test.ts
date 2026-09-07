@@ -95,21 +95,61 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         .filter((l) => !/^\s*#/.test(l))
         .join('\n');
 
-    it('gates the refresh, the drift probe and the PR on NO open refresh PR', () => {
+    it('refreshes and probes drift UNCONDITIONALLY, gating only the publish', () => {
+      // Load-bearing since the job stopped skipping: an open PR must not stop
+      // the refresh, or every new AWS addition waits for that PR to merge —
+      // and the PR that stays open longest is the RED one, exactly the window
+      // where waiting costs most.
       for (const name of ['Refresh fixtures from the public schema bundle', 'Detect drift']) {
-        expect(byName(name).if).toBe("steps.open_pr.outputs.number == ''");
+        expect(byName(name).if).toBeUndefined();
       }
-      for (const name of ['Regenerate the derived artifacts', 'Open the refresh PR']) {
+      for (const name of ['Regenerate the derived artifacts', 'Publish the refresh']) {
         expect(byName(name).if).toBe("steps.drift.outputs.drifted == 'true'");
       }
     });
 
-    it('gates the skip comment on the OPPOSITE condition', () => {
-      // The polarity pair. Swapping these two is the mutation the text
-      // assertions could not see.
-      expect(byName('Note the skipped cycle on the open PR').if).toBe(
+    it('switches onto the open PR branch only when one is open', () => {
+      expect(byName("Switch to the open refresh PR's branch").if).toBe(
         "steps.open_pr.outputs.number != ''"
       );
+    });
+
+    it('pushes onto an open PR ADDITIVELY — never forcing over a human commit', () => {
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('${existing_branch}');
+      expect(publish).toMatch(/Skipping this cycle/);
+      // Sliced STRUCTURALLY, not matched on one line. The earlier assertion was
+      // `/force[^\n]*\$\{existing_branch\}/`, and the real push is
+      // line-continued — so the mutation it existed to catch (adding `--force`
+      // to the existing-branch push) put the two tokens on different lines and
+      // the test stayed green.
+      const armStart = publish.indexOf('if [ -n "${existing_branch');
+      // Indentation-agnostic: the YAML block scalar strips the common indent,
+      // so the `else` arrives at two spaces, not ten.
+      const armEnd = publish.slice(armStart).search(/\n\s*else\s*\n/) + armStart;
+      expect(armStart, 'existing-branch arm not found').toBeGreaterThanOrEqual(0);
+      expect(armEnd, 'existing-branch arm has no else').toBeGreaterThan(armStart);
+      expect(publish.slice(armStart, armEnd)).not.toContain('force');
+    });
+
+    it('posts the diagnosis, on a new PR and on an updated one alike', () => {
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('diagnose-schema-refresh.mjs');
+      // Generated BEFORE the commit: the comparison against the COMMITTED
+      // fixtures is the whole source of "AWS removed this in THIS refresh".
+      expect(publish.indexOf('diagnose-schema-refresh.mjs')).toBeLessThan(
+        publish.indexOf('git commit')
+      );
+      expect(publish).toContain('gh pr comment');
+      expect(publish).toContain('--body-file /tmp/pr-body.md');
+    });
+
+    it('folds new writable properties into the backfill umbrella without failing the job', () => {
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('gh issue comment');
+      // The PR is the load-bearing output; losing it because an issue comment
+      // failed would be the wrong trade, and the list is in the PR body too.
+      expect(publish).toMatch(/gh issue comment[\s\S]*?\|\|/);
     });
 
     it('keeps the drift probe between the refresh and the regeneration', () => {
@@ -121,7 +161,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         order.indexOf('Regenerate the derived artifacts')
       );
       expect(order.indexOf('Regenerate the derived artifacts')).toBeLessThan(
-        order.indexOf('Open the refresh PR')
+        order.indexOf('Publish the refresh')
       );
     });
 
@@ -160,7 +200,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     });
 
     it('pushes with an EXPLICIT token, since credentials are not persisted', () => {
-      const push = shellOf('Open the refresh PR');
+      const push = shellOf('Publish the refresh');
       expect(push).toContain('x-access-token:${GH_TOKEN}');
       // A bare `git push origin` would fail: the checkout persists no auth.
       expect(push).not.toMatch(/git push\s+origin\s/);
@@ -172,7 +212,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // target is an anonymous URL). Git then expects the branch NOT to exist
       // — while `force` is set only when ls-remote proved it does — so the
       // push is rejected `(stale info)` in exactly the case it exists for.
-      const push = shellOf('Open the refresh PR');
+      const push = shellOf('Publish the refresh');
       expect(push).toContain('--force-with-lease=refs/heads/');
       expect(push).not.toMatch(/--force-with-lease(?!=)/);
     });
@@ -191,31 +231,34 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(guard).not.toContain('--author');
     });
 
-    it('posts the skip note ONCE per PR, not once per daily cycle', () => {
-      // Unattended and daily: without the marker check a PR left open for a
-      // month collects thirty identical comments, which trains the reader to
-      // ignore the thread.
-      const note = shellOf('Note the skipped cycle on the open PR');
-      // The marker must reach the POSTED BODY, not merely be assigned. It
-      // appears once in the shell (the `marker=` line), so a `toContain` on
-      // the name alone stays green when `${marker}` is dropped from `--body`
-      // — which is exactly the regression (every run posts again).
-      expect(note).toMatch(/--body \\\n\s*"\$\{marker\}/);
-      expect(note).toContain('cdkd-schema-refresh-skip-note');
-      expect(note).toContain('set -euo pipefail');
-      // Captured into a variable rather than piped: `grep -q` closing the pipe
-      // makes SIGPIPE the pipeline status under `pipefail`, inverting the
-      // guard on a long thread.
-      expect(note).toMatch(/comments=\$\(gh pr view/);
-      expect(note).not.toMatch(/\|\s*grep -qF/);
-    });
 
     it('stamps the branch per DAY, matching the daily cadence', () => {
       // The branch name IS the cycle's identity. At a daily cadence a
       // month-granular stamp would make every run after the first in a month
       // collide with an existing branch, sending each one down the
       // force-with-lease recovery path for no reason.
-      expect(shellOf('Open the refresh PR')).toContain('date -u +%Y-%m-%d');
+      // Anchored on the CYCLE assignment and the branch it builds, not on any
+      // `date -u +%Y-%m-%d` in the step — the commit messages carry one too, so
+      // a regression of `cycle=` back to `%Y-%m` left the old assertion green.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('cycle=$(date -u +%Y-%m-%d)');
+      expect(publish).toContain('branch="bot/cfn-schema-refresh/${cycle}"');
+    });
+
+    it('re-checks the PR is still OPEN before pushing onto its branch', () => {
+      // A squash merge with --delete-branch between the guard and the push
+      // would make the plain push RE-CREATE the deleted branch — an orphan ref
+      // with no PR, the class this repo has a dedicated hook for.
+      const publish = shellOf('Publish the refresh');
+      expect(publish).toContain('--json state');
+      expect(publish).toMatch(/!= "OPEN"/);
+    });
+
+    it('passes the refresh skip list to the diagnosis', () => {
+      // The flag existed and nothing passed it, so the "Not refreshed" section
+      // could never render in production.
+      expect(shellOf('Refresh fixtures from the public schema bundle')).toContain('/tmp/refresh.log');
+      expect(shellOf('Publish the refresh')).toContain('--skipped-log');
     });
 
     it('fails the open-PR guard closed rather than open on a gh error', () => {
@@ -252,11 +295,17 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).toContain(`branch="${BRANCH_PREFIX}`);
   });
 
-  it('skips the cycle when a refresh PR is already open, rather than pushing to it', () => {
-    // A human is expected to commit classifications onto the open branch; a bot
-    // push would race or destroy that work.
-    expect(workflow).toContain("steps.open_pr.outputs.number == ''");
+  it('UPDATES an open refresh PR rather than skipping the cycle', () => {
+    // This replaced a case asserting the opposite. Skipping was the original
+    // design, on the reasoning that a bot push would destroy a human's
+    // classification commits — but everything the job rewrites is derived and
+    // recomputed, and `bogusTolerated` is explicitly preserved across
+    // regeneration, so an additive push reflects that work rather than undoing
+    // it. Skipping cost most exactly where it hurt: a RED PR stays open
+    // longest, holding back every new AWS addition behind it.
     expect(workflow).toContain("steps.open_pr.outputs.number != ''");
+    expect(workflow).toContain('existing_branch');
+    expect(workflow).not.toContain('Note the skipped cycle');
   });
 
   /**

@@ -106,13 +106,24 @@ jobs:
 
       - run: vp install --frozen-lockfile
 
-      # At most ONE open refresh PR at a time. When a previous cycle's PR is
-      # still open, this cycle stops after commenting rather than pushing to
-      # that branch: a human is expected to commit CLASSIFICATIONS onto it
-      # (bogus rationales, `unhandledByDesign` entries, allow-list entries), and
-      # a bot push would race or destroy that work. Skipping loses nothing —
-      # drift is always computed against the COMMITTED fixtures, so it is
-      # cumulative and the next run after the merge picks up both cycles.
+      # At most ONE open refresh PR at a time — and when one is open the cycle
+      # UPDATES it rather than skipping.
+      #
+      # It skipped at first, on the reasoning that a human commits
+      # CLASSIFICATIONS onto that branch and a bot push would destroy them.
+      # That generalised "force-push destroys" into "push destroys", and the
+      # artifacts say otherwise: the human's work lives in provider sources and
+      # in `NESTED_KEY_ALLOW_LIST` (never touched here) and in
+      # `_todo-backfill.json`'s `bogusTolerated` block, which the generator
+      # explicitly PRESERVES across regeneration. Everything this job rewrites
+      # is DERIVED and is recomputed from the current sources, so an additive
+      # push reflects the human's classification rather than undoing it.
+      #
+      # Skipping was also the costlier answer where it mattered most: a RED PR
+      # is the one that stays open for days, and that is exactly the window in
+      # which every new AWS addition would have been held back — with no user
+      # workaround, since a warned-about property still does not reach AWS
+      # until its fixture lands.
       - name: Look for an open refresh PR
         id: open_pr
         env:
@@ -154,9 +165,25 @@ jobs:
             echo "An open refresh PR already exists: ${number}"
           fi
 
+      # Land on the open PR's branch when there is one, so the refresh below
+      # computes drift against ITS fixtures — i.e. only what AWS has changed
+      # SINCE that PR, not the drift it already carries.
+      - name: Switch to the open refresh PR's branch
+        if: steps.open_pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch=$(gh pr view "${{ steps.open_pr.outputs.number }}" --json headRefName --jq .headRefName)
+          echo "existing_branch=${branch}" >> "$GITHUB_ENV"
+          git fetch origin "${branch}"
+          git checkout "${branch}"
+
+      # Output is teed: the run log stays readable, and the diagnosis reads the
+      # skip list from the file. Without this the "Not refreshed" section was
+      # dead code — the flag existed and nothing ever passed it.
       - name: Refresh fixtures from the public schema bundle
-        if: steps.open_pr.outputs.number == ''
-        run: vp run gen:cfn-schemas-from-zip
+        run: vp run gen:cfn-schemas-from-zip 2>&1 | tee /tmp/refresh.log
 
       # The change signal. `refresh-cfn-schemas.mjs --from-zip` writes ONLY
       # fixtures that actually drifted (`generatedAt` excluded from the
@@ -166,7 +193,6 @@ jobs:
       # alone, i.e. the job would open a no-op PR every month.
       - name: Detect drift
         id: drift
-        if: steps.open_pr.outputs.number == ''
         run: |
           set -euo pipefail
           # `git status --porcelain`, not `git diff --quiet`: the latter is
@@ -209,125 +235,112 @@ jobs:
           vp run gen:all-matrices
           vp run format
 
-      - name: Open the refresh PR
+      - name: Publish the refresh
+        id: publish
         if: steps.drift.outputs.drifted == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The standing umbrella issue that collects properties still to be
+          # wired into an SDK provider. Named here rather than in the script so
+          # moving the campaign is a workflow edit, not a code change.
+          BACKFILL_UMBRELLA: "609"
         run: |
           set -euo pipefail
-          # DAY granularity, not month: the branch name is the cycle's identity,
-          # and at a daily cadence a month-granular name would make every run
-          # after the first in a month collide with an existing branch.
-          cycle=$(date -u +%Y-%m-%d)
-          branch="bot/cfn-schema-refresh/${cycle}"
-          # A same-day re-dispatch after the previous cycle's PR was closed
-          # WITHOUT deleting its branch would otherwise die on a non-fast-forward
-          # push. The branch is bot-owned and its PR is gone, so replacing it is
-          # correct; `--force-with-lease` still refuses if it moved under us.
-          #
-          # The EXPLICIT `<ref>:<sha>` form is required, not a style choice. A
-          # bare `--force-with-lease` compares against a REMOTE-TRACKING ref,
-          # and there is none here: checkout fetches only the triggering ref at
-          # depth 1, and the push target is an anonymous URL with no fetch
-          # refspec. Git then expects the ref NOT to exist — while `force` is
-          # set only on the path where `ls-remote` just proved it does — so the
-          # push is rejected `(stale info)` every time, i.e. the recovery path
-          # would fail in exactly the case it exists for.
-          force=""
-          # `refs/heads/${branch}` (fully qualified) and `NR==1`: the bare name
-          # is a PATTERN that also matches `refs/heads/<anything>/${branch}`,
-          # and two matching lines would make `existing_sha` two shas, which
-          # word-splits `${force}` into a bogus extra refspec. `awk` rather
-          # than `head -n1`, which would SIGPIPE under `pipefail`.
-          existing_sha=$(git ls-remote --heads origin "refs/heads/${branch}" | awk 'NR==1{print $1}')
-          if [ -n "${existing_sha}" ]; then
-            echo "Branch ${branch} already exists remotely at ${existing_sha} — replacing it (its PR is not open)."
-            force="--force-with-lease=refs/heads/${branch}:${existing_sha}"
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "${branch}"
-          # Scoped to what the regeneration chain writes, not `git add -A`: a
-          # generator that starts dropping a scratch file would otherwise have
-          # it committed by a bot nobody is watching at the time.
+
+          # The diagnosis is generated BEFORE committing, while the committed
+          # fixtures are still the PREVIOUS ones — that comparison is the whole
+          # source of "AWS removed this in THIS refresh".
+          set +e
+          vp run audit:nested-key-coverage:check > /tmp/nested-key.log 2>&1
+          set -e
+          # The skip list is the tail of the refresh log, after its own header.
+          sed -n '/No entry in the public bundle/,$p' /tmp/refresh.log > /tmp/skipped.log || true
+          node scripts/diagnose-schema-refresh.mjs \
+            --nested-key-log /tmp/nested-key.log \
+            --skipped-log /tmp/skipped.log > /tmp/diagnosis.md
+
           git add \
             tests/fixtures/cfn-schemas/ \
             src/provisioning/ \
             docs/
           git status --porcelain
-          # `chore(...)` on purpose: release-please's conventional-commit rules
-          # give it no changelog section, so this never opens or advances the
-          # standing release PR. Same reasoning as .github/dependabot.yml.
-          git commit -m "chore(schemas): refresh CFn schema fixtures (${cycle})"
-          # Explicit token: `persist-credentials: false` above means the remote
-          # carries no auth, so this is the ONE step that holds it — rather
-          # than every step in the job.
-          git push ${force} \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "${branch}"
-          {
-            echo "Automated daily refresh of \`tests/fixtures/cfn-schemas/*.json\` against"
-            echo "AWS's public CloudFormation schema bundle."
-            echo
-            echo "**This PR may be RED, and that is the hand-off.** The job runs only the"
-            echo "mechanical chain (refresh, \`gen:property-coverage\`, backfill regeneration,"
-            echo "\`gen:all-matrices\`, \`format\`). Two classes need a human and cannot be"
-            echo "regenerated:"
-            echo
-            echo "1. A **removed or renamed** property turns a provider's \`handledProperties\` /"
-            echo "   \`unhandledByDesign\` declaration into a bogus entry. Retire the declaration,"
-            echo "   or add a \`bogusTolerated\` rationale."
-            echo "2. \`audit:nested-key-coverage:check\` reports **divergences**, not staleness."
-            echo "   A new nested key on a \`NESTED_KEY_TARGETS\` type needs a provider fix or a"
-            echo "   \`NESTED_KEY_ALLOW_LIST\` entry with a rationale."
-            echo
-            echo "Newly unaccounted WRITABLE properties are listed in"
-            echo "\`tests/fixtures/cfn-schemas/_todo-backfill.json\`; fold them into the standing"
-            echo "backfill umbrella (https://github.com/go-to-k/cdkd/issues/609) rather than"
-            echo "filing one issue each."
-            echo
-            echo "Types with no entry in the public bundle keep the authenticated"
-            echo "\`DescribeType\` path as their only refresh route and are left untouched here."
-            echo
-            echo "Mechanism: https://github.com/go-to-k/cdkd/issues/2718"
-          } > /tmp/pr-body.md
-          gh pr create \
-            --title "chore(schemas): refresh CFn schema fixtures (${cycle})" \
-            --body-file /tmp/pr-body.md \
-            --head "${branch}" \
-            --base main
 
-      - name: Note the skipped cycle on the open PR
-        if: steps.open_pr.outputs.number != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # ONCE per PR, not once per cycle. At a daily cadence an unattended
-          # comment would otherwise land every day the PR stays open — a PR
-          # left for a month would collect thirty identical notes, which is
-          # the kind of noise that trains a reader to ignore the thread. The
-          # message says nothing new on repeat: drift is cumulative either way.
-          marker="<!-- cdkd-schema-refresh-skip-note -->"
-          # Captured into a variable, NOT piped into `grep -qF`. `grep -q`
-          # exits on the first match and closes the pipe, so under `pipefail`
-          # the producer's SIGPIPE (141) becomes the pipeline's status and the
-          # `if` takes the ELSE branch even though the marker WAS found —
-          # posting a duplicate. Measured: at 1 KB of comments the producer
-          # exits 0 and the guard works; at 60 KB (over the pipe buffer) it
-          # exits 141 and the guard inverts, i.e. it fails exactly on the
-          # long-lived thread this guard exists for. Same class as the `awk`
-          # note further down; this file has learned it twice now.
-          #
-          # A `gh` failure now aborts the step under `set -e` rather than
-          # reading as "not yet commented" — and even the pagination case
-          # errs toward a duplicate note, never toward silence.
-          comments=$(gh pr view "${{ steps.open_pr.outputs.number }}" --json comments \
-            --jq '.comments[].body')
-          if grep -qF "${marker}" <<<"${comments}"; then
-            echo "Skip note already present on PR ${{ steps.open_pr.outputs.number }} — not repeating it."
-            exit 0
+          if [ -n "${existing_branch:-}" ]; then
+            # Re-check the PR is STILL open. A squash merge with
+            # `--delete-branch` between the guard and here would make the plain
+            # push below CREATE the deleted branch again — an orphan ref with no
+            # PR, which this repo has a whole hook class about — and leave a
+            # diagnosis comment on an already-merged PR. Nothing is lost by
+            # bailing: the next cycle recomputes the same drift against main.
+            state=$(gh pr view "${{ steps.open_pr.outputs.number }}" --json state --jq .state)
+            if [ "${state}" != "OPEN" ]; then
+              echo "::warning::PR ${{ steps.open_pr.outputs.number }} is ${state}, not OPEN — it closed while this ran. Skipping; the next cycle recomputes."
+              exit 0
+            fi
+            # ADDITIVE commit onto the open PR's branch. Never force: a
+            # non-fast-forward here means a human pushed while this ran, and
+            # overwriting that is the one outcome worth losing a cycle over.
+            git commit -m "chore(schemas): additional CFn schema drift ($(date -u +%Y-%m-%d))"
+            if git push \
+                 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+                 "${existing_branch}"; then
+              gh pr comment "${{ steps.open_pr.outputs.number }}" \
+                --body-file /tmp/diagnosis.md
+              pr_number="${{ steps.open_pr.outputs.number }}"
+            else
+              echo "::warning::Could not push to ${existing_branch} — a concurrent update won. Skipping this cycle; the next run recomputes the same drift."
+              exit 0
+            fi
+          else
+            cycle=$(date -u +%Y-%m-%d)
+            branch="bot/cfn-schema-refresh/${cycle}"
+            # Explicit `--force-with-lease=<ref>:<sha>` when the branch already
+            # exists (a same-day re-dispatch whose PR was closed, not merged).
+            # The bare form compares against a remote-TRACKING ref that does not
+            # exist here, so git expects the branch to be ABSENT and rejects
+            # exactly the case this handles.
+            force=""
+            existing_sha=$(git ls-remote --heads origin "refs/heads/${branch}" | awk 'NR==1{print $1}')
+            if [ -n "${existing_sha}" ]; then
+              force="--force-with-lease=refs/heads/${branch}:${existing_sha}"
+            fi
+            git checkout -b "${branch}"
+            # `chore(...)` on purpose: release-please gives it no changelog
+            # section, so this never opens or advances the standing release PR.
+            git commit -m "chore(schemas): refresh CFn schema fixtures (${cycle})"
+            git push ${force} \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "${branch}"
+            {
+              cat .github/refresh-pr-preamble.md
+              echo
+              cat /tmp/diagnosis.md
+            } > /tmp/pr-body.md
+            # `gh pr create` prints the PR URL; it has no --json. The number
+            # is read back by head branch rather than parsed out of the URL.
+            gh pr create \
+              --title "chore(schemas): refresh CFn schema fixtures (${cycle})" \
+              --body-file /tmp/pr-body.md \
+              --head "${branch}" \
+              --base main
+            pr_number=$(gh pr list --head "${branch}" --state open --json number --jq '.[0].number // empty')
           fi
-          gh pr comment "${{ steps.open_pr.outputs.number }}" --body \
-            "${marker}
-          The scheduled CFn schema refresh ran while this PR was still open, so it did not push. Drift is always computed against the committed fixtures, so it is cumulative — the next run after this PR merges will pick up everything that has landed since. This note is posted once, not once per run."
+
+          # Fold the newly unaccounted WRITABLE properties into the standing
+          # backfill umbrella, rather than asking a human to retype a list this
+          # job just computed. A failure here must NOT undo the PR — the PR is
+          # the load-bearing output and the list is also in its body.
+          if grep -q '^### Writable properties AWS added' /tmp/diagnosis.md; then
+            {
+              echo "Newly unaccounted writable properties, from the scheduled CFn schema refresh:"
+              echo
+              sed -n '/^### Writable properties AWS added/,/^###\|^_/p' /tmp/diagnosis.md \
+                | grep '^- ' || true
+              echo
+              echo "Carried by https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number}"
+            } > /tmp/umbrella.md
+            gh issue comment "${BACKFILL_UMBRELLA}" --body-file /tmp/umbrella.md \
+              || echo "::warning::Could not comment on the backfill umbrella issue; the list is in the PR body."
+          fi
