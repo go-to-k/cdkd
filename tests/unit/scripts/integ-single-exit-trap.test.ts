@@ -192,7 +192,8 @@ describe('a shell fixture never drops its teardown handler', () => {
     //
     // RE-DERIVED from the tree rather than carried, with the ONE-pathspec form
     // `hookScripts()` above mandates (a git pathspec's `*` crosses `/`, so the
-    // two-pathspec spelling double-counts `lib/`): `git ls-files
+    // second pathspec adds nothing -- ONE invocation dedupes, it was two separate
+    // calls that double-counted): `git ls-files
     // '.claude/hooks/*.sh'` minus `lib/testdata/` gives 79 = 39 `*.test.sh` +
     // 29 `*-gate.sh` + 11 others. An earlier
     // revision of this comment said 40 and 30, and built a story on it -- that

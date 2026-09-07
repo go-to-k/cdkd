@@ -432,8 +432,20 @@ describe('the RENDERED report contains attacker text (marked, not string shapes)
   // code block. Searching the whole document is what made a first probe report
   // a false leak: `onerror` appears as escaped text inside `<pre><code>`, which
   // is exactly the containment working.
-  const liveMarkupOutsideCode = (html: string): boolean =>
-    /<a |<img |<script|href=|onerror=/.test(html.replace(/<pre><code>[\s\S]*?<\/code><\/pre>/g, ''));
+  // The set includes INLINE emphasis and block constructs, not only links and
+  // scripts. Measured (go-to-k/cdkd#2717 review): with the narrow set, 3 of the
+  // 9 payloads survived an identity `fencedQuote` -- the tilde-fence case emits
+  // only `<strong>`, and the all-backticks case emits no markup at all, so
+  // neither could ever have failed. A detector that cannot see the markup its
+  // own payload produces makes the case vacuous however hostile the payload
+  // looks. Scoped to the report's `Found:` block so the surrounding prose's own
+  // `<strong>` cannot false-positive.
+  const liveMarkupOutsideCode = (html: string): boolean => {
+    const found = html.slice(html.indexOf('Found:'), html.indexOf('(hiragana'));
+    return /<a |<img |<script|href=|onerror=|<strong|<em|<h[1-6]|<blockquote|<hr/.test(
+      found.replace(/<pre><code>[\s\S]*?<\/code><\/pre>/g, ''),
+    );
+  };
 
   it.each([
     ['a backtick closing the span', 'a backtick + link + mention'],
@@ -441,13 +453,12 @@ describe('the RENDERED report contains attacker text (marked, not string shapes)
     ['a quadruple fence with an img tag', 'quad fence + img onerror'],
     ['a CommonMark autolink', 'autolink'],
     ['a tilde fence', 'tilde fence'],
-    ['only backticks', 'all backticks'],
     ['an HTML breakout attempt', 'code/pre close + script'],
     ['a forged list item', 'newline + list marker + link'],
   ])('publishes no live markup for %s', (_name, kind) => {
     const CJK = String.fromCodePoint(0x65e5);
     const payloads: Record<string, string> = {
-      'a backtick + link + mention': `x ${CJK} \` **B** [c](https://e.example) @o \``,
+      'a backtick + link + mention': `x ${CJK} \` closes \` **B** [c](https://e.example) @o`,
       'triple fence + link': `${CJK} \`\`\` **B** [c](https://e.example)`,
       'quad fence + img onerror': `${CJK} \`\`\`\` <img src=x onerror=alert(1)>`,
       autolink: `${CJK} <https://e.example>`,
@@ -457,6 +468,22 @@ describe('the RENDERED report contains attacker text (marked, not string shapes)
       'newline + list marker + link': `${CJK}\n\n- forged [c](https://e.example)`,
     };
     expect(liveMarkupOutsideCode(render(payloads[kind]!))).toBe(false);
+  });
+
+  it('renders an all-backtick payload as exactly one code block', () => {
+    // This payload carries NO markup, so it can never leak and the leak
+    // detector above is vacuous for it (measured: it was the one render case
+    // surviving an identity `fencedQuote`). What it CAN check is structure --
+    // a payload that is nothing but backticks is the one most likely to produce
+    // a malformed or doubled fence, and identity quoting does exactly that.
+    const html = marked.parse(
+      formatReport({ kind: 'issue', number: 1, title: 't', body: 'x', labels: [] }, [
+        { field: 'body', line: 1, characters: ['U+65E5'], text: '``````' },
+      ]),
+    ) as string;
+    const found = html.slice(html.indexOf('Found:'), html.indexOf('(hiragana'));
+    expect((found.match(/<pre>/g) ?? []).length, 'exactly one code block').toBe(1);
+    expect(found).toContain('``````');
   });
 
   it('keeps every offender in ONE list', () => {

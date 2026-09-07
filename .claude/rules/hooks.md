@@ -35,12 +35,16 @@ Authoring a hook — why every Bash gate stays unconditional, and why an unquote
 # When a check may BLOCK at PreToolUse, and when it belongs in CI
 
 **A PreToolUse gate may block only when the harm completes at the moment of the
-action AND lands somewhere the actor cannot undo it. Everything else goes to
-CI, or nowhere.**
+action AND lands on a THIRD PARTY's artifact, where the actor cannot undo it.
+Everything else goes to CI, or nowhere.**
 
 Both clauses are load-bearing, and the second is the one that was missing. The
 earlier wording already said "the actor cannot undo it" -- irreversibility was
-never implicit -- but irreversibility ALONE gets `issue-dup-check` wrong: you
+never implicit -- and a first attempt to add the second clause only restated it
+("lands SOMEWHERE the actor cannot undo it"), which reads as the same test with
+a location noun and still yields the wrong answer below. The discriminator has
+to name WHOSE artifact, and it now does. Irreversibility ALONE gets
+`issue-dup-check` wrong: you
 cannot un-mint an issue number or un-send its notifications, so by that test it
 should BLOCK, and it correctly moved to CI instead. What separates it from
 `pr-body-item-number` is WHOSE artifact carries the residue. A duplicate issue

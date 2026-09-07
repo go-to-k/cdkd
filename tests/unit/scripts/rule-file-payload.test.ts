@@ -261,8 +261,10 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['layout-provisioning.md', 92],
   ['layout-scrub.md', 1], // literal list: EXACT, see below
   ['layout-scripts.md', 38],
-  // Its `paths:` frontmatter lists 16 globs -- the six CI checkers, the shared
-  // subject module, the allow-list, the three workflows and five suites. The
+  // Its `paths:` frontmatter lists 16 globs: 3 checker globs (two are wildcards,
+  // covering the six checkers between them), the shared subject module, the
+  // allow-list, the 3 workflows and 8 suite globs. An earlier revision said
+  // "five suites", which is the only way the arithmetic reached 16. The
   // FLOOR is the reach (files matched), which is not the glob count; read it
   // off this assertion's failure message rather than from this comment, which
   // an earlier revision already got wrong.
@@ -450,24 +452,31 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // the thing it would have loaded is gone. A floor left high would have
   // demanded prose about deleted files.
   //
-  // Each new floor sits under its re-measurement with room to spare (16-23% after hooks.md's later
-  // growth -- the widest is the pr-title-check.yml row at 23.2%, not the ~12% an earlier revision of this
-  // comment derived from figures taken before that growth). The number beside
-  // each row is a DATED snapshot; re-derive rather than trust it.
+  // Each new floor sits under its re-measurement with room to spare: 17.6-19.0%
+  // for the eight hook rows, 25.1% for the workflow row.
+  //
+  // The number beside each row is a DATED SNAPSHOT, and it has gone stale THREE
+  // times inside this one change -- twice because the figures were taken before
+  // the same commit had finished editing `hooks.md`, which every hook row's
+  // payload includes. Take them LAST, from the state you are about to commit;
+  // this file is in no rule file's `paths:` glob, so writing them here cannot
+  // move them. Re-derive rather than trust: sum the `.claude/rules/*.md` whose
+  // frontmatter glob matches the path (branch-gate.sh = hooks-authoring 3,801 +
+  // hooks-branch-gate 12,736 + hooks.md 59,133 = 75,670).
   // ---------------------------------------------------------------------
   // Representative path for the CI-checks satellite. A WORKFLOW path, not a
   // `scripts/` one: `layout-scripts.md`'s glob is `scripts/**`, so every checker
   // under it loads BOTH files and the payload there is the sum -- which measures
   // the split not happening. `.github/workflows/pr-title-check.yml` is matched by
   // the satellite alone, so a glob narrowed there shows up as a DROP here.
-  ['.github/workflows/pr-title-check.yml', 12_000, 20_000], // measured 15_633 on 2026-09-07
-  ['.claude/hooks/issue-deferral-criteria-gate.sh', 59_000, 120_000], // measured 72_384 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
-  ['.claude/hooks/branch-gate.sh', 62_000, 140_000], // measured 75_240 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
+  ['.github/workflows/pr-title-check.yml', 12_000, 20_000], // measured 16_030 on 2026-09-07
+  ['.claude/hooks/issue-deferral-criteria-gate.sh', 59_000, 120_000], // measured 72_814 on 2026-09-07
+  ['.claude/hooks/branch-gate.sh', 62_000, 140_000], // measured 75_670 on 2026-09-07
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
   // than the cap being raised -- a cap that moves when it fires is not a cap.
-  ['.claude/hooks/lib/command-match.sh', 64_000, 140_000], // measured 77_246 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
+  ['.claude/hooks/lib/command-match.sh', 64_000, 140_000], // measured 77_676 on 2026-09-07
   // The four `integ-*` gates were the heaviest UNBUDGETED paths once
   // `gate-sibling-repos.md` split out of hooks.md: this row is the only one
   // that names them, so without it the satellite sits under no budget at all
@@ -475,14 +484,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // Deliberately NOT added to the command-match row above: that path already
   // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
   // adding a third file would spend down to about 1 KB.
-  ['.claude/hooks/integ-local-gate.sh', 64_000, 140_000], // measured 77_849 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
+  ['.claude/hooks/integ-local-gate.sh', 64_000, 140_000], // measured 78_279 on 2026-09-07
   // The cwd-race detector's entry moved out of hooks.md when the #2363
   // widening pushed that file past the 120,000 B per-file cap (the #2236
   // precedent). This path is the representative one for the satellite
   // (its two globs are the hook and its .test.sh, per the REACH_FLOORS
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
-  ['.claude/hooks/main-tree-git-cwd-detector.sh', 61_000, 140_000], // measured 74_525 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
+  ['.claude/hooks/main-tree-git-cwd-detector.sh', 61_000, 140_000], // measured 74_955 on 2026-09-07
   // main-tree-edit-gate's entry, and its main-tree-dirty-detector backstop,
   // moved out of hooks.md on 2026-09-05 when go-to-k/cdkd#2614's entry took
   // that file to 80,352 B -- past the 80,000 B per-file cap, which had only
@@ -493,7 +502,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // file's convention -- the first draft said 40_000, 51% under, and a floor
   // that loose cannot notice the satellite going dark, because hooks.md alone
   // is 78,437 B and satisfies it unaided.
-  ['.claude/hooks/main-tree-edit-gate.sh', 56_000, 95_000], // measured 68_196 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
+  ['.claude/hooks/main-tree-edit-gate.sh', 56_000, 95_000], // measured 68_626 on 2026-09-07
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the
@@ -501,7 +510,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // globs are the hook and its suite, per the REACH_FLOORS entry above);
   // without this row the satellite would sit under no budget at all. Payload is
   // hooks.md + hooks-main-tree-branch.md.
-  ['.claude/hooks/main-tree-branch-gate.sh', 70_000, 152_000], // measured 84_744 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
+  ['.claude/hooks/main-tree-branch-gate.sh', 70_000, 152_000], // measured 85_174 on 2026-09-07
   //   The comment here read "measured 124,200" and the payload was already
   //   124,758 when it was written -- 558 B behind on the day it shipped, because
   //   the satellite kept being edited after the figure was taken. Re-measured at
@@ -516,7 +525,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // pushed that file to 122,559 B, past the same cap. Representative path for
   // the satellite (its four globs are the two hooks and their suites, per the
   // REACH_FLOORS entry above). Payload is hooks.md + hooks-stop.md.
-  ['.claude/hooks/stop-warn.sh', 65_000, 140_000], // measured 78_927 on 2026-09-07 (a DATED snapshot, not a live claim -- hooks.md moves)
+  ['.claude/hooks/stop-warn.sh', 65_000, 140_000], // measured 79_357 on 2026-09-07
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
