@@ -48,7 +48,7 @@ cdkd deploys AWS CDK applications directly via the AWS SDK and Cloud Control API
 └────────┘ └────────┘
 ```
 
-Your CDK app synthesizes to an ordinary CloudFormation template — cdkd requires zero CDK code changes. cdkd then builds and publishes assets, analyzes the template's dependency graph, diffs it against the current state, and executes the plan in parallel, dispatching each resource the moment its dependencies complete. Each resource is provisioned by a hand-written SDK Provider where one exists, with Cloud Control API as the fallback for many additional types.
+Your CDK app synthesizes to an ordinary CloudFormation template — cdkd requires zero CDK code changes. cdkd then builds and publishes assets, analyzes the template's dependency graph, diffs it against the current state, and executes the plan in parallel, dispatching each resource the moment its dependencies complete. Each resource is provisioned by a hand-written SDK Provider where one exists, with Cloud Control API as the fallback for many additional types — see [Provisioning Layers](provisioning-layers.md) for how cdkd chooses, and when that choice changes.
 
 For a deeper look at each layer and a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI parsing, synthesis, asset publishing, per-stack deploy), see [Architecture](architecture.md).
 

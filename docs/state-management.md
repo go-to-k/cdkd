@@ -501,7 +501,8 @@ stacks is supported too.
 ### `version: 7` adds `provisionedBy` (v7+ writers)
 
 Schema `version: 7` adds an optional `provisionedBy` field to each
-`ResourceState`: `'sdk'`
+`ResourceState` — [Provisioning Layers](provisioning-layers.md) covers the same
+routing from the user's side. The value is `'sdk'`
 (cdkd's preferred fast path — direct synchronous AWS SDK calls) or `'cc-api'`
 (the Cloud Control API fallback), i.e. which provisioning layer owns the
 resource. A Custom Resource is recorded `'sdk'` too, so the field is always

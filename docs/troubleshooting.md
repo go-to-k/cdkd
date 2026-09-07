@@ -1203,6 +1203,7 @@ HTTPS_PROXY=http://127.0.0.1:1 cdkd state list --profile <a working profile>
 - Long dependency chains in the DAG (the critical path caps how fast a deploy can finish, even with event-driven dispatch)
 - Cloud Control API rate limits
 - Asset publishing takes time
+- A resource pinned to the Cloud Control route (`ProvisionedBy: cc-api`), which is slower than cdkd's hand-written SDK provider
 
 **Solutions:**
 
@@ -1234,6 +1235,85 @@ const bucket = new s3.Bucket(this, 'Bucket');
 const role = new iam.Role(this, 'Role', { ... });
 // Dependencies auto-detected from Ref/GetAtt
 ```
+
+**3. Check whether a resource is pinned to the Cloud Control route**
+
+```bash
+cdkd state show MyStack
+
+# Example output:
+# MyTopic
+#   Type: AWS::SNS::Topic
+#   PhysicalID: arn:aws:sns:us-east-1:123456789012:MyTopic
+#   ProvisionedBy: cc-api
+```
+
+`ProvisionedBy: cc-api` means the resource is provisioned through the Cloud
+Control API — cdkd's fallback layer, and slower than a hand-written SDK
+provider. A resource lands there when its template carries a top-level property
+the SDK provider would silently drop, and the record is then **sticky**: a later
+cdkd release that adds SDK coverage for that property does not by itself move
+the resource back, because doing that unconditionally would mean
+destroy-and-recreate churn on every release. [Provisioning Layers](provisioning-layers.md) explains
+the two layers and how cdkd picks between them.
+
+Whether you need to do anything depends on the resource type:
+
+- **The type is exempt from the sticky rule**, because cdkd now covers it.
+  Nothing to do. The next deploy that changes the resource returns it to the SDK
+  provider automatically and **in place** — no flag, no physical-id churn. See
+  [`cdkd diff` shows `[returning to SDK provider]`](#cdkd-diff-shows-returning-to-sdk-provider)
+  below.
+- **The type has no exemption.** The migration is user-initiated, and it
+  destroys and recreates the resource:
+  [`--recreate-via-sdk-provider <LogicalId>`](cli-deploy-safety.md#recreate-via-sdk-provider-deploy).
+  The flag refuses while the template still carries the silent-drop property
+  that sent the resource to Cloud Control in the first place, so first either
+  remove that property or accept the drop with
+  `--allow-unsupported-properties <Type>:<Prop>`.
+
+### `cdkd diff` shows `[returning to SDK provider]`
+
+**Symptoms:**
+
+```
+  [~] MyTopic (AWS::SNS::Topic) [returning to SDK provider]
+```
+
+**Cause:**
+
+The resource is recorded `provisionedBy: cc-api`, and its type carries an
+`'sdk-coverage'` exemption from the sticky rule described above — Cloud Control
+manages the type correctly and is merely slower, and cdkd now covers every
+property this particular resource uses. The next mutating deploy moves it back
+to the faster SDK provider — see
+[Coming back from Cloud Control](provisioning-layers.md#coming-back-from-cloud-control).
+
+The annotation deliberately does not wear the `via CC API:` prefix its sibling
+tokens (`[via CC API: <property>]`, `[via CC API: sticky]`) share — the resource
+is *leaving* Cloud Control, not routing through it.
+
+**This is an update in place, not a replacement.** The physical id is preserved,
+so references to the resource and any out-of-band configuration attached to it
+survive. `cdkd deploy` names the move as it happens:
+
+```
+MyTopic (AWS::SNS::Topic): returning to the SDK provider — cdkd now covers every property this resource uses. The physical id is preserved; pass --pin-cc-api MyTopic to decline this for a deploy.
+```
+
+**Solutions:**
+
+Usually none — this is the routing improving itself. To decline it for a single
+deploy, for example to keep one deploy on the same layer as the last while
+investigating something, pass
+[`--pin-cc-api <LogicalId>`](cli-deploy-safety.md#pin-cc-api-deploy). It is
+per-deploy rather than a stored preference: pass it again next time, or stop
+passing it and let the move happen.
+
+A resource whose type is exempt for the opposite reason — Cloud Control
+*cannot* manage it correctly — moves for correctness rather than speed, logs a
+different line, and **ignores `--pin-cc-api`**, since honouring the pin would
+hold the resource on the handler that cannot address it.
 
 ### Cloud Control API Rate Limit
 
