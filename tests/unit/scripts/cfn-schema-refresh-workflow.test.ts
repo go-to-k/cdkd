@@ -360,7 +360,11 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // "additions only" over a checker that never ran.
       const diagnose = shellOf('Diagnose what needs a decision');
       expect(diagnose).toContain('nested_key_rc=$?');
-      expect(diagnose).toContain('--nested-key-rc');
+      // The VARIABLE, not just the flag: `--nested-key-rc 0` hard-coded would
+      // satisfy a bare flag-presence check while restoring the behaviour the
+      // flag exists to remove, and the script's absent-flag arm defaults to 0
+      // for the by-hand invocation.
+      expect(diagnose).toMatch(/--nested-key-rc "\$\{nested_key_rc\}"/);
       // Captured immediately after the invocation: any command in between
       // overwrites `$?` and the status becomes that command's.
       const lines = diagnose.split('\n').map((l) => l.trim());

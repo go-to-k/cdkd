@@ -14,6 +14,8 @@ export interface SdkLagRow {
   installed: string;
   latest: string;
   behind: boolean;
+  /** Whether `clientsForType` matched this client to the type's own service. */
+  matched?: boolean;
 }
 export declare const NESTED_KEY_FAILURE_RE: RegExp;
 export declare function comparePropertySets(
@@ -46,16 +48,27 @@ export declare function sdkClientVersions(
 export declare function parseDeclaredProperties(
   generatedSource: string
 ): Map<string, Set<string>>;
+export interface SdkEvidence {
+  client: string;
+  modelled: boolean;
+  version?: string;
+  consulted?: string[];
+}
+export interface RemovedEntry {
+  resourceType: string;
+  properties: string[];
+  candidates: Record<string, string[]>;
+  sdk?: Record<string, SdkEvidence | undefined>;
+  renameCandidates?: Record<string, string[]>;
+  providerPath?: string;
+}
+export interface AddedEntry {
+  resourceType: string;
+  properties: string[];
+}
 export declare function renderDiagnosis(input: {
-  removed: Array<{
-    resourceType: string;
-    properties: string[];
-    candidates: Record<string, string[]>;
-    sdk?: Record<string, { client: string; modelled: boolean; version?: string; consulted?: string[] } | undefined>;
-    renameCandidates?: Record<string, string[]>;
-    providerPath?: string;
-  }>;
-  writableAdded: Array<{ resourceType: string; properties: string[] }>;
+  removed: RemovedEntry[];
+  writableAdded: AddedEntry[];
   readOnlyAddedCount?: number;
   sdkLag?: SdkLagRow[];
   divergences: NestedKeyDivergence[];
@@ -75,7 +88,7 @@ export declare function renderDetail(text: string): string;
 export declare function clientsForType(
   resourceType: string,
   rows: Array<{ client: string; version: string }>
-): Array<{ client: string; version: string }>;
+): Array<{ client: string; version: string; matched: boolean }>;
 export declare function buildSdkLag(
   divergences: Array<{ resourceType: string; bucket: string }>,
   clientsFor: (resourceType: string) => Array<{ client: string; version: string }>,

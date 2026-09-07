@@ -53,9 +53,9 @@ const REPO_ROOT = join(__dirname, '..');
 /**
  * @typedef {import('./diagnose-schema-refresh.d.mts').NestedKeyDivergence} NestedKeyDivergence
  * @typedef {import('./diagnose-schema-refresh.d.mts').SdkLagRow} SdkLagRow
- * @typedef {{client: string, modelled: boolean, version?: string, consulted?: string[]}} SdkEvidence
- * @typedef {{resourceType: string, properties: string[], candidates: Record<string, string[]>, sdk?: Record<string, SdkEvidence | undefined>, renameCandidates?: Record<string, string[]>, providerPath?: string}} RemovedEntry
- * @typedef {{resourceType: string, properties: string[]}} AddedEntry
+ * @typedef {import('./diagnose-schema-refresh.d.mts').SdkEvidence} SdkEvidence
+ * @typedef {import('./diagnose-schema-refresh.d.mts').RemovedEntry} RemovedEntry
+ * @typedef {import('./diagnose-schema-refresh.d.mts').AddedEntry} AddedEntry
  */
 
 
@@ -370,19 +370,32 @@ export function sdkModelsMember(property, providerRelPath, repoRoot = REPO_ROOT)
  * Falls back to EVERY row rather than to none when nothing matches: the caller
  * renders an absent type as "UNKNOWN, not ruled out", and a silently empty
  * answer would read as ruled out. The narrowing is a noise reduction, not a
- * correctness claim.
+ * correctness claim — which is why `matched` is REPORTED rather than left for a
+ * caller to re-derive. A caller that re-derived it read the suffix test as
+ * proof and told the reader to discount a live, applicable lag on the 13
+ * registered types whose client is not named after their service segment
+ * (`AWS::Events::Rule` is served by `@aws-sdk/client-eventbridge`,
+ * `AWS::Logs::LogGroup` by `@aws-sdk/client-cloudwatch-logs`). `false` here
+ * means "this narrowing found nothing to go on", never "wrong client".
  *
  * @param {string} resourceType
  * @param {Array<{client: string, version: string}>} rows
- * @returns {Array<{client: string, version: string}>}
+ * @returns {Array<{client: string, version: string, matched: boolean}>}
  */
 export function clientsForType(resourceType, rows) {
   const service = (resourceType.split('::')[1] ?? '').toLowerCase();
-  if (!service) return rows;
-  const matched = rows.filter(
-    (r) => r.client.replace('@aws-sdk/client-', '').replace(/-/g, '') === service
-  );
-  return matched.length > 0 ? matched : rows;
+  const matched = service
+    ? rows.filter((r) => r.client.replace('@aws-sdk/client-', '').replace(/-/g, '') === service)
+    : [];
+  if (matched.length > 0) return matched.map((r) => ({ ...r, matched: true }));
+  // A provider importing exactly ONE client leaves nothing for the name test to
+  // disambiguate — that client IS the type's own, whatever it is called. This
+  // arm is what keeps the hedge off the services whose client is named
+  // differently: measured over the 134 registered types, the name test matches
+  // 119, this arm settles 10 more (`AWS::Events::Rule` /
+  // `@aws-sdk/client-eventbridge` among them), and 3 are genuinely ambiguous —
+  // a provider importing several clients, none named for the service.
+  return rows.map((r) => ({ ...r, matched: rows.length === 1 }));
 }
 
 /**
@@ -690,12 +703,14 @@ export function renderDiagnosis({
     lines.push(
       '### The nested-key check FAILED in a mode this report cannot read',
       '',
-      'It reported a failure and printed no finding line this parser recognises.',
-      'That is one of its non-divergence refusals (a stale `NESTED_KEY_ALLOW_LIST`,',
-      '`segmentRenames` or `terminalRenames` entry — each a real decision, and each',
-      'exactly what a schema refresh causes), a crash, or a change to its output',
-      'format. **Read the failing job log before merging**; the sections below are',
-      'still accurate for everything other than nested keys.',
+      'It failed, or dropped findings, without printing lines this parser could',
+      'read. That is one of its non-divergence refusals (a stale',
+      '`NESTED_KEY_ALLOW_LIST`, `segmentRenames` or `terminalRenames` entry — each a',
+      'real decision, and each exactly what a schema refresh causes), a change to',
+      'its output format, or a checker that never ran at all (a missing task, a',
+      'crash, an OOM kill — the case its exit code is the only evidence of).',
+      '**Read the failing job log before merging**; the sections below are still',
+      'accurate for everything other than nested keys.',
       '',
       '```bash',
       'vp run audit:nested-key-coverage:check',
@@ -928,13 +943,15 @@ function divergenceProcedure(divergences, sdkLag) {
     // report that says nothing reads as ruled out.
     lagLines.push('', '**Installed vs published, for the divergent types above:**', '');
     for (const l of lags) {
-      // `clientsForType` falls back to every imported client when none matches
-      // the type's service, so a row can name a client that does not serve the
-      // type at all. Saying "ruled out here" over `@aws-sdk/client-sts` would
-      // attribute a verdict to the wrong service.
-      const own = l.client.replace('@aws-sdk/client-', '').replace(/-/g, '') ===
-        (l.resourceType.split('::')[1] ?? '').toLowerCase();
-      const scope = own ? 'here' : "for that client, which is not the type's own";
+      // Read, never re-derived. `clientsForType` falls back to every imported
+      // client when none matches the type's service, so a row CAN name a client
+      // that does not serve the type — but re-computing that test here turned a
+      // noise-reduction heuristic into a correctness claim and told the reader
+      // to discount a live lag on the 13 types whose client is not named after
+      // their service (`AWS::Events::Rule` / `@aws-sdk/client-eventbridge`).
+      // A false flag means the narrowing found nothing to go on, so the
+      // qualifier hedges rather than denies.
+      const scope = l.matched === false ? 'for that client, which may not be the type’s own' : 'here';
       lagLines.push(
         l.behind
           ? `- ${renderName(l.resourceType)} — \`${l.client}\` is ${l.installed}, npm ` +
@@ -1018,10 +1035,10 @@ function committedVersion(relPath) {
  * @param {Array<{resourceType: string, bucket: string}>} divergences
  * @param {(resourceType: string) => Array<{client: string, version: string}>} clientsFor
  * @param {(client: string, installed: string) => {installed: string, latest: string, behind: boolean} | undefined} [versionLag]
- * @returns {Array<{resourceType: string, client: string, installed: string, latest: string, behind: boolean}>}
+ * @returns {SdkLagRow[]}
  */
 export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag) {
-  /** @type {Array<{resourceType: string, client: string, installed: string, latest: string, behind: boolean}>} */
+  /** @type {SdkLagRow[]} */
   const out = [];
   /** @type {Map<string, {installed: string, latest: string, behind: boolean} | undefined>} */
   const byClient = new Map();
@@ -1030,7 +1047,10 @@ export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag)
     // A case divergence needs no judgement — the SDK models the key under
     // another capitalisation — so it never justifies a network call.
     if (d.bucket === 'case-divergence') continue;
-    for (const { client, version } of clientsForType(d.resourceType, clientsFor(d.resourceType))) {
+    for (const { client, version, matched } of clientsForType(
+      d.resourceType,
+      clientsFor(d.resourceType)
+    )) {
       if (!byClient.has(client)) byClient.set(client, versionLag(client, version));
       const lag = byClient.get(client);
       // One row per (type, client): several divergences routinely land on the
@@ -1038,7 +1058,7 @@ export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag)
       const key = `${d.resourceType}\u0000${client}`;
       if (lag && !emitted.has(key)) {
         emitted.add(key);
-        out.push({ resourceType: d.resourceType, client, ...lag });
+        out.push({ resourceType: d.resourceType, client, matched, ...lag });
       }
     }
   }
@@ -1133,11 +1153,20 @@ function main() {
     }
   }
 
+  // An UNREADABLE status is not a successful one: a mistyped value used to
+  // return 0 — "the checker succeeded" — silently restoring the behaviour where
+  // a checker that never ran renders as "additions only".
+  //
+  // An ABSENT flag is different and stays 0: this script is also run by hand
+  // (the runbook's `vp run audit:nested-key-coverage:check` loop), and refusing
+  // every manual invocation is not a safety property. The risk the absent arm
+  // carries — the WORKFLOW dropping the flag — is guarded where the evidence
+  // still exists, by the workflow test asserting it passes the variable.
   const readNumArg = (/** @type {string} */ flag) => {
     const i = args.indexOf(flag);
     if (i === -1 || i + 1 >= args.length) return 0;
     const n = Number(args[i + 1]);
-    return Number.isFinite(n) ? n : 0;
+    return Number.isFinite(n) ? n : 1;
   };
   const nestedKey = parseNestedKeyDivergences(
     readArg('--nested-key-log'),

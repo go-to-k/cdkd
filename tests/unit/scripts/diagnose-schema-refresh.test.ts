@@ -25,7 +25,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -985,11 +985,37 @@ describe('the SDK-lag section', () => {
           installed: '3.0.0',
           latest: '3.0.0',
           behind: false,
+          matched: false,
         },
       ],
     });
-    expect(md).toContain("not the type's own");
+    expect(md).toContain('may not be the type\u2019s own');
     expect(md).not.toContain('ruled out here');
+  });
+
+  it('says "here" for a MATCHED client, however it is named', () => {
+    // The true positive the previous case could not see. Re-deriving the name
+    // test in the renderer made this row read "not the type's own" about
+    // `AWS::Events::Rule`'s only client — a live, applicable lag the reader was
+    // told to discount.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [{ ...divergence, resourceType: 'AWS::Events::Rule' }],
+      skipped: [],
+      sdkLag: [
+        {
+          resourceType: 'AWS::Events::Rule',
+          client: '@aws-sdk/client-eventbridge',
+          installed: '3.0.0',
+          latest: '3.1.0',
+          behind: true,
+          matched: true,
+        },
+      ],
+    });
+    expect(md).toContain('LIVE here');
+    expect(md).not.toContain('may not be');
   });
 
   it('rejects a version string that is not one', () => {
@@ -1016,7 +1042,7 @@ describe('clientsForType', () => {
     // lagging, which is true and says nothing about the finding. Most providers
     // import STS.
     expect(clientsForType('AWS::Glue::Connection', rows)).toEqual([
-      { client: '@aws-sdk/client-glue', version: '3.1.0' },
+      { client: '@aws-sdk/client-glue', version: '3.1.0', matched: true },
     ]);
   });
 
@@ -1031,14 +1057,14 @@ describe('clientsForType', () => {
       { client: '@aws-sdk/client-auto-scaling', version: '3.1045.0' },
     ];
     expect(clientsForType('AWS::AutoScaling::AutoScalingGroup', separated)).toEqual([
-      { client: '@aws-sdk/client-auto-scaling', version: '3.1045.0' },
+      { client: '@aws-sdk/client-auto-scaling', version: '3.1045.0', matched: true },
     ]);
     const route53 = [
       { client: '@aws-sdk/client-sts', version: '3.0.0' },
       { client: '@aws-sdk/client-route-53', version: '3.1.0' },
     ];
     expect(clientsForType('AWS::Route53::HostedZone', route53)).toEqual([
-      { client: '@aws-sdk/client-route-53', version: '3.1.0' },
+      { client: '@aws-sdk/client-route-53', version: '3.1.0', matched: true },
     ]);
   });
 
@@ -1046,8 +1072,50 @@ describe('clientsForType', () => {
     // An empty answer renders as an absent type, which the section calls
     // "UNKNOWN, not ruled out" — but silently narrowing to nothing would hide a
     // real lag behind a naming mismatch. Widening is the safe direction.
-    expect(clientsForType('AWS::Made::Up', rows)).toEqual(rows);
-    expect(clientsForType('', rows)).toEqual(rows);
+    const hedged = rows.map((r) => ({ ...r, matched: false }));
+    expect(clientsForType('AWS::Made::Up', rows)).toEqual(hedged);
+    expect(clientsForType('', rows)).toEqual(hedged);
+  });
+
+  it('settles a SINGLE-client provider even when the name test cannot', () => {
+    // The name test is a heuristic, and reading its failure as "wrong client"
+    // was a regression: 13 of the 134 registered types are served by a client
+    // not named after their service segment, and telling the reader to discount
+    // a live, applicable lag is the confident-wrong-answer direction. With one
+    // client there is nothing to disambiguate.
+    const one = [{ client: '@aws-sdk/client-eventbridge', version: '3.1.0' }];
+    expect(clientsForType('AWS::Events::Rule', one)).toEqual([
+      { client: '@aws-sdk/client-eventbridge', version: '3.1.0', matched: true },
+    ]);
+  });
+
+  it('hedges only where the provider really is ambiguous', () => {
+    // Measured over the real tree: name test 119, single-client arm 10,
+    // genuinely ambiguous 3 — a provider importing several clients, none named
+    // for the service. `AWS::Logs::LogGroup` is one of the three.
+    const ambiguous = [
+      { client: '@aws-sdk/client-cloudwatch-logs', version: '3.1.0' },
+      { client: '@aws-sdk/client-sts', version: '3.0.0' },
+    ];
+    expect(clientsForType('AWS::Logs::LogGroup', ambiguous).every((r) => !r.matched)).toBe(true);
+  });
+
+  it('agrees with the real tree: at most a handful of types stay ambiguous', () => {
+    // A floor AND a ceiling. Zero hedged rows would mean the flag stopped
+    // discriminating; a large number would mean the name test broke.
+    const map = mapTypesToProviderFiles(
+      readFileSync(join(REPO_ROOT, 'src/provisioning/register-providers.ts'), 'utf8')
+    );
+    let hedged = 0;
+    let settled = 0;
+    for (const [type, file] of map) {
+      const rows = sdkClientVersions(file, REPO_ROOT);
+      if (rows.length === 0) continue;
+      if (clientsForType(type, rows)[0]!.matched) settled++;
+      else hedged++;
+    }
+    expect(settled, 'the client match stopped resolving').toBeGreaterThan(100);
+    expect(hedged, 'more types went ambiguous than the measurement found').toBeLessThanOrEqual(6);
   });
 });
 
@@ -1068,11 +1136,28 @@ describe('buildSdkLag', () => {
       {
         resourceType: 'AWS::Glue::Connection',
         client: '@aws-sdk/client-glue',
+        // Carried through, never re-derived downstream: two sites computing the
+        // same predicate is how the renderer came to disagree with the narrower.
+        matched: true,
         installed: '3.1.0',
         latest: '9.9.9',
         behind: true,
       },
     ]);
+  });
+
+  it('carries a HEDGED flag through, so the renderer never has to re-derive it', () => {
+    const ambiguous = () => [
+      { client: '@aws-sdk/client-cloudwatch-logs', version: '3.1.0' },
+      { client: '@aws-sdk/client-sts', version: '3.0.0' },
+    ];
+    const rows = buildSdkLag(
+      [{ resourceType: 'AWS::Logs::LogGroup', bucket: 'no-sdk-member' }],
+      ambiguous,
+      lag
+    );
+    expect(rows.length).toBe(2);
+    expect(rows.every((r) => r.matched === false)).toBe(true);
   });
 
   it('emits ONE row per (type, client) however many divergences land on it', () => {
@@ -1121,11 +1206,17 @@ describe('the script end to end', () => {
   // against the real repo. Neither log carries a non-case divergence, so no
   // `npm view` runs and the cases stay offline.
   const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
-  const run = (log: string): string => {
+  const run = (log: string, rc?: string): string => {
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-diagnose-'));
-    const path = join(dir, 'nested-key.log');
-    writeFileSync(path, log);
-    return execFileSync('node', [SCRIPT, '--nested-key-log', path], { encoding: 'utf8' });
+    try {
+      const path = join(dir, 'nested-key.log');
+      writeFileSync(path, log);
+      const args = [SCRIPT, '--nested-key-log', path];
+      if (rc !== undefined) args.push('--nested-key-rc', rc);
+      return execFileSync('node', args, { encoding: 'utf8' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   };
 
   it('reports a clean refresh as clean', () => {
@@ -1142,6 +1233,17 @@ describe('the script end to end', () => {
     );
     expect(md).toContain('FAILED in a mode this report cannot read');
     expect(md).not.toContain('Nothing in this refresh needs a decision — additions only');
+  }, 60_000);
+
+  it('treats an UNREADABLE exit code as a failure, not as success', () => {
+    // Both arms of the flag reader used to return 0 — "the checker succeeded" —
+    // so a mistyped value silently restored the behaviour where a checker that
+    // never ran renders as "additions only".
+    expect(run('', 'not-a-number')).toContain('FAILED in a mode this report cannot read');
+    // The ABSENT flag stays 0 on purpose: this script is also run by hand, and
+    // refusing every manual invocation is not a safety property. The workflow
+    // dropping the flag is guarded in the workflow test instead.
+    expect(run('')).toContain('Nothing in this refresh needs a decision');
   }, 60_000);
 
   it('renders a case-divergence without asking npm anything', () => {
