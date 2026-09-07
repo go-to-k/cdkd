@@ -4668,12 +4668,55 @@ export class IntrinsicFunctionResolver {
     context: ResolverContext
   ): Promise<string> {
     let template: string;
-    let variables: Record<string, unknown> = {};
+    // Resolved INTO A FRESH OBJECT, never back into the caller's map (issue
+    // #2739). `subArgs[1]` is the object inside the caller's template — an
+    // Output's `Value['Fn::Sub'][1]`, a resource property's — and writing the
+    // resolved values into it left the template holding a plaintext where it
+    // had held a `{{resolve:...}}` reference or an intrinsic. A template is a
+    // description, not a cache: a later resolution of the same object with a
+    // fresh recording map would then return the plaintext without recording
+    // it (no token left for `resolveDynamicReferences` to see), and the
+    // positioning source `DeployEngine.resolveOutputs` retains would carry
+    // the secret. The plain-string form and `Fn::Join` never mutated theirs.
+    //
+    // `Object.create(null)`, not `{}`: the variable NAMES come from the
+    // template, and `JSON.parse` makes `__proto__` an OWN key there, so a
+    // plain object would route that one assignment through the inherited
+    // prototype setter and render `${__proto__}` as `[object Object]` — the
+    // same reason `redactByPath`'s object walk builds its output that way.
+    // The `in` test below therefore sees OWN keys only, on EITHER form (the
+    // plain-string form used to test against a plain `{}` too): a placeholder
+    // naming an `Object.prototype` member the map does not carry
+    // (`${constructor}`, `${toString}`) used to substitute that member's
+    // source text and now falls through to pseudo-parameter / `Ref`
+    // resolution like any other unknown name.
+    const variables: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
 
     if (Array.isArray(subArgs)) {
-      [template, variables] = subArgs;
-      // Resolve variable values
-      for (const [key, val] of Object.entries(variables)) {
+      const [templateString, variableMap] = subArgs;
+      template = templateString;
+      // A `null` / primitive second element is refused UNCONDITIONALLY —
+      // newly enforced validation. Before this change `null` always threw
+      // (`Object.entries(null)`) and so did a non-empty string (its indexed
+      // entries could not be assigned back onto the primitive), but a number,
+      // a boolean or an empty string failed only once a placeholder reached
+      // the `in` test, so a placeholder-free template beside one resolved.
+      // The cross-stack reader in `secret-redaction.ts` relies on the shape
+      // never being recorded, and copying into a fresh object would have made
+      // those three variants resolve silently. An ARRAY second element still
+      // resolves by index (`${0}`); its non-enumerable `length` is no longer
+      // a variable (`${length}` used to render the count through `in`), since
+      // `Object.entries` copies own ENUMERABLE keys.
+      if (typeof variableMap !== 'object' || variableMap === null) {
+        throw markNonRetryable(
+          new Error(
+            `Fn::Sub: the second element must be a variable map, got ${
+              variableMap === null ? 'null' : typeof variableMap
+            }`
+          )
+        );
+      }
+      for (const [key, val] of Object.entries(variableMap)) {
         variables[key] = await this.resolveValue(val, context);
       }
     } else {

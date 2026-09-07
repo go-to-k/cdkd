@@ -164,7 +164,10 @@ Index of every area: [code-layout.md](code-layout.md).
     names), so writer key and persist-path key are byte-identical BY
     CONSTRUCTION. Deriving the writer's key from the RESOLVED names is NOT
     equivalent (the persist path holds only the unresolved leaf). A slot that
-    is itself an intrinsic yields no key and REFUSES.
+    is itself an intrinsic yields no key and REFUSES; so does a 2-arg
+    `Fn::Sub` whose placeholder the reader's plain-object `in` sees as bound
+    -- a SUPERSET of what the writer's null-prototype map (#2739) binds, so
+    the reader can refuse a leaf the writer keyed, never the reverse.
   - **THE KEY IS NOT UNIQUE PER PRODUCER**: the `Fn::ImportValue` key carries
     no region segment and a `Fn::GetStackOutput` omitting `Region` keys it
     empty, so one `cdkd deploy --all` puts two stacks in two regions on ONE
