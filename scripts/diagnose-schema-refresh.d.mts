@@ -82,6 +82,16 @@ export interface DiagnosisInput {
   skipped: string[];
 }
 export declare function renderDiagnosis(input: DiagnosisInput): string;
+/**
+ * How many things in this refresh need a human decision — the number a refresh
+ * PR is labelled, retitled and assigned from. `renderDiagnosis` calls it rather
+ * than restating the condition, so the marking and the prose beneath it cannot
+ * disagree.
+ */
+export declare function countDecisions(
+  input: Pick<DiagnosisInput, 'removed' | 'divergences'> &
+    Partial<Pick<DiagnosisInput, 'nestedKeyUnparsed' | 'failedChecks' | 'unreadable'>>
+): number;
 export declare function sdkVersionLag(
   client: string,
   installed: string | undefined,
@@ -133,3 +143,9 @@ export declare function loadDeclaredProperties(repoRoot?: string): Map<string, S
 export declare function classifyGitShowFailure(stderr: string): undefined | typeof UNREADABLE;
 export declare const KNOWN_FLAGS: string[];
 export declare function assertFixtureFloor(fixtureCount: number, declaredCount: number): void;
+/** What `--umbrella-checklist` emits when the campaign is finished. */
+export declare const UMBRELLA_EMPTY_SENTINEL: string;
+/** The rows, or `UMBRELLA_EMPTY_SENTINEL` when there are none. */
+export declare function renderUmbrellaDocument(generatedSource: string): string;
+/** One `- [ ] \`Type\`: \`Prop\`` row per remaining silent-drop property. */
+export declare function renderUmbrellaChecklist(generatedSource: string): string[];

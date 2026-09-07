@@ -37,7 +37,8 @@
  *
  *   node scripts/diagnose-schema-refresh.mjs \
  *     [--nested-key-log <file>] [--nested-key-rc <status>] \
- *     [--failed-checks <a,b>] [--skipped-log <file>] [--fixtures-dir <dir>] > body.md
+ *     [--failed-checks <a,b>] [--skipped-log <file>] [--fixtures-dir <dir>] \
+ *     [--decision-count-out <file>] > body.md
  *
  * And, as a separate mode taking no other flag:
  *
@@ -53,12 +54,27 @@
  * by an ordinary schema ADDITION. `--skipped-log` is the tail of the refresh's
  * own output, listing the types the public bundle does not carry.
  *
+ * `--decision-count-out` names a file to write the number of things needing a
+ * decision into, as a side effect of the same run that renders the report. The
+ * workflow marks the PR from it — a label, a title suffix, an assignee — and
+ * clears the marking when it reaches 0. It is a side effect rather than a
+ * second mode on purpose: a second invocation would re-read `--failed-checks`
+ * and `--nested-key-log` from its own argv, so a workflow passing one of them
+ * to the report and not to the count would mark a PR as needing nothing over a
+ * report listing several.
+ *
  * `--umbrella-checklist` is a SEPARATE MODE: it renders the remaining
  * silent-drop properties from the coverage module as a Markdown checklist and
- * exits, taking no other flag. The scheduled job splices that block into the
- * backfill umbrella between its markers, regenerating it each cycle rather than
- * appending — an appended list cannot express a type that was ticked off and
- * later regained a property.
+ * exits, taking no other flag. `.github/workflows/backfill-umbrella-sync.yml`
+ * splices that block into the backfill umbrella between its markers whenever
+ * `main`'s coverage map moves — not the scheduled refresh job, which would be
+ * describing its own unmerged workspace. It REGENERATES rather than appends: an
+ * appended list cannot express a type that was ticked off and later regained a
+ * property.
+ *
+ * A failure in this mode EXITS NON-ZERO rather than printing the fallback
+ * sentence, because the consumer is a workflow that cannot read one — see the
+ * catch at the bottom of this file.
  *
  * `--fixtures-dir` is a TEST SEAM — it points the comparison at a scratch
  * directory so the empty-listing refusal is reachable from a test, the same
@@ -71,7 +87,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -679,6 +695,47 @@ export const CHECK_GUIDANCE = {
 
 
 /**
+ * How many things in this refresh need a human decision.
+ *
+ * This is the SAME predicate the report's "additions only" line is written
+ * from — `renderDiagnosis` calls it rather than restating the condition — so
+ * the count a PR is marked with and the prose inside that PR cannot disagree.
+ * The pair had to be one function rather than two agreeing ones: the condition
+ * has five terms and two of them (`nestedKeyUnparsed`, `unreadable`) are the
+ * ones a second copy forgets, since neither renders a `### … a decision is
+ * needed` heading of its own — an unparsed checker log and an unreadable
+ * fixture are decisions with no section to remind a reader they exist.
+ *
+ * The unit is ITEMS OF WORK, not properties: `removed` is per-TYPE, so a type
+ * losing three properties counts once, because it is settled by one judgement.
+ *
+ * Both checker verdicts are part of the condition, not just the sections below
+ * it: a checker that failed is the one state where "additions only" is a
+ * confident WRONG answer rather than a gap. `propertyCoverageFailed` was the
+ * sibling left out — its status was discarded by the workflow, so a red
+ * `property-coverage` rendered as clean, on the ordinary refresh shape.
+ *
+ * @param {Pick<DiagnosisInput, 'removed' | 'divergences'> &
+ *   Partial<Pick<DiagnosisInput, 'nestedKeyUnparsed' | 'failedChecks' | 'unreadable'>>} input
+ * @returns {number}
+ */
+export function countDecisions({
+  removed,
+  divergences,
+  nestedKeyUnparsed = false,
+  failedChecks = [],
+  unreadable = [],
+}) {
+  return (
+    removed.length +
+    divergences.length +
+    (nestedKeyUnparsed ? 1 : 0) +
+    failedChecks.length +
+    unreadable.length
+  );
+}
+
+/**
  * Render the Markdown appended to the pull-request body.
  *
  * It NAMES what fired, where, and what the SDK says about it — then stops.
@@ -720,18 +777,8 @@ export function renderDiagnosis(input) {
   } = input;
   const lines = ['## What changed, and what needs a decision', ''];
 
-  // Both checker verdicts are part of the condition, not just sections below
-  // it: a checker that failed is the one state where "additions only" is a
-  // confident WRONG answer rather than a gap. `propertyCoverageFailed` was the
-  // sibling left out — its status was discarded by the workflow, so a red
-  // `property-coverage` rendered as clean, on the ordinary refresh shape (see
-  // its section below).
   if (
-    removed.length === 0 &&
-    divergences.length === 0 &&
-    !nestedKeyUnparsed &&
-    failedChecks.length === 0 &&
-    unreadable.length === 0
+    countDecisions({ removed, divergences, nestedKeyUnparsed, failedChecks, unreadable }) === 0
   ) {
     lines.push('Nothing in this refresh needs a decision — additions only.', '');
   }
@@ -892,9 +939,10 @@ export function renderDiagnosis(input) {
     lines.push(
       `### Writable properties AWS added (${count}) — no decision needed`,
       '',
-      'These route through Cloud Control automatically once this merges. They are',
-      'posted to the standing backfill issue too; wiring them into an SDK provider',
-      'is separate work.',
+      'These route through Cloud Control automatically once this merges. They',
+      'reach the standing backfill issue WHEN THIS MERGES, not now — that list is',
+      'regenerated from `main`, so closing this PR leaves it untouched. Wiring',
+      'them into an SDK provider is separate work.',
       ''
     );
     for (const entry of writableAdded) {
@@ -1460,6 +1508,7 @@ export const KNOWN_FLAGS = [
   '--failed-checks',
   '--skipped-log',
   '--umbrella-checklist',
+  '--decision-count-out',
   // Test seam; see its use below.
   '--fixtures-dir',
 ];
@@ -1499,6 +1548,18 @@ export function assertFixtureFloor(fixtureCount, declaredCount) {
     );
   }
 }
+
+/**
+ * What `--umbrella-checklist` emits when the campaign is FINISHED.
+ *
+ * A zero-row render and a broken one are both "no rows", and the consuming
+ * workflow has to tell them apart: it accepts rows-or-this and refuses
+ * anything else, so a parse that produced nothing cannot be spliced in as
+ * "the campaign is over". Exported because that workflow's fence pins the two
+ * spellings against each other.
+ */
+export const UMBRELLA_EMPTY_SENTINEL =
+  '_No remaining silent-drop properties — every declared type is fully covered._';
 
 /**
  * The remaining silent-drop properties, as a checklist the umbrella issue owns.
@@ -1546,6 +1607,24 @@ export function renderUmbrellaChecklist(generatedSource) {
     }
   }
   return rows;
+}
+
+/**
+ * The whole document `--umbrella-checklist` writes: the rows, or the
+ * finished-campaign sentinel when there are none.
+ *
+ * Split out of `main()` because the empty arm is otherwise UNREACHABLE from a
+ * test — the real coverage map always has rows, so a mutation deleting the
+ * sentinel survived every case (measured). The consuming workflow accepts rows
+ * OR this sentinel and refuses anything else, so the branch that chooses
+ * between them is exactly what has to be pinned.
+ *
+ * @param {string} generatedSource
+ * @returns {string}
+ */
+export function renderUmbrellaDocument(generatedSource) {
+  const rows = renderUmbrellaChecklist(generatedSource);
+  return rows.length > 0 ? rows.join('\n') : UMBRELLA_EMPTY_SENTINEL;
 }
 
 function main() {
@@ -1607,6 +1686,25 @@ function main() {
       `unrecognized flag(s): ${unknown.join(', ')} — known flags are ${KNOWN_FLAGS.join(', ')}. ` +
         'Refusing to report from an invocation this script did not understand.'
     );
+  }
+
+  // `--umbrella-checklist` renders the generated block and exits; it shares this
+  // script only because the coverage-module parser already lives here.
+  //
+  // It returns HERE, before any of the refresh-report setup, and that position
+  // is load-bearing rather than tidy. The mode reads one file —
+  // `property-coverage.generated.ts` — but sitting further down it first ran
+  // `loadDeclaredProperties`, `readdirSync` over the fixtures,
+  // `assertFixtureFloor` and `collectFixtureDeltas`, the last of which shells
+  // out to `git show` once per fixture to fetch the committed version. None of
+  // that feeds the checklist, and all of it can FAIL: the umbrella sync
+  // workflow (go-to-k/cdkd#2774) runs this mode from a plain `main` checkout
+  // with no refresh in front of it, so a floor tuned for the refresh's
+  // population, or a git object the sync's shallow clone lacks, would abort a
+  // render whose own input was sitting there readable.
+  if (args.includes('--umbrella-checklist')) {
+    process.stdout.write(renderUmbrellaDocument(loadDeclaredPropertiesSource()) + '\n');
+    return;
   }
   // The third reader, and it was the last one still silent on both counts: a
   // flag with no value AND a path that does not exist both returned `''`.
@@ -1731,15 +1829,6 @@ function main() {
     readArg('--nested-key-log'),
     readNumArg('--nested-key-rc')
   );
-  // Comma-separated task names, so a fourth check is a workflow line and a
-  // `CHECK_GUIDANCE` row rather than another flag and another render branch.
-  // `--umbrella-checklist` renders the generated block and exits; it shares this
-  // script only because the coverage-module parser already lives here.
-  if (args.includes('--umbrella-checklist')) {
-    process.stdout.write(renderUmbrellaChecklist(loadDeclaredPropertiesSource()).join('\n') + '\n');
-    return;
-  }
-
   const failedChecks = readArgValue('--failed-checks')
     .split(',')
     .map((c) => c.trim())
@@ -1757,6 +1846,34 @@ function main() {
   // rendered section names as UNKNOWN rather than ruled out.
   const sdkLag = buildSdkLag(divergences, (t) => sdkClientVersions(providerFiles.get(t)));
 
+  // Written as a SIDE EFFECT of the same invocation that renders the report,
+  // rather than exposed as a second mode the workflow runs again. A second run
+  // would re-read `--nested-key-log` and `--failed-checks` from its own argv,
+  // so a workflow that passed one of them to the report and not to the count
+  // would mark a PR "no decisions needed" over a report listing several —
+  // exactly the shape `--failed-checks` already produced once, and the shape
+  // this file's argv guards exist to refuse. One invocation cannot disagree
+  // with itself.
+  const countOut = rawArg('--decision-count-out');
+  if (countOut === null || countOut === '') {
+    throw new Error(
+      '--decision-count-out was given with no value — there is no file to write the count to, ' +
+        'and an unwritten count is what the marking step refuses to re-mark from.'
+    );
+  }
+  // The REPORT goes out first, and a failure to write the count does not stop
+  // it. This ordering is load-bearing, and getting it backwards reversed the
+  // job's own stated priority: `--decision-count-out` rides on the SAME
+  // invocation that renders the PR body, so a throw here failed the Diagnose
+  // step, and Publish and Mark carry plain `if:` conditions — which GitHub
+  // ANDs with an implicit `success()` — so the drift went uncommitted and NO
+  // PR opened at all. The workflow comment two steps up says exactly why that
+  // is the wrong trade: the PR is how the human finds out.
+  //
+  // Nothing is lost by being forgiving here, because the marking step refuses
+  // an absent or empty count file rather than reading it as zero. The failure
+  // is still LOUD — it reddens that step — but it reddens it beside a PR that
+  // exists.
   process.stdout.write(
     renderDiagnosis({
       removed,
@@ -1770,17 +1887,56 @@ function main() {
       sdkLag,
     }) + '\n'
   );
+
+  if (countOut !== undefined) {
+    try {
+      writeFileSync(
+        countOut,
+        `${countDecisions({ removed, divergences, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable })}\n`
+      );
+    } catch (err) {
+      process.stderr.write(
+        `diagnose-schema-refresh: could not write the decision count to ${countOut} ` +
+          `(${err instanceof Error ? err.message : String(err)}). The marking step will refuse ` +
+          'to re-mark from a missing count.\n'
+      );
+    }
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     main();
   } catch (err) {
-    // A broken diagnosis must never take down the PR it describes.
-    process.stdout.write(
-      `_The automated diagnosis failed to run (${
-        err instanceof Error ? err.message : String(err)
-      }). Read the CI log for the failing checks._\n`
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    // A broken diagnosis must never take down the PR it describes — but that
+    // reasoning is about the HUMAN-READABLE report, and it does not carry to
+    // the two modes a workflow CONSUMES.
+    //
+    // `--umbrella-checklist`: swallowing wrote one error sentence to stdout at
+    // exit 0, so the sync workflow's redirect produced a non-empty file and its
+    // size guard passed — splicing that sentence into the umbrella in place of
+    // the entire checklist, on a green run.
+    //
+    // `--decision-count-out` is deliberately NOT in this set, and the reason is
+    // the whole shape of the trade. It rides on the invocation that renders the
+    // PR BODY, so exiting non-zero for it fails the Diagnose step and — through
+    // the implicit `success()` on the steps below — stops the PR from opening
+    // at all. Its unwritten count is caught one step later instead, where the
+    // marking step refuses an absent file rather than reading it as zero. The
+    // write itself is wrapped where it happens, above.
+    const consumedByAWorkflow = process.argv.slice(2).some((a) => a === '--umbrella-checklist');
+    if (consumedByAWorkflow) {
+      // `process.exitCode`, and no `return`: this catch sits at MODULE top
+      // level, not inside a function, so a `return` here is a SyntaxError that
+      // makes the whole file unparseable — which reads, from a shell, exactly
+      // like the runtime failure being handled.
+      process.stderr.write(`diagnose-schema-refresh: ${message}\n`);
+      process.exitCode = 1;
+    } else {
+      process.stdout.write(
+        `_The automated diagnosis failed to run (${message}). Read the CI log for the failing checks._\n`
+      );
+    }
   }
 }

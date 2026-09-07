@@ -1,0 +1,208 @@
+# Keeps the backfill umbrella issue's generated checklist equal to what `main`
+# says, by rendering it from `main` whenever `main`'s coverage map moves.
+#
+# This used to be a step inside `cfn-schema-refresh.yml`, and being there made
+# it describe a state that need never exist. That job renders the checklist
+# from its OWN post-refresh workspace and writes it before the refresh PR is
+# reviewed, so closing that PR left the issue asserting properties `main` does
+# not have: measured on 2026-09-07, the umbrella listed 288 rows against
+# `main`'s 285, and the three extra came from a dispatch whose PR (#2770) was
+# closed unmerged. The staleness ran the other way too — a human
+# merging a backfill PR that RETIRED entries left the old list standing until
+# the next daily run.
+#
+# Driving it from `main` instead makes the issue reflect `main` by
+# construction, whoever moved it and however: the daily refresh, a hand-written
+# backfill, a revert. There is nothing to keep in step, because there is no
+# second source.
+#
+# The path filter is exact rather than approximate. `renderUmbrellaChecklist`
+# reads `src/provisioning/property-coverage.generated.ts` and nothing else, so
+# that one path neither under-triggers (no other input can change the answer)
+# nor over-triggers (a change to it always can).
+name: Backfill umbrella sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/provisioning/property-coverage.generated.ts"
+  # The recovery path, not a convenience: every refusal below leaves the issue
+  # untouched and asks a human to fix the label or the markers, and this is how
+  # the sync is retried afterwards without waiting for the next coverage-map
+  # change — which, on a quiet week, may not come.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: backfill-umbrella-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The only write this job holds. The refresh job needed `issues: write`
+      # for this same splice; moving it here is what lets that job drop it.
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Nothing here pushes, so the token has no reason to persist into
+          # `.git/config` where the render step's subprocesses could reach it.
+          persist-credentials: false
+
+      # No `vp install`. `--umbrella-checklist` returns before any of the
+      # refresh-report setup and uses only `node:` builtins to read one
+      # committed file, so a dependency install would add a failure surface to
+      # a step that cannot use it.
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      # Rendered in a step holding NO token, the same split the refresh job
+      # draws: this is repository code reading repository files, and the step
+      # below is the one that can write.
+      - name: Render the checklist from main's coverage map
+        run: |
+          set -euo pipefail
+          node scripts/diagnose-schema-refresh.mjs --umbrella-checklist > /tmp/checklist.md
+          # SHAPE, not size. A size test looks like it covers a broken render
+          # and does not: `diagnose-schema-refresh.mjs` wraps `main()` in a
+          # catch that writes `_The automated diagnosis failed to run (…)_` to
+          # STDOUT and exits 0, so a `renderUmbrellaChecklist` throw produces a
+          # NON-EMPTY file holding one error sentence -- which the splice below
+          # would then write into the umbrella in place of the whole checklist,
+          # on a green run. That is exactly the "the campaign is finished"
+          # misread the guard exists to prevent, reached through the guard.
+          # (The script also re-throws for this mode now, so this is the second
+          # of two independent stops rather than the only one.)
+          #
+          # Rows OR the finished-campaign sentinel, because "no rows" is two
+          # different states: a broken parse, and a campaign that is actually
+          # over. Accepting only rows made the second unrepresentable — the
+          # step died under `set -e` with no annotation and the umbrella kept
+          # its last stale rows permanently.
+          grep -qE '^- \[ \] |^_No remaining silent-drop properties' /tmp/checklist.md
+
+      - name: Splice it into the backfill umbrella
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The LABEL that marks the standing umbrella issue, not its number.
+          # A number goes stale silently the moment the campaign moves, and it
+          # did: the first destination carried months of design discussion and
+          # participants beyond the maintainer, so a daily bot write notified
+          # all of them. Moving it is now `gh issue edit --add-label`, and the
+          # lookup below refuses to guess when the label is not on exactly one
+          # open issue.
+          BACKFILL_UMBRELLA_LABEL: backfill-umbrella
+          # The block this workflow OWNS in the umbrella body. Everything
+          # outside it is human-written and never rewritten.
+          MARKER_BEGIN: "<!-- BEGIN generated: remaining silent-drop properties -->"
+          MARKER_END: "<!-- END generated -->"
+        run: |
+          set -euo pipefail
+          # REGENERATE the umbrella's checklist from the coverage map, rather
+          # than appending findings to it.
+          #
+          # Appending cannot express a type that was ticked off and later
+          # regained a property: the `[x]` row stays checked and a second row
+          # appears for the same type, so the reader sees one entry saying
+          # "done" and another saying "not". Dedup does not fix that — the
+          # append model is what is wrong. The map is the umbrella's own stated
+          # completion criterion, so rendering FROM it means a type reappears
+          # when it regains a property and disappears when it is finished, with
+          # no hand-maintained state to go stale.
+          #
+          # Human provenance — which PR closed which slice — cannot be
+          # recomputed, so it lives OUTSIDE the markers and is never touched.
+          #
+          # The STATUS is captured separately from the value, because "GitHub
+          # did not answer" and "no issue carries the label" are different
+          # outcomes that must not share one exit. A `|| true` here collapses
+          # them: a transport error renders as "found 0", warns, and exits
+          # GREEN -- and since this workflow fires on a push, nothing re-runs
+          # it, so the umbrella silently stops tracking `main`. That is the
+          # same green-run-that-changed-nothing this file refuses at the write.
+          if ! umbrella_json=$(gh issue list --state open --limit 100 \
+               --label "${BACKFILL_UMBRELLA_LABEL}" --json number); then
+            echo "::error::Could not ask GitHub which issue carries '${BACKFILL_UMBRELLA_LABEL}'. This is a transport or permission failure, not an empty result — re-run this workflow once it is resolved."
+            exit 1
+          fi
+          umbrella=$(printf '%s' "${umbrella_json}" | jq -r '[.[].number] | join(" ")')
+          umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
+
+          if [ "${umbrella_count}" != "1" ]; then
+            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). Refusing to guess which issue to write. Label exactly one and re-run this workflow."
+            exit 0
+          fi
+
+          U=$(mktemp)
+          # The chaining and the `-s` test are load-bearing, not style: the
+          # redirect truncates the file BEFORE gh runs, so an unchained recipe
+          # whose `view` fails would replace the umbrella's WHOLE body —
+          # destroying the provenance section this design exists to preserve.
+          # `tr -d '\r'` is not tidying. The markers are located with `grep -Fx`,
+          # which demands a byte-exact whole line, and a body edited in the
+          # GitHub WEB UI is stored with CRLF -- so the marker line is
+          # `<!-- BEGIN ... -->\r` and matches nothing. Measured on this repo, 3
+          # of the 100 most recent issue comments carry CR. Without the strip
+          # the count guard below reports 0 and 0 and asks a human to "fix the
+          # markers" that are already correct, forever -- and the recovery it
+          # names, hand-editing the issue, is what CREATES the CRLF. It also
+          # keeps the `cmp` idempotence test from seeing a phantom diff.
+          if ! { gh issue view "${umbrella}" --json body -q .body | tr -d '\r' > "${U}" && [ -s "${U}" ]; }; then
+            echo "::warning::Could not read backfill umbrella #${umbrella}'s body; refusing to write one. Re-run this workflow once the issue is readable."
+            exit 0
+          fi
+
+          # Located by LINE NUMBER, and each marker must appear exactly once on
+          # a line of its own, with END after BEGIN. Presence alone is not
+          # enough to splice safely: two BEGIN/END pairs leave a second
+          # generated block that nothing ever updates, and END-before-BEGIN
+          # duplicates the body on every run. `-Fx` also means a marker quoted
+          # inside a human's prose is not mistaken for the real one.
+          begin_line=$(grep -Fxn -- "${MARKER_BEGIN}" "${U}" | cut -d: -f1 || true)
+          end_line=$(grep -Fxn -- "${MARKER_END}" "${U}" | cut -d: -f1 || true)
+          begin_count=$(printf '%s' "${begin_line}" | wc -w | tr -d ' ')
+          end_count=$(printf '%s' "${end_line}" | wc -w | tr -d ' ')
+          if [ "${begin_count}" != "1" ] || [ "${end_count}" != "1" ]; then
+            echo "::warning::Umbrella #${umbrella} must carry exactly one ${MARKER_BEGIN} line and one ${MARKER_END} line; found ${begin_count} and ${end_count}. There is nowhere to write the generated checklist without guessing which part of the body is generated. Fix the markers and re-run this workflow."
+            exit 0
+          fi
+          if [ "${end_line}" -le "${begin_line}" ]; then
+            echo "::warning::Umbrella #${umbrella} has ${MARKER_END} on line ${end_line}, at or before ${MARKER_BEGIN} on line ${begin_line}. Splicing that order would duplicate the body. Fix the markers and re-run this workflow."
+            exit 0
+          fi
+
+          N=$(mktemp)
+          # Everything up to and including BEGIN, the freshly rendered rows,
+          # then END onward. Splicing rather than rewriting is what keeps the
+          # human-owned half untouched.
+          #
+          # `head`/`tail` on the LINE NUMBERS above, not `sed` address ranges.
+          # `sed -n '1,/re/p'` starts searching for addr2 at line TWO, so a
+          # body whose first line is the BEGIN marker never closes the range:
+          # the head half printed the WHOLE body, and the result grew by one
+          # copy of the human provenance section on every push (measured). It
+          # also needed the marker text regex-escaped, a second way to get this
+          # wrong quietly.
+          head -n "${begin_line}" "${U}" > "${N}"
+          cat /tmp/checklist.md >> "${N}"
+          tail -n "+${end_line}" "${U}" >> "${N}"
+
+          if cmp -s "${U}" "${N}"; then
+            echo "::notice::Umbrella #${umbrella} checklist is already current."
+            exit 0
+          fi
+          # No `|| echo "::warning::"` on this one, unlike the refusals above.
+          # Those are states a human has to fix and the run reports honestly;
+          # this is the write itself, and a swallowed 403 here is the silent
+          # watch failure the refresh job's own `issues: write` comment was
+          # written about. A red run on `main` is a notification; a green run
+          # that changed nothing is not.
+          gh issue edit "${umbrella}" --body-file "${N}"

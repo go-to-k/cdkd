@@ -265,6 +265,14 @@ gates:
       # above: a checker INPUT outside this scope is a marker that reads fresh
       # while the thing it certifies has changed (issue #2718).
       - ".github/workflows/cfn-schema-refresh.yml"
+      # Its sibling, which keeps the backfill umbrella issue equal to what
+      # `main`'s coverage map says (go-to-k/cdkd#2774). Same reason again, plus
+      # one specific to it: this workflow WRITES a GitHub issue body, and its
+      # three refusals -- exactly one labelled issue, the marker pair present,
+      # a body it could read first -- are what stop it replacing a human's
+      # provenance notes with a guess. backfill-umbrella-sync-workflow.test.ts
+      # pins each of them, so the marker has to notice an edit here.
+      - ".github/workflows/backfill-umbrella-sync.yml"
       # The three workflows go-to-k/cdkd#2717 added when it moved seven gates
       # out of `.claude/hooks/**` and into CI. That move took the ENFORCEMENT
       # LOGIC -- triggers, the checkout ref that decides whose checker runs, the

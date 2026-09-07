@@ -48,6 +48,10 @@ import {
   renderKey,
   renderLiteral,
   buildSdkLag,
+  countDecisions,
+  UMBRELLA_EMPTY_SENTINEL,
+  renderUmbrellaChecklist,
+  renderUmbrellaDocument,
   CHECK_GUIDANCE,
   KNOWN_FLAGS,
   classifyGitShowFailure,
@@ -2301,5 +2305,335 @@ describe('the generated-module renderers', () => {
     const { renderHandled } = await import('../../../scripts/gen-property-coverage.ts');
     expect(renderHandled(['Alpha'])).toContain('"Alpha"');
     expect(renderHandled(['Alpha'])).not.toContain("'Alpha'");
+  });
+});
+
+describe('countDecisions', () => {
+  // The count a refresh PR is MARKED with. It is the same predicate the report
+  // writes its "additions only" line from, and the two being one function is
+  // the property under test — a second, agreeing copy is what goes stale.
+  const none = { removed: [], divergences: [] };
+
+  it('counts each of the five inputs, including the two with no section', () => {
+    // `nestedKeyUnparsed` and `unreadable` render no `### … a decision is
+    // needed` heading of their own, which is exactly why a hand-written second
+    // copy forgets them: an unparsed checker log and an unreadable fixture are
+    // decisions with nothing on the page to remind a reader they exist.
+    expect(countDecisions(none)).toBe(0);
+    expect(
+      countDecisions({
+        ...none,
+        removed: [{ resourceType: 'A', properties: ['x'], candidates: {}, sdk: {} }],
+      })
+    ).toBe(1);
+    expect(
+      countDecisions({
+        ...none,
+        divergences: [{ resourceType: 'A', nestedKey: 'k', bucket: 'no-sdk-member', detail: 'd' }],
+      })
+    ).toBe(1);
+    expect(countDecisions({ ...none, nestedKeyUnparsed: true })).toBe(1);
+    expect(countDecisions({ ...none, failedChecks: ['property-coverage'] })).toBe(1);
+    expect(countDecisions({ ...none, unreadable: ['A'] })).toBe(1);
+  });
+
+  it('counts a multi-property removal ONCE — the unit is the judgement', () => {
+    // A type losing three properties is settled by one decision, and the title
+    // suffix says "N decisions needed". Counting properties would inflate it.
+    expect(
+      countDecisions({
+        ...none,
+        removed: [
+          {
+            resourceType: 'A',
+            properties: ['x', 'y', 'z'],
+            candidates: {},
+            sdk: {},
+          },
+        ],
+      })
+    ).toBe(1);
+  });
+
+  it('agrees with the report it is rendered beside, in BOTH directions', () => {
+    // The structural claim. If these two could disagree, a PR could be marked
+    // "no decisions needed" while the body beneath the title lists several —
+    // and that is the shape this file's argv guards already had to close once.
+    const cases: Array<Record<string, unknown>> = [
+      { removed: [], divergences: [], writableAdded: [], skipped: [] },
+      {
+        removed: [
+          {
+            resourceType: 'AWS::S3::Bucket',
+            properties: ['Gone'],
+            candidates: { Gone: ['src/provisioning/providers/s3-provider.ts:1'] },
+            sdk: {},
+          },
+        ],
+        divergences: [],
+        writableAdded: [],
+        skipped: [],
+      },
+      {
+        removed: [],
+        divergences: [
+          {
+            resourceType: 'AWS::Glue::Connection',
+            nestedKey: 'BasicAuthenticationCredentials',
+            bucket: 'definition-member-missing',
+            detail: 'd',
+          },
+        ],
+        writableAdded: [],
+        skipped: [],
+      },
+      { removed: [], divergences: [], writableAdded: [], skipped: [], nestedKeyUnparsed: true },
+      { removed: [], divergences: [], writableAdded: [], skipped: [], unreadable: ['AWS::A::B'] },
+      {
+        removed: [],
+        divergences: [],
+        writableAdded: [],
+        skipped: [],
+        failedChecks: ['property-coverage'],
+      },
+    ];
+    for (const c of cases) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md = renderDiagnosis(c as any);
+      const saysClean = md.includes('Nothing in this refresh needs a decision');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const n = countDecisions(c as any);
+      expect(saysClean, `count ${n} disagrees with the rendered verdict`).toBe(n === 0);
+    }
+  });
+});
+
+describe('--decision-count-out', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  it('writes the count as a side effect of the run that rendered the report', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-count-'));
+    try {
+      const out = join(dir, 'count.txt');
+      const md = execFileSync(
+        'node',
+        [SCRIPT, '--failed-checks', 'property-coverage,audit:sdk-attr-coverage:check',
+         '--decision-count-out', out],
+        { encoding: 'utf8' }
+      );
+      expect(readFileSync(out, 'utf8').trim()).toBe('2');
+      // And the report it was written beside agrees.
+      expect(md).toContain('### CI checks that FAILED — a decision is needed');
+      expect(md).not.toContain('Nothing in this refresh needs a decision');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('writes 0 on a clean refresh rather than omitting the file', () => {
+    // An ABSENT file is what the workflow refuses to mark from, so "clean" has
+    // to be a written zero. Omitting it here would make every clean cycle look
+    // to the marking step like a broken run.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-count0-'));
+    try {
+      const out = join(dir, 'count.txt');
+      execFileSync('node', [SCRIPT, '--decision-count-out', out], { encoding: 'utf8' });
+      expect(readFileSync(out, 'utf8').trim()).toBe('0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('refuses the flag with no value instead of leaving the count unwritten', () => {
+    // Every other absent-input arm in this script is the permissive one, and
+    // an unwritten count reads to the workflow as "no decisions needed".
+    //
+    // A flag with NO VALUE is an argv error, not a runtime one, so it takes
+    // the same forgiving path every other argv guard here takes — the report
+    // is replaced by the fallback sentence and the exit stays 0, because
+    // failing would stop the PR from opening. The marking step's absent-count
+    // refusal is what turns this into a red, one step later.
+    const out = spawnSync('node', [SCRIPT, '--decision-count-out'], { encoding: 'utf8' });
+    // The STATUS, not only the text — and NOT for the reason first written
+    // here. Re-adding the flag to the re-throw set was measured and does not
+    // survive: that arm writes to stderr, so the `toContain` below already
+    // reds. What this catches is the arm that keeps the sentence on STDOUT and
+    // sets `process.exitCode = 1` anyway — a shape the text assertion cannot
+    // see at all, and one that stops the refresh PR from opening just as
+    // surely, since the Diagnose step's exit is what Publish's implicit
+    // `success()` reads.
+    expect(out.status, 'an argv error now fails the step, so no PR opens').toBe(0);
+    expect(out.stdout).toContain('--decision-count-out was given with no value');
+  }, 60_000);
+
+  it('is a known flag, so the unknown-flag guard does not refuse the workflow', () => {
+    expect(KNOWN_FLAGS).toContain('--decision-count-out');
+  });
+});
+
+describe('--umbrella-checklist returns before the refresh-report setup', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  it('renders from an EMPTY fixtures directory, which the floor would refuse', () => {
+    // The mode reads `property-coverage.generated.ts` and nothing else, but it
+    // used to return further down — after `assertFixtureFloor` and after
+    // `collectFixtureDeltas`, which shells out to `git show` per fixture. None
+    // of that feeds the checklist and all of it can fail, which matters now
+    // that `backfill-umbrella-sync.yml` runs this mode from a plain `main`
+    // checkout with no refresh in front of it.
+    //
+    // An empty fixtures directory is the cheapest proof of the ordering: the
+    // floor throws on it, so a render that still succeeds cannot have reached
+    // the floor.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-umb-'));
+    try {
+      // The control: the same empty directory DOES stop the ordinary report.
+      let refused = '';
+      try {
+        refused = execFileSync('node', [SCRIPT, '--fixtures-dir', dir], { encoding: 'utf8' });
+      } catch (e) {
+        refused = String((e as { stdout?: unknown }).stdout ?? '');
+      }
+      expect(refused, 'the fixture floor no longer refuses an empty directory').toContain(
+        'failed to run'
+      );
+
+      const md = execFileSync('node', [SCRIPT, '--umbrella-checklist', '--fixtures-dir', dir], {
+        encoding: 'utf8',
+      });
+      expect(md).toMatch(/^- \[ \] `AWS::/m);
+      expect(md, 'the checklist mode fell through into the refresh report').not.toContain(
+        'What changed, and what needs a decision'
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe('a failure in a mode a WORKFLOW consumes exits non-zero', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+  const spawn = (args: string[]) =>
+    spawnSync('node', [SCRIPT, ...args], { encoding: 'utf8' });
+
+  it('keeps the forgiving fallback for the HUMAN report', () => {
+    // The original reasoning stands where it was written: a broken diagnosis
+    // must not stop the PR that describes it from being opened, because the PR
+    // is how the human finds out anything at all.
+    const out = spawn(['--fixtures-dir', join(REPO_ROOT, 'no-such-directory')]);
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain('The automated diagnosis failed to run');
+  }, 60_000);
+
+  it('KEEPS the report when the count cannot be written, and says so on stderr', () => {
+    // `--decision-count-out` rides on the invocation that renders the PR BODY,
+    // so exiting non-zero for it fails the Diagnose step — and Publish and Mark
+    // carry plain `if:` conditions, which GitHub ANDs with an implicit
+    // `success()`. A round of this branch did exactly that, and the result was
+    // that an unwritable count path meant NO PR OPENED AT ALL, reversing the
+    // job's own stated priority. Nothing is lost by being forgiving: the
+    // marking step refuses an absent count rather than reading it as zero, so
+    // the failure is still loud — it just reddens beside a PR that exists.
+    const out = spawn(['--decision-count-out', '/nonexistent/dir/count.txt']);
+    expect(out.status, 'a count-write failure stops the PR from opening').toBe(0);
+    expect(out.stdout, 'the report was lost with the count').toContain(
+      '## What changed, and what needs a decision'
+    );
+    expect(out.stderr).toContain('could not write the decision count');
+  }, 60_000);
+
+  it('does NOT extend it to --umbrella-checklist either', () => {
+    // This one is the sharper of the two: the sync workflow redirects stdout
+    // to a file, so a swallowed failure produced a NON-EMPTY file holding one
+    // error sentence, which the splice would write into the umbrella in place
+    // of the entire checklist — on a green run.
+    const out = spawn(['--umbrella-checklist', '--umbrella-checklist']);
+    expect(out.status, 'a broken checklist render reported success').not.toBe(0);
+    expect(out.stdout, 'the error sentence would be spliced into the issue').toBe('');
+    expect(out.stderr).toContain('diagnose-schema-refresh:');
+  }, 60_000);
+
+  it('the checklist mode still renders when it CAN, ignoring the report-only seam', () => {
+    // The control for the two refusals above: the same mode, on the happy
+    // path, still exits 0 and emits rows — and does so with a fixtures
+    // directory that does not exist, which is what proves the early return
+    // still sits above the fixture floor.
+    const out = spawn(['--umbrella-checklist', '--fixtures-dir', '/nonexistent']);
+    expect(out.status).toBe(0);
+    expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
+  }, 60_000);
+});
+
+describe('the finished-campaign sentinel', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  it('is what makes "no rows left" distinguishable from a broken parse', () => {
+    // `renderUmbrellaChecklist` throws only on zero type BOUNDARIES, so a
+    // coverage map whose every `silentDrop` is empty is a legitimate empty
+    // list. Emitting a bare newline for it made the sync workflow's
+    // rows-or-nothing guard kill the step under `set -e` with no annotation,
+    // and the umbrella kept its last stale rows permanently.
+    expect(UMBRELLA_EMPTY_SENTINEL).toMatch(/^_No remaining silent-drop properties/);
+    // The consuming guard accepts a row OR this line, and nothing else. Pinned
+    // against the workflow so a reword on either side cannot pass silently.
+    const sync = readFileSync(
+      join(REPO_ROOT, '.github/workflows/backfill-umbrella-sync.yml'),
+      'utf8'
+    );
+    const accepted = /grep -qE '(\^- \\\[ \\\] \|)?\^(_No remaining silent-drop properties)'/.exec(
+      sync
+    );
+    expect(accepted, 'the sync workflow no longer accepts the sentinel').not.toBeNull();
+    expect(UMBRELLA_EMPTY_SENTINEL.startsWith(accepted![2]!)).toBe(true);
+  });
+
+  it('renders rows on the real map, so the sentinel arm is not the live one', () => {
+    // The control. A sentinel that fired in production would mean the campaign
+    // had silently emptied, and every case above would be asserting about a
+    // branch nothing takes.
+    const out = spawnSync('node', [SCRIPT, '--umbrella-checklist'], { encoding: 'utf8' });
+    expect(out.status).toBe(0);
+    expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
+    expect(out.stdout).not.toContain(UMBRELLA_EMPTY_SENTINEL);
+  }, 60_000);
+});
+
+describe('renderUmbrellaDocument', () => {
+  // A generated coverage module with a type BOUNDARY but nothing left to
+  // backfill. `renderUmbrellaChecklist` throws only on zero boundaries, so
+  // this shape is a legitimate empty list and not a broken parse — the
+  // distinction the sync workflow's guard is built on.
+  const FINISHED = `
+export const PROPERTY_COVERAGE = new Map([
+  ['AWS::S3::Bucket', {
+    handled: new Set(['BucketName']),
+    silentDrop: new Map<string, string>([]),
+  }],
+]);
+`;
+  const REMAINING = `
+export const PROPERTY_COVERAGE = new Map([
+  ['AWS::S3::Bucket', {
+    handled: new Set(['BucketName']),
+    silentDrop: new Map<string, string>([['ObjectLockConfiguration', 'x']]),
+  }],
+]);
+`;
+
+  it('says so when nothing is left, instead of emitting nothing', () => {
+    // Emitting a bare empty string made the sync workflow's rows-or-sentinel
+    // guard kill the step under `set -e` with no annotation, and the umbrella
+    // kept its last stale rows permanently. This arm is unreachable through
+    // the CLI — the real map always has rows — which is why the decision lives
+    // in a function rather than inline in `main()`.
+    expect(renderUmbrellaChecklist(FINISHED)).toEqual([]);
+    expect(renderUmbrellaDocument(FINISHED)).toBe(UMBRELLA_EMPTY_SENTINEL);
+  });
+
+  it('emits the rows, and only the rows, when there are some', () => {
+    expect(renderUmbrellaDocument(REMAINING)).toBe(
+      '- [ ] `AWS::S3::Bucket`: `ObjectLockConfiguration`'
+    );
+    expect(renderUmbrellaDocument(REMAINING)).not.toContain(UMBRELLA_EMPTY_SENTINEL);
   });
 });

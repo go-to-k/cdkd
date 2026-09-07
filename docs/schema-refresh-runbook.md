@@ -22,6 +22,7 @@ why the job is allowed to fail — is in
 | No pull request | Nothing. Most days are this. |
 | A pull request, CI green | Read the diff, squash merge. |
 | A pull request, CI red | Something needs a decision — the PR names which class. |
+| A pull request labelled `needs-decision`, assigned to you | The same thing, said where you can see it without opening the PR. |
 | A pull request saying the nested-key check failed unreadably | Read that job's log; the other sections still hold. |
 | A comment on an open pull request | New drift was added to it. Same classes. |
 | A section naming a failed CI check | That check's own guidance is in the PR; its findings are not covered by the other sections. |
@@ -47,14 +48,24 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
    involved.
 3. Rewrites only the fixtures that actually changed. A capture-date-only
    difference is not a change.
-4. **Stops if nothing drifted** — no branch, no pull request, no comment.
+4. **Stops if nothing drifted, and no refresh pull request is open** — no
+   branch, no pull request, no comment.
 5. Otherwise regenerates the derived artifacts, then either opens a pull
    request or adds a commit and a diagnosis comment to the open one.
-6. Adds any newly unaccounted writable properties to the standing backfill
-   issue.
+6. Marks the pull request with how many decisions are left, or clears the
+   marking when there are none. This is the step that also runs on a
+   no-drift day, so a decision you have settled stops being advertised.
 
 Nothing that encodes a judgement is touched: no `unhandledByDesign`, no
 `bogusTolerated`, no `NESTED_KEY_ALLOW_LIST`, no provider code.
+
+The **standing backfill issue is not written by this job**. A separate
+workflow, `backfill-umbrella-sync.yml`, regenerates its checklist whenever
+`src/provisioning/property-coverage.generated.ts` changes on `main` — a refresh
+merge, a hand-written backfill, a revert. Driving it from `main` is what keeps
+the issue describing something that actually exists: written during the refresh
+run instead, it described the job's own workspace, so closing a refresh PR
+unmerged left the issue listing properties `main` does not have.
 
 If a push onto an open pull request would not fast-forward — someone pushed
 while the job ran — it gives up for that cycle with a warning rather than
@@ -72,14 +83,52 @@ Cloud Control instead of being dropped. Before it, the same template got a
 deploy-time warning — the value was never silently lost, but it did not work
 either.
 
-Newly unaccounted **writable** properties are listed in the pull request and
-posted to the standing backfill issue by the job itself. Wiring them into an
-SDK provider is separate, unhurried work.
+Newly unaccounted **writable** properties are listed in the pull request. They
+reach the standing backfill issue when this PR MERGES, not when the job runs —
+`backfill-umbrella-sync.yml` regenerates that checklist from `main`. Wiring
+them into an SDK provider is separate, unhurried work.
 
 **Writable** matters here: a schema property AWS computes and returns
 (`readOnlyProperties` — an `Arn`, a `DomainName`) can never be a dropped value,
 because there was nothing to send. Only settable properties represent work. In
 a typical cycle most additions are read-only.
+
+## How a decision reaches you
+
+A refresh PR that needs one is **assigned to you, labelled `needs-decision`,
+titled with the count, and opened by a one-line verdict at the top of its
+body**. Of those, only the assignment sends a notification — it is applied
+first for that reason — while the label and the title suffix are what the PR
+list can still tell you afterwards, including that a PR was settled. The
+verdict line is rewritten every cycle, so it does not age the way the rest of
+the body does.
+
+GitHub holds CI on a bot-created pull request at `action_required` until a
+maintainer approves the workflows, so a decision-carrying PR does not
+necessarily show a red check — before this marking existed it was
+indistinguishable, in every list view, from a refresh that needed nothing.
+
+The marking is **cleared by the next run** once you have committed the
+classifications: the job recomputes the count while the PR is open, even on a
+day AWS changed nothing, then drops the label, restores the plain title and
+rewrites the verdict line. The **assignee stays** — the PR is still yours to
+merge, and un-assigning it would drop it out of your assigned view at the
+moment it became mergeable. So a standing `needs-decision` means work is
+genuinely outstanding, not that nobody tidied up.
+
+On a cycle that publishes nothing, the count can only CLEAR the marking — it
+never changes a non-zero one in either direction. Removals are computed by
+diffing against the branch's committed fixtures, so with nothing to refresh
+that half of the count is empty by construction and a "2 decisions needed" PR
+would otherwise be retitled "1" with nothing settled.
+The same run also refuses to clear when regenerating produces changes the
+branch has not committed — otherwise fixing a provider without running
+`vp run gen:all-matrices` would clear the label while the PR's own CI stayed
+red.
+
+If the label is missing entirely and the run log says it could not add it,
+create it once — `gh label create needs-decision` — and re-run. The job
+deliberately does not create labels, so that deleting one stays a decision.
 
 ## A red pull request
 
