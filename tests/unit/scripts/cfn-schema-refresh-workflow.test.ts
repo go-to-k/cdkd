@@ -4,8 +4,8 @@
  * workflow and its first PR-opening one.
  *
  * A workflow is the one artifact here with no local run to catch a mistake: it
- * executes monthly, unattended, with `contents: write`, and a defect surfaces
- * as a wrong or missing PR a month later. So the properties that are
+ * executes daily, unattended, with `contents: write`, and a defect surfaces
+ * as a wrong or missing PR that nobody is watching for. So the properties that are
  * load-bearing rather than cosmetic are pinned, and each case below says which
  * failure it is about.
  *
@@ -53,7 +53,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow.length).toBeGreaterThan(2000);
   });
 
-  it('runs monthly on a schedule AND is manually dispatchable', () => {
+  it('runs daily on a schedule AND is manually dispatchable', () => {
     // The schedule is the whole mechanism; `workflow_dispatch` is the reactive
     // path for a mid-cycle user report, the recovery path if GitHub suspends
     // the schedule on an inactive repo, and the only way to exercise the job
@@ -62,8 +62,8 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).toMatch(/^\s*workflow_dispatch:$/m);
     // The cron is pinned LITERALLY. A `"[^"]+"` shape assertion accepts
     // `* * * * *`, i.e. a job firing every minute with `contents: write` —
-    // the opposite of the monthly cadence the design argued for, and green.
-    expect(parsed.on.schedule).toEqual([{ cron: '37 4 2 * *' }]);
+    // and would read as green.
+    expect(parsed.on.schedule).toEqual([{ cron: '37 4 * * *' }]);
   });
 
   /**
@@ -189,6 +189,15 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // eventually-consistent GraphQL search connection, so a just-created PR
       // can be missing and the guard fails OPEN.
       expect(guard).not.toContain('--author');
+    });
+
+
+    it('stamps the branch per DAY, matching the daily cadence', () => {
+      // The branch name IS the cycle's identity. At a daily cadence a
+      // month-granular stamp would make every run after the first in a month
+      // collide with an existing branch, sending each one down the
+      // force-with-lease recovery path for no reason.
+      expect(shellOf('Open the refresh PR')).toContain('date -u +%Y-%m-%d');
     });
 
     it('fails the open-PR guard closed rather than open on a gh error', () => {

@@ -436,7 +436,7 @@ export default defineConfig({
       // Re-captures every registered type's CFn schema fixture from AWS's
       // PUBLIC schema bundle — no AWS credentials — rewriting ONLY the fixtures
       // that actually drifted (`generatedAt`-only churn excluded). This is what
-      // `.github/workflows/cfn-schema-refresh.yml` runs monthly; issue #2718.
+      // `.github/workflows/cfn-schema-refresh.yml` runs daily; issue #2718.
       //
       // NOT in `gen:all-matrices` and NOT a `--check` in CI, for the reason
       // written above `gen:aws-cli-removals`: the committed capture is the

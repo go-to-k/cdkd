@@ -2041,7 +2041,7 @@ AWS adds properties to existing resource types fairly regularly — measured at 
 
 Two mechanisms cover it.
 
-**Monthly, automatically.** `.github/workflows/cfn-schema-refresh.yml` runs `vp run gen:cfn-schemas-from-zip` on the 2nd of each month and, on drift, opens a PR carrying the mechanical regeneration. It reads AWS's **public** schema bundle, so no AWS credentials and no CI IAM role are involved — the prerequisite that kept this manual. Only fixtures that actually changed are rewritten (`generatedAt`-only churn is excluded from the comparison), so the PR diff is the real drift.
+**Daily, automatically.** `.github/workflows/cfn-schema-refresh.yml` runs `vp run gen:cfn-schemas-from-zip` every day and, on drift, opens a PR carrying the mechanical regeneration. A day with no drift opens nothing — the job stops at the drift check — and the open-PR guard bounds concurrency at one, so the cadence costs a short run per quiet day rather than a review cycle. It reads AWS's **public** schema bundle, so no AWS credentials and no CI IAM role are involved — the prerequisite that kept this manual. Only fixtures that actually changed are rewritten (`generatedAt`-only churn is excluded from the comparison), so the PR diff is the real drift.
 
 That PR is **allowed to land red**, and the red is the hand-off rather than a bug. The job runs only the mechanical chain and hand-classifies nothing, so two classes still need you:
 

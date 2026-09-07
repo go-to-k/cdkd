@@ -33,12 +33,24 @@ name: CFn schema fixture refresh
 # `reportUnrecognizedProperties` warns about at deploy time, so that specific
 # shape is the one this PR's other half already surfaces to the user.
 #
-# MONTHLY, not weekly: measured drift is ~3 WRITABLE properties per month across
-# the whole Tier 1 surface (6 of the 9 additions in the sample were
-# `readOnlyProperties`, which can never become silent drops). A weekly cycle
-# would pay the full fixed cost — branch, PR, CI approval, human read — for under
-# one property each. A user deploying between cycles is not unprotected: the
-# deploy path now WARNS about a property absent from the snapshot.
+# DAILY. An earlier revision ran monthly, reasoning that measured drift is only
+# ~3 writable properties per month so a tighter cycle would pay a full fixed
+# cost for a fraction of a property. That reasoning was wrong about where the
+# cost actually falls:
+#
+#   * a day with no drift opens NO PR — the job stops at the drift step, so the
+#     cost of a quiet day is one short run, not a review cycle;
+#   * the open-PR guard below already bounds concurrency at ONE, so raising the
+#     frequency cannot produce a pile of PRs; it only shortens the wait before
+#     the next one opens after a merge;
+#   * a smaller diff is EASIER to classify than a batched one. The first
+#     measured cycle carried 9 drifted types at once; a day's worth is
+#     typically zero or one.
+#
+# What the cadence actually buys is time-to-AUTO-ROUTE. Between cycles a user
+# is not blind — the deploy path warns that the property will not reach AWS —
+# but the property does not actually work until the fixture lands, and that
+# wait is what shrinks from weeks to a day.
 #
 # THE PR IS ALLOWED TO LAND RED, and that is the hand-off rather than a bug. The
 # job runs only the MECHANICAL chain and touches nothing encoding judgment — no
@@ -51,9 +63,9 @@ name: CFn schema fixture refresh
 # regeneration; a job that "self-healed" them would be inventing the rationale.
 on:
   schedule:
-    # 04:37 UTC on the 2nd of each month. Off the hour and off the 1st on
-    # purpose — both are heavily contended on GitHub's shared cron pool.
-    - cron: "37 4 2 * *"
+    # 04:37 UTC daily. Off the hour on purpose — the top of the hour is heavily
+    # contended on GitHub's shared cron pool and scheduled runs get delayed.
+    - cron: "37 4 * * *"
   # Required, not a convenience: the reactive path when a user reports a dropped
   # property mid-cycle, the recovery path if GitHub suspends the schedule on an
   # inactive repo, and the only way to exercise this job before its first
@@ -203,7 +215,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          cycle=$(date -u +%Y-%m)
+          # DAY granularity, not month: the branch name is the cycle's identity,
+          # and at a daily cadence a month-granular name would make every run
+          # after the first in a month collide with an existing branch.
+          cycle=$(date -u +%Y-%m-%d)
           branch="bot/cfn-schema-refresh/${cycle}"
           # A same-month re-dispatch after the previous cycle's PR was closed
           # WITHOUT deleting its branch would otherwise die on a non-fast-forward
@@ -251,7 +266,7 @@ jobs:
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "${branch}"
           {
-            echo "Automated monthly refresh of \`tests/fixtures/cfn-schemas/*.json\` against"
+            echo "Automated daily refresh of \`tests/fixtures/cfn-schemas/*.json\` against"
             echo "AWS's public CloudFormation schema bundle."
             echo
             echo "**This PR may be RED, and that is the hand-off.** The job runs only the"
