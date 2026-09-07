@@ -21,9 +21,11 @@
 # trigger to upgrade from memory-only to hook-enforced. (Quoted in
 # translation: the original was verbatim in the session's chat
 # language, which put this file in breach of the repo's English-only
-# rule for committed text and, because `non-english-text-gate` reads a
-# changed file's WHOLE content, would have blocked any PR that touched
-# this hook.)
+# rule for committed text, and would have blocked any PR touching this
+# hook -- the PR-diff scan reads a changed file's WHOLE content, not just
+# its added lines. That scan was `non-english-text-gate` until it was
+# retired to CI by go-to-k/cdkd#2717; the property is the CI check's now,
+# and the reason for translating stands either way.)
 
 __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as

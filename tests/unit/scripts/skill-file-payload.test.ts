@@ -122,7 +122,15 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 173_925,
+    // MEASURED on the MERGED tree, never derived. This record has now collided
+    // on a rebase twice: go-to-k/cdkd#2717 SHRANK the corpus (retiring nine
+    // gates let four work-issues stage files drop text about restrictions that
+    // no longer exist) while main GREW it in the same window, so neither
+    // branch's figure is the merged one and adding the two deltas is exactly
+    // the arithmetic this record exists to replace with a measurement. Re-read
+    // it from the tree after every rebase; the failure message prints the
+    // number to paste.
+    corpusBytes: 173_703,
     largest: { file: 'implement.md', bytes: 28_743 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },

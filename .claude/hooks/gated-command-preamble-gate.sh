@@ -83,8 +83,8 @@
 #
 # KNOWN LIMIT: the gated set is `git commit` / `gh pr create` / `gh pr merge`
 # only -- three of the roughly eight verbs some hook in this repo can refuse.
-# `git push` (branch-gate), `git merge` (integ-local-gate), `gh pr edit` and
-# `gh issue create` (issue-dup-check-gate) can all be refused with a
+# `git push` (branch-gate) and `git merge` (integ-local-gate) can both be
+# refused with a
 # side-effecting preamble in the same call, and that preamble is then silently
 # lost exactly as it is here. Recorded rather than widened, deliberately: this
 # gate REFUSES, so every verb added is a new false-refusal surface on a very
@@ -122,8 +122,10 @@ fi
 # produce (both functions present, constants gone) went unchecked: `set -u` then
 # aborts on the first `GATE_RE_*` read with rc=1, and per
 # `.claude/rules/hooks.md` a non-2 exit propagates as a non-blocking error and
-# turns a block into a PASS. `issue-dup-check-gate.sh` guards its constant
-# alongside its `declare -F` checks; this now matches it.
+# turns a block into a PASS. `issue-dup-check-gate.sh` guarded its constant
+# alongside its `declare -F` checks and this was written to match it; that gate
+# is retired to CI by go-to-k/cdkd#2717, so the shape is documented HERE
+# rather than by reference to a file a reader cannot open.
 #
 # The INVARIANT this rests on, stated because it is not self-evident and a
 # library reorder would break it silently: a truncation is a PREFIX cut, so

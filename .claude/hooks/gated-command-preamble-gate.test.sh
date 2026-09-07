@@ -196,8 +196,11 @@ fi
 # --- The library liveness guard must FAIL CLOSED. The hook depends on both
 # `gate_segments` and `strip_noncommand_spans`; a truncated library defining one
 # and not the other would strip every segment to empty and exit 0 in silence.
-# Sibling suites (issue-dup-check-gate, gh-body-english-gate) fence this; the
-# commit that hardened the guard described it without asserting it. ---
+# The sibling suites that fenced this (issue-dup-check-gate,
+# gh-body-english-gate) are retired to CI by go-to-k/cdkd#2717, so this
+# suite is now the only one asserting the shape -- do not delete it as
+# redundant. The commit that hardened the guard described it without
+# asserting it. ---
 
 stub_dir=$(mktemp -d) || { printf "%s\n" "FAIL could not mktemp -d for the stub-library cases" >&2; exit 1; }
 trap 'rm -rf "$stub_dir"' EXIT

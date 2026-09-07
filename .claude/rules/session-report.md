@@ -199,9 +199,10 @@ what would settle it.
 
 `Severity` / `Effort` are ALSO labels (`severity:high|medium|low`,
 `effort:small|medium|large`) — set at filing and at a claim that rewrites an
-old packed body; enforced by `issue-classification-label-gate.sh`; the PR
-inherits them via `pr-inherit-issue-labels.yml` (label the ISSUE, never the
-PR by hand). Only these two: `Session-fit` is re-decided at claim (a stale
+old packed body; the label is APPLIED in CI from the body (go-to-k/cdkd#2717
+retired `issue-classification-label-gate.sh`, whose only move was to refuse);
+the PR inherits them via `pr-inherit-issue-labels.yml` (label the ISSUE, never
+the PR by hand). Only these two: `Session-fit` is re-decided at claim (a stale
 label is worse than none) and `Estimate` is free-form.
 
 A label can also be **DERIVED**: on 2026-09-06 a maintainer-directed sweep

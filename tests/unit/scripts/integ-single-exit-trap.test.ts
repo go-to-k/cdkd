@@ -183,13 +183,23 @@ describe('a shell fixture never drops its teardown handler', () => {
     // set from the 99 total, while silently dropping all 48 `*.test.sh` —
     // including `pr-review-gate.test.sh`, the file this class was added for. So
     // the two sub-populations that can independently vanish are floored
-    // independently, from counts measured on 2026-09-06. The pathspec returns
-    // 99; `hookScripts()` drops the 2 frozen `lib/testdata/` snapshots, so the
-    // floored population is 97 = 48 `*.test.sh` + 38 `*-gate.sh` + 11 others.
+    // independently.
+    //
+    // BOTH FLOORS LOWERED BY go-to-k/cdkd#2717, which retired nine gates and
+    // their suites at once — the deliberate-drop case, not a glob that stopped
+    // matching. Counts measured on 2026-09-06 were 48 `*.test.sh` + 38
+    // `*-gate.sh` + 11 others = 97; on 2026-09-07 after the retirement they are
+    // 40 and 30. Note the second floor failed at EQUALITY (30 is not > 30),
+    // which is the shape worth remembering: a floor set AT the measurement reds
+    // on the next legitimate deletion rather than on a regression, so these are
+    // set ~12% under, matching the convention in `rule-file-payload.test.ts`.
+    // Restoring them means adding gates back, which is the direction this fence
+    // has no opinion about — what it must keep catching is a PATHSPEC that
+    // silently stops matching, and a floor of 35/26 against 40/30 still does.
     const hooks = hookScripts();
     expect(verifyScripts().length).toBeGreaterThan(50);
-    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(40);
-    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(30);
+    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(35);
+    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(26);
     const counts = scripts.map((p) => trapActions(readFileSync(join(REPO_ROOT, p), 'utf-8'), 'EXIT'));
     expect(counts.filter((a) => a.length > 0).length).toBeGreaterThan(20);
     // ...and the legitimate re-installers are SEEN rather than parsed away. If

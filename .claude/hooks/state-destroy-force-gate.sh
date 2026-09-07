@@ -37,7 +37,7 @@
 # (`--force` → `--yes`).
 #
 # Resolution of "where will the git command actually run" mirrors
-# branch-gate.sh / internal-pr-labels-gate.sh.
+# branch-gate.sh / provider-docs-gate.sh.
 
 set -u
 

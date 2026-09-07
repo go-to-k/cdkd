@@ -261,11 +261,13 @@ mk_repo() { # <dir>
 # with HEAD == origin/main the branch ships nothing and the gate is correctly
 # out of scope. A fixture change that silently empties the population is exactly
 # what fence 3 exists to catch, and here it caught one in its own fixture.
-# The ref alone is not enough: pr-title-prefix-scope-gate asks what the BRANCH
-# ships (`git diff origin/main...HEAD`) and passes when that is EMPTY, so with
-# `origin/main == HEAD` the control was vacuous (measured rc=0). One commit
-# ahead of the ref, touching no `src/**` file, is what makes a `feat:` title
-# actually refusable.
+# The ref alone is not enough, and the reason is kept even though the gate that
+# produced it is gone: `pr-title-prefix-scope-gate` (retired to CI by
+# go-to-k/cdkd#2717) asked what the BRANCH ships (`git diff origin/main...HEAD`)
+# and passed when that was EMPTY, so with `origin/main == HEAD` its control was
+# vacuous (measured rc=0). Any future gate reading a branch DELTA inherits that
+# trap, so the fixture stays one commit ahead of the ref rather than being
+# simplified back now that nothing exercises this particular shape.
 add_origin_ref() {
   "$REAL_GIT" -C "$1" update-ref refs/remotes/origin/main HEAD
   echo note > "$1/notes.md"
@@ -290,23 +292,31 @@ stage_violations() { # <dir>
   # (go-to-k/cdkd#2156). They ride the same commit as the ones above because
   # each gate reads only its own file shape.
   #   cmd-parse-stub-gate     -- cmd.parse(...) in a test with no .action stub
-  #   internal-pr-labels-gate -- a `(PR 8b)` label in user-facing prose
   #   bughunt-clean-gate      -- the LEGACY FLAT sentinel, which blocks a commit
   #                              for every caller regardless of owner, and lives
   #                              in the TARGET repo so a gate can only see it by
   #                              looking where the command actually points
   printf "cmd.parse(['node', 'x']);\n" > "$d/tests/unit/provisioning/foo.test.ts"
+  # The `(PR 8b)` line in README.md unlocked `internal-pr-labels-gate`, retired
+  # to CI by go-to-k/cdkd#2717. The write STAYS: a README the commit actually
+  # touches is what several other templates need staged, and removing it here to
+  # match one retired gate is a fixture change that could silently empty another
+  # gate's population -- the failure mode the note above this function records
+  # catching once already.
   printf 'See the note (PR 8b) for details.\n' > "$d/README.md"
   : > "$d/.markgate-bughunt-pending"
   echo "FooStack" > "$d/.markgate-bughunt-pending"
   "$REAL_GIT" -C "$d" add -A >/dev/null 2>&1
 }
 
-# A SECOND violating fixture that stages NO `src/**` file. Needed because
-# commit-prefix-scope-gate blocks a `feat:` / `fix:` message exactly when no
-# src file is staged, which is the direct COMPLEMENT of what the fixture above
-# stages -- one tree cannot satisfy both, which is why that gate had no literal
-# control and sat outside fence 3 (go-to-k/cdkd#2156).
+# A SECOND violating fixture that stages NO `src/**` file. It was built because
+# `commit-prefix-scope-gate` blocked a `feat:` / `fix:` message exactly when no
+# src file was staged -- the direct COMPLEMENT of what the fixture above stages,
+# so one tree could not satisfy both, which is why that gate had no literal
+# control and sat outside fence 3 (go-to-k/cdkd#2156). That gate is retired to
+# CI (go-to-k/cdkd#2717); the fixture STAYS because `gh-label-validity-gate`'s
+# only literal control rides it, and because the complement shape is what any
+# future staged-file gate will need.
 stage_nosrc_violation() { # <dir>
   local d="$1"
   echo two > "$d/f.txt"
@@ -464,13 +474,16 @@ CMD_TEMPLATES=(
   'gh -C @T@ issue create --title x --label nope-not-a-real-label'
 )
 
-# Templates that only DISCRIMINATE against the no-src fixture: a `feat:` /
-# `fix:` message with no `src/**` staged is exactly what commit-prefix-scope-gate
-# refuses, and it is the complement of what the primary fixture stages.
-# The message / title is QUOTED here, and that is a measurement rather than
-# style: with a bare `-m feat: x` the value is the single token `feat:` and both
-# prefix-scope gates read no subject at all, so they exited 0 and the control
-# was vacuous. Measured: quoted blocks (rc=2), unquoted passes (rc=0).
+# Templates that only DISCRIMINATE against the no-src fixture. The `feat:` /
+# `fix:` shapes here were the literal controls for the two prefix-scope gates,
+# both retired to CI by go-to-k/cdkd#2717; what still rides this fixture is
+# `gh-label-validity-gate`. The retired shapes are KEPT rather than deleted,
+# because the measurement attached to them is about the SEGMENTER and outlives
+# the gates that surfaced it: the message / title is QUOTED here, and with a
+# bare `-m feat: x` the value is the single token `feat:`, so a gate reading the
+# subject reads nothing at all and its control is vacuous (measured: quoted
+# blocked rc=2, unquoted passed rc=0). Delete these and the next subject-reading
+# gate re-learns that the expensive way.
 NOSRC_TEMPLATES=(
   'git -C @T@ commit -m "feat: add x"'
   'git -C @T@ commit -m "fix: add x"'
@@ -521,7 +534,18 @@ exercised_count=$(printf '%s' "$exercised_list" | wc -w | tr -d ' ')
 # current value tolerates exactly the drop it exists to reveal: the previous
 # `>= 6` against an actual 9 stayed green with check-gate AND branch-gate
 # reduced to `exit 0`.
-EXPECTED_EXERCISED="branch-gate bughunt-clean-gate check-gate ci-green-gate cmd-parse-stub-gate commit-prefix-scope-gate dirty-path-restore-gate gh-label-validity-gate gh-pr-edit-deprecation-gate integ-broad-gate integ-destroy-gate integ-local-gate integ-schema-migration-gate internal-pr-labels-gate issue-dup-check-gate main-tree-branch-gate post-merge-orphan-push-gate pr-review-gate pr-title-prefix-scope-gate provider-docs-gate provider-integ-gate ref-segment-audit-gate roundtrip-test-gate state-destroy-force-gate verify-pr-gate"
+# go-to-k/cdkd#2717 RETIRED four names that used to sit in this list --
+# commit-prefix-scope-gate, internal-pr-labels-gate, issue-dup-check-gate,
+# pr-title-prefix-scope-gate and gh-pr-edit-deprecation-gate. The baseline SHRINKS here, which is the one
+# direction the comment above warns about, so the reason is recorded rather
+# than left to be inferred: those gates no longer exist to block anything, and
+# a baseline naming a deleted file fails for a reason that has nothing to do
+# with the class this fence measures. Their subject was the PR DIFF or the PR
+# TITLE, which a CI job reads directly, so they moved to `.github/workflows/`
+# rather than being dropped -- see go-to-k/cdkd#2717 for the criterion
+# (a PreToolUse refusal is justified only when the harm completes at the moment
+# of the action and the actor cannot undo it).
+EXPECTED_EXERCISED="branch-gate bughunt-clean-gate check-gate ci-green-gate cmd-parse-stub-gate dirty-path-restore-gate gh-label-validity-gate integ-broad-gate integ-destroy-gate integ-local-gate integ-schema-migration-gate main-tree-branch-gate post-merge-orphan-push-gate pr-review-gate provider-docs-gate provider-integ-gate ref-segment-audit-gate roundtrip-test-gate state-destroy-force-gate verify-pr-gate"
 missing=""
 for want in $EXPECTED_EXERCISED; do
   case " $exercised_list " in *" $want "*) ;; *) missing="$missing $want" ;; esac
@@ -560,25 +584,20 @@ fi
 # red fence 3 permanently.
 DECLARED_UNEXERCISED='
 broad-process-kill-gate           gates pkill / killall, not a git/gh verb
-closes-paren-form-gate            verdict is the PR BODY, not the target tree
 commit-msg-heredoc-gate           verdict is the command SHAPE, target-independent
 flatten-before-rebase-gate        no rebase template exists to block -- see the note above
 gated-command-preamble-gate       verdict is the command SHAPE, target-independent
-gh-body-english-gate              verdict is the published BODY, not the target tree
 integ-coverage-matrix-gate        needs the real repo toolchain (node + the regen script) in the target
 integ-stale-base-detector         NON-BLOCKING: it refuses nothing, so it has no refusal to exercise
-issue-classification-label-gate   verdict is the published BODY, not the target tree
 issue-deferral-criteria-gate      verdict is the published BODY, not the target tree
 main-tree-dirty-detector          PostToolUse, non-blocking by design
 main-tree-edit-gate               fires on a WRITE-shaped command, not a git/gh verb
 main-tree-git-cwd-detector        PostToolUse, non-blocking by design
-non-english-text-gate             verdict is the PR DIFF text, not the target tree
 post-merge-sync-reminder          PostToolUse, non-blocking by design
 pr-body-item-number-gate          verdict is the published BODY, not the target tree
 restore-backup                    non-blocking by design (it snapshots, never refuses)
 stop-unmerged-lane-warn           Stop hook, no command to gate
 stop-warn                         Stop hook, no command to gate
-vp-run-test-path-gate             gates a `vp` verb, not a git/gh one
 worktree-owner-gate               Edit|Write|NotebookEdit matcher, no Bash command
 '
 unpartitioned=""
@@ -720,8 +739,9 @@ for hook in "$HOOKS_DIR"/*.sh; do
   # collected first, then looked for on an `=~`.
   #
   # But "mentions a GATE_ constant" alone is far too broad, and the difference
-  # is not cosmetic: four hooks -- commit-prefix-scope-gate, integ-local-gate,
-  # post-merge-orphan-push-gate, pr-title-prefix-scope-gate -- assign a
+  # is not cosmetic: four hooks -- integ-local-gate, post-merge-orphan-push-gate,
+  # and (until go-to-k/cdkd#2717 retired them to CI) commit-prefix-scope-gate and
+  # pr-title-prefix-scope-gate -- assign a
   # `GATE_RE_*` and pass it as an ARGUMENT to `gate_target_dir_strict`, never
   # matching it themselves, while indexing BASH_REMATCH out of their own local
   # patterns. Those are correct code. Flagging them would make a clean state

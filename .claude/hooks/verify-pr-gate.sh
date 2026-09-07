@@ -76,7 +76,7 @@ if ! gate_matches "$cmd" "$GATE_RE_GH_PR_CREATE_OR_MERGE"; then
 fi
 
 # Resolve where the gh command will actually run (cwd-aware; mirrors
-# non-english-text-gate.sh / integ-local-gate.sh).
+# integ-local-gate.sh).
 # Where the git/gh command will actually RUN.
 #
 # This calls the SHARED resolver in lib/command-match.sh, replacing the

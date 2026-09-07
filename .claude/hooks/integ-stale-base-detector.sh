@@ -159,8 +159,8 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 [ -n "$cwd" ] || cwd=$PWD
 [ -d "$cwd" ] || exit 0
 
-# Opt-in: only in a repo that uses markgate, matching issue-dup-check-gate.sh's
-# convention. Without markgate there is no `hash: diff` marker to stale, so the
+# Opt-in: only in a repo that uses markgate -- the repo-scoping convention
+# issue [#1259](https://github.com/go-to-k/cdkd/issues/1259) set. Without markgate there is no `hash: diff` marker to stale, so the
 # warning would be noise.
 top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)
 [ -n "$top" ] || exit 0

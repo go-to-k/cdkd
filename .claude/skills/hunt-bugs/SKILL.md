@@ -94,9 +94,11 @@ repro (the CDK app / commands / the exact deploy-update-destroy sequence).
 
 **Every issue carries the `Dup-check:` line and the four classification lines**
 (`CLAUDE.md` → "The four TODO fields"), with `Severity` / `Effort` ALSO as
-labels (`--label severity:<v> --label effort:<v>`) — enforced by
-`issue-dup-check-gate.sh` and `issue-classification-label-gate.sh`; the fix PR
-inherits the labels automatically, never hand-add them. Filing shapes and the
+labels (`--label severity:<v> --label effort:<v>`) — checked in CI since
+go-to-k/cdkd#2717 (which retired both hooks: the label workflow APPLIES a
+missing one, the dup-check workflow can only COMMENT once the issue exists, so
+write the line yourself rather than relying on it); the fix PR inherits the
+labels automatically, never hand-add them. Filing shapes and the
 mint-vs-fold decision live in `/work-issues` §5-f
 (`.claude/skills/work-issues/references/filing.md`) — do not re-implement
 here. A hunt is the single best moment to write the four lines: `Severity` is

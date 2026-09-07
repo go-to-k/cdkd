@@ -265,6 +265,19 @@ gates:
       # above: a checker INPUT outside this scope is a marker that reads fresh
       # while the thing it certifies has changed (issue #2718).
       - ".github/workflows/cfn-schema-refresh.yml"
+      # The three workflows go-to-k/cdkd#2717 added when it moved seven gates
+      # out of `.claude/hooks/**` and into CI. That move took the ENFORCEMENT
+      # LOGIC -- triggers, the checkout ref that decides whose checker runs, the
+      # Bot filter, the rc-to-exit mapping, the label-apply POST -- out of a
+      # scope it had always been in, since `.claude/hooks/**` above covers every
+      # hook. Without these three lines the marker cannot see a change to any of
+      # it, which is the same "moved out from under its guard" shape that issue
+      # documents for the hooks themselves. Read together with
+      # `workflow-registration.test.ts`, which is what the deleted hook suites'
+      # `.claude/settings.json` registration cases became.
+      - ".github/workflows/issue-conventions.yml"
+      - ".github/workflows/pr-content-checks.yml"
+      - ".github/workflows/pr-title-check.yml"
       # release-please-v0.test.ts reads all three: the config's
       # bump-minor-pre-major, the manifest's 0.x version, and the release
       # workflow's publish-job guard (the two layers that keep an accidental

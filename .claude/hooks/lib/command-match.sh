@@ -1367,11 +1367,19 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # ── A shell WORD, for the gates that extract with PERL ─────────────────────
 #
 # `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
-# `[[ =~ ]]`. FIVE gates -- issue-deferral-criteria, gh-body-english,
-# issue-dup-check, issue-classification-label and pr-body-item-number -- pull a
-# `--body-file` / `-F` path or an inline `--body` value out of RAW command text
-# with `perl -0777` instead, because they need a GLOBAL scan over a multi-line
-# slurp and `[[ =~ ]]` gives neither.
+# `[[ =~ ]]`. TWO gates -- issue-deferral-criteria and pr-body-item-number --
+# pull a `--body-file` / `-F` path or an inline `--body` value out of RAW
+# command text with `perl -0777` instead, because they need a GLOBAL scan over a
+# multi-line slurp and `[[ =~ ]]` gives neither.
+#
+# It was FIVE until go-to-k/cdkd#2717 retired gh-body-english,
+# issue-dup-check and issue-classification-label to CI. Their subject is a body
+# PUBLISHED to GitHub, which a workflow receives whole in the event payload --
+# so the extraction problem this constant exists to solve does not arise there
+# either, for the same reason it does not arise for a `gate_argv` consumer
+# below: nothing has to be recovered from shell text. The count is FENCED by
+# `tests/unit/scripts/gate-perl-word-consumers.test.ts`, which is what caught
+# this sentence going stale the moment those three were deleted.
 #
 # commit-prefix-scope was the sixth and LEFT again. It joined for the same two
 # holes -- `--file "$VAR"` extracted NOTHING, a glued `-F<path>` needed a
@@ -1384,7 +1392,9 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # argument, not a span inside a bigger text, belongs in that column. Derive the list rather than trusting this
 # sentence -- `grep -l GATE_PERL_WORD .claude/hooks/*-gate.sh` -- because an earlier
 # revision of THIS comment said "three" while five files consumed it, which is
-# the same stale-sibling-note class the constant exists to end.
+# the same stale-sibling-note class the constant exists to end. It went stale a
+# second time when go-to-k/cdkd#2717 deleted three consumers; the fence now
+# reds on it rather than a reviewer having to notice.
 # All of them spelled the value class `(["']?)([^"'\s]+)\1`, and that shape had
 # THREE MEASURED holes, all fail-OPEN (go-to-k/cdkd, 2026-09-05):
 #

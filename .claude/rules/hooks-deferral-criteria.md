@@ -48,8 +48,9 @@ precedence and the mutation tallies below are worth their tokens.
   without the strip a quoted line beat the body's real `now`. Bold is accepted
   on the KEY and on the VALUE alike. Repo opt-in (`.markgate.yml`), shared
   command-position matcher, fails CLOSED when the library is unloadable.
-  **It reads the body the command is about to WRITE**, porting
-  `gh-body-english-gate`'s #2397 heredoc extraction: precedence is the heredoc
+  **It reads the body the command is about to WRITE**, porting the #2397
+  heredoc extraction from `gh-body-english-gate` (retired to CI by go-to-k/cdkd#2717,
+  so this gate is now that extraction's only user): precedence is the heredoc
   body this command writes, then the file on disk (unless a TRUNCATING write
   superseded it — an APPEND still reads it), then a fallback that is the
   SEGMENT plus every OTHER segment that WRITES the body path — never the whole
@@ -78,7 +79,8 @@ precedence and the mutation tallies below are worth their tokens.
   per line. Without that the one-call shape was a FAIL-OPEN whenever
   the target path already existed: the gate judged the PREVIOUS body and
   passed (measured — stale file present rc=0, file absent rc=2). Unlike
-  `issue-dup-check-gate`, an UNREADABLE `--body-file` still does not block:
+  `issue-dup-check-gate` (retired to CI by go-to-k/cdkd#2717), an UNREADABLE
+  `--body-file` still does not block:
   this gate objects to content it FINDS, so a refusal would be unclearable.
   **What it catches** — state the PREDICATE or the number is unreproducible,
   and the `--limit 300` window MOVES (255 → 259 in one day, 66 → 65 fires in
@@ -128,6 +130,8 @@ invisible and the gate read the STALE file on disk. `issue-dup-check-gate` was
 ACCIDENTALLY safe (no path extracted means it BLOCKS), so its miss was a FALSE
 BLOCK; fixed anyway — that safety is a polarity a later edit could reverse.
 
+(That gate is retired to CI by go-to-k/cdkd#2717; the lesson is kept because
+the polarity argument applies to every gate on the shared matcher.)
 **A non-empty test is only HALF the guard.** A prelude that is present and
 does NOT COMPILE is just as silent as a missing one, because every extraction
 runs `perl … 2>/dev/null` — measured, one broken literal disarmed four gates at

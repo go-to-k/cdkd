@@ -119,7 +119,8 @@ run_case warn  "vp run typecheck in main tree, feature worktree active" \
 run_case warn  "vp run build && vp run test in main tree" \
   "$MAIN" 'vp run build && vp run test'
 
-# 11. `vp test run <path>` (the form vp-run-test-path-gate steers to)
+# 11. `vp test run <path>` (the repo's convention; the form the retired
+#     vp-run-test-path-gate steered callers to -- go-to-k/cdkd#2717)
 #     in main tree -> WARN.
 run_case warn  "vp test run <path> in main tree" \
   "$MAIN" 'vp test run tests/unit/cli/version.test.ts'
@@ -324,7 +325,8 @@ run_case warn  "cd \"<main tree with space>\" && vp run test (control)" \
 #      every main-tree `vp run build`" the issue rules out. Case 10
 #      already pins the `vp run test` spelling of this (it is the
 #      measured 2026-08-20 shape); this one uses `vp test run <path>`,
-#      the form vp-run-test-path-gate steers callers to, so the two are
+#      the form vp-run-test-path-gate steered callers to before it was
+#      retired to CI by go-to-k/cdkd#2717, so the two are
 #      not one command written twice.
 run_case warn  "vp run build && vp test run <path> in post-merge main tree" \
   "$MAIN" 'vp run build && vp test run tests/unit/cli/version.test.ts'

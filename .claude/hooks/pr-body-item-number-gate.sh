@@ -78,6 +78,24 @@ if [ -z "${GATE_PERL_WORD:-}" ]; then
   echo "Blocked: .claude/hooks/lib/command-match.sh predates GATE_PERL_WORD, so this gate cannot extract a body path." >&2
   exit 2
 fi
+# `GATE_RE_GH_BODY_CARRIER` is the VERB pattern the next line interpolates, and
+# it needs the same guard for a DIFFERENT reason than the two above. A
+# `declare -F` check cannot see a missing CONSTANT, and under `set -u` the read
+# on the next line aborts the hook with rc=1 -- which is NOT a refusal:
+# `.claude/rules/hooks.md` records that a non-2 exit propagates as a
+# non-blocking error, so the block becomes a PASS. Fail-OPEN, and silent.
+#
+# Found by go-to-k/cdkd#2717 rather than reasoned about. That change retired
+# `gh-body-english-gate.sh`, whose deletion made a fail-closed fence in
+# `lib/command-match.test.sh` silently skip; re-pointing that fence at THIS gate
+# measured rc=1 where it required rc=2. The retired `issue-dup-check-gate.sh`
+# had carried exactly this guard (`[ -z "${GATE_RE_GH_ISSUE_CREATE:-}" ]`) and
+# this gate did not, so the convergence those gates went through had left one
+# member behind.
+if [ -z "${GATE_RE_GH_BODY_CARRIER:-}" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh predates GATE_RE_GH_BODY_CARRIER, so pr-body-item-number-gate cannot recognise the command." >&2
+  exit 2
+fi
 gate_matches "$cmd" "$GATE_RE_GH_BODY_CARRIER" || exit 0
 if ! printf '%s' "$cmd" | grep -qE '(--body-file|body=@)'; then
   exit 0
@@ -240,7 +258,8 @@ MAX_REPORT=10
 #
 # NOT the whole command, which is what the first draft did and what this
 # paragraph used to describe. `issue-dup-check-gate.sh` and
-# `issue-classification-label-gate.sh` DO fall back to the command, and that is
+# `issue-classification-label-gate.sh` (both retired to CI by go-to-k/cdkd#2717)
+# DID fall back to the command, and that was
 # safe for them and not for this gate: they need one anchored marker to be
 # PRESENT, so extra text can only make them pass, while this gate objects to
 # content it FINDS, so extra text makes it BLOCK. Measured on that draft --
@@ -310,7 +329,9 @@ cmd_replaces_path() {
 }
 
 # EVERY heredoc body that writes a given path, in order. Same extraction as
-# `gh-body-english-gate.sh`, and the two are deliberately identical: both gates
+# `gh-body-english-gate.sh` -- retired to CI by go-to-k/cdkd#2717, which
+# makes this gate the extraction's ONLY remaining user, so a future edit here
+# has no twin to stay in step with. The two were deliberately identical: both gates
 # object to CONTENT they find, so both must scan the text being SUBMITTED and
 # nothing else. Handles both orders (`cat > f <<EOF` / `cat <<EOF > f`), quoted
 # and unquoted delimiters, and `<<-`'s tab-stripped terminator. Exits non-zero
@@ -411,7 +432,7 @@ scan_stream() {
 # `gh issue create --title 'follow-up to #2397 discussion' --body-file <absent>`
 # went from 0 to 2, and so did
 # `git commit -m 'address review #3' && gh pr create --body-file <clean>`. Both
-# are ordinary. `gh-body-english-gate.sh` had already refused whole-command
+# are ordinary. `gh-body-english-gate.sh` (since retired to CI by go-to-k/cdkd#2717) had already refused whole-command
 # scanning for exactly this reason; this gate now matches it line for line.
 #
 # Known miss, stated rather than hidden: a one-call body written by something

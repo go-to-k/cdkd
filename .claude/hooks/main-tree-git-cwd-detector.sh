@@ -307,9 +307,12 @@ GIT_VERB='git([[:space:]]+-[^[:space:]]+)*[[:space:]]+(commit|add|push|rebase|me
 # choice is a MISS, i.e. the status quo before this hook existed.
 #
 # `vp run <task>` requires a task token, so a bare `vp run` (which does
-# nothing) does not arm it. `vp test run <path>` is the form
-# vp-run-test-path-gate steers callers to, so it must be covered too or
-# the steer would move traffic OUT of this detector's view.
+# nothing) does not arm it. `vp test run <path>` is covered too: it was the
+# form `vp-run-test-path-gate` steered callers to (DELETED outright by
+# go-to-k/cdkd#2717 -- it had no CI replacement; its cache hazard was already
+# closed at the root by `cache: false` on every vite task),
+# and it remains the repo's convention, so leaving it out would move traffic
+# OUT of this detector's view.
 # `markgate status` is read-only and stays out.
 RUNNER_PFX='(mise[[:space:]]+exec[[:space:]]+([^[:space:]]+[[:space:]]+)*--[[:space:]]+)?'
 VERIFY_VERB="${RUNNER_PFX}"'(vp[[:space:]]+run[[:space:]]+[^[:space:]]|vp[[:space:]]+test[[:space:]]+run([[:space:]]|$|[|;&])|markgate[[:space:]]+(set|verify)([[:space:]]|$|[|;&]))'

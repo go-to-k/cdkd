@@ -73,8 +73,8 @@ issues the `Agent` calls.
    ```
 
    **That loop is `^src/`-filtered, and for `.claude/**` no prefix count works
-   at all — which is where the stakes are highest.** `commit-prefix-scope-gate`
-   refuses a `feat:` / `fix:` commit that stages no `src/**` file, so an
+   at all — which is where the stakes are highest.** A `feat:` / `fix:` title
+   with no `src/**` file is refused (in CI since go-to-k/cdkd#2717), so an
    agent-instruction change lands as `chore:` (or `docs:` / `test:`) and scores
    zero however many times the file has been corrected: measured on this file,
    whose last five commits carry no `fix:` while the go-to-k/cdkd#2595 run's
