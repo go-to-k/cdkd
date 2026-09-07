@@ -665,7 +665,73 @@ else
   printf 'FAIL latency: 1500 DISTINCT candidates took %ss, budget 4s\n' "$__vt_secs"
 fi
 
-CASE_FLOOR=88
+# 14-17. ROUND 14. Three of these are engine-parity or bound cases the suite had
+#        no shape for; the fourth is a false BLOCK, which this file had almost
+#        no coverage of at all.
+#
+# 14. A BACKSLASH IN THE WRITE TARGET. The token classes were spelled
+#     `[^[:space:]\<\>\|\&\;\(\)]`, and a backslash inside a bracket expression
+#     is an ordinary MEMBER under POSIX -- so bash 3.2 ended the token at the
+#     backslash and 5.x did not. `echo x > back\slash.md` extracted `back` under
+#     3.2, which is not a tracked file, so the gate allowed a write to one, on
+#     the only bash CI runs. Same root cause as `gate_strip_prefix`'s, six sites
+#     away. This case needs the fixture file to exist and be TRACKED, so it
+#     builds its own rather than using the shared one.
+mkdir -p "$TMPDIR/bsrepo"
+git init -q -b main "$TMPDIR/bsrepo" >/dev/null 2>&1
+printf 'x\n' > "$TMPDIR/bsrepo/back\\slash.md"
+touch "$TMPDIR/bsrepo/.markgate.yml"
+git -C "$TMPDIR/bsrepo" add -A >/dev/null 2>&1
+git -C "$TMPDIR/bsrepo" -c user.email=t@t -c user.name=t commit -q -m init >/dev/null 2>&1
+run_case 2 "Bash a write target containing a backslash" \
+  "$(jq -nc --arg cmd 'echo x > back\slash.md' --arg cwd "$TMPDIR/bsrepo" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash an UNTRACKED target in the same repo (control)" \
+  "$(jq -nc --arg cmd 'echo x > untracked.md' --arg cwd "$TMPDIR/bsrepo" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 15. THE PRODUCT, not just the target count. `GATE_EDIT_MAXCD` bounds `k`, but
+#     the union materialises k*n and `n` is unbounded on the over-bytes path:
+#     measured on bash 3.2 with k=19 -- UNDER the cap -- n=4000 cost 55 s
+#     against the 10 s PreToolUse timeout, where the hook is killed and cannot
+#     refuse anything. Asserts the verdict; the clock is the latency case above.
+run_case 2 "Bash k=19 cd targets under the cap with 2000 write candidates" \
+  "$(jq -nc --arg cmd "$(for i in $(seq 1 19); do printf 'cd %s/e%s ; ' "$TMPDIR" "$i"; done) true --body \"$(for i in $(seq 1 2000); do printf '> tok%s\n' "$i"; done)\" ; cd $MAIN ; echo hi > README.md" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 16. A FALSE BLOCK. `__cds` counted `cd` OCCURRENCES, so twenty-five copies of
+#     one target -- no union cost at all -- tripped the overflow and refused,
+#     with a message claiming 20 DISTINCT targets. The suite had no case for the
+#     overflow refusing something it should not.
+#     The repeated target must be the MAIN TREE and the write must be one the
+#     gate would ALLOW. Pointing it at an unrelated directory does not
+#     discriminate: the overflow refusal only fires when some base is a
+#     protected tree, so the buggy and fixed versions both answered 0.
+#     AND it must cross `GATE_EDIT_MAXBYTES`, or it takes the ordinary walk and
+#     never reaches `__union_cd_bases` at all -- the same way round 10's union
+#     pin missed its path by 200 bytes. 25 cds is ~1.5 KB, so the command is
+#     padded past 4096 B with a comment.
+run_case 0 "Bash the same cd target 25 times, then an allowed write" \
+  "$(jq -nc --arg cmd "$(for i in $(seq 1 25); do printf 'cd %s ; ' "$MAIN"; done) : '$(for i in $(seq 1 400); do printf 'pad%s ' "$i"; done)' ; echo hi > untracked-scratch.txt" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 17. THE CLOCK for the k*n product. Case 15 asserts the VERDICT, and the
+#     verdict is 2 with or without the product bound -- only the TIME differs,
+#     so 15 alone fences nothing. Measured on bash 3.2 without the bound: k=19,
+#     n=4000 cost 55 s against the 10 s PreToolUse timeout.
+__kn_cmd="$(for i in $(seq 1 19); do printf 'cd %s/e%s ; ' "$TMPDIR" "$i"; done) true --body \"$(for i in $(seq 1 2000); do printf '> tok%s\n' "$i"; done)\" ; cd $MAIN ; echo hi > README.md"
+__kn_json=$(jq -nc --arg cmd "$__kn_cmd" --arg cwd "$WT" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__kn_t0=$(date +%s)
+printf '%s' "$__kn_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__kn_t1=$(date +%s)
+__kn_secs=$((__kn_t1 - __kn_t0))
+if [ "$__kn_secs" -le 4 ]; then
+  pass=$((pass + 1))
+  printf 'ok   latency: 19 cd targets x 2000 candidates in %ss (budget 4s, timeout 10s)\n' "$__kn_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: 19 cd targets x 2000 candidates took %ss, budget 4s\n' "$__kn_secs"
+fi
+
+CASE_FLOOR=93
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'not ok case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"

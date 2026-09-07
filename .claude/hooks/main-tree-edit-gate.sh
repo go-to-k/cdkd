@@ -122,6 +122,31 @@ fi
 # down is defined AFTER `__union_cd_bases` is CALLED, so initialising there left
 # `__union_overflow` unbound at the first call and the hook exited 1 -- neither
 # allow nor block.
+# TOKEN CLASSES IN VARIABLES, with NO BACKSLASH INSIDE THE BRACKETS.
+#
+# `[^[:space:]\<\>\|\&\;\(\)]` reads, under POSIX, as "not a space, not a
+# BACKSLASH, not <, >, |, &, ; or )" -- a backslash inside a bracket expression
+# is an ordinary MEMBER, not an escape. bash 3.2's engine honours that and 5.x's
+# does not, so the two disagreed about where a write target ENDS: `echo x >
+# back\slash.md` extracted `back\slash.md` under 5.x and `back` under 3.2,
+# and `back` is not a tracked file, so the gate allowed a write to one -- on the
+# only bash CI runs. Same root cause as `gate_strip_prefix`'s, three functions
+# away, found by a reviewer probing filenames rather than commands.
+#
+# NOT named `GATE_*`. That prefix marks a constant SHARED from `lib/`, and
+# `unresolved-target-class` fence 4 refuses any hook that reads a positional
+# `BASH_REMATCH[N]` out of a match built from one -- widening a shared constant
+# elsewhere shifts every index here (go-to-k/cdkd#2200). These two are local to
+# this file, so the coupling the fence guards against does not exist; the fence
+# reported them purely on the name, and renaming is the honest answer rather
+# than an exemption. **Neither may ever contain a GROUP**, for the same reason
+# the fence exists: the regexes below index their captures positionally.
+#
+# They are VARIABLES because a bare `)` inside a bracket expression written
+# INLINE ends the `[[ ]]` word before the regex engine sees it -- both engines
+# reject that -- so the escapes could not simply be deleted in place.
+__TOK='[^[:space:]<>|&;()]'
+__TOK_Q='[^[:space:]<>|&;()'"'"'"]'
 __cd_targets=(); __union_overflow=0
 __union_cd_bases() {
   # NO CAP. Every candidate gets every raw-text `cd` target as an extra base.
@@ -146,7 +171,7 @@ __union_cd_bases() {
   # `cd` targets, which is small in any command a person or an agent writes, and
   # is work that has to happen anyway -- a distinct target genuinely needs its
   # own check.
-  local __n __i __b __rest __cds=0
+  local __n __i __b __rest __cds=0 __ci __seen_cd
   __n=${#candidates[@]}
   [ "$__n" -gt 0 ] || return 0
   __rest="$cmd"
@@ -158,7 +183,7 @@ __union_cd_bases() {
   # class tolerates quote and backslash characters anywhere in the word; it
   # over-matches (`\\cd`, which bash does NOT run as cd, matches too), and that
   # is the REFUSING direction, which is the right way for a fallback to be wrong.
-  while [[ "$__rest" =~ (^|[[:space:]\;\&\|])[\"\'\\]*c[\"\'\\]*d[\"\'\\]*[[:space:]]+([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+  while [[ "$__rest" =~ (^|[[:space:]\;\&\|])[\"\'\\]*c[\"\'\\]*d[\"\'\\]*[[:space:]]+(${__TOK}+) ]]; do
     __b=$(gate_unquote "${BASH_REMATCH[2]}")
     __rest="${__rest#*"${BASH_REMATCH[0]}"}"
     case "$__b" in *'$'* | *'`'*) continue ;; /*) ;; *) __b="$base_dir/$__b" ;; esac
@@ -168,6 +193,15 @@ __union_cd_bases() {
     # `k` targets and misses the real one when it comes last, which is exactly
     # where a padded command puts it. Measured: without this the n*k shape went
     # rc 2 -> 0, i.e. the bound meant to be fail-closed was a fail-open.
+    # DISTINCT targets, not occurrences. `__cds` counted every `cd` it matched,
+    # so `cd /tmp` twenty-five times -- one distinct target, no union cost at
+    # all -- tripped the overflow and produced a refusal whose message said
+    # "distinct cd targets: over 20". A false block AND a wrong diagnosis.
+    __seen_cd=0
+    for ((__ci = 0; __ci < ${#__cd_targets[@]}; __ci++)); do
+      if [ "${__cd_targets[$__ci]}" = "$__b" ]; then __seen_cd=1; break; fi
+    done
+    if [ "$__seen_cd" = 1 ]; then continue; fi
     __cd_targets+=("$__b")
     __cds=$((__cds + 1))
     # `if`, never a trailing `[ ... ] && x`. Under a caller's `set -e` a false
@@ -194,7 +228,18 @@ __union_cd_bases() {
     # limit is far above any real command -- 20 distinct `cd` targets in one
     # Bash call -- and the refusal names it, so a legitimate outlier is a loud,
     # actionable message rather than a silent pass.
-      if [ "$__cds" -ge "${GATE_EDIT_MAXCD:-20}" ]; then __union_overflow=1; fi
+      # BOTH the target count AND THE PRODUCT. Capping `k` alone bounds nothing:
+      # the union materialises k*n entries and `n`, the write-candidate count, is
+      # deliberately unbounded on the over-bytes path. Measured on bash 3.2 --
+      # the only bash CI has -- with k=19, UNDER the target cap: n=2000 cost
+      # 15.4 s and n=4000 cost 55.0 s, against a 10 s PreToolUse timeout after
+      # which the hook is killed, emits no exit 2, and every gate on the call is
+      # disarmed. That is the failure this bound exists to prevent, arriving
+      # through the fix for it.
+      if [ "$__cds" -ge "${GATE_EDIT_MAXCD:-20}" ] \
+        || [ "$((__cds * __n))" -ge "${GATE_EDIT_MAXPAIRS:-2000}" ]; then
+        __union_overflow=1
+      fi
     fi
   done
 }
@@ -344,12 +389,12 @@ case "$tool" in
     # refusing a large command would break unrelated work in unrelated repos.
     if [[ ${#cmd} -gt ${GATE_EDIT_MAXBYTES:-4096} ]]; then
       __rest="$cmd"
-      while [[ "$__rest" =~ (\>\>?)[[:space:]]*([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+      while [[ "$__rest" =~ (\>\>?)[[:space:]]*(${__TOK}+) ]]; do
         candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$base_dir")
         __rest="${__rest#*"${BASH_REMATCH[0]}"}"
       done
       __rest="$cmd"
-      while [[ "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+      while [[ "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?(${__TOK}+) ]]; do
         candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$base_dir")
         __rest="${__rest#*"${BASH_REMATCH[0]}"}"
       done
@@ -362,7 +407,7 @@ case "$tool" in
       # refusing direction.
       if [[ "$cmd" =~ sed[[:space:]]+-i ]]; then
         __rest="${cmd#*sed}"
-        while [[ "$__rest" =~ ([^[:space:]\<\>\|\&\;\(\)\'\"]*/[^[:space:]\<\>\|\&\;\(\)\'\"]*) ]]; do
+        while [[ "$__rest" =~ (${__TOK_Q}*/${__TOK_Q}*) ]]; do
           candidates+=("${BASH_REMATCH[1]}"); cand_bases+=("$base_dir")
           __rest="${__rest#*"${BASH_REMATCH[0]}"}"
         done
@@ -480,12 +525,12 @@ case "$tool" in
       # segments (the differential corpus, the write/context grid, and 16
       # adversarial redirect/tee shapes) and requiring byte-identical output.
       __rest="$__seg"
-      while [[ "$__rest" =~ (\>\>?)[[:space:]]*([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+      while [[ "$__rest" =~ (\>\>?)[[:space:]]*(${__TOK}+) ]]; do
         candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$cur_base")
         __rest="${__rest#*"${BASH_REMATCH[0]}"}"
       done
       __rest="$__seg"
-      while [[ "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+      while [[ "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?(${__TOK}+) ]]; do
         candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$cur_base")
         __rest="${__rest#*"${BASH_REMATCH[0]}"}"
       done
@@ -692,6 +737,7 @@ __base_is_protected_tree() {
       [ -n "$top" ] || return 1
       [ "$branch" = main ] || [ "$branch" = master ] || return 1
       [ -f "$top/.markgate.yml" ] || return 1
+      case "$d" in "$top"/.claude/worktrees/*) return 1 ;; esac
       PROTECT_BRANCH="$branch"; PROTECT_TOP="$top"
       return 0
     fi
@@ -709,6 +755,11 @@ __base_is_protected_tree() {
   [ -n "$top" ] || return 1
   [ "$branch" = main ] || [ "$branch" = master ] || return 1
   [ -f "$top/.markgate.yml" ] || return 1
+  # SAME nested-worktree exclusion as `is_protected_path`. Without it the two
+  # predicates disagreed: a write into `<top>/.claude/worktrees/foo` was allowed
+  # by the ordinary path and REFUSED by the overflow path, which then named that
+  # directory as the protected worktree.
+  case "$d" in "$top"/.claude/worktrees/*) return 1 ;; esac
   PROTECT_BRANCH="$branch"; PROTECT_TOP="$top"
   return 0
 }
@@ -823,7 +874,9 @@ if [ "${__union_overflow:-0}" = 1 ]; then
       cat >&2 <<EOF
 Blocked by main-tree-edit-gate: too many distinct \`cd\` targets to analyse safely.
 
-  distinct cd targets: over ${GATE_EDIT_MAXCD:-20}
+  distinct cd targets: $__cds (limit ${GATE_EDIT_MAXCD:-20})
+  write candidates:    ${#candidates[@]}
+  pairs to resolve:    over ${GATE_EDIT_MAXPAIRS:-2000}
   worktree:            $PROTECT_TOP  (on $PROTECT_BRANCH)
   tool:                $tool
 
