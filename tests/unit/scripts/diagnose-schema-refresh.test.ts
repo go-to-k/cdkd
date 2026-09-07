@@ -25,7 +25,14 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2148,6 +2155,46 @@ describe('assertFixtureFloor', () => {
       }
       expect(out).toContain('no schema fixtures found');
       expect(out).not.toContain('Nothing in this refresh needs a decision');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('compares against the SEAM directory, not the real committed fixtures', () => {
+    // Shipped UNPINNED last round on the grounds that a discriminating case
+    // needed a non-empty seam directory the floor would refuse. True, and it
+    // does not make it hard: copying the real fixtures clears the floor in one
+    // call and the whole case runs in about a second.
+    //
+    // With `committedOf` following the seam, git cannot resolve a path outside
+    // the repository and every fixture lands in "could not read". With the
+    // hard-coded path it resolves the REAL committed fixture and diffs it
+    // against scratch content — fabricating a removal, with a provider line
+    // number, for a property AWS never removed.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-seam-'));
+    try {
+      cpSync(join(REPO_ROOT, 'tests/fixtures/cfn-schemas'), dir, { recursive: true });
+      const target = join(dir, 'AWS-S3-Bucket.json');
+      const fixture = JSON.parse(readFileSync(target, 'utf8'));
+      expect(fixture.properties, 'the anchor fixture no longer declares it').toContain('BucketName');
+      fixture.properties = fixture.properties.filter((x: string) => x !== 'BucketName');
+      writeFileSync(target, JSON.stringify(fixture, null, 2));
+
+      let out = '';
+      try {
+        out = execFileSync(
+          'node',
+          [join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), `--fixtures-dir=${dir}`],
+          { encoding: 'utf8' }
+        );
+      } catch (e) {
+        out = String((e as { stdout?: unknown }).stdout ?? '');
+      }
+      expect(out, 'a removal was fabricated from the real committed fixture').not.toContain(
+        'Properties AWS removed'
+      );
+      expect(out).not.toContain('BucketName');
+      expect(out).toContain('could not read');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
