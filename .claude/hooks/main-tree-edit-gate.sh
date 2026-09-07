@@ -147,7 +147,7 @@ fi
 # reject that -- so the escapes could not simply be deleted in place.
 __TOK='[^[:space:]<>|&;()]'
 __TOK_Q='[^[:space:]<>|&;()'"'"'"]'
-__cd_targets=(); __union_overflow=0
+__cd_targets=(); __union_overflow=0; __overflow_reason=""
 __union_cd_bases() {
   # NO CAP. Every candidate gets every raw-text `cd` target as an extra base.
   #
@@ -197,11 +197,17 @@ __union_cd_bases() {
     # so `cd /tmp` twenty-five times -- one distinct target, no union cost at
     # all -- tripped the overflow and produced a refusal whose message said
     # "distinct cd targets: over 20". A false block AND a wrong diagnosis.
-    __seen_cd=0
-    for ((__ci = 0; __ci < ${#__cd_targets[@]}; __ci++)); do
-      if [ "${__cd_targets[$__ci]}" = "$__b" ]; then __seen_cd=1; break; fi
-    done
-    if [ "$__seen_cd" = 1 ]; then continue; fi
+    # The scan is O(k^2) and `k` is not bounded by anything, so it stops once the
+    # union has: past overflow the count no longer decides anything, and the
+    # refusal below only needs SOME protected base, which duplicates do not
+    # hide. Measured before this guard, k=1500 cost 31 s -- past the timeout.
+    if [ "$__union_overflow" != 1 ]; then
+      __seen_cd=0
+      for ((__ci = 0; __ci < ${#__cd_targets[@]}; __ci++)); do
+        if [ "${__cd_targets[$__ci]}" = "$__b" ]; then __seen_cd=1; break; fi
+      done
+      if [ "$__seen_cd" = 1 ]; then continue; fi
+    fi
     __cd_targets+=("$__b")
     __cds=$((__cds + 1))
     # `if`, never a trailing `[ ... ] && x`. Under a caller's `set -e` a false
@@ -236,9 +242,12 @@ __union_cd_bases() {
       # which the hook is killed, emits no exit 2, and every gate on the call is
       # disarmed. That is the failure this bound exists to prevent, arriving
       # through the fix for it.
-      if [ "$__cds" -ge "${GATE_EDIT_MAXCD:-20}" ] \
-        || [ "$((__cds * __n))" -ge "${GATE_EDIT_MAXPAIRS:-2000}" ]; then
+      if [ "$__cds" -ge "${GATE_EDIT_MAXCD:-20}" ]; then
         __union_overflow=1
+        __overflow_reason="too many distinct cd targets (${GATE_EDIT_MAXCD:-20})"
+      elif [ "$((__cds * __n))" -ge "${GATE_EDIT_MAXPAIRS:-15000}" ]; then
+        __union_overflow=1
+        __overflow_reason="cd targets x write candidates over ${GATE_EDIT_MAXPAIRS:-15000}"
       fi
     fi
   done
@@ -388,13 +397,31 @@ case "$tool" in
     # other option and was rejected: this hook fires on every tool call, so
     # refusing a large command would break unrelated work in unrelated repos.
     if [[ ${#cmd} -gt ${GATE_EDIT_MAXBYTES:-4096} ]]; then
+      # AND A SECOND, MUCH HIGHER BOUND ON THE SCAN ITSELF, which refuses rather
+      # than scanning. Each loop below consumes `__rest` with `${__rest#*...}`,
+      # which copies the remainder every iteration -- quadratic in command
+      # length. Measured on bash 3.2, the only bash CI has, on a quoted `--body`
+      # whose every line is a distinct `>` target: 109 KB / 2000 targets took
+      # 3.7 s and 329 KB / 6000 took 28.3 s, past the 10 s PreToolUse timeout
+      # where the hook is killed and every gate on the call is disarmed.
+      # origin/main is slower still on the same shape, so the cost is inherited
+      # -- but inherited cost past the timeout is the same fail-open.
+      #
+      # The candidate-count bound further down cannot help: it runs AFTER this
+      # scan has already spent the time. This one has to be here, and it has to
+      # refuse -- scanning a prefix and then allowing is the hole three
+      # successive versions of the `cd` bound shipped.
+      if [[ ${#cmd} -gt ${GATE_EDIT_MAXSCAN:-131072} ]]; then
+        __union_overflow=1
+        __overflow_reason="command too large to analyse (${GATE_EDIT_MAXSCAN:-131072} bytes)"
+      fi
       __rest="$cmd"
-      while [[ "$__rest" =~ (\>\>?)[[:space:]]*(${__TOK}+) ]]; do
+      while [[ "$__union_overflow" != 1 && "$__rest" =~ (\>\>?)[[:space:]]*(${__TOK}+) ]]; do
         candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$base_dir")
         __rest="${__rest#*"${BASH_REMATCH[0]}"}"
       done
       __rest="$cmd"
-      while [[ "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?(${__TOK}+) ]]; do
+      while [[ "$__union_overflow" != 1 && "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?(${__TOK}+) ]]; do
         candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$base_dir")
         __rest="${__rest#*"${BASH_REMATCH[0]}"}"
       done
@@ -530,7 +557,7 @@ case "$tool" in
         __rest="${__rest#*"${BASH_REMATCH[0]}"}"
       done
       __rest="$__seg"
-      while [[ "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?(${__TOK}+) ]]; do
+      while [[ "$__union_overflow" != 1 && "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?(${__TOK}+) ]]; do
         candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$cur_base")
         __rest="${__rest#*"${BASH_REMATCH[0]}"}"
       done
@@ -579,7 +606,11 @@ case "$tool" in
     ;;
 esac
 
-[[ ${#candidates[@]} -eq 0 ]] && exit 0
+# NOT when the scan was REFUSED. Skipping the scan leaves `candidates` empty,
+# and this early exit then allowed the very command the refusal was for --
+# measured, a 329 KB body went rc 0 in 0.05 s, which is a faster fail-open than
+# the 28 s one it replaced. The overflow decision has to be reached.
+if [[ ${#candidates[@]} -eq 0 && "${__union_overflow:-0}" != 1 ]]; then exit 0; fi
 
 # --- Helpers ---------------------------------------------------------------
 # Memo for `is_protected_path`, keyed on the candidate's parent directory. See
@@ -620,6 +651,30 @@ __norm_candidate() {
   case "$raw" in
     *'$'* | *'*'* | *'?'* | *'['* | '/dev/'* | '-') return 1 ;;
   esac
+  # BASH QUOTE REMOVAL. An unquoted backslash escapes the next character, so
+  # `echo hi > READ\ME.md` really writes `README.md` -- measured, along with
+  # `\README.md` and `READM\E.md`. Without this the gate looked for a file
+  # named `READ\ME.md`, did not find it, and allowed a write to the tracked
+  # `README.md`; `origin/main` refused all three. `gate_unquote` does not do
+  # this (checked: it returns those tokens unchanged), and the shared library
+  # offers nothing else that does, so it is here rather than borrowed.
+  #
+  # Guarded on the token CONTAINING a backslash, because this runs once per
+  # candidate and a command can carry thousands: the loop is character-at-a-time
+  # and almost no real path has one.
+  case "$raw" in
+    *'\'*)
+      local __ur="" __rr="$raw" __rc
+      while [ -n "$__rr" ]; do
+        __rc=${__rr%"${__rr#?}"}; __rr=${__rr#?}
+        if [ "$__rc" = '\' ] && [ -n "$__rr" ]; then
+          __rc=${__rr%"${__rr#?}"}; __rr=${__rr#?}
+        fi
+        __ur="$__ur$__rc"
+      done
+      raw="$__ur"
+      ;;
+  esac
   abs="$raw"
   [[ "$abs" != /* ]] && abs="$base/$abs"
   # Strip EVERY trailing slash: `dirname a/b/c//` is `a/b`, while one `%/`
@@ -646,6 +701,10 @@ __norm_candidate() {
 # One `git ls-files` for a directory, covering every candidate that resolves
 # into it. Idempotent; the result is a \x1f-delimited set of absolute paths.
 __pp_lsf_dirs=(); __pp_lsf_set=(); __pp_lsf_idx=0; __pp_lsf_primed=0
+# One scratch file for every `ls-files` chunk, created once and cleaned up on
+# exit. The hook must not leave temp files behind: it runs on every tool call.
+__lsf_tmp=$(mktemp 2>/dev/null || printf '/tmp/cdkd-lsf.%s' "$$")
+trap 'rm -f "$__lsf_tmp"' EXIT
 # ONE PASS OVER THE CANDIDATES, not one pass per directory.
 #
 # The first version primed lazily and re-scanned the whole candidate array for
@@ -696,11 +755,64 @@ __prime_all_tracked() {
       # `unresolved-target-class` fence 1 -- it forbids a `-C` inside a
       # grep/sed/awk expression, the shape of a hook hand-rolling its own
       # target-directory scan.
-      while IFS= read -r -d '' line; do
-        [ -n "$line" ] || continue
-        case "$line" in /*) ;; *) line="$d/$line" ;; esac
-        set="$set$line"$'\x1f'
-      done < <(git -C "$d" -c core.quotePath=false ls-files -z -- "${paths[@]}" 2>/dev/null)
+      # `:(literal)` so git does not apply its OWN escape handling to a pathspec
+      # this hook has already resolved bash-style. Without it `ls-files --
+      # 'READ\ME.md'` matched and PRINTED `README.md`, while the membership test
+      # searched for the raw token -- a miss, and therefore an allow, for a
+      # tracked file. The two resolutions have to happen once, here, not once in
+      # each layer with different rules.
+      #
+      # NO CASE DISCRIMINATES THIS ONE, and saying so is better than implying a
+      # fence that is not there: with the bash-side unescape above running
+      # first, the pathspec handed to git no longer contains an escape for git
+      # to resolve, so plain and `:(literal)` agree on every input the suite
+      # has. It stays because the resolution has already happened and a second
+      # one can only disagree -- probed, removing it reddens nothing.
+      # CHUNKED, because one exec has an argument-size limit and exceeding it
+      # is a FAIL-OPEN here: `ls-files` dies with E2BIG, `2>/dev/null` swallows
+      # it, the set comes back empty, and every candidate in the bucket is
+      # reported "not tracked". Measured on this machine: 5000 pathspecs
+      # succeed, 20000 fail and print nothing. The union's own bound admits
+      # `GATE_EDIT_MAXPAIRS` pairs, so a single bucket can reach that many.
+      #
+      # 500 per exec is two orders of magnitude under the limit and costs one
+      # fork per 500 candidates -- still bounded, still far cheaper than the
+      # per-candidate fork this batching replaced. A chunk that fails ANYWAY
+      # falls back to `--error-unmatch` per path for that chunk only: slow, but
+      # it reads an exit code instead of parsing output, so it cannot be fooled
+      # by an empty result.
+      local __lp=() __lpi __lpn=0 __chunk_rc
+      for ((__lpi = 0; __lpi <= ${#paths[@]}; __lpi++)); do
+        if [ "$__lpi" -lt "${#paths[@]}" ]; then
+          __lp+=(":(literal)${paths[$__lpi]}")
+          __lpn=$((__lpn + 1))
+          [ "$__lpn" -lt "${GATE_EDIT_LSFILES_CHUNK:-500}" ] && continue
+        fi
+        [ "${#__lp[@]}" -gt 0 ] || continue
+        # THROUGH A FILE, not a process substitution: the chunk's EXIT STATUS is
+        # the thing that decides whether the fallback runs, and `< <(...)` does
+        # not surrender it. A second `ls-files` just to read the status would
+        # double the forks this batching exists to remove, and a command
+        # substitution cannot hold the `-z` output because bash drops NULs.
+        : > "$__lsf_tmp"
+        git -C "$d" -c core.quotePath=false ls-files -z -- "${__lp[@]}" > "$__lsf_tmp" 2>/dev/null
+        __chunk_rc=$?
+        while IFS= read -r -d '' line; do
+          [ -n "$line" ] || continue
+          case "$line" in /*) ;; *) line="$d/$line" ;; esac
+          set="$set$line"$'\x1f'
+        done < "$__lsf_tmp"
+        if [ "$__chunk_rc" != 0 ]; then
+          local __fb
+          for __fb in "${__lp[@]}"; do
+            __fb="${__fb#:(literal)}"
+            if git -C "$d" ls-files --error-unmatch -- ":(literal)$__fb" >/dev/null 2>&1; then
+              set="$set$__fb"$'\x1f'
+            fi
+          done
+        fi
+        __lp=(); __lpn=0
+      done
     fi
     __pp_lsf_dirs+=("$d"); __pp_lsf_set+=("$set")
   done
@@ -737,7 +849,7 @@ __base_is_protected_tree() {
       [ -n "$top" ] || return 1
       [ "$branch" = main ] || [ "$branch" = master ] || return 1
       [ -f "$top/.markgate.yml" ] || return 1
-      case "$d" in "$top"/.claude/worktrees/*) return 1 ;; esac
+      case "$d" in "$top"/.claude/worktrees | "$top"/.claude/worktrees/*) return 1 ;; esac
       PROTECT_BRANCH="$branch"; PROTECT_TOP="$top"
       return 0
     fi
@@ -759,7 +871,7 @@ __base_is_protected_tree() {
   # predicates disagreed: a write into `<top>/.claude/worktrees/foo` was allowed
   # by the ordinary path and REFUSED by the overflow path, which then named that
   # directory as the protected worktree.
-  case "$d" in "$top"/.claude/worktrees/*) return 1 ;; esac
+  case "$d" in "$top"/.claude/worktrees | "$top"/.claude/worktrees/*) return 1 ;; esac
   PROTECT_BRANCH="$branch"; PROTECT_TOP="$top"
   return 0
 }
@@ -868,15 +980,33 @@ __dedupe_candidates
 # refusal would be a false block in unrelated trees -- the check below asks only
 # the bounded question "is any base a protected main tree", which the
 # per-directory memo answers without new forks.
+# THE CANDIDATE COUNT NEEDS THE SAME FAIL-CLOSED BOUND AS THE `cd` COUNT.
+# `GATE_EDIT_MAXCD` and `GATE_EDIT_MAXPAIRS` are both inside `__union_cd_bases`,
+# which does not run at all when a command carries no `cd` -- and the per-
+# candidate work is what costs. Measured on bash 3.2, the only bash CI has, with
+# a quoted `--body` whose every line is a distinct `>` target and no `cd` at all:
+# 2000 candidates 3.7 s, 6000 candidates 28.3 s, against a 10 s PreToolUse
+# timeout after which the hook is KILLED and every gate on the call is disarmed.
+# (origin/main is slower still on the same shape -- this is inherited cost, not
+# introduced, but inherited cost past the timeout is the same fail-open.)
+#
+# Refusing rather than truncating, for the reason the `cd` bound refuses: a
+# bound that analyses less and then ALLOWS is a hole, and three of them shipped
+# in this branch before that was believed.
+if [ "${#candidates[@]}" -ge "${GATE_EDIT_MAXCAND:-2500}" ]; then
+  __union_overflow=1
+  __overflow_reason="too many write candidates (${GATE_EDIT_MAXCAND:-2500})"
+fi
+
 if [ "${__union_overflow:-0}" = 1 ]; then
   for __ov in "${__cd_targets[@]:-$base_dir}" "$base_dir"; do
     if __base_is_protected_tree "$__ov"; then
       cat >&2 <<EOF
-Blocked by main-tree-edit-gate: too many distinct \`cd\` targets to analyse safely.
+Blocked by main-tree-edit-gate: this command is too large to analyse safely.
 
-  distinct cd targets: $__cds (limit ${GATE_EDIT_MAXCD:-20})
+  distinct cd targets: ${#__cd_targets[@]} (limit ${GATE_EDIT_MAXCD:-20})
   write candidates:    ${#candidates[@]}
-  pairs to resolve:    over ${GATE_EDIT_MAXPAIRS:-2000}
+  reason:              $__overflow_reason
   worktree:            $PROTECT_TOP  (on $PROTECT_BRANCH)
   tool:                $tool
 
@@ -892,6 +1022,14 @@ EOF
 fi
 
 __i=0
+# `${arr[@]}` ON AN EMPTY ARRAY IS AN UNBOUND-VARIABLE ABORT ON BASH 3.2 -- the
+# only bash CI has -- while bash 4.4+ expands it to nothing. The refusal path
+# above leaves `candidates` empty by design when the scan is skipped, so this
+# loop aborted with rc=1: neither allow nor block, in an UNRELATED repository
+# the gate should simply have passed. Same trap the dedupe hit one round
+# earlier; both are guarded by a count now rather than by a `:-` default, which
+# would inject a bogus candidate.
+if [ "${#candidates[@]}" -gt 0 ]; then
 for c in "${candidates[@]}"; do
   # `:-` is load-bearing: the Edit / Write arm pushes candidates with no
   # per-candidate base, and `${arr[$i]}` on an empty array under `set -u`
@@ -928,5 +1066,6 @@ EOF
   fi
   __i=$((__i + 1))
 done
+fi
 
 exit 0

@@ -35,6 +35,11 @@ git init -q -b main "$MAIN"
 mkdir -p "$MAIN/docs/_generated" "$MAIN/src"
 echo "row" > "$MAIN/docs/_generated/ledger.tsv"
 echo "x" > "$MAIN/src/existing.ts"
+# A tracked file OUTSIDE `src|tests|docs|scripts|.claude`, so the only arm that
+# can refuse a write to it is `tracked`. Without one, every "tracked" case in
+# this file was actually exercising `new-source-file` -- which is how a dead
+# `tracked` arm sat behind a green suite for an entire branch.
+echo "readme" > "$MAIN/README.md"
 # Opt the fixture into the gate (issue #1259).
 touch "$MAIN/.markgate.yml"
 git -C "$MAIN" add -A
@@ -63,6 +68,29 @@ run_case() {
     pass=$((pass+1)); printf 'ok   (exit %s) %s\n' "$rc" "$desc"
   else
     fail=$((fail+1)); printf 'FAIL (exit %s, want %s) %s\n' "$rc" "$expected" "$desc"
+  fi
+}
+
+# ASSERTS THE REFUSAL TEXT, not only the exit code.
+#
+# `run_case` compares rc and discards stderr, and rc alone cannot tell a REFUSAL
+# from a CRASH: a `set -u` abort exits 2 as well. That is not hypothetical --
+# the overflow refusal referenced `__cds`, a variable `local` to
+# `__union_cd_bases`, so every overflow aborted with `__cds: unbound variable`
+# and printed no message at all, while the case for it sat green on the crash.
+# The same blindness hid a dead `tracked` arm behind a neighbouring arm that
+# refused with the same code. Use this wherever WHICH refusal fired is the
+# thing under test.
+run_case_text() {
+  local expected="$1" needle="$2" desc="$3" json="$4" rc out
+  out=$(printf '%s' "$json" | "$HOOK_RUNNER" "$HOOK" 2>&1 >/dev/null); rc=$?
+  if [[ "$rc" == "$expected" && "$out" == *"$needle"* ]]; then
+    pass=$((pass+1)); printf 'ok   (exit %s, text) %s\n' "$rc" "$desc"
+  else
+    fail=$((fail+1))
+    printf 'FAIL (exit %s want %s; text %s) %s\n' "$rc" "$expected" \
+      "$([[ "$out" == *"$needle"* ]] && echo ok || echo MISSING)" "$desc"
+    printf '     wanted text: %s\n     got: %s\n' "$needle" "$(printf '%s' "$out" | head -2)"
   fi
 }
 
@@ -683,7 +711,16 @@ printf 'x\n' > "$TMPDIR/bsrepo/back\\slash.md"
 touch "$TMPDIR/bsrepo/.markgate.yml"
 git -C "$TMPDIR/bsrepo" add -A >/dev/null 2>&1
 git -C "$TMPDIR/bsrepo" -c user.email=t@t -c user.name=t commit -q -m init >/dev/null 2>&1
-run_case 2 "Bash a write target containing a backslash" \
+#     THE COMMAND NEEDS A DOUBLED BACKSLASH. `> back\slash.md` is
+#     `backslash.md` to bash -- quote removal, measured -- and that file is not
+#     tracked, so 0 is the right answer for it. The round-14 revision of this
+#     case asserted 2 for that spelling and was wrong about bash, not about the
+#     gate; it passed only because the fixture happened to be the one
+#     arrangement where `git ls-files` echoed the raw token back.
+run_case 2 "Bash a doubled backslash naming the tracked file" \
+  "$(jq -nc --arg cmd 'echo x > back\\slash.md' --arg cwd "$TMPDIR/bsrepo" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash a single backslash, which names a different file (control)" \
   "$(jq -nc --arg cmd 'echo x > back\slash.md' --arg cwd "$TMPDIR/bsrepo" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 run_case 0 "Bash an UNTRACKED target in the same repo (control)" \
@@ -731,7 +768,80 @@ else
   printf 'FAIL latency: 19 cd targets x 2000 candidates took %ss, budget 4s\n' "$__kn_secs"
 fi
 
-CASE_FLOOR=93
+# 18-21. ROUND 15. Two blockers, both introduced by the round-14 commit, and
+#        both invisible to an exit-code-only assertion.
+#
+# 18. THE OVERFLOW REFUSAL NEVER PRINTED. `__cds` is `local` to
+#     `__union_cd_bases`; the heredoc reading it runs at top level, so under
+#     `set -u` every overflow aborted -- and bash's abort status is 2, the same
+#     code the refusal uses, so case 15 was green on a crash. Asserted by TEXT.
+run_case_text 2 "too many distinct" "Bash overflow refuses WITH its message" \
+  "$(jq -nc --arg cmd "$(for i in $(seq 1 25); do printf 'cd %s/d%s ; ' "$MAIN" "$i"; done) cd $MAIN ; : '$(for i in $(seq 1 400); do printf 'pad%s ' "$i"; done)' ; echo hi > README.md" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 19-21. A BACKSLASH IN THE TARGET, where bash's quote removal makes the write
+#     land on a DIFFERENT, tracked file. `echo hi > READ\ME.md` really writes
+#     `README.md` (measured). The gate looked for a file named `READ\ME.md`,
+#     did not find one, and allowed it; `origin/main` refused. Round 14 fixed
+#     only the token BOUNDARY, and its case used a fixture literally named
+#     `back\slash.md` -- the one arrangement where `git ls-files` happens to
+#     echo the raw token back, so it passed while this stayed open. The fixture
+#     here is a plain `README.md`, which is what makes these discriminate.
+run_case_text 2 "tracked" "Bash a backslash before a letter in the target" \
+  "$(jq -nc --arg cmd 'echo hi > READ\ME.md' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case_text 2 "tracked" "Bash a leading backslash in the target" \
+  "$(jq -nc --arg cmd 'echo hi > \README.md' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash a backslash target that is NOT tracked (control)" \
+  "$(jq -nc --arg cmd 'echo hi > SCRAT\CH.txt' --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 22-25. THE OVER-SIZE SCAN. A security review confirmed `git ls-files` dies
+#        with E2BIG past ~20000 pathspecs, and `2>/dev/null` turned that into
+#        "not tracked" for a whole directory -- so the batched call is chunked
+#        now. Chasing that surfaced the bigger one: the over-bytes scan consumes
+#        its input with `${__rest#*...}`, which is QUADRATIC, and 329 KB with
+#        6000 distinct `>` targets cost 28.3 s on bash 3.2 against the 10 s
+#        PreToolUse timeout, where the hook is killed and every gate on the call
+#        is disarmed. The scan now refuses past `GATE_EDIT_MAXSCAN` instead.
+#
+#        Three defects were found INSIDE that fix, and all three are pinned
+#        here because none was visible from the verdict alone:
+#          - skipping the scan leaves `candidates` empty, and the early
+#            `exit 0` for "no candidates" then ALLOWED the command -- a 0.05 s
+#            fail-open replacing a 28 s one;
+#          - `${arr[@]}` on an empty array aborts under `set -u` on bash 3.2
+#            (rc=1, neither allow nor block) in unrelated repositories;
+#          - the refusal headline still said "too many distinct cd targets".
+__big_body=$(for i in $(seq 1 6000); do printf '> padpadpadpadpadpadpadpadpadpadpadpadpadpad%s\n' "$i"; done)
+run_case_text 2 "too large to analyse" "Bash a 300 KB command in the main tree refuses" \
+  "$(jq -nc --arg cmd "true --body \"$__big_body\" ; echo hi > out.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash the same 300 KB command from a feature worktree" \
+  "$(jq -nc --arg cmd "true --body \"$__big_body\" ; echo hi > out.txt" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash the same 300 KB command in a repo with no .markgate.yml" \
+  "$(jq -nc --arg cmd "true --body \"$__big_body\" ; echo hi > out.txt" --arg cwd "$TMPDIR" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 25. The clock: the refusal has to be produced FAST, or it is produced after
+#     the hook has already been killed. This is the assertion the verdict cases
+#     above cannot make.
+__os_json=$(jq -nc --arg cmd "true --body \"$__big_body\" ; echo hi > out.txt" --arg cwd "$MAIN" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__os_t0=$(date +%s)
+printf '%s' "$__os_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__os_t1=$(date +%s)
+__os_secs=$((__os_t1 - __os_t0))
+if [ "$__os_secs" -le 4 ]; then
+  pass=$((pass + 1))
+  printf 'ok   latency: a 300 KB command refused in %ss (budget 4s, timeout 10s)\n' "$__os_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
+fi
+
+CASE_FLOOR=102
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'not ok case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
