@@ -2332,9 +2332,12 @@ function isRegionAmbiguousRefusal(err: unknown): boolean {
  *   pair of its own and no name-recorded one to fall back on, so its leaf
  *   drops to the value scan (the #2485 shape, a sibling's spelling for a
  *   same-plaintext pair); the entry the name recorded is still a needle, so
- *   a plaintext of four or more characters is scrubbed either way (the
- *   scan's substring bound, `buildNeedleRegex` — a shorter one is the #2516
- *   residual, name loop or not). A failed read through the cross-region PIN
+ *   the plaintext is scrubbed either way — whole, at any length, when the
+ *   leaf IS the plaintext (`redactSecretsForState`'s whole-value arm is
+ *   unbounded and this pass hands it the raw pass map), and by the substring
+ *   arm at `MIN_NEEDLE_LENGTH` or longer when the plaintext is EMBEDDED in a
+ *   larger leaf; a shorter embedded one is the #2516 residual, which has
+ *   nothing to do with the name loop. A failed read through the cross-region PIN
  *   is not a fallback at all: `unresolvableForeignScrubSecretError` refuses
  *   the whole scrub (`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`), name loop or
  *   value loop.

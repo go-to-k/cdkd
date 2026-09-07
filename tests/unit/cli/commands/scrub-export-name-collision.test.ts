@@ -648,6 +648,11 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
         Dsn: `pre-${MOVING_PLAINTEXT}-post`,
         Whole: MOVING_PLAINTEXT,
         Orphan: MOVING_PLAINTEXT,
+        // A key holding the MOVED value the NAME's pin saw — recorded only
+        // through the pin's map. It makes the pin's ENTRY write-through
+        // load-bearing: a pin handed a fresh map (while the resolver keeps
+        // the view) would leave this plaintext with no needle.
+        Stale: MOVING_FIRST,
       }),
       etag: 'etag-1',
     });
@@ -675,6 +680,13 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(saved!.outputs['Orphan']).toBe(MOVING_EXPR_V1);
     expect(saved!.outputs['Dsn']).toBe(`pre-${MOVING_ARN_EXPR}-post`);
     expect(saved!.outputs['Whole']).toBe(MOVING_EXPR_V1);
+    // The pin's entry reached the pass map: the moved value's only needle
+    // was recorded by the name's pin, and the value scan found it — the
+    // positioned pass first (its source has no key for `Stale`, so the leaf
+    // is value-scanned against the raw pass map), then the widened pass
+    // re-deriving the same answer. Both read the pass map, so either alone
+    // would repair it, and a pin handed a fresh map fails both.
+    expect(saved!.outputs['Stale']).toBe(MOVING_ARN_EXPR);
     expect(JSON.stringify(saved)).not.toContain(MOVING_PLAINTEXT);
     expect(JSON.stringify(saved)).not.toContain(MOVING_FIRST);
   });
