@@ -619,7 +619,53 @@ else
   printf 'FAIL latency: 900 write candidates took %ss, budget 4s\n' "$__lat_secs"
 fi
 
-CASE_FLOOR=84
+# 11-13. THE SHAPES THAT DEFEATED THREE SUCCESSIVE VERSIONS OF THE UNION CAP.
+#        All three passed a suite reporting 83/0 while the gate allowed a write
+#        bash really performed, so they are pinned by shape rather than by the
+#        cap arithmetic that happened to be wrong that round.
+#
+# 11. A DECOY `cd` INSIDE A QUOTED BODY, ahead of the real one. Under any cap
+#     that budgeted the first round, only the decoy was unioned and the real
+#     `cd <main tree>` was dropped. The decoy is not contrived: this hook's own
+#     refusal message prints `cd .claude/worktrees/<slug>`, so quoting the
+#     message in a `--body` is enough. Paired with its control -- same command
+#     with the decoy line removed -- so the pair cannot go green together.
+run_case 2 "Bash a decoy cd in a quoted body ahead of the real one" \
+  "$(jq -nc --arg cmd "true --body \"  cd .claude/worktrees/hardening
+$(for i in $(seq 1 250); do printf '> quoted line %s\n' "$i"; done)\" ; cd $MAIN ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash the same without the decoy (control)" \
+  "$(jq -nc --arg cmd "true --body \"$(for i in $(seq 1 250); do printf '> quoted line %s\n' "$i"; done)\" ; cd $MAIN ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 12. DISTINCT tokens, which the deduplication cannot collapse and the
+#     repeated-token latency case above structurally cannot see. This is the
+#     cost shape: 2500 of them cost 18 s -- past the 10 s PreToolUse timeout,
+#     where the hook is killed and cannot emit exit 2 -- before `ls-files` was
+#     batched per directory and the deduplication learned to scale. Asserts the
+#     VERDICT here; the clock is asserted below.
+run_case 2 "Bash 1500 DISTINCT write-candidate tokens, then a real cd" \
+  "$(jq -nc --arg cmd "cd $MAIN ; gh pr comment 1 --body \"$(for i in $(seq 1 1500); do printf '> tok%s line %s\n' "$i" "$i"; done)\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 13. The clock for that shape. The existing latency case uses a REPEATED token
+#     and measures 0 s however bad the per-candidate cost gets, so it could not
+#     have caught this; distinct tokens are the discriminating input.
+__vt_body=$(for i in $(seq 1 1500); do printf '> tok%s line %s\n' "$i" "$i"; done)
+__vt_json=$(jq -nc --arg cmd "cd $MAIN ; gh pr comment 1 --body \"$__vt_body\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+  '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
+__vt_t0=$(date +%s)
+printf '%s' "$__vt_json" | "$HOOK_RUNNER" "$HOOK" >/dev/null 2>&1
+__vt_t1=$(date +%s)
+__vt_secs=$((__vt_t1 - __vt_t0))
+if [ "$__vt_secs" -le 4 ]; then
+  pass=$((pass + 1))
+  printf 'ok   latency: 1500 DISTINCT candidates in %ss (budget 4s, timeout 10s)\n' "$__vt_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: 1500 DISTINCT candidates took %ss, budget 4s\n' "$__vt_secs"
+fi
+
+CASE_FLOOR=88
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'not ok case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"

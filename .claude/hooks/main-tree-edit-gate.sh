@@ -119,34 +119,31 @@ fi
 # the fix for it. 200 pairs is 20 `cd`s against 10 write targets, well past any
 # hand-written command.
 __union_cd_bases() {
-  local __n __i __b __rest __rounds=0 __budget __take
+  # NO CAP. Every candidate gets every raw-text `cd` target as an extra base.
+  #
+  # THE CAP WAS THE DEFECT, not the thing keeping the defect out. Three review
+  # rounds each bounded this differently and each left a hole, all in the same
+  # direction -- some candidate never received some base, and the gate allowed a
+  # write it should have refused:
+  #
+  #   - `added + n > MAXPAIRS` with `added` zero on the first pass: a command
+  #     already over the cap unioned NOTHING;
+  #   - `MAXPAIRS / n` rounds, floored at 1: the product became 2n, unbounded,
+  #     and 900 candidates took 13.8 s past the 10 s PreToolUse timeout;
+  #   - `min(n, budget)` per round: copies the array HEAD, and the real write
+  #     target is its TAIL, after whatever padding made n large.
+  #
+  # The cap existed because duplicating array entries makes the work the PRODUCT
+  # of two counts. The duplicates are the problem, so they are removed instead:
+  # a `--body` holding 900 blockquote lines yields 900 candidates that are all
+  # the SAME token, and one (candidate, base) pair after deduplication. What is
+  # left is the number of DISTINCT write targets times the number of DISTINCT
+  # `cd` targets, which is small in any command a person or an agent writes, and
+  # is work that has to happen anyway -- a distinct target genuinely needs its
+  # own check.
+  local __n __i __b __rest
   __n=${#candidates[@]}
   [ "$__n" -gt 0 ] || return 0
-  # THE CAP BOUNDS WORK ADDED, AND NEVER THE FIRST ROUND. It used to test
-  # `__added + __n > MAXPAIRS`, and `__added` is 0 on the first iteration -- so
-  # a command that already carried more than MAXPAIRS candidates broke out
-  # before unioning ANYTHING, turning the cap into the off-switch this function
-  # exists to deny. Reachable without padding: every `>` is a candidate, so a
-  # `--body` holding 210 markdown blockquote lines does it. Measured from a
-  # feature worktree, `cd <main tree>` + a 211-line quoted body + a write went
-  # rc=0 with the tracked file really overwritten, against rc=2 at 51 lines and
-  # rc=2 on origin/main.
-  #
-  # THE CAP IS ON WORK ADDED, NOT ON ROUNDS. A rounds cap of `MAXPAIRS / n`
-  # floored at 1 does not bound anything when `n` is large: the division is 0,
-  # the floor makes it 1, and that one round copies ALL n candidates, so the
-  # total is 2n and grows without limit. Measured through the real hook on a
-  # `gh pr comment --body` holding one `cd` mention and N blockquote lines --
-  # every `>` is a candidate -- HEAD ran 4.6 s / 9.2 s / 13.8 s at N = 300 / 600
-  # / 900 against 2.3 / 4.6 / 7.0 for the same input on origin/main. Past 10 s
-  # the hook is killed and cannot emit exit 2, so the rounds cap turned one
-  # fail-open into a worse one at a MORE reachable threshold.
-  #
-  # Adding `min(n, MAXPAIRS - added)` per round keeps the total at n + MAXPAIRS
-  # -- the n the command already carried, plus a bounded contribution -- while
-  # still guaranteeing the first round runs, which is what stops the cap being
-  # used as an off-switch (the defect this replaced).
-  __budget=${GATE_EDIT_MAXPAIRS:-200}
   __rest="$cmd"
   # THE VERB IS UNQUOTED HERE TOO. A bare-literal `cd` misses `"cd"`, `'cd'` and
   # `\cd` -- the precise spellings go-to-k/cdkd#2614 closed, and which the
@@ -160,32 +157,57 @@ __union_cd_bases() {
     __b=$(gate_unquote "${BASH_REMATCH[2]}")
     __rest="${__rest#*"${BASH_REMATCH[0]}"}"
     case "$__b" in *'$'* | *'`'*) continue ;; /*) ;; *) __b="$base_dir/$__b" ;; esac
-    # ROUND 0 IS UNCONDITIONAL AND COPIES EVERY CANDIDATE; only rounds 2+ draw
-    # on the budget. Taking `min(n, budget)` on the first round instead looked
-    # like the same bound and was a fail-open, because it copies the array's
-    # HEAD and the real write target is normally its TAIL -- after whatever
-    # padding made `n` large in the first place. Measured from a feature
-    # worktree with `cd <main tree>`, an N-line quoted body and a write, on the
-    # over-bytes arm: N=220 rc=2, N=240 rc=0, N=900 rc=0, with the tracked file
-    # really overwritten in both failing cases.
-    #
-    # The total is `2n + MAXPAIRS`, still linear, and it is affordable only
-    # because the per-parent-directory memo landed in the same commit -- before
-    # that a full first round cost 13.8 s at N=900 and blew the 10 s timeout.
-    # The two changes are independent and the cost argument for capping round 0
-    # no longer holds; measured after the memo, N=900 goes 0.23 s -> 0.32 s.
-    __take=$__n
-    if [ "$__rounds" -ne 0 ]; then
-      [ "$__take" -le "$__budget" ] || __take=$__budget
-      [ "$__take" -ge 1 ] || break
-    fi
-    for ((__i = 0; __i < __take; __i++)); do
+    for ((__i = 0; __i < __n; __i++)); do
       candidates+=("${candidates[$__i]}"); cand_bases+=("$__b")
     done
-    __budget=$((__budget - __take))
-    __rounds=$((__rounds + 1))
-    [ "$__budget" -gt 0 ] || break
   done
+}
+
+# Collapse (candidate, base) pairs to their distinct set.
+#
+# This is what makes the uncapped union above affordable, and it is a
+# CORRECTNESS-NEUTRAL transformation: `is_protected_path` is a pure function of
+# the pair, so checking a pair twice cannot change any verdict. The cost it
+# removes is real -- each pair costs a `git ls-files`, and the shapes that make
+# the union expensive are repeated tokens (every `>` in a quoted `--body` yields
+# the same candidate word).
+#
+# A string set with one lookup per pair. bash 3.2 has no associative arrays; the
+# accumulated string stays short because it holds DISTINCT pairs, which is the
+# quantity this function exists to show is small.
+__dedupe_candidates() {
+  local __i __key __seen="" __c __b __line
+  local __oc=() __ob=()
+  # TWO SPELLINGS, AND THE THRESHOLD IS THE POINT. The in-shell set is
+  # fork-free, which is what the common case wants (a handful of candidates),
+  # but a substring match against a growing string is quadratic: 2500 DISTINCT
+  # pairs built a 50 KB string and cost more than the forks the dedupe exists to
+  # avoid. Past the threshold one `sort -u` is O(n log n) and one fork.
+  #
+  # Deduplication is an OPTIMISATION, never a verdict: `is_protected_path` is a
+  # pure function of the pair, so which spelling ran cannot change any outcome.
+  # That is why a threshold is safe here and was not safe on the union cap.
+  if [ "${#candidates[@]}" -le "${GATE_EDIT_DEDUPE_INLINE:-200}" ]; then
+    for ((__i = 0; __i < ${#candidates[@]}; __i++)); do
+      __c="${candidates[$__i]}"; __b="${cand_bases[$__i]:-$base_dir}"
+      __key=$'\x1f'"$__c"$'\x1e'"$__b"$'\x1f'
+      case "$__seen" in
+        *"$__key"*) continue ;;
+      esac
+      __seen="$__seen$__key"
+      __oc+=("$__c"); __ob+=("$__b")
+    done
+  else
+    while IFS=$'\x1e' read -r __c __b; do
+      [ -n "$__c" ] || continue
+      __oc+=("$__c"); __ob+=("$__b")
+    done < <(
+      for ((__i = 0; __i < ${#candidates[@]}; __i++)); do
+        printf '%s\x1e%s\n' "${candidates[$__i]}" "${cand_bases[$__i]:-$base_dir}"
+      done | sort -u
+    )
+  fi
+  candidates=("${__oc[@]}"); cand_bases=("${__ob[@]}")
 }
 
 input=$(cat 2>/dev/null || true)
@@ -478,6 +500,61 @@ canonicalize_dir() {
   else printf '%s' "${p%/}"; fi
 }
 
+# Resolve a raw candidate + base to the (dir, abs) pair `is_protected_path`
+# decides on, or return 1 when the token is not resolvable. ONE definition, used
+# by both the decision and the batch primer below -- the recurring defect in this
+# area has been two copies of one predicate drifting apart.
+__NC_DIR=""; __NC_ABS=""
+__norm_candidate() {
+  local raw="$1" base="${2:-$base_dir}" abs dir
+  raw="${raw%\"}"; raw="${raw#\"}"; raw="${raw%\'}"; raw="${raw#\'}"
+  case "$raw" in
+    *'$'* | *'*'* | *'?'* | *'['* | '/dev/'* | '-') return 1 ;;
+  esac
+  abs="$raw"
+  [[ "$abs" != /* ]] && abs="$base/$abs"
+  # Strip EVERY trailing slash: `dirname a/b/c//` is `a/b`, while one `%/`
+  # leaves `a/b/c`, which exists as a directory, so the candidate resolved to
+  # itself and the gate ALLOWED it.
+  abs="${abs%"${abs##*[!/]}"}"
+  [[ -n "$abs" ]] || abs=/
+  dir="${abs%/*}"
+  [[ -n "$dir" ]] || dir=/
+  __NC_DIR="$dir"; __NC_ABS="$abs"
+  return 0
+}
+
+# One `git ls-files` for a directory, covering every candidate that resolves
+# into it. Idempotent; the result is a \x1f-delimited set of absolute paths.
+__pp_lsf_dirs=(); __pp_lsf_set=(); __pp_lsf_idx=0
+__prime_tracked() {
+  local d="$1" i=0 paths=() line
+  while [ "$i" -lt "${#__pp_lsf_dirs[@]}" ]; do
+    [ "${__pp_lsf_dirs[$i]}" = "$d" ] && { __pp_lsf_idx=$i; return 0; }
+    i=$((i + 1))
+  done
+  for ((i = 0; i < ${#candidates[@]}; i++)); do
+    __norm_candidate "${candidates[$i]}" "${cand_bases[$i]:-$base_dir}" || continue
+    [ "$__NC_DIR" = "$d" ] && paths+=("$__NC_ABS")
+  done
+  local set=$'\x1f'
+  if [ "${#paths[@]}" -gt 0 ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      case "$line" in /*) ;; *) line="$d/$line" ;; esac
+      set="$set$line"$'\x1f'
+    # NO `--full-name`, and no post-processing: with `-C "$d"` git reports the
+    # tracked subset RELATIVE TO `$d`, which is exactly what the loop above
+    # re-absolutises. A first draft piped through `sed` to prepend the toplevel,
+    # which was both redundant and tripped `unresolved-target-class`'s fence 1 --
+    # it forbids a `-C` inside a grep/sed/awk expression, because that is the
+    # shape of a hook hand-rolling its own target-directory scan.
+    done < <(git -C "$d" ls-files -- "${paths[@]}" 2>/dev/null)
+  fi
+  __pp_lsf_dirs+=("$d"); __pp_lsf_set+=("$set")
+  __pp_lsf_idx=$(( ${#__pp_lsf_dirs[@]} - 1 ))
+}
+
 is_protected_path() {
   # echo "BLOCK <reason>" on stderr-worthy hit, else nothing.
   local raw="$1" base="${2:-$base_dir}"
@@ -554,24 +631,25 @@ is_protected_path() {
   esac
   # Tracked file? -> always protected.
   #
-  # ONE-ENTRY MEMO, because this is the last per-candidate fork and it cannot be
-  # keyed on the directory like the one above -- `ls-files` asks about the FILE.
-  # A single slot is the right size: the shape that makes this expensive is the
-  # SAME token repeated (a quoted `--body` where every `>` yields the same
-  # candidate word), which a one-entry cache collapses to a single call, while a
-  # command with genuinely distinct write targets carries few of them. A larger
-  # cache would be a linear scan per candidate, i.e. quadratic on exactly the
-  # input this is here to make cheap.
-  if [ "$__pp_lsf_key" = "$dir|$abs" ]; then
-    :
-  else
-    if git -C "$dir" ls-files --error-unmatch -- "$abs" >/dev/null 2>&1; then
-      __pp_lsf_tracked=0
-    else
-      __pp_lsf_tracked=1
-    fi
-    __pp_lsf_key="$dir|$abs"
-  fi
+  # ONE `git ls-files` PER DIRECTORY, not per candidate. This was the last
+  # per-candidate fork, and it is what made the union need a cap at all -- every
+  # attempt to bound that cap left a hole (three rounds, three holes, all in the
+  # allowing direction). Removing the cost removes the reason for the cap.
+  #
+  # A one-entry memo was tried first and only collapses REPEATED tokens; a
+  # `--body` with distinct words per line defeats it, and 2500 of them cost
+  # 18 s against the 10 s PreToolUse timeout -- a killed hook emits no exit 2,
+  # so that is a fail-open, not a slow test. `ls-files` accepts many pathspecs
+  # and prints the tracked subset, so the whole question for a directory is one
+  # fork. Primed lazily on first need, from the candidate arrays, through the
+  # SAME normalisation this function uses -- a second copy of that logic is how
+  # the two halves of a bound came to disagree earlier in this branch.
+  __prime_tracked "$dir"
+  local __tk=$'\x1f'"$abs"$'\x1f'
+  case "${__pp_lsf_set[$__pp_lsf_idx]}" in
+    *"$__tk"*) __pp_lsf_tracked=0 ;;
+    *) __pp_lsf_tracked=1 ;;
+  esac
   if [ "$__pp_lsf_tracked" = 0 ]; then
     PROTECT_BRANCH="$branch"; PROTECT_TOP="$top"; PROTECT_KIND="tracked"
     return 0
@@ -587,6 +665,10 @@ is_protected_path() {
   esac
   return 1
 }
+
+# Dedupe LAST, after both bounded paths have unioned their bases in, so it sees
+# the final pair set. Cheap when there is nothing to collapse.
+__dedupe_candidates
 
 __i=0
 for c in "${candidates[@]}"; do
