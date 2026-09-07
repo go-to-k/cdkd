@@ -253,7 +253,12 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['layout-analyzer.md', 12],
   ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
   ['layout-cli.md', 48],
-  ['layout-deployment-secrets.md', 5], // literal list: EXACT, see below
+  // 5 -> 6 (issue #2748): added `src/deployment/intrinsic-function-resolver.ts`.
+  // That file OWNS `maskSecretsForLog` and every masking site this rule
+  // enumerates, and it was NOT claimed -- so a session editing the resolver
+  // never had the rule loaded. The #2615 class, and why the same masking gap
+  // was found twice (issues #2728 then #2748).
+  ['layout-deployment-secrets.md', 6], // literal list: EXACT, see below
   ['layout-deployment.md', 12],
   ['layout-drift.md', 5],
   ['layout-local.md', 45],

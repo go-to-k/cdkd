@@ -2,6 +2,8 @@
 description: cdkd secret-redaction layout notes (dynamic-reference redaction, masking retry loggers, region classification, cdkd scrub)
 paths:
   - 'src/deployment/secret-redaction.ts'
+  # Owns `maskSecretsForLog`; unclaimed until #2748 (the #2615 class).
+  - 'src/deployment/intrinsic-function-resolver.ts'
   - 'src/deployment/masking-retry-logger.ts'
   - 'src/deployment/secret-region-classification.ts'
   - 'src/cli/commands/scrub.ts'
@@ -73,6 +75,15 @@ Index of every area: [code-layout.md](code-layout.md).
     assembled string. `DeployEngine.handleOutputResolutionFailure` masks the
     same two bags in the same order, the text with `maskSecretsInText` and
     the strict arm's `cause` with `maskSecretsInError`.
+  - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
+    mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
+    no-ops on absent bags, so masking the LINE left a live `cdkd diff` printing
+    the password — two callers passed context literals with no bag. Close a bag
+    gap at the CALLEE, by INVENTING a private map, so the next caller cannot
+    reopen it; private constrains only the invented map, never a caller's own
+    (`cdkd scrub` hands this pass its OUTPUTS bag on purpose). Per-SINK masking
+    left the next sink open (#2728, then #2748); per-CALLER leaves the next
+    caller.
   - **`maskSecretsInError(error, secrets)`** (issue #2038) is the object-level
     twin: a CLONE of EVERY link in the error's `cause` CHAIN, each with its
     own masked `message` — `formatError` renders

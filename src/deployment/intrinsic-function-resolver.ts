@@ -2558,6 +2558,40 @@ export class IntrinsicFunctionResolver {
     // set as a cycle guard. `{Condition: X}` references inside the
     // definitions resolve through `evaluateByName` via the
     // `conditionResolver` hook threaded onto the context.
+    // A PRIVATE needle bag when the caller brought none (issue #2748 review).
+    // `maskSecretsForLog` is a no-op against absent bags, so the mask below is
+    // worth exactly what this pass RECORDED — and two of the four callers hand
+    // in a context literal with no bag at all: `cli/commands/diff-recursive.ts`
+    // and `cli/commands/import.ts` (which also omits `skipDynamicReferences`,
+    // so it really does fetch the secret). `deploy-engine`'s
+    // `buildResolverContext` and `cdkd scrub`'s `resolverContext` both supply
+    // one. MEASURED before this existed: `cdkd diff` on a template whose
+    // `Conditions` entry assembles a reference out of its own resolved secret
+    // printed the password in full at default verbosity.
+    //
+    // Fixed HERE rather than at the two call sites so a fifth caller cannot
+    // reopen it — the per-site habit is what this class keeps costing.
+    //
+    // PRIVATE, and it dies with this call: it is never returned, never merged
+    // into a caller's bag, and its `WeakMap`-keyed associations die with it. So
+    // the bag this function INVENTS cannot become a redaction needle anywhere.
+    //
+    // That is a claim about the private bag ONLY, not about condition
+    // evaluation in general — an earlier wording said "a conditions bag must
+    // not reach an outputs bag" and was false for one caller: `cdkd scrub`
+    // deliberately hands this pass its OUTPUTS bag (`scrub.ts`, so a condition's
+    // secret IS a needle over `state.outputs` there), which is that caller's
+    // decision and not something to undo from here. A caller that brought a bag
+    // keeps it — the resolver fills it in place and the caller is entitled to
+    // what this pass records.
+    //
+    // Residual, unclaimed by any issue: `maskSecretsInText` matches LITERALLY,
+    // so a plaintext that reaches the message re-encoded (`Fn::Base64`, a JSON
+    // or URL escaping) is not masked by any of this.
+    const maskingContext: ResolverContext = context.recordedSecretValues
+      ? context
+      : { ...context, recordedSecretValues: new Map<string, string>() };
+
     const inProgress = new Set<string>();
 
     const evaluateByName = async (name: string): Promise<boolean> => {
@@ -2581,7 +2615,7 @@ export class IntrinsicFunctionResolver {
         // Resolve the definition with the condition-reference hook active so
         // nested `{Condition: Y}` references recurse through evaluateByName.
         const result = await this.resolveValue(definition, {
-          ...context,
+          ...maskingContext,
           conditionResolver: evaluateByName,
         });
         const value = Boolean(result);
@@ -2600,8 +2634,25 @@ export class IntrinsicFunctionResolver {
       try {
         await evaluateByName(name);
       } catch (error) {
+        // MASKED (issue #2748). This catch renders a resolver error verbatim
+        // at WARN level, so it is reached on an ordinary `cdkd deploy` with no
+        // `--verbose`. `evaluateByName` reaches `resolveDynamicReferences`
+        // below, and `resolveSub` / `resolveJoin` re-enter it with the
+        // ASSEMBLED string — so a `Conditions` entry that builds a reference
+        // out of a value this same pass resolved from a secret makes the
+        // lookup fail NAMING that plaintext (`key '<password>' not found in
+        // secret '<id>'`, thrown unmasked by construction because every other
+        // consumer of that throw masks at ITS own boundary). Same class as the
+        // lookup echoes issue #2728 closed further down this file, and this sink
+        // was missed there because it lives in a different method and renders
+        // ANY error, not only a lookup echo. Residual: a plaintext
+        // shorter than `MIN_NEEDLE_LENGTH` (4) is embedded here rather than
+        // whole, so no needle matches it and it still prints.
         this.logger.warn(
-          `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`
+          this.maskSecretsForLog(
+            `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
+            maskingContext
+          )
         );
         conditions[name] = false;
         inProgress.delete(name);
