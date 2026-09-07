@@ -88,6 +88,65 @@ describe('ProviderRegistry.getProviderFor', () => {
     expect(decision.provider).not.toBe(registry.getCloudControlProvider());
   });
 
+  it('AUTO-ROUTES an existing provisionedBy: sdk resource whose template gained a silent drop', () => {
+    // The claim docs/cli-deploy-safety.md now makes, and the one it got
+    // BACKWARDS until go-to-k/cdkd#2744: the sticky rule applies only to a
+    // record already at 'cc-api', so an 'sdk' record falls through to the
+    // silent-drop check on EVERY deploy. Adding such a property to an
+    // already-deployed resource therefore re-routes it with no flag, and the
+    // user does not need `--recreate-via-cc-api` to get the property to AWS.
+    //
+    // `tests/integration/sdk-to-cc-autoroute/` observed the whole story on a
+    // live resource (the update lands in place, the property is readable back
+    // from AWS). This is the CI-visible half: that fixture runs against real
+    // AWS on a 14-day marker, so without this case a regression in the routing
+    // rule would sit on main until someone happened to run it.
+    const registry = new ProviderRegistry();
+    const fx = pickSilentDropFixture();
+    registry.register(fx.resourceType, stubSdkProvider());
+
+    const decision = registry.getProviderFor({
+      resourceType: fx.resourceType,
+      properties: { [fx.property]: 'x' },
+      // The state says SDK -- the resource already exists on the fast path.
+      provisionedBy: 'sdk',
+    });
+
+    expect(decision.provisionedBy).toBe('cc-api');
+    expect(decision.provider).toBe(registry.getCloudControlProvider());
+    // The reason is what the deploy prints and what `cdkd diff` annotates, so
+    // asserting only the layer would let the route go silent and still pass.
+    // The PROPERTY LIST, not just presence: `toBeDefined()` passes on an empty
+    // list, and that list is exactly what the integ greps for
+    // (`via CC API: EvaluationWindow`).
+    expect(decision.ccRouteReason?.properties).toEqual([fx.property]);
+  });
+
+  it('keeps an sdk-recorded resource on the SDK path when the drop is in the allow set', () => {
+    // The opt-out on this exact path. The existing allow-set case does not pass
+    // `provisionedBy`, so nothing pinned the combination a user actually hits:
+    // an already-deployed SDK resource whose new property they chose to accept
+    // as dropped. Without it, a regression that ignored the allow set once a
+    // record exists would be invisible.
+    const registry = new ProviderRegistry();
+    const fx = pickSilentDropFixture();
+    registry.register(fx.resourceType, stubSdkProvider());
+    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
+
+    const decision = registry.getProviderFor({
+      resourceType: fx.resourceType,
+      properties: { [fx.property]: 'x' },
+      provisionedBy: 'sdk',
+    });
+
+    expect(decision.provisionedBy).toBe('sdk');
+    expect(decision.provider).not.toBe(registry.getCloudControlProvider());
+    // Its siblings assert this too: a regression that keeps the SDK provider
+    // but still emits a route reason would annotate `cdkd diff` with a Cloud
+    // Control route that never happens.
+    expect(decision.ccRouteReason).toBeUndefined();
+  });
+
   it('keeps an existing provisionedBy: cc-api resource on Cloud Control (sticky)', () => {
     const registry = new ProviderRegistry();
     // Register an SDK provider for a Tier 1 type so the un-sticky path

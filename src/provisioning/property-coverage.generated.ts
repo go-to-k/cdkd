@@ -9,9 +9,17 @@
  * (`ProviderRegistry.validateResourceProperties`). The `silentDrop` set
  * lists top-level CFn schema properties whose SDK provider does not write
  * them to AWS — using these in a template silently drops the field at
- * deploy time. The pre-flight rejects them by default; the user can opt
- * in via `--allow-unsupported-properties <Type:Prop>,...` to accept the
- * drop and proceed.
+ * deploy time. Pre-flight does not reject them for that reason:
+ * `reportSilentDropDecisions` logs the routing decision at INFO (DEBUG once
+ * the resource is already sticky on CC) and the resource is auto-routed
+ * through Cloud Control, so the property reaches AWS anyway (issue #614). It
+ * DOES reject the sub-case Cloud Control cannot serve — a NON_PROVISIONABLE
+ * type, or a provider with `disableCcApiFallback`.
+ * `--allow-unsupported-properties <Type:Prop>,...` opts back INTO the drop,
+ * keeping the resource on the SDK path, and WARNs when it does (the
+ * unrecognized-property warn is the other one). (This comment claimed pre-flight rejected every silent drop until
+ * go-to-k/cdkd#2744 measured a live deploy applying one with no flag; see
+ * tests/integration/sdk-to-cc-autoroute/.)
  *
  * Tier 2 (Cloud Control) types are NOT in this map: CC forwards the full
  * property map to AWS, so there is no write-side silent drop at cdkd.

@@ -1890,6 +1890,11 @@
       ]
     },
     {
+      "name": "sdk-to-cc-autoroute",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "secrets-array-nested",
       "annotated": true,
       "scenarios": [
@@ -2885,6 +2890,7 @@
     "scheduler-custom-group",
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
+    "sdk-to-cc-autoroute",
     "secrets-rotation-schedule",
     "secretsmanager-update-value-source",
     "servicediscovery",

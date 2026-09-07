@@ -54,7 +54,8 @@
     {
       "flag": "--allow-unsupported-properties",
       "integs": [
-        "cc-api-fallback-transitions"
+        "cc-api-fallback-transitions",
+        "sdk-to-cc-autoroute"
       ]
     },
     {
@@ -570,6 +571,7 @@
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
         "sdk-ccapi-crossref",
+        "sdk-to-cc-autoroute",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
@@ -627,7 +629,8 @@
       "integs": [
         "recreate-mixed-direction",
         "recreate-nested-logical-id-collision",
-        "recreate-via-sdk-provider"
+        "recreate-via-sdk-provider",
+        "sdk-to-cc-autoroute"
       ]
     },
     {
@@ -826,6 +829,7 @@
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
         "sdk-ccapi-crossref",
+        "sdk-to-cc-autoroute",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
@@ -1119,6 +1123,7 @@
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
         "sdk-ccapi-crossref",
+        "sdk-to-cc-autoroute",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
@@ -1384,6 +1389,7 @@
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
         "sdk-ccapi-crossref",
+        "sdk-to-cc-autoroute",
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",

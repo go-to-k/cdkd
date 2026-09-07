@@ -28,7 +28,7 @@ cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resol
 | --- | --- | --- |
 | `--allow-unsupported-types <types>` | deploy, destroy, state destroy | Attempt a resource type cdkd rejects at pre-flight as unsupported. |
 | `--allow-unsupported-properties <entries>` | deploy | Pin a resource to the SDK provider and accept a silently dropped property, instead of the default Cloud Control auto-route. |
-| `--recreate-via-cc-api <LogicalId>` | deploy | Destroy + recreate one resource via Cloud Control API, so a dropped property reaches AWS. |
+| `--recreate-via-cc-api <LogicalId>` | deploy | Destroy + recreate one resource via Cloud Control API, for a dropped property the auto-route's in-place update cannot deliver. |
 | `--recreate-via-sdk-provider <LogicalId>` | deploy | The reverse: destroy + recreate one resource via cdkd's SDK provider. |
 | `--pin-cc-api <LogicalId>` | deploy | Decline the automatic return to the SDK provider for one resource, keeping it on Cloud Control for this deploy. |
 | `--replace` | deploy | Replace (DELETE + CREATE) a resource whose in-place update AWS has no API for. |
@@ -183,6 +183,10 @@ properties.
   unchanged; with the flag the property is silently dropped at write time.
   Without the flag the resource takes the Cloud Control route and the property
   reaches AWS verbatim.
+- **NOT** free to undo. A deploy under this flag records the property in cdkd
+  state even though it was never written, and simply dropping the flag later
+  does not deliver it — see
+  [the caveat under `--recreate-via-cc-api`](#recreate-via-cc-api-deploy).
 - **NOT** persisted in cdkd state. Every deploy must pass the flag if the
   override is still wanted. The resource's `provisionedBy` state field reflects
   the routing actually used at the last deploy, not the flag.
@@ -196,8 +200,9 @@ coverage matches your needs.
 `--recreate-via-cc-api <LogicalId>` (repeatable, one flag per resource)
 destroys and recreates the named resource via Cloud Control API in this deploy,
 so a previously silently-dropped top-level CFn property reaches AWS on the
-recreated copy. It is the mid-life counterpart to the auto-route that fresh
-deploys get for free.
+recreated copy. Mid-life deploys get the auto-route for free too, so this flag
+is for the cases that route cannot serve rather than for reaching Cloud Control
+in general — see "When to use it" just below.
 
 The argument is a single CloudFormation logical id. There is no comma split —
 repeat the flag for more targets. A logical id that does not match CFn's
@@ -223,15 +228,64 @@ cdkd deploy MyStack \
 
 ### When to use it
 
-- An existing resource is `provisionedBy: 'sdk'` in cdkd state and you want to
-  start using a top-level CFn property cdkd's SDK provider does not yet wire —
-  adding `CapacityProviderConfig` to an already-deployed Lambda, say. Adding
-  the property on the next deploy alone will not reach AWS, because the SDK
-  update path drops it silently. The flag forces a destroy-and-recreate cycle
-  so the new physical resource lands on Cloud Control and the property reaches
-  AWS.
+**First check whether you need it at all.** Adding a silent-drop property to an
+already-deployed `provisionedBy: 'sdk'` resource does NOT by itself require
+this flag: the routing decision is re-made every deploy, so the next one
+auto-routes that resource through Cloud Control. Where the type's SDK-stored
+physical id is also a valid Cloud Control identifier — a per-type fact, not a
+guarantee; see the second bullet below — the property reaches AWS as an update
+in place, with the physical id preserved. Where it is not, that update fails
+rather than silently doing nothing. Measured on a live resource by
+[`tests/integration/sdk-to-cc-autoroute/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sdk-to-cc-autoroute/),
+which adds `EvaluationWindow` to a deployed `AWS::CloudWatch::Alarm` with no
+flag and then asserts: the deploy renders the per-resource verb `updated` and
+not `replaced`, the record moved to `'cc-api'`, the physical id is unchanged,
+the property reads back from `DescribeAlarms`, and a tag attached out of band
+before the redeploy survived. A later phase deliberately recreates the alarm
+and checks that tag DIES, so its survival above means something. This section
+said the opposite until that run measured it.
+
+**One sequence defeats this, and it is a bug, not a reason to reach for the
+flag.** If an earlier deploy accepted the drop with
+[`--allow-unsupported-properties`](#allow-unsupported-properties-deploy), that
+deploy still RECORDED the property in cdkd state without writing it to AWS. The
+later flag-less deploy does re-route the resource to Cloud Control, but the
+update is computed as a patch against that record, the property is identical on
+both sides, and nothing is sent — the deploy reports success and AWS never gets
+the field. That is a defect with its own tracking issue, and the same fixture
+carries the failing sequence as a pinned arm — so anyone who fixes it and runs
+`sdk-to-cc-autoroute` gets a red run telling them to update this page too.
+Until then, a resource in that state needs the property removed
+from the template and re-added across two deploys, or the recreate this flag
+performs.
+
+Reach for the flag when the auto-routed **update** cannot deliver the property,
+which is a narrower case:
+
+- **The property is create-only.** No update on either layer can set it, so the
+  resource has to be created again with the property present. The CFn resource
+  schema's `createOnlyProperties` is what to check.
+- **The SDK-created resource's physical id is not a valid Cloud Control
+  identifier.** Cloud Control addresses a resource by the `Identifier` its
+  schema's `primaryIdentifier` defines, while an SDK provider stores whatever
+  its create returned; the two agree per type or they do not, and cdkd treats
+  that as an empirical per-type fact rather than a guarantee (see the
+  `STICKY_CC_MIGRATION_EXEMPT` admission bar in
+  `src/provisioning/provider-registry.ts`). Where they disagree, the auto-routed
+  update fails and the recreate is the way through.
+
+Both bullets are reasoned from the routing model, not measured — unlike the
+`sdk-to-cc-autoroute` paragraph that opens this section. If you hit one, the
+deploy fails loudly rather than silently dropping anything, so the flag is a
+remedy you reach for after a failure, not a precaution you take before one.
+That is what separates them from the caveat above, which fails silently; the
+two-deploy workaround named there is also reasoned rather than measured.
 
 ### When not to use it
+
+- **The resource is still `provisionedBy: 'sdk'` and you have only just added
+  the property.** Deploy first: the auto-route very likely applies it in place,
+  and a recreate you did not need costs downtime. See the paragraph above.
 
 - **The resource is already `provisionedBy: 'cc-api'`.** The update path
   already routes via Cloud Control, so the recreate is a no-op that would

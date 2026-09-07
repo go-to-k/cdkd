@@ -1,0 +1,321 @@
+#!/usr/bin/env bash
+# verify.sh — what a STILL-SDK resource does when the template gains a
+# silently-dropped property (issue 2744).
+#
+# docs/cli-deploy-safety.md answered that twice, oppositely, ~70 lines apart:
+# the `--allow-unsupported-properties` section said the next deploy AUTO-ROUTES
+# the resource through Cloud Control and that the flag exists to PREVENT that;
+# the recreate-via-cc-api section said the property "will not reach AWS, because the
+# SDK update path drops it silently" and a destroy-and-recreate is required.
+# One of those costs the user downtime. `getProviderFor` reads like the first,
+# but source does not settle whether the Cloud Control UPDATE succeeds against
+# a physical id the SDK provider minted, nor whether the property lands.
+#
+# Phases:
+#   1 base      -- deploy on the SDK route
+#   2 drop      -- add EvaluationWindow with NO flag. THE ARM.
+#   3 rebase    -- --recreate-via-sdk-provider on a template without the
+#                  property. CONTROL for the identity witness: a genuine
+#                  destroy-and-recreate must kill the out-of-band tag, or the
+#                  tag surviving phase 2 witnesses nothing.
+#   4 allowdrop -- the property WITH --allow-unsupported-properties. CONTROL
+#                  for the premise: proves the SDK route really does drop it,
+#                  rather than importing that from the generated coverage map.
+#   5 dropagain -- the same property again with NO flag. Pins
+#                  go-to-k/cdkd#2750: the opt-out deploy RECORDED the property
+#                  it never wrote, so the Cloud Control patch diffs it as
+#                  unchanged and it never reaches AWS. Identical operation to
+#                  phase 2; the only difference is the recorded bag, which is
+#                  what makes the pair a clean A/B.
+#   6 destroy
+#
+# See lib/sdk-to-cc-autoroute-stack.ts for why AWS::CloudWatch::Alarm and why
+# EvaluationWindow specifically.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+cd "$(dirname "$0")"
+
+# A paged `aws` read blocks forever under a non-interactive runner.
+export AWS_PAGER=""
+
+STACK="CdkdSdkToCcAutorouteExample"
+REGION="${AWS_REGION:-us-east-1}"
+STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+ALARM_NAME="${STACK}-alarm"
+# Resolved from the synth template, never hard-coded. A guessed key would make
+# every state assertion read `null` and pass vacuously, and CDK's logical id is
+# not derivable from the construct id in general -- a nested path is hashed.
+# (Here it happens to be the bare `AutorouteAlarm`, since the construct sits at
+# the stack root; reading it is what keeps that from being load-bearing.)
+LOGICAL_ID=""
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
+
+record() { # usage: record <jq-expression-over-the-resource-object>
+  local json key
+  json=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+  [ -n "${json}" ] || { echo "FAIL: state.json unreadable at ${STATE_KEY}" >&2; exit 1; }
+  key=$(printf '%s' "${json}" | jq -r --arg p "${LOGICAL_ID}" \
+    '.resources | keys[] | select(startswith($p))' | head -1)
+  [ -n "${key}" ] || { echo "FAIL: no state resource whose logical id starts with ${LOGICAL_ID}" >&2; exit 1; }
+  printf '%s' "${json}" | jq -r --arg k "${key}" ".resources[\$k] | $1"
+}
+
+# The alarm's own ARN, needed for tagging. `describe-alarms` is the reader
+# rather than the state record's attributes: this must observe AWS, not cdkd's
+# belief about AWS.
+alarm_arn() {
+  aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+    --query 'MetricAlarms[0].AlarmArn' --output text
+}
+
+cleanup() {
+  echo "==> Cleanup"
+  set +eu
+  [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+  aws cloudwatch delete-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  fi
+  set -eu
+}
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
+
+[ -z "${STATE_BUCKET:-}" ] && { echo "FAIL: STATE_BUCKET required" >&2; exit 1; }
+[ ! -f "${LOCAL_DIST}" ] && { echo "FAIL: build dist first" >&2; exit 1; }
+command -v jq >/dev/null || { echo "FAIL: jq required" >&2; exit 1; }
+[ -d node_modules ] || npm install
+echo "==> Pre-run cleanup"; cleanup
+
+if ! SYNTH_OUT=$(node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
+  printf '%s\n' "${SYNTH_OUT}" >&2
+  echo "FAIL: synth failed" >&2
+  exit 1
+fi
+TEMPLATE="cdk.out/${STACK}.template.json"
+# `[ -f ]`, not `ls | head -1`: under `pipefail` a missing file makes `ls` exit
+# 2, errexit kills the run at the assignment, and the message below never
+# prints.
+[ -f "${TEMPLATE}" ] || { echo "FAIL: no synth template at ${TEMPLATE}" >&2; exit 1; }
+LOGICAL_ID=$(jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::CloudWatch::Alarm") | .key' "${TEMPLATE}" | head -1)
+[ -n "${LOGICAL_ID}" ] || { echo "FAIL: no AWS::CloudWatch::Alarm in ${TEMPLATE}" >&2; exit 1; }
+echo "==> Resource under test: ${LOGICAL_ID}"
+
+# The premise the whole fixture rests on: EvaluationWindow must be ABSENT from
+# the base template and PRESENT in the drop one. If a cdk-lib upgrade starts
+# emitting it, or the override stops landing, every assertion below would be
+# about the wrong template and would pass having tested nothing.
+jq -e --arg k "${LOGICAL_ID}" '.Resources[$k].Properties.EvaluationWindow' "${TEMPLATE}" >/dev/null 2>&1 && {
+  echo "FAIL: the BASE phase template already carries EvaluationWindow; phase 1 would not be an SDK-route deploy" >&2; exit 1; }
+if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=drop node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
+  printf '%s\n' "${SYNTH_OUT}" >&2
+  echo "FAIL: drop-phase synth failed" >&2
+  exit 1
+fi
+jq -e --arg k "${LOGICAL_ID}" '.Resources[$k].Properties.EvaluationWindow.WallClockWindow.Timezone == "UTC"' "${TEMPLATE}" >/dev/null 2>&1 || {
+  echo "FAIL: the DROP phase template does not carry EvaluationWindow; addPropertyOverride did not land and the arm would test nothing" >&2; exit 1; }
+echo "    OK: the two phases really do differ by the silent-drop property"
+
+echo "==> Phase 1: Deploy with handled properties only (SDK route expected)"
+env CDKD_TEST_PHASE=base \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+P0=$(record '.physicalId')
+LAYER0=$(record '.provisionedBy')
+[ "${LAYER0}" = "sdk" ] || { echo "FAIL: fresh deploy recorded provisionedBy=${LAYER0}, expected sdk. The question this fixture asks is about a STILL-SDK resource, so nothing below would be about it." >&2; exit 1; }
+echo "    OK: created on the SDK route (${P0})"
+
+# IDENTITY WITNESS. The alarm name is fixed by the template, so a delete +
+# create mints the SAME name and comparing physical ids cannot tell an in-place
+# update from a replacement. A tag applied out of band survives an update and
+# dies with a replacement, so its presence afterwards is positive evidence.
+ARN0=$(alarm_arn)
+[ -n "${ARN0}" ] && [ "${ARN0}" != "None" ] || { echo "FAIL: could not read the alarm ARN after phase 1" >&2; exit 1; }
+aws cloudwatch tag-resource --resource-arn "${ARN0}" \
+  --tags "Key=cdkd-integ-witness,Value=2744" --region "${REGION}" >/dev/null
+WITNESS_BEFORE=$(aws cloudwatch list-tags-for-resource --resource-arn "${ARN0}" --region "${REGION}" \
+  --query "length(Tags[?Key=='cdkd-integ-witness'])" --output text)
+[ "${WITNESS_BEFORE}" = "1" ] || { echo "FAIL: identity witness not established (tags=${WITNESS_BEFORE}, expected 1)" >&2; exit 1; }
+echo "    OK: identity witness attached (1 unmanaged tag)"
+
+echo "==> Phase 2a: the plan ANNOUNCES the re-route"
+DIFF_OUT=$(env CDKD_TEST_PHASE=drop \
+  node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)
+grep -q 'via CC API: EvaluationWindow' <<<"${DIFF_OUT}" || {
+  echo "FAIL: cdkd diff did not announce the Cloud Control auto-route for EvaluationWindow. A deploy that moves a live resource between provisioning layers must be visible at plan time." >&2
+  printf '%s\n' "${DIFF_OUT}" >&2
+  exit 1
+}
+echo "    OK: plan says 'via CC API: EvaluationWindow'"
+
+echo "==> Phase 2b: THE ARM -- deploy the silent-drop property with NO flag"
+# Output captured so the per-resource VERB can be read. NOT piped through
+# `tee`: /run-integ redirects this script to a regular file, and on Linux
+# /dev/stderr resolves to that path, so tee would reopen it O_TRUNC and zero
+# the run log out from under the shell.
+# `if !` rather than a bare assignment: under `set -e` a failing deploy aborts
+# AT the assignment, so a plain `ARM_OUT=$(...)` followed by a print loses every
+# line of cdkd output for the one phase that answers this fixture's question --
+# and the EXIT trap then destroys the stack, so there is nothing left to look
+# at either.
+if ! ARM_OUT=$(env CDKD_TEST_PHASE=drop \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1); then
+  printf '%s\n' "${ARM_OUT}" >&2
+  echo "FAIL: the arm deploy exited non-zero" >&2
+  exit 1
+fi
+printf '%s\n' "${ARM_OUT}" >&2
+# Colour codes sit between the marker and the verb, so strip them first.
+ARM_PLAIN=$(printf '%s' "${ARM_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+# THE VERB, not the counts. A REPLACEMENT also increments `updated`
+# (deploy-engine.ts, the replacement arm) and never increments `created`, so
+# `Updated: 1 / Created: 0` is byte-identical for a replace and cannot witness
+# in-placeness -- an earlier revision of this fixture asserted exactly that and
+# proved nothing. The per-resource line is where the two differ: an in-place
+# update renders the verb `updated`, a replacement renders `replaced`.
+# ANCHORED TO THE RESOURCE, not searched over the whole capture. This block
+# holds the CDK app's stderr verbatim -- `app-executor.ts` re-emits every line
+# at INFO, and aws-cdk-lib deprecation notices routinely say "replaced by" --
+# plus cdkd's own non-replacement lines that carry the word (lock-manager's
+# "it has been replaced since ..."). An unanchored `replaced` would print a
+# confidently wrong verdict, which is the exact failure this assertion replaced.
+#
+# READ FROM A HERESTRING, not a pipe: `printf | grep -q` exits 141 under
+# `pipefail` when grep stops at an early match and printf takes SIGPIPE, which
+# INVERTS both idioms below -- the refusal would silently skip on exactly the
+# defect it guards.
+# `LOGICAL_ID` is CDK-generated alphanumeric, so it is safe unescaped, and the
+# update-path fallback line ("Resource <id> was replaced: ...") carries it too.
+grep -qE "${LOGICAL_ID}.*\breplaced\b" <<<"${ARM_PLAIN}" && { echo "FAIL: the deploy REPLACED the resource instead of updating it in place" >&2; exit 1; }
+grep -qE "${LOGICAL_ID}.*\bupdated\b" <<<"${ARM_PLAIN}" || { echo "FAIL: the deploy did not report an update of ${LOGICAL_ID} at all; it may have been a no-op" >&2; exit 1; }
+# Liveness only. `Updated:` folds full and PARTIAL updates together, and the
+# metadata-only path renders the same verb without calling a provider, so this
+# line pins "one resource changed", not "the property was written" -- the
+# Threshold and EvaluationWindow readbacks below are what pin that.
+grep -qE '^[[:space:]]*Updated:[[:space:]]*1$' <<<"${ARM_PLAIN}" || { echo "FAIL: the summary does not count exactly one changed resource" >&2; exit 1; }
+
+P1=$(record '.physicalId')
+LAYER1=$(record '.provisionedBy')
+[ "${LAYER1}" = "cc-api" ] || { echo "FAIL: the record did not move to Cloud Control (provisionedBy=${LAYER1}). docs/cli-deploy-safety.md's --allow-unsupported-properties section claims this re-route happens with no flag." >&2; exit 1; }
+[ "${P1}" = "${P0}" ] || { echo "FAIL: the auto-route changed the physical id (${P0} -> ${P1})" >&2; exit 1; }
+
+# Did the deploy actually provision anything? Without this, "the record says
+# cc-api" is equally explained by a NO_CHANGE deploy that never called a
+# provider.
+THRESHOLD=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'MetricAlarms[0].Threshold' --output text)
+# Compared NUMERICALLY: `--output text` renders the same number as `2.0` or
+# `2` depending on the API's JSON, and a string compare would fail on a
+# perfectly good deploy.
+awk -v t="${THRESHOLD}" 'BEGIN { exit !(t + 0 == 2) }' || { echo "FAIL: the deploy did not reach AWS (Threshold=${THRESHOLD}, expected 2); every assertion here would be vacuous" >&2; exit 1; }
+
+# THE question. Read from AWS, not from cdkd's state record.
+WINDOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'MetricAlarms[0].EvaluationWindow.WallClockWindow.Timezone' --output text)
+[ "${WINDOW}" = "UTC" ] || { echo "FAIL: EvaluationWindow did NOT reach AWS (Timezone=${WINDOW}). docs/cli-deploy-safety.md's recreate-via-cc-api section would be right and its allow-unsupported-properties section wrong: the auto-route does not apply the property to an existing SDK-created resource." >&2; exit 1; }
+
+# In place, not replaced.
+ARN1=$(alarm_arn)
+[ -n "${ARN1}" ] && [ "${ARN1}" != "None" ] || { echo "FAIL: the alarm is GONE after the auto-route deploy; it was deleted rather than updated" >&2; exit 1; }
+WITNESS_AFTER=$(aws cloudwatch list-tags-for-resource --resource-arn "${ARN1}" --region "${REGION}" \
+  --query "length(Tags[?Key=='cdkd-integ-witness'])" --output text)
+# TWO explanations if this fires, and they are not the same finding: the
+# resource was REPLACED (the auto-route is not churn-free), or Cloud Control's
+# read-modify-write update dropped a tag the template does not declare. Both
+# are worth knowing and neither is acceptable silently, so this fails either
+# way and the message says to disambiguate rather than asserting which.
+[ "${WITNESS_AFTER}" = "1" ] || { echo "FAIL: the unmanaged tag is gone (tags=${WITNESS_AFTER}, expected 1). Either the alarm was REPLACED despite keeping its name, or the Cloud Control update stripped a tag the template does not declare. Disambiguate before reading this as churn." >&2; exit 1; }
+echo "    OK: record moved to cc-api, EvaluationWindow reached AWS, id unchanged, unmanaged tag intact"
+
+echo "==> Phase 3: CONTROL -- a genuine recreate MUST kill the witness"
+# The tag surviving phase 2b only means "not replaced" if a real replacement
+# would have removed it. The alarm name is fixed by the template, so its ARN
+# survives a destroy-and-recreate too and cannot carry that weight; nothing so
+# far shows the tag can die at all. `--recreate-via-sdk-provider` performs an
+# actual destroy + create, so the tag must be gone afterwards. If it is not,
+# the witness is inert and phase 2b's in-place conclusion is unsupported.
+#
+# The template drops back to handled properties only: the flag refuses while
+# the template still carries a silent-drop property, since the auto-route would
+# send the recreated resource straight back to Cloud Control.
+env CDKD_TEST_PHASE=rebase \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --recreate-via-sdk-provider "${LOGICAL_ID}" --yes
+
+LAYER_RE=$(record '.provisionedBy')
+[ "${LAYER_RE}" = "sdk" ] || { echo "FAIL: --recreate-via-sdk-provider did not return the resource to the SDK route (provisionedBy=${LAYER_RE})" >&2; exit 1; }
+ARN2=$(alarm_arn)
+[ -n "${ARN2}" ] && [ "${ARN2}" != "None" ] || { echo "FAIL: the alarm is gone after the recreate" >&2; exit 1; }
+# Every later phase reads its threshold back so a NO_CHANGE deploy cannot pass
+# vacuously; this one carried only the witness check.
+T_RE=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'MetricAlarms[0].Threshold' --output text)
+awk -v t="${T_RE}" 'BEGIN { exit !(t + 0 == 3) }' || { echo "FAIL: the recreate did not reach AWS (Threshold=${T_RE}, expected 3)" >&2; exit 1; }
+WITNESS_RECREATED=$(aws cloudwatch list-tags-for-resource --resource-arn "${ARN2}" --region "${REGION}" \
+  --query "length(Tags[?Key=='cdkd-integ-witness'])" --output text)
+[ "${WITNESS_RECREATED}" = "0" ] || { echo "FAIL: the unmanaged tag SURVIVED a real destroy-and-recreate (tags=${WITNESS_RECREATED}). The witness cannot distinguish an update from a replacement, so phase 2b's in-place conclusion rests on nothing." >&2; exit 1; }
+echo "    OK: the witness dies on a real recreate -- its survival in phase 2b is meaningful"
+
+echo "==> Phase 4: CONTROL -- the opt-in flag really does drop the property"
+# The arm imports "the SDK route would drop EvaluationWindow" from the
+# generated coverage map. This observes it: same property, the flag that says
+# "stay on the SDK path and accept the drop". The record is back on 'sdk' after
+# phase 3's recreate, which is the state this control needs.
+env CDKD_TEST_PHASE=allowdrop \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --allow-unsupported-properties "AWS::CloudWatch::Alarm:EvaluationWindow" --yes
+
+LAYER_ALLOW=$(record '.provisionedBy')
+[ "${LAYER_ALLOW}" = "sdk" ] || { echo "FAIL: --allow-unsupported-properties did not keep the resource on the SDK route (provisionedBy=${LAYER_ALLOW})" >&2; exit 1; }
+T_ALLOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'MetricAlarms[0].Threshold' --output text)
+awk -v t="${T_ALLOW}" 'BEGIN { exit !(t + 0 == 4) }' || { echo "FAIL: the control deploy did not reach AWS (Threshold=${T_ALLOW}, expected 4); it proves nothing about the drop" >&2; exit 1; }
+W_ALLOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'MetricAlarms[0].EvaluationWindow' --output text)
+[ "${W_ALLOW}" = "None" ] || [ -z "${W_ALLOW}" ] || { echo "FAIL: EvaluationWindow reached AWS on the SDK route (${W_ALLOW}); it is not a silent drop for this type, so phase 2b measured nothing" >&2; exit 1; }
+echo "    OK: stayed on SDK, other properties applied, EvaluationWindow dropped"
+
+echo "==> Phase 5: KNOWN BUG go-to-k/cdkd#2750 -- the recorded bag defeats the re-route"
+# The opt-out deploy above persisted EvaluationWindow into the state record
+# even though it was never written to AWS. `CloudControlProvider.update` builds
+# a JSON Patch from the RECORDED bag to the desired one, so the property is
+# identical on both sides, the patch omits it, and the flag-less deploy below
+# -- byte-identical in operation to phase 2b, which DID apply it -- silently
+# does not.
+#
+# This arm asserts the CURRENT, WRONG behaviour on purpose, so that a fix for
+# go-to-k/cdkd#2750 turns this fixture RED and forces both the fix and the
+# documentation to move together. Do not "repair" it by relaxing the assertion.
+RECORDED_BEFORE=$(record '.properties.EvaluationWindow // "ABSENT"')
+[ "${RECORDED_BEFORE}" != "ABSENT" ] || { echo "FAIL: the opt-out deploy did NOT record EvaluationWindow, so go-to-k/cdkd#2750's mechanism is gone and this arm no longer pins anything -- re-read the issue before changing this" >&2; exit 1; }
+
+env CDKD_TEST_PHASE=dropagain \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+LAYER_AGAIN=$(record '.provisionedBy')
+[ "${LAYER_AGAIN}" = "cc-api" ] || { echo "FAIL: the resource did not re-route to Cloud Control (provisionedBy=${LAYER_AGAIN}); the bug is that the ROUTE happens and the property still does not land, so without the route this proves nothing" >&2; exit 1; }
+T_AGAIN=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'MetricAlarms[0].Threshold' --output text)
+awk -v t="${T_AGAIN}" 'BEGIN { exit !(t + 0 == 5) }' || { echo "FAIL: the deploy did not reach AWS (Threshold=${T_AGAIN}, expected 5)" >&2; exit 1; }
+W_AGAIN=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'MetricAlarms[0].EvaluationWindow.WallClockWindow.Timezone' --output text)
+[ "${W_AGAIN}" = "None" ] || { echo "FAIL(GOOD NEWS): EvaluationWindow reached AWS (Timezone=${W_AGAIN}). go-to-k/cdkd#2750 appears FIXED -- close it, delete this arm, and drop the caveat from docs/cli-deploy-safety.md and the case-4 entry from docs/troubleshooting.md." >&2; exit 1; }
+echo "    OK: re-routed to Cloud Control and the property still did not land (go-to-k/cdkd#2750, as filed)"
+
+echo "==> Phase 6: Destroy + gone-probe"
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+GONE=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'length(MetricAlarms)' --output text)
+# describe-alarms returns an EMPTY LIST for a missing
+# alarm rather than an error, so the repo's shared not-found gone-probe helpers
+# cannot classify it -- the count is the only honest probe for this API, which
+# is why this fixture does not carry them.
+[ "${GONE}" = "0" ] || { echo "FAIL: alarm ${ALARM_NAME} survived destroy (found ${GONE})" >&2; exit 1; }
+echo "    OK: destroyed clean"
+
+echo "PASS: sdk-to-cc-autoroute (auto-route observed on a live SDK-created resource)"

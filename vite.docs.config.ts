@@ -30,7 +30,6 @@ const navigation: SsgNavigationGroup[] = [
     title: 'Features',
     items: [
       { title: 'Wait Modes', path: '/wait-modes' },
-      { title: 'Provisioning Layers', path: '/provisioning-layers' },
       { title: 'Rollback', path: '/rollback' },
       { title: 'Drift Detection', path: '/drift' },
       { title: 'Orphan vs Destroy', path: '/orphan-vs-destroy' },
@@ -39,6 +38,7 @@ const navigation: SsgNavigationGroup[] = [
       { title: 'Export to CloudFormation', path: '/export' },
       { title: 'Mixed Estates', path: '/mixed-estates' },
       { title: 'Stack Outputs', path: '/stack-outputs' },
+      { title: 'Provisioning Layers', path: '/provisioning-layers' },
       { title: 'Deployment Events', path: '/deployment-events' },
       { title: 'CI: Per-PR Environments', path: '/ci-per-pr' },
     ],
