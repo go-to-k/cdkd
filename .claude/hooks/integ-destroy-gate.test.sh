@@ -261,8 +261,16 @@ stage_filter_change() {
   # (tests/unit/scripts/cross-cutting-list-sync.test.ts compares the MERGED
   # activation set and stays 15/15 green through the move). So the invariant is
   # asserted rather than described. Kept in sync with the hook's own
-  # `delete_symbol_pattern` by hand -- a copy, but a one-alternation copy whose
-  # drift can only make this guard LOOSER, never wrong.
+  # `delete_symbol_pattern` by hand. Drift can make this guard LOOSER (the hook
+  # GAINS an alternative this list lacks: a poisoned fixture slips through and
+  # the case it feeds silently stops discriminating) or OVER-STRICT (the hook
+  # LOSES one: a content line that is delete-symbol-free by the hook's own
+  # definition is refused here anyway -- measured, dropping `|detach` from the
+  # hook and putting `detach` in a content line gives Fail: 1). It cannot fail
+  # open in the dangerous direction, because over-strict is a loud,
+  # self-correcting suite failure. The guard is also stricter than the hook by
+  # construction: the hook's `^[-+][^-+]` skips the first content character,
+  # this scans the whole string.
   case "$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')" in
     *delete*|*rollback*|*hyperplane*|*dependencyviolation*|*eni*|*detach*)
       fail=$((fail + 1))
