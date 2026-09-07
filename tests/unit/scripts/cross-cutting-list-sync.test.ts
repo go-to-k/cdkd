@@ -234,6 +234,42 @@ const DESTROY_SCOPE_PIN = [
   'src/provisioning/region-check.ts',
 ];
 
+/**
+ * The STRICT half of `integ-destroy`'s scope, pinned SEPARATELY from
+ * `DESTROY_SCOPE_PIN`.
+ *
+ * Every other assertion in this file is blind to a file MOVING BETWEEN BUCKETS.
+ * `destroyHookScope()` merges all three activation patterns before comparing, so
+ * the two-halves check, the CLAUDE.md prose copy and `DESTROY_SCOPE_PIN` all see
+ * the same set whichever bucket a file sits in; and the header fence compares the
+ * header to `strict_delete`, so editing both together satisfies it. Move
+ * `src/provisioning/provider-registry.ts` from `strict_delete` to
+ * `filtered_delete`, adjust the header to match, and the whole suite stays green.
+ *
+ * That is not a hypothetical. It is the precise fail-open go-to-k/cdkd#2720
+ * measured before choosing the bucket: `filtered_delete` only fires when a
+ * changed line carries `delete|rollback|ENI|detach|...`, and a routing edit
+ * writes none of those words -- five realistic edits matched 0 times. A
+ * hunk-filtered `provider-registry.ts` is a gate that activates, consults the
+ * marker, and passes the change through anyway. WHICH BUCKET is the decision;
+ * the merged scope cannot express it, so it gets its own pin.
+ */
+const DESTROY_STRICT_PIN = [
+  'src/analyzer/dag-builder.ts',
+  'src/analyzer/implicit-delete-deps.ts',
+  'src/analyzer/lambda-vpc-deps.ts',
+  'src/deployment/retry.ts',
+  'src/deployment/retryable-errors.ts',
+  'src/deployment/rollback-executor.ts',
+  'src/provisioning/provider-registry.ts',
+];
+
+const STRICT_PIN_RATIONALE =
+  'The STRICT bucket of integ-destroy-gate.sh changed. Adding an entry is cheap and correct. ' +
+  'MOVING one out -- to filtered_delete or provider_pattern -- means changes to that file only ' +
+  'trip the gate when their diff text happens to carry delete vocabulary, so say in the PR body ' +
+  'why that file\'s changes always will. REMOVING one drops it from the gate entirely.';
+
 const BROAD_SET_PIN = [
   'bench-cdk-sample',
   'drift-revert',
@@ -647,13 +683,18 @@ function destroyStrictBasenamesFromHookHeader(): string[] {
   return out;
 }
 
-/** The basenames `strict_delete` itself matches -- the executable side. */
-function destroyStrictBasenamesFromPattern(): string[] {
+/** The PATHS `strict_delete` itself matches -- the executable side. */
+function destroyStrictPaths(): string[] {
   const m = /^\s*strict_delete='([^']+)'$/m.exec(read(DESTROY_HOOK));
   expect(m, "integ-destroy-gate.sh: no strict_delete='...' assignment found").not.toBeNull();
-  const paths = expandFiniteEre(m![1], 'integ-destroy-gate.sh strict_delete');
+  const paths = expandFiniteEre(m![1], 'integ-destroy-gate.sh strict_delete').map(normalizeGlob);
   assertFloor(paths, 'integ-destroy-gate.sh strict_delete', 5);
-  return paths.map((p) => p.slice(p.lastIndexOf('/') + 1));
+  return paths;
+}
+
+/** The same set as basenames, which is the shape the header comment writes. */
+function destroyStrictBasenamesFromPattern(): string[] {
+  return destroyStrictPaths().map((p) => p.slice(p.lastIndexOf('/') + 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -879,6 +920,12 @@ describe('integ-destroy hook activation and marker scope name the same files', (
       .filter((p) => !existsSync(join(repoRoot, p)));
     expect(missing, 'these integ-destroy scope entries name paths that no longer exist').toEqual(
       [],
+    );
+  });
+
+  it('holds exactly the pinned STRICT bucket (which bucket, not just which files)', () => {
+    expect(canonical(destroyStrictPaths()), STRICT_PIN_RATIONALE).toEqual(
+      canonical(DESTROY_STRICT_PIN),
     );
   });
 

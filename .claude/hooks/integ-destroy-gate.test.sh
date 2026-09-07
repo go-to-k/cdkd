@@ -249,6 +249,29 @@ git -C "$filter_repo" update-ref refs/remotes/origin/main "$(git -C "$filter_rep
 #  in the STRICT set, not because the hunk filter matched words.
 stage_filter_change() {
   local rel="$1"; local line="$2"
+  # The docstring above states that the content carries no delete-symbol
+  # vocabulary, and EVERY strict-vs-filtered case depends on it: those cases
+  # prove a file trips the gate because it is STRICT, and the only thing
+  # distinguishing that from "the hunk filter matched a word" is this content.
+  # Unpinned, a future edit adding `delete` / `ENI` / `rollback` to one of these
+  # strings leaves every case GREEN while silently deleting the discrimination
+  # -- the case would then pass under either bucket. Measured: moving
+  # provider-registry.ts from strict_delete to filtered_delete currently fails
+  # its case (25/1), and that is the ONLY executable fence on the bucket choice
+  # (tests/unit/scripts/cross-cutting-list-sync.test.ts compares the MERGED
+  # activation set and stays 15/15 green through the move). So the invariant is
+  # asserted rather than described. Kept in sync with the hook's own
+  # `delete_symbol_pattern` by hand -- a copy, but a one-alternation copy whose
+  # drift can only make this guard LOOSER, never wrong.
+  case "$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')" in
+    *delete*|*rollback*|*hyperplane*|*dependencyviolation*|*eni*|*detach*)
+      fail=$((fail + 1))
+      fail_log+="FAIL stage_filter_change fixture for $rel carries delete-symbol vocabulary "
+      fail_log+="in its content line, so any case using it passes on the HUNK FILTER rather "
+      fail_log+="than on bucket membership: $line\n"
+      printf 'FAIL stage_filter_change fixture content is not delete-symbol-free: %s\n' "$rel"
+      ;;
+  esac
   git -C "$filter_repo" reset -q --hard refs/remotes/origin/main
   mkdir -p "$filter_repo/$(dirname "$rel")"
   printf '%s\n' "$line" > "$filter_repo/$rel"
@@ -307,7 +330,7 @@ run_case "diff filter: rollback-executor.ts is delete-touching (#2042)" 2 stale 
 
 # issue #2720: the SDK-vs-Cloud-Control routing decision. `getProviderFor`
 # picks the provider that DELETES a resource -- deploy-engine's plain delete
-# and its replacement old-delete, destroy-runner, and five sites in
+# and its replacement old-delete, destroy-runner, and seven sites in
 # rollback-executor all read it -- so a routing regression reroutes DELETE for
 # every resource in a template at once.
 #
