@@ -1584,7 +1584,7 @@ describe('the script end to end', () => {
     expect(glued).not.toContain('Nothing in this refresh needs a decision');
   }, 60_000);
 
-  it('refuses a SINGLE-dash flag consumed as a value', () => {
+  it('refuses a SINGLE-dash token where a value was expected', () => {
     // The guard covered `--x` only, while the workflow comment eight lines from
     // it warns about exactly the single-dash spelling (`-props`). This
     // fabricated a failed check rendered as `#### \`-property-coverage\``.
@@ -1649,14 +1649,23 @@ describe('the script end to end', () => {
   it('refuses an unrecognised flag instead of rendering a clean verdict', () => {
     // Every reader's absent-flag arm is the permissive one, so a typo, a
     // retired flag and a single-dash spelling all rendered as clean.
-    for (const bad of ['--property-coverage-rc', '--failed-check', '-failed-checks']) {
+    // A dash-LESS token too: the first guard tested `startsWith('-')`, so
+    // `failed-checks property-coverage` — one spelling over from
+    // `-failed-checks` — fell through to the permissive arms and rendered the
+    // clean verdict. This script takes no positionals at all.
+    for (const bad of [
+      '--property-coverage-rc',
+      '--failed-check',
+      '-failed-checks',
+      'failed-checks',
+    ]) {
       const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [bad, 'x']);
       expect(md, `accepted ${bad}`).toContain('unrecognized flag');
       expect(md).not.toContain('Nothing in this refresh needs a decision');
     }
   }, 60_000);
 
-  it('accepts every flag it documents, in both spellings', () => {
+  it('accepts the documented flags in both the space and glued spellings', () => {
     // The inverse: a guard that refused a REAL flag would be caught here
     // rather than in the workflow.
     const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
@@ -1932,7 +1941,15 @@ describe('the script\u2019s own synopsis', () => {
     // check, the verdict six rounds went into closing, reached through the
     // documentation. Both directions, so a new flag cannot ship undocumented
     // and a retired one cannot linger.
-    const documented = [...header.matchAll(/`?(--[a-z][a-z-]*)`?/g)].map((m) => m[1]!);
+    // The SYNOPSIS, not the whole docblock: matching across the header let a
+    // flag survive in prose while being dropped from the invocation, which is
+    // the half a reader copies — and the assertion message said "synopsis".
+    const lines = header.split('\n').map((l) => l.replace(/^\s*\*\s?/, ''));
+    const start = lines.findIndex((l) => l.includes('node scripts/diagnose-schema-refresh.mjs'));
+    expect(start, 'the synopsis no longer shows the invocation').toBeGreaterThan(-1);
+    const synopsis: string[] = [];
+    for (let i = start; i < lines.length && lines[i]!.trim() !== ''; i++) synopsis.push(lines[i]!);
+    const documented = [...synopsis.join('\n').matchAll(/(--[a-z][a-z-]*)/g)].map((m) => m[1]!);
     expect(new Set(documented), 'the synopsis and the accepted set disagree').toEqual(
       new Set(KNOWN_FLAGS)
     );
@@ -1948,8 +1965,15 @@ describe('the script\u2019s own synopsis', () => {
     for (let i = start; i < lines.length; i++) {
       const body = lines[i]!.replace(/^\s*\*\s?/, '');
       if (body.trim() === '') break;
-      const continues = body.endsWith('\\');
-      if (continues) {
+      const isLast = i + 1 >= lines.length || lines[i + 1]!.replace(/^\s*\*\s?/, '').trim() === '';
+      if (isLast) {
+        expect(body.endsWith('\\'), `the last synopsis line dangles a continuation`).toBe(false);
+      } else {
+        // Exactly one. A DOUBLED backslash terminates the command and passes a
+        // literal `\`; a MISSING one ends the command early. The first fence
+        // covered only the doubled spelling — the same one-spelling shape it
+        // was written to catch.
+        expect(body.endsWith('\\'), `line ${i + 1} does not continue`).toBe(true);
         expect(body.endsWith('\\\\'), `line ${i + 1} ends in a DOUBLED backslash`).toBe(false);
       }
     }

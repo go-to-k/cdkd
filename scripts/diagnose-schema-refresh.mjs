@@ -1415,7 +1415,8 @@ export function loadDeclaredProperties(repoRoot = REPO_ROOT) {
 }
 
 /**
- * Every flag this script accepts, in the order the synopsis lists them.
+ * Every flag this script accepts. Fenced as a SET against the synopsis — the
+ * order here is for reading, not a checked property.
  *
  * EXPORTED so the header docblock and the argument readers cannot drift apart:
  * the synopsis documented `--property-coverage-rc` for two rounds after
@@ -1440,11 +1441,27 @@ function main() {
   // for the check list), so a typo, a retired flag or a single-dash spelling
   // all render as clean. Same guard, and the same reasoning, as the sibling
   // producer `refresh-cfn-schemas.mjs` carries.
-  const unknown = args.filter(
-    (a) =>
-      a.startsWith('-') &&
-      !KNOWN_FLAGS.some((flag) => a === flag || a.startsWith(`${flag}=`))
-  );
+  // EVERY unrecognised argument, not just the dash-leading ones: this script
+  // takes no positionals, and `failed-checks property-coverage` — one spelling
+  // over from the `-failed-checks` the first guard caught — fell straight
+  // through to the permissive arms and rendered the clean verdict. A guard
+  // covering fewer spellings than its subject accepts is the shape this whole
+  // file kept producing.
+  const unknown = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (KNOWN_FLAGS.some((flag) => a.startsWith(`${flag}=`))) continue;
+    if (KNOWN_FLAGS.includes(a)) {
+      // Its value is consumed only if it could BE one. A dash-leading token is
+      // not a value here — that is the same rule `rawArg` applies — so
+      // consuming it blindly would let `--failed-checks --skipped-log <path>`
+      // swallow the second flag and report the PATH as the unknown argument.
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith('-')) i += 1;
+      continue;
+    }
+    unknown.push(a);
+  }
   if (unknown.length > 0) {
     throw new Error(
       `unrecognized flag(s): ${unknown.join(', ')} — known flags are ${KNOWN_FLAGS.join(', ')}. ` +
