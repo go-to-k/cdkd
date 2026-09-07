@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-sdk-to-cc-autoroute",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd SDK -> Cloud Control auto-route on a still-SDK resource (issue 2744)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

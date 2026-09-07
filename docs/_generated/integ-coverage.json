@@ -717,7 +717,8 @@
         "full-stack-demo",
         "log-pipeline",
         "replacement-immutable-name",
-        "scheduled-task"
+        "scheduled-task",
+        "sdk-to-cc-autoroute"
       ],
       "signals": {
         "cloudwatch": [
@@ -743,6 +744,10 @@
         ],
         "scheduled-task": [
           "l2"
+        ],
+        "sdk-to-cc-autoroute": [
+          "l1",
+          "literal"
         ]
       }
     },

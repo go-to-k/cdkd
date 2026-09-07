@@ -20,7 +20,7 @@ This document summarizes common issues when using cdkd and their solutions.
 - [Deployment Errors](#deployment-errors)
   - ["The following resources declare mutually exclusive properties"](#the-following-resources-declare-mutually-exclusive-properties)
   - ["Resource already exists" Error](#resource-already-exists-error)
-  - ["Provider not found" Error](#provider-not-found-error)
+  - [An unsupported resource type](#an-unsupported-resource-type)
   - ["Update requires replacement" Error](#update-requires-replacement-error)
   - ["bucket is not empty" / "still contains images" on destroy](#bucket-is-not-empty-still-contains-images-on-destroy)
   - ["has DeletionPolicy: Snapshot, but ..." refusal on delete](#has-deletionpolicy-snapshot-but-refusal-on-delete)
@@ -44,6 +44,7 @@ This document summarizes common issues when using cdkd and their solutions.
   - [Verifying that traffic is routed](#verifying-that-traffic-is-routed)
 - [Performance Issues](#performance-issues)
   - [Deployment is Slow](#deployment-is-slow)
+  - [A property you set in the template never reaches AWS](#a-property-you-set-in-the-template-never-reaches-aws)
   - [`cdkd diff` shows `[returning to SDK provider]`](#cdkd-diff-shows-returning-to-sdk-provider)
   - [Cloud Control API Rate Limit](#cloud-control-api-rate-limit)
 - [Orphaned Resources](#orphaned-resources)
@@ -563,35 +564,64 @@ cdkd import MyStack --resource MyBucket=my-bucket-name
 
 See [Importing Existing Resources](import.md) for the full flag set.
 
-### "Provider not found" Error
+### An unsupported resource type
 
 **Symptoms:**
 
+Usually at pre-flight, before anything is touched — and the message already
+carries a pre-filled link for requesting the type:
+
 ```
-Error: No provider registered for resource type: AWS::CustomService::Resource
+The following resource types are not supported by cdkd:
+  - AWS::AppMesh::Mesh
+      AWS reports this type as NON_PROVISIONABLE (Cloud Control API cannot
+      manage it) and cdkd has no SDK provider for it.
+      Request support: https://github.com/go-to-k/cdkd/issues/new?title=...
+
+To attempt deployment anyway (Cloud Control will likely fail for
+NON_PROVISIONABLE types), re-run with: --allow-unsupported-types AWS::AppMesh::Mesh
+```
+
+Or, if the type slipped past pre-flight, at provisioning time:
+
+```
+No provider available for resource type: AWS::CustomService::Resource. This
+resource type is not supported by Cloud Control API and no SDK provider is
+registered.
 ```
 
 **Causes:**
 
-- Resource not supported by Cloud Control API
-- SDK Provider not implemented
+cdkd provisions a resource through a hand-written SDK provider or, failing
+that, the Cloud Control API ([Provisioning Layers](provisioning-layers.md)).
+This error means neither is available: AWS reports the type as
+`NON_PROVISIONABLE`, or it is on cdkd's Cloud Control blocklist pending a
+dedicated provider, or it is not an `AWS::` type at all.
 
 **Solutions:**
 
-**1. Check Cloud Control API support status**
+**1. Ask for the type**
+
+The pre-flight message includes a link that opens a pre-filled issue for
+exactly this type. Use it — that request is what schedules the work.
+
+**2. Unblock the deploy now, if the type is only blocklisted**
 
 ```bash
-# Check AWS documentation
-# https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html
+cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh
 ```
 
-**2. Implement SDK Provider**
+This routes the named type through Cloud Control optimistically. It is
+per-type, not a blanket flag, so each one is an explicit choice. For a type AWS
+reports as `NON_PROVISIONABLE`, Cloud Control cannot manage it either and the
+deploy will still fail — the flag does not conjure support. See
+[`--allow-unsupported-types`](cli-deploy-safety.md#allow-unsupported-types-deploy-destroy).
 
-Refer to [Provider Development](./provider-development.md) to implement a custom provider.
+**3. Confirm what Cloud Control actually supports**
 
-**3. Temporarily use CloudFormation**
-
-For resources not supported by cdkd, use regular `cdk deploy`.
+[Supported resources for Cloud Control API](https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html),
+and [Supported Resources](supported-resources.md) for cdkd's own per-type
+coverage table.
 
 ### "Update requires replacement" Error
 
@@ -1335,6 +1365,75 @@ Whether you need to do anything depends on the resource type:
   that sent the resource to Cloud Control in the first place, so first either
   remove that property or accept the drop with
   `--allow-unsupported-properties <Type>:<Prop>`.
+
+### A property you set in the template never reaches AWS
+
+**Symptoms:**
+
+The deploy succeeds, `cdkd diff` reports the change, but the field is absent
+from the live resource when you read it back with the AWS CLI or the console.
+
+**Cause:**
+
+cdkd's SDK providers write only the properties they were written to handle. A
+top-level CloudFormation property outside that set is a **silent drop** — the
+provider does not send it and does not complain. This is a real bug class, so
+cdkd defends against it by default rather than dropping the field: a resource
+whose template carries such a property is routed through the Cloud Control API
+instead, which forwards the whole property map. The deploy says so:
+
+```
+MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Provider does not yet wire EvaluationWindow — CC API will forward the full property map. Override via --allow-unsupported-properties AWS::CloudWatch::Alarm:EvaluationWindow.)
+```
+
+So if the field is genuinely missing from AWS, either the auto-route did not
+fire — three reasons below — or it fired and still did not deliver the
+property, which is a fourth, separate case:
+
+1. **You passed `--allow-unsupported-properties <Type>:<Prop>`.** That flag
+   means "keep this resource on the SDK provider and accept the drop" — it is
+   the opt-in to exactly this outcome.
+2. **The property is not in cdkd's committed CloudFormation schema snapshot.**
+   The routing table is built offline from `tests/fixtures/cfn-schemas/`, and a
+   property AWS published after that snapshot is indistinguishable at deploy
+   time from a typo, so it cannot drive a routing decision. cdkd warns rather
+   than routing.
+3. **The property is nested, not top-level.** The silent-drop check works on
+   top-level properties; a missing key inside a nested object is a different
+   problem.
+4. **The auto-route fired, but an earlier deploy accepted the drop.** If you
+   once passed `--allow-unsupported-properties` for this property, that deploy
+   recorded it in cdkd state without writing it to AWS. The later flag-less
+   deploy does re-route the resource to Cloud Control, but the update is
+   computed as a patch against that record, the property matches on both sides,
+   and nothing is sent. This is a known defect, not AWS behaviour — see
+   [Deploy: safety & compatibility flags](cli-deploy-safety.md#recreate-via-cc-api-deploy).
+
+**Solutions:**
+
+Confirm which layer handled the resource:
+
+```bash
+cdkd state show MyStack    # ProvisionedBy: sdk | cc-api
+```
+
+`sdk` means one of causes 1-3 applies. For case 1, dropping the flag is enough
+ONLY if that resource has never been deployed with it — otherwise you are in
+case 4. For case 2, the property is genuinely unsupported today: open an issue,
+or use `--recreate-via-cc-api <LogicalId>` to put the resource on Cloud Control
+deliberately.
+
+`cc-api` does **not** by itself mean the property was forwarded. It rules out
+causes 1-3 and leaves case 4, so check the deploy history for an
+`--allow-unsupported-properties` run on this property before concluding the
+absence is on AWS's side.
+
+You do **not** need `--recreate-via-cc-api` merely because a deployed
+SDK-managed resource has just gained a silent-drop property — the next deploy
+re-routes it and normally applies the property in place. Case 4 above is one
+exception; a create-only property and a physical id Cloud Control cannot
+address are the others. See
+[Provisioning Layers](provisioning-layers.md#choosing-a-flag).
 
 ### `cdkd diff` shows `[returning to SDK provider]`
 

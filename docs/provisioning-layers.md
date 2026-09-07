@@ -37,7 +37,16 @@ The layer is decided per resource, per deploy, in this order:
    silently drop, cdkd routes the resource through Cloud Control instead**, so
    the property actually reaches AWS. This is the *auto-route*, and it is on by
    default because a silently dropped property is a bug class, not a
-   convenience.
+   convenience. It applies to an **already-deployed** resource too, not only a
+   fresh one: the decision is re-made every deploy. Where the type's SDK-stored
+   physical id is also a valid Cloud Control identifier — true per type, not in
+   general — that write is an update in place, with the physical id preserved
+   and nothing recreated. One sequence defeats it: if an earlier deploy accepted
+   the drop with `--allow-unsupported-properties`, the property is already in
+   the state record and the Cloud Control patch omits it — see
+   [Deploy: safety & compatibility flags](cli-deploy-safety.md#recreate-via-cc-api-deploy).
+   Measured on a live resource by
+   [`tests/integration/sdk-to-cc-autoroute/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sdk-to-cc-autoroute/).
 4. **If no SDK provider exists for the type**, Cloud Control handles it.
 
 Step 3 is what makes the choice look surprising: adding one property to a
@@ -106,7 +115,7 @@ and recreates the resource — see the table below.
 | You want | Situation | Do this |
 | --- | --- | --- |
 | A property the SDK provider drops to reach AWS | The resource is not in cdkd state yet | Nothing — the fresh deploy auto-routes it through Cloud Control |
-| The same, on a resource already deployed | `ProvisionedBy: sdk` | The routing decision is re-made every deploy, so the next one routes the resource through Cloud Control. For the cases that need the resource *recreated* on Cloud Control, see [`--recreate-via-cc-api`](cli-deploy-safety.md#recreate-via-cc-api-deploy) |
+| The same, on a resource already deployed | `ProvisionedBy: sdk` | Usually nothing — the routing decision is re-made every deploy, so the next one auto-routes the resource through Cloud Control, normally as an in-place update. [`--recreate-via-cc-api`](cli-deploy-safety.md#recreate-via-cc-api-deploy) is for the narrower case where that update cannot deliver the property |
 | To keep SDK semantics and accept the dropped property instead | Either | [`--allow-unsupported-properties <Type>:<Prop>`](cli-deploy-safety.md#allow-unsupported-properties-deploy) |
 | To move a resource back to the SDK provider | `ProvisionedBy: cc-api`, type not exempt from the sticky rule | [`--recreate-via-sdk-provider <LogicalId>`](cli-deploy-safety.md#recreate-via-sdk-provider-deploy) — destroys and recreates |
 | The same, without destroying anything | `ProvisionedBy: cc-api`, type exempt because cdkd now covers it | Nothing — the next deploy that changes the resource moves it in place |
