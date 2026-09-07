@@ -856,26 +856,45 @@ gate_segments_raw() {
           # first: one body can hold a whole command list, and an unmarked
           # tail would be read as top-level and its `cd` honoured.
           flushed = flush_line(elines[ei])
-          # A BODY THAT ENDS INSIDE AN UNTERMINATED SPAN GETS THE SAME RETRY THE
-          # END RULE GIVES A TOP-LEVEL LINE, and it has to happen HERE. The END
-          # rule reads the global `q` after `run()`, which this function
-          # restores to the enclosing line`s state, so a body`s finding never
-          # reached it. Measured through the real `branch-gate`: a backtick body
-          # whose `#` comment carries one apostrophe went rc 2 -> 0, because the
-          # verb inside it stopped starting a segment.
+          # THERE IS NO IN-BODY ignore_q RETRY HERE, and its absence is the fix
+          # rather than an omission.
           #
-          # Retrying HERE and not by signalling the END rule is deliberate. A
-          # flag ORed into that rule re-runs the WHOLE input with a quote
-          # character treated as literal, which changed segmentation for lines
-          # that were never in question -- the differential caught it as two
-          # classes losing cells (NOW_MISS 14 -> 8, SEGCOUNT 16 -> 11). The
-          # repair belongs to the body that needs it.
-          if (q != "") {
-            saved_ignore = ignore_q
-            ignore_q = "BOTH"
-            flushed = flush_line(elines[ei])
-            ignore_q = saved_ignore
-          }
+          # NO APOSTROPHE APPEARS IN THIS COMMENT. The whole awk program is ONE
+          # single-quoted shell word, so one apostrophe ends that word and
+          # leaves the library unparseable -- which fails every gate CLOSED,
+          # including the one matching Edit and Write, so the ability to repair
+          # the file goes with it. That happened FIVE times while this branch
+          # was written, and the fifth was this very comment, in the draft that
+          # described the hazard. Do not read that as carelessness to be
+          # corrected by care: the hazard is structural, and go-to-k/cdkd#2717
+          # proposes the structural fix (the Edit and Write arms read
+          # tool_input.file_path and need no matcher, so only the Bash arm has
+          # any reason to fail closed on it).
+          #
+          # A retry stood here whose own comment said it repaired a backtick
+          # body whose number-sign comment carries one apostrophe. It did the
+          # OPPOSITE, measured on both spellings of that shape -- a multi-line
+          # dollar-paren substitution and its backtick twin, each holding a git
+          # commit followed by such a comment. Real bash RUNS that git commit
+          # (verified with a stub git on PATH), while gate_matches against
+          # GATE_RE_GIT_COMMIT answered MATCH on origin/main and NO MATCH with
+          # the retry present. So branch-gate went rc 2 to 0: a commit to main,
+          # ungated.
+          #
+          # Deleting it restores MATCH on both spellings and on the single-line
+          # control, and no suite regresses -- command-match 624/0, differential
+          # 25/0, main-tree-edit-gate 82/0, oracle 4/0, each against a
+          # SAME-LAYOUT control. That control is load-bearing: a first attempt
+          # to measure this ran the suites from a scratch tree where the oracle
+          # could not resolve the hook at all, and its 204 fail-opens read as
+          # "removing the retry breaks everything" when it meant "this harness
+          # tests nothing".
+          #
+          # The lesson is in the comment that was here, not only in the code: it
+          # asserted a repro nobody had re-run after the surrounding code
+          # changed, so the file carried a measurement stating the opposite of
+          # the behaviour it sat on. Both spellings are now cases in
+          # command-match.test.sh.
           nf = split(flushed, fl, "\n")
           for (fi = 1; fi <= nf; fi++) {
             if (fl[fi] == "") continue
@@ -1596,7 +1615,7 @@ gate_dequote_structural() {
 # that reads `gate_segments` has to change. That is a weaker statement than the
 # one this comment used to make, and the weaker one is the true one --
 # `gate_segments` itself is NOT byte-identical to origin/main. It differs on a
-# QUARTER of the differential's inputs -- mostly from the per-line drain, which
+# 28 of the differential's 239 inputs (11.7%) -- mostly from the per-line drain, which
 # changes segment ORDER, plus the escaped-space refusal in `_gate_struct_next`.
 # NO COUNT IS WRITTEN HERE: one stood as "9" until a reviewer re-ran it and got
 # 28, and the attribution beside it named `close_paren`, which this branch no
@@ -1660,6 +1679,10 @@ GATE_MARK_MAXSEG=200
 gate_segments_marked() {
   local segment raw depth=0 opens closes marked rest scan from_subst
   local _all _nseg over=0
+  # $2 is the RECURSION depth (see the `bash -c` arm below), defaulting to 0 so
+  # every existing one-argument caller is unaffected. Not to be confused with
+  # `depth`, which is the paren nesting of the current scan.
+  local _depth="${2:-0}"
   _all=$(gate_segments_raw "$1")
   _nseg=$(printf '%s\n' "$_all" | grep -c '')
   [ "$_nseg" -gt "$GATE_MARK_MAXSEG" ] && over=1
@@ -1716,8 +1739,25 @@ gate_segments_marked() {
     # 0.08 s flat on origin/main, so past the 10 s PreToolUse timeout the hook
     # is KILLED and cannot emit exit 2 -- every gate disarmed at once, from any
     # repo on any branch. Deleting every other character is one pass.
-    rest="${scan//[^(]}"; opens=${#rest}
-    rest="${scan//[^)]}"; closes=${#rest}
+    # THE DELETION IS QUADRATIC ON BASH 3.2, which is the only bash CI has.
+    # `${scan//[^(]}` is one pass on 5.x and O(n^2) on 3.2: measured on a single
+    # 4087-byte segment, 3 s per deletion and 6 s for the pair, so a command
+    # under `GATE_EDIT_MAXBYTES` blew the 10 s PreToolUse timeout on the runner
+    # while costing 0 s locally -- the same suite-passes-subject-fails shape as
+    # go-to-k/cdkd#2650's regex divergence, one layer down.
+    #
+    # Long segments take ONE `awk` fork instead, which is linear. The threshold
+    # keeps the fork off the common path: ordinary segments are tens of bytes,
+    # and a fork per segment across a 2000-segment command is its own budget
+    # problem. Both spellings count the same thing; the parity is pinned in
+    # `command-match.test.sh`.
+    if [ "${#scan}" -gt "${GATE_MARK_MAXINLINE:-1024}" ]; then
+      opens=$(printf '%s' "$scan" | awk '{n+=gsub(/\(/,"")} END{print n+0}')
+      closes=$(printf '%s' "$scan" | awk '{n+=gsub(/\)/,"")} END{print n+0}')
+    else
+      rest="${scan//[^(]}"; opens=${#rest}
+      rest="${scan//[^)]}"; closes=${#rest}
+    fi
     # THREE ways a segment is inside a subshell, and the third is the one a
     # depth counter alone misses: `( cd /tmp )` is BALANCED, so it neither
     # raises the depth nor arrives with one. Its raw form still opens with the
@@ -1749,8 +1789,34 @@ gate_segments_marked() {
     # consumer tracking a working directory: `bash -c "cd /tmp" ; echo hi >
     # <tracked>` went rc=2 -> 0 with the tracked file really written.
     if [[ "$segment" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+(.*)$ ]]; then
-      gate_segments_marked "$(gate_unquote_span "${BASH_REMATCH[2]}")" \
-        | while IFS=$'\t' read -r _m _s; do printf '1\t%s\n' "$_s"; done
+      # DEPTH-BOUNDED, and it is a THIRD bound because neither existing one can
+      # see this shape. Every level restarts with a fresh `GATE_MARK_MAXSEG`
+      # budget and contributes ONE segment to its parent, so `GATE_MARK_MAXSEG`
+      # counts 1 however deep it goes, while `GATE_EDIT_MAXBYTES` is a bound the
+      # HOOK applies to the whole command and 4096 bytes buys plenty of nesting.
+      # Cost is quadratic in length: measured through the real hook, `sh -c `
+      # repeated 300 / 500 / 680 times (1807 / 3007 / 4087 bytes) cost 5.7 s,
+      # 12.7 s and 23.1 s against 0.04 s flat on origin/main. Past the 10 s
+      # PreToolUse timeout the hook is KILLED and cannot emit exit 2, which
+      # disarms every gate at once -- the worst outcome available here, and one
+      # a 4 KB command reaches.
+      #
+      # Refusing past the limit marks the body 1 (subshell-derived) WITHOUT
+      # descending, which is the conservative reading: a `cd` inside it is
+      # ignored, exactly as it is for a body that IS scanned, since `bash -c`
+      # runs a child that cannot move this shell either way.
+      # DEPTH IS A POSITIONAL ARGUMENT, not an assignment prefix. `VAR=v func`
+      # does not propagate into the callee reliably on bash 3.2 -- measured, the
+      # env-prefix spelling left this at 30 s under 3.2 while 5.x was 0 s, i.e.
+      # the bound existed only on the version CI does NOT run. A second
+      # parameter is read the same way by both, and every existing caller passes
+      # one argument, so it defaults cleanly.
+      if [ "$_depth" -lt "${GATE_MARK_MAXDEPTH:-4}" ]; then
+        gate_segments_marked "$(gate_unquote_span "${BASH_REMATCH[2]}")" "$((_depth + 1))" \
+          | while IFS=$'\t' read -r _m _s; do printf '1\t%s\n' "$_s"; done
+      else
+        printf '1\t%s\n' "$segment"
+      fi
       continue
     fi
     if [ -n "$segment" ]; then

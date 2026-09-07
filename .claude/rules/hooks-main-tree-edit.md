@@ -79,7 +79,7 @@ toll only on a session actually touching these two hooks.
   the missing piece, and it is a SEPARATE entry point, so no consumer of
   `gate_segments` has to opt in. That is not the same as leaving
   `gate_segments` alone, and an earlier draft claimed it was: `gate_segments`
-  differs from `origin/main` on a QUARTER of the differential corpus, mostly
+  differs from `origin/main` on 28 of the differential's 239 inputs (11.7%), mostly
   from the per-line drain, which changes segment ORDER. The fence prices every
   difference — that is the property; the size of the set is not restated here,
   because "differs on 9" stood until a reviewer re-ran it and got 28.

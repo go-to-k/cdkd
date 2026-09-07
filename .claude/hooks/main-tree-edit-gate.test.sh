@@ -525,7 +525,64 @@ run_case 2 "Bash over the marking cap, cd INTO the main tree from a feature cwd"
   "$(jq -nc --arg cmd "$(printf '; true %.0s' $(seq 1 210)) ; cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
-CASE_FLOOR=76
+# 5-8. THE FOUR BLOCKERS THE go-to-k/cdkd#2711 REVIEW FOUND, each a fail-open
+#      this branch INTRODUCED and each measured rc 2 -> 0 against origin/main's
+#      2 before the repair. They are here rather than in the oracle because the
+#      oracle's grid has no axis for any of them.
+#
+# 5. The over-cap compensation asked a re-derived question over a different
+#    population: the library counts RAW segment lines (blanks included), this
+#    hook counted the OUTPUT stream (blanks dropped). So an ordinary multi-line
+#    call could be over the cap in the library -- every `cd` discarded -- and
+#    under it by the hook's count, with nothing compensating.
+run_case 2 "Bash blank-line padding puts the library over the cap, not the hook" \
+  "$(jq -nc --arg cmd "cd $MAIN$(printf '\n%.0s' $(seq 1 200))
+echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 6. The same defect reached by a shape nobody would call padding: a plain
+#    multi-line script with blank lines between its steps.
+run_case 2 "Bash an ordinary multi-line script, blank lines between steps" \
+  "$(jq -nc --arg cmd "cd $MAIN
+$(for i in $(seq 1 110); do printf 'echo step%s\n\n' "$i"; done)
+echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 7. `GATE_EDIT_MAXPAIRS` was tested as `added + n > cap` with `added` zero on
+#    the first pass, so a command already carrying more than `cap` candidates
+#    unioned NOTHING -- the cap became the off-switch the union exists to deny.
+#    Every `>` is a candidate, so a quoted body of markdown blockquotes reaches
+#    it with no padding at all.
+run_case 2 "Bash a 211-line quoted body starves the cd union of its budget" \
+  "$(jq -nc --arg cmd "cd $MAIN ; true --body \"$(for i in $(seq 1 211); do printf '> quoted line %s\n' "$i"; done)\" ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 8. The union matched a bare literal `cd`, so `"cd"` / `'cd'` / `\cd` -- the
+#    spellings go-to-k/cdkd#2614 closed on the ordinary walk -- were invisible
+#    on BOTH bounded paths. Paired with its literal control, which passes on
+#    every revision, so the pair cannot go green together by accident.
+run_case 2 "Bash a QUOTED cd verb on the over-bytes path" \
+  "$(jq -nc --arg cmd ": '$(printf 'a%.0s' $(seq 1 5000))' ; \"cd\" $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash a LITERAL cd verb on the over-bytes path (control)" \
+  "$(jq -nc --arg cmd ": '$(printf 'a%.0s' $(seq 1 5000))' ; cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# 9. Unbounded `bash -c` recursion: each level restarted with a fresh
+#    `GATE_MARK_MAXSEG` budget and contributed ONE segment to its parent, so
+#    neither existing bound could see the nesting. Cost was quadratic --
+#    measured 24.1 s at 4087 bytes against a 10 s PreToolUse timeout, and a
+#    KILLED hook cannot emit exit 2, which disarms every gate at once.
+#
+#    THE EXPECTATION IS 0, AND THAT IS THE POINT. Asked of real bash rather than
+#    assumed: `sh -c` runs a CHILD, so none of those `cd`s moves this shell, the
+#    write resolves against the FEATURE worktree, and a feature worktree always
+#    passes -- measured, the worktree's ledger is written and the main tree's is
+#    not. A first draft of this case asserted 2 and was wrong about bash, not
+#    about the gate. What it pins is that the depth bound did not change the
+#    VERDICT for the shape it bounds; the cost half is fenced by the latency
+#    assertion in command-match.test.sh, which can time the library directly.
+run_case 0 "Bash deeply nested sh -c around a cd, then a write" \
+  "$(jq -nc --arg cmd "$(printf 'sh -c %.0s' $(seq 1 300))cd $MAIN ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+CASE_FLOOR=82
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'not ok case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"

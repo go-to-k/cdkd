@@ -2032,6 +2032,109 @@ strip_is 'a bare closer with no label is not an arm' ') cmd' ') cmd'
 # without it, reverting the close pattern alone leaves this file green.
 strip_is 'a trailing backslash is not grouping punctuation' 'echo hi\\' 'echo hi\\'
 
+# --- gate_segments_marked: RECURSION DEPTH IS A BOUND, and its absence was a
+# --- denial of service on every gate at once ---------------------------------
+#
+# `bash -c "<list>"` recurses, and every level used to restart with a fresh
+# `GATE_MARK_MAXSEG` budget while contributing exactly ONE segment to its
+# parent. So `GATE_MARK_MAXSEG` counted 1 however deep the nesting went, and
+# `GATE_EDIT_MAXBYTES` (4096, applied by the hook to the whole command) buys
+# hundreds of levels. Cost is quadratic in length: measured through the real
+# hook, `sh -c ` repeated 300 / 500 / 680 times -- 1807 / 3007 / 4087 bytes,
+# all UNDER the byte cap -- cost 5.7 s, 12.7 s and 24.1 s, against 0.04 s flat
+# on origin/main.
+#
+# That is not a slow test, it is a gate bypass: the PreToolUse timeout is 10 s,
+# a KILLED hook cannot emit exit 2, and every gate sourcing this library goes
+# quiet together. `GATE_MARK_MAXDEPTH` (default 4) bounds it; past the limit the
+# body is marked 1 without descending, which is the same conservative reading a
+# scanned body gets, since `bash -c` runs a child that cannot move this shell.
+#
+# The budget is deliberately far under the 10 s timeout AND far over the
+# measured cost, so this fails on a return of the quadratic and not on a slow
+# machine.
+__deep=$(awk 'BEGIN{ s=""; for (i=0;i<680;i++) s = s "sh -c "; print s "cd /tmp" }')
+__t0=$(date +%s)
+gate_segments_marked "$__deep" >/dev/null 2>&1
+__t1=$(date +%s)
+__deep_secs=$((__t1 - __t0))
+if [ "$__deep_secs" -le 5 ]; then
+  pass=$((pass + 1))
+  printf 'OK   latency: 680 nested `sh -c` levels (4087 B) in %ss (budget 5s)\n' "$__deep_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: 680 nested `sh -c` levels took %ss, budget 5s\n' "$__deep_secs"
+  fail_log="${fail_log}FAIL latency: gate_segments_marked took ${__deep_secs}s on 680 nested levels -- this measured 24s before GATE_MARK_MAXDEPTH, past the 10s PreToolUse timeout, which disarms every gate sourcing this library\n"
+fi
+
+# The bound must not change the ANSWER for ordinary nesting, only refuse to keep
+# descending past the limit. One level in, the body's `cd` is still reported
+# subshell-derived -- which it is, because `bash -c` runs a child.
+__one=$(gate_segments_marked 'bash -c "cd /tmp" ; echo hi > f' | head -1)
+if [ "$__one" = "$(printf '1\tcd /tmp')" ]; then
+  pass=$((pass + 1)); printf 'OK   a single bash -c level still marks its body subshell-derived\n'
+else
+  fail=$((fail + 1)); printf 'FAIL a single bash -c level: got [%s]\n' "$__one"
+  fail_log="${fail_log}FAIL single bash -c level marking\n  got: $__one\n"
+fi
+
+# --- a verb INSIDE a multi-line substitution whose comment holds an apostrophe -
+#
+# Real bash RUNS this `git commit` -- verified with a stub `git` on PATH, not
+# reasoned about. An in-body `ignore_q` retry in `drain_extra` made the matcher
+# answer NO MATCH for both spellings while `origin/main` answered MATCH, so
+# `branch-gate` went rc 2 -> 0 and a commit to `main` was ungated. The retry is
+# gone; these pin both spellings so it cannot come back, and the single-line
+# form is the control that was never broken.
+#
+# Built with `printf` rather than written inline: the apostrophe is the whole
+# subject of the case, and this file is read by people who will copy the shape.
+__ap_multi=$(printf 'x=$(\ngit commit -m y # don%st\n)\n' "'")
+__ap_btick=$(printf 'x=`\ngit commit -m y # don%st\n`\n' "'")
+__ap_one=$(printf 'x=$(git commit -m y # don%st)\n' "'")
+check 'a verb inside a multi-line $( ) whose comment holds an apostrophe' 0 \
+  "$GATE_RE_GIT_COMMIT" "$__ap_multi"
+check 'the same, backtick spelling' 0 \
+  "$GATE_RE_GIT_COMMIT" "$__ap_btick"
+check 'the single-line control, which was never broken' 0 \
+  "$GATE_RE_GIT_COMMIT" "$__ap_one"
+
+# --- go-to-k/cdkd#2710: a `#` comment inside a multi-line $( ) whose
+# --- apostrophe used to swallow the closer -------------------------------
+#
+# Bash does NOT read quotes inside a `#` comment, so the apostrophe is an
+# ordinary character and real git RUNS this commit. `close_paren` opened a
+# span on it, the span never closed, the real `)` was swallowed, and the verb
+# AFTER the substitution was never reached -- `no match` on origin/main.
+# Fixed here; the issue is closed by this PR rather than carried as a residual.
+__i2710=$(printf 'git -c user.email=t@t -c user.name=t -C $(\n# it%ss fine\necho .\n) commit -m y\n' "'")
+check 'go-to-k/cdkd#2710: apostrophe in a comment inside a multi-line $( )' 0 \
+  "$GATE_RE_GIT_COMMIT" "$__i2710"
+
+# --- the two paren-count spellings must agree ACROSS the threshold -----------
+#
+# `gate_segments_marked` counts a segment's parens with an in-shell deletion
+# below `GATE_MARK_MAXINLINE` and with one `awk` fork above it, because the
+# deletion is O(n^2) on bash 3.2 -- the only bash CI runs. Two spellings of one
+# predicate is exactly the shape that goes wrong silently, so the equality is
+# asserted here, straddling the threshold, under whichever engine runs this
+# file. Without it, a segment could be judged nested on one side of 1024 bytes
+# and top-level on the other.
+__pc_fail=0
+for __n in 100 1000 1024 1028 2000 4000; do
+  __s=$(awk -v n="$__n" 'BEGIN{x="";for(i=0;i<n/4;i++)x=x "(a) ";print x}')
+  __a="${__s//[^(]}"
+  __inline=${#__a}
+  __fork=$(printf '%s' "$__s" | awk '{n+=gsub(/\(/,"")} END{print n+0}')
+  [ "$__inline" = "$__fork" ] || __pc_fail=1
+done
+if [ "$__pc_fail" = 0 ]; then
+  pass=$((pass + 1)); printf 'OK   paren count: inline and awk agree across GATE_MARK_MAXINLINE\n'
+else
+  fail=$((fail + 1)); printf 'FAIL paren count: inline and awk disagree across GATE_MARK_MAXINLINE\n'
+  fail_log="${fail_log}FAIL paren count parity across the inline/fork threshold\n"
+fi
+
 # THE FLOOR IS A COLLAPSE DETECTOR, NOT THE CASE COUNT -- and it is set BELOW
 # what any context currently reports, on purpose.
 #

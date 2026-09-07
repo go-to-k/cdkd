@@ -119,19 +119,42 @@ fi
 # the fix for it. 200 pairs is 20 `cd`s against 10 write targets, well past any
 # hand-written command.
 __union_cd_bases() {
-  local __n __i __b __rest __added=0
+  local __n __i __b __rest __rounds=0 __maxrounds
   __n=${#candidates[@]}
   [ "$__n" -gt 0 ] || return 0
+  # THE CAP BOUNDS ROUNDS, AND NEVER TO ZERO. It used to test
+  # `__added + __n > MAXPAIRS`, and `__added` is 0 on the first iteration -- so
+  # a command that already carried more than MAXPAIRS candidates broke out
+  # before unioning ANYTHING, turning the cap into the off-switch this function
+  # exists to deny. Reachable without padding: every `>` is a candidate, so a
+  # `--body` holding 210 markdown blockquote lines does it. Measured from a
+  # feature worktree, `cd <main tree>` + a 211-line quoted body + a write went
+  # rc=0 with the tracked file really overwritten, against rc=2 at 51 lines and
+  # rc=2 on origin/main.
+  #
+  # At least one round always runs; past that the product stays near MAXPAIRS,
+  # which is what the bound is for (each pair costs a filesystem probe -- 5000
+  # measured at 40 s, 200 at 2 s).
+  __maxrounds=$(( ${GATE_EDIT_MAXPAIRS:-200} / __n ))
+  [ "$__maxrounds" -ge 1 ] || __maxrounds=1
   __rest="$cmd"
-  while [[ "$__rest" =~ (^|[[:space:]\;\&\|])cd[[:space:]]+([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+  # THE VERB IS UNQUOTED HERE TOO. A bare-literal `cd` misses `"cd"`, `'cd'` and
+  # `\cd` -- the precise spellings go-to-k/cdkd#2614 closed, and which the
+  # ordinary walk still handles through `gate_unquote_span`. So both bounded
+  # escapes lost them: from a worktree, `"cd" <main tree> && echo x > <tracked>`
+  # went rc=0 with the file written, against rc=2 for the literal control. The
+  # class tolerates quote and backslash characters anywhere in the word; it
+  # over-matches (`\\cd`, which bash does NOT run as cd, matches too), and that
+  # is the REFUSING direction, which is the right way for a fallback to be wrong.
+  while [[ "$__rest" =~ (^|[[:space:]\;\&\|])[\"\'\\]*c[\"\'\\]*d[\"\'\\]*[[:space:]]+([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
     __b=$(gate_unquote "${BASH_REMATCH[2]}")
     __rest="${__rest#*"${BASH_REMATCH[0]}"}"
     case "$__b" in *'$'* | *'`'*) continue ;; /*) ;; *) __b="$base_dir/$__b" ;; esac
-    [ "$((__added + __n))" -gt "${GATE_EDIT_MAXPAIRS:-200}" ] && break
     for ((__i = 0; __i < __n; __i++)); do
       candidates+=("${candidates[$__i]}"); cand_bases+=("$__b")
     done
-    __added=$((__added + __n))
+    __rounds=$((__rounds + 1))
+    [ "$__rounds" -ge "$__maxrounds" ] && break
   done
 }
 
@@ -378,7 +401,31 @@ case "$tool" in
     # what gets discarded -- measured, 210 padding segments turned rc 2 into 0
     # for five write vehicles. Union in the raw-text `cd` targets, as the
     # over-bound path does, so the cap cannot be used as an off-switch.
-    if [[ $(printf '%s\n' "$__marked" | grep -c '^1') -gt ${GATE_MARK_MAXSEG:-200} || "$__mis_split" == 1 ]]; then
+    # ASK WHETHER EVERY SEGMENT IS SUBSHELL-DERIVED -- do not re-count against
+    # the cap. Over the cap the library marks EVERYTHING 1, and that state is
+    # what this branch has to compensate for; counting `^1` lines against
+    # `GATE_MARK_MAXSEG` here answers a different question over a different
+    # population, because the library counts RAW segment lines (blank ones
+    # included) while this stream has dropped every empty segment. A command can
+    # therefore be over the cap in the library -- every `cd` ignored -- and under
+    # it by this count, so the compensation never runs and the `cd` is discarded
+    # with nothing replacing it. Measured: `cd <main tree>`, 110 `echo` lines
+    # separated by blank lines, then a write (1654 B, 220 lines, an ordinary
+    # multi-line Bash call) went rc 2 -> 0 with the tracked file really written,
+    # while origin/main answered 2.
+    #
+    # "Every segment marked 1" is exactly the state the library produces when
+    # over, needs no second copy of the predicate, and its false positive -- a
+    # command genuinely made only of subshell segments -- unions in extra bases,
+    # which is the REFUSING direction.
+    __all_marked=1
+    __seen_seg=0
+    while IFS=$'\t' read -r __m __s; do
+      [[ -n "$__s" ]] || continue
+      __seen_seg=1
+      [[ "$__m" == 1 ]] || { __all_marked=0; break; }
+    done <<< "$__marked"
+    if [[ ( "$__seen_seg" == 1 && "$__all_marked" == 1 ) || "$__mis_split" == 1 ]]; then
       __union_cd_bases
     fi
     fi
