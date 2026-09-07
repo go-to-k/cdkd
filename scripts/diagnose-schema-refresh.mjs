@@ -39,6 +39,10 @@
  *     [--nested-key-log <file>] [--nested-key-rc <status>] \
  *     [--failed-checks <a,b>] [--skipped-log <file>] [--fixtures-dir <dir>] > body.md
  *
+ * And, as a separate mode taking no other flag:
+ *
+ *   node scripts/diagnose-schema-refresh.mjs --umbrella-checklist > checklist.md
+ *
  * `--nested-key-log` is the captured output of
  * `vp run audit:nested-key-coverage:check` and `--nested-key-rc` its exit
  * status. The status is what tells a checker that FAILED silently from one that
@@ -48,6 +52,13 @@
  * that came back red — every one of them fixture-driven, and every one reached
  * by an ordinary schema ADDITION. `--skipped-log` is the tail of the refresh's
  * own output, listing the types the public bundle does not carry.
+ *
+ * `--umbrella-checklist` is a SEPARATE MODE: it renders the remaining
+ * silent-drop properties from the coverage module as a Markdown checklist and
+ * exits, taking no other flag. The scheduled job splices that block into the
+ * backfill umbrella between its markers, regenerating it each cycle rather than
+ * appending — an appended list cannot express a type that was ticked off and
+ * later regained a property.
  *
  * `--fixtures-dir` is a TEST SEAM — it points the comparison at a scratch
  * directory so the empty-listing refusal is reachable from a test, the same
@@ -1409,6 +1420,17 @@ export function collectFixtureDeltas({
  * @param {string} [repoRoot]
  * @returns {Map<string, Set<string>>}
  */
+export function loadDeclaredPropertiesSource(repoRoot = REPO_ROOT) {
+  const generatedPath = join(repoRoot, 'src/provisioning/property-coverage.generated.ts');
+  if (!existsSync(generatedPath)) {
+    throw new Error(
+      `${generatedPath} is missing — refusing to report from a coverage table that was ` +
+        'never read.'
+    );
+  }
+  return readFileSync(generatedPath, 'utf8');
+}
+
 export function loadDeclaredProperties(repoRoot = REPO_ROOT) {
   const generatedPath = join(repoRoot, 'src/provisioning/property-coverage.generated.ts');
   if (!existsSync(generatedPath)) {
@@ -1437,6 +1459,7 @@ export const KNOWN_FLAGS = [
   '--nested-key-rc',
   '--failed-checks',
   '--skipped-log',
+  '--umbrella-checklist',
   // Test seam; see its use below.
   '--fixtures-dir',
 ];
@@ -1475,6 +1498,54 @@ export function assertFixtureFloor(fixtureCount, declaredCount) {
         'refusing to report from a listing this far short of the coverage table.'
     );
   }
+}
+
+/**
+ * The remaining silent-drop properties, as a checklist the umbrella issue owns.
+ *
+ * REGENERATED each cycle rather than appended to, and that is the whole point.
+ * An append-only list cannot express a type that was ticked off and later
+ * regained a property: the `[x]` row stays checked and a second row appears for
+ * the same type, so the reader sees one entry saying "done" and another saying
+ * "not". Dedup does not fix that — it is the append model that is wrong.
+ *
+ * The generated coverage map is the source of truth for what remains (the
+ * umbrella's own completion criterion says so), so this renders FROM it. A type
+ * that regains a property simply reappears, and one that is finished disappears,
+ * with no state to maintain by hand and nothing to go stale.
+ *
+ * Human-written provenance — which pull request closed which slice — is NOT in
+ * here. It cannot be recomputed, so it lives outside the generated block and is
+ * never touched.
+ *
+ * @param {string} generatedSource
+ * @returns {string[]} one `- [ ] \`Type\`: \`Prop\`` row per remaining property
+ */
+export function renderUmbrellaChecklist(generatedSource) {
+  const boundaries = [...generatedSource.matchAll(/\[\s*'([A-Z][\w:]+)'\s*,\s*\{/g)];
+  if (boundaries.length === 0) {
+    throw new Error(
+      'property-coverage.generated.ts parsed to zero types — refusing to render an empty ' +
+        'checklist over a module the parser could not read.'
+    );
+  }
+  /** @type {string[]} */
+  const rows = [];
+  for (let i = 0; i < boundaries.length; i++) {
+    const slice = generatedSource.slice(
+      boundaries[i].index,
+      i + 1 < boundaries.length ? boundaries[i + 1].index : undefined
+    );
+    const type = boundaries[i][1];
+    // Only the populated shape carries rows; `new Map<string, string>()` is a
+    // finished type and contributes nothing.
+    const drop = /silentDrop:\s*new Map<[^>]*>\(\s*\[([\s\S]*?)\]\s*\)/.exec(slice);
+    if (!drop) continue;
+    for (const m of drop[1].matchAll(/\[\s*'([^']+)'\s*,/g)) {
+      rows.push(`- [ ] ${renderName(type)}: ${renderName(m[1])}`);
+    }
+  }
+  return rows;
 }
 
 function main() {
@@ -1662,6 +1733,13 @@ function main() {
   );
   // Comma-separated task names, so a fourth check is a workflow line and a
   // `CHECK_GUIDANCE` row rather than another flag and another render branch.
+  // `--umbrella-checklist` renders the generated block and exits; it shares this
+  // script only because the coverage-module parser already lives here.
+  if (args.includes('--umbrella-checklist')) {
+    process.stdout.write(renderUmbrellaChecklist(loadDeclaredPropertiesSource()).join('\n') + '\n');
+    return;
+  }
+
   const failedChecks = readArgValue('--failed-checks')
     .split(',')
     .map((c) => c.trim())

@@ -347,6 +347,11 @@ jobs:
           # The STATUS as well as the text: an empty log, a `task not found` and
           # an OOM kill all carry no announcement to grep for, and all three
           # rendered "additions only" over a checker that never ran.
+          # The umbrella checklist is rendered HERE, in the step that holds no
+          # token, for the same reason the diagnosis is: this script spawns
+          # `npm`, and a spawn in the token-holding step inherits its
+          # environment. Publish only reads the file.
+          node scripts/diagnose-schema-refresh.mjs --umbrella-checklist > /tmp/checklist.md
           node scripts/diagnose-schema-refresh.mjs \
             --nested-key-log /tmp/nested-key.log \
             --nested-key-rc "${nested_key_rc}" \
@@ -368,6 +373,10 @@ jobs:
           BACKFILL_UMBRELLA_LABEL: backfill-umbrella
           # Same reasoning as the switch step: no `${{ }}` inside a shell body.
           PR_NUMBER: ${{ steps.open_pr.outputs.number }}
+          # The block the job OWNS in the umbrella body. Everything outside it is
+          # human-written and never rewritten.
+          MARKER_BEGIN: "<!-- BEGIN generated: remaining silent-drop properties -->"
+          MARKER_END: "<!-- END generated -->"
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -457,42 +466,52 @@ jobs:
             pr_number=$(gh pr list --head "${branch}" --state open --json number --jq '.[0].number // empty')
           fi
 
-          # Fold the newly unaccounted WRITABLE properties into the standing
-          # backfill umbrella, rather than asking a human to retype a list this
-          # job just computed. A failure here must NOT undo the PR — the PR is
-          # the load-bearing output and the list is also in its body.
-          if grep -q '^### Writable properties AWS added' /tmp/diagnosis.md; then
-            {
-              echo "Newly unaccounted writable properties, from the scheduled CFn schema refresh:"
-              echo
-              sed -n '/^### Writable properties AWS added/,/^###\|^_/p' /tmp/diagnosis.md \
-                | grep '^- ' || true
-              echo
-              if [ -n "${pr_number:-}" ]; then
-                echo "Carried by https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number}"
+          # REGENERATE the umbrella's checklist from the coverage map, rather
+          # than appending this cycle's findings to it.
+          #
+          # Appending cannot express a type that was ticked off and later
+          # regained a property: the `[x]` row stays checked and a second row
+          # appears for the same type, so the reader sees one entry saying
+          # "done" and another saying "not". Dedup does not fix that — the
+          # append model is what is wrong. The map is the umbrella's own stated
+          # completion criterion, so rendering FROM it means a type reappears
+          # when it regains a property and disappears when it is finished, with
+          # no hand-maintained state to go stale.
+          #
+          # Human provenance — which PR closed which slice — cannot be
+          # recomputed, so it lives OUTSIDE the markers and is never touched.
+          umbrella=$(gh issue list --state open --limit 100 \
+            --label "${BACKFILL_UMBRELLA_LABEL}" --json number \
+            --jq '[.[].number] | join(" ")' || true)
+          umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
+
+          if [ "${umbrella_count}" = "1" ]; then
+            U=$(mktemp)
+            # The chaining and the `-s` test are load-bearing, not style: the
+            # redirect truncates the file BEFORE gh runs, so an unchained recipe
+            # whose `view` fails would replace the umbrella's WHOLE body —
+            # destroying the provenance section this design exists to preserve.
+            if gh issue view "${umbrella}" --json body -q .body > "${U}" && [ -s "${U}" ]; then
+              if grep -Fq "${MARKER_BEGIN}" "${U}" && grep -Fq "${MARKER_END}" "${U}"; then
+                N=$(mktemp)
+                # Everything before BEGIN, the freshly rendered rows, everything
+                # after END. Splicing rather than rewriting is what keeps the
+                # human-owned half untouched.
+                sed -n "1,/$(printf '%s' "${MARKER_BEGIN}" | sed 's/[][\.*^$/]/\\&/g')/p" "${U}" > "${N}"
+                cat /tmp/checklist.md >> "${N}"
+                sed -n "/$(printf '%s' "${MARKER_END}" | sed 's/[][\.*^$/]/\\&/g')/,\$p" "${U}" >> "${N}"
+                if cmp -s "${U}" "${N}"; then
+                  echo "::notice::Umbrella #${umbrella} checklist is already current."
+                else
+                  gh issue edit "${umbrella}" --body-file "${N}" \
+                    || echo "::warning::Could not update backfill umbrella #${umbrella}; the list is in the PR body."
+                fi
+              else
+                echo "::warning::Umbrella #${umbrella} carries no ${MARKER_BEGIN} / ${MARKER_END} pair, so there is nowhere to write the generated checklist without guessing which part of the body is generated. The list is in the PR body."
               fi
-            } > /tmp/umbrella.md
-            # Resolve the destination by LABEL, and refuse to guess. Zero
-            # matches means the campaign has no home; two or more means nobody
-            # can say which is the running list. Posting to an arbitrary one is
-            # the silent-wrong-destination failure this job exists to avoid, so
-            # both are warnings rather than a pick — and neither undoes the PR,
-            # which carries the same list in its body.
-            # `|| true`: a bare command substitution here runs under
-            # `set -euo pipefail`, so a transient gh failure would abort the
-            # step — AFTER the PR has been created. The step's whole contract is
-            # that the umbrella fold never undoes the PR, which the previous
-            # `gh issue comment ... || echo` spelling preserved and this lookup
-            # would have quietly broken. An empty result falls through to the
-            # not-exactly-one warning below.
-            umbrella=$(gh issue list --state open --limit 100 \
-              --label "${BACKFILL_UMBRELLA_LABEL}" --json number \
-              --jq '[.[].number] | join(" ")' || true)
-            umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
-            if [ "${umbrella_count}" = "1" ]; then
-              gh issue comment "${umbrella}" --body-file /tmp/umbrella.md \
-                || echo "::warning::Could not comment on backfill umbrella #${umbrella}; the list is in the PR body."
             else
-              echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). The list is in the PR body; label one issue to restore the running list."
+              echo "::warning::Could not read backfill umbrella #${umbrella}'s body; refusing to write one. The list is in the PR body."
             fi
+          else
+            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). The list is in the PR body; label one issue to restore the running list."
           fi

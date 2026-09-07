@@ -2084,10 +2084,18 @@ describe('the script\u2019s own synopsis', () => {
     // flag survive in prose while being dropped from the invocation, which is
     // the half a reader copies — and the assertion message said "synopsis".
     const lines = header.split('\n').map((l) => l.replace(/^\s*\*\s?/, ''));
-    const start = lines.findIndex((l) => l.includes('node scripts/diagnose-schema-refresh.mjs'));
-    expect(start, 'the synopsis no longer shows the invocation').toBeGreaterThan(-1);
+    // EVERY invocation block, not just the first: the synopsis grew a second
+    // form (`--umbrella-checklist`, which takes no other flag), and reading
+    // only the first block dropped its flag from the derived set while the
+    // assertion still claimed to cover the synopsis.
     const synopsis: string[] = [];
-    for (let i = start; i < lines.length && lines[i]!.trim() !== ''; i++) synopsis.push(lines[i]!);
+    let found = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i]!.includes('node scripts/diagnose-schema-refresh.mjs')) continue;
+      found += 1;
+      for (let j = i; j < lines.length && lines[j]!.trim() !== ''; j++) synopsis.push(lines[j]!);
+    }
+    expect(found, 'the synopsis no longer shows an invocation').toBeGreaterThan(0);
     const documented = [...synopsis.join('\n').matchAll(/(--[a-z][a-z-]*)/g)].map((m) => m[1]!);
     expect(new Set(documented), 'the synopsis and the accepted set disagree').toEqual(
       new Set(KNOWN_FLAGS)
