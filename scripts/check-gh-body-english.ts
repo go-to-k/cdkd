@@ -79,6 +79,7 @@
  * Exit 0 = clean, 1 = offenders found (report on stdout), 2 = could not run.
  */
 
+import { foldAnnotationRuns } from './annotation-text.ts';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseSubject, type Subject } from './gh-subject.ts';
@@ -173,6 +174,43 @@ export function scanSubject(subject: Subject): Offender[] {
   return offenders;
 }
 
+/**
+ * Whether the event was raised by a BOT, and this check must therefore not run.
+ *
+ * ## Why the rule lives here rather than only in the workflow
+ *
+ * Two of `issue-conventions.yml`'s jobs POST COMMENTS, and a comment is itself
+ * an `issue_comment: created` event. Without this filter the English check
+ * scans its SIBLINGS' output on every violation. That output is English and
+ * would pass, which is exactly what makes it dangerous: it costs a run per
+ * comment and reads as fine right up until one of those comments QUOTES an
+ * offending body back at the author -- at which point the check fails on text
+ * it wrote itself, and the author cannot clear it.
+ *
+ * The rule used to exist ONLY as `github.event.sender.type != 'Bot'` in the
+ * job's `if:`, where no test could reach it: deleting that clause was silent,
+ * and its failure mode is a comment loop the check then reports on
+ * (go-to-k/cdkd#2736). This is the same move go-to-k/cdkd#2717 made for
+ * `isMintEvent` in `check-issue-dup-check.ts` -- the `if:` stays as a cheap
+ * filter that avoids spawning a runner, and the SCRIPT is the authority, which
+ * is the half under test.
+ *
+ * ## Why the default is "not a bot"
+ *
+ * An ABSENT `SENDER_TYPE` means the caller did not pass one -- the `english-pr`
+ * job does not, because a fork PR opened by a bot still publishes a body worth
+ * checking and no PR job posts a comment that could feed back. Defaulting to
+ * "skip" would silently disable the check for every caller that forgot the env
+ * var, which is the fail-open direction; defaulting to "scan" costs at worst a
+ * redundant run.
+ *
+ * GitHub spells the field `User` / `Bot` / `Organization`. The comparison is
+ * case-insensitive so a payload shape change cannot re-open the loop quietly.
+ */
+export function isBotSender(senderType: string | undefined): boolean {
+  return (senderType ?? '').trim().toLowerCase() === 'bot';
+}
+
 const KIND_LABEL: Record<Subject['kind'], string> = {
   issue: 'issue',
   issue_comment: 'issue comment',
@@ -193,7 +231,18 @@ const KIND_LABEL: Record<Subject['kind'], string> = {
  * line break in some clients and would split the row visually.
  */
 export function fencedQuote(text: string): string {
-  const flat = text.replace(/[\r\n]+/g, ' ');
+  // Delegates to the SHARED fold rather than carrying a fourth private copy of
+  // the rule. This function's own `/[\r\n]+/g` is what kept the two
+  // comment-posting jobs safe, and those run with `issues: write` and are
+  // reachable by any GitHub user -- so it is the highest-privilege instance of
+  // the class, and it was the one still spelled separately after
+  // go-to-k/cdkd#2736 unified the other four (round-3 security review).
+  //
+  // `foldAnnotationRuns`, not `foldAnnotationText` + a space collapse: the
+  // latter also collapses runs the fold never created, silently re-indenting
+  // code and mis-aligning tables inside a fence whose whole point is to
+  // preserve them.
+  const flat = foldAnnotationRuns(text);
   const longestRun = Math.max(0, ...[...flat.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = '`'.repeat(Math.max(3, longestRun + 1));
   return `${fence}\n${flat}\n${fence}`;
@@ -269,6 +318,22 @@ function isMain(): boolean {
 }
 
 if (isMain()) {
+  // Checked BEFORE the subject is read, so a bot-authored comment costs no API
+  // call and cannot fail on an unrelated parse error either.
+  //
+  // It also precedes the ARGV check, so `SENDER_TYPE=Bot` with no subject path
+  // exits 0 rather than the usage 2 -- a workflow that stopped passing the path
+  // would be silent for bot events. Accepted: those events are skipped anyway,
+  // so nothing is lost that the argv check would have caught. Named here rather
+  // than left for the next reader to rediscover (go-to-k/cdkd#2736 code review).
+  if (isBotSender(process.env['SENDER_TYPE'])) {
+    console.log(
+      `gh-body-english: sender type is Bot; skipping. This check posts comments, and a ` +
+        `comment is itself an issue_comment event -- scanning them makes the check report on ` +
+        `its own output.`,
+    );
+    process.exit(0);
+  }
   const path = process.argv[2];
   if (!path) {
     console.error('usage: gh-body-english.ts <subject.json>');

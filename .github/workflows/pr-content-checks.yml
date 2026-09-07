@@ -1,23 +1,33 @@
 name: PR content checks
 
-# The CI half of two retired PreToolUse hooks. Both had the PR DIFF as their
-# subject and both were ~300-1500 lines almost entirely because a PreToolUse
-# hook is handed raw SHELL COMMAND TEXT and has to find the artifact inside it
-# (heredocs, `--body-file`, `-F`, glued flags, quoting, `cd` / `git -C` target
-# resolution). A CI job is handed the artifact directly by the event payload
-# and by git, so all of that parsing is deleted rather than translated. Only
-# the DETECTION logic was ported; each script's header records what it dropped.
+# The CI half of three retired PreToolUse hooks. Each was ~300-1500 lines
+# almost entirely because a PreToolUse hook is handed raw SHELL COMMAND TEXT and
+# has to find the artifact inside it (heredocs, `--body-file`, `-F`, glued
+# flags, quoting, `cd` / `git -C` target resolution). A CI job is handed the
+# artifact directly by the event payload and by git, so all of that parsing is
+# deleted rather than translated. Only the DETECTION logic was ported; each
+# script's header records what it dropped.
 #
-#   scripts/check-pr-non-english-text.ts     <- .claude/hooks/non-english-text-gate.sh
+#   scripts/check-pr-non-english-text.ts  <- .claude/hooks/non-english-text-gate.sh
 #   scripts/check-pr-internal-labels.ts   <- .claude/hooks/internal-pr-labels-gate.sh
+#   scripts/check-pr-closes-paren.ts      <- .claude/hooks/closes-paren-form-gate.sh
+#
+# The third one is the odd one out and deliberately so: it WARNS and exits 0
+# rather than failing. go-to-k/cdkd#2717's stopping rule retired its hook because
+# the harm -- an issue left OPEN after a merge -- lands on the author's own
+# artifact and is repaired by one `gh issue close`. What the retirement left
+# behind was a prose row in a skill, which is what go-to-k/cdkd#2736 reopened.
+# A warning annotation is mechanical without being a gate.
 #
 # `pull_request`, NOT `pull_request_target`: this job reads the PR's own code,
-# so it must run with the read-only fork token. It needs no secrets and no
-# write scope -- it only reads git and exits non-zero.
+# so it must run with the read-only fork token. It needs no secrets and no write
+# scope -- it reads git, reads the PR through `gh pr view` with the job's
+# read-only `GH_TOKEN`, and exits non-zero. (It said "only reads git" until the
+# auto-close check added that fetch.)
 #
 # Kept out of ci.yml on purpose: ci.yml's `check-build-test` job installs the
-# lockfile and runs the whole build + suite (minutes), while these two checks
-# need nothing but `git` and a Node that can strip types (seconds). Merging
+# lockfile and runs the whole build + suite (minutes), while these checks need
+# nothing but `git`, `gh` and a Node that can strip types (seconds). Merging
 # them would put a fast, always-relevant signal behind a slow one.
 
 on:
@@ -47,15 +57,32 @@ jobs:
   pr-content:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The workflow default is `contents: read`; the closes-paren check reads the
+    # PR BODY, which is a pull-requests scope. A job-level block REPLACES the
+    # workflow-level one rather than merging, so `contents: read` is restated
+    # here or the two diff checks would lose git access, and everything not
+    # listed is `none`.
+    #
+    # This does NOT scope the widening to one check -- there is one job, so all
+    # of its steps run under the same token. An earlier revision of this comment
+    # claimed otherwise (go-to-k/cdkd#2736 security review). The widening is
+    # accepted on its merits: `pull-requests: read` is what `gh pr view --json`
+    # needs, it matches the sibling `english-pr` job, and the workflow is
+    # `pull_request` (never `pull_request_target`), so no write scope and no
+    # secret is in reach either way.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      # Both checks read each changed file's content AT THE PR HEAD -- not the
-      # merge ref, which carries base-branch content the PR did not write and
-      # would let a violation on main be reported against this PR (and, on the
+      # The two DIFF checks read each changed file's content AT THE PR HEAD --
+      # not the merge ref, which carries base-branch content the PR did not write
+      # (the third check reads the PR BODY and needs none of this) -- and would
+      # let a violation on main be reported against this PR (and, on the
       # other side, would hide one a merge silently resolves away). That is a
       # property of what the SCRIPTS read (`git show $HEAD_SHA:<path>`), and it
       # is deliberately NOT achieved by checking the head out -- see below.
       #
-      # `fetch-depth: 0` is load-bearing: both scripts run
+      # `fetch-depth: 0` is load-bearing: both DIFF scripts run
       # `git merge-base <base> <head>` to get the same three-dot view
       # `gh pr diff` gave the hooks. A shallow clone makes that fail -- and the
       # scripts treat that as an ERROR, not a pass, so a regression here goes
@@ -113,20 +140,38 @@ jobs:
             "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/${PR_NUMBER}/head"
 
       # Node 24 strips type annotations, so `node scripts/**/*.ts` runs
-      # directly (CLAUDE.md -> Node.js Version). Both checks import node
+      # directly (CLAUDE.md -> Node.js Version). All three checks import node
       # builtins only, so `run-install: false` and `cache: false`: there is
       # nothing to install and no lockfile to key a cache on. A runner whose
       # node cannot strip types fails LOUDLY here ("Unknown file extension
       # .ts"), never silently.
+      # `!cancelled()` here too, and it is not symmetry for its own sake: without
+      # it a failed head fetch SKIPS the node setup while all four check steps
+      # still run under `!cancelled()`, on whatever node the runner ships -- where
+      # `--experimental-strip-types` can die with "bad option". The closes-paren
+      # check needs neither git nor that fetch, and it is exactly what the policy
+      # exists to keep reporting (go-to-k/cdkd#2736 round-2 review).
       - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        if: ${{ !cancelled() }}
         with:
           node-version: "24"
           cache: false
           run-install: false
 
-      # Both steps run even when the first fails, so one PR round-trip reports
-      # every content violation rather than one family at a time.
+      # POLICY: every check step carries `if: ${{ !cancelled() }}`, so one PR
+      # round-trip reports every content violation rather than one family at a
+      # time. Among the RUN steps only `fetch the PR head as data` is exempt --
+      # it is the prerequisite, not a check. (`actions/checkout` carries none
+      # either; there is nothing to keep reporting when the checkout that
+      # supplies the checkers failed.)
+      #
+      # An earlier revision said the FIRST check was exempt because it "cannot
+      # have been skipped". That was false -- it carried no `if:`, so a failed
+      # head fetch skipped it while its sibling ran and errored on the same
+      # missing data. Two sibling checks over the same input disagreeing about
+      # whether to run is not a policy (go-to-k/cdkd#2736 code review).
       - name: non-English writing-system characters in the PR diff
+        if: ${{ !cancelled() }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -138,3 +183,97 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node --experimental-strip-types scripts/check-pr-internal-labels.ts
+
+      # The PR BODY, not the diff -- so this step needs neither the merge base
+      # nor the head fetch above. It is fetched SERVER-SIDE with `gh --json` and
+      # handed over as a file, following `issue-conventions.yml`: a body is
+      # attacker-controlled text and `${{ github.event.pull_request.body }}` is
+      # never written into a `run:` block anywhere in this repo. Only the NUMBER
+      # and the repo name cross into shell, through `env:`, quoted.
+      #
+      # Written under `$RUNNER_TEMP`, not into the workspace. For a SAME-REPO PR
+      # the workspace is the PR's own tree, and this file's whole principle is
+      # that the checker and the content it judges come from different places;
+      # a repo-tracked `subject.json` must not be able to be the input, even
+      # though `>` truncation makes that unreachable today
+      # (go-to-k/cdkd#2736 security review).
+      #
+      # FAILS OPEN on the fetch, and that is the hook's own policy rather than a
+      # weakening. A `gh` transport / auth / rate-limit error is not evidence a
+      # body is clean, but this check WARNS and never fails a PR -- so reddening
+      # the job on a network blip, and letting `ci-green-gate` then block the
+      # merge, would be a strictly worse outcome than the reversible harm it
+      # reports. The retired gate fixed exactly this in its own case 13. A
+      # subject that is PRESENT but unreadable is a different thing: that is a
+      # broken checker and still exits 2 below.
+      - name: build the PR subject document
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          rm -f "$RUNNER_TEMP/subject.json" "$RUNNER_TEMP/subject.json.tmp"
+
+          # The subject is built into a TEMP name and moved into place only on
+          # success, so the check step's `[ -f ]` means "the fetch worked",
+          # never "a redirect created the file first".
+          #
+          # `> subject.json` directly is what an earlier revision wrote, and it
+          # creates the file BEFORE jq writes to it -- so `gh` exiting 0 with
+          # empty stdout, and jq failing, both left a PRESENT, 0-byte subject.
+          # `parseSubject('')` then throws, the checker exits 2, and the job
+          # reds: the "broken checker" verdict applied to a FETCH problem,
+          # which is the exact distinction this arm was added to draw
+          # (measured -- jq on empty stdin exits 0 with no output;
+          # go-to-k/cdkd#2736 round-2 review).
+          if ! gh pr view "$NUMBER" -R "$REPO" --json title,body,labels \
+                 > "$RUNNER_TEMP/pr.json"; then
+            echo "::warning title=Auto-close form check skipped::could not read PR" \
+                 "#$NUMBER (gh exited non-zero, or its output could not be written --" \
+                 "network / auth / rate limit / disk). The parens-form auto-close" \
+                 "check did NOT run."
+            exit 0
+          fi
+          if ! jq -e --argjson n "$NUMBER" \
+                 '{kind:"pull_request", number:$n, title:.title, body:.body,
+                   labels:[.labels[].name]}' \
+                 < "$RUNNER_TEMP/pr.json" > "$RUNNER_TEMP/subject.json.tmp"; then
+            echo "::warning title=Auto-close form check skipped::PR #$NUMBER fetched," \
+                 "but its JSON could not be read. The parens-form auto-close check" \
+                 "did NOT run."
+            rm -f "$RUNNER_TEMP/subject.json.tmp"
+            exit 0
+          fi
+          # Same verdict as the two arms above: this step either produces a
+          # subject or says why it could not. A failed `mv` reddening the job
+          # while a failed fetch warns would be the same failure family with
+          # opposite outcomes (go-to-k/cdkd#2736 round-3 review).
+          if ! mv "$RUNNER_TEMP/subject.json.tmp" "$RUNNER_TEMP/subject.json"; then
+            echo "::warning title=Auto-close form check skipped::the subject document" \
+                 "could not be moved into place. The parens-form auto-close check" \
+                 "did NOT run."
+            rm -f "$RUNNER_TEMP/subject.json.tmp"
+            exit 0
+          fi
+
+      # WARNS, never fails. The checker returns 0 whether or not it found
+      # anything and 2 only when it could not look, so this step reds on a
+      # broken check and stays green on a violating body -- which is the whole
+      # difference between this successor and the gate it replaces.
+      #
+      # An ABSENT subject means the fetch failed open above and already said so;
+      # re-reporting it as a broken checker would undo that. An absent file and
+      # an unreadable one are deliberately NOT the same verdict.
+      - name: auto-close keyword written in parens form
+        if: ${{ !cancelled() }}
+        run: |
+          set -uo pipefail
+          if [ ! -f "$RUNNER_TEMP/subject.json" ]; then
+            echo "::warning title=Auto-close form check skipped::no subject document;" \
+                 "see the fetch step above."
+            exit 0
+          fi
+          node --experimental-strip-types scripts/check-pr-closes-paren.ts \
+            "$RUNNER_TEMP/subject.json"

@@ -55,6 +55,7 @@
  *     findOffender().
  */
 
+import { foldAnnotationText } from './annotation-text.ts';
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -210,7 +211,27 @@ export function collectScannableLines(
       continue;
     }
     if (inFence) continue;
-    if (wanted.has(i + 1)) out.push({ line: i + 1, text });
+    // Folded at CONSTRUCTION, not only where it is printed.
+    //
+    // Three review rounds of go-to-k/cdkd#2736 each found one echo site
+    // folded and another missed -- `hits` while `text` was raw, then the
+    // `::error` annotation while the `Found:` block was raw. Each file has
+    // MORE THAN ONE emitter, so "fold at the emitter" is a rule that has to
+    // be re-obeyed at every site somebody adds later, and it was not obeyed
+    // twice in a row. Folding once, here, makes every present and future
+    // echo safe by construction. The emitter folds stay as well: the fold is
+    // idempotent, and they are what the tests pin.
+    //
+    // In THIS file the folded text does reach the detector -- `scanFile` passes
+    // it to `stripInlineCode` and `findOffender`. That was measured after an
+    // earlier revision of this comment claimed the field was display-only:
+    // `(PR<U+0085>5 of #224)` matches nothing raw and matches once folded,
+    // because U+0085 is not JS `\s`. The change is monotonically WIDER -- no
+    // folded character is required by any of the three patterns -- so it can
+    // add a false positive but never hide a violation. Stated rather than
+    // asserted away; the sibling checkers fold AFTER detection and are
+    // genuinely display-only.
+    if (wanted.has(i + 1)) out.push({ line: i + 1, text: foldAnnotationText(text) });
   }
   return out;
 }
@@ -247,7 +268,7 @@ export function scanChangedFiles(
     // fix-delta review caught that only one of the two had been closed.
     if (content === null) {
       throw new Error(
-        `cannot read ${file} at the PR head. It is in scope, so refusing rather than ` +
+        `cannot read ${foldAnnotationText(file)} at the PR head. It is in scope, so refusing rather than ` +
           `reporting a clean scan that never read it.`,
       );
     }
@@ -399,6 +420,42 @@ export function resolveDiffScope(baseSha: string, headSha: string): DiffScope {
   };
 }
 
+/**
+ * The `::error` annotation for one offender.
+ *
+ * Extracted so the FOLD is testable. Both `o.hit` and `o.text` come from a fork
+ * PR's file content and are echoed into a step's stdout, where the Actions
+ * runner parses workflow commands -- a raw CR in either starts a new line. This
+ * file stripped nothing until go-to-k/cdkd#2736; `annotation-text.ts` carries
+ * the shared rule and the reason it is shared.
+ */
+export function formatAnnotation(o: Offender): string {
+  return (
+    `::error file=${foldAnnotationText(o.file)},line=${o.line}::internal PR label ` +
+    `${foldAnnotationText(o.hit)}: ${foldAnnotationText(o.text)}`
+  );
+}
+
+/**
+ * The `Found:` summary row for one offender.
+ *
+ * Extracted for the same reason `formatAnnotation` was: it is a SECOND echo of
+ * the same attacker-controlled fields, and three review rounds in a row fixed
+ * one echo per file while leaving another raw. A function can be asserted; an
+ * inline template inside `main()` cannot.
+ *
+ * The `- ` marker is load-bearing, not decoration. The Actions runner
+ * TRIM-STARTS each line before deciding whether it is a workflow command, so
+ * the two-space indent protects nothing -- and `git diff --name-only` never
+ * quotes `:`, `,`, `=` or a space, so a fork PR can add a file literally named
+ * `::error file=src/index.ts,line=1::...` and forge one with no control
+ * character at all, which folding cannot prevent (go-to-k/cdkd#2736 round-4
+ * security review).
+ */
+export function formatFoundRow(o: Offender): string {
+  return `  - ${foldAnnotationText(o.file)}:${o.line}: ${foldAnnotationText(o.text)}`;
+}
+
 export function main(env: NodeJS.ProcessEnv = process.env): number {
   const probeFailures = selfProbe();
   if (probeFailures.length > 0) {
@@ -451,7 +508,7 @@ export function main(env: NodeJS.ProcessEnv = process.env): number {
   if (offenders.length === 0) return 0;
 
   for (const o of offenders) {
-    console.error(`::error file=${o.file},line=${o.line}::internal PR label ${o.hit}: ${o.text}`);
+    console.error(formatAnnotation(o));
   }
 
   console.error('');
@@ -461,7 +518,15 @@ export function main(env: NodeJS.ProcessEnv = process.env): number {
   console.error("not track cdkd's internal PR roadmap.");
   console.error('');
   console.error('Found:');
-  for (const o of offenders) console.error(`  ${o.file}:${o.line}: ${o.text}`);
+  // The `- ` marker is not decoration. The Actions runner TRIM-STARTS each
+  // output line before deciding whether it is a workflow command, so a
+  // whitespace-only indent protects NOTHING -- and `git diff --name-only`
+  // C-quotes control bytes but never `:`, `,`, `=` or a space, so a fork PR can
+  // add a file literally NAMED
+  // `::error file=src/index.ts,line=1::CI self-check FAILED` and forge a command
+  // with no control character at all. Folding cannot help there; only a
+  // NON-WHITESPACE prefix can (go-to-k/cdkd#2736 round-4 security review).
+  for (const o of offenders) console.error(formatFoundRow(o));
   if (offenders.length >= MAX_REPORT) {
     console.error(`  ... reporting stopped at ${MAX_REPORT} lines.`);
   }

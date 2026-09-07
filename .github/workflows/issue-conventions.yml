@@ -87,6 +87,13 @@ jobs:
     # per comment and reads as fine until one of those comments QUOTES an
     # offending body back at the author, at which point the check fails on text
     # it wrote itself and the author cannot clear it.
+    #
+    # That rule is ALSO in the script now, as `isBotSender`, and the script is
+    # the authority. It lived only here until go-to-k/cdkd#2736: no test can read
+    # a workflow `if:` expression, so deleting this clause was silent and its
+    # failure mode is the comment loop above. Same move go-to-k/cdkd#2717 made for
+    # `isMintEvent` in the dup-check job -- the `if:` stays as a cheap filter
+    # that avoids spawning a runner, the script is the half under test.
     if: >-
       (github.event_name == 'issues' || github.event_name == 'issue_comment') &&
       github.event.sender.type != 'Bot'
@@ -140,11 +147,24 @@ jobs:
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
           ACTION: ${{ github.event.action }}
+          # Passed so the SCRIPT decides what a Bot sender means, not only the
+          # `if:` above -- see the rationale there. Deliberately NOT passed by
+          # `english-pr`: that job posts no comment, so there is no loop to
+          # break, and skipping a bot-opened PR's body would lose real coverage.
+          SENDER_TYPE: ${{ github.event.sender.type }}
         run: |
           set -uo pipefail
           rc=0
           node scripts/check-gh-body-english.ts subject.json > report.md || rc=$?
-          cat report.md
+          # Piped through a NON-WHITESPACE prefix before it reaches the log.
+          # The runner TRIM-STARTS each line before deciding whether it is a
+          # workflow command, so the report's own two-space fence indent
+          # protects nothing: an issue body whose first offending line is
+          # `::stop-commands::<non-English text>` suppressed every later
+          # annotation in this job -- and any GitHub user can open an issue. The
+          # FILE stays pristine; it is posted as a comment, where the fence has
+          # to render (go-to-k/cdkd#2736 round-4 security review).
+          sed 's/^/| /' report.md
           [ "$rc" = "0" ] && exit 0
           # rc 2 is "could not evaluate", never "clean". A checker that did not
           # look has not passed, and mapping the two together is the fail-open
@@ -218,7 +238,15 @@ jobs:
             | jq --argjson n "$NUMBER" \
                 '{kind:"pull_request", number:$n, title:.title, body:.body,
                   labels:[.labels[].name]}' > subject.json
-          node scripts/check-gh-body-english.ts subject.json
+          # Piped through a NON-WHITESPACE prefix before it reaches the log.
+          # The runner TRIM-STARTS each line before deciding whether it is a
+          # workflow command, so the report's own two-space fence indent
+          # protects nothing: an issue body whose first offending line is
+          # `::stop-commands::<non-English text>` suppressed every later
+          # annotation in this job -- and any GitHub user can open an issue. The
+          # FILE stays pristine; it is posted as a comment, where the fence has
+          # to render (go-to-k/cdkd#2736 round-4 security review).
+          node scripts/check-gh-body-english.ts subject.json | sed 's/^/| /'
 
   # --- 3. Severity / Effort labels -----------------------------------------
   # The one check that FIXES instead of refusing: it derives the label from the
@@ -294,7 +322,9 @@ jobs:
             # the verdict cannot drift apart.
             node scripts/check-issue-classification-labels.ts subject.json --comment \
               > conflict.md || true
-            cat conflict.md
+            # Same prefix, same reason; the file stays pristine for the
+            # comment posted below.
+            sed 's/^/| /' conflict.md
             if [ "$ACTION" = "opened" ]; then
               gh api "repos/$REPO/issues/$NUMBER/comments" -F body=@conflict.md --silent
             fi
@@ -355,7 +385,11 @@ jobs:
 
           rc=0
           node scripts/check-issue-dup-check.ts subject.json > comment.md || rc=$?
-          cat comment.md
+          # `formatComment()` takes no arguments and interpolates nothing, so
+          # this one carries no attacker text. Prefixed anyway, so the rule is
+          # "every report goes through the prefix" rather than a judgement the
+          # next editor has to re-make per site.
+          sed 's/^/| /' comment.md
           [ "$rc" = "0" ] && exit 0
           [ "$rc" = "1" ] || exit "$rc"
           gh api "repos/$REPO/issues/$NUMBER/comments" -F body=@comment.md --silent

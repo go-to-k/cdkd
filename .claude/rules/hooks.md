@@ -80,6 +80,19 @@ moved to `.github/workflows/`: `non-english-text`, `commit-prefix-scope` and
 merging makes the PR title the release subject), `internal-pr-labels`,
 `issue-classification-label`, `issue-dup-check` and `gh-body-english`.
 
+**One of the two deletions got a CI successor afterwards, and the correction is
+worth reading before applying the rule again.** `closes-paren-form` was deleted
+on the criterion and the criterion holds — but what the deletion LEFT was a
+prose row in `.claude/skills/verify-pr/SKILL.md`, and a skill step is exactly
+the instruction that gets skipped under time pressure, which is the argument the
+gate's own header made for existing. go-to-k/cdkd#2736 gave it
+`scripts/check-pr-closes-paren.ts`, which WARNS from `pr-content-checks.yml` and
+never fails a PR on what it FINDS — it still exits 2, and reds, when it could
+not look at all. So the rule's third option — "or nowhere" — is the one to reach for
+last: a class measured live four times (go-to-k/cdkd#509 through #514) needs
+something mechanical even when it does not deserve a gate. `vp-run-test-path`
+took the other answer and stands: its own suite is what catches the mistake.
+
 **`gh-pr-edit-deprecation-gate` was deleted on a MEASUREMENT, not on the tier.**
 It blocked `gh pr edit --title` / `--body` because a Projects-classic GraphQL
 deprecation made them exit non-zero with the mutation silently unapplied. MEASURED 2026-09-07 on gh 2.92.0 against a live PR: `gh pr edit --body` exited 0 AND the body was actually replaced. The Projects-classic GraphQL deprecation that made it fail silently is FIXED upstream. **`--title` was NOT measured** -- it is inferred from sharing the same `updatePullRequest` mutation, which is why the retraction says so rather than claiming both arms were observed.

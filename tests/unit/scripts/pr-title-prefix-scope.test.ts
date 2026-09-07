@@ -485,6 +485,31 @@ describe('the CLI names its file source, so a bare invocation cannot HANG', () =
     expect(r.stderr).toContain('--files-from -');
   });
 
+  it('prints the changed-file list, and no path in it can forge a command', () => {
+    // This script echoes FORK-CONTROLLED paths. They arrive JSON-decoded from
+    // `gh api .../files`, so unlike `git diff --name-only` -- which C-quotes
+    // control bytes whatever `core.quotePath` says -- a carriage return
+    // survives. The runner splits output on CR and parses a line beginning
+    // `::` as a workflow command.
+    //
+    // The listing used to be a `cat` in `pr-title-check.yml`, which forged one
+    // on every run. Moving it here and folding was the fix -- and NOTHING
+    // fenced it: removing the fold, and deleting the listing outright, both
+    // passed the whole suite (measured, go-to-k/cdkd#2736 round-4 review).
+    const evil = `src/a${String.fromCodePoint(0x0d)}::stop-commands::x.ts`;
+    const r = run(['--title', 'fix: x', '--files-from', '-'], `${evil}\n`);
+    expect(r.signal).toBeNull();
+
+    const lines = `${r.stdout}${r.stderr}`.split(/\r\n|\r|\n/);
+    expect(
+      lines.some((l) => l.trimStart().startsWith('::stop-commands::')),
+      'a fork-controlled path forged a workflow command',
+    ).toBe(false);
+    // The listing must still HAPPEN -- deleting it satisfies the line above.
+    expect(r.stdout).toContain('Changed files (1)');
+    expect(r.stdout).toContain('src/a');
+  });
+
   it('still accepts stdin, spelled explicitly', () => {
     const r = run(['--title', 'fix: x', '--files-from', '-'], 'src/a.ts\n');
     expect(r.signal).toBeNull();
