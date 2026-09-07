@@ -44,6 +44,7 @@ import {
   CHECK_GUIDANCE,
   KNOWN_FLAGS,
   classifyGitShowFailure,
+  assertFixtureFloor,
   collectFixtureDeltas,
   loadDeclaredProperties,
   UNREADABLE,
@@ -486,6 +487,24 @@ describe('pairRenames', () => {
     expect(pairRenames('Id', ['Tags', 'Name', 'CapacityProviderConfiguration'])).toEqual([]);
   });
 
+  it('is PREFIX/SUFFIX, not containment — the rule the rename signal rests on', () => {
+    // `CapacityProviderConfiguration` above cannot discriminate: it justifies
+    // itself with "`Id` is inside Prov-id-er", true only case-INsensitively,
+    // while `pairRenames` is case-sensitive — so reverting the rule to
+    // `includes()` left all 118 cases green. `ProviderIdentity` CONTAINS `Id`
+    // and neither starts nor ends with it, so it separates the two rules.
+    expect(
+      'CapacityProviderConfiguration'.includes('Id'),
+      'the old anchor still cannot discriminate'
+    ).toBe(false);
+    expect('ProviderIdentity'.includes('Id'), 'this anchor no longer contains the needle').toBe(
+      true
+    );
+    expect(pairRenames('Id', ['ProviderIdentity'])).toEqual([]);
+    // The accepted twin, so a rule that pairs NOTHING also fails.
+    expect(pairRenames('Id', ['RepositoryId', 'IdArn'])).toEqual(['RepositoryId', 'IdArn']);
+  });
+
   it('pairs nothing when the refresh added nothing writable', () => {
     // Read-only additions never reach here — a declaration cannot target one.
     expect(pairRenames('Id', [])).toEqual([]);
@@ -823,6 +842,9 @@ describe('the render guards, at every site that reaches Markdown', () => {
       // The unreadable section renders a name too, and adding a render site the
       // poison input cannot reach defeats this case's stated job.
       unreadable: ['AWS-X-Y`\n\n## Nothing in this refresh needs a decision.json'],
+      // The failed-check HEADING is a twelfth site; without an entry here it
+      // was pinned only against the wrong-guard swap, not against no guard.
+      failedChecks: [POISON_TYPE],
       skipped: [POISON],
       sdkLag: [
         {
@@ -858,7 +880,7 @@ describe('the render guards, at every site that reaches Markdown', () => {
     // writable-added type and its property list, the lag row's type, and the
     // skipped list.
     const rejections = (md.match(/\[(?:name|key) rejected: unexpected characters\]/g) ?? []).length;
-    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(11);
+    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(12);
     // `renderDetail` strips rather than rejects, so it needs its own witness:
     // the backtick it removes cannot appear in the rendered detail.
     expect(md, 'renderDetail was bypassed at its call site').not.toContain('SDK has `X`');
@@ -1648,6 +1670,49 @@ describe('the script end to end', () => {
     expect(md).not.toContain('failed to run');
   }, 60_000);
 
+  it('renders the "Not refreshed" section from a POPULATED skipped log', () => {
+    // Every other `--skipped-log` case is a refusal or `/dev/null`, so the
+    // parse turning the refresh log's tail into that section had no coverage:
+    // replacing its `^AWS::` filter with "any non-empty line" left all cases
+    // green.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-skipped-'));
+    try {
+      const log = join(dir, 'skipped.log');
+      writeFileSync(
+        log,
+        [
+          'No entry in the public bundle for these registered types:',
+          '  AWS::BedrockAgentCore::Browser',
+          '  AWS::BedrockAgentCore::CodeInterpreter',
+          'some trailing prose',
+        ].join('\n')
+      );
+      const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, [
+        '--skipped-log',
+        log,
+      ]);
+      expect(md).toContain('Not refreshed');
+      // Asserted against the BULLET lines only: the section's own prose
+      // legitimately contains the log header's wording, so a whole-body
+      // `not.toContain` fails on correct output.
+      const bullets = md
+        .split('\n')
+        .filter((l) => l.startsWith('- '))
+        .join('\n');
+      // The EXACT bullet set. A `not.toContain('No entry')` does not
+      // discriminate: `renderName` rejects a line with spaces, so a loosened
+      // filter renders the header and the prose as
+      // `**[name rejected: unexpected characters]**` and the header's words
+      // never appear. The guard masks the parse it sits downstream of.
+      expect(bullets.split('\n')).toEqual([
+        '- `AWS::BedrockAgentCore::Browser`',
+        '- `AWS::BedrockAgentCore::CodeInterpreter`',
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('refuses a log path that is a DIRECTORY, naming the cause', () => {
     // It passes `existsSync` and throws `EISDIR` inside `readFileSync`, which
     // collapsed the whole report to the generic one-line failure. Every other
@@ -1948,7 +2013,23 @@ describe('the module\u2019s own doc comments', () => {
       // anything and both are correct as they are.
       const attaches = seenBlocks > 1 && !/@typedef/.test(body);
       const next = lines[i + 1] ?? '';
-      if (attaches && (next.trim() === '' || next.trim() === '/**')) {
+      // A docblock must be followed by a DECLARATION — which also catches a
+      // block followed by a stray comment or by non-declaration code, not only
+      // the blank-line and stacked-block shapes.
+      //
+      // BOUND, stated because an over-claimed fence is the thing this file
+      // keeps producing: it CANNOT see an undocumented declaration slipped
+      // BETWEEN a docblock and the function it describes. That shape still
+      // reads as "block, then a declaration", and telling the intended subject
+      // from an interloper needs more than the next line — a JSDoc block does
+      // not name what it documents. `tsc --checkJs` is the real control there
+      // (it caught two of this session's three orphan incidents through an
+      // implicit-any on a parameter that had lost its `@param`); this fence
+      // covers the shapes that produce no type error at all.
+      const declares = /^(export\s+)?(async\s+)?(function|class|const|let|var)\s/.test(
+        next.trim()
+      );
+      if (attaches && !declares) {
         orphans.push(`line ${i + 2}: ${JSON.stringify(next)}`);
       }
     }
@@ -2008,6 +2089,49 @@ describe('the script\u2019s own synopsis', () => {
     }
   });
 
+});
+
+describe('assertFixtureFloor', () => {
+  it('refuses an EMPTY listing rather than reporting from it', () => {
+    // The last input in the module without a floor. Empty yields empty
+    // removals AND empty additions, which renders as "additions only" — every
+    // sibling input already refuses a short read.
+    expect(() => assertFixtureFloor(0, 134)).toThrow(/no schema fixtures found/);
+  });
+
+  it('refuses a listing far short of the coverage table', () => {
+    expect(() => assertFixtureFloor(3, 134)).toThrow(/far short of the coverage table/);
+  });
+
+  it('is CALLED by main(), before the walk it guards', () => {
+    // The function is exercised directly above; the CALL SITE lives in `main()`
+    // and no seam reaches it — `FIXTURES_DIR` is derived from the repo root, so
+    // a spawn cannot be pointed at an empty directory. A source-shape
+    // assertion is the honest cover: it catches deletion, and says plainly
+    // that it does not exercise the behaviour.
+    const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+    const floorAt = src.indexOf('assertFixtureFloor(fixtureFiles.length');
+    // The CALL, not the definition — `collectFixtureDeltas({` matches the
+    // function's own signature first, which sits far earlier in the file.
+    const walkAt = src.indexOf('} = collectFixtureDeltas({');
+    expect(floorAt, 'main() no longer calls the floor').toBeGreaterThan(-1);
+    expect(walkAt).toBeGreaterThan(-1);
+    expect(floorAt, 'the floor is checked after the walk it guards').toBeLessThan(walkAt);
+  });
+
+  it('accepts the real tree, and does not fire when the table is empty', () => {
+    // Bound to the DECLARED count rather than a constant: the two move
+    // together, so a hand-picked number goes stale. Driven by the real
+    // directory so a future refresh cannot silently cross the floor.
+    const files = readdirSync(join(REPO_ROOT, 'tests/fixtures/cfn-schemas')).filter(
+      (f) => f.endsWith('.json') && !f.startsWith('_')
+    );
+    const declared = loadDeclaredProperties();
+    expect(files.length).toBeGreaterThan(100);
+    expect(() => assertFixtureFloor(files.length, declared.size)).not.toThrow();
+    // A by-hand run against an unread coverage table must not trip the ratio.
+    expect(() => assertFixtureFloor(1, 0)).not.toThrow();
+  });
 });
 
 describe('the sibling type declarations', () => {

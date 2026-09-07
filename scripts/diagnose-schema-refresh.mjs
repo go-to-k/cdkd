@@ -592,8 +592,9 @@ export function parseDeclaredProperties(generatedSource) {
  *
  * A check absent from this table still gets a section — naming it and saying
  * there is no guidance beats the silence that shipped for six rounds.
+ *
+ * @type {Record<string, string[]>}
  */
-/** @type {Record<string, string[]>} */
 export const CHECK_GUIDANCE = {
   'property-coverage': [
     'Most often AWS RE-ADDED a property a provider had written off with a',
@@ -1433,6 +1434,40 @@ export const KNOWN_FLAGS = [
   '--skipped-log',
 ];
 
+/**
+ * Refuse a fixture listing too small to have been produced by a real refresh.
+ *
+ * The LAST input in this file without a floor, and the same class as every
+ * other one: `parseDeclaredProperties` throws on zero types and on a
+ * recognised-entry shortfall, `loadDeclaredProperties` refuses a missing
+ * module, `parseNestedKeyDivergences` counts a shortfall, the per-fixture
+ * `catch` counts `unreadable` — while the directory listing went straight in.
+ * An empty one yields empty removals AND empty additions, which renders as
+ * "additions only".
+ *
+ * The bound is the DECLARED type count rather than a constant: the two move
+ * together (134 and 134 today), a hand-picked number goes stale, and the
+ * producer never deletes a fixture. Half is slack for a genuine mid-refresh
+ * state, not a target.
+ *
+ * @param {number} fixtureCount
+ * @param {number} declaredCount
+ */
+export function assertFixtureFloor(fixtureCount, declaredCount) {
+  if (fixtureCount === 0) {
+    throw new Error(
+      'no schema fixtures found — refusing to report "nothing needs a decision" from a ' +
+        'directory this run never read.'
+    );
+  }
+  if (declaredCount > 0 && fixtureCount * 2 < declaredCount) {
+    throw new Error(
+      `only ${fixtureCount} schema fixtures against ${declaredCount} declared types — ` +
+        'refusing to report from a listing this far short of the coverage table.'
+    );
+  }
+}
+
 function main() {
   const args = process.argv.slice(2);
 
@@ -1562,8 +1597,12 @@ function main() {
   // is still listed there — which is exactly the "now bogus" condition.
   const declared = loadDeclaredProperties();
 
+  const fixtureFiles = readdirSync(FIXTURES_DIR).filter(
+    (f) => f.endsWith('.json') && !f.startsWith('_')
+  );
+  assertFixtureFloor(fixtureFiles.length, declared.size);
   const { removed, writableAdded, readOnlyAddedCount, unreadable } = collectFixtureDeltas({
-    files: readdirSync(FIXTURES_DIR).filter((f) => f.endsWith('.json') && !f.startsWith('_')),
+    files: fixtureFiles,
     committedOf: (file) => committedVersion(`tests/fixtures/cfn-schemas/${file}`),
     currentOf: (file) => readFileSync(join(FIXTURES_DIR, file), 'utf8'),
     providerFiles,

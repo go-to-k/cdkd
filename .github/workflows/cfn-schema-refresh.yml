@@ -85,6 +85,13 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # `issues: write` is REQUIRED, not tidiness: the umbrella fold calls
+      # `gh issue comment`, and `pull-requests: write` covers PR comments only.
+      # Without it every cycle 403s, the `|| echo "::warning::"` on that call
+      # swallows it, the job goes GREEN and the umbrella is never updated — the
+      # silent-failure class this whole job exists to remove, in the one step
+      # the runbook promises will happen automatically.
+      issues: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -172,9 +179,13 @@ jobs:
         if: steps.open_pr.outputs.number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Through `env:`, not `${{ }}` inside the shell body. The value is a
+          # jq-extracted JSON integer, so it is contained today — this removes
+          # the CLASS rather than a live bug, and costs one line.
+          PR_NUMBER: ${{ steps.open_pr.outputs.number }}
         run: |
           set -euo pipefail
-          branch=$(gh pr view "${{ steps.open_pr.outputs.number }}" --json headRefName --jq .headRefName)
+          branch=$(gh pr view "${PR_NUMBER}" --json headRefName --jq .headRefName)
           echo "existing_branch=${branch}" >> "$GITHUB_ENV"
           git fetch origin "${branch}"
           git checkout "${branch}"
@@ -351,6 +362,8 @@ jobs:
           # wired into an SDK provider. Named here rather than in the script so
           # moving the campaign is a workflow edit, not a code change.
           BACKFILL_UMBRELLA: "609"
+          # Same reasoning as the switch step: no `${{ }}` inside a shell body.
+          PR_NUMBER: ${{ steps.open_pr.outputs.number }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -368,9 +381,9 @@ jobs:
             # PR, which this repo has a whole hook class about — and leave a
             # diagnosis comment on an already-merged PR. Nothing is lost by
             # bailing: the next cycle recomputes the same drift against main.
-            state=$(gh pr view "${{ steps.open_pr.outputs.number }}" --json state --jq .state)
+            state=$(gh pr view "${PR_NUMBER}" --json state --jq .state)
             if [ "${state}" != "OPEN" ]; then
-              echo "::warning::PR ${{ steps.open_pr.outputs.number }} is ${state}, not OPEN — it closed while this ran. Skipping; the next cycle recomputes."
+              echo "::warning::PR ${PR_NUMBER} is ${state}, not OPEN — it closed while this ran. Skipping; the next cycle recomputes."
               exit 0
             fi
             # The BASE this commit sits on — the tip fetched in the switch step,
@@ -388,9 +401,9 @@ jobs:
             if git push \
                  "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
                  "${existing_branch}"; then
-              gh pr comment "${{ steps.open_pr.outputs.number }}" \
+              gh pr comment "${PR_NUMBER}" \
                 --body-file /tmp/diagnosis.md
-              pr_number="${{ steps.open_pr.outputs.number }}"
+              pr_number="${PR_NUMBER}"
             else
               # A lost RACE and a broken push are different outcomes and must
               # not share one green exit: a permission or branch-protection

@@ -752,6 +752,18 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).toMatch(/^permissions: \{\}$/m);
     expect(workflow).toMatch(/^\s+contents: write$/m);
     expect(workflow).toMatch(/^\s+pull-requests: write$/m);
+    // Asserted because it was MISSING: `gh issue comment` needs `issues:
+    // write`, `pull-requests: write` covers PR comments only, and the call's
+    // own `|| echo "::warning::"` turns the resulting 403 into a green job with
+    // the umbrella silently never updated.
+    expect(workflow, 'gh issue comment cannot work without issues: write').toMatch(
+      /^\s+issues: write$/m
+    );
+
+    // Derived, not a fixed list: any `gh issue`/`gh api .../issues` call in the
+    // workflow requires that scope, so a future one cannot be added without it.
+    const usesIssueApi = /gh issue |\/issues\//.test(workflow);
+    expect(usesIssueApi, 'no issue API call found — this assertion guards nothing').toBe(true);
   });
 
   it('pins every action to a full commit SHA', () => {
