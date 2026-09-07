@@ -339,11 +339,9 @@ printf '%s' "$side_prev" > "$side_repo/.markgate-verify-pr-sha"
 run_case "mismatch still caught from a SUBDIRECTORY" 2 fresh "" "$sub_payload"
 printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
 
-# The 100-byte read cap. The sentinel's first 100 bytes are the right sha and
-# the tail is junk: a read with no cap sees the junk and refuses, so this pins
-# the cap rather than merely the comparison.
 # The sha followed by junk. What refuses it is reading the file WHOLE: a capped
-# read would see only the sha.
+# read would see only the sha. (There is no read cap; the 128-byte gate is on
+# SIZE, and the case below pins that separately.)
 { printf '%s' "$real_sha"; printf '%*s' 60 ''; printf 'TAILJUNK'; } \
   > "$side_repo/.markgate-verify-pr-sha"
 run_case "sha followed by junk is REFUSED (whole-file read)" 2 fresh "" "$side_payload"

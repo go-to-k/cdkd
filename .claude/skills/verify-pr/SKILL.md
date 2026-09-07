@@ -380,9 +380,10 @@ COMMIT, and `check-gate` guards the commit. Both directions are explained in
 mise exec -- markgate set check
 mise exec -- markgate set docs
 
-# 2-3. Every `&&`, the `||`, `--verify` and `--show-toplevel` are all
-#    load-bearing; hooks.md says why. Do not unchain this. After a rebase the
-#    push needs `--force-with-lease`.
+# 2. Land the changes, then 3. BIND (the last two lines). Every `&&`, the
+#    `||`, `--verify` and `--show-toplevel` are load-bearing; hooks.md says
+#    why. Do not unchain this. After a rebase the push needs
+#    `--force-with-lease`.
 git add -A \
   && { git diff --cached --quiet || git commit -m "..."; } \
   && git push \
@@ -392,8 +393,10 @@ git add -A \
 ```
 
 **Anything that moves HEAD afterwards invalidates the binding, by design** — a
-rebase or force-push before merge (which `ship.md` prescribes) needs step 3
-repeated once the tree is final.
+rebase or force-push before merge (which `ship.md` prescribes) needs the last
+two lines above repeated once the tree is final: the sentinel write and
+`markgate set verify-pr`, NOT the whole chain, whose plain `git push` is
+rejected non-fast-forward on exactly that path.
 
 **The sentinel is the binding, and `markgate verify` does not enforce it**
 (issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). Why, and why it is
@@ -407,6 +410,6 @@ by hand to bypass the gate defeats the point. If a check legitimately cannot
 pass right now, say so in the report and DO NOT set the marker — the gate
 exits non-zero so the human can decide.
 
-Skip the marker step entirely if any check failed. (The commit/push that used
-to be described here moved UP, into step 1 above — doing it after the markers
-is what invalidated the binding.)
+Skip the whole sequence if any check failed. (The commit/push that used to be
+described here is now inside the chain above — doing it after the markers is
+what invalidated the binding.)
