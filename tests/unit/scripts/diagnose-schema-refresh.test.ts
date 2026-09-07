@@ -1529,6 +1529,21 @@ describe('the script end to end', () => {
     expect(md).toContain('Nothing in this refresh needs a decision');
   }, 60_000);
 
+  it('refuses a --failed-checks given with NO value', () => {
+    // Present-with-no-value is unreadable, not empty, and empty reads as
+    // "nothing failed" — the same distinction `--nested-key-rc` needed. The
+    // script still exits 0 (a diagnosis must not take down the PR it
+    // describes), so the refusal has to be visible in the body.
+    const md = run('nested-key-coverage: OK — 0 divergences\n', undefined, ['--failed-checks']);
+    expect(md).not.toContain('Nothing in this refresh needs a decision');
+    // The MESSAGE, not just the outcome: without the explicit refusal the
+    // `undefined` reaches `.split(',')` and throws a TypeError, which the outer
+    // handler renders as the same generic failure — so asserting "failed to
+    // run" alone could not tell the deliberate refusal from the accident, and
+    // the maintainer would read `Cannot read properties of undefined`.
+    expect(md).toContain('--failed-checks was given with no value');
+  }, 60_000);
+
   it('renders a case-divergence without asking npm anything', () => {
     const md = run(
       'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.\n' +
@@ -1649,6 +1664,29 @@ describe('collectFixtureDeltas', () => {
     // "could not read", never "brand-new".
     expect(classifyGitShowFailure('')).toBe(UNREADABLE);
     expect(classifyGitShowFailure('fatal: not a git repository')).toBe(UNREADABLE);
+  });
+
+  it('falls back to the filename as a TYPE name, not as a filename', () => {
+    // A fixture missing `resourceType` yields the stem, which is hyphenated —
+    // and `renderName` rejects hyphens, so the heading became
+    // `**[name rejected]**`. The declared-property lookup misses either way,
+    // but a legible heading says which type it missed for. Same shape as the
+    // two render sites the previous two rounds fixed.
+    const out = collectFixtureDeltas({
+      ...base,
+      files: ['AWS-Glue-Connection.json'],
+      committedOf: () => JSON.stringify({ properties: ['A'] }),
+      currentOf: () => JSON.stringify({ properties: [] }),
+      declared: new Map([['AWS::Glue::Connection', new Set(['A'])]]),
+    });
+    expect(out.removed[0]!.resourceType).toBe('AWS::Glue::Connection');
+    const md = renderDiagnosis({
+      removed: out.removed,
+      writableAdded: [],
+      divergences: [],
+      skipped: [],
+    });
+    expect(md).not.toContain('rejected');
   });
 
   it('skips a BRAND-NEW fixture silently, which is not the same thing', () => {

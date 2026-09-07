@@ -1316,7 +1316,13 @@ export function collectFixtureDeltas({
       let resourceType;
       try {
         delta = comparePropertySets(committed, currentOf(file));
-        resourceType = JSON.parse(committed).resourceType ?? file;
+        // The filename stem converted back, never the raw stem: it is hyphenated
+      // and `renderName` rejects hyphens, so the fallback rendered
+      // `**[name rejected]**` as the heading — the same shape as the two render
+      // sites rounds 8 and 9 fixed. The declared-property lookup misses either
+      // way, but a legible heading says which type it missed for.
+      resourceType =
+        JSON.parse(committed).resourceType ?? file.replace(/\.json$/, '').replace(/-/g, '::');
       } catch {
         // An unparseable side is the refresh's problem, not the report's — but it
         // is COUNTED, because a type that vanishes here vanishes from the removal
@@ -1436,9 +1442,17 @@ function main() {
   // every manual invocation is not a safety property. The risk the absent arm
   // carries — the WORKFLOW dropping the flag — is guarded where the evidence
   // still exists, by the workflow test asserting it passes the variable.
+  // A flag PRESENT with no value is unreadable, not empty — the same
+  // distinction `readNumArg` draws, and its twin here fails open the same way:
+  // an empty list reads as "nothing failed".
   const readArgValue = (/** @type {string} */ flag) => {
     const i = args.indexOf(flag);
-    return i === -1 || i + 1 >= args.length ? '' : args[i + 1];
+    if (i === -1) return '';
+    const raw = args[i + 1];
+    if (raw === undefined) {
+      throw new Error(`${flag} was given with no value — refusing to report from an unread list.`);
+    }
+    return raw;
   };
   const readNumArg = (/** @type {string} */ flag) => {
     const i = args.indexOf(flag);

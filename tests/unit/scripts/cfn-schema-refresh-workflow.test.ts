@@ -22,7 +22,14 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { CHECK_GUIDANCE } from '../../../scripts/diagnose-schema-refresh.mjs';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
@@ -400,6 +407,67 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
           readFileSync(join(REPO_ROOT, 'scripts', script), 'utf8'),
           `${check} does not read the fixtures — why is it in this list?`
         ).toContain('cfn-schemas');
+      }
+    });
+
+    it('covers EVERY zero-headroom suite, and every filter matches something', () => {
+      // Five suites assert `silentDrop` is empty against the REAL coverage, so
+      // one writable property AWS adds to any of their types reds CI — while
+      // `property-coverage` under `CDKD_GENERATE_BACKFILL` absorbs the same
+      // addition and stays green. Naming one of them covered three files of the
+      // five. The family is DERIVED here so a sixth cannot be added silently.
+      const walk = (dir: string): string[] =>
+        readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+          e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]
+        );
+      const testFiles = walk(join(REPO_ROOT, 'tests/unit')).filter((f) => f.endsWith('.test.ts'));
+      const zeroHeadroom = testFiles.filter((f) =>
+        /silentDrop\.keys\(\)[\s\S]{0,80}?toEqual\(\[\]\)/.test(readFileSync(f, 'utf8'))
+      );
+      expect(
+        zeroHeadroom.length,
+        'no zero-headroom suite found — the derivation broke, not the coverage'
+      ).toBeGreaterThanOrEqual(5);
+
+      const regen = shellOf('Regenerate the derived artifacts');
+      // Line continuations joined first: the invocation is written across two
+      // lines, so a naive per-line match finds only the `run_check` half.
+      const flat = regen
+        .replace(/\\\n\s*/g, ' ')
+        .split('\n')
+        .map((l) => l.trim())
+        .join('\n');
+      const line = flat.match(/run_check fixture-consumer-tests\s+vp test run ([^\n]*)/);
+      expect(line, 'the fixture-consumer run_check is gone').not.toBeNull();
+      const filters = line![1]!.trim().split(/\s+/).filter(Boolean);
+
+      for (const file of zeroHeadroom) {
+        const rel = file.slice(REPO_ROOT.length + 1);
+        expect(
+          filters.some((needle) => rel.includes(needle)),
+          `${rel} asserts zero headroom and no filter selects it`
+        ).toBe(true);
+      }
+
+      for (const needle of filters) {
+        // A leading dash is parsed as a FLAG, not a filter: `-props` killed the
+        // whole step with `Unknown option \`-p\``, and the substring check below
+        // passed it happily — the filter matched the filenames it was never
+        // going to be given to vitest as.
+        expect(
+          needle.startsWith('-'),
+          `filter ${JSON.stringify(needle)} starts with a dash — vitest reads it as a flag`
+        ).toBe(false);
+      }
+
+      // And a filter matching NOTHING is a silent narrowing: vitest ignores a
+      // non-matching positional when others match, so renaming a file removes
+      // its coverage with no red anywhere.
+      for (const needle of filters) {
+        expect(
+          testFiles.some((f) => f.slice(REPO_ROOT.length + 1).includes(needle)),
+          `filter ${JSON.stringify(needle)} matches no test file`
+        ).toBe(true);
       }
     });
 
