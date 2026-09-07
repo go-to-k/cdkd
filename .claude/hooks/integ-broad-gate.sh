@@ -128,7 +128,14 @@ cd "$target_dir" 2>/dev/null || exit 0
 # cdkd makes. `rollback-executor.ts` was found unscoped in the same pass
 # (it was NOT named by that issue): its reverse-replacement path deletes
 # the new physical resource and re-creates the old one.
-CROSS_CUTTING_REGEX='^src/deployment/(deploy-engine|intrinsic-function-resolver|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'
+#
+# `provider-registry.ts` joined in issue #2720. Its sibling
+# `register-providers.ts` decides which TYPES have an SDK provider; this
+# one decides which provider actually runs EVERY resource in EVERY
+# template -- the SDK-vs-Cloud-Control routing decision, delete path
+# included -- which is the multi-resource blast radius this gate exists
+# for. It was in NEITHER real-AWS gate until then.
+CROSS_CUTTING_REGEX='^src/deployment/(deploy-engine|intrinsic-function-resolver|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/(provider-registry|register-providers)\.ts$'
 
 # --- Extract PR number from the `gh pr merge` command and fetch the
 # actual PR diff via `gh pr view --json files`. Same pattern as

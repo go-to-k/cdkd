@@ -122,7 +122,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 173_147,
+    corpusBytes: 173_304,
     largest: { file: 'implement.md', bytes: 28_727 },
     runnerUp: { file: 'verify.md', bytes: 28_187 },
   },
@@ -491,7 +491,17 @@ const MIN_REFERENCE_FILES = 6;
 // document COUNT, and work-issues-launch-mode.test.ts pins that each
 // arm-bearing stage file still names the mode it branches on and that the
 // probe still exists exactly once.
-const MIN_REFERENCE_CORPUS_BYTES = 145_000;
+// RAISED 145_000 -> 145_500 by go-to-k/cdkd#2720, which added
+// `src/provisioning/provider-registry.ts` to triage.md's contested-file list (+157 B,
+// corpus 173,147 -> 173,304). The floor is NOT being raised to accommodate growth --
+// it is DERIVED from the corpus and must stay above `corpus - runnerUp`, so any
+// growth in a non-leader file mechanically pushes it up. Inputs at this date:
+// corpus 173,304, largest implement.md 28,727, runner-up verify.md 28,187, so the
+// two thresholds are 144,577 (largest-side) and 145,117 (runner-up side, binding);
+// 145,500 clears the binding one by 383 B. The forbidden direction retro.md
+// section 10-c names is a RETRO buying room for its own prose by raising a cap;
+// this is the opposite move on a floor whose failure mode is deletion.
+const MIN_REFERENCE_CORPUS_BYTES = 145_500;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

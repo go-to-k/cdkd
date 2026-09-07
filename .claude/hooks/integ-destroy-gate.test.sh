@@ -249,6 +249,37 @@ git -C "$filter_repo" update-ref refs/remotes/origin/main "$(git -C "$filter_rep
 #  in the STRICT set, not because the hunk filter matched words.
 stage_filter_change() {
   local rel="$1"; local line="$2"
+  # The docstring above states that the content carries no delete-symbol
+  # vocabulary, and EVERY strict-vs-filtered case depends on it: those cases
+  # prove a file trips the gate because it is STRICT, and the only thing
+  # distinguishing that from "the hunk filter matched a word" is this content.
+  # Unpinned, a future edit adding `delete` / `ENI` / `rollback` to one of these
+  # strings leaves every case GREEN while silently deleting the discrimination
+  # -- the case would then pass under either bucket. Measured: moving
+  # provider-registry.ts from strict_delete to filtered_delete currently fails
+  # its case (25/1), and that is the ONLY executable fence on the bucket choice
+  # (tests/unit/scripts/cross-cutting-list-sync.test.ts compares the MERGED
+  # activation set and stays 15/15 green through the move). So the invariant is
+  # asserted rather than described. Kept in sync with the hook's own
+  # `delete_symbol_pattern` by hand. Drift can make this guard LOOSER (the hook
+  # GAINS an alternative this list lacks: a poisoned fixture slips through and
+  # the case it feeds silently stops discriminating) or OVER-STRICT (the hook
+  # LOSES one: a content line that is delete-symbol-free by the hook's own
+  # definition is refused here anyway -- measured, dropping `|detach` from the
+  # hook and putting `detach` in a content line gives Fail: 1). It cannot fail
+  # open in the dangerous direction, because over-strict is a loud,
+  # self-correcting suite failure. The guard is also stricter than the hook by
+  # construction: the hook's `^[-+][^-+]` skips the first content character,
+  # this scans the whole string.
+  case "$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')" in
+    *delete*|*rollback*|*hyperplane*|*dependencyviolation*|*eni*|*detach*)
+      fail=$((fail + 1))
+      fail_log+="FAIL stage_filter_change fixture for $rel carries delete-symbol vocabulary "
+      fail_log+="in its content line, so any case using it passes on the HUNK FILTER rather "
+      fail_log+="than on bucket membership: $line\n"
+      printf 'FAIL stage_filter_change fixture content is not delete-symbol-free: %s\n' "$rel"
+      ;;
+  esac
   git -C "$filter_repo" reset -q --hard refs/remotes/origin/main
   mkdir -p "$filter_repo/$(dirname "$rel")"
   printf '%s\n' "$line" > "$filter_repo/$rel"
@@ -303,6 +334,31 @@ run_case "diff filter: retry.ts is delete-touching (#2042)" 2 stale "$filter_rep
 
 stage_filter_change "src/deployment/rollback-executor.ts" "const REPLAY_LIMIT = 3;"
 run_case "diff filter: rollback-executor.ts is delete-touching (#2042)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# issue #2720: the SDK-vs-Cloud-Control routing decision. `getProviderFor`
+# picks the provider that DELETES a resource -- deploy-engine's plain delete
+# and its replacement old-delete, destroy-runner, and seven sites in
+# rollback-executor all read it -- so a routing regression reroutes DELETE for
+# every resource in a template at once.
+#
+# STRICT rather than hunk-filtered, and this case is the evidence: the content
+# line below is a realistic routing edit (a type added to the sticky-exemption
+# set) and carries NONE of the delete-symbol vocabulary. Under the filtered
+# bucket it would pass through -- a fail-open for exactly the change the gate
+# was added for. Measured before the move: five such mutations matched the
+# symbol filter 0 times, while a control line naming `deleteProvider` matched.
+stage_filter_change "src/provisioning/provider-registry.ts" \
+  "const STICKY_CC_MIGRATION_EXEMPT = new Set(['AWS::Scheduler::Schedule']);"
+run_case "diff filter: provider-registry.ts is delete-touching (#2720)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# Near-miss control for the #2720 entry: the pattern is anchored at BOTH ends,
+# so a provisioning sibling whose basename merely STARTS with the scoped one is
+# out of scope. Without this, a loose `provider-registry.*` would satisfy the
+# case above while silently gating unrelated files.
+stage_filter_change "src/provisioning/provider-registry-helpers.ts" "export const NOOP = 1;"
+run_case "diff filter: provider-registry-helpers.ts passes through (#2720 anchor)" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
 

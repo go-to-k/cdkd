@@ -113,17 +113,28 @@ cd "$target_dir" 2>/dev/null || exit 0
 # Heuristic:
 # - "strict-delete" files (dag-builder.ts, implicit-delete-deps.ts,
 #   lambda-vpc-deps.ts, retry.ts, retryable-errors.ts,
-#   rollback-executor.ts): any change at all is delete-touching. These
-#   are small high-stakes analyzer files where a typical addition is an
-#   array entry like `'AWS::Foo': ['AWS::Bar']` whose text does NOT
-#   contain the delete-symbol vocabulary, so the hunk filter would
-#   miss it. Keep strict. The retry pair joined this group for the same
-#   reason (issue #2042): a typical change there adds an HTTP status
-#   code or an error name to a classifier list, text that carries none
-#   of the delete vocabulary, while `withRetry` wraps every provider's
-#   delete() and `destroy-runner.ts` consults the classifier directly.
+#   rollback-executor.ts, provider-registry.ts): any change at all is
+#   delete-touching. These are small high-stakes analyzer files where a
+#   typical addition is an array entry like `'AWS::Foo': ['AWS::Bar']`
+#   whose text does NOT contain the delete-symbol vocabulary, so the
+#   hunk filter would miss it. Keep strict. The retry pair joined this
+#   group for the same reason (issue #2042): a typical change there adds
+#   an HTTP status code or an error name to a classifier list, text that
+#   carries none of the delete vocabulary, while `withRetry` wraps every
+#   provider's delete() and `destroy-runner.ts` consults the classifier
+#   directly.
 #   `rollback-executor.ts` is here because its every path is a DELETE or
 #   a re-CREATE of a real resource, so the hunk filter buys nothing.
+#   `provider-registry.ts` joined for the same reason (issue #2720): its
+#   `getProviderFor` picks the provider that DELETES a resource --
+#   `deploy-engine.ts`'s plain delete and its replacement old-delete,
+#   `destroy-runner.ts`, and seven sites in `rollback-executor.ts` all
+#   read it -- so one routing change reroutes DELETE for every resource
+#   in a template. Hunk-filtering it was measured to be a fail-open: five
+#   realistic routing edits across three shapes (a type added to
+#   `STICKY_CC_MIGRATION_EXEMPT`, the sticky predicate replaced, a
+#   returned `provisionedBy` flipped) matched `delete_symbol_pattern` 0
+#   times, while a control line naming `deleteProvider` matched.
 # - "filtered-delete" files (destroy.ts, destroy-runner.ts,
 #   deploy-engine.ts): considered delete-touching ONLY when the diff
 #   hunks add/remove a delete-related symbol — same filter as provider
@@ -151,7 +162,7 @@ if [ -n "$diff_base" ]; then
   # Strict files — any change triggers (small high-stakes analyzer
   # files plus the retry classifier / rollback executor; see header
   # comment for rationale).
-  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor)\.ts$'
+  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor)\.ts$|^src/provisioning/provider-registry\.ts$'
   # Hunk-filtered files — only delete-symbol changes trigger.
   filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine\.ts)$'
   provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'
