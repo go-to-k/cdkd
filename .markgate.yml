@@ -292,6 +292,16 @@ gates:
       # already did on every release, so the entry adds no new cost.
       - "CHANGELOG.md"
       - "docs/**"
+      # `.gitignore` is a checker INPUT since go-to-k/cdkd#2738:
+      # `tests/unit/scripts/settings-bash-first-optout.test.ts` requires
+      # `.claude/settings.local.json` to be ignored BY THIS FILE (it reads
+      # `git check-ignore -v`'s source), because a local settings file
+      # outranks `.claude/settings.json` and would beat the bash-first pin.
+      # Without this entry, deleting that line reds the suite while a
+      # `check` marker recorded a moment earlier still verifies FRESH.
+      # `check-scope-checker-inputs.test.ts` cannot see it: the read goes
+      # through `git check-ignore`, not a literal read target.
+      - ".gitignore"
       # This file itself (the go-to-k/cdk-local#623 sibling, handled in the
       # same session): the gate's own definition decides what the marker
       # MEANS, so editing it — this include list included — must stale a
