@@ -765,10 +765,12 @@ const MAX_MISSING_TYPE_RATIO = 0.1;
  * declared entry count above `(len - offset) / 46` (measured: a 1 KB buffer
  * declaring 0xFFFF entries throws `Number of disk entries is too large`), so
  * the buffer size genuinely bounds the count, and the worst case is
- * `MAX_DOWNLOAD_BYTES / 46 * ~9,241` — about 2.5 GB here, which survives, with
- * the run then refused by {@link MIN_ZIP_ENTRIES}, since a directory bomb
- * yields almost no `.json` entries. At 64 MB the same arithmetic gives ~13 GB,
- * which OOM-kills the job. The per-entry cost is maximized at the SMALLEST
+ * `MAX_DOWNLOAD_BYTES / 46 * 9,500` — about 2.6 GB here, which survives (peak
+ * RSS measured at 2.75 GB), with the run then refused by
+ * {@link MIN_ZIP_ENTRIES}, since a directory bomb yields almost no `.json`
+ * entries. At 64 MB the same arithmetic gives ~13.9 GB, which OOM-kills the
+ * job. The 9,500 is the conservative end of an independently measured
+ * 9,210-9,434 B/entry, and it is the figure the test asserts. The per-entry cost is maximized at the SMALLEST
  * record: entries scale as `B/(46+n)` and cost as `base+n`, and since
  * `46 < base` the product falls as the filename grows.
  *
@@ -802,10 +804,10 @@ export const MAX_DOWNLOAD_BYTES = 12 * 1024 * 1024;
  * reasons: one guards the runner's parse cost, the other guards decompression.
  * They must not share a number.
  *
- * 48 MB is ~3.4x the measured uncompressed total.
+ * 48 MiB is ~3.6x the measured uncompressed total (and the download cap's
+ * 12 MiB is ~4.2x the compressed one).
  */
 export const MAX_UNCOMPRESSED_BYTES = 48 * 1024 * 1024;
-
 
 /**
  * Convert a CFn resource type to its entry name in the public schema bundle.
@@ -935,12 +937,13 @@ export function readSchemaBundle(zipBuffer) {
     // earlier revision tried to cover this by adding
     // `max(size, compressedSize)` to the running total; that is
     // MATHEMATICALLY INERT, because the sum of every entry's compressed size
-    // cannot exceed the zip buffer, which the download cap already holds under
-    // the download cap. So the compressed arm can never trip it, and the
-    // only arm that can is the very field the attacker zeroes. Measured: a
-    // central header with `size=0, compressedSize=4080` contributed 4 KB while
-    // `getData()` materialized 4 MB — 1029x past the counter, and ~64 GiB of
-    // inflate when scaled to the download budget.
+    // cannot exceed the zip buffer, which MAX_DOWNLOAD_BYTES already holds at
+    // 12 MiB — below MAX_UNCOMPRESSED_BYTES. So the compressed arm can never
+    // trip the cap, and the only arm that can is the very field the attacker
+    // zeroes. Measured: a central header with `size=0, compressedSize=4080`
+    // contributed 4 KB while `getData()` materialized 4 MB — 1029x past the
+    // counter, which at the 12 MiB download budget scales to ~12.9 GB of
+    // inflate.
     //
     // adm-zip reads the CENTRAL directory, where sizes are correct even for a
     // data-descriptor entry, so a zero here is a lie rather than a streaming

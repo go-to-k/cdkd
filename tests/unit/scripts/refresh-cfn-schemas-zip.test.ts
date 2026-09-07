@@ -838,8 +838,10 @@ describe('download and decompression bounds', () => {
    *
    * `new AdmZip(buffer)` builds an object per directory record before any
    * other check in the module runs, so a buffer that is nothing but records is
-   * the cheapest attack on the runner. Measured 2026-09-07: ~8,686 bytes of
-   * heap per entry, minimum record 46 bytes plus a one-character name.
+   * the cheapest attack on the runner. Measured 2026-09-07: 9,210-9,434 bytes
+   * of heap per entry, against adm-zip's own 46-byte record divisor (it
+   * refuses a declared count above `(len - offset) / 46` before allocating,
+   * so the buffer size genuinely bounds the count).
    *
    * A hand-rolled EOCD ceiling was tried instead and deleted: two independent
    * reviews measured four bypasses (wrong field — `ENDTOT` vs the `ENDSUB`
