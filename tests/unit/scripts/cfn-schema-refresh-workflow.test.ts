@@ -119,12 +119,14 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       for (const name of ['Refresh fixtures from the public schema bundle', 'Detect drift']) {
         expect(byName(name).if).toBeUndefined();
       }
-      for (const name of [
-        'Regenerate the derived artifacts',
-        'Diagnose what needs a decision',
-        'Publish the refresh',
-      ]) {
-        expect(byName(name).if).toBe("steps.drift.outputs.drifted == 'true'");
+      // Only the PUBLISH is drift-only. The two steps feeding the PR's
+      // decision marking also run while a refresh PR is open, so the marking
+      // can be CLEARED on a day AWS did not move — see the case for that
+      // below; here the point is that neither runs unconditionally.
+      expect(byName('Publish the refresh').if).toBe("steps.drift.outputs.drifted == 'true'");
+      for (const name of ['Regenerate the derived artifacts', 'Diagnose what needs a decision']) {
+        expect(byName(name).if).toContain("steps.drift.outputs.drifted == 'true'");
+        expect(byName(name).if, `${name} runs unconditionally`).not.toBeUndefined();
       }
     });
 
@@ -170,85 +172,164 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(publish).toContain('--body-file /tmp/pr-body.md');
     });
 
-    it('REGENERATES the umbrella checklist from the coverage map', () => {
-      // Appending cannot express a type that was ticked off and later regained
-      // a property: the `[x]` row stays checked and a second row appears for
-      // the same type. Dedup does not fix that — the append model is wrong. The
-      // map is the campaign's stated completion criterion, so the block is
-      // rendered from it and a type reappears or disappears on its own.
-      const publish = shellOf('Publish the refresh');
-      // Rendered in the TOKENLESS step — the script spawns `npm`, and a spawn
-      // in the token-holding step inherits its environment. Publish only reads
-      // the file. This is the property an earlier round established and this
-      // redesign briefly broke.
-      expect(shellOf('Diagnose what needs a decision')).toContain('--umbrella-checklist');
-      expect(publish, 'a script spawn is back in the token-holding step').not.toContain(
-        'diagnose-schema-refresh.mjs'
+    it('no longer writes the umbrella from here, and gives up the scope that took', () => {
+      // The splice moved to `backfill-umbrella-sync.yml`, driven by pushes to
+      // `main`. Writing it from HERE meant writing it from the job's own
+      // post-refresh workspace, before the PR was reviewed — so closing the PR
+      // left the issue asserting properties `main` does not have (measured
+      // 2026-09-07: 288 rows against `main`'s 285). Fenced from this side too,
+      // because a re-added splice here would be invisible to the new
+      // workflow's own suite while quietly restoring the divergence.
+      expect(workflow, 'the umbrella splice is back in the refresh job').not.toContain(
+        'MARKER_BEGIN'
       );
-      expect(publish).toContain('/tmp/checklist.md');
-      expect(publish).toContain('gh issue edit');
-      expect(publish, 'the split-destination comment is back').not.toContain('gh issue comment');
-      // The PR is the load-bearing output; losing it because an issue write
-      // failed would be the wrong trade, and the list is in the PR body too.
-      expect(publish).toMatch(/gh issue edit[\s\S]*?\|\|/);
+      expect(workflow).not.toContain('gh issue edit');
+      expect(workflow).not.toContain('--umbrella-checklist');
+      // And the permission that existed only for that write is gone with it.
+      // This is the repo's one unattended job holding `contents: write`, so a
+      // scope it no longer uses is worth pinning at zero rather than trusting
+      // to review.
+      expect(
+        parsed.jobs.refresh.permissions,
+        'issues: write is back on the job that no longer touches an issue'
+      ).not.toHaveProperty('issues');
     });
 
-    it('writes only BETWEEN the markers, never the whole body', () => {
-      // Everything outside them is human-written provenance — which PR closed
-      // which slice — that cannot be recomputed. Rewriting the body wholesale
-      // would destroy exactly what the consolidation preserved.
-      const publish = shellOf('Publish the refresh');
-      const step = steps.find((st) => st.name === 'Publish the refresh')!;
-      expect(step.env?.['MARKER_BEGIN']).toMatch(/^<!-- BEGIN generated/);
-      expect(step.env?.['MARKER_END']).toBe('<!-- END generated -->');
-      // The two halves of the splice: everything up to BEGIN, and everything
-      // from END onward. Asserted as the sed ranges themselves rather than by
-      // exact escaping, which differs between the YAML and the shell.
-      expect(publish).toContain('${MARKER_BEGIN}');
-      expect(publish).toContain('${MARKER_END}');
-      expect(publish, 'the head half of the splice is gone').toMatch(/sed -n "1,/);
-      expect(publish, 'the tail half of the splice is gone').toMatch(
-        /"\$\{U\}" >> "\$\{N\}"/
-      );
-      // And the generated rows land BETWEEN the two halves, not appended after.
-      const headAt = publish.indexOf('> "${N}"');
-      const rowsAt = publish.indexOf('cat /tmp/checklist.md >> "${N}"');
-      const tailAt = publish.indexOf('"${U}" >> "${N}"');
-      expect(headAt).toBeGreaterThan(-1);
-      expect(rowsAt, 'the rows are not spliced between the halves').toBeGreaterThan(headAt);
-      expect(tailAt).toBeGreaterThan(rowsAt);
+    it('derives the decision count from the SAME run that rendered the body', () => {
+      // A second invocation would re-read `--failed-checks` and
+      // `--nested-key-log` from its own argv, so a copy that drifted by one
+      // flag would mark the PR "no decisions needed" over the very report it
+      // sits beside — the shape `--failed-checks` already produced here once.
+      // One invocation cannot disagree with itself.
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(diagnose).toContain('--decision-count-out /tmp/decision-count.txt');
+      const invocations = diagnose.match(/node scripts\/diagnose-schema-refresh\.mjs/g) ?? [];
+      expect(
+        invocations.length,
+        'the diagnosis is invoked more than once, so the count and the report can disagree'
+      ).toBe(1);
     });
 
-    it('refuses when the umbrella carries no marker pair', () => {
-      // Without them there is nowhere to write without guessing which part of
-      // the body is generated, and guessing means overwriting a human's notes.
-      const publish = shellOf('Publish the refresh');
-      expect(publish).toMatch(
-        /if grep -Fq "\$\{MARKER_BEGIN\}" "\$\{U\}" && grep -Fq "\$\{MARKER_END\}" "\$\{U\}"; then/
-      );
-      const elseAt = publish.indexOf('carries no ${MARKER_BEGIN}');
-      expect(elseAt, 'the missing-marker case does not announce itself').toBeGreaterThan(-1);
-      expect(publish.slice(elseAt)).not.toMatch(/gh issue edit/);
+    it('recomputes the marking while a PR is open, even on a day with no drift', () => {
+      // The clearing path. Gated on drift alone, the marking could only be
+      // recomputed on a day AWS happened to move: a human commits the
+      // classifications, the next cycle stops at "No fixture drift — nothing
+      // to do", and the label, title count and assignee keep asserting work
+      // that is already settled. A signal that cannot be cleared teaches its
+      // reader to ignore it.
+      for (const name of ['Regenerate the derived artifacts', 'Diagnose what needs a decision']) {
+        expect(byName(name).if, `${name} cannot run on the open-PR arm`).toBe(
+          "steps.drift.outputs.drifted == 'true' || steps.open_pr.outputs.number != ''"
+        );
+      }
+      // Publish stays drift-only: nothing may be COMMITTED on the open-PR arm.
+      expect(byName('Publish the refresh').if).toBe("steps.drift.outputs.drifted == 'true'");
     });
 
-    it('never writes a body it could not first read', () => {
-      // The redirect truncates the file BEFORE gh runs, so an unchained recipe
-      // whose `view` fails replaces the umbrella's WHOLE body. Same shape and
-      // reasoning as .claude/hooks/issue-dup-check-gate.sh's recipe.
-      const publish = shellOf('Publish the refresh');
-      expect(publish).toMatch(
-        /if gh issue view "\$\{umbrella\}" --json body -q \.body > "\$\{U\}" && \[ -s "\$\{U\}" \]; then/
+    it('marks the PR this cycle published, or the one already open', () => {
+      // Both can be set — an additive push republishes onto the open PR — and
+      // they are then the same number. What must not happen is a cycle that
+      // lost the push race also losing the marking on a PR that still exists.
+      expect(byName('Mark whether the PR needs a decision').if).toBe(
+        "steps.publish.outputs.pr_number != '' || steps.open_pr.outputs.number != ''"
       );
-      const elseAt = publish.indexOf('Could not read backfill umbrella');
-      expect(elseAt).toBeGreaterThan(-1);
-      expect(publish.slice(elseAt)).not.toMatch(/gh issue edit/);
+      expect(shellOf('Publish the refresh')).toContain('pr_number=${pr_number:-}');
+      const mark = shellOf('Mark whether the PR needs a decision');
+      expect(mark).toContain('pr="${PUBLISHED_PR:-${OPEN_PR}}"');
     });
 
-    it('does not rewrite an unchanged body', () => {
-      // Regeneration is idempotent, so a cycle whose checklist is already
-      // current must not touch the issue at all.
-      const publish = shellOf('Publish the refresh');
-      expect(publish).toMatch(/if cmp -s "\$\{U\}" "\$\{N\}"; then/);
+    it('refuses to re-mark from a count it did not read', () => {
+      // "Absent" must never read as zero: that is the direction that silently
+      // clears a real decision, and it is reachable by any earlier step dying
+      // before the count is written. Same reasoning as the `--failed-checks`
+      // guards in the diagnosis — every absent-input arm here is the
+      // permissive one unless it is written not to be.
+      const mark = shellOf('Mark whether the PR needs a decision');
+      expect(mark).toMatch(/if \[ ! -s \/tmp\/decision-count\.txt \]; then/);
+      const emptyAt = mark.indexOf('/tmp/decision-count.txt is missing or empty');
+      expect(emptyAt, 'the unread-count case does not announce itself').toBeGreaterThan(-1);
+      // It must FAIL, not warn and carry on into the marking below.
+      expect(mark.slice(emptyAt)).toMatch(/exit 1/);
+      // And a value that is not a number is the same fail-closed case.
+      expect(mark).toContain("''|*[!0-9]*)");
+    });
+
+    it('writes a title suffix it can also strip, so the step is idempotent', () => {
+      // The base title is DERIVED from the PR's current one rather than
+      // threaded from the step that created it — which is what makes the
+      // additive path correct, where the title was written by an earlier cycle
+      // this run has no output from. Producer and stripper are the same
+      // pattern, so they cannot drift apart.
+      const mark = shellOf('Mark whether the PR needs a decision');
+      expect(mark).toContain("sed -E 's/ — [0-9]+ decisions? needed$//'");
+      expect(mark).toContain('title="${base} — 1 decision needed"');
+      expect(mark).toContain('title="${base} — ${decisions} decisions needed"');
+      // The stripper must match what the producer writes, in both numbers.
+      const strip = / — [0-9]+ decisions? needed$/;
+      expect('chore(schemas): refresh CFn schema fixtures (2026-09-07) — 1 decision needed').toMatch(
+        strip
+      );
+      expect(
+        'chore(schemas): refresh CFn schema fixtures (2026-09-07) — 12 decisions needed'
+      ).toMatch(strip);
+      // `gh api -X PATCH`, the form /verify-pr uses: the endpoint itself, with
+      // no CLI-side interpretation between the value and the PR.
+      expect(mark).toContain('gh api -X PATCH');
+    });
+
+    it('clears the label at zero and never assigns on that path', () => {
+      const mark = shellOf('Mark whether the PR needs a decision');
+      // The LAST of the two `decisions == 0` gates: the first chooses the
+      // title, this one chooses the marking. Anchoring on the first would
+      // slice the title block and assert nothing about either label call —
+      // and both gates are spelled identically, so `indexOf` picks the wrong
+      // one silently.
+      const gate = 'if [ "${decisions}" = "0" ]; then';
+      const zeroAt = mark.lastIndexOf(gate);
+      expect(zeroAt, 'the zero-decision marking arm is gone').toBeGreaterThan(-1);
+      expect(
+        mark.indexOf(gate),
+        'the title gate and the marking gate collapsed into one'
+      ).toBeLessThan(zeroAt);
+      const zeroArm = mark.slice(zeroAt, mark.indexOf('fi', zeroAt));
+      expect(zeroArm).toContain('--remove-label "${DECISION_LABEL}"');
+      expect(zeroArm, 'the settled PR is still being assigned').not.toContain('--add-assignee');
+      expect(zeroArm, 'the settled PR is still being labelled').not.toContain('--add-label');
+      expect(zeroArm, 'the zero arm falls through into the marking below').toContain('exit 0');
+    });
+
+    it('labels AND assigns when a decision remains — the assignee is the notification', () => {
+      // Of the three marks only the assignee produces one, and the maintainer
+      // does not routinely read the PR list: a label and a title suffix are
+      // legible only to someone already looking. They earn their place by
+      // making the state readable afterwards, including "this was settled".
+      const mark = shellOf('Mark whether the PR needs a decision');
+      expect(mark).toContain('--add-label "${DECISION_LABEL}"');
+      expect(mark).toContain('--add-assignee "${GITHUB_REPOSITORY_OWNER}"');
+      // Read from the event, not hard-coded, so a fork or a transfer cannot
+      // silently assign a stranger.
+      expect(mark, 'the assignee is hard-coded').not.toMatch(/--add-assignee "go-to-k"/);
+    });
+
+    it('does not create the decision label, and says so when it is missing', () => {
+      // A workflow that creates the label on demand would also recreate one a
+      // maintainer deliberately deleted. Failing loudly is the honest half of
+      // that trade, and the message has to name the fix.
+      const mark = shellOf('Mark whether the PR needs a decision');
+      // As a COMMAND, not as a substring: the refusal message below names
+      // `gh label create needs-decision` so a reader can paste it, and a plain
+      // `not.toContain('gh label create')` is satisfied by that message —
+      // reading the remedy as the defect. Only a line that STARTS with it is
+      // the job actually creating the label.
+      const createsLabel = mark
+        .split('\n')
+        .some((l) => /^\s*gh label create\b/.test(l));
+      expect(createsLabel, 'the job creates the label it should be asking for').toBe(false);
+      expect(mark).toMatch(/if ! gh pr edit "\$\{pr\}" --add-label "\$\{DECISION_LABEL\}"; then/);
+      expect(mark).toContain('gh label create needs-decision');
+      const failAt = mark.indexOf("Could not add the '${DECISION_LABEL}' label");
+      expect(failAt).toBeGreaterThan(-1);
+      expect(mark.slice(failAt)).toMatch(/exit 1/);
     });
 
     it('keeps the drift probe between the refresh and the regeneration', () => {
@@ -630,55 +711,16 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         'No entry in the public bundle'
       );
       expect(diagnose).toContain('No entry in the public bundle');
-      // The umbrella list is no longer extracted from the diagnosis text by
-      // `sed`, so that heading is not a cross-file contract any more — the
-      // checklist is rendered from the coverage module by the script itself.
-      // What IS shared is the flag name.
+      // The flag that carries the decision count out of the diagnosis and into
+      // the marking step. Same shape as the skip list above: the producer is a
+      // script and the consumer is this shell, with nothing joining them, so a
+      // rename on either side leaves the marking reading an absent file — and
+      // the marking step's own refusal is what turns that into a red rather
+      // than a PR silently marked clean.
       expect(
         readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8')
-      ).toContain('--umbrella-checklist');
-      expect(diagnose).toContain('--umbrella-checklist');
-    });
-
-    it('resolves the backfill umbrella by LABEL, never by a hardcoded number', () => {
-      // A number goes stale silently the moment the campaign moves, and it did:
-      // the first destination carried months of design discussion and
-      // participants beyond the maintainer, so a daily bot comment notified all
-      // of them. The label is the indirection that makes moving it a
-      // `gh issue edit`, not a workflow edit.
-      const publish = steps.find((st) => st.name === 'Publish the refresh')!;
-      expect(publish.env?.['BACKFILL_UMBRELLA_LABEL']).toBe('backfill-umbrella');
-      expect(
-        publish.env?.['BACKFILL_UMBRELLA'],
-        'the hardcoded issue number is back'
-      ).toBeUndefined();
-      const shell = shellOf('Publish the refresh');
-      expect(shell, 'an issue number is hardcoded in the shell').not.toMatch(
-        /gh issue comment "?\d+/
-      );
-    });
-
-    it('refuses to guess when the label is not on exactly one open issue', () => {
-      // Zero means the campaign has no home; two or more means nobody can say
-      // which is the running list. Posting to an arbitrary one is the
-      // silent-wrong-destination failure this whole job exists to avoid.
-      const shell = shellOf('Publish the refresh');
-      expect(shell).toMatch(/--label "\$\{BACKFILL_UMBRELLA_LABEL\}"/);
-      // The count gate, whatever else is ANDed onto it (the rows file must
-      // also be non-empty). Pinning the `; then` suffix broke the moment that
-      // arm was added — a spelling pin, not the invariant.
-      expect(shell).toMatch(/if \[ "\$\{umbrella_count\}" = "1" \]/);
-      // And the non-1 branch warns rather than picking one.
-      // The lookup must not abort the step: it runs under `set -euo pipefail`
-      // AFTER the PR exists, and this step's contract is that the umbrella fold
-      // never undoes the PR. The previous `gh issue comment ... || echo`
-      // spelling preserved that; a bare command substitution would not.
-      expect(shell, 'a transient gh failure aborts the step after the PR was made').toMatch(
-        /--jq '\[\.\[\]\.number\] \| join\(" "\)' \|\| true\)/
-      );
-      const elseAt = shell.indexOf('Expected exactly one OPEN issue');
-      expect(elseAt, 'the ambiguous case does not announce itself').toBeGreaterThan(-1);
-      expect(shell.slice(elseAt)).not.toMatch(/gh issue (edit|comment)/);
+      ).toContain('--decision-count-out');
+      expect(diagnose).toContain('--decision-count-out');
     });
 
     it('re-checks the PR is still OPEN before pushing onto its branch', () => {
@@ -849,25 +891,26 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).toMatch(/^permissions: \{\}$/m);
     expect(workflow).toMatch(/^\s+contents: write$/m);
     expect(workflow).toMatch(/^\s+pull-requests: write$/m);
-    // Asserted because it was MISSING: `gh issue comment` needs `issues:
-    // write`, `pull-requests: write` covers PR comments only, and the call's
-    // own `|| echo "::warning::"` turns the resulting 403 into a green job with
-    // the umbrella silently never updated.
-    expect(workflow, 'gh issue comment cannot work without issues: write').toMatch(
-      /^\s+issues: write$/m
-    );
-
-    // Derived from the SHELL BODIES, not the raw file. Over the raw file this
-    // anti-vacuity floor was itself vacuous: the workflow header cites an
-    // `.../issues/2718` URL and the permission's own rationale comment contains
-    // the words `gh issue comment`, so deleting the real call left it green and
-    // the "guards nothing" message could never fire. An anti-vacuity guard that
-    // is vacuous is the defect class this PR is about, in the guard against it.
+    // `issues: write` used to be asserted PRESENT here, for the umbrella fold.
+    // That fold now lives in `backfill-umbrella-sync.yml`, so the scope is
+    // asserted ABSENT instead — and the two directions are held together by
+    // the same anti-vacuity floor as before, one polarity over: the permission
+    // may be gone only while no step actually calls the issue API.
+    //
+    // Derived from the SHELL BODIES, not the raw file. Over the raw file the
+    // floor was itself vacuous: the workflow header cites an
+    // `.../issues/2718` URL and a rationale comment names `gh issue`, so it
+    // could never fire. An anti-vacuity guard that is vacuous is the defect
+    // class this file is about, in the guard against it.
     const shellBodies = steps
       .map((st) => (st.name ? shellOf(st.name) : ''))
       .join('\n');
     const usesIssueApi = /gh issue |\/issues\//.test(shellBodies);
-    expect(usesIssueApi, 'no issue API call found — this assertion guards nothing').toBe(true);
+    expect(
+      usesIssueApi,
+      'a step calls the issue API again — it needs issues: write back, or it belongs in backfill-umbrella-sync.yml'
+    ).toBe(false);
+    expect(workflow, 'issues: write is back without a caller').not.toMatch(/^\s+issues: write$/m);
   });
 
   it('pins every action to a full commit SHA', () => {

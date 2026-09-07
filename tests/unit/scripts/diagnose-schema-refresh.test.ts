@@ -48,6 +48,7 @@ import {
   renderKey,
   renderLiteral,
   buildSdkLag,
+  countDecisions,
   CHECK_GUIDANCE,
   KNOWN_FLAGS,
   classifyGitShowFailure,
@@ -2302,4 +2303,179 @@ describe('the generated-module renderers', () => {
     expect(renderHandled(['Alpha'])).toContain('"Alpha"');
     expect(renderHandled(['Alpha'])).not.toContain("'Alpha'");
   });
+});
+
+describe('countDecisions', () => {
+  // The count a refresh PR is MARKED with. It is the same predicate the report
+  // writes its "additions only" line from, and the two being one function is
+  // the property under test — a second, agreeing copy is what goes stale.
+  const none = { removed: [], divergences: [] };
+
+  it('counts each of the five inputs, including the two with no section', () => {
+    // `nestedKeyUnparsed` and `unreadable` render no `### … a decision is
+    // needed` heading of their own, which is exactly why a hand-written second
+    // copy forgets them: an unparsed checker log and an unreadable fixture are
+    // decisions with nothing on the page to remind a reader they exist.
+    expect(countDecisions(none)).toBe(0);
+    expect(
+      countDecisions({
+        ...none,
+        removed: [{ resourceType: 'A', properties: ['x'], candidates: {}, sdk: {} }],
+      })
+    ).toBe(1);
+    expect(
+      countDecisions({
+        ...none,
+        divergences: [{ resourceType: 'A', nestedKey: 'k', bucket: 'no-sdk-member', detail: 'd' }],
+      })
+    ).toBe(1);
+    expect(countDecisions({ ...none, nestedKeyUnparsed: true })).toBe(1);
+    expect(countDecisions({ ...none, failedChecks: ['property-coverage'] })).toBe(1);
+    expect(countDecisions({ ...none, unreadable: ['A'] })).toBe(1);
+  });
+
+  it('counts a multi-property removal ONCE — the unit is the judgement', () => {
+    // A type losing three properties is settled by one decision, and the title
+    // suffix says "N decisions needed". Counting properties would inflate it.
+    expect(
+      countDecisions({
+        ...none,
+        removed: [
+          {
+            resourceType: 'A',
+            properties: ['x', 'y', 'z'],
+            candidates: {},
+            sdk: {},
+          },
+        ],
+      })
+    ).toBe(1);
+  });
+
+  it('agrees with the report it is rendered beside, in BOTH directions', () => {
+    // The structural claim. If these two could disagree, a PR could be marked
+    // "no decisions needed" while the body beneath the title lists several —
+    // and that is the shape this file's argv guards already had to close once.
+    const cases: Array<Record<string, unknown>> = [
+      { removed: [], divergences: [], writableAdded: [], skipped: [] },
+      {
+        removed: [
+          {
+            resourceType: 'AWS::S3::Bucket',
+            properties: ['Gone'],
+            candidates: { Gone: ['src/provisioning/providers/s3-provider.ts:1'] },
+            sdk: {},
+          },
+        ],
+        divergences: [],
+        writableAdded: [],
+        skipped: [],
+      },
+      { removed: [], divergences: [], writableAdded: [], skipped: [], nestedKeyUnparsed: true },
+      { removed: [], divergences: [], writableAdded: [], skipped: [], unreadable: ['AWS::A::B'] },
+      {
+        removed: [],
+        divergences: [],
+        writableAdded: [],
+        skipped: [],
+        failedChecks: ['property-coverage'],
+      },
+    ];
+    for (const c of cases) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md = renderDiagnosis(c as any);
+      const saysClean = md.includes('Nothing in this refresh needs a decision');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const n = countDecisions(c as any);
+      expect(saysClean, `count ${n} disagrees with the rendered verdict`).toBe(n === 0);
+    }
+  });
+});
+
+describe('--decision-count-out', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  it('writes the count as a side effect of the run that rendered the report', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-count-'));
+    try {
+      const out = join(dir, 'count.txt');
+      const md = execFileSync(
+        'node',
+        [SCRIPT, '--failed-checks', 'property-coverage,audit:sdk-attr-coverage:check',
+         '--decision-count-out', out],
+        { encoding: 'utf8' }
+      );
+      expect(readFileSync(out, 'utf8').trim()).toBe('2');
+      // And the report it was written beside agrees.
+      expect(md).toContain('### CI checks that FAILED — a decision is needed');
+      expect(md).not.toContain('Nothing in this refresh needs a decision');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('writes 0 on a clean refresh rather than omitting the file', () => {
+    // An ABSENT file is what the workflow refuses to mark from, so "clean" has
+    // to be a written zero. Omitting it here would make every clean cycle look
+    // to the marking step like a broken run.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-count0-'));
+    try {
+      const out = join(dir, 'count.txt');
+      execFileSync('node', [SCRIPT, '--decision-count-out', out], { encoding: 'utf8' });
+      expect(readFileSync(out, 'utf8').trim()).toBe('0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('refuses the flag with no value instead of leaving the count unwritten', () => {
+    // Every other absent-input arm in this script is the permissive one, and
+    // an unwritten count reads to the workflow as "no decisions needed".
+    const md = execFileSync('node', [SCRIPT, '--decision-count-out'], { encoding: 'utf8' });
+    expect(md).toContain('--decision-count-out was given with no value');
+  }, 60_000);
+
+  it('is a known flag, so the unknown-flag guard does not refuse the workflow', () => {
+    expect(KNOWN_FLAGS).toContain('--decision-count-out');
+  });
+});
+
+describe('--umbrella-checklist returns before the refresh-report setup', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  it('renders from an EMPTY fixtures directory, which the floor would refuse', () => {
+    // The mode reads `property-coverage.generated.ts` and nothing else, but it
+    // used to return further down — after `assertFixtureFloor` and after
+    // `collectFixtureDeltas`, which shells out to `git show` per fixture. None
+    // of that feeds the checklist and all of it can fail, which matters now
+    // that `backfill-umbrella-sync.yml` runs this mode from a plain `main`
+    // checkout with no refresh in front of it.
+    //
+    // An empty fixtures directory is the cheapest proof of the ordering: the
+    // floor throws on it, so a render that still succeeds cannot have reached
+    // the floor.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-umb-'));
+    try {
+      // The control: the same empty directory DOES stop the ordinary report.
+      let refused = '';
+      try {
+        refused = execFileSync('node', [SCRIPT, '--fixtures-dir', dir], { encoding: 'utf8' });
+      } catch (e) {
+        refused = String((e as { stdout?: unknown }).stdout ?? '');
+      }
+      expect(refused, 'the fixture floor no longer refuses an empty directory').toContain(
+        'failed to run'
+      );
+
+      const md = execFileSync('node', [SCRIPT, '--umbrella-checklist', '--fixtures-dir', dir], {
+        encoding: 'utf8',
+      });
+      expect(md).toMatch(/^- \[ \] `AWS::/m);
+      expect(md, 'the checklist mode fell through into the refresh report').not.toContain(
+        'What changed, and what needs a decision'
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

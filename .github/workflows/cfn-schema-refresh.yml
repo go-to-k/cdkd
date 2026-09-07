@@ -84,14 +84,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # `pull-requests: write` covers the label and the assignee the marking
+      # step sets, as well as the PR and its comments — this is the permission
+      # `actions/labeler` asks for and nothing more.
+      #
+      # `issues: write` used to be here for the umbrella fold, which is now its
+      # own workflow (`backfill-umbrella-sync.yml`) driven by pushes to `main`.
+      # That move is why this job no longer touches an issue, and dropping the
+      # scope is the point rather than a side effect: this is the repo's only
+      # unattended job holding `contents: write`.
       pull-requests: write
-      # `issues: write` is REQUIRED, not tidiness: the umbrella fold calls
-      # `gh issue comment`, and `pull-requests: write` covers PR comments only.
-      # Without it every cycle 403s, the `|| echo "::warning::"` on that call
-      # swallows it, the job goes GREEN and the umbrella is never updated — the
-      # silent-failure class this whole job exists to remove, in the one step
-      # the runbook promises will happen automatically.
-      issues: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -240,8 +242,20 @@ jobs:
       # retire), and the PR's own CI reports it to the human anyway. Suppressing
       # the report would be wrong; letting it stop the PR from being OPENED
       # would be worse, since the PR is how the human finds out.
+      # Runs on drift OR while a refresh PR is open, and the second arm is what
+      # makes the PR's decision marking CLEARABLE. The marking is derived from
+      # the checks below, and with a `drifted`-only guard the only day it could
+      # be recomputed was a day AWS happened to move: a human committing the
+      # classifications onto the PR branch settled the decisions, the next
+      # cycle stopped at "No fixture drift — nothing to do", and the label,
+      # title count and assignee kept asserting work that no longer existed.
+      # A signal that cannot be cleared teaches its reader to ignore it, which
+      # is the same defect as the umbrella listing rows `main` does not have.
+      # Nothing is committed on this arm — Publish still requires drift — so
+      # the cost is one regeneration pass on a day the job would otherwise
+      # have exited early.
       - name: Regenerate the derived artifacts
-        if: steps.drift.outputs.drifted == 'true'
+        if: steps.drift.outputs.drifted == 'true' || steps.open_pr.outputs.number != ''
         run: |
           # The one multi-command step that previously lacked this: a failing
           # `gen:property-coverage` was swallowed and the PR opened on a
@@ -330,7 +344,7 @@ jobs:
       # Generated BEFORE the commit: the comparison against the COMMITTED
       # fixtures is the whole source of "AWS removed this in THIS refresh".
       - name: Diagnose what needs a decision
-        if: steps.drift.outputs.drifted == 'true'
+        if: steps.drift.outputs.drifted == 'true' || steps.open_pr.outputs.number != ''
         run: |
           set -euo pipefail
           # The checker is EXPECTED to exit non-zero here — a divergence is the
@@ -347,36 +361,27 @@ jobs:
           # The STATUS as well as the text: an empty log, a `task not found` and
           # an OOM kill all carry no announcement to grep for, and all three
           # rendered "additions only" over a checker that never ran.
-          # The umbrella checklist is rendered HERE, in the step that holds no
-          # token, for the same reason the diagnosis is: this script spawns
-          # `npm`, and a spawn in the token-holding step inherits its
-          # environment. Publish only reads the file.
-          node scripts/diagnose-schema-refresh.mjs --umbrella-checklist > /tmp/checklist.md
+          # `--decision-count-out` is a SIDE EFFECT of this same invocation,
+          # never a second run. The marking step below turns the number into a
+          # label, a title suffix and an assignee, and a second invocation
+          # would re-read `--failed-checks` and `--nested-key-log` from its own
+          # argv — so a copy that drifted by one flag would mark the PR "no
+          # decisions needed" over the very report it sits next to. That is the
+          # shape `--failed-checks` already produced once here.
           node scripts/diagnose-schema-refresh.mjs \
             --nested-key-log /tmp/nested-key.log \
             --nested-key-rc "${nested_key_rc}" \
             --failed-checks "${FAILED_CHECKS}" \
-            --skipped-log /tmp/skipped.log > /tmp/diagnosis.md
+            --skipped-log /tmp/skipped.log \
+            --decision-count-out /tmp/decision-count.txt > /tmp/diagnosis.md
 
       - name: Publish the refresh
         id: publish
         if: steps.drift.outputs.drifted == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # The LABEL that marks the standing umbrella issue, not its number.
-          # A number goes stale silently the moment the campaign moves, and it
-          # did: the first destination carried months of design discussion and
-          # participants beyond the maintainer, so a daily bot comment notified
-          # all of them. Moving it is now `gh issue edit --add-label`, and the
-          # lookup below refuses to guess when the label is not on exactly one
-          # open issue.
-          BACKFILL_UMBRELLA_LABEL: backfill-umbrella
           # Same reasoning as the switch step: no `${{ }}` inside a shell body.
           PR_NUMBER: ${{ steps.open_pr.outputs.number }}
-          # The block the job OWNS in the umbrella body. Everything outside it is
-          # human-written and never rewritten.
-          MARKER_BEGIN: "<!-- BEGIN generated: remaining silent-drop properties -->"
-          MARKER_END: "<!-- END generated -->"
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -466,52 +471,108 @@ jobs:
             pr_number=$(gh pr list --head "${branch}" --state open --json number --jq '.[0].number // empty')
           fi
 
-          # REGENERATE the umbrella's checklist from the coverage map, rather
-          # than appending this cycle's findings to it.
-          #
-          # Appending cannot express a type that was ticked off and later
-          # regained a property: the `[x]` row stays checked and a second row
-          # appears for the same type, so the reader sees one entry saying
-          # "done" and another saying "not". Dedup does not fix that — the
-          # append model is what is wrong. The map is the umbrella's own stated
-          # completion criterion, so rendering FROM it means a type reappears
-          # when it regains a property and disappears when it is finished, with
-          # no hand-maintained state to go stale.
-          #
-          # Human provenance — which PR closed which slice — cannot be
-          # recomputed, so it lives OUTSIDE the markers and is never touched.
-          umbrella=$(gh issue list --state open --limit 100 \
-            --label "${BACKFILL_UMBRELLA_LABEL}" --json number \
-            --jq '[.[].number] | join(" ")' || true)
-          umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
+          # Read by the marking step below, which runs whether or not this one
+          # did. `// empty`-style absence matters: the marking step treats an
+          # empty value as "this cycle published nothing" and falls back to the
+          # open PR the guard found, so a lost race here does not also lose the
+          # marking on a PR that still exists.
+          echo "pr_number=${pr_number:-}" >> "$GITHUB_OUTPUT"
 
-          if [ "${umbrella_count}" = "1" ]; then
-            U=$(mktemp)
-            # The chaining and the `-s` test are load-bearing, not style: the
-            # redirect truncates the file BEFORE gh runs, so an unchained recipe
-            # whose `view` fails would replace the umbrella's WHOLE body —
-            # destroying the provenance section this design exists to preserve.
-            if gh issue view "${umbrella}" --json body -q .body > "${U}" && [ -s "${U}" ]; then
-              if grep -Fq "${MARKER_BEGIN}" "${U}" && grep -Fq "${MARKER_END}" "${U}"; then
-                N=$(mktemp)
-                # Everything before BEGIN, the freshly rendered rows, everything
-                # after END. Splicing rather than rewriting is what keeps the
-                # human-owned half untouched.
-                sed -n "1,/$(printf '%s' "${MARKER_BEGIN}" | sed 's/[][\.*^$/]/\\&/g')/p" "${U}" > "${N}"
-                cat /tmp/checklist.md >> "${N}"
-                sed -n "/$(printf '%s' "${MARKER_END}" | sed 's/[][\.*^$/]/\\&/g')/,\$p" "${U}" >> "${N}"
-                if cmp -s "${U}" "${N}"; then
-                  echo "::notice::Umbrella #${umbrella} checklist is already current."
-                else
-                  gh issue edit "${umbrella}" --body-file "${N}" \
-                    || echo "::warning::Could not update backfill umbrella #${umbrella}; the list is in the PR body."
-                fi
-              else
-                echo "::warning::Umbrella #${umbrella} carries no ${MARKER_BEGIN} / ${MARKER_END} pair, so there is nowhere to write the generated checklist without guessing which part of the body is generated. The list is in the PR body."
-              fi
-            else
-              echo "::warning::Could not read backfill umbrella #${umbrella}'s body; refusing to write one. The list is in the PR body."
-            fi
-          else
-            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). The list is in the PR body; label one issue to restore the running list."
+      # Make a PR that needs a decision distinguishable from one that does not,
+      # WITHOUT opening it — and make the marking go away once the decisions
+      # are settled.
+      #
+      # go-to-k/cdkd#2770 is the measurement this exists for: it carried two
+      # failed checks and three decisions in a 162-line body, and presented in
+      # every list view as no label, no assignee, and a title byte-identical to
+      # a refresh needing nothing. Its CI sat at `action_required` — GitHub
+      # holds workflows on a `GITHUB_TOKEN`-created PR until a maintainer
+      # approves them — so there was no red mark either. Nothing distinguished
+      # it from a clean cycle.
+      #
+      # Of the three marks only the ASSIGNEE produces a notification, and that
+      # is the load-bearing one: the maintainer does not routinely read the PR
+      # list, so a label and a title suffix are legible only to someone already
+      # looking. They earn their place by making the state readable AFTERWARDS
+      # — including "this was settled", which is the half a notification cannot
+      # carry.
+      - name: Mark whether the PR needs a decision
+        # Not `always()`: a failed earlier step means the count was never
+        # written, and marking from a missing count is how a PR gets labelled
+        # clean because the job broke. The count file is checked below too.
+        if: steps.publish.outputs.pr_number != '' || steps.open_pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This cycle's PR when it published one, else the PR the guard found.
+          # Both can be set (an additive push republishes onto the open PR) and
+          # they are then the same number.
+          PUBLISHED_PR: ${{ steps.publish.outputs.pr_number }}
+          OPEN_PR: ${{ steps.open_pr.outputs.number }}
+          # Pre-created in the repository rather than created here. `gh pr edit
+          # --add-label` fails on a label that does not exist, and a workflow
+          # that creates one on demand would also recreate a label a maintainer
+          # deliberately deleted. Failing loudly is the honest half of that
+          # trade; the guard below names the fix.
+          DECISION_LABEL: needs-decision
+        run: |
+          set -euo pipefail
+          pr="${PUBLISHED_PR:-${OPEN_PR}}"
+
+          # The count is written by the Diagnose step as a side effect of the
+          # same invocation that rendered the body. An ABSENT file means that
+          # step did not run or died before writing, and "absent" must never
+          # read as zero: that is the direction that silently clears a real
+          # decision. Refuse instead, leaving whatever marking is already on
+          # the PR standing.
+          if [ ! -s /tmp/decision-count.txt ]; then
+            echo "::error::/tmp/decision-count.txt is missing or empty — the diagnosis did not report a decision count, so this step cannot tell a settled PR from an unexamined one. Leaving PR ${pr}'s marking as it is."
+            exit 1
           fi
+          decisions=$(tr -d '[:space:]' < /tmp/decision-count.txt)
+          # A non-numeric value is the same fail-closed case as an absent one.
+          case "${decisions}" in
+            ''|*[!0-9]*)
+              echo "::error::decision count '${decisions}' is not a number — refusing to re-mark PR ${pr} from a value this step did not understand."
+              exit 1
+              ;;
+          esac
+
+          # The base title is the current one with any previous suffix removed,
+          # rather than a value threaded from the step that created the PR.
+          # Deriving it makes the step IDEMPOTENT and correct on the additive
+          # path, where the title was written by an earlier cycle this run has
+          # no output from — and it cannot drift from the suffix it writes,
+          # because the same pattern produces and strips it.
+          current=$(gh pr view "${pr}" --json title --jq .title)
+          base=$(printf '%s' "${current}" | sed -E 's/ — [0-9]+ decisions? needed$//')
+          if [ "${decisions}" = "0" ]; then
+            title="${base}"
+          elif [ "${decisions}" = "1" ]; then
+            title="${base} — 1 decision needed"
+          else
+            title="${base} — ${decisions} decisions needed"
+          fi
+          if [ "${title}" != "${current}" ]; then
+            # `gh api -X PATCH`, the form `/verify-pr` uses for bodies: it is
+            # the endpoint itself, with no CLI-side interpretation between the
+            # value and the PR.
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" -f title="${title}" > /dev/null
+          fi
+
+          if [ "${decisions}" = "0" ]; then
+            # `--remove-label` on a PR that does not carry it is a no-op, not
+            # an error, so no membership test is needed.
+            gh pr edit "${pr}" --remove-label "${DECISION_LABEL}"
+            echo "::notice::PR ${pr} needs no decision — marking cleared."
+            exit 0
+          fi
+
+          if ! gh pr edit "${pr}" --add-label "${DECISION_LABEL}"; then
+            echo "::error::Could not add the '${DECISION_LABEL}' label to PR ${pr}. Create the label once with 'gh label create needs-decision' and re-run; this job deliberately does not create it."
+            exit 1
+          fi
+          # The notification. `--add-assignee` is idempotent, and the owner is
+          # read from the event rather than hard-coded so a fork or a transfer
+          # does not silently assign a stranger.
+          gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"
+          echo "::notice::PR ${pr} needs ${decisions} decision(s) — labelled, retitled and assigned."
