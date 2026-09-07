@@ -292,11 +292,6 @@ gates:
       # already did on every release, so the entry adds no new cost.
       - "CHANGELOG.md"
       - "docs/**"
-      # This file itself (the go-to-k/cdk-local#623 sibling, handled in the
-      # same session): the gate's own definition decides what the marker
-      # MEANS, so editing it — this include list included — must stale a
-      # marker recorded under the old definition. Same argument as
-      # `.mise.toml` below (the pin decides what green means).
       # `.gitignore` is a checker INPUT since go-to-k/cdkd#2738:
       # `tests/unit/scripts/settings-bash-first-optout.test.ts` requires
       # `.claude/settings.local.json` to be ignored BY THIS FILE (it reads
@@ -307,6 +302,11 @@ gates:
       # `check-scope-checker-inputs.test.ts` cannot see it: the read goes
       # through `git check-ignore`, not a literal read target.
       - ".gitignore"
+      # This file itself (the go-to-k/cdk-local#623 sibling, handled in the
+      # same session): the gate's own definition decides what the marker
+      # MEANS, so editing it — this include list included — must stale a
+      # marker recorded under the old definition. Same argument as
+      # `.mise.toml` below (the pin decides what green means).
       - ".markgate.yml"
       - "package.json"
       - "pnpm-lock.yaml"

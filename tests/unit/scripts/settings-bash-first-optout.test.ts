@@ -248,6 +248,18 @@ describe('.claude/settings.json bash-first opt-out', () => {
     expect(() =>
       accessSync(join(repoRoot, OWNER_GATE_SCRIPT), constants.X_OK),
     ).not.toThrow();
+    // ...and the INDEX must carry the bit too. `accessSync` reads the LOCAL
+    // mode, so a file committed 100644 and `chmod +x`'d on this machine stays
+    // green here while every other checkout exits 126.
+    const staged = spawnSync('git', ['-C', repoRoot, 'ls-files', '--stage', '--', OWNER_GATE_SCRIPT], {
+      encoding: 'utf8',
+    });
+    expect(staged.status).toBe(0);
+    expect(
+      (staged.stdout ?? '').split(/\s/)[0],
+      `${OWNER_GATE_SCRIPT} is not mode 100755 in the index; a fresh clone would ` +
+        'get a non-executable hook, which exits 126 and does not block',
+    ).toBe('100755');
 
     // The invariant is that the guard still selects the three file tools and
     // still does NOT select Bash -- both read through the binary's own rule, so
