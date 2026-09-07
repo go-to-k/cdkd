@@ -217,12 +217,35 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // replace the umbrella's generated block with nothing, which reads as
       // "the campaign is finished".
       const render = shellOf(RENDER_STEP);
-      expect(render, 'the empty-render guard is gone').toMatch(/\[ -s \/tmp\/checklist\.md \]/);
+      // SHAPE, not size, and the distinction is the whole case. A `-s` test
+      // looked like it covered a broken render and did not:
+      // `diagnose-schema-refresh.mjs` used to swallow every failure, writing
+      // `_The automated diagnosis failed to run (…)_` to STDOUT at exit 0, so
+      // the redirect produced a NON-EMPTY file holding one error sentence and
+      // `-s` passed — splicing that sentence into the umbrella in place of the
+      // entire checklist, on a green run. Rows or nothing.
+      expect(render, 'the render guard accepts a file that is merely non-empty').not.toMatch(
+        /\[ -s \/tmp\/checklist\.md \]/
+      );
+      expect(render, 'the shape guard is gone').toMatch(
+        /grep -q '\^- \\\[ \\\] ' \/tmp\/checklist\.md/
+      );
       // Under `set -e`, and AFTER the redirect it inspects.
       expect(render).toContain('set -euo pipefail');
       expect(render.indexOf('> /tmp/checklist.md')).toBeLessThan(
-        render.indexOf('[ -s /tmp/checklist.md ]')
+        render.indexOf("grep -q '^- \\[ \\] ' /tmp/checklist.md")
       );
+    });
+
+    it('is backed by the script exiting non-zero, not by the guard alone', () => {
+      // The guard above is the SECOND of two independent stops, and the first
+      // one lives in the script: `--umbrella-checklist` re-throws instead of
+      // printing the fallback sentence, because its reader is a workflow that
+      // cannot read a sentence. Pinned here because the two files are the
+      // producer and the consumer of one contract with nothing joining them.
+      const script = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+      expect(script).toContain("a === '--umbrella-checklist'");
+      expect(script).toContain('process.exitCode = 1');
     });
   });
 
@@ -240,12 +263,26 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // exact escaping, which differs between the YAML and the shell.
       expect(splice).toContain('${MARKER_BEGIN}');
       expect(splice).toContain('${MARKER_END}');
-      expect(splice, 'the head half of the splice is gone').toMatch(/sed -n "1,/);
-      expect(splice, 'the tail half of the splice is gone').toMatch(/"\$\{U\}" >> "\$\{N\}"/);
+      // Spliced by LINE NUMBER, never by a `sed` address range. `sed -n
+      // '1,/re/p'` begins searching for addr2 at line TWO, so a body whose
+      // FIRST line is the BEGIN marker never closes the range: the head half
+      // emitted the whole body, and the result grew by one copy of the human
+      // provenance section on every push (measured under bash). The address
+      // form also needed the marker text regex-escaped, a second quiet way to
+      // get it wrong.
+      expect(splice, 'the sed address range is back, with its line-1 hole').not.toMatch(
+        /sed -n "1,/
+      );
+      expect(splice, 'the head half of the splice is gone').toMatch(
+        /head -n "\$\{begin_line\}" "\$\{U\}" > "\$\{N\}"/
+      );
+      expect(splice, 'the tail half of the splice is gone').toMatch(
+        /tail -n "\+\$\{end_line\}" "\$\{U\}" >> "\$\{N\}"/
+      );
       // And the generated rows land BETWEEN the two halves, not appended after.
-      const headAt = splice.indexOf('> "${N}"');
+      const headAt = splice.indexOf('head -n "${begin_line}"');
       const rowsAt = splice.indexOf('cat /tmp/checklist.md >> "${N}"');
-      const tailAt = splice.indexOf('"${U}" >> "${N}"');
+      const tailAt = splice.indexOf('tail -n "+${end_line}"');
       expect(headAt).toBeGreaterThan(-1);
       expect(rowsAt, 'the rows are not spliced between the halves').toBeGreaterThan(headAt);
       expect(tailAt).toBeGreaterThan(rowsAt);
@@ -255,19 +292,36 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // Without them there is nowhere to write without guessing which part of
       // the body is generated, and guessing means overwriting a human's notes.
       const splice = shellOf(SPLICE_STEP);
-      // BOTH markers are looked for. Checking only BEGIN accepts a body whose
-      // END was deleted, and the tail `sed` then matches nothing — silently
-      // truncating every human note below the block.
-      expect(splice, 'the BEGIN marker is no longer required').toMatch(
-        /grep -Fq "\$\{MARKER_BEGIN\}" "\$\{U\}"/
+      // COUNTED, not merely present, and on WHOLE LINES. Presence alone is not
+      // enough to splice safely, and each way it is not enough is a different
+      // corruption: two BEGIN/END pairs leave a second generated block that
+      // nothing ever updates, and a marker quoted inside a human's prose is
+      // taken for the real one. `-Fxn` answers both, and gives the line numbers
+      // the splice is cut on.
+      expect(splice, 'the BEGIN marker is no longer located').toMatch(
+        /grep -Fxn -- "\$\{MARKER_BEGIN\}" "\$\{U\}"/
       );
-      expect(splice, 'the END marker is no longer required').toMatch(
-        /grep -Fq "\$\{MARKER_END\}" "\$\{U\}"/
+      expect(splice, 'the END marker is no longer located').toMatch(
+        /grep -Fxn -- "\$\{MARKER_END\}" "\$\{U\}"/
       );
-      // And the refusal REFUSES: an early-exit guard whose `exit 0` is gone
+      expect(splice, 'the markers are no longer COUNTED').toContain(
+        '[ "${begin_count}" != "1" ] || [ "${end_count}" != "1" ]'
+      );
+      // ORDER, separately. END before BEGIN passes a count check and then
+      // duplicates the body on every run.
+      expect(splice, 'the marker ORDER is unchecked').toContain(
+        '[ "${end_line}" -le "${begin_line}" ]'
+      );
+      // And each refusal REFUSES: an early-exit guard whose `exit 0` is gone
       // announces the problem and then writes anyway.
-      const arm = guardArm(splice, 'carries no ${MARKER_BEGIN}');
-      expect(arm, 'the missing-marker refusal falls through to the write').toContain('exit 0');
+      expect(
+        guardArm(splice, 'must carry exactly one'),
+        'the marker-count refusal falls through to the write'
+      ).toContain('exit 0');
+      expect(
+        guardArm(splice, 'Splicing that order would duplicate'),
+        'the marker-order refusal falls through to the write'
+      ).toContain('exit 0');
     });
 
     it('never writes a body it could not first read', () => {
@@ -316,15 +370,37 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       expect(splice).toMatch(/--label "\$\{BACKFILL_UMBRELLA_LABEL\}"/);
       expect(splice).toMatch(/--state open/);
       expect(splice).toMatch(/if \[ "\$\{umbrella_count\}" != "1" \]/);
-      // The lookup must not abort the step on a transport error: under
-      // `set -euo pipefail` a bare command substitution kills the run with no
-      // announcement, and the count guard below is the honest place to say
-      // "could not ask".
-      expect(splice, 'a transient gh failure aborts the step with no explanation').toMatch(
-        /--jq '\[\.\[\]\.number\] \| join\(" "\)' \|\| true\)/
-      );
       const arm = guardArm(splice, 'Expected exactly one OPEN issue');
       expect(arm, 'the ambiguous case picks one anyway').toContain('exit 0');
+    });
+
+    it('tells "GitHub did not answer" apart from "no issue carries the label"', () => {
+      // A `|| true` on the lookup collapses the two into one exit: a transport
+      // or permission failure renders as "found 0", warns, and exits GREEN —
+      // and since this workflow fires on a push, nothing re-runs it, so the
+      // umbrella silently stops tracking `main`. That is the same
+      // green-run-that-changed-nothing this file refuses at the write, one
+      // step earlier.
+      const splice = shellOf(SPLICE_STEP);
+      // SCOPED to the lookup's own statement. An unscoped
+      // `not.toMatch(/gh issue list[\s\S]*?\|\| true\)/)` spans forward to the
+      // NEXT `|| true)` anywhere below — and the marker `grep`s legitimately
+      // carry one — so it failed on correct code, which is the same
+      // wrong-span defect this suite keeps finding in the workflow.
+      const lookup = splice.slice(
+        splice.indexOf('gh issue list'),
+        splice.indexOf('umbrella_count=')
+      );
+      expect(lookup.length, 'the lookup statement could not be located').toBeGreaterThan(0);
+      expect(lookup, 'the lookup swallows its own failure again').not.toContain('|| true');
+      expect(splice, 'the lookup status is no longer captured separately').toMatch(
+        /if ! umbrella_json=\$\(gh issue list/
+      );
+      // And that arm FAILS the run rather than warning: it is not a state a
+      // human can fix by editing the issue.
+      const arm = guardArm(splice, 'Could not ask GitHub which issue carries');
+      expect(arm, 'a transport failure exits green').toContain('exit 1');
+      expect(arm).not.toContain('exit 0');
     });
   });
 

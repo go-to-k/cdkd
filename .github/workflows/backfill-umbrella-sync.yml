@@ -6,8 +6,8 @@
 # from its OWN post-refresh workspace and writes it before the refresh PR is
 # reviewed, so closing that PR left the issue asserting properties `main` does
 # not have: measured on 2026-09-07, the umbrella listed 288 rows against
-# `main`'s 285, and the three extra came from a dispatch whose PR was closed
-# unmerged (go-to-k/cdkd#2774). The staleness ran the other way too — a human
+# `main`'s 285, and the three extra came from a dispatch whose PR (#2770) was
+# closed unmerged. The staleness ran the other way too — a human
 # merging a backfill PR that RETIRED entries left the old list standing until
 # the next daily run.
 #
@@ -71,12 +71,17 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/diagnose-schema-refresh.mjs --umbrella-checklist > /tmp/checklist.md
-          # An empty render is never correct — `renderUmbrellaChecklist` throws
-          # when it finds no type boundaries — but the redirect above creates
-          # the file whatever happens, and the splice would then replace the
-          # umbrella's generated block with nothing. Refusing here keeps a
-          # broken parse from reading as "the campaign is finished".
-          [ -s /tmp/checklist.md ]
+          # SHAPE, not size. A size test looks like it covers a broken render
+          # and does not: `diagnose-schema-refresh.mjs` wraps `main()` in a
+          # catch that writes `_The automated diagnosis failed to run (…)_` to
+          # STDOUT and exits 0, so a `renderUmbrellaChecklist` throw produces a
+          # NON-EMPTY file holding one error sentence -- which the splice below
+          # would then write into the umbrella in place of the whole checklist,
+          # on a green run. That is exactly the "the campaign is finished"
+          # misread the guard exists to prevent, reached through the guard.
+          # (The script also re-throws for this mode now, so this is the second
+          # of two independent stops rather than the only one.)
+          grep -q '^- \[ \] ' /tmp/checklist.md
 
       - name: Splice it into the backfill umbrella
         env:
@@ -110,12 +115,19 @@ jobs:
           # Human provenance — which PR closed which slice — cannot be
           # recomputed, so it lives OUTSIDE the markers and is never touched.
           #
-          # `|| true` is load-bearing: under `set -euo pipefail` a bare command
-          # substitution aborts the step on a `gh` transport error, and the
-          # count guard below is the honest place to handle "could not ask".
-          umbrella=$(gh issue list --state open --limit 100 \
-            --label "${BACKFILL_UMBRELLA_LABEL}" --json number \
-            --jq '[.[].number] | join(" ")' || true)
+          # The STATUS is captured separately from the value, because "GitHub
+          # did not answer" and "no issue carries the label" are different
+          # outcomes that must not share one exit. A `|| true` here collapses
+          # them: a transport error renders as "found 0", warns, and exits
+          # GREEN -- and since this workflow fires on a push, nothing re-runs
+          # it, so the umbrella silently stops tracking `main`. That is the
+          # same green-run-that-changed-nothing this file refuses at the write.
+          if ! umbrella_json=$(gh issue list --state open --limit 100 \
+               --label "${BACKFILL_UMBRELLA_LABEL}" --json number); then
+            echo "::error::Could not ask GitHub which issue carries '${BACKFILL_UMBRELLA_LABEL}'. This is a transport or permission failure, not an empty result — re-run this workflow once it is resolved."
+            exit 1
+          fi
+          umbrella=$(printf '%s' "${umbrella_json}" | jq -r '[.[].number] | join(" ")')
           umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
 
           if [ "${umbrella_count}" != "1" ]; then
@@ -133,18 +145,40 @@ jobs:
             exit 0
           fi
 
-          if ! grep -Fq "${MARKER_BEGIN}" "${U}" || ! grep -Fq "${MARKER_END}" "${U}"; then
-            echo "::warning::Umbrella #${umbrella} carries no ${MARKER_BEGIN} / ${MARKER_END} pair, so there is nowhere to write the generated checklist without guessing which part of the body is generated. Add the marker pair and re-run this workflow."
+          # Located by LINE NUMBER, and each marker must appear exactly once on
+          # a line of its own, with END after BEGIN. Presence alone is not
+          # enough to splice safely: two BEGIN/END pairs leave a second
+          # generated block that nothing ever updates, and END-before-BEGIN
+          # duplicates the body on every run. `-Fx` also means a marker quoted
+          # inside a human's prose is not mistaken for the real one.
+          begin_line=$(grep -Fxn -- "${MARKER_BEGIN}" "${U}" | cut -d: -f1 || true)
+          end_line=$(grep -Fxn -- "${MARKER_END}" "${U}" | cut -d: -f1 || true)
+          begin_count=$(printf '%s' "${begin_line}" | wc -w | tr -d ' ')
+          end_count=$(printf '%s' "${end_line}" | wc -w | tr -d ' ')
+          if [ "${begin_count}" != "1" ] || [ "${end_count}" != "1" ]; then
+            echo "::warning::Umbrella #${umbrella} must carry exactly one ${MARKER_BEGIN} line and one ${MARKER_END} line; found ${begin_count} and ${end_count}. There is nowhere to write the generated checklist without guessing which part of the body is generated. Fix the markers and re-run this workflow."
+            exit 0
+          fi
+          if [ "${end_line}" -le "${begin_line}" ]; then
+            echo "::warning::Umbrella #${umbrella} has ${MARKER_END} on line ${end_line}, at or before ${MARKER_BEGIN} on line ${begin_line}. Splicing that order would duplicate the body. Fix the markers and re-run this workflow."
             exit 0
           fi
 
           N=$(mktemp)
-          # Everything before BEGIN, the freshly rendered rows, everything
-          # after END. Splicing rather than rewriting is what keeps the
+          # Everything up to and including BEGIN, the freshly rendered rows,
+          # then END onward. Splicing rather than rewriting is what keeps the
           # human-owned half untouched.
-          sed -n "1,/$(printf '%s' "${MARKER_BEGIN}" | sed 's/[][\.*^$/]/\\&/g')/p" "${U}" > "${N}"
+          #
+          # `head`/`tail` on the LINE NUMBERS above, not `sed` address ranges.
+          # `sed -n '1,/re/p'` starts searching for addr2 at line TWO, so a
+          # body whose first line is the BEGIN marker never closes the range:
+          # the head half printed the WHOLE body, and the result grew by one
+          # copy of the human provenance section on every push (measured). It
+          # also needed the marker text regex-escaped, a second way to get this
+          # wrong quietly.
+          head -n "${begin_line}" "${U}" > "${N}"
           cat /tmp/checklist.md >> "${N}"
-          sed -n "/$(printf '%s' "${MARKER_END}" | sed 's/[][\.*^$/]/\\&/g')/,\$p" "${U}" >> "${N}"
+          tail -n "+${end_line}" "${U}" >> "${N}"
 
           if cmp -s "${U}" "${N}"; then
             echo "::notice::Umbrella #${umbrella} checklist is already current."

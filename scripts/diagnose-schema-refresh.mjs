@@ -65,10 +65,16 @@
  *
  * `--umbrella-checklist` is a SEPARATE MODE: it renders the remaining
  * silent-drop properties from the coverage module as a Markdown checklist and
- * exits, taking no other flag. The scheduled job splices that block into the
- * backfill umbrella between its markers, regenerating it each cycle rather than
- * appending — an appended list cannot express a type that was ticked off and
- * later regained a property.
+ * exits, taking no other flag. `.github/workflows/backfill-umbrella-sync.yml`
+ * splices that block into the backfill umbrella between its markers whenever
+ * `main`'s coverage map moves — not the scheduled refresh job, which would be
+ * describing its own unmerged workspace. It REGENERATES rather than appends: an
+ * appended list cannot express a type that was ticked off and later regained a
+ * property.
+ *
+ * A failure in this mode EXITS NON-ZERO rather than printing the fallback
+ * sentence, because the consumer is a workflow that cannot read one — see the
+ * catch at the bottom of this file.
  *
  * `--fixtures-dir` is a TEST SEAM — it points the comparison at a scratch
  * directory so the empty-listing refusal is reachable from a test, the same
@@ -689,31 +695,6 @@ export const CHECK_GUIDANCE = {
 
 
 /**
- * Render the Markdown appended to the pull-request body.
- *
- * It NAMES what fired, where, and what the SDK says about it — then stops.
- *
- * The stopping point is narrower than it first looks, and the earlier framing
- * of it here was wrong: "the tiebreaker is in neither model" ignored that AWS
- * publishes a THIRD description, the SDK, which this repo already reads. So the
- * research IS largely mechanical and is now done above; what is left to a human
- * is confirmation plus the cases the evidence cannot separate — a rename looks
- * exactly like a removal at the name level (hence this repo's hand-maintained
- * rename maps), and `no-sdk-member` cannot tell "unsupported" from "the
- * installed SDK lags the service".
- *
- * The reason to stop there is the asymmetry rather than the ambiguity: the
- * silencing option (`bogusTolerated`, `NESTED_KEY_ALLOW_LIST`) is always
- * available and always turns CI green, so anything choosing automatically under
- * uncertainty converges on it — disabling the very check that caught the
- * problem, silently. Evidence shortens the human's work; it does not change who
- * accepts that risk.
- *
- * The input shape lives in the sibling `.d.mts` and is named here rather than
- * restated field by field: the per-field `@param` list was a second copy, and
- * it went stale twice — silently, since nothing in CI type-checks `scripts/**`.
- *
-/**
  * How many things in this refresh need a human decision.
  *
  * This is the SAME predicate the report's "additions only" line is written
@@ -755,6 +736,30 @@ export function countDecisions({
 }
 
 /**
+ * Render the Markdown appended to the pull-request body.
+ *
+ * It NAMES what fired, where, and what the SDK says about it — then stops.
+ *
+ * The stopping point is narrower than it first looks, and the earlier framing
+ * of it here was wrong: "the tiebreaker is in neither model" ignored that AWS
+ * publishes a THIRD description, the SDK, which this repo already reads. So the
+ * research IS largely mechanical and is now done above; what is left to a human
+ * is confirmation plus the cases the evidence cannot separate — a rename looks
+ * exactly like a removal at the name level (hence this repo's hand-maintained
+ * rename maps), and `no-sdk-member` cannot tell "unsupported" from "the
+ * installed SDK lags the service".
+ *
+ * The reason to stop there is the asymmetry rather than the ambiguity: the
+ * silencing option (`bogusTolerated`, `NESTED_KEY_ALLOW_LIST`) is always
+ * available and always turns CI green, so anything choosing automatically under
+ * uncertainty converges on it — disabling the very check that caught the
+ * problem, silently. Evidence shortens the human's work; it does not change who
+ * accepts that risk.
+ *
+ * The input shape lives in the sibling `.d.mts` and is named here rather than
+ * restated field by field: the per-field `@param` list was a second copy, and
+ * it went stale twice — silently, since nothing in CI type-checks `scripts/**`.
+ *
  * @param {DiagnosisInput} input
  * @returns {string}
  */
@@ -934,9 +939,10 @@ export function renderDiagnosis(input) {
     lines.push(
       `### Writable properties AWS added (${count}) — no decision needed`,
       '',
-      'These route through Cloud Control automatically once this merges. They are',
-      'posted to the standing backfill issue too; wiring them into an SDK provider',
-      'is separate work.',
+      'These route through Cloud Control automatically once this merges. They',
+      'reach the standing backfill issue WHEN THIS MERGES, not now — that list is',
+      'regenerated from `main`, so closing this PR leaves it untouched. Wiring',
+      'them into an SDK provider is separate work.',
       ''
     );
     for (const entry of writableAdded) {
@@ -1851,11 +1857,37 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     main();
   } catch (err) {
-    // A broken diagnosis must never take down the PR it describes.
-    process.stdout.write(
-      `_The automated diagnosis failed to run (${
-        err instanceof Error ? err.message : String(err)
-      }). Read the CI log for the failing checks._\n`
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    // A broken diagnosis must never take down the PR it describes — but that
+    // reasoning is about the HUMAN-READABLE report, and it does not carry to
+    // the two modes a workflow CONSUMES.
+    //
+    // `--umbrella-checklist`: swallowing wrote one error sentence to stdout at
+    // exit 0, so the sync workflow's redirect produced a non-empty file and its
+    // size guard passed — splicing that sentence into the umbrella in place of
+    // the entire checklist, on a green run.
+    //
+    // `--decision-count-out`: swallowing left the count unwritten while
+    // reporting success, and replaced the PR body with the sentence. The
+    // refusal message this file raises for that flag says "refusing to leave
+    // the count unwritten while reporting success", which the catch made false.
+    //
+    // Both are read by a machine that cannot see the sentence, so for them the
+    // honest failure is a non-zero exit.
+    const consumedByAWorkflow = process.argv
+      .slice(2)
+      .some((a) => a === '--umbrella-checklist' || a.startsWith('--decision-count-out'));
+    if (consumedByAWorkflow) {
+      // `process.exitCode`, and no `return`: this catch sits at MODULE top
+      // level, not inside a function, so a `return` here is a SyntaxError that
+      // makes the whole file unparseable — which reads, from a shell, exactly
+      // like the runtime failure being handled.
+      process.stderr.write(`diagnose-schema-refresh: ${message}\n`);
+      process.exitCode = 1;
+    } else {
+      process.stdout.write(
+        `_The automated diagnosis failed to run (${message}). Read the CI log for the failing checks._\n`
+      );
+    }
   }
 }

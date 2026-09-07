@@ -2371,6 +2371,19 @@ describe('countDecisions', () => {
         writableAdded: [],
         skipped: [],
       },
+      {
+        removed: [],
+        divergences: [
+          {
+            resourceType: 'AWS::Glue::Connection',
+            nestedKey: 'BasicAuthenticationCredentials',
+            bucket: 'definition-member-missing',
+            detail: 'd',
+          },
+        ],
+        writableAdded: [],
+        skipped: [],
+      },
       { removed: [], divergences: [], writableAdded: [], skipped: [], nestedKeyUnparsed: true },
       { removed: [], divergences: [], writableAdded: [], skipped: [], unreadable: ['AWS::A::B'] },
       {
@@ -2431,8 +2444,13 @@ describe('--decision-count-out', () => {
   it('refuses the flag with no value instead of leaving the count unwritten', () => {
     // Every other absent-input arm in this script is the permissive one, and
     // an unwritten count reads to the workflow as "no decisions needed".
-    const md = execFileSync('node', [SCRIPT, '--decision-count-out'], { encoding: 'utf8' });
-    expect(md).toContain('--decision-count-out was given with no value');
+    //
+    // The refusal reaches STDERR at a non-zero exit rather than stdout at 0:
+    // the reader here is a workflow step, and the fallback sentence it would
+    // otherwise get is both unreadable to it and, as the PR body, wrong.
+    const out = spawnSync('node', [SCRIPT, '--decision-count-out'], { encoding: 'utf8' });
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain('--decision-count-out was given with no value');
   }, 60_000);
 
   it('is a known flag, so the unknown-flag guard does not refuse the workflow', () => {
@@ -2477,5 +2495,56 @@ describe('--umbrella-checklist returns before the refresh-report setup', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }, 60_000);
+});
+
+describe('a failure in a mode a WORKFLOW consumes exits non-zero', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+  const spawn = (args: string[]) =>
+    spawnSync('node', [SCRIPT, ...args], { encoding: 'utf8' });
+
+  it('keeps the forgiving fallback for the HUMAN report', () => {
+    // The original reasoning stands where it was written: a broken diagnosis
+    // must not stop the PR that describes it from being opened, because the PR
+    // is how the human finds out anything at all.
+    const out = spawn(['--fixtures-dir', join(REPO_ROOT, 'no-such-directory')]);
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain('The automated diagnosis failed to run');
+  }, 60_000);
+
+  it('does NOT extend that fallback to --decision-count-out', () => {
+    // Swallowing here left the count unwritten while reporting success — and
+    // the refusal this script raises for the flag says, in as many words,
+    // "refusing to leave the count unwritten while reporting success". The
+    // catch made its own message false. Downstream, the marking step reads a
+    // file that is not there.
+    const out = spawn(['--decision-count-out', '/nonexistent/dir/count.txt']);
+    expect(out.status, 'a workflow-consumed failure reported success').not.toBe(0);
+    expect(out.stderr).toContain('diagnose-schema-refresh:');
+    expect(
+      out.stdout,
+      'the PR body was replaced by the fallback sentence on a run that also failed'
+    ).not.toContain('The automated diagnosis failed to run');
+  }, 60_000);
+
+  it('does NOT extend it to --umbrella-checklist either', () => {
+    // This one is the sharper of the two: the sync workflow redirects stdout
+    // to a file, so a swallowed failure produced a NON-EMPTY file holding one
+    // error sentence, which the splice would write into the umbrella in place
+    // of the entire checklist — on a green run.
+    const out = spawn(['--umbrella-checklist', '--umbrella-checklist']);
+    expect(out.status, 'a broken checklist render reported success').not.toBe(0);
+    expect(out.stdout, 'the error sentence would be spliced into the issue').toBe('');
+    expect(out.stderr).toContain('diagnose-schema-refresh:');
+  }, 60_000);
+
+  it('the checklist mode still renders when it CAN, ignoring the report-only seam', () => {
+    // The control for the two refusals above: the same mode, on the happy
+    // path, still exits 0 and emits rows — and does so with a fixtures
+    // directory that does not exist, which is what proves the early return
+    // still sits above the fixture floor.
+    const out = spawn(['--umbrella-checklist', '--fixtures-dir', '/nonexistent']);
+    expect(out.status).toBe(0);
+    expect(out.stdout).toMatch(/^- \[ \] `AWS::/m);
   }, 60_000);
 });

@@ -39,7 +39,11 @@ name: CFn schema fixture refresh
 # cost actually falls:
 #
 #   * a day with no drift opens NO PR — the job stops at the drift step, so the
-#     cost of a quiet day is one short run, not a review cycle;
+#     cost of a quiet day is one short run, not a review cycle. (With a refresh
+#     PR already OPEN a quiet day is no longer short: the regeneration, the five
+#     check families and the diagnosis all run, because that is the only way the
+#     PR's decision marking can be RE-EVALUATED and cleared. Nothing is
+#     committed on that arm.);
 #   * the open-PR guard below already bounds concurrency at ONE, so raising the
 #     frequency cannot produce a pile of PRs; it only shortens the wait before
 #     the next one opens after a merge;
@@ -508,15 +512,38 @@ jobs:
           # they are then the same number.
           PUBLISHED_PR: ${{ steps.publish.outputs.pr_number }}
           OPEN_PR: ${{ steps.open_pr.outputs.number }}
+          # Whether AWS actually moved this cycle. Load-bearing below: on the
+          # no-drift arm the count is not comparable to a published one.
+          DRIFTED: ${{ steps.drift.outputs.drifted }}
           # Pre-created in the repository rather than created here. `gh pr edit
           # --add-label` fails on a label that does not exist, and a workflow
           # that creates one on demand would also recreate a label a maintainer
           # deliberately deleted. Failing loudly is the honest half of that
           # trade; the guard below names the fix.
           DECISION_LABEL: needs-decision
+          # The one-line verdict this step owns at the TOP of the PR body.
+          # Delimited for the same reason the umbrella's checklist is: the rest
+          # of the body is the preamble plus the day-one diagnosis, and neither
+          # may be rewritten.
+          VERDICT_BEGIN: "<!-- BEGIN generated: decision verdict -->"
+          VERDICT_END: "<!-- END generated: decision verdict -->"
         run: |
           set -euo pipefail
           pr="${PUBLISHED_PR:-${OPEN_PR}}"
+
+          # The PR must still be OPEN. `PUBLISHED_PR` is empty on Publish's
+          # closed-PR bail-out -- that arm `exit 0`s BEFORE writing the output
+          # -- so without this check the fallback to `OPEN_PR` marks the very
+          # PR Publish just refused to touch: a merged PR acquires a label, a
+          # "N decisions needed" title and an assignee, all still editable
+          # after a merge, and no later cycle can clear them because the
+          # open-PR guard will never find it again. The `drifted == false` path
+          # reaches here with no state check of its own at all.
+          state=$(gh pr view "${pr}" --json state --jq .state)
+          if [ "${state}" != "OPEN" ]; then
+            echo "::notice::PR ${pr} is ${state}, not OPEN -- leaving its marking alone."
+            exit 0
+          fi
 
           # The count is written by the Diagnose step as a side effect of the
           # same invocation that rendered the body. An ABSENT file means that
@@ -525,54 +552,127 @@ jobs:
           # decision. Refuse instead, leaving whatever marking is already on
           # the PR standing.
           if [ ! -s /tmp/decision-count.txt ]; then
-            echo "::error::/tmp/decision-count.txt is missing or empty — the diagnosis did not report a decision count, so this step cannot tell a settled PR from an unexamined one. Leaving PR ${pr}'s marking as it is."
+            echo "::error::/tmp/decision-count.txt is missing or empty -- the diagnosis did not report a decision count, so this step cannot tell a settled PR from an unexamined one. Leaving PR ${pr}'s marking as it is."
             exit 1
           fi
           decisions=$(tr -d '[:space:]' < /tmp/decision-count.txt)
           # A non-numeric value is the same fail-closed case as an absent one.
           case "${decisions}" in
             ''|*[!0-9]*)
-              echo "::error::decision count '${decisions}' is not a number — refusing to re-mark PR ${pr} from a value this step did not understand."
+              echo "::error::decision count '${decisions}' is not a number -- refusing to re-mark PR ${pr} from a value this step did not understand."
               exit 1
               ;;
           esac
+
+          # On the NO-DRIFT arm the count is not comparable to the one this PR
+          # was published with, and may only CLEAR it.
+          #
+          # Two independent reasons, both read off the code rather than
+          # reasoned about. First, `removed` is computed by diffing the working
+          # fixtures against the branch's committed ones, so with no drift it
+          # is empty BY CONSTRUCTION: a PR published as "2 decisions needed"
+          # (one removed type plus a red `property-coverage`) would be retitled
+          # "1 decision needed" the next morning with nothing settled. Second,
+          # this arm grades a tree it then throws away -- `Regenerate` rewrites
+          # the derived artifacts and Publish does not run -- so a human who
+          # fixed a provider WITHOUT regenerating would see the marking cleared
+          # while the PR's own CI, which builds the committed tree, stays red.
+          #
+          # Zero is still trustworthy: a bogus declaration keeps
+          # `property-coverage` red however the diff came out, and the
+          # clean-tree test below is what rules out the un-regenerated case.
+          if [ "${DRIFTED}" != "true" ] && [ "${decisions}" != "0" ]; then
+            echo "::notice::No drift this cycle and ${decisions} decision(s) still outstanding on PR ${pr} -- leaving the existing marking, which was computed against a real refresh."
+            exit 0
+          fi
+          if [ "${DRIFTED}" != "true" ]; then
+            regen=$(git status --porcelain -- src/provisioning/ docs/ tests/fixtures/cfn-schemas/)
+            if [ -n "${regen}" ]; then
+              echo "::warning::PR ${pr} has no outstanding checks, but regenerating changed files this PR has not committed, so its own CI is still red. Leaving the marking. Run 'vp run gen:all-matrices' on the branch and push."
+              echo "${regen}"
+              exit 0
+            fi
+          fi
 
           # The base title is the current one with any previous suffix removed,
           # rather than a value threaded from the step that created the PR.
           # Deriving it makes the step IDEMPOTENT and correct on the additive
           # path, where the title was written by an earlier cycle this run has
-          # no output from — and it cannot drift from the suffix it writes,
+          # no output from -- and it cannot drift from the suffix it writes,
           # because the same pattern produces and strips it.
           current=$(gh pr view "${pr}" --json title --jq .title)
           base=$(printf '%s' "${current}" | sed -E 's/ — [0-9]+ decisions? needed$//')
           if [ "${decisions}" = "0" ]; then
             title="${base}"
+            verdict="> **No decisions outstanding.** Everything this refresh raised has been settled on this branch; merge when CI is green."
           elif [ "${decisions}" = "1" ]; then
             title="${base} — 1 decision needed"
+            verdict="> **1 decision needs your call.** The sections below name it; this line and the title are rewritten by the job each cycle."
           else
             title="${base} — ${decisions} decisions needed"
+            verdict="> **${decisions} decisions need your call.** The sections below name them; this line and the title are rewritten by the job each cycle."
           fi
           if [ "${title}" != "${current}" ]; then
-            # `gh api -X PATCH`, the form `/verify-pr` uses for bodies: it is
-            # the endpoint itself, with no CLI-side interpretation between the
+            # `gh api -X PATCH`, the form /verify-pr uses for bodies: it is the
+            # endpoint itself, with no CLI-side interpretation between the
             # value and the PR.
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" -f title="${title}" > /dev/null
           fi
 
+          # The verdict block at the TOP of the body. The body is otherwise
+          # written once, on the day the PR opened, while later cycles add
+          # comments -- so without this the body's own summary ages while the
+          # title stays current.
+          B=$(mktemp); NB=$(mktemp)
+          if gh pr view "${pr}" --json body --jq .body > "${B}" && [ -s "${B}" ]; then
+            vb=$(grep -Fxn -- "${VERDICT_BEGIN}" "${B}" | cut -d: -f1 || true)
+            ve=$(grep -Fxn -- "${VERDICT_END}" "${B}" | cut -d: -f1 || true)
+            vb_count=$(printf '%s' "${vb}" | wc -w | tr -d ' ')
+            ve_count=$(printf '%s' "${ve}" | wc -w | tr -d ' ')
+            if [ "${vb_count}" = "1" ] && [ "${ve_count}" = "1" ] && [ "${ve}" -gt "${vb}" ]; then
+              # Replace between the markers, by LINE NUMBER -- `sed -n '1,/re/p'`
+              # starts its addr2 search at line TWO, so a marker on line 1
+              # (exactly where this block sits) never closes the range and the
+              # head half emits the whole body.
+              head -n "${vb}" "${B}" > "${NB}"
+              printf '%s\n' "${verdict}" >> "${NB}"
+              tail -n "+${ve}" "${B}" >> "${NB}"
+            elif [ "${vb_count}" = "0" ] && [ "${ve_count}" = "0" ]; then
+              { printf '%s\n%s\n%s\n\n' "${VERDICT_BEGIN}" "${verdict}" "${VERDICT_END}"; cat "${B}"; } > "${NB}"
+            else
+              echo "::warning::PR ${pr}'s body has ${vb_count} verdict-begin and ${ve_count} verdict-end markers, so there is no unambiguous block to rewrite. Leaving the body; the title and label still carry the count."
+              cp "${B}" "${NB}"
+            fi
+            if ! cmp -s "${B}" "${NB}"; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --field "body=@${NB}" > /dev/null
+            fi
+          else
+            echo "::warning::Could not read PR ${pr}'s body; refusing to write one. The title and label still carry the count."
+          fi
+
           if [ "${decisions}" = "0" ]; then
             # `--remove-label` on a PR that does not carry it is a no-op, not
-            # an error, so no membership test is needed.
+            # an error, so no membership test is needed. The ASSIGNEE is left
+            # in place on purpose: the PR is still the maintainer's to merge,
+            # and un-assigning would drop it out of their assigned view at the
+            # moment it became mergeable. The runbook says the same.
             gh pr edit "${pr}" --remove-label "${DECISION_LABEL}"
-            echo "::notice::PR ${pr} needs no decision — marking cleared."
+            echo "::notice::PR ${pr} needs no decision -- label and title suffix cleared; the assignee stays, since it is still theirs to merge."
             exit 0
           fi
 
+          # The ASSIGNEE FIRST, because it is the only one of the three that
+          # notifies. Ordered after the label, a repository missing the label
+          # lost the notification too: the label failure `exit 1`s and the
+          # assignment below it never runs, so the one mark that reaches a
+          # maintainer who is NOT reading the PR list depended on a mark that
+          # is legible only to someone already reading it. `--add-assignee` is
+          # idempotent, and the owner is read from the event rather than
+          # hard-coded so a fork or a transfer cannot silently assign a
+          # stranger.
+          gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"
           if ! gh pr edit "${pr}" --add-label "${DECISION_LABEL}"; then
             echo "::error::Could not add the '${DECISION_LABEL}' label to PR ${pr}. Create the label once with 'gh label create needs-decision' and re-run; this job deliberately does not create it."
             exit 1
           fi
-          # The notification. `--add-assignee` is idempotent, and the owner is
-          # read from the event rather than hard-coded so a fork or a transfer
-          # does not silently assign a stranger.
-          gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"
-          echo "::notice::PR ${pr} needs ${decisions} decision(s) — labelled, retitled and assigned."
+          echo "::notice::PR ${pr} needs ${decisions} decision(s) -- assigned, labelled and retitled."

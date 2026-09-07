@@ -95,10 +95,13 @@ a typical cycle most additions are read-only.
 
 ## How a decision reaches you
 
-A refresh PR that needs one is **labelled `needs-decision`, titled with the
-count, and assigned to you**. Of the three, only the assignment sends a
-notification; the label and the title suffix are there so the PR list still
-tells you afterwards, including that a PR was settled.
+A refresh PR that needs one is **assigned to you, labelled `needs-decision`,
+titled with the count, and opened by a one-line verdict at the top of its
+body**. Of those, only the assignment sends a notification — it is applied
+first for that reason — while the label and the title suffix are what the PR
+list can still tell you afterwards, including that a PR was settled. The
+verdict line is rewritten every cycle, so it does not age the way the rest of
+the body does.
 
 GitHub holds CI on a bot-created pull request at `action_required` until a
 maintainer approves the workflows, so a decision-carrying PR does not
@@ -107,9 +110,20 @@ indistinguishable, in every list view, from a refresh that needed nothing.
 
 The marking is **cleared by the next run** once you have committed the
 classifications: the job recomputes the count while the PR is open, even on a
-day AWS changed nothing, drops the label, restores the plain title, and says so
-in its log. So a standing `needs-decision` means work is genuinely outstanding,
-not that nobody tidied up.
+day AWS changed nothing, then drops the label, restores the plain title and
+rewrites the verdict line. The **assignee stays** — the PR is still yours to
+merge, and un-assigning it would drop it out of your assigned view at the
+moment it became mergeable. So a standing `needs-decision` means work is
+genuinely outstanding, not that nobody tidied up.
+
+On a day with no drift the count can only CLEAR the marking, never lower it.
+Removals are computed by diffing against the branch's committed fixtures, so
+with nothing to refresh that half of the count is empty by construction and a
+"2 decisions needed" PR would otherwise be retitled "1" with nothing settled.
+The same run also refuses to clear when regenerating produces changes the
+branch has not committed — otherwise fixing a provider without running
+`vp run gen:all-matrices` would clear the label while the PR's own CI stayed
+red.
 
 If the label is missing entirely and the run log says it could not add it,
 create it once — `gh label create needs-decision` — and re-run. The job

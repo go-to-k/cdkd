@@ -21,9 +21,10 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { CHECK_GUIDANCE } from '../../../scripts/diagnose-schema-refresh.mjs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -76,11 +77,52 @@ const parsed: any = parseYaml(workflow);
       .join('\n');
 
 /**
+ * The body of the guard arm introduced by `needle`, up to its closing `fi`.
+ *
+ * Ported from the sibling `backfill-umbrella-sync-workflow.test.ts` — and the
+ * duplication is deliberate for the reason that file's header gives: a shared
+ * helper would let a deletion there silently empty this file too.
+ *
+ * It exists here because slicing to the END OF THE STEP is not an assertion
+ * about the arm. The marking step carries three later `exit 1`s, so
+ * `expect(mark.slice(at)).toMatch(/exit 1/)` stayed green with the guard's own
+ * `exit 1` flipped to `exit 0` — measured. Every guard-arm assertion below goes
+ * through this, so the same vacuity cannot be reintroduced one case over.
+ */
+const guardArm = (shell: string, needle: string) => {
+  const at = shell.indexOf(needle);
+  expect(at, `the guard announcing ${JSON.stringify(needle)} is gone`).toBeGreaterThan(-1);
+  const rest = shell.slice(at);
+  const end = rest.search(/\n\s*fi\b/);
+  expect(end, `the guard announcing ${JSON.stringify(needle)} is never closed`).toBeGreaterThan(-1);
+  return rest.slice(0, end);
+};
+
+/**
+ * The same, for a `case` arm — which closes with `;;`, not `fi`. `guardArm`
+ * over one of those runs on to whatever block closes NEXT and reads ITS exit as
+ * this arm's, which is the identical defect one syntax over.
+ */
+const caseArm = (shell: string, needle: string) => {
+  const at = shell.indexOf(needle);
+  expect(at, `the case arm announcing ${JSON.stringify(needle)} is gone`).toBeGreaterThan(-1);
+  const rest = shell.slice(at);
+  const end = rest.search(/\n\s*;;/);
+  expect(end, `the case arm announcing ${JSON.stringify(needle)} is never closed`).toBeGreaterThan(
+    -1
+  );
+  return rest.slice(0, end);
+};
+
+/**
  * The task the workflow invokes to do the capture. Named here as a literal
  * rather than derived from the workflow, so a rename must be made in both
  * places deliberately.
  */
 const REFRESH_TASK = 'gen:cfn-schemas-from-zip';
+
+/** The step this file's decision-marking cases are about. */
+const MARK_STEP = 'Mark whether the PR needs a decision';
 
 /** The branch namespace the job creates AND the one its skip-guard looks for. */
 const BRANCH_PREFIX = 'bot/cfn-schema-refresh/';
@@ -244,14 +286,25 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // before the count is written. Same reasoning as the `--failed-checks`
       // guards in the diagnosis — every absent-input arm here is the
       // permissive one unless it is written not to be.
-      const mark = shellOf('Mark whether the PR needs a decision');
+      const mark = shellOf(MARK_STEP);
       expect(mark).toMatch(/if \[ ! -s \/tmp\/decision-count\.txt \]; then/);
-      const emptyAt = mark.indexOf('/tmp/decision-count.txt is missing or empty');
-      expect(emptyAt, 'the unread-count case does not announce itself').toBeGreaterThan(-1);
-      // It must FAIL, not warn and carry on into the marking below.
-      expect(mark.slice(emptyAt)).toMatch(/exit 1/);
-      // And a value that is not a number is the same fail-closed case.
+      // Sliced to the guard's OWN `fi`, not to the end of the step. The earlier
+      // form was `expect(mark.slice(emptyAt)).toMatch(/exit 1/)`, which the
+      // step's three LATER `exit 1`s satisfied — flipping this guard to
+      // `exit 0` left it green, i.e. the case pinned nothing.
+      const arm = guardArm(mark, '/tmp/decision-count.txt is missing or empty');
+      expect(arm, 'the unread-count guard no longer fails the step').toContain('exit 1');
+      expect(
+        arm,
+        'the unread-count guard now falls through into the marking below'
+      ).not.toContain('exit 0');
+      // And a value that is not a number is the same fail-closed case. A `case`
+      // arm closes with `;;`, so it gets the sibling slicer — `guardArm` here
+      // would run on to the no-drift block's `fi` and read ITS `exit 0`.
       expect(mark).toContain("''|*[!0-9]*)");
+      const nonNumeric = caseArm(mark, "is not a number");
+      expect(nonNumeric, 'a non-numeric count no longer fails the step').toContain('exit 1');
+      expect(nonNumeric, 'a non-numeric count is marked from anyway').not.toContain('exit 0');
     });
 
     it('writes a title suffix it can also strip, so the step is idempotent', () => {
@@ -260,25 +313,59 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // additive path correct, where the title was written by an earlier cycle
       // this run has no output from. Producer and stripper are the same
       // pattern, so they cannot drift apart.
-      const mark = shellOf('Mark whether the PR needs a decision');
-      expect(mark).toContain("sed -E 's/ — [0-9]+ decisions? needed$//'");
-      expect(mark).toContain('title="${base} — 1 decision needed"');
-      expect(mark).toContain('title="${base} — ${decisions} decisions needed"');
-      // The stripper must match what the producer writes, in both numbers.
-      const strip = / — [0-9]+ decisions? needed$/;
-      expect('chore(schemas): refresh CFn schema fixtures (2026-09-07) — 1 decision needed').toMatch(
-        strip
+      const mark = shellOf(MARK_STEP);
+      // BOTH operands come out of the workflow. The earlier form matched a
+      // hand-typed JS regex against hand-typed titles — neither the stripper
+      // nor the strings under test came from the step, so no edit to the step
+      // could fail it. It is unfalsifiable, not strict.
+      const sed = mark.match(/base=\$\(printf '%s' "\$\{current\}" \| sed -E 's\/(.*)\/\/'\)/);
+      expect(sed, 'the base title is no longer derived by stripping the suffix').not.toBeNull();
+      // The pattern is a POSIX ERE using only constructs JS spells the same
+      // way; anything else here should fail loudly rather than be approximated.
+      const pattern = sed![1]!;
+      expect(pattern, 'the strip pattern grew a construct this case cannot evaluate').not.toMatch(
+        /\\[0-9]|\[:[a-z]+:\]|\(\?/
       );
+      const strip = new RegExp(pattern);
+
+      // The titles the step ITSELF writes, read off its assignments, so a
+      // reworded suffix moves both sides at once and only a real DRIFT between
+      // producer and stripper fails.
+      const suffixes = [...mark.matchAll(/^\s*title="\$\{base\}([^"]*)"$/gm)].map((m) => m[1]!);
       expect(
-        'chore(schemas): refresh CFn schema fixtures (2026-09-07) — 12 decisions needed'
-      ).toMatch(strip);
-      // `gh api -X PATCH`, the form /verify-pr uses: the endpoint itself, with
-      // no CLI-side interpretation between the value and the PR.
-      expect(mark).toContain('gh api -X PATCH');
+        suffixes.length,
+        'the step no longer builds its title from ${base} — the producer half is gone'
+      ).toBe(3);
+      // One of them is the zero case, which appends nothing.
+      expect(suffixes, 'the zero-decision title is no longer the bare base').toContain('');
+
+      const base = 'chore(schemas): refresh CFn schema fixtures (2026-09-07)';
+      for (const suffix of suffixes) {
+        // `${decisions}` is the shell's own variable; every count the step can
+        // render has to survive the round trip, so the plural arm is exercised
+        // at a width the singular pattern cannot absorb.
+        for (const count of ['2', '12']) {
+          const title = base + suffix.split('${decisions}').join(count);
+          if (suffix === '') {
+            expect(title, 'the zero-decision title is not the base').toBe(base);
+          } else {
+            expect(title, `${JSON.stringify(title)} carries no suffix to strip`).not.toBe(base);
+            expect(title, `the stripper does not match ${JSON.stringify(title)}`).toMatch(strip);
+          }
+          expect(
+            title.replace(strip, ''),
+            `stripping ${JSON.stringify(title)} does not return the base byte-identically`
+          ).toBe(base);
+        }
+      }
+      // And the stripper is ANCHORED: a base merely containing the words must
+      // survive untouched, or every re-mark eats part of the real title.
+      const decoy = `${base} — 3 decisions needed for the release`;
+      expect(decoy.replace(strip, ''), 'the stripper is not anchored to the end').toBe(decoy);
     });
 
     it('clears the label at zero and never assigns on that path', () => {
-      const mark = shellOf('Mark whether the PR needs a decision');
+      const mark = shellOf(MARK_STEP);
       // The LAST of the two `decisions == 0` gates: the first chooses the
       // title, this one chooses the marking. Anchoring on the first would
       // slice the title block and assert nothing about either label call —
@@ -291,7 +378,11 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
         mark.indexOf(gate),
         'the title gate and the marking gate collapsed into one'
       ).toBeLessThan(zeroAt);
-      const zeroArm = mark.slice(zeroAt, mark.indexOf('fi', zeroAt));
+      // Through `guardArm`, which ends the arm at a LINE-LEADING `fi`. The
+      // earlier `mark.indexOf('fi', zeroAt)` ended it inside the word "suffix"
+      // in this arm's own notice, cutting the slice before the `exit 0` it then
+      // asserted — the case failed on correct code.
+      const zeroArm = guardArm(mark.slice(zeroAt), gate);
       expect(zeroArm).toContain('--remove-label "${DECISION_LABEL}"');
       expect(zeroArm, 'the settled PR is still being assigned').not.toContain('--add-assignee');
       expect(zeroArm, 'the settled PR is still being labelled').not.toContain('--add-label');
@@ -303,19 +394,36 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // does not routinely read the PR list: a label and a title suffix are
       // legible only to someone already looking. They earn their place by
       // making the state readable afterwards, including "this was settled".
-      const mark = shellOf('Mark whether the PR needs a decision');
+      const mark = shellOf(MARK_STEP);
       expect(mark).toContain('--add-label "${DECISION_LABEL}"');
       expect(mark).toContain('--add-assignee "${GITHUB_REPOSITORY_OWNER}"');
       // Read from the event, not hard-coded, so a fork or a transfer cannot
       // silently assign a stranger.
       expect(mark, 'the assignee is hard-coded').not.toMatch(/--add-assignee "go-to-k"/);
+      // ORDER, by index — presence is satisfied by either arrangement. With the
+      // label first, a repository missing the label loses the notification too:
+      // the label failure `exit 1`s and the assignment below it never runs, so
+      // the one mark that reaches a maintainer NOT reading the PR list depended
+      // on a mark legible only to someone already reading it.
+      const assignAt = mark.indexOf('--add-assignee "${GITHUB_REPOSITORY_OWNER}"');
+      const addLabelAt = mark.indexOf('--add-label "${DECISION_LABEL}"');
+      expect(
+        assignAt,
+        'the label is added before the assignee — a missing label kills the only notification'
+      ).toBeLessThan(addLabelAt);
+      // And the assignment is NOT inside the label guard, where a label failure
+      // would take it down with it.
+      expect(
+        guardArm(mark, 'if ! gh pr edit "${pr}" --add-label "${DECISION_LABEL}"; then'),
+        'the assignment moved inside the label-failure arm'
+      ).not.toContain('--add-assignee');
     });
 
     it('does not create the decision label, and says so when it is missing', () => {
       // A workflow that creates the label on demand would also recreate one a
       // maintainer deliberately deleted. Failing loudly is the honest half of
       // that trade, and the message has to name the fix.
-      const mark = shellOf('Mark whether the PR needs a decision');
+      const mark = shellOf(MARK_STEP);
       // As a COMMAND, not as a substring: the refusal message below names
       // `gh label create needs-decision` so a reader can paste it, and a plain
       // `not.toContain('gh label create')` is satisfied by that message —
@@ -327,9 +435,250 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(createsLabel, 'the job creates the label it should be asking for').toBe(false);
       expect(mark).toMatch(/if ! gh pr edit "\$\{pr\}" --add-label "\$\{DECISION_LABEL\}"; then/);
       expect(mark).toContain('gh label create needs-decision');
-      const failAt = mark.indexOf("Could not add the '${DECISION_LABEL}' label");
-      expect(failAt).toBeGreaterThan(-1);
-      expect(mark.slice(failAt)).toMatch(/exit 1/);
+      // The guard's OWN arm, for the same reason the unread-count case gives:
+      // sliced to the end of the step, the trailing `exit 1`s of the arms
+      // ABOVE this one would satisfy it with this one flipped to `exit 0`.
+      const failArm = guardArm(
+        mark,
+        'if ! gh pr edit "${pr}" --add-label "${DECISION_LABEL}"; then'
+      );
+      expect(failArm, 'the missing-label case does not announce itself').toContain(
+        "Could not add the '${DECISION_LABEL}' label"
+      );
+      expect(failArm, 'a missing label no longer fails the step').toContain('exit 1');
+      expect(failArm, 'a missing label now reports success').not.toContain('exit 0');
+    });
+
+    it('declares every variable its shell reads — a dropped one is a daily set -u death', () => {
+      // The whole `env:` block, as an EXACT object. Every entry is load-bearing
+      // and none of them fails visibly: the step runs `set -euo pipefail`, so a
+      // dropped `OPEN_PR` / `DRIFTED` / `DECISION_LABEL` / marker kills it on
+      // the first unset expansion, every day, on a PR nobody is watching — and
+      // a dropped `GH_TOKEN` makes every `gh` call fail instead. A presence-only
+      // form also accepts a rewiring (`steps.drift.outputs.drifted` swapped for
+      // another step's output), which is silent in both directions.
+      const step = byName(MARK_STEP);
+      expect(step.env).toEqual({
+        GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}',
+        PUBLISHED_PR: '${{ steps.publish.outputs.pr_number }}',
+        OPEN_PR: '${{ steps.open_pr.outputs.number }}',
+        DRIFTED: "${{ steps.drift.outputs.drifted }}",
+        DECISION_LABEL: 'needs-decision',
+        VERDICT_BEGIN: '<!-- BEGIN generated: decision verdict -->',
+        VERDICT_END: '<!-- END generated: decision verdict -->',
+      });
+
+      // And the other direction, derived: every environment-shaped name the
+      // shell dereferences must be declared here or provided by the runner.
+      // The object above pins what is DECLARED; this pins that nothing is READ
+      // without being declared, which is the half a future edit adds.
+      const mark = shellOf(MARK_STEP);
+      const referenced = new Set(
+        [...mark.matchAll(/\$\{([A-Z][A-Z0-9_]*)[:}]/g)].map((m) => m[1]!)
+      );
+      expect(
+        referenced.size,
+        'no environment reads found in the marking step — the scan broke'
+      ).toBeGreaterThanOrEqual(6);
+      const RUNNER_PROVIDED = new Set(['GITHUB_REPOSITORY', 'GITHUB_REPOSITORY_OWNER']);
+      // Names the step ASSIGNS itself (`B=$(mktemp); NB=$(mktemp)`) are not
+      // env; the separator class covers the `;`-joined second assignment, which
+      // a `^`-anchored pattern misses.
+      const assigned = new Set(
+        [...mark.matchAll(/(?:^|[\s;])([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((m) => m[1]!)
+      );
+      for (const name of referenced) {
+        expect(
+          Object.keys(step.env ?? {}).includes(name) ||
+            RUNNER_PROVIDED.has(name) ||
+            assigned.has(name),
+          `\${${name}} is read but neither declared in env:, assigned by the step, nor provided by the runner`
+        ).toBe(true);
+      }
+      // The markers are read from `env:`, never spelled again in the shell —
+      // two copies of a delimiter drift and the block stops being found.
+      expect(mark, 'the verdict marker text is hardcoded in the shell').not.toContain(
+        '<!-- BEGIN generated'
+      );
+      expect(mark).toContain('"${VERDICT_BEGIN}"');
+      expect(mark).toContain('"${VERDICT_END}"');
+    });
+
+    it('re-checks the PR is still OPEN before marking it', () => {
+      // `PUBLISHED_PR` is empty on Publish's closed-PR bail-out — that arm
+      // `exit 0`s BEFORE writing the output — so without this the fallback to
+      // `OPEN_PR` marks the very PR Publish just refused to touch: a merged PR
+      // acquires a label, a "N decisions needed" title and an assignee, all
+      // still editable after a merge, and no later cycle can clear them because
+      // the open-PR guard will never find it again.
+      const mark = shellOf(MARK_STEP);
+      expect(mark).toMatch(/state=\$\(gh pr view "\$\{pr\}" --json state --jq \.state\)/);
+      const arm = guardArm(mark, 'if [ "${state}" != "OPEN" ]; then');
+      expect(arm, 'the non-OPEN case marks the PR anyway').toContain('exit 0');
+      expect(arm, 'the non-OPEN arm writes to the PR').not.toContain('gh pr edit');
+      expect(arm, 'the non-OPEN arm writes to the PR').not.toContain('gh api');
+      // Before EVERY write, not merely present somewhere.
+      const stateAt = mark.indexOf('state=$(gh pr view');
+      for (const write of ['gh api -X PATCH', 'gh pr edit']) {
+        const at = mark.indexOf(write);
+        expect(at, `${write} is gone — this case guards nothing`).toBeGreaterThan(-1);
+        expect(at, `${write} runs before the OPEN re-check`).toBeGreaterThan(stateAt);
+      }
+    });
+
+    it('leaves an outstanding count alone on a day with no drift', () => {
+      // `removed` is diffed against the branch's COMMITTED fixtures, so with no
+      // drift it is empty by construction: a PR published as "2 decisions
+      // needed" would be retitled "1 decision needed" the next morning with
+      // nothing settled. The count is only comparable downward on this arm.
+      const mark = shellOf(MARK_STEP);
+      const arm = guardArm(
+        mark,
+        'if [ "${DRIFTED}" != "true" ] && [ "${decisions}" != "0" ]; then'
+      );
+      expect(arm, 'the no-drift arm re-marks from an incomparable count').toContain('exit 0');
+      expect(arm, 'the no-drift arm still writes to the PR').not.toContain('gh pr edit');
+      expect(arm, 'the no-drift arm still writes to the PR').not.toContain('gh api');
+      // It has to run BEFORE the title is computed, or the retitle happens on
+      // the way to the refusal.
+      expect(mark.indexOf('current=$(gh pr view')).toBeGreaterThan(
+        mark.indexOf('if [ "${DRIFTED}" != "true" ] && [ "${decisions}" != "0" ]; then')
+      );
+    });
+
+    it('refuses to CLEAR on a no-drift day whose regeneration changed files', () => {
+      // This arm grades a tree it then throws away — `Regenerate` rewrites the
+      // derived artifacts and Publish does not run on this arm — so a human who
+      // fixed a provider WITHOUT regenerating would see the marking cleared
+      // while the PR's own CI, which builds the COMMITTED tree, stays red.
+      const mark = shellOf(MARK_STEP);
+      // The same three paths `Publish the refresh` commits, or the probe grades
+      // a different tree than the one the PR carries.
+      expect(mark).toContain(
+        'regen=$(git status --porcelain -- src/provisioning/ docs/ tests/fixtures/cfn-schemas/)'
+      );
+      const publish = shellOf('Publish the refresh');
+      for (const path of ['src/provisioning/', 'docs/', 'tests/fixtures/cfn-schemas/']) {
+        expect(publish, `${path} is no longer committed — the clean-tree probe is now wrong`).toContain(
+          path
+        );
+      }
+      // Only on the no-drift arm: on a drift day the tree is DIRTY by
+      // definition and this would refuse every real cycle.
+      const noDrift = guardArm(mark, 'if [ "${DRIFTED}" != "true" ]; then\n  regen=');
+      expect(noDrift, 'the clean-tree probe escaped its no-drift guard').toContain('regen=');
+      const dirty = guardArm(mark, 'if [ -n "${regen}" ]; then');
+      expect(dirty, 'a dirty tree still gets its marking cleared').toContain('exit 0');
+      expect(dirty, 'the dirty-tree refusal is silent').toContain('::warning::');
+      expect(dirty, 'the dirty-tree arm writes to the PR').not.toContain('gh pr edit');
+    });
+
+    it('PATCHes the title only when it actually changed, through the API endpoint', () => {
+      // Unconditional, every quiet cycle stamps a fresh "changed the title"
+      // event on the PR while changing nothing — the same edit-noise defect the
+      // sibling workflow's `cmp -s` guard exists for.
+      const mark = shellOf(MARK_STEP);
+      const arm = guardArm(mark, 'if [ "${title}" != "${current}" ]; then');
+      expect(arm, 'the title PATCH escaped its changed-title guard').toContain(
+        'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" -f title="${title}"'
+      );
+      // Exactly one title write, and it is the one inside that arm.
+      expect(
+        [...mark.matchAll(/-f title=/g)].length,
+        'more than one title write — only the guarded one is fenced'
+      ).toBe(1);
+      // The PR NUMBER is the one this step resolved, not a re-read: `${pr}` is
+      // what the OPEN re-check above was performed against.
+      expect(mark).toContain('/pulls/${pr}"');
+      expect(mark, 'the title is threaded through gh pr edit again').not.toMatch(
+        /gh pr edit[^\n]*--title/
+      );
+    });
+
+    it('derives the base title from the PR, not from a value threaded into the step', () => {
+      // Deriving is what makes the step IDEMPOTENT and correct on the additive
+      // path, where the title was written by an earlier cycle this run has no
+      // output from — and it cannot drift from the suffix it writes, because
+      // the same pattern produces and strips it.
+      const mark = shellOf(MARK_STEP);
+      const currentAt = mark.indexOf('current=$(gh pr view "${pr}" --json title --jq .title)');
+      expect(currentAt, 'the current title is no longer read off the PR').toBeGreaterThan(-1);
+      const baseAt = mark.indexOf('base=$(printf \'%s\' "${current}" | sed -E');
+      expect(baseAt, 'the base is no longer derived from the current title').toBeGreaterThan(-1);
+      expect(baseAt, 'the base is derived before the title it derives from is read').toBeGreaterThan(
+        currentAt
+      );
+      // Nothing else may supply it: a threaded base is exactly the value the
+      // additive path does not have.
+      expect(Object.keys(byName(MARK_STEP).env ?? {}), 'a title is threaded in through env').not.toContain(
+        'BASE_TITLE'
+      );
+      expect(mark, 'the base is rebuilt from a literal instead of the PR').not.toMatch(
+        /base="chore/
+      );
+    });
+
+    it('maintains ONE verdict block at the top of the body, and refuses to guess', () => {
+      // The body is written once, on the day the PR opened, while later cycles
+      // add comments — so without this the body's own summary ages while the
+      // title stays current.
+      const mark = shellOf(MARK_STEP);
+      const guard =
+        'if [ "${vb_count}" = "1" ] && [ "${ve_count}" = "1" ] && [ "${ve}" -gt "${vb}" ]; then';
+      expect(mark, 'the unambiguous-block guard is gone').toContain(guard);
+      const block = guardArm(mark, guard);
+      const elifAt = block.indexOf('elif [ "${vb_count}" = "0" ] && [ "${ve_count}" = "0" ]');
+      expect(elifAt, 'the insert arm is gone — a body with no block is never given one').toBeGreaterThan(-1);
+      const elseAt = block.search(/\n\s*else\s*\n/);
+      expect(elseAt, 'the ambiguous arm is gone').toBeGreaterThan(elifAt);
+
+      // Arm 1 — REPLACE, by line number. `sed -n '1,/re/p'` starts its addr2
+      // search at line TWO, so a marker on line 1 (exactly where this block
+      // sits) never closes the range and the head half emits the whole body.
+      const replaceArm = block.slice(0, elifAt);
+      expect(replaceArm).toContain('head -n "${vb}" "${B}" > "${NB}"');
+      expect(replaceArm).toContain('printf \'%s\\n\' "${verdict}" >> "${NB}"');
+      expect(replaceArm).toContain('tail -n "+${ve}" "${B}" >> "${NB}"');
+      expect(replaceArm, 'the block is addressed by regex again, not by line').not.toContain(
+        'sed -n'
+      );
+
+      // Arm 2 — INSERT, at the TOP, keeping the existing body below it.
+      const insertArm = block.slice(elifAt, elseAt);
+      expect(insertArm).toContain('"${VERDICT_BEGIN}" "${verdict}" "${VERDICT_END}"');
+      expect(insertArm, 'the existing body is dropped when the block is inserted').toContain(
+        'cat "${B}"'
+      );
+      expect(
+        insertArm.indexOf('printf'),
+        'the block is appended after the body instead of inserted at the top'
+      ).toBeLessThan(insertArm.indexOf('cat "${B}"'));
+
+      // Arm 3 — REFUSE. Anything else is an ambiguous body, and rewriting one
+      // means guessing which half is generated.
+      const warnArm = block.slice(elseAt);
+      expect(warnArm, 'the ambiguous body is rewritten anyway').toContain('::warning::');
+      expect(warnArm).toContain('cp "${B}" "${NB}"');
+      expect(warnArm, 'the ambiguous arm writes the body').not.toContain('gh api');
+
+      // The write itself: guarded on a real change, and the body goes through
+      // the API as a FILE — an inline value would be re-interpreted by the CLI.
+      const writeArm = guardArm(mark, 'if ! cmp -s "${B}" "${NB}"; then');
+      expect(writeArm).toContain(
+        'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --field "body=@${NB}"'
+      );
+      expect(
+        [...mark.matchAll(/--field "body=@/g)].length,
+        'more than one body write — only the guarded one is fenced'
+      ).toBe(1);
+
+      // And a body it could not READ is never written: the redirect truncates
+      // `${B}` before gh runs, so an unchained recipe would splice onto an
+      // empty body and replace the whole thing with the verdict alone.
+      expect(mark).toMatch(
+        /if gh pr view "\$\{pr\}" --json body --jq \.body > "\$\{B\}" && \[ -s "\$\{B\}" \]; then/
+      );
+      expect(mark).toContain('Could not read PR ${pr}\'s body; refusing to write one');
     });
 
     it('keeps the drift probe between the refresh and the regeneration', () => {
@@ -887,6 +1236,221 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     }
   }, 60_000);
 
+  it('RUNS the marking step: mark, re-mark and clear return the base title byte-for-byte', () => {
+    // Executed, like the two regenerate cases above, and for the same reason:
+    // the round trip is a BEHAVIOUR of four arms plus a title the step DERIVES
+    // from the PR. Pattern-matching each half separately cannot see that the
+    // third cycle hands back exactly the string the first one was given — which
+    // is the whole claim "the same pattern produces and strips the suffix"
+    // makes, and the one a drift between them breaks.
+    const step = byName(MARK_STEP);
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-mark-'));
+    try {
+      const bin = join(dir, 'bin');
+      const repo = join(dir, 'repo');
+      mkdirSync(bin);
+      mkdirSync(join(repo, 'docs'), { recursive: true });
+
+      // The step names ABSOLUTE `/tmp` paths, which are shared: two suites
+      // running at once would grade each other's counts, and a failure would
+      // read as flakiness. The PREFIX is redirected into the sandbox rather
+      // than the filename, so a rename of the count file still flows through
+      // to `countPath` below instead of silently testing a stale path.
+      const shell = shellOf(MARK_STEP).split('/tmp/').join(`${dir}/`);
+      const countPath = shell.match(/\[ ! -s (\S+) \]/)?.[1];
+      expect(countPath, 'the step no longer probes a decision-count file').toBeDefined();
+      writeFileSync(join(dir, 'mark.sh'), `${shell}\n`);
+
+      // A `gh` that RECORDS what it was asked and answers the three reads off
+      // files, so a PATCH is observable as the next read's answer.
+      const gh = [
+        '#!/bin/sh',
+        'printf "%s\\n" "$*" >> "$GH_LOG"',
+        'case "$1 $2" in',
+        '  "pr view")',
+        '    case "$*" in',
+        '      *"--json state"*) cat "$GH_STATE"; exit 0 ;;',
+        '      *"--json title"*) cat "$GH_TITLE"; exit 0 ;;',
+        '      *"--json body"*) cat "$GH_BODY"; exit 0 ;;',
+        '    esac',
+        '    exit 1 ;;',
+        '  "api -X")',
+        '    for a in "$@"; do',
+        '      case "$a" in',
+        '        title=*) printf "%s" "${a#title=}" > "$GH_TITLE" ;;',
+        '        body=@*) cat "${a#body=@}" > "$GH_BODY" ;;',
+        '      esac',
+        '    done',
+        '    exit 0 ;;',
+        'esac',
+        'exit 0',
+      ].join('\n');
+      writeFileSync(join(bin, 'gh'), `${gh}\n`, { mode: 0o755 });
+
+      // A real repository as cwd, so the no-drift arm's `git status` probe has
+      // something to answer about and the clean/dirty halves are controllable.
+      const git = (...args: string[]) =>
+        execFileSync('git', args, {
+          cwd: repo,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            GIT_CONFIG_GLOBAL: '/dev/null',
+            GIT_CONFIG_SYSTEM: '/dev/null',
+          },
+        });
+      writeFileSync(join(repo, 'docs', 'kept.md'), 'kept\n');
+      git('init', '-q', '-b', 'main');
+      git('add', '-A');
+      git(
+        '-c',
+        'user.email=bot@example.com',
+        '-c',
+        'user.name=bot',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '-qm',
+        'seed'
+      );
+
+      // The step's own `env:` block, with only the `${{ }}`-valued entries
+      // supplied by the harness — the literals (label, markers) come from the
+      // workflow, so a reworded marker is exercised rather than mirrored.
+      const HARNESS: Record<string, string> = {
+        GH_TOKEN: 'stub-token',
+        PUBLISHED_PR: '4242',
+        OPEN_PR: '',
+      };
+      const envFor = (drifted: string) => {
+        const out: Record<string, string> = {};
+        for (const [key, value] of Object.entries(step.env ?? {})) {
+          if (!value.includes('${{')) {
+            out[key] = value;
+            continue;
+          }
+          const supplied = key === 'DRIFTED' ? drifted : HARNESS[key];
+          expect(
+            supplied,
+            `env ${key} is expression-valued and this harness has no value for it`
+          ).toBeDefined();
+          out[key] = supplied!;
+        }
+        return out;
+      };
+
+      const ghLog = join(dir, 'gh.log');
+      const stateFile = join(dir, 'state');
+      const titleFile = join(dir, 'title');
+      const bodyFile = join(dir, 'body');
+      const BASE = 'chore(schemas): refresh CFn schema fixtures (2026-09-07)';
+      const PREAMBLE = 'The preamble a human wrote.';
+      writeFileSync(stateFile, 'OPEN\n');
+      writeFileSync(titleFile, BASE);
+      writeFileSync(bodyFile, `${PREAMBLE}\n\n## What needs a decision\n\n- something\n`);
+
+      const run = (decisions: string, drifted: string) => {
+        writeFileSync(countPath!, `${decisions}\n`);
+        writeFileSync(ghLog, '');
+        const res = spawnSync('bash', [join(dir, 'mark.sh')], {
+          cwd: repo,
+          encoding: 'utf8',
+          env: {
+            PATH: `${bin}:${process.env['PATH'] ?? ''}`,
+            HOME: dir,
+            TMPDIR: dir,
+            GH_LOG: ghLog,
+            GH_STATE: stateFile,
+            GH_TITLE: titleFile,
+            GH_BODY: bodyFile,
+            GITHUB_REPOSITORY: 'go-to-k/cdkd',
+            GITHUB_REPOSITORY_OWNER: 'go-to-k',
+            ...envFor(drifted),
+          },
+        });
+        expect(
+          res.status,
+          `the step exited ${res.status}: ${res.stdout}${res.stderr}`
+        ).toBe(0);
+        return {
+          title: readFileSync(titleFile, 'utf8'),
+          body: readFileSync(bodyFile, 'utf8'),
+          gh: readFileSync(ghLog, 'utf8').split('\n').filter(Boolean),
+        };
+      };
+      const begin = step.env!['VERDICT_BEGIN']!;
+      const end = step.env!['VERDICT_END']!;
+      const count = (body: string, line: string) =>
+        body.split('\n').filter((l) => l === line).length;
+
+      // 1. A drift cycle carrying two decisions.
+      const two = run('2', 'true');
+      expect(two.title).toBe(`${BASE} — 2 decisions needed`);
+      expect(two.body.split('\n')[0], 'the verdict block is not at the top').toBe(begin);
+      expect(two.body).toContain('2 decisions need your call');
+      expect(two.body, 'the human half of the body was overwritten').toContain(PREAMBLE);
+      // ORDER, observed rather than read: only the assignment notifies, so it
+      // must not sit behind a label call that `exit 1`s when the label is gone.
+      const assignAt = two.gh.findIndex((l) => l.includes('--add-assignee'));
+      const labelAt = two.gh.findIndex((l) => l.includes('--add-label'));
+      expect(assignAt, 'no assignment was issued at 2 decisions').toBeGreaterThan(-1);
+      expect(labelAt, 'no label was added at 2 decisions').toBeGreaterThan(-1);
+      expect(assignAt, 'the label call ran before the assignment').toBeLessThan(labelAt);
+
+      // 2. The additive path: re-marked from the title the FIRST run wrote,
+      // with nothing threading the base in.
+      const one = run('1', 'true');
+      expect(one.title).toBe(`${BASE} — 1 decision needed`);
+      expect(one.body).toContain('1 decision needs your call');
+      expect(one.body, 'the stale verdict survived the re-mark').not.toContain(
+        '2 decisions need your call'
+      );
+      expect(count(one.body, begin), 'the verdict block accumulated').toBe(1);
+      expect(count(one.body, end), 'the verdict block accumulated').toBe(1);
+      expect(one.body, 'the human half was lost on the second write').toContain(PREAMBLE);
+
+      // 3. Settled. The title returns to its exact original bytes, the label
+      // goes, and the assignee STAYS — it is still theirs to merge.
+      const zero = run('0', 'true');
+      expect(zero.title, 'the round trip did not restore the base title').toBe(BASE);
+      expect(zero.body).toContain('No decisions outstanding');
+      expect(count(zero.body, begin)).toBe(1);
+      expect(
+        zero.gh.some((l) => l.includes('--remove-label')),
+        'the label was not cleared at zero'
+      ).toBe(true);
+      expect(
+        zero.gh.some((l) => l.includes('--add-assignee')),
+        'a settled PR was assigned again'
+      ).toBe(false);
+      expect(
+        zero.gh.some((l) => l.includes('--add-label')),
+        'a settled PR was labelled again'
+      ).toBe(false);
+
+      // 4. The no-drift arm over a tree the regeneration changed: the PR's own
+      // CI builds the COMMITTED tree, so clearing here would advertise green
+      // over a red PR. Nothing is written at all.
+      writeFileSync(join(repo, 'docs', 'regenerated.md'), 'changed\n');
+      const dirty = run('0', 'false');
+      expect(
+        dirty.gh.filter((l) => l.startsWith('pr edit') || l.startsWith('api ')),
+        'the un-regenerated tree was marked anyway'
+      ).toEqual([]);
+      // And the same call over a CLEAN tree does proceed — without this the
+      // assertion above is satisfied by any refusal, including a broken one.
+      rmSync(join(repo, 'docs', 'regenerated.md'));
+      const clean = run('0', 'false');
+      expect(
+        clean.gh.some((l) => l.includes('--remove-label')),
+        'the clean no-drift arm never reaches the marking'
+      ).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('denies permissions at the top level and grants them per job', () => {
     expect(workflow).toMatch(/^permissions: \{\}$/m);
     expect(workflow).toMatch(/^\s+contents: write$/m);
@@ -902,9 +1466,32 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     // `.../issues/2718` URL and a rationale comment names `gh issue`, so it
     // could never fire. An anti-vacuity guard that is vacuous is the defect
     // class this file is about, in the guard against it.
-    const shellBodies = steps
-      .map((st) => (st.name ? shellOf(st.name) : ''))
-      .join('\n');
+    const named = steps.filter((st) => st.name && st.run);
+    const bodies = named.map((st) => shellOf(st.name!));
+    // The FLOOR, which the polarity flip destroyed: with the assertion below
+    // reading `.toBe(false)`, an empty `shellBodies` — a broken `steps`, a
+    // `shellOf` that stopped stripping, a renamed job — passes it. So the
+    // subject is proved to EXIST before its absence-of-`gh issue` is believed.
+    // (In the `issues: write`-present era the floor was free: `.toBe(true)`
+    // cannot be satisfied by nothing.)
+    expect(named.length, 'no named shell steps found — the parse broke, not the workflow').toBeGreaterThanOrEqual(6);
+    for (const st of named) {
+      expect(
+        shellOf(st.name!).trim().length,
+        `${st.name}: its shell reads as empty — shellOf is stripping everything`
+      ).toBeGreaterThan(0);
+    }
+    const shellBodies = bodies.join('\n');
+    expect(
+      shellBodies.length,
+      'the collected shell bodies are too small to be this job'
+    ).toBeGreaterThan(2000);
+    // Positive anchors: the bodies really are THIS job's shell, so a scan that
+    // silently reads some other file cannot clear the negative below.
+    expect(shellBodies, 'the open-PR guard is not among the scanned bodies').toContain('gh pr list');
+    expect(shellBodies, 'the publish step is not among the scanned bodies').toContain(
+      'gh pr create'
+    );
     const usesIssueApi = /gh issue |\/issues\//.test(shellBodies);
     expect(
       usesIssueApi,
