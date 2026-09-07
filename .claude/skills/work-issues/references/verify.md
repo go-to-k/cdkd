@@ -308,6 +308,11 @@ code defects and FIVE false statements in prose. Habits that each caught one:
   (a later PR may already have falsified it).
 - **A correction can be a new false claim** — twice the replacement sentence
   was wrong in the other direction. Re-read a correction against the code.
+- **A round finding the SAME CLASS twice means stop fixing instances** — make
+  both sites ask ONE question. Four rounds on go-to-k/cdkd#2719 each subtracted
+  one input from a label meant to mirror a dispatch; every fix was correct and
+  incomplete. The tell: a finding differing from the last only in which input
+  it names.
 - **In a FIX round, the fix invalidated your own prose** — every past-tense
   measurement is stale until re-derived (one run: one code defect, TEN false
   claims, among them a fence called "claimed rather than probed" whose named

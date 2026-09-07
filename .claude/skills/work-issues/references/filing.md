@@ -97,6 +97,11 @@ scale: parallel lanes share the scratchpad and an uncoordinated
 read-modify-write loses a row — never run two folds against the same issue
 concurrently.
 
+**Search the CODE PATH too** — §5-b's issue-number sweep in reverse. Issue
+search matches the TITLE's vocabulary: go-to-k/cdkd#2723 duplicated
+go-to-k/cdkd#2651 with zero shared terms while a comment three lines above the
+reported line named it. Record both probes below.
+
 On a MISS — the expected outcome for a genuinely new root cause — file it, and
 record the search so the next lane can see the window was checked:
 
