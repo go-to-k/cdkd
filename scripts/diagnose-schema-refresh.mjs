@@ -1463,10 +1463,12 @@ function main() {
       unknown.push(a);
       continue;
     }
-    // A REPEAT is not a valid invocation: `rawArg` takes the FIRST match, so
-    // the later value is silently discarded — which rendered the clean verdict
-    // over an rc=3 checker, the last argv shape that still reached a confident
-    // answer.
+    // A REPEAT is not a valid invocation: `rawArg` reads exactly ONE of them and
+    // WHICH one depends on the spelling — it looks for the glued form before
+    // the space form, so `--nested-key-rc 0 --nested-key-rc=3` reads 3 while
+    // the other three orderings read 0. Either way a value is silently
+    // discarded, which rendered the clean verdict over a failing checker: the
+    // last argv shape that still reached a confident answer.
     if (seen.has(flag)) repeated.push(flag);
     seen.add(flag);
     if (a === flag) {
@@ -1480,9 +1482,9 @@ function main() {
   }
   if (repeated.length > 0) {
     throw new Error(
-      `flag(s) given more than once: ${[...new Set(repeated)].join(', ')} — only the first ` +
-        'would have been read. Refusing to report from an invocation this script did not ' +
-        'understand.'
+      `flag(s) given more than once: ${[...new Set(repeated)].join(', ')} — only one would ` +
+        'have been read, and which one depends on the spelling. Refusing to report from an ' +
+        'invocation this script did not understand.'
     );
   }
   if (unknown.length > 0) {

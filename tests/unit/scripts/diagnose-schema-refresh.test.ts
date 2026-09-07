@@ -1690,10 +1690,10 @@ describe('the script end to end', () => {
   }, 60_000);
 
   it('refuses a flag given more than once, in every spelling', () => {
-    // `rawArg` takes the FIRST match, so the later value is silently discarded
-    // — `--nested-key-rc 0 --nested-key-rc 3` rendered the clean verdict over
-    // an rc=3 checker. It was the last argv shape that still reached a
-    // confident answer.
+    // `rawArg` reads exactly ONE of them, and which one depends on the
+    // spelling: it looks for the glued form first, so the third case below
+    // reads 3 while the other two read 0. Either way a value is silently
+    // discarded — the last argv shape that still reached a confident answer.
     for (const argv of [
       ['--nested-key-rc', '0', '--nested-key-rc', '3'],
       ['--nested-key-rc=0', '--nested-key-rc=3'],
