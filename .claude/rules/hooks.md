@@ -581,6 +581,71 @@ last `git -C` / `gh -C` flag, and `cd`s to the resolved target before
 gate landed in the main tree, the root cause in
 `feedback_cross_agent_main_tree_contention.md`).
 
+### Two gates bind their marker to a COMMIT, and the binding lives in the hook
+
+`pr-review` and `verify-pr` each write a gitignored root sentinel
+(`.markgate-pr-review-sha`, `.markgate-verify-pr-sha`) and compare it in the
+hook. **That comparison is the enforcement — `markgate verify` does not do it.**
+`verify` digests the gate's SCOPE, so REWRITING a sentinel stales the marker,
+but a sentinel nobody rewrote keeps its digest whatever the branch moved to:
+`verify` reports `match` for a sentinel naming a different commit entirely
+(measured, issue [#2681](https://github.com/go-to-k/cdkd/issues/2681), whose
+whole subject is a comment that claimed the opposite and would have made
+deleting the real check look like a safe simplification).
+
+Why each needs it:
+
+- `pr-review` — bound to the PR's `headRefOid`, so a new push invalidates it.
+- `verify-pr` — bound to the LOCAL HEAD, because this gate also guards
+  `gh pr create`, where there is no PR to ask yet. Added by issue
+  [#2686](https://github.com/go-to-k/cdkd/issues/2686): the parent has no
+  `include:` of its own, so once set in a worktree it never stales by itself —
+  it is only MASKED by a stale child, and `/check` + `/check-docs` un-mask it.
+  In the IN-PLACE worktree mode CLAUDE.md prescribes, lane N inherited lane
+  N-1's green. Measured twice, a day apart, in different worktrees: a parent an
+  hour older than children four minutes old, `verify` rc=0, `gh pr create`
+  unblocked.
+
+**The ORDER in `/verify-pr`'s final step is forced from two directions, and
+getting either wrong deadlocks or false-blocks.** `check-gate` refuses the
+commit unless `check` and `docs` are fresh, so those two are set FIRST — after
+the commit is too late for exactly the runs that produced changes to commit, and
+an agent facing a blocking gate starts improvising around it. The sentinel and
+`markgate set verify-pr` come LAST, after the push: written before the commit,
+HEAD moves past the binding and the next `gh pr create` refuses a PR that is
+genuinely ready. Both halves were live defects in the change that added the
+binding. The commit itself is guarded (`git diff --cached --quiet ||`) because a
+CLEAN tree is the normal case on a re-run after a rebase, where a bare
+`commit && push` chain exits 1 and never pushes.
+
+**It is ONE `&&` chain, and unchaining it re-opens the class**: if a gate
+refuses the commit, unchained execution continues, the push sends nothing, and
+the bind records the OLD head — a green for work that was never committed.
+
+The re-bind after a rebase is written out as the two COMMANDS rather than cited
+as "the last N lines". A count into a wrapped `&&` block goes stale the moment
+anyone reflows it, and the miscount executes: `> <sentinel> && markgate set
+verify-pr` is a bare redirect bash accepts, which TRUNCATES the sentinel to zero
+bytes, exits 0, and lets the marker be set — a block whose cause is off-screen.
+Measured (go-to-k/cdkd#2686 round-5 review).
+
+The sentinel is written from the repo TOP (`$(git rev-parse --show-toplevel)/…`):
+the cwd-relative spelling run from a subdirectory writes a file the hook never
+reads, and `.gitignore`'s entry has no leading slash, so the stray copy is
+invisible — a permanent block with an off-screen cause.
+
+Anything that moves HEAD afterwards invalidates the binding by design, including
+the flatten / rebase / force-push `work-issues/references/ship.md` prescribes
+before merge.
+
+The read uses `git rev-parse --verify HEAD`, not the bare form: in a repo with
+no commits the bare spelling prints the literal string `HEAD` on STDOUT, which
+would make the emptiness guard beside it dead code and let a sentinel containing
+`HEAD` compare equal. Both halves are pinned by
+`.claude/hooks/verify-pr-gate.test.sh`, which also carries the case the issue
+asked for — a FRESH marker plus a FOREIGN sha must BLOCK, and must say so
+rather than reporting staleness the children do not have.
+
 **A hand-typed `markgate` is not the one the hooks run.** `.mise.toml` pins
 0.4.1 and every gate resolves it through mise, but a Homebrew `markgate` 0.2.0
 earlier on `PATH` wins for a bare invocation and cannot parse this repo's

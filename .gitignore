@@ -52,6 +52,7 @@ tests/benchmark/results-*.md
 # verified; bound to the `pr-review` markgate gate's include scope so a
 # new push to the PR invalidates the marker automatically)
 .markgate-pr-review-sha
+.markgate-verify-pr-sha
 
 # markgate integ-broad sentinel (records the test name + timestamp of the
 # last broad real-AWS integ run, e.g. bench-cdk-sample; updated by

@@ -371,10 +371,41 @@ of `/check` and `/check-docs`, so its success implies all three. Use
 `mise exec` (cdkd pins markgate via mise):
 
 ```bash
+# 1. Children FIRST: `check-gate` blocks the commit below unless both are
+#    fresh, and step 2 exists for runs that changed files in their scope.
 mise exec -- markgate set check
 mise exec -- markgate set docs
-mise exec -- markgate set verify-pr
+
+# 2. Land the changes, then 3. BIND. Every `&&`, the `||`, `--verify` and
+#    `--show-toplevel` are load-bearing; hooks.md says why. Do not unchain
+#    this. After a rebase the push needs `--force-with-lease`.
+git add -A \
+  && { git diff --cached --quiet || git commit -m "..."; } \
+  && git push \
+  && git rev-parse --verify HEAD \
+       > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha" \
+  && mise exec -- markgate set verify-pr
 ```
+
+**Anything that moves HEAD afterwards invalidates the binding, by design.** After
+a rebase or force-push (which `ship.md` prescribes), repeat the BIND -- still
+chained -- once the tree is final:
+
+```bash
+git rev-parse --verify HEAD > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha" \
+  && mise exec -- markgate set verify-pr
+```
+
+That suffices only if the tree is UNCHANGED; with changes to commit, re-run the
+full chain with `--force-with-lease`. hooks.md: why it is named, not counted.
+
+**The sentinel is the binding, `markgate verify` does not enforce it, and the
+ORDER above is forced from two directions** — the marker is bound to a COMMIT,
+and `check-gate` guards that commit. All of it, including why the binding is to
+the local HEAD rather than the PR's, is in
+[.claude/rules/hooks.md](../../rules/hooks.md) → "Two gates bind their marker to
+a COMMIT" (issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). Read it
+before touching either half.
 
 The `verify-pr` marker is what `.claude/hooks/verify-pr-gate.sh` consults for
 `gh pr create` / `gh pr merge`. It is settable ONLY by this skill — setting it
@@ -382,6 +413,6 @@ by hand to bypass the gate defeats the point. If a check legitimately cannot
 pass right now, say so in the report and DO NOT set the marker — the gate
 exits non-zero so the human can decide.
 
-Then, if there are uncommitted changes from this run (lint fixes, doc
-updates), commit and push so the remote branch matches the "ready to merge"
-report. Skip the marker + commit step if any check failed.
+Skip the whole sequence if any check failed. (The commit/push that used to be
+described here is now inside the chain above — doing it after the markers is
+what invalidated the binding.)
