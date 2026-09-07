@@ -970,7 +970,15 @@ is_protected_path() {
 
 # Dedupe LAST, after both bounded paths have unioned their bases in, so it sees
 # the final pair set. Cheap when there is nothing to collapse.
-__dedupe_candidates
+# THE OVERFLOW DECISION COMES FIRST, BEFORE THE DEDUPE.
+#
+# Once the bound has tripped the command is going to be refused, so
+# deduplicating the pairs it already built is work whose result nothing reads.
+# It is not free: at `GATE_EDIT_MAXPAIRS` the array holds thousands of entries,
+# and the CI runner -- slower than any developer machine, and the only place
+# bash 3.2 runs both halves -- spent 6 s of the 10 s PreToolUse budget on a
+# k=19 / n=2000 command that was refused anyway. A budget is not the thing to
+# relax when the hook is genuinely that close to being killed.
 
 # THE OVERFLOW REFUSES, and it refuses only where the gate could ever apply.
 # `__union_cd_bases` stops after `GATE_EDIT_MAXCD` distinct `cd` targets rather
@@ -1021,6 +1029,10 @@ EOF
   done
 fi
 
+
+# Deduplicate only when the candidates will actually be CHECKED. This is an
+# optimisation for `is_protected_path`, which does not run on the path above.
+__dedupe_candidates
 __i=0
 # `${arr[@]}` ON AN EMPTY ARRAY IS AN UNBOUND-VARIABLE ABORT ON BASH 3.2 -- the
 # only bash CI has -- while bash 4.4+ expands it to nothing. The refusal path
