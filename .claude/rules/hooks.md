@@ -109,6 +109,76 @@ Two consequences worth carrying forward:
 **Do not read this as "hooks were a mistake."** The blocking gates below have
 prevented measured incidents and should keep doing so. The rule bounds the SET,
 it does not disparage the members.
+# The bash-first experiment must stay OFF (`env.CLAUDE_CODE_THRIFTY_SONIC`)
+
+`.claude/settings.json` pins `env.CLAUDE_CODE_THRIFTY_SONIC: "0"`. It is
+load-bearing for this harness, not a preference. With the flag ON, Claude Code
+appends a system-reminder telling the agent to read AND write files through
+`cat` / `sed -i` / heredocs rather than the Read / Edit / Write tools. Three
+surfaces are keyed to those tools and go silently inert:
+
+- **`worktree-owner-gate.sh`** (matcher `Edit|Write|NotebookEdit`) stops firing
+  entirely — a Bash heredoc write claims no worktree and is refused by nothing,
+  which is the multi-session uncommitted-work guard gone.
+- the **PostToolUse `Write|Edit` → `vp run lint:fix`** entry never runs, so a
+  `.ts` written through Bash surfaces its formatting breakage at `/check`.
+- **every `paths:`-scoped file in this directory, this one included** — a
+  rule loads when a matching file enters context through the file tools, so
+  a `cat`-read subsystem gets none of its notes. No count is quoted here:
+  `grep -l '^paths:' .claude/rules/*.md | wc -l`, for the same reason the
+  counts at the top of this file are gone.
+
+`main-tree-edit-gate.sh` survives (its matcher lists `Bash`) but degrades to the
+best-effort literal-path scan its own header describes. The 2026-08-09
+uncommitted-work class loses its SNAPSHOT too, not only its owner claim:
+`restore-backup.sh` and `dirty-path-restore-gate.sh` are scoped to git VERBS
+(`git checkout -- <path>`, `git restore`, `git reset --hard`), so an overwrite
+spelled `cat > f` or `sed -i` never reaches either one.
+
+Two properties of the pin worth stating rather than discovering. It is a repo
+**DEFAULT, not an unescapable one**: `.claude/settings.local.json` outranks the
+committed file and the fence never reads it, so a contributor who wants the
+experiment can take it locally — what the pin removes is the SILENT version,
+where a server-side cohort decides it and nobody chose anything. That file is listed in
+`.gitignore` for the same reason the pin is committed: a CHECKED-IN
+`settings.local.json` carrying `"1"` would beat the pin for everyone with the
+fence still green, which is a local escape hatch turning into a silent
+repo-wide one. And `env` exports the variable into **every Bash subprocess this
+session spawns**, a nested `claude` and CI scripts included, not just the
+session itself — and it BEATS an inherited value rather than merely defaulting
+one: measured 2026-09-07, launching with `CLAUDE_CODE_THRIFTY_SONIC=1` in the
+environment answers ABSENT inside a directory pinning `"0"`, while the same
+launch from a directory with no project settings answers PRESENT.
+
+Measured on Claude Code 2.1.263: the native binary parses the variable as a
+tri-state bool, and an explicitly set value SHORT-CIRCUITS the server-side
+cohort assignment — `if (env.CLAUDE_CODE_THRIFTY_SONIC !== undefined) return it`
+sits ahead of the `forced` / `cohort` branches. So pinning it in the REPO's
+settings decides the question for every clone and every contributor, which a
+maintainer's `~/.claude/settings.json` cannot do. Probe it by flipping the value
+to `"1"` and running `claude -p` with a prompt that asks whether the phrase
+`Do your work through the Bash tool` is in context: `"1"` answers PRESENT,
+`"0"` and the unset baseline answer ABSENT. **The unset baseline is not the
+discriminator** — only the `"1"` arm is.
+
+`tests/unit/scripts/settings-bash-first-optout.test.ts` fences the pin and the
+reason, but it asserts a JSON string and can never assert vendor behavior: a
+rename, a default flip, or removal of that short-circuit turns the pin into a
+no-op with the fence still green. So its VERSION case pins the Claude Code line
+the measurement was taken on (issue
+[#2737](https://github.com/go-to-k/cdkd/issues/2737)) — **when the installed
+MAJOR.MINOR moves off the recorded one, re-run BOTH probe arms above and update
+the two constants together.** It is a REMINDER, not a detector: only running the
+probe observes the vendor's behavior, and what a test can do is refuse to let
+the measurement go quietly out of date. Compared at MAJOR.MINOR because patches
+land often enough that an exact pin would red an unrelated commit most weeks,
+and a red that frequent gets discharged by editing the constant instead of
+re-probing; the bound that buys is a behavior change shipped inside a patch
+release, which passes silently. Where no `claude` binary answers — CI — there is
+no installed version to disagree with, so the case asserts that the receipt is
+well-formed AND that this file still names the same version: bumping one copy of
+the measurement without the other reds even there (`CDKD_CLAUDE_BIN` is the seam
+that probes that arm).
 
 # Other PreToolUse safety hooks
 

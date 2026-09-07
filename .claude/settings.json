@@ -1,4 +1,7 @@
 {
+  "env": {
+    "CLAUDE_CODE_THRIFTY_SONIC": "0"
+  },
   "hooks": {
     "PreToolUse": [
       {

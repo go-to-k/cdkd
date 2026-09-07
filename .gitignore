@@ -84,3 +84,8 @@ tests/benchmark/results-*.md
 .pr-body*.txt
 .gh-body*.md
 .gh-body*.txt
+
+# Claude Code local settings override -- never committed: it OUTRANKS
+# .claude/settings.json, so a committed one would silently beat the pins there
+# (see .claude/rules/hooks.md, the bash-first section).
+.claude/settings.local.json
