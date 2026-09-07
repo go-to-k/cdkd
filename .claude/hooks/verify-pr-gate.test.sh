@@ -29,6 +29,13 @@ git -C "$main_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 
 # one or every case would pass through untested.
 touch "$side_repo/.markgate.yml" "$main_repo/.markgate.yml"
 
+# The sha sentinel `/verify-pr` writes (go-to-k/cdkd#2686). Every pre-existing
+# `fresh` case assumed a fresh marker was sufficient; it is not, and seeding
+# these is what keeps those cases testing what they were written for rather
+# than the new binding.
+git -C "$side_repo" rev-parse HEAD > "$side_repo/.markgate-verify-pr-sha"
+git -C "$main_repo" rev-parse HEAD > "$main_repo/.markgate-verify-pr-sha"
+
 SHIM_DIR="$TMPDIR/bin"
 mkdir -p "$SHIM_DIR"
 CWD_TRACE_FILE="$TMPDIR/cwd-trace"
@@ -248,6 +255,74 @@ export MARKGATE_MOCK_VERDICT
 printf '%s' "$(jq -n --arg c "gh pr create --title t" --arg d "$main_repo" \
   '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}')" \
   | bash "$HOOK" >/dev/null 2>&1
+# --- SHA BINDING (go-to-k/cdkd#2686) ----------------------------------------
+#
+# A FRESH marker is not sufficient. `verify-pr` has no `include:` of its own, so
+# once set in a worktree it never stales by itself -- it is only MASKED by a
+# stale child, and `/check` + `/check-docs` un-mask it. In the IN-PLACE worktree
+# mode CLAUDE.md prescribes, lane N then inherits lane N-1's green. Measured
+# twice a day apart, in different worktrees.
+#
+# Every case below is FRESH; only the sentinel varies. That is the point -- the
+# marker state cannot tell them apart, so whatever separates them is the
+# binding doing the work.
+side_payload='{"cwd":"'"$side_repo"'","tool_input":{"command":"gh pr create"}}'
+merge_payload='{"cwd":"'"$side_repo"'","tool_input":{"command":"gh pr merge 1 --squash"}}'
+real_sha=$(git -C "$side_repo" rev-parse HEAD)
+
+printf '%s' "0000000000000000000000000000000000000000" > "$side_repo/.markgate-verify-pr-sha"
+run_case "fresh marker + FOREIGN sha REFUSED (pr create)" 2 fresh "" "$side_payload"
+run_case "fresh marker + FOREIGN sha REFUSED (pr merge)" 2 fresh "" "$merge_payload"
+
+# The message must NOT say "stale": the marker is fresh, and sending the reader
+# to /check for a problem no child has is how a real block gets worked around.
+foreign_msg=$(printf '%s' "$side_payload" | MARKGATE_MOCK_VERDICT=fresh "$HOOK" 2>&1 >/dev/null)
+if printf '%s' "$foreign_msg" | grep -q 'bound to a different commit' \
+   && printf '%s' "$foreign_msg" | grep -q "$real_sha" \
+   && ! printf '%s' "$foreign_msg" | grep -q 'marker is stale'; then
+  pass=$((pass + 1)); printf 'OK   foreign-sha block names the binding, not staleness\n'
+else
+  fail=$((fail + 1)); fail_log+="FAIL foreign-sha message: $foreign_msg\n"
+  printf 'FAIL foreign-sha block message\n'
+fi
+
+rm -f "$side_repo/.markgate-verify-pr-sha"
+run_case "fresh marker + MISSING sentinel REFUSED" 2 fresh "" "$side_payload"
+
+# The CONTROL. Without it every case above is satisfied by a gate that stopped
+# passing anything at all.
+printf '%s' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
+run_case "fresh marker + MATCHING sha passes" 0 fresh "" "$side_payload"
+
+# A trailing newline must be tolerated: `git rev-parse HEAD > file` writes one,
+# and that is the command the skill documents.
+printf '%s\n' "$real_sha" > "$side_repo/.markgate-verify-pr-sha"
+run_case "sentinel with a trailing newline still matches" 0 fresh "" "$side_payload"
+
+# An UNREADABLE HEAD must block, and this is why the `[ -n "$head_sha" ]` guard
+# is not redundant: in a repo with no commits `git rev-parse HEAD` fails, so
+# `head_sha` is empty -- and with no sentinel `recorded_sha` is empty too.
+# Without the guard the comparison is `"" = ""`, which PASSES. A fail-open, in
+# the gate whose whole job is refusing. Measured: dropping the guard left the
+# suite at 30/30 green.
+empty_repo="$TMPDIR/empty-repo"
+git init -q -b main "$empty_repo"
+touch "$empty_repo/.markgate.yml"
+empty_payload='{"cwd":"'"$empty_repo"'","tool_input":{"command":"gh pr create"}}'
+run_case "fresh marker + UNREADABLE head REFUSED" 2 fresh "" "$empty_payload"
+
+# And the degenerate match the bare `git rev-parse HEAD` spelling would allow:
+# in a repo with no commits it prints the literal string `HEAD` on STDOUT, so a
+# sentinel containing `HEAD` would COMPARE EQUAL and the gate would pass. With
+# `--verify` the read yields nothing and the `-n` guard refuses. Contrived, but
+# it is what makes the spelling testable rather than a matter of taste.
+printf '%s' "HEAD" > "$empty_repo/.markgate-verify-pr-sha"
+run_case "sentinel literally 'HEAD' in an empty repo REFUSED" 2 fresh "" "$empty_payload"
+rm -f "$empty_repo/.markgate-verify-pr-sha"
+
+# STALE + matching sha still blocks: the two conditions are ANDed.
+run_case "stale marker + MATCHING sha still REFUSED" 2 stale "" "$side_payload"
+
 unset MARKGATE_MOCK_VERDICT
 if grep -qE '(^| )verify-pr( |$)' "$ARGS_TRACE_FILE"; then
   echo "ok   markgate was asked about the verify-pr gate specifically"

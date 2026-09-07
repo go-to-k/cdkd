@@ -124,7 +124,47 @@ fi
 "${markgate[@]}" verify verify-pr >/dev/null 2>&1
 status=$?
 
-if [ "$status" -eq 0 ]; then
+# SHA BINDING (go-to-k/cdkd#2686).
+#
+# A fresh marker is not enough. `verify-pr` is declared `requires: [check,
+# docs]` with NO `include:` of its own, so once set in a worktree it never
+# stales by itself -- it is only ever MASKED by a stale child. Running `/check`
+# and `/check-docs` un-masks it, and the gate that is supposed to physically
+# block `gh pr create` / `gh pr merge` for a PR whose live behaviour was never
+# exercised goes green for a PR `/verify-pr` has never seen.
+#
+# That is invisible in a single-PR session and NOT invisible in the IN-PLACE
+# worktree mode CLAUDE.md prescribes, where lane N inherits lane N-1's parent
+# marker. Measured twice, in different worktrees a day apart: a parent an hour
+# older than children four minutes old, `markgate verify verify-pr` rc=0, and
+# `gh pr create` unblocked.
+#
+# THIS COMPARISON IS THE ENFORCEMENT, not a nicer error string. `markgate
+# verify` digests the gate's SCOPE; a sentinel nobody rewrote keeps its digest
+# whatever the branch moved to, so `verify` reports `match` for a sentinel
+# naming a different commit entirely (measured on the sibling gate,
+# go-to-k/cdkd#2681 -- whose whole subject is a comment that claimed the digest
+# enforced it, and which would have made deleting this look like a safe
+# simplification). Do not remove it on the strength of the digest.
+#
+# Bound to the LOCAL HEAD, not to the PR's `headRefOid` as `pr-review-gate.sh`
+# is: this gate also guards `gh pr create`, where there is no PR to ask. The
+# local HEAD exists at both moments and is exactly what distinguishes one lane
+# from the next.
+# Read from the repo TOP, not the cwd: `gh pr create` run from a subdirectory
+# would otherwise find no sentinel and be refused for a reason that has nothing
+# to do with the marker. `target_top` is already resolved above.
+recorded_sha=""
+if [ -f "$target_top/.markgate-verify-pr-sha" ]; then
+  recorded_sha=$(head -c 100 "$target_top/.markgate-verify-pr-sha" 2>/dev/null | tr -d '[:space:]')
+fi
+# `--verify`, not a bare `rev-parse HEAD`: in a repo with no commits the bare
+# form prints the literal string `HEAD` on STDOUT (and the fatal on stderr), so
+# `head_sha` would be "HEAD" rather than empty and the `-n` guard below would be
+# dead code. Measured. `--verify` yields a sha or nothing.
+head_sha=$(git rev-parse --verify HEAD 2>/dev/null || echo "")
+
+if [ "$status" -eq 0 ] && [ -n "$head_sha" ] && [ "$recorded_sha" = "$head_sha" ]; then
   exit 0
 fi
 
@@ -137,7 +177,14 @@ fi
 reason=$("${markgate[@]}" status verify-pr 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
-if [ -n "$reason" ]; then
+if [ "$status" -eq 0 ] && [ "$recorded_sha" != "$head_sha" ]; then
+  # The marker is FRESH; what is wrong is what it is bound to. Saying "stale"
+  # here would send the reader to `/check` for a problem no child has.
+  printf "Blocked by verify-pr-gate: the \`verify-pr\` marker is fresh but bound to a different commit.\n\n" >&2
+  printf "  HEAD is:          %s\n" "${head_sha:-<unreadable>}" >&2
+  printf "  marker bound to:  %s\n\n" "${recorded_sha:-<unset>}" >&2
+  printf "This is the second-lane case: a marker set for an earlier branch in this\nworktree, un-masked by a later \`/check\` + \`/check-docs\`. Run \`/verify-pr\`\nfor THIS branch.\n\n" >&2
+elif [ -n "$reason" ]; then
   printf "Blocked by verify-pr-gate: the \`verify-pr\` marker is stale %s.\n\n" "$reason" >&2
 else
   echo "Blocked by verify-pr-gate: the \`verify-pr\` marker is stale (or missing)." >&2

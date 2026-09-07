@@ -373,8 +373,25 @@ of `/check` and `/check-docs`, so its success implies all three. Use
 ```bash
 mise exec -- markgate set check
 mise exec -- markgate set docs
+# Bind the marker to the commit it was earned on, BEFORE setting it.
+git rev-parse HEAD > .markgate-verify-pr-sha
 mise exec -- markgate set verify-pr
 ```
+
+**The sentinel is the binding, and `markgate verify` does not enforce it**
+(issue [#2686](https://github.com/go-to-k/cdkd/issues/2686)). `verify-pr` is
+`requires: [check, docs]` with no `include:` of its own, so once set in a
+worktree it never stales by itself — it is only ever MASKED by a stale child,
+and running `/check` + `/check-docs` un-masks it. In the IN-PLACE worktree mode
+CLAUDE.md prescribes, that means lane N inherits lane N-1's green: measured
+twice, a day apart, in different worktrees. `verify-pr-gate.sh` compares the
+sentinel against the CURRENT HEAD and blocks on a mismatch — read the comment
+there before touching either half; the digest cannot see a sentinel nobody
+rewrote (the sibling gate's own comment got this wrong, issue
+[#2681](https://github.com/go-to-k/cdkd/issues/2681)).
+
+Bound to the LOCAL HEAD rather than the PR's, because this gate also guards
+`gh pr create`, where there is no PR to ask yet.
 
 The `verify-pr` marker is what `.claude/hooks/verify-pr-gate.sh` consults for
 `gh pr create` / `gh pr merge`. It is settable ONLY by this skill — setting it
