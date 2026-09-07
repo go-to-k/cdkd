@@ -120,11 +120,18 @@ jobs:
           # "open refresh PR" and skip. The silent-drop class this whole job
           # exists to watch would then go unwatched indefinitely, with no
           # alert, which is strictly worse than the job not existing.
-          # `--author` narrows to the bot's own PRs, so the `--limit` window
-          # cannot be pushed past by unrelated open PRs — without it, >100
-          # newer PRs hide the bot's own and the guard opens a duplicate.
-          number=$(gh pr list --state open --limit 100 \
-            --author "app/github-actions" \
+          # `--limit 1000` rather than an `--author` filter, and that choice was
+          # settled between two conflicting review opinions by measuring:
+          # `--author` makes `gh` route through the eventually-consistent
+          # GraphQL SEARCH connection, so a PR created shortly before this step
+          # can be missing from the index — the guard then finds nothing, the
+          # cycle proceeds, and the live `--force-with-lease` read passes,
+          # force-pushing over a human's classification commits. The plain
+          # `pullRequests` connection is strongly consistent, and 1000 is far
+          # past floodable for this repo, so the window closes without taking
+          # on a consistency dependency (or coupling the guard to the token's
+          # identity, which a future PAT swap would silently break).
+          number=$(gh pr list --state open --limit 1000 \
             --json number,headRefName,headRepositoryOwner \
             --jq '[.[]
                    | select(.headRepositoryOwner.login == "${{ github.repository_owner }}")
@@ -212,7 +219,12 @@ jobs:
           # push is rejected `(stale info)` every time, i.e. the recovery path
           # would fail in exactly the case it exists for.
           force=""
-          existing_sha=$(git ls-remote --heads origin "${branch}" | cut -f1)
+          # `refs/heads/${branch}` (fully qualified) and `NR==1`: the bare name
+          # is a PATTERN that also matches `refs/heads/<anything>/${branch}`,
+          # and two matching lines would make `existing_sha` two shas, which
+          # word-splits `${force}` into a bogus extra refspec. `awk` rather
+          # than `head -n1`, which would SIGPIPE under `pipefail`.
+          existing_sha=$(git ls-remote --heads origin "refs/heads/${branch}" | awk 'NR==1{print $1}')
           if [ -n "${existing_sha}" ]; then
             echo "Branch ${branch} already exists remotely at ${existing_sha} — replacing it (its PR is not open)."
             force="--force-with-lease=refs/heads/${branch}:${existing_sha}"

@@ -177,8 +177,18 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       expect(push).not.toMatch(/--force-with-lease(?!=)/);
     });
 
-    it('narrows the open-PR search to the bot author so the limit cannot be flooded', () => {
-      expect(byName('Look for an open refresh PR').run).toContain('--author');
+    it('searches a window wide enough that unrelated PRs cannot hide the bot PR', () => {
+      // Read through `shellOf`, NOT the raw `run`. The earlier version of this
+      // case asserted `run` contained `--author` and was VACUOUS: the workflow
+      // COMMENT mentions the flag, so deleting the actual flag left it green —
+      // exactly the class `shellOf` exists for, and the one assertion that
+      // skipped it.
+      const guard = shellOf('Look for an open refresh PR');
+      expect(guard).toContain('--limit 1000');
+      // `--author` is deliberately absent: it routes gh through the
+      // eventually-consistent GraphQL search connection, so a just-created PR
+      // can be missing and the guard fails OPEN.
+      expect(guard).not.toContain('--author');
     });
 
     it('fails the open-PR guard closed rather than open on a gh error', () => {

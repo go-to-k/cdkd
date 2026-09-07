@@ -764,6 +764,14 @@ const MAX_MISSING_TYPE_RATIO = 0.1;
 const MAX_BUNDLE_BYTES = 64 * 1024 * 1024;
 
 /**
+ * Ceiling on the number of entries the bundle may declare. Measured 2026-09-07
+ * at 1729, so this is ~29x headroom — it exists to refuse a crafted directory,
+ * not to track AWS's type count. See {@link assertEntryCountUnderCeiling} for
+ * why it has to be checked before adm-zip parses.
+ */
+const MAX_ZIP_ENTRIES = 50000;
+
+/**
  * Convert a CFn resource type to its entry name in the public schema bundle.
  * `AWS::Lambda::Function` → `aws-lambda-function.json`. Note this is NOT
  * {@link fixtureFilename}'s convention (which preserves case and is the
@@ -869,12 +877,61 @@ export function refreshFixturesFromEntries({
 }
 
 /**
+ * Refuse a zip whose central directory declares more entries than any real
+ * schema bundle could, BEFORE handing the buffer to adm-zip.
+ *
+ * The order is the point. `new AdmZip(buffer)` parses the entire central
+ * directory eagerly, at roughly 9 KB of heap per entry, and every other bound
+ * in this module runs after that — so a 64 MB buffer that is nothing but
+ * central-directory records (~1.4M entries) costs about 12 GB of heap and
+ * OOM-kills the runner before a single byte is inflated. `MIN_ZIP_ENTRIES` is
+ * a FLOOR checked later and cannot help.
+ *
+ * Read straight from the End Of Central Directory record rather than from
+ * adm-zip, since the whole point is to answer before adm-zip runs. The ZIP64
+ * form is honored because a plain EOCD saturates at 0xFFFF, and adm-zip
+ * follows the ZIP64 count.
+ *
+ * @param {Buffer} zipBuffer
+ */
+function assertEntryCountUnderCeiling(zipBuffer) {
+  const EOCD_SIG = 0x06054b50;
+  const ZIP64_EOCD_SIG = 0x06064b50;
+  // The EOCD sits in the last 22 bytes plus up to 64 KB of comment.
+  const scanFrom = Math.max(0, zipBuffer.length - (22 + 0xffff));
+  let eocd = -1;
+  for (let i = zipBuffer.length - 22; i >= scanFrom; i--) {
+    if (zipBuffer.readUInt32LE(i) === EOCD_SIG) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return; // Not a zip we can read — adm-zip will say so properly.
+  let total = zipBuffer.readUInt16LE(eocd + 10);
+  if (total === 0xffff) {
+    for (let i = eocd - 20; i >= scanFrom; i--) {
+      if (zipBuffer.readUInt32LE(i) === ZIP64_EOCD_SIG) {
+        total = Number(zipBuffer.readBigUInt64LE(i + 32));
+        break;
+      }
+    }
+  }
+  if (total > MAX_ZIP_ENTRIES) {
+    throw new Error(
+      `Schema bundle declares ${total} entries, over the ${MAX_ZIP_ENTRIES} ceiling — ` +
+        'refusing to parse its central directory.'
+    );
+  }
+}
+
+/**
  * Read a schema bundle into an entry-name → JSON map.
  *
  * @param {Buffer} zipBuffer
  * @returns {Map<string, string>}
  */
 export function readSchemaBundle(zipBuffer) {
+  assertEntryCountUnderCeiling(zipBuffer);
   const zip = new AdmZip(zipBuffer);
   /** @type {Map<string, string>} */
   const entries = new Map();
@@ -882,19 +939,37 @@ export function readSchemaBundle(zipBuffer) {
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) continue;
     if (!entry.entryName.endsWith('.json')) continue;
+    // A deflate stream that declares ZERO uncompressed bytes is refused
+    // OUTRIGHT rather than counted, and that is the whole defence — counting
+    // it cannot work.
+    //
+    // adm-zip passes `maxOutputLength: header.size` to `inflateRawSync` only
+    // when that size is > 0, so an entry declaring 0 inflates unbounded. An
+    // earlier revision tried to cover this by adding
+    // `max(size, compressedSize)` to the running total; that is
+    // MATHEMATICALLY INERT, because the sum of every entry's compressed size
+    // cannot exceed the zip buffer, which the download cap already holds under
+    // MAX_BUNDLE_BYTES. So the compressed arm can never trip the cap, and the
+    // only arm that can is the very field the attacker zeroes. Measured: a
+    // central header with `size=0, compressedSize=4080` contributed 4 KB while
+    // `getData()` materialized 4 MB — 1029x past the counter, and ~64 GiB of
+    // inflate when scaled to the download budget.
+    //
+    // adm-zip reads the CENTRAL directory, where sizes are correct even for a
+    // data-descriptor entry, so a zero here is a lie rather than a streaming
+    // artifact — and AWS's bundle contains no such entry.
+    if (entry.header.size === 0 && entry.header.compressedSize > 0) {
+      throw new Error(
+        `Schema bundle entry "${entry.entryName}" declares 0 uncompressed bytes for ` +
+          `${entry.header.compressedSize} compressed bytes — refusing to inflate an ` +
+          'entry that opts out of its own size bound.'
+      );
+    }
     // Running total rather than a per-entry cap: the bomb shape is many small
     // entries, not one big one, and `getData()` materializes each in full.
-    //
-    // The counter is `max(size, compressedSize)`, and the `compressedSize` arm
-    // is what closes a real hole. adm-zip passes `maxOutputLength: header.size`
-    // to `inflateRawSync` ONLY when that size is > 0, so an entry DECLARING 0
-    // gets no inflate bound at all while contributing 0 here — a few
-    // compressed MB then expand to gigabytes before dying on a CRC check, past
-    // the allocation. Counting the compressed bytes instead keeps such an entry
-    // bounded by what it actually costs to ship. (A header lying SMALL is
-    // already safe: zlib throws at `maxOutputLength`. One lying LARGE is
-    // already safe: this check runs BEFORE `getData()`.)
-    uncompressed += Math.max(entry.header.size, entry.header.compressedSize);
+    // Checked BEFORE `getData()`, so an entry lying LARGE is caught here and
+    // one lying SMALL is caught by zlib's own `maxOutputLength`.
+    uncompressed += entry.header.size;
     if (uncompressed > MAX_BUNDLE_BYTES) {
       throw new Error(
         `Schema bundle expands past the ${MAX_BUNDLE_BYTES}-byte cap — refusing to continue.`
@@ -939,6 +1014,12 @@ export async function downloadSchemaBundle(url, fetchImpl = fetch) {
       `GET ${url} failed (a redirect is refused on purpose — this job pins the origin ` +
         `because the bundle carries no checksum): ${
           err instanceof Error ? err.message : String(err)
+        }${
+          // `fetch` reports BOTH a refused redirect and an ordinary DNS/TCP
+          // failure as a bare `TypeError: fetch failed`; the discriminating
+          // detail lives only on `cause`. Dropping it made this wrapper
+          // actively misdirect on a network blip.
+          err instanceof Error && err.cause instanceof Error ? ` (${err.cause.message})` : ''
         }`
     );
   }

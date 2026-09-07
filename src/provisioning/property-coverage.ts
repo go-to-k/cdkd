@@ -138,18 +138,21 @@ export function findUnrecognizedProperties(
   if (!templateProperties) return [];
   const coverage = getPropertyCoverage(resourceType);
   if (!coverage) return [];
+  const keys = Object.keys(templateProperties);
+  // A WHOLE-BAG intrinsic — `Properties: { 'Fn::If': [...] }` — is not a
+  // property name, and reporting it would be the one FALSE warn this
+  // predicate can emit. The test is `Fn::*` as the SOLE key, mirroring
+  // `IntrinsicFunctionResolver`, which only treats a single-key object as an
+  // intrinsic: in a MIXED bag (`{ 'Fn::If': [...], Foo: 1 }`) the resolver
+  // leaves `Fn::If` as a literal key, the SDK provider drops it, and the warn
+  // is then correct rather than false. Skipping by prefix alone suppressed
+  // exactly that case.
+  const isWholeBagIntrinsic = keys.length === 1 && keys[0]!.startsWith('Fn::');
+  if (isWholeBagIntrinsic) return [];
   const unrecognized: string[] = [];
-  for (const prop of Object.keys(templateProperties)) {
+  for (const prop of keys) {
     if (coverage.handled.has(prop)) continue;
     if (coverage.silentDrop.has(prop)) continue;
-    // A whole-bag intrinsic is not a property name. `Properties: { 'Fn::If':
-    // [...] }` is legal CloudFormation (and what `CfnInclude` / a raw
-    // `addOverride` can produce), and the resolver expands it into real
-    // properties later — so reporting `Fn::If` as "not in the schema" would be
-    // the one FALSE warn this predicate can emit. Skipped by prefix rather
-    // than by an enumerated list: every intrinsic in this position is spelled
-    // `Fn::*`, and a new one must not become a false warn the day AWS adds it.
-    if (prop.startsWith('Fn::')) continue;
     unrecognized.push(prop);
   }
   return unrecognized.sort((a, b) => a.localeCompare(b));

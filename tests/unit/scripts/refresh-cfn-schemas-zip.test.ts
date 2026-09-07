@@ -749,11 +749,31 @@ describe('download and decompression bounds', () => {
     expect((await downloadSchemaBundle('http://x', fetchImpl)).toString()).toBe('x');
   });
 
-  it('names the redirect refusal rather than surfacing a bare fetch failure', async () => {
+  it('names the redirect refusal, and keeps the cause that distinguishes it', async () => {
+    // `fetch` reports a refused redirect AND an ordinary DNS/TCP failure as the
+    // same bare `TypeError: fetch failed`; only `cause` tells them apart, so
+    // dropping it made the wrapper misdirect on a network blip.
     const fetchImpl = async () => {
-      throw new TypeError('fetch failed');
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: new Error('unexpected redirect'),
+      });
     };
-    await expect(downloadSchemaBundle('http://x', fetchImpl)).rejects.toThrow(/redirect is refused/);
+    await expect(downloadSchemaBundle('http://x', fetchImpl)).rejects.toThrow(
+      /redirect is refused.*unexpected redirect/s
+    );
+  });
+
+  it('actually passes redirect: "error" to fetch', async () => {
+    // Every other mock here ignores `init`, so deleting `redirect: 'error'`
+    // from the source passed the whole suite while the describe block claimed
+    // the control was covered.
+    let seen: Record<string, unknown> | undefined;
+    const fetchImpl = async (_url: string, init?: Record<string, unknown>) => {
+      seen = init;
+      return resp() as never;
+    };
+    await downloadSchemaBundle('http://x', fetchImpl as never);
+    expect(seen?.['redirect']).toBe('error');
   });
 
   it('refuses a non-ok response', async () => {
@@ -770,6 +790,64 @@ describe('download and decompression bounds', () => {
       zip.addFile(`aws-test-t${i}.json`, Buffer.alloc(1024 * 1024, 0x61));
     }
     expect(() => readSchemaBundle(zip.toBuffer())).toThrow(/expands past the/);
+  });
+
+  /**
+   * The case the cap alone CANNOT catch, and the reason the zero-size refusal
+   * exists as its own arm.
+   *
+   * adm-zip passes `maxOutputLength: header.size` to `inflateRawSync` only
+   * when that size is positive, so an entry declaring 0 inflates unbounded. A
+   * previous revision tried to cover it by adding
+   * `max(size, compressedSize)` to the running total — mathematically inert,
+   * since the sum of all compressed sizes is bounded by the zip buffer, which
+   * is already under the cap. Measured then: a `size=0` entry contributed 4 KB
+   * while `getData()` materialized 4 MB.
+   *
+   * This fixture patches the CENTRAL directory (which is what adm-zip reads),
+   * so it exercises the real shape rather than a synthetic one.
+   */
+  it('refuses an entry that declares ZERO uncompressed bytes for real compressed data', () => {
+    const zip = new AdmZip();
+    zip.addFile('aws-test-bomb.json', Buffer.alloc(1024 * 1024, 0x61));
+    const buf = zip.toBuffer();
+
+    // Locate the central-directory record and zero its uncompressed-size field
+    // (CEN signature 0x02014b50; uncompressed size at offset 24).
+    const CEN_SIG = 0x02014b50;
+    let cen = -1;
+    for (let i = 0; i + 4 <= buf.length; i++) {
+      if (buf.readUInt32LE(i) === CEN_SIG) {
+        cen = i;
+        break;
+      }
+    }
+    expect(cen, 'no central-directory record found — fixture is wrong').toBeGreaterThanOrEqual(0);
+    const compressed = buf.readUInt32LE(cen + 20);
+    expect(compressed, 'the entry must carry real compressed data').toBeGreaterThan(0);
+    buf.writeUInt32LE(0, cen + 24);
+
+    expect(() => readSchemaBundle(buf)).toThrow(/declares 0 uncompressed bytes/);
+  });
+
+  it('refuses a zip declaring more entries than any real bundle, before parsing them', () => {
+    // The EOCD total-entries field, patched to a crafted count. The ceiling has
+    // to be read from the tail BEFORE `new AdmZip()`, which parses the whole
+    // central directory eagerly at ~9 KB of heap per entry.
+    const zip = new AdmZip();
+    zip.addFile('aws-test-t0.json', Buffer.from('{"properties":{}}'));
+    const buf = zip.toBuffer();
+    const EOCD_SIG = 0x06054b50;
+    let eocd = -1;
+    for (let i = buf.length - 22; i >= 0; i--) {
+      if (buf.readUInt32LE(i) === EOCD_SIG) {
+        eocd = i;
+        break;
+      }
+    }
+    expect(eocd, 'no EOCD found — fixture is wrong').toBeGreaterThanOrEqual(0);
+    buf.writeUInt16LE(0xfffe, eocd + 10);
+    expect(() => readSchemaBundle(buf)).toThrow(/over the .* ceiling/);
   });
 
   it('reads a normal bundle without tripping the cap', () => {
