@@ -289,9 +289,8 @@ Run each check and report pass/fail:
     - **Auto-close audit**: read the PR body; for every `(#N)` parens-form
       reference adjacent to a close keyword, the merge will NOT auto-close —
       rewrite to parens-free `Closes #N` or add a manual `gh issue close <N>`
-      step. This is now the ONLY check for it: go-to-k/cdkd#2717 retired
-      `closes-paren-form-gate.sh`, whose harm (an issue left open) is one
-      query to detect and one command to fix after the fact.)
+      step. `pr-content-checks.yml` also WARNS on it (go-to-k/cdkd#2736), but a
+      warning reds nothing, so this step is still the one that acts.)
 
 11. **PR title + body freshness** (skip if no PR exists yet — `/create-pr`
     writes them from scratch)

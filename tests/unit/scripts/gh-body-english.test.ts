@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   fencedQuote,
+  isBotSender,
   MAX_REPORT,
   NON_ENGLISH_RE,
   containsNonEnglish,
@@ -84,12 +85,22 @@ function subject(fields: Record<string, unknown>) {
 }
 
 /** Spawn the checker the way the workflow does, and report exit code + stdout. */
-function runCli(doc: unknown): { status: number; stdout: string } {
+function runCli(
+  doc: unknown,
+  env: Record<string, string> = {},
+): { status: number; stdout: string } {
   const dir = mkdtempSync(join(tmpdir(), 'gh-body-english-'));
   const file = join(dir, 'subject.json');
   writeFileSync(file, typeof doc === 'string' ? doc : JSON.stringify(doc));
   try {
-    const stdout = execFileSync('node', [SCRIPT, file], { encoding: 'utf8' });
+    const stdout = execFileSync('node', [SCRIPT, file], {
+      encoding: 'utf8',
+      // `SENDER_TYPE: ''` is the DEFAULT, not merely a passthrough. Inheriting
+      // an ambient one would make every status-0 assertion here pass for the
+      // wrong reason -- the script would be SKIPPING rather than finding the
+      // subject clean (go-to-k/cdkd#2736 test review).
+      env: { ...process.env, SENDER_TYPE: '', ...env },
+    });
     return { status: 0, stdout };
   } catch (err) {
     const e = err as { status?: number; stdout?: string };
@@ -497,5 +508,60 @@ describe('the RENDERED report contains attacker text (marked, not string shapes)
     const found = html.slice(html.indexOf('Found:'), html.indexOf('(hiragana'));
     expect((found.match(/<ul>/g) ?? []).length, 'one list, not one per offender').toBe(1);
     expect((found.match(/<li>/g) ?? []).length).toBe(2);
+  });
+});
+
+// No per-describe timeout: `vi.setConfig({ testTimeout: 60_000 })` at the top of
+// this file already covers every spawning case here, and a second bound is one
+// more thing to keep in step.
+describe('the Bot-sender filter', () => {
+  /**
+   * The rule used to live ONLY in `issue-conventions.yml`'s `english-issue`
+   * `if:`, where nothing could test it (go-to-k/cdkd#2736). It is here now, and
+   * the `if:` is a runner-saving filter -- the same split go-to-k/cdkd#2717 made
+   * for `isMintEvent`.
+   *
+   * What it protects: two jobs in that workflow POST COMMENTS, and a comment is
+   * itself an `issue_comment: created` event. Unfiltered, this check scans its
+   * own siblings' output -- and fails on it the moment a report QUOTES an
+   * offending body back at the author, which the author then cannot clear.
+   */
+  it.each([['Bot'], ['bot'], ['  Bot  ']])('treats %j as a bot', (t) => {
+    expect(isBotSender(t)).toBe(true);
+  });
+
+  it.each([['User'], ['Organization'], [''], ['   '], [undefined]])(
+    'treats %j as a human',
+    (t) => {
+      // The default direction is load-bearing: an ABSENT SENDER_TYPE means the
+      // caller passed none (`english-pr` does not), and defaulting to SKIP
+      // would silently disable the check for any caller that forgot the env
+      // var. Scanning a bot's text costs one redundant run; not scanning a
+      // human's is the whole check gone.
+      expect(isBotSender(t)).toBe(false);
+    },
+  );
+
+  it('skips a violating subject when SENDER_TYPE is Bot', () => {
+    // The end-to-end direction. Without the env var this exact subject exits 1
+    // (the control below), so a skip that did nothing would be invisible here.
+    const doc = { kind: 'issue', number: 9, title: 'x', body: HANGUL };
+    const { status, stdout } = runCli(doc, { SENDER_TYPE: 'Bot' });
+    expect(status).toBe(0);
+    expect(stdout).toContain('sender type is Bot');
+  });
+
+  it('still fails the same subject when SENDER_TYPE is User', () => {
+    const doc = { kind: 'issue', number: 9, title: 'x', body: HANGUL };
+    expect(runCli(doc, { SENDER_TYPE: 'User' }).status).toBe(1);
+  });
+
+  it('skips BEFORE reading the subject, so an unreadable one still exits 0', () => {
+    // Ordering is the property: a bot-authored comment must cost no read at
+    // all. Checked after the parse, this returns 2 and reds a job that had
+    // nothing to check.
+    expect(runCli('{ not json', { SENDER_TYPE: 'Bot' }).status).toBe(0);
+    // The control -- same input, no env var -- is the 2 the ordering hides.
+    expect(runCli('{ not json').status).toBe(2);
   });
 });

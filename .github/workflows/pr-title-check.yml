@@ -134,8 +134,13 @@ jobs:
           set -euo pipefail
           gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
             --jq '.[].filename' > changed-files.txt
-          echo "Changed files ($(grep -c . changed-files.txt || true)):"
-          cat changed-files.txt
+          # The file list is NOT echoed here. These paths are fork-controlled
+          # and arrive JSON-decoded from the API, so a `cat` printed a name
+          # containing a carriage return at COLUMN 0 and forged a workflow
+          # command on every run -- three lines before the checker this PR
+          # taught to fold. The checker prints the list itself, through the
+          # shared fold; shell has no portable control-character class to do it
+          # with (go-to-k/cdkd#2736 round-3 security review).
           node scripts/check-pr-title-prefix-scope.ts --files-from changed-files.txt
 
       # The premise that let the per-commit gate be deleted, asserted rather than

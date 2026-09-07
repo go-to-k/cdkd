@@ -23,6 +23,7 @@ Per-area detail lives in the satellite files below. Each one is loaded only when
 | `src/synthesis/**`, `src/state/**`, `src/assets/**`, `src/types/**` | [layout-misc.md](layout-misc.md) | synthesis, S3 state backend, asset publishing, type definitions |
 | `scripts/**`, `docs/_generated/**` | [layout-scripts.md](layout-scripts.md) | coverage generators, their generated docs, CI critics |
 | `scripts/check-{pr,issue}-*.ts` | [layout-ci-checks.md](layout-ci-checks.md) | CI checks replacing retired gates |
+| `.github/workflows/pr-content-checks.yml` | [layout-ci-pr-content.md](layout-ci-pr-content.md) | PR-content checks: diff scans + auto-close form |
 | `docs/**` | [docs-page-template.md](docs-page-template.md) | page shape and voice for the public cdkd.dev site |
 
 Provider contract, Custom Resources, and "Adding a New SDK Provider": [providers.md](providers.md).

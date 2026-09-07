@@ -86,6 +86,7 @@
  * the gate correctly blocked the PR that introduced it.
  */
 
+import { foldAnnotationText } from './annotation-text.ts';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -227,7 +228,24 @@ export function findNonEnglishLines(content: string): Offender[] {
   for (let i = 0; i < lines.length; i++) {
     const text = lines[i] ?? '';
     if (NON_ENGLISH_RE.test(text)) {
-      out.push({ line: i + 1, text: text.replace(/\r$/, '') });
+      // Folded at CONSTRUCTION, not only where it is printed.
+      //
+      // Three review rounds of go-to-k/cdkd#2736 each found one echo site
+      // folded and another missed -- `hits` while `text` was raw, then the
+      // `::error` annotation while the `Found:` block was raw. Each file has
+      // MORE THAN ONE emitter, so "fold at the emitter" is a rule that has to
+      // be re-obeyed at every site somebody adds later, and it was not obeyed
+      // twice in a row. Folding once, here, makes every present and future
+      // echo safe by construction. The emitter folds stay as well: the fold is
+      // idempotent, and they are what the tests pin.
+      //
+      // Safe because this field is DISPLAY-ONLY -- nothing compares, re-parses
+      // or persists it.
+      // The trailing-CR STRIP is kept ahead of the fold, not replaced by it: a
+      // CRLF artifact at end of line should vanish, and folding it instead
+      // leaves a trailing space in every reported line. The suite pinned that
+      // and caught the change.
+      out.push({ line: i + 1, text: foldAnnotationText(text.replace(/\r$/, '')) });
     }
   }
   return out;
@@ -261,7 +279,7 @@ export function scanChangedFiles(
     // reaches the same line.
     if (content === null) {
       throw new Error(
-        `cannot read ${file} at the PR head. It is in scope, so refusing rather than ` +
+        `cannot read ${foldAnnotationText(file)} at the PR head. It is in scope, so refusing rather than ` +
           `reporting a clean scan that never read it.`,
       );
     }
@@ -432,6 +450,43 @@ function readAtHead(headSha: string, file: string): string | null {
   return out === null ? null : out;
 }
 
+/**
+ * The `::error` annotation for one offender.
+ *
+ * Extracted so the FOLD is testable. `o.text` is a line of a fork PR's file
+ * content, echoed into a step's stdout, and the Actions runner reads workflow
+ * commands out of that stream -- so a raw CR in it starts a new line and
+ * `::stop-commands::` becomes injectable. This file stripped only a TRAILING
+ * carriage return until go-to-k/cdkd#2736; see `annotation-text.ts` for why the
+ * rule is shared rather than repeated here.
+ */
+export function formatAnnotation(o: FileOffender): string {
+  return (
+    `::error file=${foldAnnotationText(o.file)},line=${o.line}::non-English writing-system characters: ` +
+    foldAnnotationText(o.text)
+  );
+}
+
+/**
+ * The `Found:` summary row for one offender.
+ *
+ * Extracted for the same reason `formatAnnotation` was: it is a SECOND echo of
+ * the same attacker-controlled fields, and three review rounds in a row fixed
+ * one echo per file while leaving another raw. A function can be asserted; an
+ * inline template inside `main()` cannot.
+ *
+ * The `- ` marker is load-bearing, not decoration. The Actions runner
+ * TRIM-STARTS each line before deciding whether it is a workflow command, so
+ * the two-space indent protects nothing -- and `git diff --name-only` never
+ * quotes `:`, `,`, `=` or a space, so a fork PR can add a file literally named
+ * `::error file=src/index.ts,line=1::...` and forge one with no control
+ * character at all, which folding cannot prevent (go-to-k/cdkd#2736 round-4
+ * security review).
+ */
+export function formatFoundRow(o: FileOffender): string {
+  return `  - ${foldAnnotationText(o.file)}:${o.line}: ${foldAnnotationText(o.text)}`;
+}
+
 export function main(env: NodeJS.ProcessEnv = process.env): number {
   const probeFailures = selfProbe();
   if (probeFailures.length > 0) {
@@ -469,7 +524,11 @@ export function main(env: NodeJS.ProcessEnv = process.env): number {
           'is a permanent hole in the English-only rule for that path; drop the entry when the ' +
           'file goes.',
       );
-      for (const entry of stale) console.error(`  - ${entry}`);
+      // Folded for uniformity, not because it is reachable: the allow-list is
+      // read from the BASE checkout, which a fork PR cannot write. Uniformity
+      // is the point -- a per-site judgement about reachability is what let
+      // three echoes ship raw (go-to-k/cdkd#2736 round-5 review).
+      for (const entry of stale) console.error(`  - ${foldAnnotationText(entry)}`);
       return 1;
     }
   } else {
@@ -498,7 +557,7 @@ export function main(env: NodeJS.ProcessEnv = process.env): number {
 
   for (const o of offenders) {
     console.error(
-      `::error file=${o.file},line=${o.line}::non-English writing-system characters: ${o.text}`,
+      formatAnnotation(o),
     );
   }
 
@@ -512,7 +571,15 @@ export function main(env: NodeJS.ProcessEnv = process.env): number {
   console.error('chat may be in any language -- this rule applies to the repository.');
   console.error('');
   console.error('Found:');
-  for (const o of offenders) console.error(`  ${o.file}:${o.line}: ${o.text}`);
+  // The `- ` marker is not decoration. The Actions runner TRIM-STARTS each
+  // output line before deciding whether it is a workflow command, so a
+  // whitespace-only indent protects NOTHING -- and `git diff --name-only`
+  // C-quotes control bytes but never `:`, `,`, `=` or a space, so a fork PR can
+  // add a file literally NAMED
+  // `::error file=src/index.ts,line=1::CI self-check FAILED` and forge a command
+  // with no control character at all. Folding cannot help there; only a
+  // NON-WHITESPACE prefix can (go-to-k/cdkd#2736 round-4 security review).
+  for (const o of offenders) console.error(formatFoundRow(o));
   if (offenders.length >= MAX_REPORT) {
     console.error(`  ... reporting stopped at ${MAX_REPORT} lines.`);
   }

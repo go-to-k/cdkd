@@ -141,6 +141,7 @@
  *   Exit 0 = allow, 1 = violation. The title may also arrive as $PR_TITLE.
  */
 
+import { foldAnnotationText } from './annotation-text.ts';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -286,7 +287,14 @@ export const MAX_LISTED_FILES = 20;
 
 /** The human-facing failure text. Ported from the hooks' block message. */
 export function formatFailure(v: PrefixScopeVerdict): string {
-  const shown = v.files.slice(0, MAX_LISTED_FILES).map((f) => `  - ${f}`);
+  // The PATHS are fork-controlled: git permits a carriage return in a filename,
+  // and this string is written to stderr as a `::error::` annotation, where the
+  // Actions runner parses any line whose trimmed form starts with `::` as a
+  // workflow command. A path `x<CR>::stop-commands::y` would escape the `  - `
+  // prefix and start one. Found by `annotation-text.test.ts`'s derived fence on
+  // its first run -- this checker was the FOURTH emitter, and the one nobody
+  // had thought of (go-to-k/cdkd#2736).
+  const shown = v.files.slice(0, MAX_LISTED_FILES).map((f) => `  - ${foldAnnotationText(f)}`);
   if (v.files.length > MAX_LISTED_FILES) {
     shown.push(`  ...truncated (>${MAX_LISTED_FILES} files)`);
   }
@@ -325,6 +333,13 @@ export interface RepoMergeSettings {
   squash_merge_commit_message?: string;
   allow_merge_commit?: boolean;
   allow_rebase_merge?: boolean;
+  /**
+   * Fetched, deliberately never asserted on. GitHub refuses to disable every
+   * merge method, so `allow_squash_merge: false` forces one of the other two
+   * ON -- which the `allow_merge_commit` / `allow_rebase_merge` clause below
+   * already raises a violation for. Kept in the shape so a reader can see the
+   * field was considered rather than missed.
+   */
   allow_squash_merge?: boolean;
 }
 
@@ -518,6 +533,21 @@ export function main(argv: readonly string[]): number {
     }
     files = parseFileList(from === '-' ? readFileSync(0, 'utf8') : readFileSync(from, 'utf8'));
   }
+
+  // The file list is printed HERE rather than by a `cat` in the workflow.
+  //
+  // These paths are fork-controlled and arrive JSON-DECODED from
+  // `gh api .../files --jq .filename` -- unlike `git diff --name-only`, which
+  // C-quotes control bytes whatever `core.quotePath` says. A `cat` put them at
+  // COLUMN 0, so `docs/a<CR>::stop-commands::x.md` forged a workflow command on
+  // every run. Doing it in shell needs a portable control-character class and
+  // there is not one: a first attempt with BSD `sed` mangled every `o` and left
+  // the carriage return intact (measured on macOS). Node has the shared fold,
+  // so the printing moved to where the fold already is.
+  //
+  // Bracketed so an empty or whitespace-only path is still visible.
+  process.stdout.write(`Changed files (${files.length}):\n`);
+  for (const f of files) process.stdout.write(`  [${foldAnnotationText(f)}]\n`);
 
   const v = checkPrTitlePrefixScope(title, files);
   if (v.ok) {

@@ -274,6 +274,11 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // off this assertion's failure message rather than from this comment, which
   // an earlier revision already got wrong.
   ['layout-ci-checks.md', 15],
+  // The three PR-CONTENT checks, their allow-list and their three suites, the
+  // one workflow that runs them, and the shared annotation fold plus its suite:
+  // ten literal paths, no wildcard, so this is EXACT and a narrowed glob cannot
+  // hide behind a floor (go-to-k/cdkd#2736).
+  ['layout-ci-pr-content.md', 10],
   ['layout-utils.md', 19],
   ['provider-aws-response-reads.md', 65],
   ['provider-custom-resources.md', 1], // literal list: EXACT, see below
@@ -474,7 +479,18 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // under it loads BOTH files and the payload there is the sum -- which measures
   // the split not happening. `.github/workflows/pr-title-check.yml` is matched by
   // the satellite alone, so a glob narrowed there shows up as a DROP here.
-  ['.github/workflows/pr-title-check.yml', 12_000, 20_000], // measured 16_030 on 2026-09-07
+  ['.github/workflows/pr-title-check.yml', 12_000, 20_000], // measured 15_222 on 2026-09-07
+  // Representative path for the PR-CONTENT satellite. A WORKFLOW path again,
+  // for the reason above: `scripts/check-pr-closes-paren.ts` also matches
+  // `layout-scripts.md`'s `scripts/**`, so budgeting there measures 93,728 B --
+  // mostly a file this split has nothing to do with.
+  //
+  // Both rule files match this path deliberately: the satellite carries the
+  // per-check detail and the parent carries the stopping rule and the shared
+  // conventions its own header tells the reader to start from. So the FLOOR is
+  // what matters here -- narrowing the satellite's glob drops this from 22,878
+  // to the parent's 15,222 alone, which 18,000 catches.
+  ['.github/workflows/pr-content-checks.yml', 18_000, 30_000], // measured 22_878 on 2026-09-07
   ['.claude/hooks/issue-deferral-criteria-gate.sh', 59_000, 120_000], // measured 72_814 on 2026-09-07
   ['.claude/hooks/branch-gate.sh', 62_000, 140_000], // measured 75_670 on 2026-09-07
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
@@ -1039,7 +1055,17 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 50; // + hooks-deferral-criteria.md (go-to-k/cdkd#2707): hooks.md
+const CORPUS_FILE_COUNT = 51; // + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
+                              //  auto-close-form entry, plus the review round that followed
+                              //  it, took layout-ci-checks.md to 20,839 B against the 20,000 B
+                              //  ceiling its `pr-title-check.yml` path band asserts. (The entry
+                              //  alone reached 19,672 B and would have fit; crediting it with the
+                              //  whole overrun was wrong and is corrected here.) The three PR-CONTENT checks split off together because
+                              //  they share one job and one subject (a pull request's diff or
+                              //  body); the parent keeps the PR-TITLE check and the ISSUE checks,
+                              //  which have different subjects and different workflows.
+                              //
+                              //  + hooks-deferral-criteria.md (go-to-k/cdkd#2707): hooks.md
                               //  crossed the per-file cap AGAIN, and the tell was a CI-only
                               //  failure -- the branch measured 79,289 B locally and 80,671 B
                               //  merged, because main had grown the same file meanwhile. Read a
@@ -1236,7 +1262,28 @@ const CORPUS_BYTES_MIN = 895_000;   // RE-DERIVED UPWARD 862_000 -> 895_000 (202
 // no gate re-asks. `.claude/skills/check/SKILL.md` step 0 now fetches before
 // the suite, which fixes the LOCAL half only; go-to-k/cdkd#2705 tracks the
 // merge-time close.
-const CORPUS_BYTES_MAX = 962_000; // RE-DERIVED UPWARD 929_000 -> 962_000 (2026-09-06, issue
+const CORPUS_BYTES_MAX = 996_000; // RE-DERIVED UPWARD 962_000 -> 996_000 (2026-09-07, issue
+                                  // go-to-k/cdkd#2736): measured 962,790 B on this branch, and
+                                  // -- the number that decides it -- 954,822 B on `origin/main`
+                                  // with NO branch involved. That left 7,178 B of headroom, under
+                                  // a quarter of one ordinary lane, which is precisely the
+                                  // landmine shape this constant's own history names: the next
+                                  // edit fails for a reason unrelated to itself. The 2026-09-06
+                                  // re-derivation set ~33 KB and main has eaten 25,650 B of it
+                                  // since, so the bound was due independently of whoever tripped
+                                  // it.
+                                  //
+                                  // BOTH levers used, not just this one. This lane's own restated
+                                  // framing was cut first (the new satellite's header, which
+                                  // re-explained a split the parent already explains, and two
+                                  // mechanism paragraphs duplicated out of
+                                  // `scripts/check-pr-closes-paren.ts`'s header -- CLAUDE.md's
+                                  // contract puts a mechanism at its module and a POINTER in the
+                                  // rule file, so those were the lane's own stale bytes). What
+                                  // remains is the entry itself. Headroom set to 33,210 B, the
+                                  // ~33 KB the previous two re-derivations chose.
+                                  //
+                                  // 962_000 was: // RE-DERIVED UPWARD 929_000 -> 962_000 (2026-09-06, issue
                                   // go-to-k/cdkd#2310): `origin/main` at df3eb981 measured
                                   // 929,172 B -- 172 B OVER the old ceiling with NO branch
                                   // involved, so CI run 34022213808 was red on main and every lane
