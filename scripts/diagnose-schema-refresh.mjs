@@ -61,7 +61,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1620,7 +1620,10 @@ function main() {
   assertFixtureFloor(fixtureFiles.length, declared.size);
   const { removed, writableAdded, readOnlyAddedCount, unreadable } = collectFixtureDeltas({
     files: fixtureFiles,
-    committedOf: (file) => committedVersion(`tests/fixtures/cfn-schemas/${file}`),
+    // Follows the seam too. Leaving this hard-coded while `currentOf` moved is
+    // harmless for the empty directory the test uses, and wrong for any other:
+    // it would diff scratch content against the real committed fixtures.
+    committedOf: (file) => committedVersion(`${relative(REPO_ROOT, fixturesDir)}/${file}`),
     currentOf: (file) => readFileSync(join(fixturesDir, file), 'utf8'),
     providerFiles,
     declared,

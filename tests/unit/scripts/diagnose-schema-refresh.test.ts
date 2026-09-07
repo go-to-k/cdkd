@@ -2213,10 +2213,28 @@ describe('the generated-module renderers', () => {
     expect(drops).not.toContain("['zzz',");
     expect(drops).toContain(JSON.stringify(hostile));
 
-    // And the emitted text still PARSES as the expression it claims to be —
-    // escaping that produced invalid TypeScript would fail the build instead.
+    // A weaker check than it looks, stated as such: `new Function` parses
+    // `new Set<string>([...])` as relational operators, not as the TypeScript
+    // it is — so this does NOT prove the emission is valid TS. It does throw on
+    // the hostile emission, which is the discrimination being bought here; the
+    // TS validity of the whole module is covered by the build.
     expect(() => new Function(`return ${handled}`)).not.toThrow();
     expect(() => new Function(`return ${drops}`)).not.toThrow();
+  });
+
+  it('escapes the TYPE key too, not only the two renderers', async () => {
+    // The third site this PR escaped, and the one the cases missed: the
+    // rationale comment says "in BOTH renderers", which excludes the entry key
+    // by wording. Its input is provider-source-derived rather than
+    // bundle-derived, so this is a test gap and not an exposure — but a raw
+    // interpolation left beside two hardened ones is the ambiguity the comment
+    // exists to remove.
+    const mod = await import('../../../scripts/gen-property-coverage.ts');
+    const src = readFileSync(join(REPO_ROOT, 'scripts/gen-property-coverage.ts'), 'utf8');
+    expect(mod).toBeDefined();
+    // The emitted entry key must go through JSON.stringify like its siblings.
+    expect(src, 'the entry key is interpolated raw').not.toMatch(/^\s*'\$\{type\}',$/m);
+    expect(src).toMatch(/\$\{JSON\.stringify\(type\)\},/);
   });
 
   it('emits DOUBLE quotes, which the formatter normalises back', async () => {
