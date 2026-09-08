@@ -1811,13 +1811,30 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       'gh pr view "${pr}" --json body'
     );
 
-    // Both PATCH spellings, and any `gh pr edit` that grew a body. The quoted
-    // `--field "body=@..."` form alone left an unquoted `-f body=` and a
-    // `gh pr edit --body-file` green, and `gh pr edit` already appears three
-    // times in that step, so it is the natural reach.
-    for (const m of workflow.matchAll(/(?:--field\s+"?|[-]f\s+)body=@?([^\s"]+)/g)) {
-      expect(['${NB}'], `an unexpected whole-body write from ${m[1]}`).toContain(m[1]);
-    }
+    // Matched on the PAYLOAD, not on the flag. Enumerating flag spellings lost
+    // the race twice: first the quoted `--field "body=@..."` form alone, then a
+    // `--field`/`-f` pair — while `gh api` spells the same two flags FOUR ways
+    // (`--field`/`-F`, `--raw-field`/`-f`), and `-F` is the short form of the
+    // one this workflow already uses. A `-F body=@/tmp/pr-body.md` added to the
+    // publish step passed every other clause of this case (measured). `body=`
+    // cannot be reached by any read — the body FETCH spells it `--json body` —
+    // so the payload is the stable thing to bind.
+    const code = workflow
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
+    const bodyWrites = [...code.matchAll(/\bbody=@?([^\s"']+)/g)].map((m) => m[1]);
+    expect(bodyWrites.length, 'no body write found — the matcher stopped matching').toBe(1);
+    expect(bodyWrites[0], 'a body write from something other than the verdict splice').toBe(
+      '${NB}'
+    );
+    // And that one write lives in the marking step, not anywhere a fresh
+    // rendering is in scope.
+    expect([...mark.matchAll(/\bbody=@?/g)].length, 'the splice left the marking step').toBe(1);
+    expect(publish, 'the publish step now writes a PR body payload').not.toMatch(/\bbody=@?/);
+
+    // `gh pr edit` is the other reach — it already appears three times in the
+    // marking step, so a `--body-file` there is one word away.
     for (const m of workflow.matchAll(/gh pr edit[\s\S]{0,200}?(?=\n\s*\n|\n\s*[a-z}])/g)) {
       expect(m[0], 'a gh pr edit now writes a body').not.toMatch(/--body(-file)?\b/);
     }
