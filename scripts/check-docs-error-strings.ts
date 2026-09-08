@@ -66,9 +66,12 @@
  *   a call-graph question this cannot answer from string literals.
  * - **A truncated quotation is judged on a PREFIX of the template**, so the
  *   text after the author's ellipsis is unexamined by construction. It must
- *   still match the template up to some hole — an earlier revision compared
- *   only the overlapping characters and stopped, which let any invention
- *   through on a twelve-character borrow.
+ *   either stop inside the opening literal, or reach a SECOND literal —
+ *   keeping text from both sides of a hole. Two review rounds landed here:
+ *   the first revision compared only the overlapping characters, and the
+ *   second still accepted anything whose borrowed opening aligned to a whole
+ *   literal. A quote cut inside the first hole is now refused, which is a
+ *   loud, author-fixable outcome rather than a silent blessing.
  *
  * COLLAPSE DEFENCES. The population is small (a couple of dozen lines
  * site-wide), so counting only findings would let a broken scanner report a
@@ -145,13 +148,6 @@ export const FLOORS = {
   errorNames: 20,
   /** Message templates extracted from `src/` for the anchor test to match against. */
   templates: 5_000,
-  /**
-   * Quoted error lines the scan must still FIND. The other floors prove the
-   * inputs are reached; this one proves the `Name: message` recogniser still
-   * matches, which they cannot see — a broken recogniser leaves every other
-   * counter untouched and reports a confident zero findings.
-   */
-  quotedLines: 10,
 } as const;
 
 export type Verdict = 'anchored' | 'foreign-allowed' | 'unknown-class' | 'no-source-anchor';
@@ -235,10 +231,38 @@ export interface Template {
   lead: string;
   /** The literal segments between holes, in order. Used to judge a truncation. */
   parts: string[];
+  /** Memoised start-anchored prefix matchers, keyed by segment count. */
+  prefixCache: Map<number, RegExp>;
 }
 
 /** Escape a literal for embedding in a regex. */
 const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Wildcard standing in for one `${...}` hole. */
+const HOLE = '[\\s\\S]*?';
+
+/**
+ * Start-anchored matcher for the first `k` literal segments of a template,
+ * memoised per template — arm (b) of the truncation test asks for these
+ * repeatedly, and recompiling them per call is the whole cost of that path.
+ */
+function prefixMatcher(t: Template, k: number): RegExp {
+  const cached = t.prefixCache.get(k);
+  if (cached) return cached;
+  /*
+   * The FINAL segment of the head is matched with its trailing whitespace
+   * trimmed. An author truncating at a word boundary writes
+   * `... stack 'S' after ...`, while the template's literal is `' after ` —
+   * with the space, the quote reaches the literal but never completes it, and
+   * a correct truncation is refused for a reason nobody can act on. Only the
+   * trailing space is relaxed; every earlier segment must match in full.
+   */
+  const head = t.parts.slice(0, k).map(esc);
+  head[k - 1] = esc(t.parts[k - 1]!.replace(/\s+$/, ''));
+  const re = new RegExp(`^${head.join(HOLE)}`);
+  t.prefixCache.set(k, re);
+  return re;
+}
 
 /** Longest template worth compiling. Past this it is a code block, not a message. */
 const MAX_TEMPLATE_CHARS = 600;
@@ -298,7 +322,8 @@ export function scanTemplateLiterals(
       while (j >= 0 && /\s/.test(text[j]!)) j--;
       const prev = j >= 0 ? text[j]! : '';
       const afterValue = /[A-Za-z0-9_$)\]]/.test(prev);
-      const kw = /(?:^|[^A-Za-z0-9_$])(return|typeof|case|in|of|delete|void|instanceof|do|else)$/;
+      const kw =
+        /(?:^|[^A-Za-z0-9_$])(return|typeof|case|in|of|delete|void|instanceof|do|else|await|yield|new|throw)$/;
       const isRegex = !afterValue || kw.test(text.slice(Math.max(0, j - 12), j + 1));
       if (isRegex) {
         i++;
@@ -324,6 +349,18 @@ export function scanTemplateLiterals(
         const ch = text[i]!;
         if (ch === '\\') { i += 2; continue; }
         if (ch === '$' && text[i + 1] === '{') { depth++; i += 2; continue; }
+        /*
+         * Inside a hole, skip quoted spans whole. Counting braces without this
+         * makes `${ f("{") }` unbalance the depth and swallow past the closing
+         * backtick — a desync the pre-brace-counting version did not have, so
+         * the two arms have to land together.
+         */
+        if (depth > 0 && (ch === "'" || ch === '"')) {
+          i++;
+          while (i < text.length && text[i] !== ch) i += text[i] === '\\' ? 2 : 1;
+          i++;
+          continue;
+        }
         // A brace nested INSIDE a hole (an object literal argument) must not
         // be read as the hole's end, or the template stops early and the
         // following comment's backticks open bogus ones.
@@ -354,12 +391,17 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
     const parts = collapsed.split(/\$\{[^{}]*\}/g);
     if (parts.join('').length < MIN_TEMPLATE_LITERAL_CHARS) return;
 
-    const source = parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*?');
+    const source = parts.map(esc).join(HOLE);
     if (seen.has(source)) return;
     seen.add(source);
     const trimmedParts = parts.slice();
     trimmedParts[0] = (trimmedParts[0] ?? '').trimStart();
-    out.push({ re: new RegExp(`^${source}$`), lead: trimmedParts[0]!, parts: trimmedParts });
+    out.push({
+      re: new RegExp(`^${source}$`),
+      lead: trimmedParts[0]!,
+      parts: trimmedParts,
+      prefixCache: new Map(),
+    });
   };
 
   for (const file of sourceFiles) {
@@ -406,27 +448,35 @@ export function matchesSourceTemplate(
     if (t.re.test(subject)) return true;
     /*
      * A truncated quotation must be a genuine PREFIX of what the template
-     * renders — every character the author kept has to be accounted for.
+     * renders. Two arms, and the SECOND one's residual is stated rather than
+     * claimed away, because two review rounds landed on it:
      *
-     * An earlier revision compared only the first `min(subject, lead)`
-     * characters and then stopped, which left the REST of the message
-     * unexamined: `Failed to acquire the moon and every star ...` shared 18
-     * characters with `Failed to acquire lock for stack` and was blessed.
-     * Copying twelve characters and appending an ellipsis was enough to
-     * launder any invention through the fence — the exact hole it exists to
-     * close. Both arms below consume the whole subject.
+     * - Round 1 found the original: it compared only the first
+     *   `min(subject, lead)` characters and stopped, leaving the rest of the
+     *   message unexamined, so `Failed to acquire the moon and every star ...`
+     *   passed on an 18-character overlap.
+     * - Round 2 found that the rewrite still accepted `Added node: TOTAL
+     *   FABRICATION ...` whenever the borrowed text happened to align to a
+     *   whole opening literal, while an inline comment here claimed both arms
+     *   consumed the whole subject. They do not: arm (b) is anchored at the
+     *   start only, and everything past the last matched literal sits in a
+     *   HOLE, which this checker does not judge by design.
+     *
+     * So arm (b) now requires the truncation to reach a SECOND literal —
+     * proving the author kept text from both sides of a hole, not just an
+     * opening they could have copied. A quote cut inside the first hole is
+     * refused; the remedy is to quote one clause further, which is a loud,
+     * author-fixable outcome rather than a silent blessing.
      */
     if (truncated) {
       // (a) The author cut inside the opening literal.
       if (t.lead.startsWith(subject) && subject.length >= MIN_TEMPLATE_LITERAL_CHARS) return true;
 
-      // (b) The author cut later. The subject must match the template up to
-      //     some hole — a cumulative prefix of the pattern, anchored at the
-      //     start, carrying enough literal text to mean something.
-      for (let k = t.parts.length; k >= 1; k--) {
+      // (b) The author cut later, having crossed at least one hole.
+      for (let k = t.parts.length; k >= 2; k--) {
         const head = t.parts.slice(0, k);
         if (head.join('').length < MIN_TEMPLATE_LITERAL_CHARS) break;
-        if (new RegExp(`^${head.map(esc).join('[\\s\\S]*?')}`).test(subject)) return true;
+        if (prefixMatcher(t, k).test(subject)) return true;
       }
     }
   }

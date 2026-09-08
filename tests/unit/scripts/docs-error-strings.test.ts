@@ -52,6 +52,15 @@ describe('docs error-string checker: self-probe', () => {
     expect(runSelfProbe()).toEqual([]);
   });
 
+  it('does not hard-code the allow-listed name its foreign case relies on', () => {
+    // Retiring a FOREIGN_ERROR_NAMES entry should fail the STALENESS arm, not
+    // break the self-probe — they are separate claims.
+    const foreignCase = SELF_PROBE_CASES.find((c) => c.expect === 'foreign-allowed');
+    expect(foreignCase).toBeDefined();
+    const name = foreignCase!.line.split(':')[0]!;
+    expect([...FOREIGN_ERROR_NAMES.keys()]).toContain(name);
+  });
+
   it('covers every verdict, including the failing ones', () => {
     const covered = new Set(SELF_PROBE_CASES.map((c) => c.expect));
     // A probe suite made only of accept cases dies silently when a reject arm
@@ -207,9 +216,27 @@ describe('docs error-string checker: template extraction', () => {
   });
 
   it('does not end a template at a brace nested inside a hole', () => {
-    const src = 'throw new E(`prefix text ${ fn(a, { k: 1 }) } suffix text`);';
+    /*
+     * The fixture needs a NESTED TEMPLATE after the object literal, or it
+     * scans correctly with or without the fix and pins nothing. Review
+     * measured exactly that: the first version of this case stayed green with
+     * the brace arm deleted, while the real tree lost a template and gained
+     * six bogus ones. This shape is `src/cli/commands/state.ts`'s.
+     */
+    const src = 'throw new E(`Run: ${ f({ a: 1 }) || `fallback text here` } tail`);';
     const tokens = scanTemplateLiterals(src);
-    expect(tokens.map((x) => x.raw)).toEqual(['prefix text ${ fn(a, { k: 1 }) } suffix text']);
+    expect(tokens.map((x) => x.raw)).toEqual(['Run: ${ f({ a: 1 }) || `fallback text here` } tail']);
+  });
+
+  it('does not desync on a brace inside a STRING inside a hole', () => {
+    // The brace-counting arm introduced this one; both arms have to land
+    // together or `${ f("{") }` swallows past the closing backtick.
+    const src = 'const a = `pre ${ f("{") } post`; const b = `a second template ${x} here`;';
+    const tokens = scanTemplateLiterals(src);
+    expect(tokens.map((x) => x.raw)).toEqual([
+      'pre ${ f("{") } post',
+      'a second template ${x} here',
+    ]);
   });
 
   it('refuses a truncated invention that merely BORROWS an opening', () => {
@@ -223,6 +250,19 @@ describe('docs error-string checker: template extraction', () => {
     // ...while the genuine truncations at both cut points still pass.
     expect(matchesSourceTemplate('Failed to acquire lock for ...', t)).toBe(true);
     expect(matchesSourceTemplate("Failed to acquire lock for stack 'S' after ...", t)).toBe(true);
+  });
+
+  it('refuses a truncation that borrows a whole opening literal and then invents', () => {
+    /*
+     * Round 2's blocker: aligning the borrowed text to a complete opening
+     * literal was enough, because the cumulative-prefix loop accepted k=1 and
+     * left everything after it in an unexamined hole. A truncation past the
+     * opening must now reach a SECOND literal.
+     */
+    const t = templatesOf('throw new E(`Added node: ${id} (${type})`);');
+    expect(matchesSourceTemplate('Added node: TOTAL FABRICATION never emitted ...', t)).toBe(false);
+    // Reaching the second literal is what makes it a real prefix.
+    expect(matchesSourceTemplate('Added node: MyBucket (AWS::S3 ...', t)).toBe(true);
   });
 
   it('requires a truncated quote to overlap the opening literal by a real margin', () => {
@@ -267,6 +307,21 @@ describe('docs error-string checker: page scanning', () => {
     expect(scan.findings[0]!.message).not.toContain('Caused by');
   });
 
+  it('reports a wrapped message at the line it STARTS on', () => {
+    // The absorption loop moves the cursor; reading the line number after it
+    // reports where the message ENDS, sending a reader to the wrong place.
+    const text = [
+      'intro',
+      '```text',
+      "StateError: State file for stack 'MyStack' is not",
+      'valid JSON: nope',
+      '```',
+    ].join('\n');
+    const scan = scanPage('p.md', text, names, templates);
+    expect(scan.findings).toHaveLength(1);
+    expect(scan.findings[0]!.line).toBe(3);
+  });
+
   it('reports an unknown class name', () => {
     const scan = scanPage('p.md', fenced('AssetPublisherError: whatever it says'), names, templates);
     expect(scan.findings[0]!.verdict).toBe('unknown-class');
@@ -307,7 +362,6 @@ describe('docs error-string checker: the real tree', () => {
       fencedLines: 2500,
       errorNames: 20,
       templates: 5_000,
-      quotedLines: 10,
     });
   });
 
@@ -320,6 +374,12 @@ describe('docs error-string checker: the real tree', () => {
     expect(report.counts.fencedLines).toBeGreaterThanOrEqual(3_500);
     expect(report.counts.errorNames).toBeGreaterThanOrEqual(35);
     expect(report.counts.templates).toBeGreaterThanOrEqual(6_000);
+  });
+
+  it('walks past the generated directory rather than into it', () => {
+    // docs/_generated is written by generators and guarded by its own
+    // staleness checks; a finding there would point at the wrong file.
+    expect(report.findings.some((f) => f.file.startsWith('docs/_generated/'))).toBe(false);
   });
 
   it('finds its subject on more than one page', () => {
