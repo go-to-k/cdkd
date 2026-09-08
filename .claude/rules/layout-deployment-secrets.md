@@ -87,7 +87,11 @@ Index of every area: [code-layout.md](code-layout.md).
     the same file: the resolver's own debug / warn ECHOES, which it masks
     itself). So every new caller of a throwing resolver inherits the
     obligation, which is why the class keeps recurring one boundary at a time
-    (#2728, #2531, #2803); masking at the THROW instead is residual #2827.
+    (#2728, then #2803 — NOT #2531, which is the bag-IDENTITY fix below, no
+    mask and no throw); masking at the THROW instead is residual #2827, and
+    that closes only part of it — a value transformed BEFORE the throw
+    (`Fn::Base64`, `stringifyValue`'s escaping) no longer matches its needle
+    anywhere, and a sub-`MIN_NEEDLE_LENGTH` one never did.
   - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
     mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
     no-ops on absent bags, so masking the LINE left a live `cdkd diff` printing

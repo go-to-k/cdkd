@@ -1534,6 +1534,16 @@ export async function resolveImportedProperties(
       );
     }
   }
+  // The three `logger.debug` catches in this preamble — this one and the two
+  // `resolveParameters` arms above — interpolate the resolver's error text
+  // UNMASKED, and that is deliberate rather than the issue #2803 defect
+  // repeated. There is no bag to mask against here and cannot be: the
+  // per-resource `recordedSecretValues` is created inside the walk below, and
+  // these three calls thread no `recordedSecretValues` of their own, so nothing
+  // can have been recorded when they fail. Passing a freshly-made empty map
+  // would be ceremony — `maskSecretsInText` is the identity on one — and would
+  // read as a guard where there is nothing to guard. If a future change threads
+  // a bag into any of these calls, mask that one THEN.
   try {
     conditions = await resolver.evaluateConditions({
       template,
@@ -1615,22 +1625,28 @@ export async function resolveImportedProperties(
       // stated contract is to persist the `{{resolve:...}}` expression and
       // never the value.
       //
-      // TWO residuals, both because the mask matches a needle LITERALLY.
+      // THREE residuals, all because the mask matches a needle LITERALLY, and
+      // they differ in WHERE a fix could live — measured, not reasoned:
       //
-      // 1. The one `evaluateConditions`' mask states: a plaintext shorter than
-      //    `MIN_NEEDLE_LENGTH` (4) is EMBEDDED here rather than being the whole
-      //    string, so the whole-value arm does not apply and `buildNeedleRegex`
-      //    filters the needle out — it still prints.
-      // 2. A throw that echoes the plaintext TRANSFORMED defeats the match at
-      //    any length. `resolveGetAZs` and `Fn::GetStackOutput`'s region gate
-      //    both print `stripControlChars(value).slice(0, 64)`, so an 80-char
-      //    secret assembled into a region position puts 64 of its characters
-      //    on stderr with no needle matching (measured against this tree).
-      //    `stripControlChars` alone defeats it at any length.
-      //
-      // Both belong to issue #2827 — masking at the THROW, where the untruncated
-      // value still exists — not to this boundary, which by then has only the
-      // transformed text.
+      // 1. Sub-floor. A plaintext shorter than `MIN_NEEDLE_LENGTH` (4) is
+      //    EMBEDDED here rather than being the whole string, so the whole-value
+      //    arm does not apply and `buildNeedleRegex` filters the needle out.
+      //    `evaluateConditions`' mask states the same one. NO mask anywhere
+      //    fixes this — the floor applies wherever the masker runs — so it is
+      //    not issue #2827's; pinned by a case in this fix's test file.
+      // 2. Transformed AT the throw. `resolveGetAZs` and `Fn::GetStackOutput`'s
+      //    region gate print `stripControlChars(value).slice(0, 64)`, so an
+      //    80-char secret assembled into a region position puts 64 of its
+      //    characters on stderr with no needle matching. `stripControlChars`
+      //    defeats it at any length WHEN the plaintext carries a control
+      //    character (a control-char-free 10-char secret still masks). This one
+      //    IS issue #2827's: at the throw the untransformed value still exists.
+      // 3. Transformed BEFORE the throw. `Fn::Base64` and `stringifyValue`'s
+      //    JSON escaping change the value during RESOLUTION, so the recorded
+      //    needle no longer occurs in any downstream text — measured leaking a
+      //    base64 secret and a quote-bearing one. Neither this boundary nor a
+      //    throw-site mask can match it; recorded on #2827 so its plan is not
+      //    written on the assumption that masking at the throw suffices.
       logger.warn(
         `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}. ` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.` +
