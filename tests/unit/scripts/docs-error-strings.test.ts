@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync,
   rmSync,
@@ -70,6 +70,16 @@ describe('docs error-string checker: self-probe', () => {
     expect(foreignCase).toBeDefined();
     const name = foreignCase!.line.split(':')[0]!;
     expect([...FOREIGN_ERROR_NAMES.keys()]).toContain(name);
+  });
+
+  it('every self-probe source is valid TypeScript', () => {
+    // The checker REFUSES a file with parse diagnostics, so a probe fixture
+    // that is not valid TS throws out of the probe rather than producing its
+    // verdict — and the failure names a deleted tmpdir path. One case already
+    // had to be fixed for this; nothing fenced the next one.
+    for (const c of SELF_PROBE_CASES) {
+      expect(() => scanTemplateLiterals(c.source), c.what).not.toThrow();
+    }
   });
 
   it('covers every verdict, including the failing ones', () => {
@@ -324,6 +334,23 @@ describe('docs error-string checker: template extraction', () => {
     expect(matchesSourceTemplate('a b c d e VALUE xyz invented tail ...', t)).toBe(false);
   });
 
+  it('refuses to vouch for a truncation with a template that STARTS with a hole', () => {
+    /*
+     * Such a template has no opening literal, so both the whole-template
+     * matcher and the prefix loop lose their left anchor and degrade to "ends
+     * with / contains this segment". Measured, 490 real templates are in this
+     * shape and they accepted entire fabricated sentences on the strength of
+     * a trailing `.assets.json`.
+     */
+    const t = templatesOf('throw new E(`${path} could not be read here`);');
+    expect(
+      matchesSourceTemplate('Nothing here is real, it is pure invention, and yet it could not be read here ...', t)
+    ).toBe(false);
+    // A COMPLETE quotation of the same template is still fine — it is anchored
+    // at both ends, so the leading hole costs nothing.
+    expect(matchesSourceTemplate('/tmp/x could not be read here', t)).toBe(true);
+  });
+
   it('refuses a second literal made only of whitespace', () => {
     /*
      * Round 3's blocker. `Could not confirm that ${a} ${b} (${c})` has a
@@ -538,6 +565,9 @@ describe('docs error-string checker: fails against real code', () => {
   });
 
   function runOnCopy(mutate: (root: string) => void): { code: number; out: string } {
+    // Without this, an unbuilt `dir` ('') makes `mutate` write RELATIVE paths
+    // into the real repository before the spawn fails.
+    if (!dir) throw new Error('copy tree was not built');
     try {
       mutate(dir);
       try {
@@ -651,17 +681,6 @@ describe('docs error-string checker: fails against real code', () => {
     expect(out).toContain('now a real cdkd error name');
   }, 180_000);
 
-  it('is still green AFTER every probe (proves the restores work)', () => {
-    /*
-     * The leading control cannot see a failed restore — only a trailing one
-     * can. Without this, a probe could pass on the PREVIOUS probe's lingering
-     * mutation and the suite would read as fully green.
-     */
-    const { code, out } = runOnCopy(() => {});
-    expect(code).toBe(0);
-    expect(out).toContain('check OK');
-  }, 180_000);
-
   it('fails a stale allow-list entry no page quotes any more', () => {
     const { code, out } = runOnCopy((root) => {
       // Retire the only quotation of CredentialsProviderError from the page.
@@ -672,4 +691,27 @@ describe('docs error-string checker: fails against real code', () => {
     expect(code).not.toBe(0);
     expect(out).toContain('no page quotes it any more');
   }, 180_000);
+  it('is still green AFTER every probe, and left the copy byte-identical', () => {
+    /*
+     * Runs LAST on purpose: a leading control cannot see a failed restore, so
+     * without this a probe could pass on its predecessor's mutation and the
+     * suite would still read green.
+     *
+     * The `diff -r` is the second half. The exit-code check only catches a
+     * leak that makes the checker FAIL; a green-preserving leak — a widened
+     * allow-list, a lowered floor — would pass it. Comparing the whole copy
+     * against ROOT also fences `MUTABLE`: a future probe touching a fifth file
+     * fails here rather than leaking silently.
+     */
+    const { code, out } = runOnCopy(() => {});
+    expect(code).toBe(0);
+    expect(out).toContain('check OK');
+
+    for (const sub of ['src', 'docs', 'scripts']) {
+      const r = spawnSync('diff', ['-r', join(ROOT, sub), join(dir, sub)], { encoding: 'utf8' });
+      expect(r.stdout, `${sub} differs from ROOT after the probes`).toBe('');
+      expect(r.status).toBe(0);
+    }
+  }, 180_000);
+
 });

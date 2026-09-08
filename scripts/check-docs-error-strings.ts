@@ -71,12 +71,16 @@
  *   text after the author's ellipsis is unexamined by construction. It must
  *   either stop inside the opening literal, or reach a SECOND literal —
  *   keeping text from both sides of a hole, counted in SUBSTANTIVE (non-
- *   whitespace) characters and required to clear a MARGIN. Four review rounds
- *   walked this rule inward: comparing only the overlapping characters, then
- *   accepting any borrowed opening that aligned to a whole literal, then a
- *   whitespace-only second literal collapsing it back, then a ONE-character
- *   one doing the same. A quote cut inside the first hole is refused, which is
- *   a loud, author-fixable outcome rather than a silent blessing.
+ *   whitespace) characters and required to clear a MARGIN; and a template
+ *   with no opening literal at all does not vouch for a truncation, since
+ *   without a left anchor the test degrades to "ends with this segment".
+ *   FIVE review rounds walked this rule inward, each remedy re-opening it one
+ *   step further out: comparing only the overlapping characters; accepting a
+ *   borrowed opening that aligned to a whole literal; a whitespace-only
+ *   second literal collapsing it back; a ONE-character one doing the same;
+ *   and finally the leading-hole templates, which had never been anchored at
+ *   all. A quote cut inside the first hole is refused — a loud,
+ *   author-fixable outcome rather than a silent blessing.
  *
  * COLLAPSE DEFENCES. The population is small (a couple of dozen lines
  * site-wide), so counting only findings would let a broken scanner report a
@@ -112,10 +116,10 @@ const ROOT = join(import.meta.dirname, '..');
  * nearly-all-holes template such as `` `${operation}: ${message}` `` would
  * match almost any line with a colon in it and silently bless every invention
  * on the site. Requiring real literal text means the match is carried by
- * wording somebody actually wrote. The threshold clears every template the
- * site actually quotes -- the tightest is
- * `` `${operation} failed for ${logicalId}: ${err.message}` `` -- while
- * refusing the ones that carry no wording of their own.
+ * wording somebody actually wrote. The margin over the threshold is THIN for
+ * the tightest voucher on the site, so treat this constant as load-bearing:
+ * raising it would strand a real quotation, lowering it admits templates that
+ * carry no wording of their own.
  */
 export const MIN_TEMPLATE_LITERAL_CHARS = 12;
 
@@ -421,6 +425,20 @@ export function matchesSourceTemplate(
   if (subject.length === 0) return false;
 
   for (const t of templates) {
+    /*
+     * A template that STARTS with a hole has no opening literal. For a
+     * COMPLETE quotation that is fine — `${op} failed for ${id}: ${msg}`
+     * legitimately renders `CREATE failed for MyTopic: Rate exceeded`, and the
+     * match is anchored at both ends. For a TRUNCATED one it is not: the end
+     * anchor is gone too, so the test degrades to "ends with this segment",
+     * and 490 such templates accepted whole fabricated sentences on the
+     * strength of a trailing `.assets.json`. Neither arm below can judge one
+     * either, so a leading-hole template simply does not vouch for a
+     * truncation.
+     */
+    const leadless = substantive(t.parts[0] ?? '') === 0;
+    if (truncated && leadless) continue;
+
     if (t.re.test(subject)) return true;
     /*
      * A truncated quotation must be a genuine PREFIX of what the template
