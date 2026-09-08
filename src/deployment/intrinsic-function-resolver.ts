@@ -2611,9 +2611,12 @@ export class IntrinsicFunctionResolver {
     // keeps it — the resolver fills it in place and the caller is entitled to
     // what this pass records.
     //
-    // Residual, unclaimed by any issue: `maskSecretsInText` matches LITERALLY,
-    // so a plaintext that reaches the message re-encoded (`Fn::Base64`, a JSON
-    // or URL escaping) is not masked by any of this.
+    // Residual, issue #2827: `maskSecretsInText` matches LITERALLY, so a
+    // plaintext that reaches the message re-encoded (`Fn::Base64`, a JSON or
+    // URL escaping) is not masked by any of this. That issue's own remedy —
+    // masking at the THROW — does not reach this one either, because the
+    // re-encoding happens during RESOLUTION, before any throw; it is recorded
+    // there as the part a throw-site mask cannot close.
     const maskingContext: ResolverContext = context.recordedSecretValues
       ? context
       : { ...context, recordedSecretValues: new Map<string, string>() };

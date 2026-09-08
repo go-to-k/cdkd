@@ -1537,7 +1537,7 @@ export async function resolveImportedProperties(
   // The three `logger.debug` catches in this preamble — this one and the two
   // `resolveParameters` arms above — interpolate the resolver's error text
   // UNMASKED, and that is deliberate rather than the issue #2803 defect
-  // repeated. There is no bag to mask against here and cannot be: the
+  // repeated. There is no bag to mask against here: the
   // per-resource `recordedSecretValues` is created inside the walk below, and
   // these three calls thread no `recordedSecretValues` of their own, so nothing
   // can have been recorded when they fail. Passing a freshly-made empty map
@@ -1628,12 +1628,19 @@ export async function resolveImportedProperties(
       // THREE residuals, all because the mask matches a needle LITERALLY, and
       // they differ in WHERE a fix could live — measured, not reasoned:
       //
-      // 1. Sub-floor. A plaintext shorter than `MIN_NEEDLE_LENGTH` (4) is
-      //    EMBEDDED here rather than being the whole string, so the whole-value
-      //    arm does not apply and `buildNeedleRegex` filters the needle out.
-      //    `evaluateConditions`' mask states the same one. NO mask anywhere
-      //    fixes this — the floor applies wherever the masker runs — so it is
-      //    not issue #2827's; pinned by a case in this fix's test file.
+      // 1. Sub-floor, at a MESSAGE-level mask. A plaintext shorter than
+      //    `MIN_NEEDLE_LENGTH` (4) is EMBEDDED in the assembled message, so it
+      //    reaches `buildNeedleRegex`'s substring arm, which filters it.
+      //    `evaluateConditions`' mask states the same one. What does NOT
+      //    follow — and an earlier revision of this comment claimed it — is
+      //    that no mask can fix it: the WHOLE-VALUE arm carries no floor
+      //    (`maskSecretsInText('ab3', bag)` is `***`, measured), and at the
+      //    resolver's own throws the interpolated id / key IS the whole
+      //    plaintext with `context` in scope. So masking the RAW value before
+      //    interpolation closes it, which is the pattern `masked-retry-logger.ts`,
+      //    `composite-id.ts` and `ssm-parameter-provider.ts` already document —
+      //    and it is issue #2827's, at the throw. Pinned by a case in this
+      //    fix's test file, which asserts today's leak rather than the remedy.
       // 2. Transformed AT the throw. `resolveGetAZs` and `Fn::GetStackOutput`'s
       //    region gate print `stripControlChars(value).slice(0, 64)`, so an
       //    80-char secret assembled into a region position puts 64 of its

@@ -74,10 +74,13 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
         return { SecretString: JSON.stringify({ password: SHORT_PASSWORD }) };
       }
       // The id ASSEMBLED from the password resolves to a real secret that
-      // carries only a binary value. Measured: without this arm the lookup
-      // fails with the SDK's `ResourceNotFoundException`, which names nothing
-      // — so the id-position case would assert against a message that never
-      // had a plaintext in it, and would pass on unmasked code too.
+      // carries only a binary value, which is what reaches the resolver's
+      // `secret '<id>' does not contain a SecretString value` throw — the
+      // second site this file pins. Without this arm the lookup takes the
+      // SDK's `ResourceNotFoundException`, which names nothing: measured, the
+      // id-position case then FAILS on the missing `***` rather than passing
+      // vacuously, so the arm is load-bearing for REACHING the throw, not for
+      // keeping the case honest.
       if (command.input?.SecretId === PASSWORD) {
         return { SecretBinary: new Uint8Array([1, 2, 3]) };
       }
