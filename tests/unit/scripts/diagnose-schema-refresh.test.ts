@@ -3867,22 +3867,20 @@ describe('partitionPendingSdkBump', () => {
     // behind", reported nothing unknown, and left the procedure asserting a
     // check that never ran: the exact failure the return value was added for,
     // and it survived the first cut of it (measured — the mutation lived).
-    let fetches = 0;
     const result = partitionPendingSdkBump({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
       sdkLag: [],
-      publishedInterfaces: () => {
-        fetches += 1;
-        return PUBLISHED_GLUE;
-      },
+      // Resolves the finding, so a walk that ran at all would settle it rather
+      // than report it unknown — which is what the `unresolved` assertion below
+      // rests on. A download COUNTER was tried here and removed: with no rows,
+      // no mutation of the type predicate can reach a fetch, so it fenced
+      // nothing while reading as if it did. The counter is load-bearing in the
+      // foreign-row case above, where a row does exist.
+      publishedInterfaces: () => PUBLISHED_GLUE,
     });
     expect(result.divergences).toHaveLength(1);
     expect(result.unresolved).toHaveLength(1);
-    // Nothing to download with no row to name a client, and the index the stub
-    // would have returned resolves the finding — so a walk that ran at all
-    // would settle it rather than report it unknown.
-    expect(fetches).toBe(0);
   });
 
   it('reports UNKNOWN when a lagging client was read but declares no such interface', () => {
@@ -4248,9 +4246,18 @@ describe('every emitted dependency version is refused when it is not version-sha
           {
             resourceType: 'AWS::S3::Bucket',
             properties: ['Gone'],
-            candidates: {},
+            // Shaped like what `collectFixtureDeltas` actually writes: it always
+            // sets `candidates[property]`, and `sdkModelsMember` never returns
+            // an empty `consulted` — an empty one renders "across 0 client(s)",
+            // a sentence the producer cannot emit.
+            candidates: { Gone: [] },
             sdk: {
-              Gone: { modelled, client: '@aws-sdk/client-s3', version: HOSTILE, consulted: [] },
+              Gone: {
+                modelled,
+                client: '@aws-sdk/client-s3',
+                version: HOSTILE,
+                consulted: ['@aws-sdk/client-s3'],
+              },
             },
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -4353,12 +4360,21 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     const md = render([DIVERGENCE]);
     expect(md).toContain(MARKER);
     expect(md).toContain('before allow-listing any of them');
-    // All three causes are named. The rendered set is wider than "could not be
-    // read", and a line naming fewer of them sends the reader to a remedy that
-    // does not apply — "nothing to bump" is a real case.
-    expect(md).toContain('npm was');
-    expect(md).toContain('no client could be resolved');
-    expect(md).toContain('none declared the interface');
+    // ALL FOUR causes are named. A line naming fewer sends the reader to a
+    // remedy that does not apply: the first cut named three and dropped the
+    // download-or-read failure, for which "npm was unreachable" is provably
+    // false — a version row exists, which is what proves npm answered.
+    //
+    // Asserted against a whitespace-COLLAPSED body: the sentence is assembled
+    // from hand-wrapped array literals, so a pure reflow would red substrings
+    // that straddle a line break while changing nothing a reader sees.
+    const flat = md.replace(/\s+/g, ' ');
+    expect(flat).toContain('npm was unreachable');
+    expect(flat).toContain('no client could be resolved for the type');
+    expect(flat).toContain('published tarball could not be downloaded or read');
+    expect(flat).toContain('every candidate was read and none declared the interface');
+    // And the remedy caveat, which had no assertion and could be deleted green.
+    expect(flat).toContain('when no client could be resolved there is nothing to bump');
     // The finding itself is named, not just the class...
     expect(md).toContain('   - `AWS::Glue::Connection`: `OAuth2Credentials`');
     // ...and the OTHER divergence, which the published client DID settle, is

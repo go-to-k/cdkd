@@ -1214,10 +1214,11 @@ export function renderDiagnosis(input) {
       // `renderKey` is the guard for BUNDLE-derived names and it rejects a
       // scoped package outright (`@` and `/`), which is why the client name is
       // not routed through it while the interface and member names below are.
-      // It also rejects `+`, which the version guard in
-      // `published-sdk-typings.ts` admits — inert, since no AWS SDK release
-      // carries build metadata, but a first such version would render as
-      // rejected rather than as itself.
+      // It also rejects `+`. That is NOT about the version guard in
+      // `published-sdk-typings.ts`, which never sees these values — they are
+      // unguarded until here, so a `+` reaches this point more easily, not
+      // less. Inert today, since no AWS SDK release carries build metadata; a
+      // first one would render as rejected rather than as itself.
       lines.push(
         `#### ${D()}Bump \`${group.client}\` from ${renderKey(group.installed)} to \`${group.latest}\``,
         '',
@@ -1641,11 +1642,13 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
             ? [
                 '',
                 '   **The published client could not settle these, so their SDK-lag',
-                '   reading is UNKNOWN, not ruled out.** Three causes: npm was',
-                '   unreachable, no client could be resolved for the type at all, or',
-                '   every candidate was read and none declared the interface. Check',
-                '   which applies before allow-listing any of them — there is nothing',
-                '   to bump in the second case:',
+                '   reading is UNKNOWN, not ruled out.** Four causes, and the version',
+                '   line above tells them apart: npm was unreachable; no client could',
+                '   be resolved for the type; a lagging client WAS named but its',
+                '   published tarball could not be downloaded or read; or every',
+                '   candidate was read and none declared the interface. Check which',
+                '   applies before allow-listing any of them — when no client could',
+                '   be resolved there is nothing to bump:',
                 '',
                 ...unresolved.map(
                   (d) => `   - ${renderName(d.resourceType)}: ${renderKey(d.nestedKey)}`
@@ -1869,12 +1872,16 @@ export function pendingBumpGroups(pending) {
  *   pendingSdkBump: import('./diagnose-schema-refresh.d.mts').PendingSdkBump[],
  *   unresolved: NestedKeyDivergence[]}} `unresolved` is the subset of
  *   `divergences` the published client did not SETTLE either way, so their
- *   SDK-lag reading is UNKNOWN rather than ruled out. Three causes, one remedy:
- *   no version row at all (npm unreachable, or no client resolved), a lagging
- *   row whose index could not be read, and a row read fine that declares no
- *   such interface. Reporting these as ruled out would tell a maintainer the
- *   bump had been checked when nothing was — and the step it feeds ends in an
- *   allow-list entry, the one outcome that must not be reached on a guess.
+ *   SDK-lag reading is UNKNOWN rather than ruled out. FOUR causes, and they do
+ *   NOT share a remedy: npm unreachable and no client resolved both leave no
+ *   version row (and nothing to bump in the second); a lagging row whose
+ *   published index could not be downloaded or read is a retry; and a row read
+ *   fine that declares no such interface is a finding of its own. The rendered
+ *   line names all four, because a maintainer holding the version line above it
+ *   can tell them apart and the remedies differ. Reporting any of them as ruled
+ *   out would say the bump had been checked when nothing was — and the step it
+ *   feeds ends in an allow-list entry, the one outcome that must not be reached
+ *   on a guess.
  */
 export function partitionPendingSdkBump({
   divergences,
@@ -1955,11 +1962,14 @@ export function partitionPendingSdkBump({
     // IS the latest and the checker's own verdict already stands. Reporting
     // that as unknown would send the maintainer to bump a current client.
     //
-    // Everything else is unknown — no row at all (npm unreachable, or no client
-    // resolved), a lagging row whose index could not be read, and a lagging row
-    // read fine that declares no such interface. The three have different
-    // causes and the same remedy, which is why the rendered line says the
-    // reading could not be SETTLED rather than naming one of them.
+    // Everything else is unknown, by FOUR distinct routes: npm unreachable and
+    // no client resolved both leave no row here; a lagging row whose published
+    // index could not be downloaded or read breaks out of the loop above; and a
+    // lagging row read fine that declares no such interface exhausts it. The
+    // rendered line names all four rather than saying only "could not be
+    // settled" — their remedies differ (there is nothing to bump when no client
+    // resolved), and the version line beside it is what lets a reader tell
+    // which one applies. Keep the two lists in step.
     const clientIsCurrent = typeRows.length > 0 && rows.length === 0;
     if (!answered && !clientIsCurrent) unresolved.push(d);
   }

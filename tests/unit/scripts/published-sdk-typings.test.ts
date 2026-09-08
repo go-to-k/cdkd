@@ -249,16 +249,18 @@ describe('publishedSdkInterfaces', () => {
     // throw on ENOENT (measured), so the case named the swallow without ever
     // entering it and stayed green with the `catch` deleted.
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-pst-locked-'));
+    // Captured so the test can clean up what the refusing remover left: the
+    // injected failure means the module's own `mkdtemp` directory survives, and
+    // a suite that leaks one per run is the thing the sibling case exists to
+    // catch. Declared OUTSIDE the `try` and removed in the `finally` — inside,
+    // a red assertion throws past the cleanup and leaks it in exactly the state
+    // where the suite gets re-run most.
+    let leaked: string | undefined;
     try {
       const models = join(dir, ...MODELS_IN_ARCHIVE);
       mkdirSync(models, { recursive: true });
       writeFileSync(join(models, 'models_0.d.ts'), GLUE_DECLARATION);
       let attempted = 0;
-      // Captured so the test can clean up what the refusing remover left: the
-      // injected failure means the module's own `mkdtemp` directory survives,
-      // and a suite that leaks one per run is the thing the sibling case exists
-      // to catch.
-      let leaked: string | undefined;
       const interfaces = publishedSdkInterfaces(
         '@aws-sdk/client-glue',
         '9.9.9',
@@ -275,8 +277,8 @@ describe('publishedSdkInterfaces', () => {
       expect(interfaces?.get('AuthenticationConfiguration')?.has('BasicAuthenticationCredentials')).toBe(
         true
       );
-      if (leaked !== undefined) rmSync(leaked, { recursive: true, force: true });
     } finally {
+      if (leaked !== undefined) rmSync(leaked, { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true });
     }
   });
