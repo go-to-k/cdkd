@@ -68,10 +68,34 @@ poll. Require that checks EXIST, and enumerate the non-terminal states. And
 re-query. (`ci-green-gate` refuses a merge on "no checks reported", so a wrong
 poll costs a retry, not a bad merge.)
 
+**Does this lane write a changelog entry at all?** Only a user-visible
+behavior delta does — what the SHIPPED BINARY does — in practice `src/**`
+plus anything feeding data the runtime reads. A `scripts/**` generator whose
+output the deploy path consumes is the exception that is IN: a schema refresh
+can silently drop a property from a user's stack. An agent-tooling, test-only
+or CI lane writes NONE, and its reasoning goes to the commit message,
+`docs/design/`, or the implementing module's or test's doc comment
+instead. (Issue
+go-to-k/cdkd#2779; the full rule and the measurement behind it are in
+`docs/changelog-cdkd.md`'s header.)
+
+**A no-entry lane still runs everything below.** What stops applying is only
+what is ABOUT an entry — the keep-both rule, the entry-phrase residual, and
+the duplicated-heading check, since a lane that opened no dated heading cannot
+duplicate one. The FLATTEN step, the `^<` residual and the ledger-normalize
+step do not.
+`flatten-before-rebase-gate.sh`'s `APPEND_SHAPED` covers
+`docs/_generated/integ-last-run.tsv` as well, so any lane that ran `/run-integ`
+is gate-scoped with no changelog entry at all — and touching
+`docs/changelog-cdkd.md` WITHOUT adding an entry is enough on its own, which is
+the shape of the PR that wrote this sentence. Reading "no entry" as "this
+section is moot" gets the rebase refused, or keep-boths the ledger into two
+rows CI rejects.
+
 **FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The changelog
-conflicts on nearly every parallel-lane rebase, and a commit-by-commit rebase
-re-conflicts once per commit. The repo squash-merges, so flattening loses
-nothing:
+conflicts on nearly every parallel-lane rebase for a lane that DOES write one,
+and a commit-by-commit rebase re-conflicts once per commit. The repo
+squash-merges, so flattening loses nothing:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
@@ -90,7 +114,9 @@ diff <(git show origin/main:docs/changelog-cdkd.md) docs/changelog-cdkd.md | gre
 # nothing printed = every line main had is still there; the '^>' lines are yours
 ```
 
-Keep BOTH changelog entries, but never reflexively keep-both a SHARED
+Keep BOTH changelog entries when both sides have one — under the entry-policy
+rule above, main's side may carry one where yours does not, and then there is
+nothing of yours to keep. Never reflexively keep-both a SHARED
 paragraph (main's copy of a bullet both sides edited once described this
 lane's own issue as still open — word-level diff shows whether it is two
 additions or one contested sentence). **Keep-both also DUPLICATES any entry
