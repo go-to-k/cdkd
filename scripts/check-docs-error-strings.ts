@@ -57,8 +57,18 @@
  *   adjudicate, and guessing at them is how a docs lint becomes a thesaurus.
  * - **A `Caused by:` continuation line is out of scope** for the same reason:
  *   its text is AWS's, not cdkd's.
- * - **A truncated quotation is judged on the template's opening literal only.**
- *   The author elided the rest; there is nothing left to match it against.
+ * - **The class name and the message are decided INDEPENDENTLY**, so a real
+ *   class paired with a real-but-wrong message passes. Review found exactly
+ *   that on the throttling section — `ProvisioningError: CREATE failed for
+ *   MyTopic: ...`, where both halves exist but the engine wraps that message
+ *   under a `Caused by:` line, making the published one-line form unreachable.
+ *   Deciding the pairing would mean knowing which errors wrap which, which is
+ *   a call-graph question this cannot answer from string literals.
+ * - **A truncated quotation is judged on a PREFIX of the template**, so the
+ *   text after the author's ellipsis is unexamined by construction. It must
+ *   still match the template up to some hole — an earlier revision compared
+ *   only the overlapping characters and stopped, which let any invention
+ *   through on a twelve-character borrow.
  *
  * COLLAPSE DEFENCES. The population is small (a couple of dozen lines
  * site-wide), so counting only findings would let a broken scanner report a
@@ -78,7 +88,7 @@
  * is how a correct page rots.
  */
 
-import { readFileSync, readdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 
@@ -135,6 +145,13 @@ export const FLOORS = {
   errorNames: 20,
   /** Message templates extracted from `src/` for the anchor test to match against. */
   templates: 5_000,
+  /**
+   * Quoted error lines the scan must still FIND. The other floors prove the
+   * inputs are reached; this one proves the `Name: message` recogniser still
+   * matches, which they cannot see — a broken recogniser leaves every other
+   * counter untouched and reports a confident zero findings.
+   */
+  quotedLines: 10,
 } as const;
 
 export type Verdict = 'anchored' | 'foreign-allowed' | 'unknown-class' | 'no-source-anchor';
@@ -171,7 +188,7 @@ export function deriveErrorNames(sourceFiles: ReadonlyArray<string>): Set<string
   const names = new Set<string>(['Error']);
   for (const file of sourceFiles) {
     const text = readFileSync(file, 'utf8');
-    for (const m of text.matchAll(/this\.name\s*=\s*'([A-Za-z0-9_]+)'/g)) {
+    for (const m of text.matchAll(/this\.name\s*=\s*['"]([A-Za-z][A-Za-z0-9]*)['"]/g)) {
       names.add(m[1]!);
     }
   }
@@ -216,7 +233,12 @@ export interface Template {
   re: RegExp;
   /** Literal text before the first hole — the anchor a truncated quote is judged on. */
   lead: string;
+  /** The literal segments between holes, in order. Used to judge a truncation. */
+  parts: string[];
 }
+
+/** Escape a literal for embedding in a regex. */
+const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Longest template worth compiling. Past this it is a code block, not a message. */
 const MAX_TEMPLATE_CHARS = 600;
@@ -257,6 +279,43 @@ export function scanTemplateLiterals(
       i++;
       continue;
     }
+    /*
+     * REGEX LITERALS. Without this arm a `/` whose regex body contains a quote
+     * desynchronises everything after it: the scanner treats the quote as a
+     * string start and swallows to the next stray one. Measured on the real
+     * tree, two such regexes (in `cloud-control-provider.ts` and
+     * `docker-cmd.ts`) dropped 11 genuine templates AND manufactured four
+     * bogus matchers out of JSDoc prose — the precise failure this scanner
+     * exists to avoid, one level down.
+     *
+     * `/` is a regex only in EXPRESSION position, which the preceding
+     * non-space token decides: after a value (identifier, literal, `)`, `]`)
+     * it is division. This is the standard heuristic and it is why the
+     * previous-token scan below is not optional.
+     */
+    if (c === '/') {
+      let j = i - 1;
+      while (j >= 0 && /\s/.test(text[j]!)) j--;
+      const prev = j >= 0 ? text[j]! : '';
+      const afterValue = /[A-Za-z0-9_$)\]]/.test(prev);
+      const kw = /(?:^|[^A-Za-z0-9_$])(return|typeof|case|in|of|delete|void|instanceof|do|else)$/;
+      const isRegex = !afterValue || kw.test(text.slice(Math.max(0, j - 12), j + 1));
+      if (isRegex) {
+        i++;
+        let inClass = false;
+        while (i < text.length) {
+          const ch = text[i]!;
+          if (ch === '\\') { i += 2; continue; }
+          if (ch === '[') inClass = true;
+          else if (ch === ']') inClass = false;
+          else if (ch === '/' && !inClass) break;
+          else if (ch === '\n') break; // unterminated: not a regex after all
+          i++;
+        }
+        i++;
+        continue;
+      }
+    }
     if (c === '`') {
       i++;
       const start = i;
@@ -265,6 +324,10 @@ export function scanTemplateLiterals(
         const ch = text[i]!;
         if (ch === '\\') { i += 2; continue; }
         if (ch === '$' && text[i + 1] === '{') { depth++; i += 2; continue; }
+        // A brace nested INSIDE a hole (an object literal argument) must not
+        // be read as the hole's end, or the template stops early and the
+        // following comment's backticks open bogus ones.
+        if (ch === '{' && depth > 0) { depth++; i++; continue; }
         if (ch === '}' && depth > 0) { depth--; i++; continue; }
         if (ch === '`' && depth === 0) break;
         i++;
@@ -294,7 +357,9 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
     const source = parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*?');
     if (seen.has(source)) return;
     seen.add(source);
-    out.push({ re: new RegExp(`^${source}$`), lead: (parts[0] ?? '').trimStart() });
+    const trimmedParts = parts.slice();
+    trimmedParts[0] = (trimmedParts[0] ?? '').trimStart();
+    out.push({ re: new RegExp(`^${source}$`), lead: trimmedParts[0]!, parts: trimmedParts });
   };
 
   for (const file of sourceFiles) {
@@ -340,16 +405,29 @@ export function matchesSourceTemplate(
   for (const t of templates) {
     if (t.re.test(subject)) return true;
     /*
-     * A truncated quotation is judged on the template's OPENING LITERAL alone:
-     * the rest of the message was elided by the author, so there is nothing
-     * left to match it against. Requiring the overlap to reach
-     * MIN_TEMPLATE_LITERAL_CHARS is what keeps that from degenerating into
-     * "starts with a few common words".
+     * A truncated quotation must be a genuine PREFIX of what the template
+     * renders — every character the author kept has to be accounted for.
+     *
+     * An earlier revision compared only the first `min(subject, lead)`
+     * characters and then stopped, which left the REST of the message
+     * unexamined: `Failed to acquire the moon and every star ...` shared 18
+     * characters with `Failed to acquire lock for stack` and was blessed.
+     * Copying twelve characters and appending an ellipsis was enough to
+     * launder any invention through the fence — the exact hole it exists to
+     * close. Both arms below consume the whole subject.
      */
     if (truncated) {
-      let i = 0;
-      while (i < subject.length && i < t.lead.length && subject[i] === t.lead[i]) i++;
-      if (i >= MIN_TEMPLATE_LITERAL_CHARS) return true;
+      // (a) The author cut inside the opening literal.
+      if (t.lead.startsWith(subject) && subject.length >= MIN_TEMPLATE_LITERAL_CHARS) return true;
+
+      // (b) The author cut later. The subject must match the template up to
+      //     some hole — a cumulative prefix of the pattern, anchored at the
+      //     start, carrying enough literal text to mean something.
+      for (let k = t.parts.length; k >= 1; k--) {
+        const head = t.parts.slice(0, k);
+        if (head.join('').length < MIN_TEMPLATE_LITERAL_CHARS) break;
+        if (new RegExp(`^${head.map(esc).join('[\\s\\S]*?')}`).test(subject)) return true;
+      }
     }
   }
   return false;
@@ -402,6 +480,9 @@ export function scanPage(
      * A blank line, a fence, a `Caused by:` line, or another class-prefixed
      * line all end the message.
      */
+    // Captured BEFORE the absorption loop moves `i`, or a wrapped message is
+    // reported at the line it ENDS on rather than the one it starts on.
+    const startLine = i + 1;
     const parts = [firstLine];
     for (let j = i + 1; j < lines.length; j++) {
       const cont = lines[j]!;
@@ -425,7 +506,7 @@ export function scanPage(
     } else {
       verdict = matchesSourceTemplate(message, templates) ? 'anchored' : 'no-source-anchor';
     }
-    findings.push({ file: relPath, line: i + 1, errorName, message, verdict });
+    findings.push({ file: relPath, line: startLine, errorName, message, verdict });
   }
   return { findings, fencedBlocks, fencedLines };
 }
@@ -528,7 +609,9 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
 /** Run the self-probe. Returns the failures, empty when healthy. */
 export function runSelfProbe(): string[] {
   const failures: string[] = [];
-  const tmp = join(tmpdir(), `cdkd-doc-error-probe-${process.pid}.ts`);
+  const dir = mkdtempSync(join(tmpdir(), 'cdkd-doc-error-probe-'));
+  const tmp = join(dir, 'probe.ts');
+  try {
   for (const c of SELF_PROBE_CASES) {
     // The 'no-finding' case is the one that must NOT be wrapped in a fence.
     const text = c.expect === 'no-finding' ? c.line : ['```text', c.line, '```'].join('\n');
@@ -540,7 +623,9 @@ export function runSelfProbe(): string[] {
       failures.push(`self-probe: ${c.what} — expected ${c.expect}, got ${got}`);
     }
   }
-  rmSync(tmp, { force: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
   if (process.env['CDKD_SELF_PROBE_FORCE_FAIL'] === '1') {
     failures.push('self-probe: forced failure via CDKD_SELF_PROBE_FORCE_FAIL');
   }
@@ -549,7 +634,7 @@ export function runSelfProbe(): string[] {
 
 export interface Report {
   findings: Finding[];
-  counts: { pages: number; fencedBlocks: number; fencedLines: number; errorNames: number; templates: number };
+  counts: { pages: number; fencedBlocks: number; fencedLines: number; errorNames: number; templates: number; quotedLines: number };
   floorViolations: string[];
   staleForeignNames: string[];
 }
@@ -582,6 +667,7 @@ export function analyze(root: string = ROOT): Report {
     fencedLines,
     errorNames: errorNames.size,
     templates: templates.length,
+    quotedLines: findings.length,
   };
 
   const floorViolations: string[] = [];

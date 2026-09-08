@@ -64,8 +64,14 @@ describe('docs error-string checker: self-probe', () => {
   });
 
   it('still consults the probe from the shipped binary', () => {
-    // Without this seam, `main()` dropping the runSelfProbe() call would be
-    // invisible — the unit test calls the function directly.
+    /*
+     * Without this seam, `main()` dropping the runSelfProbe() call would be
+     * invisible — the unit test calls the function directly. Asserting only a
+     * non-zero exit is NOT equivalent: a blocking finding, a floor violation,
+     * a stale allow-list entry and a type-strip failure all exit non-zero too,
+     * so the assertion must name the probe's OWN wording.
+     */
+    let out = '';
     let failed = false;
     try {
       execFileSync('node', [SCRIPT], {
@@ -73,10 +79,19 @@ describe('docs error-string checker: self-probe', () => {
         env: { ...process.env, CDKD_SELF_PROBE_FORCE_FAIL: '1' },
         stdio: 'pipe',
       });
-    } catch {
+    } catch (e) {
+      const err = e as { stdout?: Buffer; stderr?: Buffer };
       failed = true;
+      out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
     }
     expect(failed).toBe(true);
+    expect(out).toContain('CDKD_SELF_PROBE_FORCE_FAIL');
+    expect(out).toContain('failed its own fixed cases');
+  }, 60_000);
+
+  it('exits 0 without the seam (the control that makes the case above mean something)', () => {
+    const out = execFileSync('node', [SCRIPT], { cwd: ROOT, stdio: 'pipe' }).toString();
+    expect(out).toContain('check OK');
   }, 60_000);
 });
 
@@ -110,10 +125,104 @@ describe('docs error-string checker: template extraction', () => {
     expect(matchesSourceTemplate('Failed to publish asset: Access Denied', t)).toBe(false);
   });
 
-  it('refuses a template too weak to vouch for anything', () => {
-    const t = templatesOf('throw new E(`${a}: ${b}`);');
-    expect(t).toEqual([]);
-    expect(matchesSourceTemplate('literally anything: at all', t)).toBe(false);
+  it('refuses a template too weak to vouch for anything, and accepts its twin', () => {
+    const weak = templatesOf('throw new E(`${a}: ${b}`);');
+    expect(weak).toEqual([]);
+    expect(matchesSourceTemplate('literally anything: at all', weak)).toBe(false);
+
+    /*
+     * The ACCEPT twin. Without it, `toEqual([])` cannot tell "rejected by
+     * MIN_TEMPLATE_LITERAL_CHARS" from "the extractor returned nothing at
+     * all" — the same shape `check-provider-secret-mask` pairs its arms for.
+     * Same source, same holes; only the literal text crosses the threshold.
+     */
+    const strong = templatesOf('throw new E(`${a} failed for the thing: ${b}`);');
+    expect(strong.length).toBe(1);
+    expect(matchesSourceTemplate('CREATE failed for the thing: boom', strong)).toBe(true);
+  });
+
+  it('drops a template longer than the cap, and keeps one just under it', () => {
+    const long = 'x'.repeat(700);
+    expect(templatesOf(`const a = \`${long}\`;`)).toEqual([]);
+    const short = 'y'.repeat(100);
+    expect(templatesOf(`const a = \`${short}\`;`).length).toBe(1);
+  });
+
+  it('dedupes identical templates', () => {
+    const t = templatesOf('const a = `the same message ${x}`; const b = `the same message ${y}`;');
+    expect(t.length).toBe(1);
+  });
+
+  it('scans the comment, escape and nesting arms of the state machine', () => {
+    // `//` line comment — its backticks must not open a template.
+    expect(scanTemplateLiterals('// a `tick` in a line comment\nconst x = 1;')).toEqual([]);
+    // An escaped backtick does not close the template.
+    expect(scanTemplateLiterals('const x = `a \\` still inside`;').map((t) => t.raw)).toEqual([
+      'a \\` still inside',
+    ]);
+    // A `}` inside a hole must not be read as the hole's end.
+    const nested = scanTemplateLiterals('const x = `v=${ {a:1}.a } end`;');
+    expect(nested.map((t) => t.raw)).toEqual(['v=${ {a:1}.a } end']);
+  });
+
+  it('treats an empty or whitespace-only template as no template', () => {
+    expect(templatesOf('const a = ``; const b = `   `;')).toEqual([]);
+  });
+
+  it('never matches an empty message', () => {
+    const t = templatesOf('throw new E(`a perfectly good template ${x}`);');
+    expect(matchesSourceTemplate('', t)).toBe(false);
+    expect(matchesSourceTemplate('   ', t)).toBe(false);
+  });
+
+  /*
+   * Regressions for the three blockers review found in the first cut. Each was
+   * MEASURED against the real tree, so each gets a case rather than a comment.
+   */
+  it('does not desync on a regex literal containing a quote', () => {
+    // Review measured this dropping 11 genuine templates and MANUFACTURING
+    // four live matchers out of the JSDoc prose that followed.
+    const src = [
+      'const re = /"([^"\\\\]{1,64})"\\s*:/g;',
+      'throw new E(`a genuine message template ${x} here`);',
+    ].join('\n');
+    const t = templatesOf(src);
+    expect(matchesSourceTemplate('a genuine message template VALUE here', t)).toBe(true);
+  });
+
+  it('does not desync on a regex literal containing an apostrophe', () => {
+    const src = [
+      "const re = /'args\\[(\\d+)\\]'[^']*?Received /g;",
+      'throw new E(`another genuine template ${x} here`);',
+    ].join('\n');
+    const t = templatesOf(src);
+    expect(matchesSourceTemplate('another genuine template VALUE here', t)).toBe(true);
+  });
+
+  it('treats a division operator as division, not as a regex start', () => {
+    // The inverse error: over-eager regex detection would swallow real code.
+    const src = 'const half = total / 2; throw new E(`a template after division ${x}`);';
+    const t = templatesOf(src);
+    expect(matchesSourceTemplate('a template after division V', t)).toBe(true);
+  });
+
+  it('does not end a template at a brace nested inside a hole', () => {
+    const src = 'throw new E(`prefix text ${ fn(a, { k: 1 }) } suffix text`);';
+    const tokens = scanTemplateLiterals(src);
+    expect(tokens.map((x) => x.raw)).toEqual(['prefix text ${ fn(a, { k: 1 }) } suffix text']);
+  });
+
+  it('refuses a truncated invention that merely BORROWS an opening', () => {
+    // The blocker: comparing only the overlapping characters left the rest of
+    // the message unexamined, so 12 borrowed characters + "..." blessed
+    // anything. Each subject below diverges from the template after a real
+    // shared prefix and must be refused.
+    const t = templatesOf('throw new E(`Failed to acquire lock for stack ${s} after ${n}`);');
+    expect(matchesSourceTemplate('Failed to acquire the moon and every star, twice ...', t)).toBe(false);
+    expect(matchesSourceTemplate('Failed to acquire lock for the wrong thing entirely ...', t)).toBe(false);
+    // ...while the genuine truncations at both cut points still pass.
+    expect(matchesSourceTemplate('Failed to acquire lock for ...', t)).toBe(true);
+    expect(matchesSourceTemplate("Failed to acquire lock for stack 'S' after ...", t)).toBe(true);
   });
 
   it('requires a truncated quote to overlap the opening literal by a real margin', () => {
@@ -183,15 +292,43 @@ describe('docs error-string checker: the real tree', () => {
     expect(report.floorViolations).toEqual([]);
   });
 
-  it('really is reading the tree, at magnitudes the floors do not pin', () => {
-    // The floors are literals in the script and could be lowered alongside a
-    // scope that silently stopped matching. These bands are derived here
-    // instead, so both would have to be edited to hide a collapse.
-    expect(report.counts.pages).toBeGreaterThan(FLOORS.pages);
-    expect(report.counts.fencedBlocks).toBeGreaterThan(FLOORS.fencedBlocks);
-    expect(report.counts.templates).toBeGreaterThan(FLOORS.templates);
-    // The subject itself must not vanish: the site really does quote errors.
+  /*
+   * `FLOORS` pinned to LITERALS. Without this the bands below could be
+   * satisfied by lowering the constants, which is the same edit that hides a
+   * collapsed scope. Measured: zeroing every floor and narrowing
+   * `collectDocPages` to `troubleshooting.md` alone — 72 of 73 pages
+   * unscanned — left an earlier version of this suite fully green, because its
+   * bands were expressed as `> FLOORS.x`.
+   */
+  it('pins the floor constants themselves', () => {
+    expect(FLOORS).toEqual({
+      pages: 40,
+      fencedBlocks: 300,
+      fencedLines: 2500,
+      errorNames: 20,
+      templates: 5_000,
+      quotedLines: 10,
+    });
+  });
+
+  it('really is reading the tree, at magnitudes stated INDEPENDENTLY of the floors', () => {
+    // Literals, not `FLOORS.x` — measured 2026-09-08 at 73 / 489 / 4272 / 42 /
+    // 7945, banded for ordinary growth and shrinkage. Every counter gets one:
+    // the two that previously had none are where a collapse would hide.
+    expect(report.counts.pages).toBeGreaterThanOrEqual(60);
+    expect(report.counts.fencedBlocks).toBeGreaterThanOrEqual(400);
+    expect(report.counts.fencedLines).toBeGreaterThanOrEqual(3_500);
+    expect(report.counts.errorNames).toBeGreaterThanOrEqual(35);
+    expect(report.counts.templates).toBeGreaterThanOrEqual(6_000);
+  });
+
+  it('finds its subject on more than one page', () => {
+    // A count alone survives the measured collapse above: all findings come
+    // from two pages, so narrowing the walk to the busiest one keeps the
+    // total near its full value. The SPREAD is what that cannot fake.
     expect(report.findings.length).toBeGreaterThanOrEqual(10);
+    const files = new Set(report.findings.map((f) => f.file));
+    expect(files.size).toBeGreaterThanOrEqual(2);
   });
 
   it('derives the error names from the real tree, not a list', () => {
@@ -296,5 +433,56 @@ describe('docs error-string checker: fails against real code', () => {
     });
     expect(code).not.toBe(0);
     expect(out).toContain('unknown-class');
+  }, 180_000);
+
+  /** Rewrite a constant in the COPIED checker itself. */
+  function patchChecker(root: string, from: string, to: string): void {
+    const p = join(root, 'scripts/check-docs-error-strings.ts');
+    const text = readFileSync(p, 'utf8');
+    if (!text.includes(from)) throw new Error(`probe needle not found: ${from}`);
+    writeFileSync(p, text.replace(from, to), 'utf8');
+  }
+
+  it('fails when a floor is not met, rather than reporting a confident zero', () => {
+    // The floors exist for a scan that silently stopped seeing its input.
+    // Raising one above the real magnitude simulates exactly that.
+    const { code, out } = runOnCopy((root) => patchChecker(root, 'pages: 40,', 'pages: 40_000,'));
+    expect(code).not.toBe(0);
+    expect(out).toContain('floor: pages');
+  }, 180_000);
+
+  it('fails a stale allow-list entry whose name became a real cdkd error', () => {
+    const { code, out } = runOnCopy((root) => {
+      // CredentialsProviderError is quoted on the proxy page and is NOT cdkd's.
+      // Make the tree assign it, and the exemption must be reported stale.
+      const p = join(root, 'src/utils/error-handler.ts');
+      const text = readFileSync(p, 'utf8');
+      writeFileSync(
+        p,
+        text.replace(
+          "this.name = 'StateError';",
+          "this.name = 'StateError';\n    void 'CredentialsProviderError';\n    this.name = this.name;"
+        ),
+        'utf8'
+      );
+      patchChecker(
+        root,
+        "const names = new Set<string>(['Error']);",
+        "const names = new Set<string>(['Error', 'CredentialsProviderError']);"
+      );
+    });
+    expect(code).not.toBe(0);
+    expect(out).toContain('now a real cdkd error name');
+  }, 180_000);
+
+  it('fails a stale allow-list entry no page quotes any more', () => {
+    const { code, out } = runOnCopy((root) => {
+      // Retire the only quotation of CredentialsProviderError from the page.
+      const p = join(root, 'docs/troubleshooting.md');
+      const text = readFileSync(p, 'utf8');
+      writeFileSync(p, text.replace('CredentialsProviderError: Error:', 'SomeOther: Error:'), 'utf8');
+    });
+    expect(code).not.toBe(0);
+    expect(out).toContain('no page quotes it any more');
   }, 180_000);
 });

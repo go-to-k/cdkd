@@ -1042,8 +1042,8 @@ S3 read/write on the asset bucket — `cdkd-assets-*` in cdkd-assets mode
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject"],
       "Resource": [
-        "arn:aws:s3:::cdkd-assets-*/*",
-        "arn:aws:s3:::cdk-hnb659fds-assets-*/*"
+        "arn:aws:s3:::cdkd-assets-123456789012-*/*",
+        "arn:aws:s3:::cdk-hnb659fds-assets-123456789012-*/*"
       ]
     },
     {
@@ -1051,8 +1051,8 @@ S3 read/write on the asset bucket — `cdkd-assets-*` in cdkd-assets mode
       "Effect": "Allow",
       "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
       "Resource": [
-        "arn:aws:s3:::cdkd-assets-*",
-        "arn:aws:s3:::cdk-hnb659fds-assets-*"
+        "arn:aws:s3:::cdkd-assets-123456789012-*",
+        "arn:aws:s3:::cdk-hnb659fds-assets-123456789012-*"
       ]
     },
     {
@@ -1068,8 +1068,6 @@ S3 read/write on the asset bucket — `cdkd-assets-*` in cdkd-assets mode
         "ecr:DescribeRepositories",
         "ecr:DescribeImages",
         "ecr:BatchCheckLayerAvailability",
-        "ecr:BatchGetImage",
-        "ecr:GetDownloadUrlForLayer",
         "ecr:InitiateLayerUpload",
         "ecr:UploadLayerPart",
         "ecr:CompleteLayerUpload",
@@ -1096,11 +1094,35 @@ Three things about that policy are easy to get wrong:
   pre-flight storage probe needs. Omitting it fails the deploy before any
   upload is attempted.
 
-Bootstrapping needs more than this — `s3:CreateBucket`,
-`s3:PutBucketVersioning`, `s3:PutEncryptionConfiguration`,
-`s3:PutBucketPublicAccessBlock`, `s3:PutBucketPolicy`, `ecr:CreateRepository`
-and `ecr:PutImageTagMutability` — which is why those belong to whoever runs
-`cdkd bootstrap`, not to the day-to-day deploy identity.
+**Creating the storage needs more**, and not only when you run
+`cdkd bootstrap`: the first `cdkd deploy` into a region with no cdkd bootstrap
+marker **auto-creates** the asset storage, from the deploy identity. So unless
+you pass `--no-auto-asset-storage`, the same identity also needs:
+
+```json
+{
+  "Sid": "CreateAssetStorage",
+  "Effect": "Allow",
+  "Action": [
+    "s3:CreateBucket",
+    "s3:PutEncryptionConfiguration",
+    "s3:PutBucketPublicAccessBlock",
+    "s3:PutBucketPolicy",
+    "ecr:CreateRepository",
+    "ecr:PutImageTagMutability"
+  ],
+  "Resource": [
+    "arn:aws:s3:::cdkd-assets-123456789012-*",
+    "arn:aws:ecr:*:123456789012:repository/cdkd-container-assets-*"
+  ]
+}
+```
+
+Without it the auto-create fails, the deploy falls back to legacy mode with a
+warning, and the push then targets a CDK bootstrap bucket that may not exist —
+a confusing failure two steps removed from the missing permission. (Asset
+buckets are deliberately NOT versioned, so `s3:PutBucketVersioning` is not in
+this set; it belongs to the state bucket, which `cdkd bootstrap` creates.)
 
 ### Lambda Deployment Fails
 
@@ -1277,7 +1299,8 @@ IAM user/role lacks required permissions.
 They are genuinely two sets, and conflating them is why hand-written policies
 for cdkd tend not to work.
 
-**Set A — cdkd's own bookkeeping.** Fixed, and the same for every stack:
+**Set A — cdkd's own bookkeeping.** Needed by every deploy, whatever the stack
+contains:
 
 ```json
 {
@@ -1352,6 +1375,21 @@ with a bucket and a queue needs the `s3:` and `sqs:` actions for those
 operations on top of Set A. See
 [Supported Resources](supported-resources.md) for which layer handles a type.
 
+**Set C — two conditional sets that are easy to miss**, because neither is
+implied by the resources in your template:
+
+- **A CDK context lookup** (`Vpc.fromLookup`, `Machineimage.lookup`, a hosted
+  zone or AMI lookup) is resolved at SYNTH time and needs its own read
+  permissions — typically `ec2:DescribeVpcs` / `DescribeSubnets` /
+  `DescribeAvailabilityZones` / `DescribeImages`, `ssm:GetParameter`,
+  `route53:ListHostedZonesByName`, `kms:ListAliases`. A denial here fails
+  before any provisioning starts.
+- **A template declaring a macro** (`Transform` / `Fn::Transform`, e.g. SAM) is
+  expanded by CloudFormation through a transient stack, so that deploy also
+  needs `cloudformation:CreateChangeSet`, `DescribeChangeSet`, `GetTemplate`
+  and `DeleteStack` on `cdkd-macro-expand-*`, plus `lambda:InvokeFunction` on
+  your own macro function if it is not an AWS-managed transform.
+
 **Note**: In production, follow the principle of least privilege and grant only necessary permissions.
 
 **Note on `cloudformation:DescribeType`**: cdkd reads the CloudFormation
@@ -1407,21 +1445,30 @@ AccessDenied: User: arn:aws:iam::123456789012:user/myuser is not authorized to p
 
 **Causes:**
 
-cdkd assumes a role in exactly two situations, and neither of them involves a
-CDK bootstrap role:
+cdkd assumes a role only when something asked it to, and none of those involve
+a CDK bootstrap role:
 
 - **You passed `--role-arn` / set `CDKD_ROLE_ARN`.** cdkd assumes that role for
   every AWS call.
 - **A cross-account `Fn::GetStackOutput` supplied a `RoleArn`.** cdkd assumes
   it to read the producer stack's state. That path wraps the AWS error with a
   trust-policy hint rather than surfacing it bare.
+- **You passed `--assume-role` to a `cdkd local` command**, which assumes the
+  role to give the locally-run function or task its credentials. Pulling a
+  container image from ECR for `cdkd local` can assume a role too.
 
 **`cdk-hnb659fds-deploy-role-*` and the other CDK bootstrap roles are not
 usable here.** cdkd issues raw service API calls instead of routing through
-CloudFormation, so a CDK CLI deploy role does not carry the permissions cdkd
-needs — the role you name must have admin-equivalent permissions for the
-services your template touches. Adding yourself to a bootstrap role's trust
-policy will not make this error go away.
+CloudFormation, so a CDK CLI deploy role does not carry what cdkd needs.
+Adding yourself to a bootstrap role's trust policy will not make this error go
+away.
+
+The role you name needs the permissions the Set A / Set B / Set C policy above
+describes, granted on the assumed role rather than on your own principal —
+**not `AdministratorAccess`**. cdkd's own help text calls this
+"admin-equivalent" because the union of Set B across an arbitrary template is
+unbounded; that is an argument for scoping the role to the services your stacks
+actually use, not for attaching a blanket policy.
 
 **Solutions:**
 
@@ -1617,11 +1664,12 @@ cdkd deploy --app "..." --state-bucket ${STATE_BUCKET} --dry-run --verbose
 ```
 
 ```text
+... DEBUG [DagBuilder] Dependency graph built: 4 nodes, 3 edges
 ... DEBUG [DagBuilder] Level 0: 2 resources - Bucket, Table
 ... DEBUG [DagBuilder] Level 1: 1 resources - Role
 ... DEBUG [DagBuilder] Level 2: 1 resources - Function
 ... DEBUG [DagBuilder] Execution levels computed: 3 levels
-Dry run mode - skipping actual deployment
+✓ Dry run completed - no actual changes made
 ```
 
 A deep, narrow graph is what caps a deploy: the depth bounds how much can
@@ -1804,7 +1852,8 @@ hold the resource on the handler that cannot address it.
 **Symptoms:**
 
 ```
-ProvisioningError: CREATE failed for MyTopic: Rate exceeded
+ProvisioningError: Failed to create resource MyTopic
+Caused by: CREATE failed for MyTopic: Rate exceeded
 ```
 
 Cloud Control returns this as `ThrottlingException`. cdkd retries it
