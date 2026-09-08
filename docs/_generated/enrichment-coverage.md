@@ -17,11 +17,11 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 ## Summary
 
 - Classified types (cached schema): **134**
-- Fully enriched: **50**
-- No computed attribute (Ref == physicalId is correct): **15**
+- Fully enriched: **47**
+- No computed attribute (Ref == physicalId is correct): **17**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **69**
-- Types with allow-listed (not-a-gap) attributes: **87**
+- SDK-fallback gaps (informational, #614 path only): **70**
+- Types with allow-listed (not-a-gap) attributes: **85**
 
 ## Pure-CC latent gaps
 
@@ -33,7 +33,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 
 | Resource type | Unenriched computed attributes (CC-fallback only) |
 | --- | --- |
-| `AWS::ApiGatewayV2::Api` | `ApiEndpoint` |
+| `AWS::ApiGatewayV2::Api` | `ApiEndpoint`, `ExecuteApiArn` |
 | `AWS::AppSync::ApiKey` | `ApiKey`, `Arn` |
 | `AWS::AppSync::GraphQLApi` | `Arn`, `GraphQLDns`, `GraphQLEndpointArn`, `GraphQLUrl`, `RealtimeDns`, `RealtimeUrl` |
 | `AWS::AutoScaling::AutoScalingGroup` | `AutoScalingGroupARN` |
@@ -67,6 +67,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | `LoadBalancerArns`, `TargetGroupFullName`, `TargetGroupName` |
 | `AWS::EMR::Cluster` | `MasterPublicDNS` |
 | `AWS::Events::EventBus` | `Arn` |
+| `AWS::Events::Rule` | `RuleName` |
 | `AWS::FSx::FileSystem` | `DNSName`, `LustreMountName`, `ResourceARN`, `RootVolumeId` |
 | `AWS::IAM::AccessKey` | `SecretAccessKey` |
 | `AWS::IAM::Group` | `Arn` |
@@ -84,7 +85,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Neptune::DBCluster` | `ClusterResourceId`, `Endpoint`, `Port`, `ReadEndpoint` |
 | `AWS::Neptune::DBInstance` | `Endpoint`, `Port` |
 | `AWS::RDS::DBCluster` | `DBClusterArn`, `StorageEncryptionType`, `StorageThroughput` |
-| `AWS::RDS::DBInstance` | `AutomaticRestartTime`, `CertificateDetails`, `DBInstanceArn`, `DBInstanceStatus`, `DbiResourceId`, `InstanceCreateTime`, `IsStorageConfigUpgradeAvailable`, `LatestRestorableTime`, `ListenerEndpoint`, `PercentProgress`, `ReadReplicaDBClusterIdentifiers`, `ReadReplicaDBInstanceIdentifiers`, `ResumeFullAutomationModeTime`, `SecondaryAvailabilityZone`, `StatusInfos` |
+| `AWS::RDS::DBInstance` | `AutomaticRestartTime`, `CertificateDetails`, `DBInstanceArn`, `DBInstanceStatus`, `DbiResourceId`, `InstanceCreateTime`, `IsStorageConfigUpgradeAvailable`, `LatestRestorableTime`, `ListenerEndpoint`, `PercentProgress`, `ReadReplicaDBClusterIdentifiers`, `ReadReplicaDBInstanceIdentifiers`, `ResumeFullAutomationModeTime`, `SecondaryAvailabilityZone`, `StatusInfos`, `StorageOperationPercentProgress`, `StorageOperationStatus` |
 | `AWS::RDS::DBProxy` | `DBProxyArn`, `Endpoint`, `VpcId` |
 | `AWS::RDS::DBProxyEndpoint` | `DBProxyEndpointArn`, `Endpoint`, `IsDefault`, `VpcId` |
 | `AWS::RDS::DBSubnetGroup` | `DBSubnetGroupArn` |
@@ -113,7 +114,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ApiGateway::Method` | yes | no-computed-attr | _(none)_ |
 | `AWS::ApiGateway::Resource` | yes | enriched | `ResourceId` (allow) |
 | `AWS::ApiGateway::Stage` | yes | no-computed-attr | _(none)_ |
-| `AWS::ApiGatewayV2::Api` | yes | sdk-fallback-gap | `ApiEndpoint` (GAP), `ApiId` (allow) |
+| `AWS::ApiGatewayV2::Api` | yes | sdk-fallback-gap | `ApiEndpoint` (GAP), `ApiId` (allow), `ExecuteApiArn` (GAP) |
 | `AWS::ApiGatewayV2::Authorizer` | yes | enriched | `AuthorizerId` (allow) |
 | `AWS::ApiGatewayV2::Integration` | yes | enriched | `IntegrationId` (allow) |
 | `AWS::ApiGatewayV2::Route` | yes | enriched | `RouteId` (allow) |
@@ -139,12 +140,12 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudWatch::Alarm` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::CloudWatch::AnomalyDetector` | yes | enriched | `Id` (allow) |
 | `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
-| `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Id` (allow), `Name` (GAP) |
+| `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Name` (GAP), `RepositoryId` (allow) |
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (allow) |
 | `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
 | `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (allow), `ReadEndpoint` (GAP) |
 | `AWS::DocDB::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Id` (allow), `Port` (GAP) |
-| `AWS::DocDB::DBSubnetGroup` | yes | enriched | `Id` (allow) |
+| `AWS::DocDB::DBSubnetGroup` | yes | no-computed-attr | _(none)_ |
 | `AWS::DynamoDB::GlobalTable` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (GAP), `TableId` (GAP) |
 | `AWS::DynamoDB::Table` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (OK) |
 | `AWS::EC2::EIP` | yes | enriched | `AllocationId` (OK), `PublicIp` (OK) |
@@ -178,9 +179,9 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::EMR::InstanceFleetConfig` | yes | enriched | `Id` (allow) |
 | `AWS::EMR::InstanceGroupConfig` | yes | enriched | `Id` (allow) |
 | `AWS::Events::EventBus` | yes | sdk-fallback-gap | `Arn` (GAP) |
-| `AWS::Events::Rule` | yes | enriched | `Arn` (allow) |
+| `AWS::Events::Rule` | yes | sdk-fallback-gap | `Arn` (allow), `RuleName` (GAP) |
 | `AWS::FSx::FileSystem` | yes | sdk-fallback-gap | `DNSName` (GAP), `Id` (allow), `LustreMountName` (GAP), `ResourceARN` (GAP), `RootVolumeId` (GAP) |
-| `AWS::Glue::Connection` | yes | enriched | `Id` (allow) |
+| `AWS::Glue::Connection` | yes | enriched | `Name` (allow) |
 | `AWS::Glue::Crawler` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Database` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Job` | yes | no-computed-attr | _(none)_ |
@@ -213,13 +214,13 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Neptune::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Port` (GAP) |
 | `AWS::Neptune::DBSubnetGroup` | yes | no-computed-attr | _(none)_ |
 | `AWS::RDS::DBCluster` | yes | sdk-fallback-gap | `DBClusterArn` (GAP), `DBClusterResourceId` (OK), `Endpoint` (OK), `ReadEndpoint` (OK), `StorageEncryptionType` (GAP), `StorageThroughput` (GAP) |
-| `AWS::RDS::DBInstance` | yes | sdk-fallback-gap | `AutomaticRestartTime` (GAP), `CertificateDetails` (GAP), `DBInstanceArn` (GAP), `DBInstanceStatus` (GAP), `DbiResourceId` (GAP), `Endpoint` (OK), `InstanceCreateTime` (GAP), `IsStorageConfigUpgradeAvailable` (GAP), `LatestRestorableTime` (GAP), `ListenerEndpoint` (GAP), `PercentProgress` (GAP), `ReadReplicaDBClusterIdentifiers` (GAP), `ReadReplicaDBInstanceIdentifiers` (GAP), `ResumeFullAutomationModeTime` (GAP), `SecondaryAvailabilityZone` (GAP), `StatusInfos` (GAP) |
+| `AWS::RDS::DBInstance` | yes | sdk-fallback-gap | `AutomaticRestartTime` (GAP), `CertificateDetails` (GAP), `DBInstanceArn` (GAP), `DBInstanceStatus` (GAP), `DbiResourceId` (GAP), `Endpoint` (OK), `InstanceCreateTime` (GAP), `IsStorageConfigUpgradeAvailable` (GAP), `LatestRestorableTime` (GAP), `ListenerEndpoint` (GAP), `PercentProgress` (GAP), `ReadReplicaDBClusterIdentifiers` (GAP), `ReadReplicaDBInstanceIdentifiers` (GAP), `ResumeFullAutomationModeTime` (GAP), `SecondaryAvailabilityZone` (GAP), `StatusInfos` (GAP), `StorageOperationPercentProgress` (GAP), `StorageOperationStatus` (GAP) |
 | `AWS::RDS::DBProxy` | yes | sdk-fallback-gap | `DBProxyArn` (GAP), `Endpoint` (GAP), `VpcId` (GAP) |
 | `AWS::RDS::DBProxyEndpoint` | yes | sdk-fallback-gap | `DBProxyEndpointArn` (GAP), `Endpoint` (GAP), `IsDefault` (GAP), `VpcId` (GAP) |
 | `AWS::RDS::DBProxyTargetGroup` | yes | enriched | `TargetGroupArn` (allow) |
 | `AWS::RDS::DBSubnetGroup` | yes | sdk-fallback-gap | `DBSubnetGroupArn` (GAP) |
 | `AWS::Route53::HostedZone` | yes | sdk-fallback-gap | `Id` (allow), `NameServers` (GAP) |
-| `AWS::Route53::RecordSet` | yes | enriched | `Id` (allow) |
+| `AWS::Route53::RecordSet` | yes | no-computed-attr | _(none)_ |
 | `AWS::S3::Bucket` | yes | sdk-fallback-gap | `Arn` (OK), `DomainName` (GAP), `DualStackDomainName` (GAP), `RegionalDomainName` (GAP), `WebsiteURL` (GAP) |
 | `AWS::S3::BucketPolicy` | yes | no-computed-attr | _(none)_ |
 | `AWS::S3Express::DirectoryBucket` | yes | sdk-fallback-gap | `Arn` (GAP), `AvailabilityZoneName` (GAP) |

@@ -14,18 +14,23 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 - SDK-backed types classified: **134**
 - Covered (every Arn/Url readOnly resolvable): **42**
-- No Arn/Url readOnly attribute: **92**
-- **Latent gaps (blocks CI): 0**
+- No Arn/Url readOnly attribute: **91**
+- **Latent gaps (blocks CI): 1**
 - Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
 
-## Latent gaps
+## Latent gaps (UNRESOLVABLE Arn/Url readOnly) — BLOCKS CI
 
-None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cached or constructAttribute-resolvable.
+Cache the attribute under its exact CFn name in the provider create/update (via the returned `attributes` map), add a `constructAttribute` handler, OR add an `SDK_ATTR_ALLOW_LIST` entry with a rationale.
+
+| Resource type | Unresolvable Arn/Url attributes |
+| --- | --- |
+| `AWS::ApiGatewayV2::Api` | `ExecuteApiArn` |
 
 ## Full classification (types with an Arn/Url readOnly)
 
 | Resource type | Bucket | Arn/Url attributes (status) |
 | --- | --- | --- |
+| `AWS::ApiGatewayV2::Api` | gap | `ExecuteApiArn` (GAP) |
 | `AWS::AppSync::ApiKey` | covered | `Arn` (cached) |
 | `AWS::AppSync::GraphQLApi` | covered | `Arn` (cached), `GraphQLEndpointArn` (ctor), `GraphQLUrl` (cached), `RealtimeUrl` (ctor) |
 | `AWS::BedrockAgentCore::Runtime` | covered | `AgentRuntimeArn` (cached) |

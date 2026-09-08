@@ -33,6 +33,7 @@
       "PlacementGroup"
     ],
     "AWS::BedrockAgentCore::Runtime": [
+      "CapacityProviderConfiguration",
       "FilesystemConfigurations",
       "RequestHeaderConfiguration",
       "Tags"
@@ -42,7 +43,8 @@
       "AggregationConfigurations"
     ],
     "AWS::CloudWatch::Alarm": [
-      "EvaluationWindow"
+      "EvaluationWindow",
+      "WarmUpConfiguration"
     ],
     "AWS::CodeBuild::Project": [
       "ResourceAccessRole",
@@ -145,6 +147,9 @@
       "SnapshotArns"
     ],
     "AWS::ElasticLoadBalancingV2::Listener": [
+      "Tags"
+    ],
+    "AWS::Glue::Connection": [
       "Tags"
     ],
     "AWS::Kinesis::Stream": [
@@ -357,6 +362,9 @@
     "AWS::S3Tables::Table": {
       "Name": "Likely typo for 'TableName' (CFn schema name). Real bug — fix in a follow-up PR.",
       "Format": "Likely typo for 'OpenTableFormat' (CFn schema name). Real bug — fix in a follow-up PR."
+    },
+    "AWS::Route53::RecordSet": {
+      "GeoProximityLocation": "AWS removed this from the CFn schema, but `@aws-sdk/client-route-53` still declares it as a member of ResourceRecordSet, and the provider wires it at src/provisioning/providers/route53-provider.ts:1535. cdkd calls the SDK directly, so the value still reaches AWS; deleting the declaration would only make the coverage checker under-report a property cdkd sends. Written automatically by the schema refresh job."
     }
   }
 }

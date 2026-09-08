@@ -1,17 +1,15 @@
 {
   "resourceType": "AWS::Route53::RecordSet",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-08",
   "properties": [
     "AliasTarget",
     "CidrRoutingConfig",
     "Comment",
     "Failover",
     "GeoLocation",
-    "GeoProximityLocation",
     "HealthCheckId",
     "HostedZoneId",
     "HostedZoneName",
-    "Id",
     "MultiValueAnswer",
     "Name",
     "Region",
@@ -21,16 +19,16 @@
     "Type",
     "Weight"
   ],
-  "readOnlyProperties": [
-    "Id"
-  ],
+  "readOnlyProperties": [],
   "createOnlyProperties": [
     "HostedZoneId",
-    "HostedZoneName",
-    "Name"
+    "HostedZoneName"
   ],
   "primaryIdentifier": [
-    "Id"
+    "HostedZoneId",
+    "Name",
+    "SetIdentifier",
+    "Type"
   ],
   "nestedProperties": {
     "AliasTarget": [
@@ -41,14 +39,6 @@
     "CidrRoutingConfig": [
       "CollectionId",
       "LocationName"
-    ],
-    "GeoProximityLocation": [
-      "AWSRegion",
-      "Bias",
-      "Coordinates",
-      "Latitude",
-      "LocalZoneGroup",
-      "Longitude"
     ],
     "GeoLocation": [
       "ContinentCode",
@@ -65,14 +55,6 @@
     "CidrRoutingConfig": [
       "CollectionId",
       "LocationName"
-    ],
-    "GeoProximityLocation": [
-      "AWSRegion",
-      "Bias",
-      "Coordinates",
-      "Coordinates.Latitude",
-      "Coordinates.Longitude",
-      "LocalZoneGroup"
     ],
     "GeoLocation": [
       "ContinentCode",
@@ -95,30 +77,28 @@
       "Type": "scalar",
       "CidrRoutingConfig": "object",
       "Failover": "scalar",
-      "GeoProximityLocation": "object",
       "Region": "scalar",
       "GeoLocation": "object",
-      "Id": "scalar",
       "MultiValueAnswer": "scalar"
     },
     "AliasTarget": {
-      "DNSName": "scalar",
       "HostedZoneId": "scalar",
+      "DNSName": "scalar",
       "EvaluateTargetHealth": "scalar"
+    },
+    "Coordinates": {
+      "Latitude": "scalar",
+      "Longitude": "scalar"
     },
     "CidrRoutingConfig": {
       "CollectionId": "scalar",
       "LocationName": "scalar"
     },
     "GeoProximityLocation": {
-      "AWSRegion": "scalar",
-      "LocalZoneGroup": "scalar",
       "Bias": "scalar",
-      "Coordinates": "object"
-    },
-    "Coordinates": {
-      "Longitude": "scalar",
-      "Latitude": "scalar"
+      "Coordinates": "object",
+      "AWSRegion": "scalar",
+      "LocalZoneGroup": "scalar"
     },
     "GeoLocation": {
       "ContinentCode": "scalar",
@@ -135,13 +115,13 @@
       "DNSName",
       "HostedZoneId"
     ],
-    "CidrRoutingConfig": [
-      "CollectionId",
-      "LocationName"
-    ],
     "Coordinates": [
       "Latitude",
       "Longitude"
+    ],
+    "CidrRoutingConfig": [
+      "CollectionId",
+      "LocationName"
     ]
   }
 }

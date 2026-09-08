@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBCluster",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-08",
   "properties": [
     "AllocatedStorage",
     "AssociatedRoles",
@@ -79,7 +79,6 @@
     "StorageThroughput"
   ],
   "createOnlyProperties": [
-    "AvailabilityZones",
     "ClusterScalabilityType",
     "DBClusterIdentifier",
     "DBSubnetGroupName",
