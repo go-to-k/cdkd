@@ -35,6 +35,7 @@ This document summarizes common issues when using cdkd and their solutions.
 - [Permission Errors](#permission-errors)
   - ["Access Denied" Error](#access-denied-error)
   - ["not authorized to perform: sts:AssumeRole"](#not-authorized-to-perform-sts-assumerole)
+  - ["The state machine IAM Role is not authorized to access the Log Destination"](#the-state-machine-iam-role-is-not-authorized-to-access-the-log-destination)
 - [Proxy / Corporate Network](#proxy-corporate-network)
   - ["self-signed certificate in certificate chain" on the very first command](#self-signed-certificate-in-certificate-chain-on-the-very-first-command)
   - [Variables cdkd honours](#variables-cdkd-honours)
@@ -1502,6 +1503,85 @@ For the cross-account `Fn::GetStackOutput` case, the trust policy belongs on
 the **producer** account's role and must allow the consumer's principal — see
 [Cross-Stack References](cross-stack-references.md).
 
+### "The state machine IAM Role is not authorized to access the Log Destination"
+
+A Step Functions state machine with `LoggingConfiguration` fails to create or
+update with:
+
+```text
+The state machine IAM Role is not authorized to access the Log Destination
+```
+
+AWS emits this same sentence whether the problem is transient or permanent, so
+cdkd cannot tell them apart from the message:
+
+| Cause | Fix |
+| --- | --- |
+| The role's log-delivery grants have not propagated yet | Nothing — cdkd retries this for you |
+| The execution role lacks the grants | Add the delivery policy below |
+| The account's CloudWatch Logs resource policies are at a quota | See below |
+
+**Missing grants.** The role the state machine runs as needs the vended-logs
+delivery actions on `"Resource": "*"` — these actions do not support resource
+types, so scoping them to the log group's ARN produces this same error:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "logs:CreateLogDelivery",
+    "logs:GetLogDelivery",
+    "logs:UpdateLogDelivery",
+    "logs:DeleteLogDelivery",
+    "logs:ListLogDeliveries",
+    "logs:PutResourcePolicy",
+    "logs:DescribeResourcePolicies",
+    "logs:DescribeLogGroups"
+  ],
+  "Resource": "*"
+}
+```
+
+That is what the CDK Step Functions L2 attaches to the role it CREATES for the
+state machine. If you passed your own `role:`, check that it carries them —
+a role imported with `mutable: false` has the grant silently dropped, and the
+state machine still synthesizes with logging enabled.
+
+AWS's reference policy for this error additionally lists `logs:CreateLogStream`
+and `logs:PutLogEvents`, which are for writing log events rather than for the
+destination check the eight above satisfy.
+
+**Resource-policy quotas.** Step Functions records log delivery in CloudWatch
+Logs resource policies, and two separate quotas apply — a policy document is
+limited to 5120 characters, and an account is limited to ten policies per
+Region. Either one produces this error. Inspect both dimensions with:
+
+```bash
+aws logs describe-resource-policies --region <region>
+```
+
+For the size limit, give the log group a name starting with `/aws/vendedlogs/`,
+which is covered by one wildcard entry instead of consuming the budget per
+group. The name is immutable, so this REPLACES the log group — see the
+[stateful-resource guard](cli-deploy-safety.md#stateful-resource-guard) for what
+cdkd does with the old one and when it refuses the replacement outright. The
+ten-policy quota is account-wide across every service that writes one, so it can
+be reached with no Step Functions history at all; AWS documents consolidating
+the existing policies for that case.
+
+Editing those documents by hand is not safe by default: there is no per-entry
+API, so pruning means rewriting a whole document with
+`aws logs put-resource-policy`, and `aws logs delete-resource-policy` removes
+one outright — revoking log delivery for every identity in it, not just Step
+Functions.
+
+Because the first cause is transient, cdkd retries this message rather than
+failing immediately — so on the two permanent causes the deploy appears to hang
+for up to ~47.75s before the error surfaces, and the give-up line still carries
+AWS's own sentence. The schedule and how to read that line are under
+[Cloud Control API Rate Limit](#cloud-control-api-rate-limit), which is where
+this page documents the retry behaviour.
+
 ---
 
 ## Proxy / Corporate Network
@@ -1869,7 +1949,7 @@ replays performed by `cdkd rollback` and `cdkd drift --revert`), with the
 backoff shape chosen per error class:
 
 - **Throttling and other transient errors** (rate limits, a resource still leaving `Pending`, an async delete releasing a dependency, and a transient server error — HTTP 500 / 502 / 503 / 504, the same four the AWS SDK's own retry strategy treats as transient): exponential backoff `1s->2s->4s->8s->8s->8s->8s->8s`, capped at 8s, up to 8 retries (47s of sleep). Hammering a throttled API is counter-productive, so this class deliberately backs off hard.
-- **IAM propagation** (`Invalid IAM Instance Profile`, `cannot be assumed`, `not authorized to perform`, `Policy Error: PrincipalNotFound`, ...): a denser `0.25s->0.5s->1s->2s->2s...` schedule over 26 retries (47.75s of sleep). This class resolves in single-digit seconds — cdkd creates an IAM entity and consumes it ~1-3s later, faster than IAM propagates — so cdkd re-probes roughly every 2s instead of idling through a 4s or 8s step. The dense window (47.75s) is slightly longer than the generic one (47s), so nothing that used to recover stops recovering — and from 3.75s onwards the dense grid is strictly ahead, never lagging the generic one by more than 0.75s in the early band.
+- **IAM propagation** (`Invalid IAM Instance Profile`, `cannot be assumed`, `not authorized to perform`, `Policy Error: PrincipalNotFound`, `not authorized to access the Log Destination`, ...): a denser `0.25s->0.5s->1s->2s->2s...` schedule over 26 retries (47.75s of sleep). This class usually resolves in single-digit seconds — cdkd creates an IAM entity and consumes it ~1-3s later, faster than IAM propagates — so cdkd re-probes roughly every 2s instead of idling through a 4s or 8s step. A few of these patterns are also emitted for PERMANENT problems (see the note under the give-up line below), and those spend the budget rather than resolving. The dense window (47.75s) is slightly longer than the generic one (47s), so nothing that used to recover stops recovering — and from 3.75s onwards the dense grid is strictly ahead, never lagging the generic one by more than 0.75s in the early band.
 
   If the window is not enough, cdkd says so rather than silently re-raising the AWS error. A propagation retry that gives up prints one line at the DEFAULT log level (`--verbose` additionally prefixes a timestamp and `WARN`):
 
@@ -1893,7 +1973,9 @@ backoff shape chosen per error class:
 
   That line is how you tell the cases apart without reading cdkd's source:
 
-  - **`(the full propagation budget)` present** — the retry ran to exhaustion and IAM genuinely took longer than 47.75s in that account. Re-running usually succeeds; if it recurs, please [open an issue](https://github.com/go-to-k/cdkd/issues) with the line, since the budget's shape is then the thing that needs changing. Note the retry COUNT on such a line can be below 26: a throttle mid-race consumes an attempt without counting as a propagation retry, so the budget can run out at 25 or fewer.
+  - **`(the full propagation budget)` present** — the retry ran to exhaustion. Usually that means IAM genuinely took longer than 47.75s in that account, and re-running succeeds; if it recurs, please [open an issue](https://github.com/go-to-k/cdkd/issues) with the line, since the budget's shape is then the thing that needs changing. Note the retry COUNT on such a line can be below 26: a throttle mid-race consumes an attempt without counting as a propagation retry, so the budget can run out at 25 or fewer.
+
+    **Read the AWS message on the line before concluding that, though**: a few patterns are matched because the same sentence is AMBIGUOUS between a propagation race and a permanent misconfiguration, so exhausting the budget is how a PERMANENT failure surfaces on those. Re-running will never succeed there and the budget is not the problem — fix what the message names. The Step Functions log-destination rejection is the one to know: `The state machine IAM Role is not authorized to access the Log Destination` is emitted both while the role's log-delivery grants are still propagating AND when they are genuinely absent or when the account's CloudWatch Logs resource policies have hit a quota. See ["The state machine IAM Role is not authorized to access the Log Destination"](#the-state-machine-iam-role-is-not-authorized-to-access-the-log-destination) for both remedies.
   - **No budget note, and a low count** — something terminal ended the race early: a non-retryable error such as an explicit deny, or an error cdkd's classifier could not read. The seconds figure tells you how much of the 47.75s was actually spent, which is what distinguishes "IAM was too slow" from "the retry was cut short", and the bracketed `[name=... http=...]` names what ended it. This shape is worth reporting when the status is a 5xx other than 500 / 502 / 503 / 504, or when the bracket shows `no-$metadata`: those are the cases cdkd does not currently treat as transient, and one of them (a plain HTTP 500 answered mid-propagation with an empty body) was a real, since-fixed defect, where a single 500 ended an otherwise healthy sequence at 12% of its budget.
   - **No such line at all** — the retry never engaged, and there are two reasons, which need different responses. Either cdkd's error classifier did not recognise the failure as IAM propagation — worth reporting, since the wording it failed to recognise is the useful half of the report — OR the failing resource is served by a provider that opts out of the outer retry by design: `Custom::*` / `AWS::CloudFormation::CustomResource` and `AWS::CloudFormation::Stack` are never wrapped by the dense outer schedule, so no give-up line is produced for them. A custom resource's Lambda HANDLER is an ordinary `AWS::Lambda::Function` and does retry on the outer schedule. Check which of the two the failing logical id is before filing.
 

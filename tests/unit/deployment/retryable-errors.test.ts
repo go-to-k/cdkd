@@ -363,15 +363,119 @@ describe('isRetryableTransientError', () => {
       expect(isRetryableTransientError(new Error(missingDb), missingDb)).toBe(false);
     });
 
-    it('does not retry an SFN error that lacks the assume-role propagation phrase', () => {
-      // Guard the SFN boundary: the pattern is anchored on "authorized to
-      // assume the provided role", so a different permanent SFN role problem
-      // (e.g. the logging-destination access rejection, which says
-      // "authorized to ACCESS", not "authorized to ASSUME") stays
-      // non-retryable and fails fast rather than burning the bounded retries.
-      const logAccess =
-        'AccessDeniedException: The state machine IAM Role is not authorized to access the Log Destination';
-      expect(isRetryableTransientError(new Error(logAccess), logAccess)).toBe(false);
+    // Shared by the three #2783 cases below: the positive, the controls, and
+    // the computed no-unfenced-truncation ladder. ONE definition, so the
+    // ladder can never be measured against a control set the assertions do
+    // not use.
+    const SFN_LOG_DESTINATION_ANCHOR = 'not authorized to access the Log Destination';
+    // Verbatim from the live A/B run (name=AccessDeniedException, http=400, no
+    // `(Service: ...)` trailer -- this is the JS SDK, not the Java-wrapped
+    // shape), with the prefix StepFunctionsProvider.create wraps it in, which
+    // is the string the retry classifier actually reads.
+    const SFN_LOG_DESTINATION_WIRE_MESSAGE =
+      'Failed to create Step Functions state machine Express: The state machine IAM Role is not authorized to access the Log Destination';
+    // Each must stay NON-retryable. Between them they fence every truncation
+    // of the anchor -- the computed case below is what establishes that, over
+    // the set; it says nothing about which control carries which truncation.
+    const SFN_ANCHOR_CONTROLS = [
+      // An ordinary permanent SFN failure, sharing no phrase with either
+      // anchor.
+      'InvalidDefinition: Invalid State Machine Definition: SCHEMA_VALIDATION_FAILED at /States/PassIt',
+      // Shares the prefix up to "access the", fencing back-truncations from
+      // there inward.
+      'AccessDeniedException: The state machine IAM Role is not authorized to access the KMS key',
+      // ...but not the FIRST back-truncation step: dropping only "Destination"
+      // leaves "not authorized to access the Log", which the KMS control does
+      // not contain. Constructed rather than captured: AWS's real explicit-deny
+      // sentence says "not authorized to PERFORM", which an existing pattern
+      // already classifies retryable, so a captured one could not serve as a
+      // control here. What it pins is the SHAPE -- a denial naming the Log
+      // Group rather than the Log Destination -- not a claim about how AWS
+      // words it.
+      'AccessDeniedException: User: arn:aws:iam::111122223333:user/dev is not authorized to access the Log Group with an explicit deny in an identity-based policy',
+      // The truncation that drops the NEGATION: "authorized to access the Log
+      // Destination" is a substring of the anchor, so a pattern shortened to
+      // it would match an affirmative sentence -- not an error at all.
+      // Constructed, like the one above.
+      'The state machine IAM Role is authorized to access the Log Destination',
+      // A real front-truncation shape: "Log Destination" is a phrase several
+      // services use, so a tail-only anchor would admit unrelated delivery
+      // failures. Lower-case "the" because matching is case-SENSITIVE.
+      'ValidationException: Delivery to the Log Destination is disabled for this account',
+    ];
+
+    it('retries the SFN log-destination rejection as IAM propagation (#2783)', () => {
+      // This case asserted the OPPOSITE until issue #2783: the phrase was
+      // classified permanent when the assume-role pattern landed, on the
+      // reasoning that "authorized to ACCESS" is a different problem from
+      // "authorized to ASSUME". A live A/B (us-east-1, 2026-09-08) falsified
+      // that — with the vended-logs grants PUT 1s before the create, AWS
+      // rejects with this exact sentence five times and then the IDENTICAL
+      // call succeeds at t+7.8s. AWS's own sentence is verbatim from that run
+      // (name=AccessDeniedException, http=400, no `(Service: ...)` trailer —
+      // this is the JS SDK, not the Java-wrapped shape); the prefix is what
+      // StepFunctionsProvider.create wraps it in, which is the string the
+      // retry classifier actually reads.
+      const logAccess = SFN_LOG_DESTINATION_WIRE_MESSAGE;
+      expect(isRetryableTransientError(new Error(logAccess), logAccess)).toBe(true);
+      // ...and on the DENSE cadence, which is what makes the ~8s window fit:
+      // the generic 1s/2s/4s/8s grid would overshoot it.
+      expect(isIamPropagationError(logAccess)).toBe(true);
+    });
+
+    it('does not retry an SFN error that carries neither propagation phrase', () => {
+      // The boundary the reversed case above no longer guards. Both SFN
+      // patterns are anchored on their own full sentence, so an ordinary
+      // permanent SFN failure still fails fast rather than burning the
+      // bounded retries.
+      // Asserted as an object rather than two booleans so a failure PRINTS the
+      // offending message: this is the assertion a real #2783 over-widening
+      // trips, and `expected true to be false` would not say which control or
+      // which widening did it.
+      for (const message of SFN_ANCHOR_CONTROLS) {
+        expect({
+          message,
+          retryable: isRetryableTransientError(new Error(message), message),
+          propagation: isIamPropagationError(message),
+        }).toEqual({ message, retryable: false, propagation: false });
+      }
+    });
+
+    // The claim this replaces was a COMMENT asserting the controls above left
+    // no truncation of the anchor unfenced. It was written by eye and it was
+    // wrong -- an earlier revision said the KMS control fenced "every"
+    // back-truncation while seven truncations passed the suite green. A
+    // sentence cannot notice when a control is edited, so the claim is
+    // computed here instead.
+    //
+    // Widening is the failure mode that matters: the anchor is a SUBSTRING
+    // match, so shortening it silently admits messages about other resources
+    // (`...access the Log Group` is a permanent CloudWatch Logs denial) or
+    // even non-errors (`is authorized to access...`, the negation dropped).
+    it('leaves no truncation of the log-destination anchor unfenced (#2783)', () => {
+      const words = SFN_LOG_DESTINATION_ANCHOR.split(' ');
+      const truncations: string[] = [];
+      for (let i = 0; i < words.length; i++) {
+        for (let j = i + 1; j <= words.length; j++) {
+          const candidate = words.slice(i, j).join(' ');
+          if (candidate !== SFN_LOG_DESTINATION_ANCHOR) truncations.push(candidate);
+        }
+      }
+      // Non-vacuity: the ladder must actually have rungs, and every rung must
+      // still match the real message (one that does not is fenced trivially).
+      // The anchor is the SHIPPED pattern, not a copy of it -- otherwise this
+      // ladder could fence a string production no longer uses.
+      expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS).toContain(SFN_LOG_DESTINATION_ANCHOR);
+      expect(truncations.length).toBe(27);
+      for (const t of truncations) expect(SFN_LOG_DESTINATION_WIRE_MESSAGE).toContain(t);
+
+      // A truncation is FENCED when some control message contains it, because
+      // the pattern is matched by substring: a control carrying the shortened
+      // anchor would be classified retryable, and its assertion above fails.
+      const unfenced = truncations.filter(
+        (t) => !SFN_ANCHOR_CONTROLS.some((control) => control.includes(t))
+      );
+      expect(unfenced).toEqual([]);
     });
   });
 

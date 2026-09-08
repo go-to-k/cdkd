@@ -1211,6 +1211,7 @@
         "s3-lifecycle",
         "secrets-dynamic-ref",
         "stepfunctions",
+        "stepfunctions-logging",
         "tags-propagation",
         "throttle-wide-dag"
       ]
