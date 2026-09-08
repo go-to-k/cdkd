@@ -14,6 +14,7 @@ import {
   type EnvironmentVariableType,
   type CacheType,
   type CacheMode,
+  type HostKernel,
   type ImagePullCredentialsType,
   type SourceAuthType,
   type ProjectSource,
@@ -205,14 +206,12 @@ export class CodeBuildProvider implements ResourceProvider {
     // Environment nested sub-blocks (issue #1386). Same fresh-object drop
     // hazard as `mapSource`.
     //
-    // `Environment.HostKernel` is deliberately NOT mapped: it exists in the
-    // CFn registry schema but has NO corresponding member on the installed
-    // `@aws-sdk/client-codebuild` `ProjectEnvironment` model, so there is
-    // nothing to map it onto until an SDK bump adds one. Naming it here
-    // would be a false claim of support. It is a NESTED key, so it cannot be
-    // declared in `unhandledByDesign` (that map is top-level-only), and
-    // `AWS::CodeBuild::Project` is not yet a `NESTED_KEY_TARGETS` entry in
-    // `scripts/gen-nested-key-coverage.ts` — this comment is the record.
+    // `Environment.HostKernel` IS mapped now. It was not, for the whole time
+    // the installed `@aws-sdk/client-codebuild` had no member to map it onto
+    // (issue #1386) — naming it then would have been a false claim of support.
+    // The SDK grew `ProjectEnvironment.hostKernel`, which the allow-list entry
+    // had named as its own expiry condition, and the nested-key checker's
+    // staleness pass is what surfaced that the condition had been met.
     const cfnFleet = environment?.['Fleet'] as Record<string, unknown> | undefined;
     const cfnDockerServer = environment?.['DockerServer'] as Record<string, unknown> | undefined;
 
@@ -367,6 +366,13 @@ export class CodeBuildProvider implements ResourceProvider {
         imagePullCredentialsType: environment?.['ImagePullCredentialsType'] as
           | ImagePullCredentialsType
           | undefined,
+        // `HostKernel` was unmappable until the SDK grew the member: the CFn
+        // registry declared the key while `ProjectEnvironment` had nothing to
+        // put it on, so naming it here would have been a false claim of
+        // support. `@aws-sdk/client-codebuild` 3.1126.0 declares
+        // `ProjectEnvironment.hostKernel`, which is exactly the condition the
+        // `NESTED_KEY_ALLOW_LIST` entry named as its own expiry.
+        hostKernel: environment?.['HostKernel'] as HostKernel | undefined,
         fleet: cfnFleet ? { fleetArn: cfnFleet['FleetArn'] as string | undefined } : undefined,
         dockerServer: cfnDockerServer
           ? {
@@ -728,7 +734,9 @@ export class CodeBuildProvider implements ResourceProvider {
         env['Certificate'] = project.environment.certificate;
       }
       // Fleet / DockerServer wired on the write side by issue #1386.
-      // `HostKernel` has no SDK member, so there is nothing to read back.
+      if (project.environment?.hostKernel !== undefined) {
+        env['HostKernel'] = project.environment.hostKernel;
+      }
       if (project.environment?.fleet !== undefined) {
         const fleet: Record<string, unknown> = {};
         if (project.environment.fleet.fleetArn !== undefined) {

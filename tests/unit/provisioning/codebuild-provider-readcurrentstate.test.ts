@@ -223,6 +223,50 @@ describe('CodeBuildProvider.readCurrentState', () => {
     expect('AutoRetryLimit' in result!).toBe(false);
   });
 
+  it('emits Environment.HostKernel when AWS reports it', async () => {
+    // The read-back half of the key that left `NESTED_KEY_ALLOW_LIST` when the
+    // SDK grew `ProjectEnvironment.hostKernel`. Without it a drift comparison
+    // sees a value the template set and the observed state does not carry, and
+    // reports a permanent difference on a project that is in fact correct.
+    mockSend.mockResolvedValueOnce({
+      projects: [
+        {
+          name: 'myproj',
+          environment: {
+            type: 'LINUX_CONTAINER',
+            image: 'aws/codebuild/standard:7.0',
+            computeType: 'BUILD_GENERAL1_SMALL',
+            hostKernel: 'LINUX_KERNEL_6',
+          },
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const env = result?.['Environment'] as Record<string, unknown> | undefined;
+    expect(env?.['HostKernel']).toBe('LINUX_KERNEL_6');
+  });
+
+  it('omits Environment.HostKernel when AWS does not report it', async () => {
+    mockSend.mockResolvedValueOnce({
+      projects: [
+        {
+          name: 'myproj',
+          environment: {
+            type: 'LINUX_CONTAINER',
+            image: 'aws/codebuild/standard:7.0',
+            computeType: 'BUILD_GENERAL1_SMALL',
+          },
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    const env = result?.['Environment'] as Record<string, unknown> | undefined;
+    expect(env).toBeDefined();
+    expect('HostKernel' in env!).toBe(false);
+  });
+
   it('returns undefined when project is gone (empty projects array)', async () => {
     mockSend.mockResolvedValueOnce({ projects: [] });
     const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');

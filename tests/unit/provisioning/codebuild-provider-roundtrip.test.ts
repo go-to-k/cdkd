@@ -270,6 +270,70 @@ describe('CodeBuildProvider read-update round-trip', () => {
     expect(input.sourceVersion).toBeUndefined();
   });
 
+  it('create() sends Environment.HostKernel, which was unmappable until the SDK grew the member', async () => {
+    // It sat in `NESTED_KEY_ALLOW_LIST` for as long as the installed
+    // `@aws-sdk/client-codebuild` had no member to map it onto — the CFn
+    // registry declared the key and `ProjectEnvironment` did not carry it, so
+    // naming it in the provider would have been a false claim of support. The
+    // entry's own rationale named the SDK shipping the member as its expiry,
+    // and the nested-key checker's staleness pass is what noticed the condition
+    // had been met. This case is the other half: the key is not merely
+    // allow-list-free, it is actually delivered.
+    const props = {
+      Name: 'myproj',
+      ServiceRole: 'arn:aws:iam::1:role/r',
+      Source: { Type: 'NO_SOURCE' },
+      Artifacts: { Type: 'NO_ARTIFACTS' },
+      Environment: {
+        Type: 'LINUX_CONTAINER',
+        Image: 'aws/codebuild/standard:7.0',
+        ComputeType: 'BUILD_GENERAL1_SMALL',
+        HostKernel: 'LINUX_KERNEL_6',
+      },
+    };
+
+    mockSend.mockResolvedValueOnce({ project: { name: 'myproj', arn: 'arn:1' } });
+
+    await provider.create('L', RESOURCE_TYPE, props);
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateProjectCommand);
+    expect(createCall).toBeDefined();
+    const input = (createCall![0] as CreateProjectCommand).input;
+    expect(input.environment?.hostKernel, 'HostKernel is dropped on the way out').toBe(
+      'LINUX_KERNEL_6'
+    );
+    // The siblings still ride along: a fresh-object mapper that gains a key by
+    // REPLACING the object drops everything it did not restate, which is the
+    // hazard the surrounding comment in the provider is about.
+    expect(input.environment?.computeType).toBe('BUILD_GENERAL1_SMALL');
+    expect(input.environment?.image).toBe('aws/codebuild/standard:7.0');
+  });
+
+  it('omits Environment.HostKernel entirely when the template does not set it', async () => {
+    // `undefined` rather than a null or an empty string: CodeBuild rejects an
+    // empty enum, and an always-present key would make every project that
+    // never asked for one carry a value.
+    const props = {
+      Name: 'myproj',
+      ServiceRole: 'arn:aws:iam::1:role/r',
+      Source: { Type: 'NO_SOURCE' },
+      Artifacts: { Type: 'NO_ARTIFACTS' },
+      Environment: {
+        Type: 'LINUX_CONTAINER',
+        Image: 'aws/codebuild/standard:7.0',
+        ComputeType: 'BUILD_GENERAL1_SMALL',
+      },
+    };
+
+    mockSend.mockResolvedValueOnce({ project: { name: 'myproj', arn: 'arn:1' } });
+
+    await provider.create('L', RESOURCE_TYPE, props);
+
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateProjectCommand);
+    const input = (createCall![0] as CreateProjectCommand).input;
+    expect(input.environment?.hostKernel).toBeUndefined();
+  });
+
   it('create() sends AutoRetryLimit into CreateProjectCommand (#609 backfill)', async () => {
     const props = {
       Name: 'myproj',

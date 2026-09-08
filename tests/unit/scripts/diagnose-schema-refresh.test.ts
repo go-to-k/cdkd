@@ -1198,16 +1198,59 @@ describe('sdkClientVersions', () => {
     // `route53-provider.ts`.
     const rows = sdkClientVersions('src/provisioning/providers/asg-provider.ts', REPO_ROOT);
     expect(rows.length, 'asg-provider no longer imports two clients').toBeGreaterThan(1);
-    expect(
-      new Set(rows.map((r) => r.version)).size,
-      'the two clients now share a version — this case can no longer see a mispairing'
-    ).toBeGreaterThan(1);
     for (const { client, version } of rows) {
       expect(client).toMatch(/^@aws-sdk\/client-/);
       const onDisk = JSON.parse(
         readFileSync(join(REPO_ROOT, 'node_modules', client, 'package.json'), 'utf8')
       ).version;
       expect(version, `${client} paired with another client's version`).toBe(onDisk);
+    }
+  });
+
+  it('pairs correctly when the two clients are at DIFFERENT versions', () => {
+    // The discriminating half, and it is synthetic BECAUSE the real tree can
+    // no longer supply it: every `@aws-sdk/client-*` moves as one dependabot
+    // group, so after a bump they all share a version and the real-provider
+    // case above cannot tell a correct pairing from `rows[0]`'s version
+    // repeated. Its own anti-vacuity guard said so and failed, which is how
+    // this case came to exist — the guard is not deleted, it is answered.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-sdkver-'));
+    try {
+      const provider = join(dir, 'src/provisioning/providers');
+      mkdirSync(provider, { recursive: true });
+      writeFileSync(
+        join(provider, 'two-client-provider.ts'),
+        [
+          "import { AlphaClient } from '@aws-sdk/client-alpha';",
+          "import { BetaClient } from '@aws-sdk/client-beta';",
+          'export const x = [AlphaClient, BetaClient];',
+        ].join('\n')
+      );
+      for (const [name, version] of [
+        ['alpha', '3.1.0'],
+        ['beta', '3.999.0'],
+      ] as const) {
+        const pkg = join(dir, 'node_modules/@aws-sdk', `client-${name}`);
+        // `dist-types/models` must EXIST: an installed-but-typeless package is
+        // skipped rather than reported, which is the honest answer for a lag
+        // question there is no model to ask.
+        mkdirSync(join(pkg, 'dist-types/models'), { recursive: true });
+        writeFileSync(
+          join(pkg, 'package.json'),
+          JSON.stringify({ name: `@aws-sdk/client-${name}`, version })
+        );
+      }
+      const rows = sdkClientVersions('src/provisioning/providers/two-client-provider.ts', dir);
+      expect(
+        new Set(rows.map((r) => r.version)).size,
+        'the fixture no longer supplies two DIFFERENT versions'
+      ).toBe(2);
+      expect(rows).toEqual([
+        { client: '@aws-sdk/client-alpha', version: '3.1.0' },
+        { client: '@aws-sdk/client-beta', version: '3.999.0' },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

@@ -14,16 +14,16 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 - Audited targets: **24**
 - Nested CFn key paths audited: **1215**
-- Same spelling in SDK model: **1123**
+- Same spelling in SDK model: **1124**
 - Explicitly handled in provider: **70**
-- Allow-listed pass-throughs (does NOT block CI): **22**
+- Allow-listed pass-throughs (does NOT block CI): **21**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **15**
 - **No write evidence (blocks CI): 0**
 - Shape pass — bare-array pairs clean: **148**
 - Shape pass — explicitly handled in provider: **40**
-- Shape pass — allow-listed (does NOT block CI): **7**
+- Shape pass — allow-listed (does NOT block CI): **9**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
 - Shape pass — ambiguous (visible, non-blocking): **0**
@@ -47,7 +47,6 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::CloudFront::Distribution` | `DistributionConfig.S3Origin.DNSName` | Member of the legacy CustomOrigin / S3Origin blocks only (LegacyCustomOrigin / LegacyS3Origin definitions); unreachable from a modern template. |
 | `AWS::CloudFront::Distribution` | `Tags.Key` | Written by toSdkTags on the forward path (`.map(([Key, Value]) => ({ Key, Value }))`), but one wrapper level below the audited chain: the SDK Tags shape is the { Items: Tag[] } wrapper, so the write scope is Tags.Items while the CFn transparent-array chain is Tags.Key. A wrapper-level insertion is neither a case fold nor a segmentRename, so the write pass cannot see it. |
 | `AWS::CloudFront::Distribution` | `Tags.Value` | Same wrapper-level insertion as Tags.Key: written by toSdkTags beneath the SDK { Items: Tag[] } wrapper (scope Tags.Items), one level below the CFn chain. |
-| `AWS::CodeBuild::Project` | `Environment.HostKernel` | Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable. |
 | `AWS::ECS::Service` | `ForceNewDeployment.EnableForceNewDeployment` | CFn-only rollout-trigger member with NO per-member SDK counterpart: the ECS SDK models the whole ForceNewDeployment block as the single top-level boolean `forceNewDeployment` on UpdateService. ECSProvider.resolveForceNewDeployment translates {EnableForceNewDeployment: true} OR a ForceNewDeploymentNonce change into `forceNewDeployment: true` (issue #609) — a shape collapse neither the key pass (no same-spelled member exists) nor the write pass (the write is a different, top-level member) can express. |
 | `AWS::ECS::Service` | `ForceNewDeployment.ForceNewDeploymentNonce` | Same single-boolean collapse as ForceNewDeployment.EnableForceNewDeployment: the nonce has no SDK member of its own — a nonce CHANGE is what resolveForceNewDeployment turns into `forceNewDeployment: true` (issue #609). |
 | `AWS::Lambda::EventSourceMapping` | `Tags.Key` | Same list-to-map fold as the AppSync entries: Lambda models an event source mapping's tags as a flat Record<string, string> (`Tags`), not as CFn's [{Key, Value}] list, and the provider folds the list into that map on create (`Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]))`). No `Key` member exists anywhere in the SDK model to spell-match. READ THE VERDICT WITH CARE: the key pass reports this as `case-divergence` ("SDK has KEY") rather than `no-sdk-member`, because the member index also carries enum const-object keys and `@aws-sdk/client-lambda`'s `KafkaSchemaValidationAttribute` declares `KEY` / `VALUE` — a Kafka schema-validation attribute with nothing to do with tagging. A case fold would NOT fix this key; there is no member to fold onto. |
@@ -63,6 +62,8 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 
@@ -216,6 +217,6 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 16 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 37 | 6 |
-| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 190 | 15 |
+| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 190 | 14 |
 | `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | no | 47 | 0 |
 
