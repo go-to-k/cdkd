@@ -25,7 +25,6 @@ import {
   FOREIGN_ERROR_NAMES,
   SELF_PROBE_CASES,
   MIN_TEMPLATE_LITERAL_CHARS,
-  MIN_TRUNCATION_TAIL_CHARS,
   BLOCKING,
 } from '../../../scripts/check-docs-error-strings.ts';
 
@@ -171,6 +170,41 @@ describe('docs error-string checker: template extraction', () => {
     expect(matchesSourceTemplate('CREATE failed for the thing: boom', strong)).toBe(true);
   });
 
+
+  it('REFUSES a quotation the author truncated with an ellipsis', () => {
+    /*
+     * Six review rounds each found the partial-match rule accepting a
+     * fabrication one step further out, and the measurement that settled it is
+     * that ZERO of the site's quoted lines are truncated. Refusing is now the
+     * contract: the author quotes the message in full.
+     */
+    const t = templatesOf('throw new E(`State has been modified by another process. ${tail}`);');
+    expect(matchesSourceTemplate('State has been modified by another ...', t)).toBe(false);
+    // The same quotation, complete, is accepted.
+    expect(matchesSourceTemplate('State has been modified by another process. yes', t)).toBe(true);
+  });
+
+  it('does not let a trailing HOLE absorb the ellipsis', () => {
+    /*
+     * The refusal is inert unless truncated subjects are matched only against
+     * templates whose own text ends in an ellipsis: most templates end in a
+     * hole, whose wildcard swallows the author's `...` so the fabrication
+     * matches outright and never reaches the refusal. Measured on the real
+     * corpus, `Failed to ${verb} resource ${id}` vouched for a whole invented
+     * sentence this way.
+     */
+    const t = templatesOf('throw new E(`Failed to ${verb} resource ${logicalId}`);');
+    expect(
+      matchesSourceTemplate('Failed to reach the state bucket and every resource ...', t)
+    ).toBe(false);
+  });
+
+  it('still accepts a message whose REAL text ends in an ellipsis', () => {
+    // The narrow legitimate case the refusal must not break.
+    const t = templatesOf('throw new E(`Reticulating splines, please wait...`);');
+    expect(matchesSourceTemplate('Reticulating splines, please wait...', t)).toBe(true);
+  });
+
   it('drops a template longer than the cap, and keeps one just under it', () => {
     const long = 'x'.repeat(700);
     expect(templatesOf(`const a = \`${long}\`;`)).toEqual([]);
@@ -270,107 +304,12 @@ describe('docs error-string checker: template extraction', () => {
     ]);
   });
 
-  it('refuses a truncated invention that merely BORROWS an opening', () => {
-    // The blocker: comparing only the overlapping characters left the rest of
-    // the message unexamined, so 12 borrowed characters + "..." blessed
-    // anything. Each subject below diverges from the template after a real
-    // shared prefix and must be refused.
-    const t = templatesOf('throw new E(`Failed to acquire lock for stack ${s} after ${n}`);');
-    expect(matchesSourceTemplate('Failed to acquire the moon and every star, twice ...', t)).toBe(false);
-    expect(matchesSourceTemplate('Failed to acquire lock for the wrong thing entirely ...', t)).toBe(false);
-    // ...while the genuine truncations at both cut points still pass.
-    expect(matchesSourceTemplate('Failed to acquire lock for ...', t)).toBe(true);
-    expect(matchesSourceTemplate("Failed to acquire lock for stack 'S' after ...", t)).toBe(true);
-  });
 
-  it('refuses a truncation that borrows a whole opening literal and then invents', () => {
-    /*
-     * Round 2's blocker: aligning the borrowed text to a complete opening
-     * literal was enough, because the cumulative-prefix loop accepted k=1 and
-     * left everything after it in an unexamined hole. A truncation past the
-     * opening must now reach a SECOND literal.
-     */
-    const t = templatesOf('throw new E(`Added the node named ${id} of type (${type})`);');
-    expect(matchesSourceTemplate('Added the node named TOTAL FABRICATION never ...', t)).toBe(false);
-    // Reaching the second literal is what makes it a real prefix.
-    expect(matchesSourceTemplate('Added the node named MyBucket of type (AWS ...', t)).toBe(true);
-  });
 
-  it('refuses a second literal of a single character', () => {
-    /*
-     * Round 4's finding: requiring the tail to be merely NON-EMPTY was the
-     * same defect one character up. `(`, `:` and `,` are second literals on
-     * many real templates and turn up by chance in invented prose, so the
-     * tail must clear MIN_TRUNCATION_TAIL_CHARS rather than just exist.
-     */
-    // Second literal is a single `:` — enough to "exist", not enough to mean
-    // anything, since a colon turns up in arbitrary prose.
-    const weak = templatesOf('throw new E(`Something big happened ${a}: ${b} at the end here`);');
-    expect(
-      matchesSourceTemplate('Something big happened TOTAL FABRICATION: invented ...', weak)
-    ).toBe(false);
 
-    /*
-     * ACCEPT twin, so the case cannot pass merely because the extractor
-     * returned nothing: same shape, second literal widened past the margin.
-     */
-    const strong = templatesOf('throw new E(`Something big happened ${a} while ${b} at the end`);');
-    expect(matchesSourceTemplate('Something big happened THING while other ...', strong)).toBe(true);
-    expect(MIN_TRUNCATION_TAIL_CHARS).toBeGreaterThan(1);
-  });
 
-  it('counts the head in substantive characters, not raw length', () => {
-    /*
-     * Fences the FIRST substantive() guard, which review mutation-tested as
-     * unfenced: reverting it to `head.join('').length` left every other case
-     * green. The template's head is long in raw characters and short in real
-     * ones, so only the substantive count refuses it.
-     */
-    const t = templatesOf('throw new E(`a b c d e ${x} xyz ${y} Z`);');
-    // Head is 17 raw characters but only 9 substantive ones, and the trailing
-    // ` Z` keeps the whole-template matcher from accepting outright — so the
-    // ONLY thing standing between this subject and a pass is which unit the
-    // first guard counts in.
-    expect(matchesSourceTemplate('a b c d e VALUE xyz invented tail ...', t)).toBe(false);
-  });
 
-  it('refuses to vouch for a truncation with a template that STARTS with a hole', () => {
-    /*
-     * Such a template has no opening literal, so both the whole-template
-     * matcher and the prefix loop lose their left anchor and degrade to "ends
-     * with / contains this segment". Measured, 490 real templates are in this
-     * shape and they accepted entire fabricated sentences on the strength of
-     * a trailing `.assets.json`.
-     */
-    const t = templatesOf('throw new E(`${path} could not be read here`);');
-    expect(
-      matchesSourceTemplate('Nothing here is real, it is pure invention, and yet it could not be read here ...', t)
-    ).toBe(false);
-    // A COMPLETE quotation of the same template is still fine — it is anchored
-    // at both ends, so the leading hole costs nothing.
-    expect(matchesSourceTemplate('/tmp/x could not be read here', t)).toBe(true);
-  });
 
-  it('refuses a second literal made only of whitespace', () => {
-    /*
-     * Round 3's blocker. `Could not confirm that ${a} ${b} (${c})` has a
-     * whitespace-only second segment; trailing-trim emptied it and the
-     * cumulative prefix collapsed back to `^lead`, reinstating the k=1
-     * matcher the `k >= 2` rule forbids. Guards count SUBSTANTIVE characters
-     * now, so a padding segment satisfies nothing.
-     */
-    const t = templatesOf('throw new E(`Could not confirm that ${a} ${b} (${c}) is the resource`);');
-    expect(matchesSourceTemplate('Could not confirm that TOTAL FABRICATION never ...', t)).toBe(false);
-    expect(matchesSourceTemplate('Could not confirm that FABRICATIONXYZQ ...', t)).toBe(false);
-  });
-
-  it('requires a truncated quote to overlap the opening literal by a real margin', () => {
-    const t = templatesOf('throw new E(`State has been modified by another process. ${tail}`);');
-    expect(matchesSourceTemplate('State has been modified by ...', t)).toBe(true);
-    // A few shared characters must not be enough.
-    expect(matchesSourceTemplate('State ...', t)).toBe(false);
-    expect(MIN_TEMPLATE_LITERAL_CHARS).toBeGreaterThan(8);
-  });
 });
 
 describe('docs error-string checker: page scanning', () => {

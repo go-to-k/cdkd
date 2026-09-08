@@ -67,20 +67,23 @@
  *   under a `Caused by:` line, making the published one-line form unreachable.
  *   Deciding the pairing would mean knowing which errors wrap which, which is
  *   a call-graph question this cannot answer from string literals.
- * - **A truncated quotation is judged on a PREFIX of the template**, so the
- *   text after the author's ellipsis is unexamined by construction. It must
- *   either stop inside the opening literal, or reach a SECOND literal —
- *   keeping text from both sides of a hole, counted in SUBSTANTIVE (non-
- *   whitespace) characters and required to clear a MARGIN; and a template
- *   with no opening literal at all does not vouch for a truncation, since
- *   without a left anchor the test degrades to "ends with this segment".
- *   FIVE review rounds walked this rule inward, each remedy re-opening it one
- *   step further out: comparing only the overlapping characters; accepting a
- *   borrowed opening that aligned to a whole literal; a whitespace-only
- *   second literal collapsing it back; a ONE-character one doing the same;
- *   and finally the leading-hole templates, which had never been anchored at
- *   all. A quote cut inside the first hole is refused — a loud,
- *   author-fixable outcome rather than a silent blessing.
+ * - **A quotation the author TRUNCATED with an ellipsis is REFUSED, not
+ *   partially verified.** This was the opposite for six review rounds, and
+ *   each remedy was found accepting a fabrication one step further out:
+ *   comparing only the overlapping characters; accepting a borrowed opening
+ *   that aligned to a whole literal; a whitespace-only second literal; a
+ *   one-character one; templates with no opening literal at all; and finally
+ *   an unbounded hole between two literals, where `Failed to ${verb} resource
+ *   ${id}` vouched for an entire invented sentence. What settled it was a
+ *   measurement rather than a seventh guard: ZERO of the site's quoted error
+ *   lines are truncated, so 45 lines of partial-matching served no real case
+ *   while admitting thousands of vouchers. Refusing costs an author one more
+ *   clause; the alternative made `...` the documented way past the fence.
+ *
+ *   The one legitimate case is preserved: a message whose OWN text ends in an
+ *   ellipsis matches in full. That is why a truncated subject is compared only
+ *   against templates ending in one — otherwise a trailing hole absorbs the
+ *   author's `...` and the refusal never fires.
  *
  * COLLAPSE DEFENCES. The population is small (a couple of dozen lines
  * site-wide), so counting only findings would let a broken scanner report a
@@ -160,7 +163,12 @@ export const FLOORS = {
   templates: 5_000,
 } as const;
 
-export type Verdict = 'anchored' | 'foreign-allowed' | 'unknown-class' | 'no-source-anchor';
+export type Verdict =
+  | 'anchored'
+  | 'foreign-allowed'
+  | 'unknown-class'
+  | 'no-source-anchor'
+  | 'truncated-quotation';
 
 export interface Finding {
   file: string;
@@ -235,14 +243,14 @@ export function collectDocPages(dir: string, out: string[] = []): string[] {
  *   reunites the halves into the single template the code effectively has.
  */
 export interface Template {
-  /** Whole-message matcher, holes widened to wildcards. */
+  /** Whole-message matcher, holes widened to wildcards, anchored at both ends. */
   re: RegExp;
-  /** Literal text before the first hole — the anchor a truncated quote is judged on. */
-  lead: string;
-  /** The literal segments between holes, in order. Used to judge a truncation. */
-  parts: string[];
-  /** Memoised start-anchored prefix matchers, keyed by segment count. */
-  prefixCache: Map<number, RegExp>;
+  /**
+   * Does the template's own LITERAL text end in an ellipsis? Only such a
+   * template may vouch for a quotation that ends in one — otherwise a trailing
+   * hole silently absorbs the author's `...` and the refusal never fires.
+   */
+  endsWithEllipsis: boolean;
 }
 
 /** Escape a literal for embedding in a regex. */
@@ -253,42 +261,6 @@ const HOLE = '[\\s\\S]*?';
 
 /** Literal characters that are not whitespace — the only ones that anchor anything. */
 const substantive = (s: string): number => s.replace(/\s/g, '').length;
-
-/**
- * Substantive characters a truncated quotation must match BEYOND the opening
- * literal before arm (b) will vouch for it.
- *
- * A presence test (`!== 0`) is not enough, which review established twice at
- * one character's distance: first a whitespace-only second literal collapsed
- * the rule to "starts with the lead", then a ONE-character one (`(`, `:`, `,`)
- * did the same in practice, because single punctuation appears by chance in
- * arbitrary invented prose. A margin is what makes the second literal carry
- * signal rather than merely exist.
- */
-export const MIN_TRUNCATION_TAIL_CHARS = 3;
-
-/**
- * Start-anchored matcher for the first `k` literal segments of a template,
- * memoised per template — arm (b) of the truncation test asks for these
- * repeatedly, and recompiling them per call is the whole cost of that path.
- */
-function prefixMatcher(t: Template, k: number): RegExp {
-  const cached = t.prefixCache.get(k);
-  if (cached) return cached;
-  /*
-   * The FINAL segment of the head is matched with its trailing whitespace
-   * trimmed. An author truncating at a word boundary writes
-   * `... stack 'S' after ...`, while the template's literal is `' after ` —
-   * with the space, the quote reaches the literal but never completes it, and
-   * a correct truncation is refused for a reason nobody can act on. Only the
-   * trailing space is relaxed; every earlier segment must match in full.
-   */
-  const head = t.parts.slice(0, k).map(esc);
-  head[k - 1] = esc(t.parts[k - 1]!.replace(/\s+$/, ''));
-  const re = new RegExp(`^${head.join(HOLE)}`);
-  t.prefixCache.set(k, re);
-  return re;
-}
 
 /** Longest template worth compiling. Past this it is a code block, not a message. */
 const MAX_TEMPLATE_CHARS = 600;
@@ -367,13 +339,9 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
     const source = parts.map(esc).join(HOLE);
     if (seen.has(source)) return;
     seen.add(source);
-    const trimmedParts = parts.slice();
-    trimmedParts[0] = (trimmedParts[0] ?? '').trimStart();
     out.push({
       re: new RegExp(`^${source}$`),
-      lead: trimmedParts[0]!,
-      parts: trimmedParts,
-      prefixCache: new Map(),
+      endsWithEllipsis: /(\.\.\.|\u2026)$/.test(collapsed),
     });
   };
 
@@ -419,74 +387,31 @@ export function matchesSourceTemplate(
   message: string,
   templates: ReadonlyArray<Template>
 ): boolean {
-  const trimmed = message.trim();
-  const truncated = /\s?\.\.\.$/.test(trimmed);
-  const subject = truncated ? trimmed.replace(/\s?\.\.\.$/, '').trimEnd() : trimmed;
+  const subject = message.trim();
   if (subject.length === 0) return false;
-
-  for (const t of templates) {
-    /*
-     * A template that STARTS with a hole has no opening literal. For a
-     * COMPLETE quotation that is fine — `${op} failed for ${id}: ${msg}`
-     * legitimately renders `CREATE failed for MyTopic: Rate exceeded`, and the
-     * match is anchored at both ends. For a TRUNCATED one it is not: the end
-     * anchor is gone too, so the test degrades to "ends with this segment",
-     * and 490 such templates accepted whole fabricated sentences on the
-     * strength of a trailing `.assets.json`. Neither arm below can judge one
-     * either, so a leading-hole template simply does not vouch for a
-     * truncation.
-     */
-    const leadless = substantive(t.parts[0] ?? '') === 0;
-    if (truncated && leadless) continue;
-
-    if (t.re.test(subject)) return true;
-    /*
-     * A truncated quotation must be a genuine PREFIX of what the template
-     * renders. Two arms, and the SECOND one's residual is stated rather than
-     * claimed away, because two review rounds landed on it:
-     *
-     * - Round 1 found the original: it compared only the first
-     *   `min(subject, lead)` characters and stopped, leaving the rest of the
-     *   message unexamined, so `Failed to acquire the moon and every star ...`
-     *   passed on an 18-character overlap.
-     * - Round 2 found that the rewrite still accepted `Added node: TOTAL
-     *   FABRICATION ...` whenever the borrowed text happened to align to a
-     *   whole opening literal, while an inline comment here claimed both arms
-     *   consumed the whole subject. They do not: arm (b) is anchored at the
-     *   start only, and everything past the last matched literal sits in a
-     *   HOLE, which this checker does not judge by design.
-     *
-     * So arm (b) now requires the truncation to reach a SECOND literal —
-     * proving the author kept text from both sides of a hole, not just an
-     * opening they could have copied. A quote cut inside the first hole is
-     * refused; the remedy is to quote one clause further, which is a loud,
-     * author-fixable outcome rather than a silent blessing.
-     */
-    if (truncated) {
-      // (a) The author cut inside the opening literal.
-      if (t.lead.startsWith(subject) && subject.length >= MIN_TEMPLATE_LITERAL_CHARS) return true;
-
-      /*
-       * (b) The author cut later, having crossed at least one hole.
-       *
-       * Every guard counts SUBSTANTIVE characters — literal text with the
-       * whitespace removed — and the tail beyond the lead must clear a MARGIN,
-       * not merely exist. Review walked this rule inward twice: counting raw
-       * length let a whitespace-only second literal collapse the whole thing
-       * back to "starts with the lead", and requiring merely non-zero let a
-       * one-character literal do the same, since `(` or `:` turns up by chance
-       * in invented prose. The margin is what makes the second literal
-       * evidence instead of a coincidence.
-       */
-      for (let k = t.parts.length; k >= 2; k--) {
-        const head = t.parts.slice(0, k);
-        if (substantive(head.join('')) < MIN_TEMPLATE_LITERAL_CHARS) break;
-        if (substantive(head.slice(1).join('')) < MIN_TRUNCATION_TAIL_CHARS) continue;
-        if (prefixMatcher(t, k).test(subject)) return true;
-      }
-    }
+  /*
+   * A quotation ending in an ellipsis is matched ONLY against templates whose
+   * own text ends in one. Without that restriction the check is inert: most
+   * templates end in a hole, whose wildcard absorbs the author's `...`, so a
+   * truncated fabrication matches outright and never reaches the refusal.
+   * Measured — `Failed to ${verb} resource ${id}` vouched for an entire
+   * invented sentence that way, and 2728 templates could do the same.
+   */
+  if (looksTruncated(subject)) {
+    return templates.some((t) => t.endsWithEllipsis && t.re.test(subject));
   }
-  return false;
+  return templates.some((t) => t.re.test(subject));
+}
+
+/**
+ * Does this quotation END in an ellipsis, i.e. did the author elide the rest?
+ *
+ * Checked only AFTER {@link matchesSourceTemplate} fails, because a handful of
+ * real messages genuinely end in `...` — quoting one of those in full is
+ * correct and matches outright.
+ */
+export function looksTruncated(message: string): boolean {
+  return /(\.\.\.|\u2026)$/.test(message.trim());
 }
 
 /** Result of scanning one page: findings plus the coverage counters. */
@@ -559,8 +484,19 @@ export function scanPage(
     let verdict: Verdict;
     if (!errorNames.has(errorName)) {
       verdict = FOREIGN_ERROR_NAMES.has(errorName) ? 'foreign-allowed' : 'unknown-class';
+    } else if (matchesSourceTemplate(message, templates)) {
+      verdict = 'anchored';
     } else {
-      verdict = matchesSourceTemplate(message, templates) ? 'anchored' : 'no-source-anchor';
+      /*
+       * A quotation the author ended with an ellipsis is REFUSED rather than
+       * partially verified. Six review rounds each found the partial-match
+       * rule accepting a fabrication one step further out, and the measurement
+       * that settled it is that ZERO of the site's quoted error lines are
+       * truncated — 45 lines of guarded matching served no real case while
+       * admitting thousands of vouchers. Making `...` the way past the fence
+       * would have been the per-message opt-out this checker refuses to have.
+       */
+      verdict = looksTruncated(message) ? 'truncated-quotation' : 'no-source-anchor';
     }
     findings.push({ file: relPath, line: startLine, errorName, message, verdict });
   }
@@ -568,7 +504,11 @@ export function scanPage(
 }
 
 /** A verdict that fails the build. */
-export const BLOCKING: ReadonlySet<Verdict> = new Set<Verdict>(['unknown-class', 'no-source-anchor']);
+export const BLOCKING: ReadonlySet<Verdict> = new Set<Verdict>([
+  'unknown-class',
+  'no-source-anchor',
+  'truncated-quotation',
+]);
 
 /**
  * Fixed inputs with known verdicts, run BEFORE the real tree is read.
@@ -646,11 +586,18 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     expect: 'no-source-anchor',
   },
   {
-    what: 'a doc block truncated with ... matches as a prefix',
+    what: 'a doc block truncated with ... is REFUSED, not partially verified',
     line: 'StateError: State has been modified by another process. Expected ...',
     errorNames: ['StateError'],
     source:
       'throw new StateError(`State has been modified by another process. Expected ETag: ${etag}, but state has changed.`)',
+    expect: 'truncated-quotation',
+  },
+  {
+    what: 'a message whose real text ENDS in an ellipsis still matches in full',
+    line: 'StateError: Reticulating splines, please wait...',
+    errorNames: ['StateError'],
+    source: 'throw new StateError(`Reticulating splines, please wait...`)',
     expect: 'anchored',
   },
   {
@@ -767,7 +714,9 @@ function main(): void {
     const why =
       f.verdict === 'unknown-class'
         ? `cdkd assigns no error the name '${f.errorName}'`
-        : 'no message template in src/ produces this line';
+        : f.verdict === 'truncated-quotation'
+          ? 'a quotation ending in an ellipsis cannot be verified — quote the message in full'
+          : 'no message template in src/ produces this line';
     console.error(`${f.file}:${f.line}  [${f.verdict}] ${f.errorName}: ${f.message}\n    ${why}`);
   }
   for (const v of [...report.floorViolations, ...report.staleForeignNames]) console.error(v);
