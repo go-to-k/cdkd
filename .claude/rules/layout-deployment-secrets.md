@@ -75,13 +75,19 @@ Index of every area: [code-layout.md](code-layout.md).
     assembled string. `DeployEngine.handleOutputResolutionFailure` masks the
     same two bags in the same order, the text with `maskSecretsInText` and
     the strict arm's `cause` with `maskSecretsInError`. `cdkd import`'s
-    `resolveImportedProperties` is the third boundary of that shape (issue
-    #2803): its bag is HOISTED above the `try` so the `catch` can name it,
-    which is the whole fix — declared inside, it was out of scope exactly
-    where it was needed. **Every one of these is a mask over an error the
-    resolver built UNMASKED**, so each new caller inherits the obligation and
-    the class keeps recurring one boundary at a time (#2728, #2531, #2803);
-    masking at the THROW instead is residual #2827.
+    `resolveImportedProperties` joins them (issue #2803) — NOT the third of
+    that shape: `drift.ts` and `rollback-executor.ts` already hoist their bags
+    above the `try` for the same reason and say so at their own declarations,
+    so import was the site that had been MISSED, not a new pattern. Two halves,
+    and each alone is insufficient: the bag is HOISTED above the `try` so the
+    `catch` can name it at all, and the message is then MASKED — keeping the
+    hoist and dropping the mask still puts the plaintext on stderr (measured).
+    **Where a caller masks an error the RESOLVER THREW, it is masking text the
+    resolver built unmasked** (the #2728 sites above are a different half of
+    the same file: the resolver's own debug / warn ECHOES, which it masks
+    itself). So every new caller of a throwing resolver inherits the
+    obligation, which is why the class keeps recurring one boundary at a time
+    (#2728, #2531, #2803); masking at the THROW instead is residual #2827.
   - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
     mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
     no-ops on absent bags, so masking the LINE left a live `cdkd diff` printing

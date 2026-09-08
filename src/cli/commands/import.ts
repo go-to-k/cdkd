@@ -1615,10 +1615,22 @@ export async function resolveImportedProperties(
       // stated contract is to persist the `{{resolve:...}}` expression and
       // never the value.
       //
-      // Residual, the same one `evaluateConditions`' mask states: a plaintext
-      // shorter than `MIN_NEEDLE_LENGTH` (4) is EMBEDDED here rather than
-      // being the whole string, so the whole-value arm does not apply and
-      // `buildNeedleRegex` filters the needle out — it still prints.
+      // TWO residuals, both because the mask matches a needle LITERALLY.
+      //
+      // 1. The one `evaluateConditions`' mask states: a plaintext shorter than
+      //    `MIN_NEEDLE_LENGTH` (4) is EMBEDDED here rather than being the whole
+      //    string, so the whole-value arm does not apply and `buildNeedleRegex`
+      //    filters the needle out — it still prints.
+      // 2. A throw that echoes the plaintext TRANSFORMED defeats the match at
+      //    any length. `resolveGetAZs` and `Fn::GetStackOutput`'s region gate
+      //    both print `stripControlChars(value).slice(0, 64)`, so an 80-char
+      //    secret assembled into a region position puts 64 of its characters
+      //    on stderr with no needle matching (measured against this tree).
+      //    `stripControlChars` alone defeats it at any length.
+      //
+      // Both belong to issue #2827 — masking at the THROW, where the untruncated
+      // value still exists — not to this boundary, which by then has only the
+      // transformed text.
       logger.warn(
         `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}. ` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.` +

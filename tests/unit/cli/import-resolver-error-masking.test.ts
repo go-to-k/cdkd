@@ -108,7 +108,9 @@ function makeState(properties: Record<string, unknown>): StackState {
     },
     outputs: {},
     lastModified: 0,
-  } as unknown as StackState;
+    // No `as unknown as` — the literal satisfies `StackState` on its own, so a
+    // future required field reds here instead of being absorbed by a cast.
+  } satisfies StackState;
 }
 
 const TEMPLATE: CloudFormationTemplate = {
@@ -126,6 +128,11 @@ async function runWalk(properties: Record<string, unknown>): Promise<StackState>
     state,
     TEMPLATE,
     'us-east-1',
+    // The one cast that stays. `stateBackend` is only consulted for a
+    // cross-stack read (`Fn::ImportValue` / `Fn::GetStackOutput`), and no
+    // fixture here contains one — passing a stub would assert a call shape
+    // nothing in this file exercises. If a future case adds a cross-stack
+    // reference, this throws rather than resolving against a silent double.
     undefined as never,
     getLogger()
   );
@@ -181,15 +188,11 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
     expect(text, 'the surrounding diagnosis inside the masked segment survives').toContain(
       `not found in secret '${SECRET_ID}'`
     );
-  });
-
-  it('the text outside the masked segment is untouched', async () => {
-    // Cheap and separate from the control above: these three are concatenated
-    // outside `maskSecretsInText`, so this pins that the fix did not move the
-    // mask boundary outward to swallow them.
-    await runWalk({ Password: ECHOING_PROPERTY });
-
-    const text = warnedText();
+    // The spans OUTSIDE the mask, folded in here rather than given their own
+    // case: a working mask cannot swallow them, so no realistic regression
+    // reds on them alone and a separate case would be unfalsifiable. They are
+    // still worth asserting beside the needle above, which is what makes the
+    // pair read as "this much survives, that much is masked".
     expect(text, 'the resource id is still named').toContain('Res');
     expect(text, 'the resource type is still named').toContain('AWS::SQS::Queue');
     expect(text, 'the remedy sentence survives').toContain('cdkd state orphan');
