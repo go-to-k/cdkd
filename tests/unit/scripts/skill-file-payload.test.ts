@@ -130,7 +130,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // the arithmetic this record exists to replace with a measurement. Re-read
     // it from the tree after every rebase; the failure message prints the
     // number to paste.
-    corpusBytes: 174_012,
+    corpusBytes: 174_869,
     largest: { file: 'implement.md', bytes: 28_743 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },
@@ -509,7 +509,14 @@ const MIN_REFERENCE_FILES = 6;
 // 145,500 clears the binding one by 383 B. The forbidden direction retro.md
 // section 10-c names is a RETRO buying room for its own prose by raising a cap;
 // this is the opposite move on a floor whose failure mode is deletion.
-const MIN_REFERENCE_CORPUS_BYTES = 145_500;
+// RAISED 145_500 -> 146_700 by go-to-k/cdkd#1837, which gave ship.md's rebase
+// recipe the SECTION-HEADING case its three residual checks structurally could
+// not see (+857 B, corpus 174,012 -> 174,869). Same mechanical raise as above:
+// the growth is in a non-leader file, so it pushes the derived floor up. Inputs
+// at this date: corpus 174,869, largest implement.md 28,743, runner-up
+// verify.md 28,516, so the two thresholds are 146,126 (largest-side) and
+// 146,353 (runner-up side, binding); 146,700 clears the binding one by 347 B.
+const MIN_REFERENCE_CORPUS_BYTES = 146_700;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
