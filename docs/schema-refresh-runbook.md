@@ -97,7 +97,11 @@ a typical cycle most additions are read-only.
 
 A refresh PR that needs one is **assigned to you, labelled `needs-decision`,
 titled with the count, and opened by a one-line verdict at the top of its
-body**. Of those, only the assignment sends a notification — it is applied
+body**. The verdict names a range — `D1`–`D5` — and every decision in the body
+carries its label, running straight through the sections. They are spread
+across sections because they arrive from different checks, so the labels are
+what let you reach the number in the title; each decision section also carries
+its own count in the heading. Of those, only the assignment sends a notification — it is applied
 first for that reason — while the label and the title suffix are what the PR
 list can still tell you afterwards, including that a PR was settled. The
 verdict line is rewritten every cycle, so it does not age the way the rest of

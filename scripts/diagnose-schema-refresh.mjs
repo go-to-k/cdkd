@@ -1020,11 +1020,37 @@ export function renderDiagnosis(input) {
   } = input;
   const lines = ['## What changed, and what needs a decision', ''];
 
-  if (
-    countDecisions({ removed, divergences, nestedKeyUnparsed, failedChecks, unreadable }) === 0
-  ) {
+  const decisionTotal = countDecisions({
+    removed,
+    divergences,
+    nestedKeyUnparsed,
+    failedChecks,
+    unreadable,
+  });
+  if (decisionTotal === 0) {
     lines.push('Nothing in this refresh needs a decision — additions only.', '');
+  } else {
+    lines.push(
+      `**${decisionTotal} ${decisionTotal === 1 ? 'decision needs' : 'decisions need'} your ` +
+        `call**, labelled **D1**\u2013**D${decisionTotal}** below. They are spread across ` +
+        'sections because they arrive from different checks; the labels run straight through ' +
+        'so the count in the title can be reached from the body.',
+      ''
+    );
   }
+
+  // One running label per decision, ACROSS sections. Per-section numbering
+  // restarts and cannot be counted up to the total in the title, which is the
+  // only number a reader sees first — the PR that motivated this said
+  // "5 decisions needed" over four divergences and one failed check in two
+  // differently-shaped sections, and nothing in the body let a reader reach 5.
+  //
+  // Incremented at exactly the sites `countDecisions` counts, and the suite
+  // pins the last label against that total: a section that stops labelling, or
+  // one that labels something the count does not include, is a body that
+  // disagrees with its own title.
+  let decisionSeq = 0;
+  const D = () => `**D${++decisionSeq}.** `;
 
   if (autoTolerated.length > 0) {
     lines.push(
@@ -1066,7 +1092,7 @@ export function renderDiagnosis(input) {
 
   if (removed.length > 0) {
     lines.push(
-      '### Properties AWS removed — a decision is needed',
+      `### Properties AWS removed (${removed.length}) — a decision is needed`,
       '',
       'Each was in the previous snapshot, is not in this one, AND is declared by',
       'the provider — so the declaration is now bogus. Removals nothing declares',
@@ -1074,7 +1100,9 @@ export function renderDiagnosis(input) {
       ''
     );
     for (const entry of removed) {
-      lines.push(`- ${renderName(entry.resourceType)}`);
+      // One decision per TYPE, which is the unit `countDecisions` uses: a type
+      // losing three properties is settled by one judgement.
+      lines.push(`- ${D()}${renderName(entry.resourceType)}`);
       for (const property of entry.properties) {
         const candidates = entry.candidates[property] ?? [];
         const where =
@@ -1141,7 +1169,7 @@ export function renderDiagnosis(input) {
 
   if (divergences.length > 0) {
     lines.push(
-      '### Nested-key divergences — a decision is needed',
+      `### Nested-key divergences (${divergences.length}) — a decision is needed`,
       '',
       'Reported by the nested-key check, which reports divergences rather than',
       'staleness, so regenerating will not clear these.',
@@ -1150,7 +1178,7 @@ export function renderDiagnosis(input) {
     for (const d of divergences) {
       const detail = d.detail ? ` — ${renderDetail(d.detail)}` : '';
       lines.push(
-        `- ${renderName(d.resourceType)}: ${renderKey(d.nestedKey)} [${d.bucket}]${detail}`
+        `- ${D()}${renderName(d.resourceType)}: ${renderKey(d.nestedKey)} [${d.bucket}]${detail}`
       );
     }
     lines.push('', ...divergenceProcedure(divergences, sdkLag), '');
@@ -1162,7 +1190,7 @@ export function renderDiagnosis(input) {
     // is honest — both were tried, and the second is the exact silent-clean
     // verdict the whole job exists to prevent.
     lines.push(
-      '### The nested-key check reported something this report could not read',
+      `### ${D()}The nested-key check reported something this report could not read`,
       '',
       'It failed, or dropped findings, without printing lines this parser could',
       'read. That is one of its non-divergence refusals (a stale',
@@ -1188,7 +1216,7 @@ export function renderDiagnosis(input) {
     // `enrichment-coverage` — both fixture-driven, both CI-blocking, both
     // reachable by an ordinary schema ADDITION — reporting nothing. The next
     // one is a row in `CHECK_GUIDANCE` and a line in the workflow.
-    lines.push('### CI checks that FAILED — a decision is needed', '');
+    lines.push(`### CI checks that FAILED (${failedChecks.length}) — a decision is needed`, '');
     for (const check of failedChecks) {
       // `Object.hasOwn`, not a bare lookup: a plain object literal answers for
       // `constructor` / `toString` / `valueOf` with a FUNCTION, which the
@@ -1200,7 +1228,7 @@ export function renderDiagnosis(input) {
       // rejection placeholder — the section that exists to say WHICH check
       // failed naming none of them. Identical to the defect one section down,
       // one round earlier. `renderKey` adds its own backticks.
-      lines.push(`#### ${renderKey(check)}`, '');
+      lines.push(`#### ${D()}${renderKey(check)}`, '');
       lines.push(
         ...(guidance ?? [
           'This report carries no guidance for that check — read its job log.',
@@ -1270,7 +1298,7 @@ export function renderDiagnosis(input) {
       // which is also what every other section renders.
       ...unreadable.map(
         (/** @type {string} */ f) =>
-          `- ${renderName(f.replace(/\.json$/, '').replace(/-/g, '::'))}`
+          `- ${D()}${renderName(f.replace(/\.json$/, '').replace(/-/g, '::'))}`
       ),
       ''
     );
