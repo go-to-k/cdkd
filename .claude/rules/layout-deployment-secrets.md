@@ -89,12 +89,12 @@ Index of every area: [code-layout.md](code-layout.md).
     obligation, which is why the class keeps recurring one boundary at a time
     (#2728, then #2803 — NOT #2531, which replaced scrub's PRIVATE name map
     with a view of the pass map, a bag-identity change carrying no mask and no
-    throw). Masking at the THROW instead is residual #2827, and it must mask
-    the RAW value rather than the assembled message: the whole-value arm has
-    no floor, so a 3-character secret masks there and not once interpolated.
-    What #2827 still cannot close is a value transformed BEFORE the throw
-    (`Fn::Base64`, `stringifyValue`'s escaping) — the recorded needle no
-    longer occurs in the text, so no masker matches it anywhere.
+    throw). **Every one of these masks is BOUNDED** — `maskSecretsInText`
+    matches literally, so a plaintext that arrives shortened, re-encoded or
+    embedded in a longer string is not masked. Do not restate WHICH shapes
+    escape or where a fix would sit: issue #2827 carries that enumeration with
+    its measurements, and five review rounds on #2803 each wrote a version of
+    it here and in the code that measurement then refuted.
   - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
     mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
     no-ops on absent bags, so masking the LINE left a live `cdkd diff` printing

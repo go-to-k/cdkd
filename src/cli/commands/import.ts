@@ -1625,35 +1625,20 @@ export async function resolveImportedProperties(
       // stated contract is to persist the `{{resolve:...}}` expression and
       // never the value.
       //
-      // THREE residuals, all because the mask matches a needle LITERALLY, and
-      // they differ in WHERE a fix could live — measured, not reasoned:
+      // THE MASK IS BOUNDED, and this comment deliberately does NOT enumerate
+      // how. `maskSecretsInText` matches a needle LITERALLY, so a plaintext
+      // that reaches the message shortened, re-encoded, or embedded in a
+      // longer string is not masked here. Which of those a fix elsewhere could
+      // close, and where such a fix would have to sit, is enumerated WITH ITS
+      // MEASUREMENTS on issue #2827 — five review rounds on this PR each
+      // rewrote a taxonomy in this spot and each was wrong in a NEW way
+      // (`no mask can fix it`, then `a raw-value mask closes it`, both refuted
+      // by measurement), because nothing here re-checks a claim about the
+      // masker's semantics. The issue is where the claims are acted on and
+      // where they are kept true; a pointer cannot go stale in the same way.
       //
-      // 1. Sub-floor, at a MESSAGE-level mask. A plaintext shorter than
-      //    `MIN_NEEDLE_LENGTH` (4) is EMBEDDED in the assembled message, so it
-      //    reaches `buildNeedleRegex`'s substring arm, which filters it.
-      //    `evaluateConditions`' mask states the same one. What does NOT
-      //    follow — and an earlier revision of this comment claimed it — is
-      //    that no mask can fix it: the WHOLE-VALUE arm carries no floor
-      //    (`maskSecretsInText('ab3', bag)` is `***`, measured), and at the
-      //    resolver's own throws the interpolated id / key IS the whole
-      //    plaintext with `context` in scope. So masking the RAW value before
-      //    interpolation closes it, which is the pattern `masked-retry-logger.ts`,
-      //    `composite-id.ts` and `ssm-parameter-provider.ts` already document —
-      //    and it is issue #2827's, at the throw. Pinned by a case in this
-      //    fix's test file, which asserts today's leak rather than the remedy.
-      // 2. Transformed AT the throw. `resolveGetAZs` and `Fn::GetStackOutput`'s
-      //    region gate print `stripControlChars(value).slice(0, 64)`, so an
-      //    80-char secret assembled into a region position puts 64 of its
-      //    characters on stderr with no needle matching. `stripControlChars`
-      //    defeats it at any length WHEN the plaintext carries a control
-      //    character (a control-char-free 10-char secret still masks). This one
-      //    IS issue #2827's: at the throw the untransformed value still exists.
-      // 3. Transformed BEFORE the throw. `Fn::Base64` and `stringifyValue`'s
-      //    JSON escaping change the value during RESOLUTION, so the recorded
-      //    needle no longer occurs in any downstream text — measured leaking a
-      //    base64 secret and a quote-bearing one. Neither this boundary nor a
-      //    throw-site mask can match it; recorded on #2827 so its plan is not
-      //    written on the assumption that masking at the throw suffices.
+      // What this site owns, and what the test file pins: the bag is hoisted
+      // so the `catch` can name it, and the message is masked against it.
       logger.warn(
         `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}. ` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.` +
