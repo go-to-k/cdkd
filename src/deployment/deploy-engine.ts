@@ -1307,7 +1307,13 @@ export class DeployEngine {
   ): Record<string, unknown> {
     const inherited = this.options.inheritedSecrets;
     if (!inherited || inherited.size === 0) return parameterValues;
-    const out: Record<string, unknown> = {};
+    // `Object.create(null)` (issue #2802). Since the resolver's parameters bag
+    // became null-prototype, a template parameter named `__proto__` is a real
+    // OWN key here rather than one already swallowed upstream -- so a plain
+    // `{}` accumulator would drop it through the inherited setter and move the
+    // very defect the sweep fixed one hop downstream, into a file the checker
+    // does not scan.
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [name, value] of Object.entries(parameterValues)) {
       // Issue #2291: the PER-PARAMETER answer first, because `inherited` is
       // keyed by PLAINTEXT and two parameters resolving to one value have
