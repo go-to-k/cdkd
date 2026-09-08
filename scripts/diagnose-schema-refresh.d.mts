@@ -101,10 +101,10 @@ export interface DiagnosisInput {
   /** Divergences a pending dependency bump resolves, rendered in their own section. */
   pendingSdkBump?: PendingSdkBump[];
   /**
-   * Divergences whose published client could NOT be read, so their SDK-lag
-   * reading is unknown rather than ruled out. They stay in `divergences`; this
-   * list only makes the procedure say so, instead of claiming a check that
-   * never happened.
+   * Divergences the published client did not settle either way, so their
+   * SDK-lag reading is unknown rather than ruled out. They stay in
+   * `divergences`; this list only makes the procedure say so, instead of
+   * claiming a check that never happened.
    */
   unresolvedSdkLag?: NestedKeyDivergence[];
   skipped: string[];
@@ -151,7 +151,7 @@ export declare function partitionPendingSdkBump(input: {
 }): {
   divergences: NestedKeyDivergence[];
   pendingSdkBump: PendingSdkBump[];
-  /** The subset of `divergences` whose published client could not be read. */
+  /** The subset of `divergences` the published client did not settle either way. */
   unresolved: NestedKeyDivergence[];
 };
 export declare function sdkVersionLag(

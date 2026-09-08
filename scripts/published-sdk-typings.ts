@@ -161,7 +161,14 @@ export function publishedSdkInterfaces(
     client: string,
     version: string,
     workDir: string
-  ) => string | undefined = publishedModelsDir
+  ) => string | undefined = publishedModelsDir,
+  // Injectable ONLY so the swallow below can be exercised. `rmSync` with
+  // `force: true` does not throw on a path that is already gone, so a test that
+  // deletes the directory first names this branch without executing it
+  // (measured — the case was written that way and passed with the `catch`
+  // deleted). A real EPERM / EBUSY cannot be produced under the system temp
+  // root, so the seam is the only honest way to reach it.
+  remove: (dir: string) => void = (dir) => rmSync(dir, { recursive: true, force: true })
 ): Map<string, Map<string, SdkMemberType>> | undefined {
   let workDir: string | undefined;
   try {
@@ -182,7 +189,7 @@ export function publishedSdkInterfaces(
     // replaces the whole PR body with one sentence and leaves the decision count
     // unwritten. A leaked temp directory is the smaller failure by far.
     try {
-      rmSync(workDir, { recursive: true, force: true });
+      remove(workDir);
     } catch {
       /* the OS will reclaim it; losing the report would not be reclaimed */
     }

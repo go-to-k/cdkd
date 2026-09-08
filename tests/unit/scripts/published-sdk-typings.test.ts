@@ -239,20 +239,33 @@ describe('publishedSdkInterfaces', () => {
 
   it('still returns an index when the work directory cannot be removed', () => {
     // The cleanup lives in a `finally`, which runs AFTER the `catch` — so a
-    // throwing `rmSync` would escape this module's "every failure degrades to
+    // throwing remove would escape this module's "every failure degrades to
     // undefined" contract entirely, abort the diagnosis, and replace the PR body
     // with one sentence. A leaked temp directory is the smaller failure.
+    //
+    // The failure is INJECTED. An earlier version of this case deleted the work
+    // directory from inside `materialize` and expected the module's own cleanup
+    // to fail on the missing path — but `rmSync(..., { force: true })` does not
+    // throw on ENOENT (measured), so the case named the swallow without ever
+    // entering it and stayed green with the `catch` deleted.
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-pst-locked-'));
     try {
       const models = join(dir, ...MODELS_IN_ARCHIVE);
       mkdirSync(models, { recursive: true });
       writeFileSync(join(models, 'models_0.d.ts'), GLUE_DECLARATION);
-      const interfaces = publishedSdkInterfaces('@aws-sdk/client-glue', '9.9.9', (c, v, workDir) => {
-        // Remove the module's own work directory out from under it, so its
-        // cleanup runs against a path that is already gone.
-        rmSync(workDir, { recursive: true, force: true });
-        return models;
-      });
+      let attempted = 0;
+      const interfaces = publishedSdkInterfaces(
+        '@aws-sdk/client-glue',
+        '9.9.9',
+        () => models,
+        () => {
+          attempted += 1;
+          const err: NodeJS.ErrnoException = new Error('EPERM: operation not permitted');
+          err.code = 'EPERM';
+          throw err;
+        }
+      );
+      expect(attempted, 'the cleanup was never attempted, so the swallow is unproven').toBe(1);
       expect(interfaces?.get('AuthenticationConfiguration')?.has('BasicAuthenticationCredentials')).toBe(
         true
       );
