@@ -16,11 +16,10 @@ Never edit in the main checkout (`main-tree-branch-gate` blocks branching
 there). Per lane:
 
 ```bash
-# MAIN-CHECKOUT mode only. IN-PLACE (launched inside a linked worktree) skips
-# these two and creates NO WORKTREE -- nesting dies with the outer workspace
-# (go-to-k/cdkd#2390). It DOES still take a branch, in place: see the branch
-# recipe below, which is unconditional. (The probe lives in
-# references/launch-mode.md, its only copy.)
+# MAIN-CHECKOUT only; CLAUDE.md holds this recipe and why IN-PLACE (in a
+# linked worktree) creates NO worktree. IN-PLACE skips these two and branches
+# by the unconditional recipe below. (Mode probe: references/launch-mode.md,
+# its only copy.)
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
@@ -282,11 +281,6 @@ applied literally that refuses every EMPTY bucket, so the third probe applied
 the issue's own prescription and one test went red. Write that control before
 writing the paragraph that explains why you did not do what was asked.
 
-**Choose the probe's INPUT to discriminate too** — a mask-before-stringify
-fix probed with a SCALAR secret came back green under its own motivating
-mutation; only a JSON-document secret makes the needle stop occurring. Ask
-what property of the INPUT the defect depends on.
-
 **A probe MATRIX that must recur is a SCRIPT, not a re-measured table** —
 §8-g's "delete the number" disposition. Re-measuring on the merge tree was
 already the rule and a table went stale TWICE in one lane anyway, a reviewer
@@ -310,12 +304,20 @@ and report the HIT's own line.
 **Calibration is HALF the measurement — follow it with probes against the
 real tree:**
 
-- **Write the defect in the spelling a PERSON would write**, not the easiest
-  to inject (a fence split on quote characters caught its own probe and
-  missed the spelling anybody would type — go-to-k/cdkd#2052).
-- **Write the defect in every spelling the language allows** (a scanner
-  matched `||` only while the tree used `??` at four sites; widening it
-  surfaced a real unfiled bug — go-to-k/cdkd#2111).
+- **Spell the injected defect the way its SOURCE would** — not the easiest to
+  inject, nor one you have proved you can see. Four wrong choices: the line
+  you just removed (a fence caught that while missing computed members,
+  `Object.assign`, an object literal, a spread rebuild); the injectable
+  spelling over the one a PERSON types (go-to-k/cdkd#2052); one spelling
+  where the language allows several — probe each (`||` matched while four
+  sites used `??`; widening it found a real unfiled bug —
+  go-to-k/cdkd#2111); and, for GENERATED input, the
+  UPSTREAM form not the generator's output (go-to-k/cdkd#2788 injected
+  `/properties/X`, a prefix the generator strips, so the probe "proving" it
+  discriminated used a shape no fixture holds). It governs any probe's VALUE
+  input too — ask what property of it the defect depends on (a
+  mask-before-stringify fix stayed green under its own mutation until the
+  secret was a JSON document, not a scalar).
 - **Delete the thing the fence REQUIRES and watch it fail.** An OR of
   whole-file substrings is satisfied by any one; a population derived from
   the DEFECT itself drops the subject out instead of failing (a gate-parity
@@ -324,14 +326,14 @@ real tree:**
   annotation, an explicit return type, `implements`) is derivable-around for
   free — derive from a relation the write CANNOT omit, and ask: what would
   this look like if the author did not write the optional part?
-- **Probe the fence with the evasions the DEFECT would use**, not the one you
-  just fixed — the removed line is the one spelling you have proved you can
-  see (a fence caught its own removed line and missed computed members,
-  `Object.assign`, an object literal and a spread rebuild).
 - **Watch the FLOOR for the same collapse** — a floor naming only the file
   the defect lives in is satisfied BY the collapse; a floor computed from the
   pool it guards is unfalsifiable (emptying the pool left it green). Write
-  the expected count as a LITERAL from a source the fence does not read.
+  the expected count as a LITERAL from a source the fence does not read. **A
+  RELATION also needs a floor on the COMPARAND** — walk floors count what you
+  ITERATED, and a set-vs-set claim is vacuously TRUE when the other operand
+  parses empty (go-to-k/cdkd#2788: 134 fixtures compared nothing under two
+  healthy walk floors; the invariant as stated was FALSE).
 - **Is anything RUNNING it?** (nine shell hook harnesses were invoked by no
   CI step and no task — exercised only by hand since written).
 
