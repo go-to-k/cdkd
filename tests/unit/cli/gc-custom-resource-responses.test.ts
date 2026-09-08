@@ -82,6 +82,32 @@ vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
   };
 });
 
+// `resolveEffectiveRegion` asks the SDK's OWN chain for a region when neither
+// `--region` nor `AWS_REGION` / `AWS_DEFAULT_REGION` answers, and it does that
+// by constructing a REAL `STSClient` and reading `config.region()`. With no
+// profile on disk the chain walks all the way to the instance-metadata
+// service, which the network fence in `tests/setup.ts` refuses — so this file
+// reached real AWS on any machine without `~/.aws`, which is every CI runner.
+//
+// It surfaced on an `@aws-sdk` group bump rather than on the code, because a
+// developer's own credentials answer earlier in the chain and the probe never
+// gets that far locally. Reproduce with an empty `HOME`.
+//
+// Mocked at the PACKAGE, not through `aws-clients`: that module is mocked
+// above and this construction deliberately bypasses it (region resolution has
+// to run BEFORE the shared clients can be built).
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({
+      send: mockStsSend,
+      config: { region: async () => REGION },
+      destroy: vi.fn(),
+    })),
+  };
+});
+
 vi.mock('../../../src/utils/error-handler.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/utils/error-handler.js')>();
   return {

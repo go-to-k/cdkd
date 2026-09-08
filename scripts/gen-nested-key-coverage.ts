@@ -2308,17 +2308,6 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'definition pass (issue #1378) is what catches it.',
     },
   ],
-  [
-    allowKey('AWS::CodeBuild::Project', 'HostKernel'),
-    {
-      rationale:
-        'Declared in the CFn registry schema but has NO member anywhere in the ' +
-        'installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to ' +
-        'map it onto until an SDK bump adds one (issue #1386). Naming it in the ' +
-        'provider would be a false claim of support. Remove this entry once the SDK ' +
-        'ships the member, at which point the key becomes genuinely mappable.',
-    },
-  ],
   // The three S3 Metadata-Tables members below are the FIRST real instance of
   // the unreachable-definition false positive `classifyTargetShapes` documents:
   // the shape pass audits the whole `definitionShapes` map rather than pruning

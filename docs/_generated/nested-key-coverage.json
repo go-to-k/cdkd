@@ -2,16 +2,16 @@
   "summary": {
     "targetCount": 24,
     "nestedKeyCount": 1215,
-    "sameSpelling": 1123,
+    "sameSpelling": 1124,
     "providerHandled": 70,
-    "allowListed": 22,
+    "allowListed": 21,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
     "freshObjectTargets": 15,
     "shapeClean": 148,
     "shapeHandled": 40,
-    "shapeAllowListed": 7,
+    "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
     "shapeAmbiguous": 0
@@ -2674,9 +2674,7 @@
           "nestedKey": "Environment.HostKernel",
           "topLevelProperty": "Environment",
           "terminalKey": "HostKernel",
-          "bucket": "allow-listed",
-          "rationale": "Declared in the CFn registry schema but has NO member anywhere in the installed @aws-sdk/client-codebuild dist-types tree, so there is nothing to map it onto until an SDK bump adds one (issue #1386). Naming it in the provider would be a false claim of support. Remove this entry once the SDK ships the member, at which point the key becomes genuinely mappable.",
-          "allowMatchKey": "AWS::CodeBuild::Project#HostKernel"
+          "bucket": "same-spelling"
         },
         {
           "resourceType": "AWS::CodeBuild::Project",
@@ -8941,6 +8939,26 @@
         },
         {
           "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableName",
+          "definition": "AnnotationTableConfiguration",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `AnnotationTableConfiguration` has no `TableName` member",
+          "rationale": "Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "allowMatchKey": "AWS::S3::Bucket#TableName"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableArn",
+          "definition": "AnnotationTableConfiguration",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `AnnotationTableConfiguration` has no `TableArn` member",
+          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "allowMatchKey": "AWS::S3::Bucket#TableArn"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
           "nestedKey": "Rules",
           "definition": "S3KeyFilter",
           "pass": "definition",
@@ -9045,7 +9063,6 @@
       ],
       "shapeCleanCount": 13,
       "unmatchedDefinitions": [
-        "AnnotationTableConfiguration",
         "BucketEncryption",
         "CorsConfiguration",
         "CorsRule",
