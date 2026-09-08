@@ -9,12 +9,23 @@
  * `sdkVersionLag` in `diagnose-schema-refresh.mjs` already tells the report that
  * a divergent type's client is behind the registry. That reading stops one step
  * short of useful: it hands the maintainer a `npm view` / bump / re-check loop
- * whose every input the job holds. Measured on
- * [go-to-k/cdkd#2784](https://github.com/go-to-k/cdkd/pull/2784), four of its
- * five decisions were `AWS::Glue::Connection` divergences against
- * `@aws-sdk/client-glue` 3.1018.0 while npm published 3.1127.0, and all four
- * cleared on the bump alone — so 4/5 of that PR's decision budget was a pending
- * dependency bump charged to a human.
+ * whose every input the job holds.
+ * [go-to-k/cdkd#2784](https://github.com/go-to-k/cdkd/pull/2784) escalated four
+ * `AWS::Glue::Connection` divergences that way, against `@aws-sdk/client-glue`
+ * 3.1018.0 while npm published 3.1127.0.
+ *
+ * **The answer for those four turned out to be NO** — measured against the
+ * published tarballs, neither `AuthenticationConfiguration` nor
+ * `OAuth2Properties` declares the members at either version, so the loop the PR
+ * prescribed ends in no change. That is the value, not a counterexample: the
+ * question gets ANSWERED, and a negative answer is worth as much as a positive
+ * one when the next step is a standing allow-list entry.
+ *
+ * The settling direction is real too, and here is a measured instance:
+ * `@aws-sdk/client-codebuild`'s `ProjectEnvironment` gains `hostKernel` between
+ * 3.1018.0 and 3.1126.0 — the shape that made a `NESTED_KEY_ALLOW_LIST` entry
+ * stale and had to be retired by hand. How OFTEN each direction fires is
+ * unmeasured; do not put a ratio here without one.
  *
  * WHAT THIS DELIBERATELY DOES NOT DO
  * ----------------------------------
@@ -93,6 +104,17 @@ export function publishedModelsDir(
   workDir: string,
   run: CommandRunner = defaultRun
 ): string | undefined {
+  // The scope and version shapes are enforced HERE, not only at the one caller
+  // that happens to produce them. This module's header states "first-party
+  // `@aws-sdk/*`" as a property of what it downloads, and until this test
+  // existed the only thing making it true was a regex in a different file
+  // (`sdkClientVersions`) — so widening that regex, or adding a second caller,
+  // would silently turn this into arbitrary-package fetch inside an unattended
+  // `contents: write` job. The anchors also make a leading `-` unrepresentable,
+  // which is what keeps either operand from being read as a flag by npm.
+  if (!/^@aws-sdk\/client-[a-z0-9-]+$/.test(client)) return undefined;
+  if (!/^\d+\.\d+\.\d+[\w.+-]*$/.test(version)) return undefined;
+
   try {
     run('npm', ['pack', `${client}@${version}`, '--ignore-scripts', '--pack-destination', workDir]);
   } catch {
@@ -154,6 +176,15 @@ export function publishedSdkInterfaces(
   } catch {
     return undefined;
   } finally {
-    rmSync(workDir, { recursive: true, force: true });
+    // Swallowed on purpose. A `finally` runs AFTER the `catch`, so an EPERM or
+    // EBUSY here would propagate past this module's "every failure degrades to
+    // undefined" contract, out through the partition, and abort `main()` — which
+    // replaces the whole PR body with one sentence and leaves the decision count
+    // unwritten. A leaked temp directory is the smaller failure by far.
+    try {
+      rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* the OS will reclaim it; losing the report would not be reclaimed */
+    }
   }
 }

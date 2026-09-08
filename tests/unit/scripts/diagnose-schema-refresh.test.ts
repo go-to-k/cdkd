@@ -3533,10 +3533,17 @@ describe('the decision labels and the count cannot disagree', () => {
 /**
  * The SDK-lag partition — issue go-to-k/cdkd#2819.
  *
- * go-to-k/cdkd#2784 spent four of its five decisions on `AWS::Glue::Connection`
- * divergences against an `@aws-sdk/client-glue` the lockfile pinned three
- * hundred releases behind the registry, and all four cleared on the bump alone.
- * The job already PRINTED that version gap and escalated anyway.
+ * go-to-k/cdkd#2784 escalated four `AWS::Glue::Connection` divergences while its
+ * own body reported `@aws-sdk/client-glue` at 3.1018.0 against a registry
+ * publishing 3.1127.0, and told the maintainer to bump and re-check by hand.
+ *
+ * **Those four are NOT SDK lag** — measured against the published tarballs, the
+ * client declares none of the members on those interfaces at either version, so
+ * the bump-and-recheck loop ends in no change. That is the point rather than a
+ * caveat: the partition answers the question either way, and the negative answer
+ * is the one it produced for the case that motivated it. A real instance of the
+ * settling direction exists in `@aws-sdk/client-codebuild`, where
+ * `ProjectEnvironment.hostKernel` is absent at 3.1018.0 and present at 3.1126.0.
  *
  * Two failure directions bound every case here, and they pull opposite ways:
  *
@@ -3587,7 +3594,7 @@ describe('partitionPendingSdkBump', () => {
     OAuth2Properties: ['OAuth2GrantType', 'AuthorizationCodeProperties', 'OAuth2Credentials'],
   });
 
-  it('settles the go-to-k/cdkd#2784 population against the published client', () => {
+  it('settles every finding a published client resolves, and groups them into one bump', () => {
     const divergences = [
       glueDivergence('BasicAuthenticationCredentials'),
       glueDivergence('CustomAuthenticationCredentials'),
@@ -3631,6 +3638,11 @@ describe('partitionPendingSdkBump', () => {
     });
     expect(result.pendingSdkBump).toEqual([]);
     expect(result.divergences).toHaveLength(1);
+    // And NOT unknown: the published client was read and it declared the
+    // interface, so the answer is definitive. Listing it as unknown would send
+    // the maintainer to bump-and-recheck a question already settled — the same
+    // wasted loop the whole partition exists to remove, in reverse.
+    expect(result.unresolved).toEqual([]);
   });
 
   it('asks the INTERFACE, not the name — a member on another interface settles nothing', () => {
@@ -3743,7 +3755,35 @@ describe('partitionPendingSdkBump', () => {
     expect(fetches).toBe(0);
   });
 
-  it('escalates when the published typings could not be read', () => {
+  it('looks the member up under the SDK’s OWN spelling, not the CFn key', () => {
+    // Six targets declare `keyStyle: 'lower-first'`, so the producer writes the
+    // detail with a lowerFirst member while `nestedKey` keeps the CFn
+    // capitalisation. Every other fixture here has member === nestedKey, which
+    // leaves `members.has(asked.member)` indistinguishable from
+    // `members.has(d.nestedKey)` — green, and wrong on all six.
+    const result = partitionPendingSdkBump({
+      divergences: [
+        {
+          resourceType: 'AWS::ECS::TaskDefinition',
+          nestedKey: 'PortMappings',
+          bucket: 'definition-member-missing',
+          detail: detailFor('ContainerDefinition', 'portMappings'),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      ],
+      sdkLag: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { ...GLUE_LAG, resourceType: 'AWS::ECS::TaskDefinition', client: '@aws-sdk/client-ecs' } as any,
+      ],
+      // Declares ONLY the lowerFirst spelling, so a lookup by `nestedKey` misses.
+      publishedInterfaces: () => index({ ContainerDefinition: ['portMappings', 'image'] }),
+    });
+    expect(result.pendingSdkBump).toHaveLength(1);
+    expect(result.pendingSdkBump[0]!.member).toBe('portMappings');
+    expect(result.pendingSdkBump[0]!.nestedKey).toBe('PortMappings');
+  });
+
+  it('escalates when the published typings could not be read, and says the reading is UNKNOWN', () => {
     const result = partitionPendingSdkBump({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
@@ -3755,6 +3795,50 @@ describe('partitionPendingSdkBump', () => {
     // direction is the finding staying visible.
     expect(result.pendingSdkBump).toEqual([]);
     expect(result.divergences).toHaveLength(1);
+    // And it must be DISTINGUISHABLE from a finding the published client was
+    // read for and did not resolve. Reporting both as "already ruled out" tells
+    // the maintainer a check happened when npm was simply unreachable, and the
+    // step it feeds ends in an allow-list entry.
+    expect(result.unresolved).toHaveLength(1);
+  });
+
+  it('does not delegate to a fallback client when the type’s own one could not be read', () => {
+    // The matched client fails to download and a fallback declares a same-named
+    // interface carrying the name. Falling through would settle a real
+    // divergence from a client `clientsForType` itself calls "may not be the
+    // type's own" — a confident wrong answer, which is the one outcome this
+    // report must not produce.
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
+      sdkLag: [
+        GLUE_LAG,
+        { ...GLUE_LAG, client: '@aws-sdk/client-other', matched: false, latest: '1.0.0' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+      publishedInterfaces: (client) =>
+        client === '@aws-sdk/client-glue'
+          ? undefined
+          : index({ AuthenticationConfiguration: ['BasicAuthenticationCredentials'] }),
+    });
+    expect(result.pendingSdkBump).toEqual([]);
+    expect(result.divergences).toHaveLength(1);
+    expect(result.unresolved).toHaveLength(1);
+  });
+
+  it('reports no unknown when the client is current, because the version answered it', () => {
+    // With nothing behind, no lookup is owed: the version comparison already
+    // eliminated the SDK-lag reading. Calling that UNKNOWN would send the
+    // maintainer to bump a client that is already the latest.
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [{ ...GLUE_LAG, installed: '3.1127.0', behind: false }] as any,
+      publishedInterfaces: () => undefined,
+    });
+    expect(result.divergences).toHaveLength(1);
+    expect(result.unresolved).toEqual([]);
   });
 
   it('tries the type’s own client before a fallback one', () => {
@@ -3968,6 +4052,65 @@ describe('the pending-bump section', () => {
     expect(md.match(/Bump `@aws-sdk\/client-glue`/g)).toHaveLength(1);
   });
 
+  it('counts BUMPS in its own heading, not findings', () => {
+    // The heading's number is the one thing a reader totals the sections up
+    // from, and the `Dn` fence cannot see it — swapping it for the finding count
+    // renders "(2)" over a single label D1 and stays green everywhere else.
+    const md = render();
+    expect(md).toContain(
+      'SDK bumps that resolve nested-key divergences (1) — a decision is needed'
+    );
+  });
+
+  it('says "divergence" for one and "divergences" for two', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      divergences: [],
+      writableAdded: [],
+      skipped: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pendingSdkBump: [PENDING[0]] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    expect(md).toContain('Resolves 1 divergence:');
+    expect(md).not.toContain('Resolves 1 divergences:');
+  });
+
+  it('orders several bumps deterministically', () => {
+    // Two clients and two versions of one of them. Without the sort the section
+    // renders in Map-insertion order, which is the order findings happened to
+    // arrive — so the same refresh produces a different body run to run and the
+    // PR shows a diff with nothing behind it.
+    const at = (client: string, latest: string, key: string) => ({
+      ...PENDING[0],
+      nestedKey: key,
+      member: key,
+      client,
+      latest,
+    });
+    const md = renderDiagnosis({
+      removed: [],
+      divergences: [],
+      writableAdded: [],
+      skipped: [],
+      pendingSdkBump: [
+        at('@aws-sdk/client-s3', '3.901.0', 'C'),
+        at('@aws-sdk/client-glue', '3.1200.0', 'B'),
+        at('@aws-sdk/client-glue', '3.1127.0', 'A'),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    const order = [...md.matchAll(/Bump `([^`]+)` from `[^`]+` to `([^`]+)`/g)].map(
+      (m) => `${m[1]}@${m[2]}`
+    );
+    expect(order).toEqual([
+      '@aws-sdk/client-glue@3.1127.0',
+      '@aws-sdk/client-glue@3.1200.0',
+      '@aws-sdk/client-s3@3.901.0',
+    ]);
+  });
+
   it('states that the value does not reach AWS until the bump lands', () => {
     // The section is the one place a reader could take "no judgement" for
     // "nothing is wrong". It is a LIVE silent drop at the installed version,
@@ -3988,5 +4131,52 @@ describe('the pending-bump section', () => {
   it('renders no section at all when nothing is pending', () => {
     const md = renderDiagnosis({ removed: [], divergences: [], writableAdded: [], skipped: [] });
     expect(md).not.toContain('SDK bumps that resolve');
+  });
+});
+
+describe('the divergence procedure and the unknown SDK-lag reading', () => {
+  const DIVERGENCE = {
+    resourceType: 'AWS::Glue::Connection',
+    nestedKey: 'OAuth2Credentials',
+    bucket: 'definition-member-missing',
+    detail: 'SDK interface `OAuth2Properties` has no `OAuth2Credentials` member',
+  };
+
+  const render = (unresolvedSdkLag: unknown[]) =>
+    renderDiagnosis({
+      removed: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [DIVERGENCE] as any,
+      writableAdded: [],
+      skipped: [],
+      unresolvedSdkLag,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+  // NOT `UNKNOWN, not ruled out`: the pre-existing lag block ends with
+  // "its SDK-lag reading is UNKNOWN, not ruled out" for a type whose client
+  // could not be read at all, and it renders on this same input. Asserting that
+  // phrase made the positive case pass over text this change did not add and
+  // the negative case fail for a reason it was not about — caught by the
+  // negative arm, which is why both are written.
+  const MARKER = 'could not be read for these';
+
+  it('claims the SDK-lag reading is settled only for findings it could actually check', () => {
+    const md = render([]);
+    expect(md).toContain('re-asks that finding’s own');
+    expect(md).not.toContain(MARKER);
+  });
+
+  it('names the findings whose published client could not be read', () => {
+    // The blocking defect this arm exists for: with no such list, a finding
+    // reaches the escalation section for two indistinguishable reasons — the
+    // published client did not resolve it, or nobody asked. The section's next
+    // step is a `NESTED_KEY_ALLOW_LIST` entry, a standing promise that cdkd
+    // never sends the value, which must not be reached over a failed download.
+    const md = render([DIVERGENCE]);
+    expect(md).toContain(MARKER);
+    expect(md).toContain('Bump and re-check by');
+    // The finding itself is named, not just the class.
+    expect(md).toContain('   - `AWS::Glue::Connection`: `OAuth2Credentials`');
   });
 });

@@ -238,13 +238,18 @@ For `no-sdk-member` / `definition-member-missing`, rule out the installed SDK
 simply lagging the service before allow-listing anything — an entry added over
 a stale SDK hides a real dropped value.
 
-For a **`definition-member-missing` this is already ruled out.** The job
+For a **`definition-member-missing` the job usually rules this out for you.** It
 downloads the published client and re-asks that finding's own question there —
 does interface `I` declare member `M`? — so one reaching this section is one the
 published client does not resolve either. A finding the bump *does* resolve
 appears in its own pull-request section instead, under "SDK bumps that resolve
 nested-key divergences", naming the client and the version. Merge that bump; no
 allow-list entry is called for.
+
+The exception is named in the pull request whenever it happens: if the published
+client could not be downloaded, that finding's SDK-lag reading is **unknown, not
+ruled out**, and the procedure lists it as such. Bump and re-check those by hand
+before allow-listing them.
 
 A **`no-sdk-member` carries no interface**, so there is nothing to re-ask
 automatically — it is a member-index question over the whole client. Check it by

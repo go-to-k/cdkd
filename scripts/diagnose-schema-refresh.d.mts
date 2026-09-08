@@ -100,6 +100,13 @@ export interface DiagnosisInput {
   autoEscalated?: Array<{ resourceType: string; property: string; reason: string }>;
   /** Divergences a pending dependency bump resolves, rendered in their own section. */
   pendingSdkBump?: PendingSdkBump[];
+  /**
+   * Divergences whose published client could NOT be read, so their SDK-lag
+   * reading is unknown rather than ruled out. They stay in `divergences`; this
+   * list only makes the procedure say so, instead of claiming a check that
+   * never happened.
+   */
+  unresolvedSdkLag?: NestedKeyDivergence[];
   skipped: string[];
 }
 export declare function renderDiagnosis(input: DiagnosisInput): string;
@@ -141,7 +148,12 @@ export declare function partitionPendingSdkBump(input: {
     client: string,
     version: string
   ) => ReadonlyMap<string, ReadonlyMap<string, unknown>> | undefined;
-}): { divergences: NestedKeyDivergence[]; pendingSdkBump: PendingSdkBump[] };
+}): {
+  divergences: NestedKeyDivergence[];
+  pendingSdkBump: PendingSdkBump[];
+  /** The subset of `divergences` whose published client could not be read. */
+  unresolved: NestedKeyDivergence[];
+};
 export declare function sdkVersionLag(
   client: string,
   installed: string | undefined,

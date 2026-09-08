@@ -109,6 +109,47 @@ describe('publishedModelsDir', () => {
     });
   });
 
+  it('refuses anything that is not a first-party client at a plain version', () => {
+    // The module header states "first-party `@aws-sdk/*`" as a property of what
+    // it downloads. Until this test the only thing making that true was a regex
+    // in a DIFFERENT file, so a widened matcher or a second caller would have
+    // turned an unattended `contents: write` job into arbitrary-package fetch.
+    // The anchors are also what makes a leading `-` unrepresentable, so neither
+    // operand can be read as a flag by npm.
+    withTempDir((dir) => {
+      // The runner SUCCEEDS. A throwing one made every case pass for the wrong
+      // reason — with the guard deleted the throw was caught and the function
+      // returned `undefined` anyway, so the assertions held over no guard at
+      // all (measured; the mutation survived). With a succeeding runner, a
+      // deleted guard produces a models directory and the case fails.
+      const { run, calls } = succeedingRunner(GLUE_DECLARATION);
+      for (const [client, version] of [
+        ['express', '9.9.9'],
+        ['@aws-sdk/client-glue-evil/../../x', '9.9.9'],
+        ['@aws-sdk/CLIENT-glue', '9.9.9'],
+        ['-rf', '9.9.9'],
+        ['@evil/client-glue', '9.9.9'],
+        ['@aws-sdk/client-glue', '--registry=http://evil'],
+        ['@aws-sdk/client-glue', '-9.9.9'],
+        ['@aws-sdk/client-glue', 'latest'],
+      ] as const) {
+        expect(
+          publishedModelsDir(client, version, dir, run),
+          `accepted ${client}@${version}`
+        ).toBeUndefined();
+      }
+      // Refused BEFORE any process starts, which is the property that matters:
+      // the guard exists so an unattended job never spawns npm against a spec
+      // nobody vetted, not merely so the return value is empty afterwards.
+      expect(calls, 'a refused spec still spawned a process').toEqual([]);
+
+      // And the shape it exists to allow still passes — otherwise every case
+      // above would hold with the guard set to refuse everything.
+      expect(publishedModelsDir('@aws-sdk/client-glue', '3.1127.0', dir, run)).toBeDefined();
+      expect(calls.map((c) => c[0])).toEqual(['npm', 'tar']);
+    });
+  });
+
   it('returns undefined when the pack fails', () => {
     withTempDir((dir) => {
       const run: CommandRunner = (command) => {
@@ -196,9 +237,32 @@ describe('publishedSdkInterfaces', () => {
     ).toBeUndefined();
   });
 
+  it('still returns an index when the work directory cannot be removed', () => {
+    // The cleanup lives in a `finally`, which runs AFTER the `catch` — so a
+    // throwing `rmSync` would escape this module's "every failure degrades to
+    // undefined" contract entirely, abort the diagnosis, and replace the PR body
+    // with one sentence. A leaked temp directory is the smaller failure.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-pst-locked-'));
+    try {
+      const models = join(dir, ...MODELS_IN_ARCHIVE);
+      mkdirSync(models, { recursive: true });
+      writeFileSync(join(models, 'models_0.d.ts'), GLUE_DECLARATION);
+      const interfaces = publishedSdkInterfaces('@aws-sdk/client-glue', '9.9.9', (c, v, workDir) => {
+        // Remove the module's own work directory out from under it, so its
+        // cleanup runs against a path that is already gone.
+        rmSync(workDir, { recursive: true, force: true });
+        return models;
+      });
+      expect(interfaces?.get('AuthenticationConfiguration')?.has('BasicAuthenticationCredentials')).toBe(
+        true
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('removes its work directory on both the success and the failure path', () => {
     const seen: string[] = [];
-    const before = new Set(readdirSync(tmpdir()));
 
     publishedSdkInterfaces('@aws-sdk/client-glue', '9.9.9', (c, v, workDir) => {
       seen.push(workDir);
@@ -215,11 +279,13 @@ describe('publishedSdkInterfaces', () => {
     // Two distinct directories were created and neither survives. A daily job
     // leaking one SDK tarball per lagging client per cycle fills a runner's
     // disk with nothing reporting why.
+    //
+    // Asserted on the directories this call actually created, NOT by listing
+    // the system temp root for a `cdkd-published-sdk-*` prefix: that root is
+    // shared with every other lane and worktree on the machine, so a concurrent
+    // run of this same file would transiently expose one and fail a case about
+    // something else entirely.
     expect(new Set(seen).size).toBe(2);
     for (const dir of seen) expect(existsSync(dir)).toBe(false);
-    // And nothing else was left behind in the system temp root.
-    expect(readdirSync(tmpdir()).filter((e) => !before.has(e) && e.startsWith('cdkd-published-sdk-'))).toEqual(
-      []
-    );
   });
 });
