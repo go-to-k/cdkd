@@ -90,3 +90,8 @@ tests/benchmark/results-*.md
 # .claude/settings.json, so a committed one would silently beat the pins there
 # (see .claude/rules/hooks.md, the bash-first section).
 .claude/settings.local.json
+
+# Assembled from changelog.d/ by `vp run gen:changelog` (issue go-to-k/cdkd#2779).
+# NOT committed: a committed assembly restores the single shared append anchor
+# the fragment layout removes, which is the condition option A turns on.
+docs/changelog-cdkd.md

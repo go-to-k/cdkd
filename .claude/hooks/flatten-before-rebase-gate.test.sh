@@ -73,9 +73,9 @@ run() {
   fi
 }
 
-TWO_CHANGELOG=$(mkrepo two-changelog 2 docs/changelog-cdkd.md)
-FOUR_CHANGELOG=$(mkrepo four-changelog 4 docs/changelog-cdkd.md)
-ONE_CHANGELOG=$(mkrepo one-changelog 1 docs/changelog-cdkd.md)
+TWO_CHANGELOG=$(mkrepo two-changelog 2 docs/_generated/integ-last-run.tsv)
+FOUR_CHANGELOG=$(mkrepo four-changelog 4 docs/_generated/integ-last-run.tsv)
+ONE_CHANGELOG=$(mkrepo one-changelog 1 docs/_generated/integ-last-run.tsv)
 TWO_LEDGER=$(mkrepo two-ledger 2 docs/_generated/integ-last-run.tsv)
 TWO_SRC=$(mkrepo two-src 2 src/thing.ts)
 
@@ -203,8 +203,8 @@ run 2 'a MENTION of the bypass does not buy it' "git -C $TWO_CHANGELOG rebase ma
 
 # --- The append-shaped match is EXACT-LINE, not substring ---
 # Both of these contain `docs/changelog-cdkd.md` as a substring of their path.
-NEAR_MISS=$(mkrepo near-miss 2 docs/changelog-cdkd.md.bak)
-NEAR_MISS2=$(mkrepo near-miss2 2 xdocs/changelog-cdkd.md)
+NEAR_MISS=$(mkrepo near-miss 2 docs/_generated/integ-last-run.tsv.bak)
+NEAR_MISS2=$(mkrepo near-miss2 2 xdocs/_generated/integ-last-run.tsv)
 run 0 'a longer path containing the needle is not a hit' "git -C $NEAR_MISS rebase main"
 run 0 'a longer directory containing the needle is not a hit' "git -C $NEAR_MISS2 rebase main"
 
@@ -215,15 +215,23 @@ case "$lmsg" in
   *'docs/_generated/integ-last-run.tsv'*) pass=$((pass + 1)) ;;
   *) fail=$((fail + 1)); echo "FAIL: a ledger refusal does not name the ledger" ;;
 esac
-case "$lmsg" in
-  *'docs/changelog-cdkd.md'*) fail=$((fail + 1)); echo "FAIL: a ledger refusal names the changelog instead" ;;
+# The changelog was RETIRED from APPEND_SHAPED by issue go-to-k/cdkd#2779: it is
+# assembled from changelog.d/ and gitignored, so no branch diff can touch it and
+# a gate entry for it would be permanently inert. Asserting a refusal does not
+# NAME it is now vacuous -- it could not -- so the guard watches the list
+# itself, where re-adding it is the thing that would be wrong.
+case "$(grep '^APPEND_SHAPED=' "$HOOK")" in
+  *'docs/changelog-cdkd.md'*)
+    fail=$((fail + 1))
+    echo "FAIL: docs/changelog-cdkd.md is back in APPEND_SHAPED -- it is gitignored and assembled, so the entry can never match a diff"
+    ;;
   *) pass=$((pass + 1)) ;;
 esac
 
 # --- The refusal must NAME the remedy, not just refuse ---
 msg=$(printf '%s' "{\"cwd\":$(printf '%s' "$NO_TREE" | jq -Rs .),\"tool_input\":{\"command\":$(printf '%s' "git -C $TWO_CHANGELOG rebase main" | jq -Rs .)}}" \
   | "$HOOK_BASH" "$HOOK" 2>&1 >/dev/null)
-for needle in 'reset --soft' 'merge-base' 'docs/changelog-cdkd.md' 'CDKD_SKIP_FLATTEN_GATE=1' 'ship.md'; do
+for needle in 'reset --soft' 'merge-base' 'docs/_generated/integ-last-run.tsv' 'CDKD_SKIP_FLATTEN_GATE=1' 'ship.md'; do
   case "$msg" in
     *"$needle"*) pass=$((pass + 1)) ;;
     *) fail=$((fail + 1)); echo "FAIL: refusal message omits '$needle'" ;;
@@ -237,7 +245,7 @@ case "$msg" in
 esac
 
 # A remedy that is not copy-pasteable for a path with a space is not a remedy.
-SPACED=$(mkrepo 'spaced lane' 2 docs/changelog-cdkd.md)
+SPACED=$(mkrepo 'spaced lane' 2 docs/_generated/integ-last-run.tsv)
 smsg=$(printf '%s' "{\"cwd\":$(printf '%s' "$NO_TREE" | jq -Rs .),\"tool_input\":{\"command\":$(printf '%s' "git -C \"$SPACED\" rebase main" | jq -Rs .)}}" \
   | "$HOOK_BASH" "$HOOK" 2>&1 >/dev/null)
 # BOTH remedy lines, not just the first: they are printed by separate `echo`s,

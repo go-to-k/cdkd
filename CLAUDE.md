@@ -153,8 +153,13 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 
 - Not yet production-ready — use the AWS CDK CLI for production workloads (see "Important Notes" above)
 
-**Recently Implemented**: per-PR shipped-feature notes live in
-[docs/changelog-cdkd.md](docs/changelog-cdkd.md) — new entries go there, never
+**Recently Implemented**: per-PR shipped-feature notes are written as ONE
+FILE each under `changelog.d/entries/<YYYY-MM-DD>-<issue>-<slug>.md`, carrying
+the bullet and NO dated heading — the assembler emits one per date, which is
+why two lanes can no longer write the same heading (issue [#2779](https://github.com/go-to-k/cdkd/issues/2779)).
+`vp run gen:changelog` builds `docs/changelog-cdkd.md` from them; that file is
+GITIGNORED and never committed, because a committed assembly restores the one
+shared append anchor the layout removes. Entries never go
 back into this CLAUDE.md (per the official guidance that a CLAUDE.md should
 stay small so context-window usage and instruction adherence stay high).
 **Only a change with a user-visible behavior delta writes one** — what the

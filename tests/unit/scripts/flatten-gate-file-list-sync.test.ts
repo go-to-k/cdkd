@@ -56,14 +56,26 @@ function hookFiles(): string[] {
 }
 
 describe('flatten-before-rebase-gate append-shaped file list', () => {
-  it('names at least the changelog (an empty list makes the gate inert)', () => {
+  it('names at least the integ ledger (an empty list makes the gate inert)', () => {
     const files = hookFiles();
     expect(
       files,
-      `APPEND_SHAPED is empty or lost the changelog. The gate only fires when a branch ` +
+      `APPEND_SHAPED is empty or lost the integ ledger. The gate only fires when a branch ` +
         `touches one of these files, so an empty list is a gate that can never block ` +
         `while still reading as installed.`,
-    ).toContain('docs/changelog-cdkd.md');
+    ).toContain('docs/_generated/integ-last-run.tsv');
+    // The changelog was the ORIGINAL member and the reason the hook exists.
+    // Issue go-to-k/cdkd#2779 retired it by removing the shared anchor: entries
+    // live one-per-file under changelog.d/ and the shipped document is
+    // assembled and gitignored, so no branch diff can ever touch it. Re-adding
+    // it would be an entry that cannot match -- inert, while reading as
+    // coverage -- so the retirement is asserted rather than assumed.
+    expect(
+      files,
+      `docs/changelog-cdkd.md is back in APPEND_SHAPED. It is gitignored and assembled from ` +
+        `changelog.d/, so a branch diff can never contain it and the entry would be permanently ` +
+        `inert. If the fragment layout was reverted, revert this line with it.`,
+    ).not.toContain('docs/changelog-cdkd.md');
   });
 
   it('every file the hook gates is one ship.md section 9 tells you how to resolve', () => {
@@ -94,7 +106,7 @@ describe('flatten-before-rebase-gate append-shaped file list', () => {
       `No generated-file path was found in ship.md at all, so this direction is ` +
         `vacuous. The regex that reads them has drifted from how ship.md spells its ` +
         `paths -- re-derive it rather than deleting the check.`,
-    ).toContain('docs/changelog-cdkd.md');
+    ).toContain('docs/_generated/integ-last-run.tsv');
     // Only the APPEND-SHAPED ones are the hook's business. ship.md mentions
     // other docs in passing, so the set is narrowed by the one property that
     // makes a file this gate's concern: every lane appends to it at the same
@@ -115,6 +127,14 @@ describe('flatten-before-rebase-gate append-shaped file list', () => {
       // keep-both. Flattening cannot prevent a conflict in a file the generator
       // rewrites wholesale, so gating on it would refuse a rebase for nothing.
       'docs/cli-flag-coverage.md',
+      // ASSEMBLED from changelog.d/ and GITIGNORED since issue
+      // go-to-k/cdkd#2779 (option A). It was the append-shaped file this hook
+      // was built for; the fragment layout removed the shared anchor, and a
+      // gitignored path cannot appear in a branch diff at all, so an entry for
+      // it in APPEND_SHAPED could never match. ship.md still names it because
+      // it is still the document readers open -- which is exactly the case
+      // this classification exists to distinguish from a gap.
+      'docs/changelog-cdkd.md',
     ]);
     // Every exclusion must still be EARNED. Without this, an entry whose path
     // ship.md no longer mentions sits here forever, silently pre-excluding a

@@ -89,6 +89,13 @@ gates:
     include:
       - "src/**"
       - "tests/**"
+      # changelog.d/** is the changelog's SOURCE since issue go-to-k/cdkd#2779:
+      # docs/changelog-cdkd.md is assembled from it and gitignored, so the
+      # docs/** entry below no longer sees a changelog edit at all. Without
+      # this line a fragment could be added or reworded against a marker that
+      # never staled -- and the three fences that read the assembled document
+      # (size, uniqueness, ledger citations) assemble it from HERE.
+      - "changelog.d/**"
       # scripts/** holds load-bearing CI logic: the codegen'd-critic family
       # (gen-nested-key-coverage.ts, gen-handled-property-wiring.ts, ...)
       # plus every check-*.ts classifier. Before issue #1592 the enforcement
@@ -364,6 +371,13 @@ gates:
     include:
       - "src/**"
       - "docs/**"
+      # changelog.d/** is the changelog's SOURCE since issue go-to-k/cdkd#2779:
+      # docs/changelog-cdkd.md is assembled from it and gitignored, so the
+      # docs/** entry below no longer sees a changelog edit at all. Without
+      # this line a fragment could be added or reworded against a marker that
+      # never staled -- and the three fences that read the assembled document
+      # (size, uniqueness, ledger citations) assemble it from HERE.
+      - "changelog.d/**"
       - "README.md"
       - "CLAUDE.md"
       - ".claude/rules/**"

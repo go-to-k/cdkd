@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { assembleChangelog } from '../../../scripts/assemble-changelog.js';
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
@@ -121,7 +122,8 @@ import { describe, expect, it } from 'vite-plus/test';
  * bar a cap like this can actually hold.
  */
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
-const CHANGELOG = join(REPO_ROOT, 'docs', 'changelog-cdkd.md');
+/** Assembled in memory -- see assemble-changelog.ts (issue go-to-k/cdkd#2779). */
+const assembled = () => assembleChangelog(REPO_ROOT);
 
 /** Maximum characters in ONE entry, including its continuation lines. */
 const LIMIT = 2000;
@@ -305,7 +307,7 @@ const CAP_ADVICE =
   'verify, and it drifts (go-to-k/cdkd#2549). There is no per-entry opt-out on purpose.';
 
 describe('changelog entry size', () => {
-  const source = readFileSync(CHANGELOG, 'utf-8');
+  const source = assembled();
   const lines = source.split('\n');
   const parsed = parseEntries(source);
   const entries = parsed.entries;

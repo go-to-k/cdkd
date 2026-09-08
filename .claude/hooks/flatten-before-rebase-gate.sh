@@ -5,14 +5,23 @@
 # carries more than one commit AND its diff touches an APPEND-SHAPED
 # generated file, steering the caller to collapse the branch first.
 #
-# WHY: `docs/changelog-cdkd.md` gains an entry at the same place on every
-# lane, so it conflicts on nearly every parallel-lane rebase -- and a
-# commit-by-commit rebase re-conflicts on it ONCE PER COMMIT. This repo
+# WHY: `docs/_generated/integ-last-run.tsv` gains a row at the same place
+# on every lane that runs an integ, so it conflicts on nearly every
+# parallel-lane rebase -- and a commit-by-commit rebase re-conflicts on it
+# ONCE PER COMMIT. Keeping both sides yields two rows for the same test,
+# which its one-row-per-test invariant forbids and CI rejects. This repo
 # squash-merges (`mergeCommitAllowed: false`, `rebaseMergeAllowed:
 # false`), so the branch tip is the only history that survives and
-# flattening loses nothing. `docs/_generated/integ-last-run.tsv` is the
-# other one: keeping both sides there yields two rows for the same test,
-# which its one-row-per-test invariant forbids and CI rejects.
+# flattening loses nothing.
+#
+# `docs/changelog-cdkd.md` WAS the other one, and was the reason this hook
+# exists. Issue go-to-k/cdkd#2779 removed it from the list by removing the
+# shared anchor: entries now live one-per-file under `changelog.d/` and the
+# shipped document is assembled and gitignored, so no branch diff can touch
+# it and no two lanes write the same line. It is NOT left here as a
+# harmless leftover -- a gitignored path can never match a diff, so the
+# entry would be inert while the sync fence below asserted its presence,
+# which is a fence guarding a rule that no longer exists.
 #
 # WHY A HOOK RATHER THAN A SENTENCE: the rule has been written down since
 # 2026-08-25 -- `.claude/skills/work-issues/references/ship.md` section 9,
@@ -98,7 +107,7 @@ esac
 # `references/ship.md` section 9, which carries the resolution recipe for
 # each; `tests/unit/scripts/flatten-gate-file-list-sync.test.ts` fences
 # the pair so neither can drift alone.
-APPEND_SHAPED='docs/changelog-cdkd.md docs/_generated/integ-last-run.tsv'
+APPEND_SHAPED='docs/_generated/integ-last-run.tsv'
 
 while IFS= read -r line; do
   dir=${line%%$'\t'*}
