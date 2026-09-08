@@ -62,7 +62,35 @@ toll only on a session actually touching these two hooks.
   published as eleven, then fourteen, then twenty-eight, and a reviewer
   re-measuring got fourteen against a different comparand: four attempts, no
   two agreeing. Apply the `odd-trailing-bs` mutant and read the differential's
-  own undeclared-cell list. Load fails CLOSED.
+  own undeclared-cell list.
+
+  **Load fails CLOSED for `Bash` ONLY, and the asymmetry is the point**
+  (go-to-k/cdkd#2717). Every other gate on the shared matcher refuses outright
+  when the library will not load; this one matches `Edit|Write|Bash`, so
+  refusing at LOAD time took away the three tools the library is repaired with.
+  It happened four times in one session (go-to-k/cdkd#2650), three of them from
+  a single apostrophe inside a comment in the library's awk program, and each
+  time the maintainer ran the repair from their own shell. A safety mechanism
+  must not be able to remove the operator's means of repair.
+
+  What makes the split sound rather than a relaxation: the
+  `Edit|Write|MultiEdit` arm reads `tool_input.file_path` through `jq` and calls
+  no library function — the path arrives already expanded, so there is no shell
+  text to parse. Only the `Bash` arm needs the matcher. Everything between the
+  load and the dispatch is assignments and function definitions, so nothing runs
+  against the missing symbols in between. Inside the `Bash` arm the refusal is
+  UNCONDITIONAL — a write to `/tmp` is refused too, because deciding it is safe
+  is the parse the hook just failed to do.
+
+  **The surviving arms still ENFORCE**, which is the half a fail-open would also
+  satisfy: with the library broken, an `Edit` of a tracked main-tree file is
+  still refused, by the gate's OWN message rather than the load refusal. Both
+  halves are cases. Measured against `origin/main`'s hook under the same broken
+  library and the same payloads: `Edit` 2 → 0, `Write` 2 → 0, `Bash` 2 → 2, with
+  the library restored giving 0 on the old hook as the control. The refusal TEXT
+  is a case too — it has to say that Edit and Write survive, since a refusal
+  that misstates what is available is what sends an agent looking for a way
+  around the gate.
 
   **This is the fifth resolution strategy the gate has carried, and the first
   that is neither anchored nor hand-rolled.** The four before it each fixed
