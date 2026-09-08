@@ -1386,9 +1386,8 @@ instead, which forwards the whole property map. The deploy says so:
 MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Provider does not yet wire EvaluationWindow — CC API will forward the full property map. Override via --allow-unsupported-properties AWS::CloudWatch::Alarm:EvaluationWindow.)
 ```
 
-So if the field is genuinely missing from AWS, either the auto-route did not
-fire — three reasons below — or it fired and still did not deliver the
-property, which is a fourth, separate case:
+So if the field is genuinely missing from AWS, the auto-route did not fire.
+Three reasons:
 
 1. **You passed `--allow-unsupported-properties <Type>:<Prop>`.** That flag
    means "keep this resource on the SDK provider and accept the drop" — it is
@@ -1401,14 +1400,6 @@ property, which is a fourth, separate case:
 3. **The property is nested, not top-level.** The silent-drop check works on
    top-level properties; a missing key inside a nested object is a different
    problem.
-4. **The auto-route fired, but an earlier deploy accepted the drop.** If you
-   once passed `--allow-unsupported-properties` for this property, that deploy
-   recorded it in cdkd state without writing it to AWS. The later flag-less
-   deploy does re-route the resource to Cloud Control, but the update is
-   computed as a patch against that record, the property matches on both sides,
-   and nothing is sent. This is a known defect, not AWS behaviour — see
-   [Deploy: safety & compatibility flags](cli-deploy-safety.md#recreate-via-cc-api-deploy).
-
 **Solutions:**
 
 Confirm which layer handled the resource:
@@ -1417,22 +1408,24 @@ Confirm which layer handled the resource:
 cdkd state show MyStack    # ProvisionedBy: sdk | cc-api
 ```
 
-`sdk` means one of causes 1-3 applies. For case 1, dropping the flag is enough
-ONLY if that resource has never been deployed with it — otherwise you are in
-case 4. For case 2, the property is genuinely unsupported today: open an issue,
-or use `--recreate-via-cc-api <LogicalId>` to put the resource on Cloud Control
+`sdk` means one of the three causes applies. For case 1, dropping the flag is
+enough: cdkd records only what the SDK provider actually sent, so the property
+is a genuine addition on the next deploy and the auto-route delivers it — unless
+the property is create-only, which cdkd keeps in the record because applying one
+to a live resource needs a replacement. See
+[Deploy: safety & compatibility flags](cli-deploy-safety.md#the-override) for how
+to recreate it deliberately and what that costs. For
+case 2, the property is genuinely unsupported today: open an issue, or use
+`--recreate-via-cc-api <LogicalId>` to put the resource on Cloud Control
 deliberately.
 
-`cc-api` does **not** by itself mean the property was forwarded. It rules out
-causes 1-3 and leaves case 4, so check the deploy history for an
-`--allow-unsupported-properties` run on this property before concluding the
-absence is on AWS's side.
+`cc-api` means the resource is on the layer that forwards the whole property
+map, so the absence is not cdkd dropping the field.
 
 You do **not** need `--recreate-via-cc-api` merely because a deployed
 SDK-managed resource has just gained a silent-drop property — the next deploy
-re-routes it and normally applies the property in place. Case 4 above is one
-exception; a create-only property and a physical id Cloud Control cannot
-address are the others. See
+re-routes it and normally applies the property in place. A create-only property
+and a physical id Cloud Control cannot address are the exceptions. See
 [Provisioning Layers](provisioning-layers.md#choosing-a-flag).
 
 ### `cdkd diff` shows `[returning to SDK provider]`

@@ -57,10 +57,11 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
  *                proves the SDK route really does drop the property, which the
  *                arm otherwise imports from the generated coverage map.
  *   dropagain -- the same property again with NO flag, after `allowdrop`.
- *                Pins go-to-k/cdkd#2750: the opt-out deploy RECORDED the
- *                property it never wrote, so the Cloud Control patch diffs it
- *                as unchanged and it never reaches AWS. Same operation as the
- *                arm; the only difference is the recorded bag.
+ *                Closes go-to-k/cdkd#2750: the opt-out deploy used to RECORD
+ *                the property it never wrote, so the Cloud Control patch
+ *                diffed it as unchanged and it never reached AWS. Same
+ *                operation as the arm; the only difference is the recorded
+ *                bag, which is what makes the pair a clean A/B.
  *
  * The threshold moves with the phase for the same reason the sibling
  * `cc-to-sdk-reroute` fixture varies its DisplayName: routing is decided while

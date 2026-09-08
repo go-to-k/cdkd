@@ -27,6 +27,24 @@ function pickSilentDropFixture(): { resourceType: string; property: string } {
 }
 
 /**
+ * A type with TWO silent drops, so the mixed allow-set case below has a
+ * SIBLING to leave un-allowed. Throws rather than skipping: with no such type
+ * the case would pass having exercised nothing.
+ */
+function pickSilentDropPair(): { resourceType: string; propA: string; propB: string } {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    if (cov.silentDrop.size >= 2) {
+      const sorted = Array.from(cov.silentDrop.keys()).sort((x, y) => x.localeCompare(y));
+      return { resourceType, propA: sorted[0]!, propB: sorted[1]! };
+    }
+  }
+  throw new Error(
+    'PROPERTY_COVERAGE_BY_TYPE has no type with ≥2 silent-drop entries — the ' +
+      'mixed allow-set case needs one. Update it to use a synthetic fixture.'
+  );
+}
+
+/**
  * Build a registry whose `.logger` field is a vi-mocked spy so the test
  * can inspect every `info` / `warn` line emitted by
  * `reportSilentDropDecisions` without touching the real logger.
@@ -47,6 +65,25 @@ function makeRegistry() {
     error,
   };
   return { registry, info, warn };
+}
+
+/** A (type, property) whose silent drop IS create-only. */
+function pickCreateOnlyDropFixture(): { resourceType: string; property: string } {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    const first = [...cov.createOnlyDrops].sort((a, b) => a.localeCompare(b))[0];
+    if (first !== undefined) return { resourceType, property: first };
+  }
+  throw new Error('no type has a create-only silent drop — use a synthetic fixture');
+}
+
+/** A (type, property) whose silent drop is NOT create-only. */
+function pickPlainSilentDropFixtureForWarn(): { resourceType: string; property: string } {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    for (const property of cov.silentDrop.keys()) {
+      if (!cov.createOnlyDrops.has(property)) return { resourceType, property };
+    }
+  }
+  throw new Error('every silent drop is create-only — use a synthetic fixture');
 }
 
 describe('ProviderRegistry.validateResourceProperties (post-#614, now a report path)', () => {
@@ -106,6 +143,155 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(msg).toContain(fx.property);
     expect(msg).toContain('silently dropped');
     expect(msg).toContain('--allow-unsupported-properties');
+  });
+
+  /**
+   * Issue #2750. The allow set is per `<Type>:<Prop>` while the ROUTE is per
+   * resource: the un-allowed sibling sends the whole resource through Cloud
+   * Control, which forwards the full property map — so the allow-listed
+   * property reaches AWS after all and the "will be silently dropped" line is
+   * simply false. Only the auto-route line is true here.
+   */
+  it('does NOT warn about an overridden drop when a SIBLING drop auto-routes the resource', () => {
+    const pair = pickSilentDropPair();
+    const { registry, info, warn } = makeRegistry();
+    registry.allowUnsupportedProperties([`${pair.resourceType}:${pair.propA}`]);
+    registry.validateResourceProperties([
+      {
+        logicalId: 'MixedResource',
+        resourceType: pair.resourceType,
+        properties: { [pair.propA]: 'x', [pair.propB]: 'y' },
+      },
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    const msg = info.mock.calls[0]![0] as string;
+    expect(msg).toContain('routing via Cloud Control API');
+    // The auto-route line still names ONLY the un-allowed drop: the override
+    // hint it prints is what the user would add to force the SDK route.
+    expect(msg).toContain(pair.propB);
+    expect(msg).not.toContain(pair.propA);
+  });
+
+  /**
+   * The engine calls this OPTIONALLY (`?.()`) so the many unit files that cast a
+   * hand-built registry literal into `DeployEngine` keep working — which means
+   * no engine-side test can witness the REAL class losing the method. Pin it
+   * here, on the real class, or the #2750 desired-side narrowing goes silently
+   * inert in production while every mocked suite stays green.
+   */
+  /**
+   * Issue #2750, the second route that means the drop does not happen. A
+   * `provisionedBy: 'cc-api'` record stays on Cloud Control (`getProviderFor`
+   * rule 2) whatever the allow set says, so the full map is forwarded and the
+   * property IS written — while the pre-fix warn told the user it "will be
+   * silently dropped" and prescribed removing the override, which is a no-op
+   * because the resource is already on the route that remedy names.
+   *
+   * The `!STICKY_CC_MIGRATION_EXEMPT.has(type)` half of that gate is NOT
+   * exercised here and cannot be: an admitted exempt type has an EMPTY
+   * silentDrop map by construction (that is why it was admitted), the same
+   * unreachability `wouldReturnToSdkProvider`'s doc comment records for its own
+   * both-bags condition. It is present for parity with the sibling
+   * `reportUnrecognizedProperties`, which makes the identical test.
+   */
+  it('does NOT warn about an overridden drop on a resource already recorded cc-api', () => {
+    const fx = pickSilentDropFixture();
+    const { registry, info, warn } = makeRegistry();
+    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
+    registry.validateResourceProperties([
+      {
+        logicalId: 'StickyResource',
+        resourceType: fx.resourceType,
+        properties: { [fx.property]: 'x' },
+        provisionedBy: 'cc-api',
+      },
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it('STILL warns for the same bag on a resource recorded sdk', () => {
+    // The control for the row above: without it, that row also passes under an
+    // implementation that stopped warning entirely.
+    const fx = pickSilentDropFixture();
+    const { registry, warn } = makeRegistry();
+    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
+    registry.validateResourceProperties([
+      {
+        logicalId: 'SdkResource',
+        resourceType: fx.resourceType,
+        properties: { [fx.property]: 'x' },
+        provisionedBy: 'sdk',
+      },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0] as string).toContain('silently dropped');
+  });
+
+  /**
+   * The remedy is per property, because "remove the override" is FALSE for a
+   * create-only one: cdkd keeps such a key in the record (removing it would
+   * make the next deploy read it as an addition and so as a REPLACEMENT), so
+   * with the flag gone the diff is NO_CHANGE and nothing routes anywhere.
+   * go-to-k/cdkd#2790 is the residual.
+   */
+  it('tells a create-only drop it needs a RECREATE, not a flag removal', () => {
+    const fx = pickCreateOnlyDropFixture();
+    const { registry, warn } = makeRegistry();
+    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
+    registry.validateResourceProperties([
+      {
+        logicalId: 'CreateOnlyResource',
+        resourceType: fx.resourceType,
+        properties: { [fx.property]: 'x' },
+        provisionedBy: 'sdk',
+      },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = warn.mock.calls[0]![0] as string;
+    expect(msg).toContain(fx.property);
+    expect(msg).toContain('create-only');
+    expect(msg).toContain('can only be applied by recreating the resource');
+    // The false remedy must be GONE for this property, not merely joined by the
+    // true one — it is the sentence a user would act on.
+    expect(msg).not.toContain('Remove the override');
+    // And NO pasteable command: `--recreate-via-cc-api` is refused by
+    // pre-flight while this very override is still set, needs
+    // `--force-stateful-recreation` for a stateful type, and is refused
+    // outright for a `disableCcApiFallback` provider. A line that has to be
+    // right about all three is one that will be wrong about one.
+    expect(msg).not.toContain('--recreate-via-cc-api');
+  });
+
+  it('keeps the flag-removal remedy for a NON-create-only drop', () => {
+    // The control: without it the row above passes under an implementation
+    // that dropped the reroutable remedy for everything.
+    const fx = pickPlainSilentDropFixtureForWarn();
+    const { registry, warn } = makeRegistry();
+    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
+    registry.validateResourceProperties([
+      {
+        logicalId: 'PlainResource',
+        resourceType: fx.resourceType,
+        properties: { [fx.property]: 'x' },
+        provisionedBy: 'sdk',
+      },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = warn.mock.calls[0]![0] as string;
+    expect(msg).toContain(`Remove the override for ${fx.property}`);
+    expect(msg).not.toContain('create-only');
+  });
+
+  it('exposes the allow set for the diff to narrow with (#2750)', () => {
+    const registry = new ProviderRegistry();
+    expect(registry.getAllowedUnsupportedProperties()).toBeInstanceOf(Set);
+    expect(registry.getAllowedUnsupportedProperties().size).toBe(0);
+    registry.allowUnsupportedProperties(['AWS::CloudWatch::Alarm:EvaluationWindow']);
+    expect(Array.from(registry.getAllowedUnsupportedProperties())).toEqual([
+      'AWS::CloudWatch::Alarm:EvaluationWindow',
+    ]);
   });
 
   it('skips resources with no silent-drop properties (no log noise)', () => {

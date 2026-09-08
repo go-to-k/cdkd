@@ -302,6 +302,17 @@ const NOT_IMPLEMENTED_RATIONALE = 'not yet implemented by cdkd';
 interface PerTypeCoverage {
   handled: string[];
   silentDrop: Array<[prop: string, rationale: string]>;
+  /**
+   * The subset of `silentDrop` this type's schema marks CREATE-ONLY (issue
+   * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
+   *
+   * Only the intersection is emitted, not the whole `createOnlyProperties`
+   * list: the one consumer is the record narrowing, which iterates the drops.
+   * The routing decision (`findSilentDropProperties` /
+   * `findActionableSilentDrops`) does NOT read it — a create-only property is
+   * still a silent drop and still auto-routes.
+   */
+  createOnlyDrops: string[];
 }
 
 function main(): void {
@@ -339,18 +350,26 @@ function main(): void {
     const handled = combinedHandled.get(type) ?? new Set<string>();
     const byDesign = combinedByDesign.get(type) ?? new Map<string, string>();
     const readOnly = new Set(fixture.readOnlyProperties);
+    // The fixture writer already strips the `/properties/` pointer prefix and
+    // drops nested paths (`scripts/refresh-cfn-schemas.mjs`), so these are
+    // bare top-level names. Read them as such -- a pointer-shaped parse here
+    // silently yields an EMPTY set and every consumer below goes inert.
+    const createOnly = new Set(fixture.createOnlyProperties ?? []);
 
     const silentDrop: Array<[string, string]> = [];
+    const createOnlyDrops: string[] = [];
     for (const prop of [...fixture.properties].sort((a, b) => a.localeCompare(b))) {
       if (handled.has(prop)) continue;
       if (readOnly.has(prop)) continue;
       const rationale = byDesign.get(prop) ?? NOT_IMPLEMENTED_RATIONALE;
       silentDrop.push([prop, rationale]);
+      if (createOnly.has(prop)) createOnlyDrops.push(prop);
     }
 
     coverageByType.set(type, {
       handled: [...handled].sort((a, b) => a.localeCompare(b)),
       silentDrop,
+      createOnlyDrops,
     });
     totalHandled += handled.size;
     totalDrops += silentDrop.length;
@@ -388,6 +407,7 @@ function main(): void {
     {
       handled: ${renderHandled(cov.handled)},
       silentDrop: ${renderSilentDrop(cov.silentDrop)},
+      createOnlyDrops: ${renderHandled(cov.createOnlyDrops)},
     },
   ],`
   )
@@ -429,6 +449,20 @@ export interface PropertyCoverage {
    * rationale or the default \`not yet implemented by cdkd\`).
    */
   readonly silentDrop: ReadonlyMap<string, string>;
+  /**
+   * The subset of \`silentDrop\` this type's committed schema marks
+   * CREATE-ONLY (issue
+   * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
+   *
+   * Read ONLY by the record narrowing, which must NOT remove such a key: the
+   * key would then read as an ADDITION against the template on the next
+   * deploy, and an added create-only property classifies as a REPLACEMENT --
+   * so a plain upgrade deploy over an unchanged template would destroy and
+   * re-create the resource, cascading to its dependents. Routing is
+   * unaffected: a create-only property is still a silent drop and still
+   * auto-routes through Cloud Control.
+   */
+  readonly createOnlyDrops: ReadonlySet<string>;
 }
 
 export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = new Map<
