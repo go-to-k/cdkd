@@ -241,7 +241,6 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // per-file cap a second time this session (go-to-k/cdkd#2707); the content
   // is the gate's vocabulary, its body-CHANNEL precedence and its mutation
   // tallies, none of which a lane needs unless it has that gate open.
-  ['hooks-deferral-criteria.md', 2], // literal list: EXACT, see below
   ['hooks-class-fences.md', 6], // literal list: EXACT, see below
   // +1 (go-to-k/cdkd#2650): command-match-mutants.sh. The file already
   // DESCRIBED that harness while nothing made it load on an edit to it.
@@ -522,7 +521,6 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // what matters here -- narrowing the satellite's glob drops this from 22,878
   // to the parent's 15,222 alone, which 18,000 catches.
   ['.github/workflows/pr-content-checks.yml', 18_000, 30_000], // measured 22_878 on 2026-09-07
-  ['.claude/hooks/issue-deferral-criteria-gate.sh', 59_000, 96_000], // measured 72_814 on 2026-09-07
   ['.claude/hooks/branch-gate.sh', 62_000, 100_000], // measured 75_670 on 2026-09-07
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
@@ -585,7 +583,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `pulls in N B` off the failure) and check the HISTORY before explaining why
   // an old figure differs -- a hand-summed answer also has to reproduce
   // `globToRegExp`, and the obvious approximation picks a different file set.
-  ['.claude/hooks/main-tree-edit-gate.sh', 78_000, 95_000], // measured 86_662 on 2026-09-08
+  ['.claude/hooks/main-tree-edit-gate.sh', 78_000, 95_000], // measured 86_991 on 2026-09-08
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the
@@ -1174,7 +1172,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 51; // + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
+const CORPUS_FILE_COUNT = 50; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#2717, its gate retired). + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
                               //  auto-close-form entry, plus the review round that followed
                               //  it, took layout-ci-checks.md to 20,839 B against the 20,000 B
                               //  ceiling its `pr-title-check.yml` path band asserts. (The entry

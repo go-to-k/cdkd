@@ -176,7 +176,13 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     //
     // The value below is MEASURED on the merged tree, not the two deltas added
     // up -- both changes edit ship.md, so their sum is not their composition.
-    corpusBytes: 175_335,
+    //
+    // go-to-k/cdkd#2717 then retired issue-deferral-criteria-gate, whose
+    // filing.md reference was reworded SHORTER so that change stayed a net
+    // deletion here too -- a floor lapses if you fund prose with it, and it
+    // was a deletion change. Same rule as above: MEASURED on the merged
+    // tree, not the two deltas added up.
+    corpusBytes: 175_281,
     largest: { file: 'implement.md', bytes: 28_939 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },

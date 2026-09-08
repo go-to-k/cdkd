@@ -589,7 +589,6 @@ flatten-before-rebase-gate        no rebase template exists to block -- see the 
 gated-command-preamble-gate       verdict is the command SHAPE, target-independent
 integ-coverage-matrix-gate        needs the real repo toolchain (node + the regen script) in the target
 integ-stale-base-detector         NON-BLOCKING: it refuses nothing, so it has no refusal to exercise
-issue-deferral-criteria-gate      verdict is the published BODY, not the target tree
 main-tree-dirty-detector          PostToolUse, non-blocking by design
 main-tree-edit-gate               fires on a WRITE-shaped command, not a git/gh verb
 main-tree-git-cwd-detector        PostToolUse, non-blocking by design
@@ -615,6 +614,31 @@ if [ -z "$unpartitioned" ]; then
   ok "fence 3: every registered hook is either exercised by a literal control or declared unexercisable with a reason"
 else
   ng "fence 3: registered hook(s) in NEITHER list -- they are outside the fence and nothing says why:$unpartitioned"
+fi
+
+# ...and the OTHER direction, which nothing checked. `DECLARED_UNEXERCISED` is
+# read only as a membership test over REGISTERED hooks, so a row naming a hook
+# that no longer exists is inert forever: go-to-k/cdkd#2717 deleted
+# issue-deferral-criteria-gate and its row would have sat here unnoticed, since
+# a stale exemption fails nothing. This repo's sibling tables (`EXEMPT`,
+# `UPDATE_WRAP_ALLOW_LIST`) all fail on a stale entry; this one now does too.
+# The point is not tidiness -- an exemption list that cannot shrink is how a
+# gate's absence stops being visible.
+stale_declared=""
+while read -r dh _rest; do
+  [ -n "$dh" ] || continue
+  found=0
+  for h in "${HOOKS[@]}"; do
+    [ "$(basename "$h" .sh)" = "$dh" ] && { found=1; break; }
+  done
+  [ "$found" = 1 ] || stale_declared="$stale_declared $dh"
+done <<EOF
+$DECLARED_UNEXERCISED
+EOF
+if [ -z "$stale_declared" ]; then
+  ok "fence 3: every DECLARED_UNEXERCISED row names a hook that is still registered"
+else
+  ng "fence 3: DECLARED_UNEXERCISED row(s) name hooks that are not registered -- delete the row with the hook:$stale_declared"
 fi
 
 if [ -z "$leaks" ]; then
@@ -668,9 +692,12 @@ fence4_hazard() {
       # `$END` terminates the NAME. Without it `$f` prefix-matches
       # `$fence_open_re`, and a hook with a one-letter local plus any
       # `=~ $some_local_re` was reported as coupled to a shared constant --
-      # measured on issue-deferral-criteria-gate.sh, whose `f` is a body-file
-      # PATH and whose regex is local. A false positive here is worse than a
-      # miss: it makes a clean state unreachable without an exemption list.
+      # measured on the since-retired issue-deferral-criteria-gate.sh
+      # (go-to-k/cdkd#2717), whose `f` was a body-file PATH and whose regex was
+      # local. The file is gone and the MEASUREMENT is kept: it is why the
+      # terminator is here, and re-deriving it would need a hook with that shape.
+      # A false positive here is worse than a miss: it makes a clean state
+      # unreachable without an exemption list.
       grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv}\}?\"?${END}" "$f" && { m=1; break; }
       # A name copied into another name, one hop -- enough for the shapes seen.
       for gv2 in $(grep -oE "[A-Za-z_][A-Za-z0-9_]*=\"?\\\$\{?${gv}\}?\"?${END}" "$f" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*'); do

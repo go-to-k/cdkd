@@ -5,7 +5,11 @@ import { dirname, join } from 'node:path';
 
 /**
  * `GATE_PERL_WORD` in `.claude/hooks/lib/command-match.sh` is one shared shell
- * literal that several BLOCKING gates interpolate into `perl -0777` programs.
+ * literal that a BLOCKING gate interpolates into `perl -0777` programs. It was
+ * five gates until go-to-k/cdkd#2717 retired four of them; the constant stays
+ * shared because the assertions below are what would notice a second consumer
+ * arriving and disagreeing with the header.
+ *
  * Two failure modes are invisible from any single file, and both were live:
  *
  *   1. **The canonical comment undercounts its own consumers.** The header said
@@ -65,9 +69,10 @@ function perlPrograms(source: string): { body: string; whole: string }[] {
 describe('GATE_PERL_WORD consumers', () => {
   it('the library header names the same count as the tree', () => {
     const found = consumers();
-    // Five today. Asserted as a NUMBER WORD against the header sentence rather
-    // than as a hard-coded 5 here: the point is that the two agree, so adding a
-    // sixth consumer must update the sentence, not this file.
+    // ONE today (go-to-k/cdkd#2717 retired the other four). Asserted as a
+    // NUMBER WORD against the header sentence rather than as a hard-coded count
+    // here: the point is that the two agree, so adding a second consumer must
+    // update the sentence, not this file.
     const words: Record<number, string> = {
       1: 'ONE',
       2: 'TWO',
@@ -84,9 +89,36 @@ describe('GATE_PERL_WORD consumers', () => {
     // The claim sits in the "A shell WORD, for the gates that extract with
     // PERL" block; match case-insensitively so `FIVE gates` / `Five gates`
     // both satisfy it while `Three gates` does not.
+    //
+    // `gates?` because the count reached ONE (go-to-k/cdkd#2717 retired the
+    // fourth of the five original consumers) and this regex demanded the
+    // literal `ONE gates`. The NUMBER WORD is what discriminates -- a header
+    // claiming ONE while two files consume it still fails -- so accepting the
+    // singular costs nothing and stops the fence from forcing ungrammatical
+    // prose into the file it guards. Retiring the LAST consumer is a different
+    // question: `words` has no entry for 0, so `word` is undefined and the
+    // assertion above fails first, which is the right place to stop and decide
+    // whether the constant should still exist.
+    // SCOPED to the block that carries the claim, not the whole file. Searching
+    // the file was already loose and became vacuous the moment the count hit
+    // ONE: `\bONE\s+gates?\b` case-insensitively also matches the unrelated
+    // sentence "for the one gate whose verb is ALSO an ordinary English word",
+    // 600 lines away, so the header could say TWO and the fence still passed
+    // (measured). Small counts spell out as ordinary English words, so a
+    // whole-file search for one is a coincidence waiting to happen.
+    const BLOCK_START = '# ── A shell WORD, for the gates that extract with PERL';
+    const blockStart = lib.indexOf(BLOCK_START);
     expect(
-      new RegExp(`\\b${word}\\s+gates\\b`, 'i').test(lib),
-      `command-match.sh should say "${word} gates"; consumers are:\n  ${found.join('\n  ')}`,
+      blockStart,
+      `could not find the "${BLOCK_START}" block in command-match.sh; this assertion reads the count out of that block, so a rename here would make it search nothing`,
+    ).toBeGreaterThanOrEqual(0);
+    // To the next section rule, or the first non-comment line.
+    const rest = lib.slice(blockStart + BLOCK_START.length);
+    const end = rest.search(/\n# ──|\n[^#\n]/);
+    const block = rest.slice(0, end === -1 ? undefined : end);
+    expect(
+      new RegExp(`\\b${word}\\s+gates?\\b`, 'i').test(block),
+      `the "A shell WORD" block in command-match.sh should say "${word} gate${found.length === 1 ? '' : 's'}"; consumers are:\n  ${found.join('\n  ')}`,
     ).toBe(true);
   });
 

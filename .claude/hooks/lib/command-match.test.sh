@@ -2233,6 +2233,65 @@ utf8_case 'truncated at EOS'        '"\xe6"'               "$F"
 utf8_case 'stray byte BEFORE a character' '"\xff\xe6\x97\xa5"' "$F U+65E5"
 utf8_case 'stray byte AFTER a character'  '"\xe6\x97\xa5\xff"' "U+65E5 $F"
 
+# --- the `$GW` value class, on the shapes that MOTIVATED it -----------------
+#
+# `command-match.sh`'s prelude records three MEASURED fail-open holes the old
+# value class `(["']?)([^"'\s]+)\1` had, and the two below were exercised ONLY
+# by `issue-deferral-criteria-gate`'s suite. go-to-k/cdkd#2717 deleted that gate,
+# so deleting its suite took the only regression coverage for a documented
+# fail-open with it -- the surviving consumer, `pr-body-item-number-gate`,
+# extracts neither shape (its own header records bare `-F` as a deliberate
+# non-goal).
+#
+# So they are asserted HERE, against the constant, which outlives any one gate.
+# Through a gate they could only show a VERDICT; here they show what was
+# EXTRACTED, which is the thing the holes were about -- the old class extracted
+# nothing and the gate then judged an empty body.
+# The pattern arrives through the ENVIRONMENT, not spliced into the perl source.
+# Splicing it needs the shell to survive two quoting layers around a regex that
+# contains both quote characters; the first attempt did that and every case
+# extracted the empty string -- which is exactly what the HOLE these cases pin
+# looks like, so the harness would have been indistinguishable from the defect.
+gw_extract() { # <perl pattern, `GW` naming the class> <command text>
+  GW_PAT="$1" perl -0777 -ne "$GATE_PERL_WORD"'
+    my $re = $ENV{GW_PAT};
+    $re =~ s/\bGW\b/$GW/g;
+    while (/$re/g) { print gate_unq($1), "\n"; }
+  ' <<GW_EOF
+$2
+GW_EOF
+}
+gw_case() { # <name> <pattern> <command> <expected first extraction>
+  local name="$1" pat="$2" cmd="$3" want="$4" got
+  got=$(gw_extract "$pat" "$cmd" | head -1)
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   $GW: %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL $GW: %s (want "%s", got "%s")\n' "$name" "$want" "$got"
+    fail_log+="FAIL \$GW: $name\n  want: $want\n  got : $got\n"
+  fi
+}
+# gh's OWN documented spelling puts the quote INSIDE the value, after `body=`.
+# The old class fell through to `\S+` and captured `body='a`.
+gw_case 'quote INSIDE the value, after body=' \
+  '-f[=\s]+body=(GW)' \
+  "gh api repos/o/r/issues -f body='next: not this session'" \
+  'next: not this session'
+# A quoted path containing a SPACE: the bare class cannot span the space, and
+# with the optional quote group unset it cannot start on the quote either, so
+# NOTHING was extracted.
+gw_case 'quoted path with a SPACE' \
+  '--body-file[=\s]+(GW)' \
+  'gh issue create --body-file "/tmp/dir with space/b.md"' \
+  '/tmp/dir with space/b.md'
+# Bare `-F <path>` (gh's short --body-file). Not extracted by any surviving
+# gate, deliberately -- but the CLASS must still span it, or the next consumer
+# that scopes to the gh segment inherits the hole.
+gw_case 'bare -F <path>' \
+  '-F[=\s]+(GW)' \
+  'gh issue create -F /tmp/body.md' \
+  '/tmp/body.md'
+
 # --- the SPLIT_CHARS fast path must equal the substr fallback ---------------
 #
 # `substr(s, k, 1)` is O(n) per call in the awk macOS ships, so every

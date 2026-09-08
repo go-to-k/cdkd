@@ -123,15 +123,18 @@ extract_files() {
   #   --body-file "<dir with space>/bad.md"   rc=0, plain spelling rc=2
   #   -F body=@<path>  glued as `-Fbody=@…`   rc=0
   #
-  # This is the FIFTH site of one root cause; the other four are
-  # gh-body-english / issue-dup-check / issue-deferral-criteria /
-  # issue-classification-label. If you fix a path-extraction bug in any of
-  # them, check the rest.
+  # This was the FIFTH site of one root cause. The other four --
+  # gh-body-english, issue-dup-check, issue-classification-label (moved to CI)
+  # and issue-deferral-criteria (deleted) -- were retired by go-to-k/cdkd#2717,
+  # so this hook is the LAST one extracting a body path from raw command text,
+  # and there is no longer a sibling to cross-check a fix against. The shapes
+  # above are the record of what that root cause looked like; keep them.
   #
   # KNOWN LIMIT, deliberately NOT closed here: a bare `-F <path>` (gh's short
   # `--body-file`) is still not extracted, and the arming grep above does not
-  # even let it reach this function. The four siblings do read it, but they
-  # scope their scan to the `gh` SEGMENT; this gate scans the WHOLE command, so
+  # even let it reach this function. The four siblings DID read it (they are
+  # retired now, so this is why rather than a place to look), because they
+  # scoped their scan to the `gh` SEGMENT; this gate scans the WHOLE command, so
   # a bare `-F` arm would also read `git commit -F <msg>` and `awk -F ,` — and
   # this gate BLOCKS on what it FINDS, so a commit message mentioning `#4`
   # would become a false refusal. Closing it means segment-scoping first.

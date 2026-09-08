@@ -1914,13 +1914,17 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # ── A shell WORD, for the gates that extract with PERL ─────────────────────
 #
 # `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
-# `[[ =~ ]]`. TWO gates -- issue-deferral-criteria and pr-body-item-number --
-# pull a `--body-file` / `-F` path or an inline `--body` value out of RAW
-# command text with `perl -0777` instead, because they need a GLOBAL scan over a
-# multi-line slurp and `[[ =~ ]]` gives neither.
+# `[[ =~ ]]`. ONE gate -- pr-body-item-number -- pulls a `--body-file` / `-F`
+# path or an inline `--body` value out of RAW command text with `perl -0777`
+# instead, because it needs a GLOBAL scan over a multi-line slurp and
+# `[[ =~ ]]` gives neither. Do not trust that count from this comment: the
+# header undercounted its own consumers once and the fence
+# `tests/unit/scripts/gate-perl-word-consumers.test.ts` now derives the set from
+# the hooks directory and fails when the two disagree.
 #
 # It was FIVE until go-to-k/cdkd#2717 retired gh-body-english,
-# issue-dup-check and issue-classification-label to CI. Their subject is a body
+# issue-dup-check and issue-classification-label to CI, and then
+# issue-deferral-criteria outright. Their subject is a body
 # PUBLISHED to GitHub, which a workflow receives whole in the event payload --
 # so the extraction problem this constant exists to solve does not arise there
 # either, for the same reason it does not arise for a `gate_argv` consumer
@@ -1948,7 +1952,8 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 #   gh issue create --body-file "<dir with space>/x.md"
 #     The bare class cannot span the space, and with the optional quote group
 #     unset it cannot start on the quote either, so NOTHING is extracted and
-#     the gate judges an empty body. Measured: issue-deferral-criteria-gate
+#     the gate judges an empty body. Measured on the since-retired
+#     issue-deferral-criteria-gate (go-to-k/cdkd#2717):
 #     rc=0 on a PR-shaped deferral where the unquoted spelling gave 2, and
 #     gh-body-english-gate rc=0 on a JAPANESE body where the unquoted spelling
 #     gave 2 -- the English-only rule was bypassable by putting the body file
@@ -1957,7 +1962,7 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 #   gh api repos/O/R/issues -f body='<text>'
 #     gh's OWN documented spelling puts the quote INSIDE the value, after the
 #     `body=`. An alternation tried AFTER the literal `body=` falls through to
-#     `\S+` and captures `body='a`. Measured on issue-deferral-criteria-gate:
+#     `\S+` and captures `body='a`. Measured on the same since-retired gate:
 #     rc=0, where `-f 'body=<text>'` (quote OUTSIDE, the only shape its suite
 #     covered) gave 2.
 #
@@ -2571,15 +2576,16 @@ GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:s
 # where `Severity` first exists for the bulk of the backlog. `comment` stays
 # absent: a comment is not the issue's classification.
 GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space:]]|$)"
-# The same mint through the REST verb. `gh api repos/<o>/<r>/issues` with a
-# `title=` field creates an issue; the path must NOT continue past `issues`,
-# which is what separates it from `/issues/<n>/comments` (a comment) and
-# `/issues/<n>` (an edit) -- neither of which mints anything. Sibling
-# GATE_RE_GH_BODY_CARRIER already carries `api` for exactly this reason; this
-# gate omitting it left the trigger under-approximated, against the
-# "over-approximate the TRIGGER, be strict on RESOLUTION" rule in
-# .claude/rules/hooks.md.
-GATE_RE_GH_API_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$).*repos/[^[:space:]/]+/[^[:space:]/]+/issues([[:space:]]|$|\")"
+# GATE_RE_GH_API_ISSUE_CREATE stood here -- the issue mint through the REST
+# verb, `gh api repos/<o>/<r>/issues`. Its only consumer was
+# issue-deferral-criteria-gate, retired by go-to-k/cdkd#2717, so it is removed
+# WITH that consumer rather than left as a constant nothing reads: an unused
+# regex reads as a supported trigger and is the same invisible-residue class
+# that change's other findings were about. `git log -S` recovers it with its
+# rationale if a future gate needs the shape; the discrimination it encoded --
+# the path must NOT continue past `issues`, which separates a MINT from
+# `/issues/<n>/comments` and `/issues/<n>` -- is the part worth re-reading
+# there.
 # gh-body-english-gate: every gh verb that PUBLISHES prose. UNANCHORED, because
 # that hook feeds the same ERE to `cmd_matches_verb` (which wraps it in `^(...)`)
 # and to `cmd_last_cd_target` (which needs the bare verb). The terminator is

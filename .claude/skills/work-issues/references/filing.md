@@ -20,9 +20,8 @@ cannot sit open while site 1's fix drifts away. Two boundaries:
   sites this lane DID close, so the residue is unambiguous.
 
   **Say WHY in the criteria's terms, not the PR's.** This read "would make the
-  PR unreviewable" until 2026-09-05 — a spelling
-  `issue-deferral-criteria-gate.sh` refuses, so the file blessed what the gate
-  blocks. Review size is the SIGNAL; under it is verification the residue needs
+  PR unreviewable" until 2026-09-05, so the file blessed what its own rule
+  refuses. Review size is the SIGNAL; under it is verification the residue needs
   and this lane is not paying. Else the residue is `now`.
 
   **The unreviewable state is never reached by drifting into it**, because each
