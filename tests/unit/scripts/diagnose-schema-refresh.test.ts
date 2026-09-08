@@ -4417,8 +4417,11 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // it rests on is fenced separately, in
     // `tests/unit/scripts/cfn-schema-refresh-workflow.test.ts`.
     expect(flat).toContain('No rendering of this report is ever rewritten in place');
-    expect(flat).toContain('the newest comment holds the newest reading');
-    expect(flat).toContain('if there is no comment, the body is all there is');
+    expect(flat).toContain('the newest comment holds the newest reading POSTED');
+    // Not the newest reading TAKEN — an idle cycle recomputes and discards one,
+    // so "it is current" claimed more than the mechanism supports.
+    expect(flat).toContain('not necessarily the newest one taken');
+    expect(flat).toContain('If there is no comment, the body is all there is');
     expect(flat).toContain('npm view @aws-sdk/client-<service> version');
     // Nothing may claim WHERE this particular instance is being read.
     expect(flat).not.toContain('written once, on the day');

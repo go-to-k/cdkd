@@ -1760,40 +1760,66 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       'cat /tmp/diagnosis.md'
     );
 
-    // (ii) A later publishing cycle posts a COMMENT — exactly one poster, and it
-    // sits directly on the push-success arm. A guarded or duplicated comment
-    // makes "the newest comment holds the newest reading" false without
-    // changing any call shape.
-    const posters = [...workflow.matchAll(/gh pr comment/g)];
-    expect(posters.length, 'there is no longer exactly one comment poster').toBe(1);
-    const pushArm = guardArm(workflow, 'if git push \\');
-    expect(pushArm, 'the diagnosis comment left the push-success arm').toContain('gh pr comment');
+    // (ii) A later publishing cycle posts a COMMENT — exactly one poster,
+    // UNCONDITIONALLY, on the push-SUCCESS half. All three matter: a second
+    // poster, an `&&` in front of the one, or moving it into the failure arm
+    // each makes "each later publishing cycle posts its own as a new comment"
+    // false while every call shape stays identical (all three measured green
+    // against the earlier form of this case).
+    expect([...workflow.matchAll(/gh pr comment/g)].length, 'not exactly one poster').toBe(1);
+    const publish = shellOf('Publish the refresh');
+    const pushAt = publish.indexOf('if git push');
+    expect(pushAt, 'the push guard is gone').toBeGreaterThan(-1);
+    const thenAt = publish.indexOf('then', pushAt);
+    expect(thenAt, 'the push guard opens no arm').toBeGreaterThan(-1);
+    // Bounded by the arm's own `else`, NOT by `guardArm`: that helper ends at
+    // the first line-leading `fi`, which here is the INNER lost-race one inside
+    // the failure arm — so its slice spanned BOTH halves and a poster moved to
+    // the failure arm still satisfied `toContain` (measured).
+    const elseOffset = publish.slice(thenAt).search(/\n\s*else\b/);
+    expect(elseOffset, 'the push guard has no else arm to bound the success half').toBeGreaterThan(
+      -1
+    );
+    const successArm = publish.slice(thenAt, thenAt + elseOffset);
+    expect(successArm, 'the diagnosis comment left the push-SUCCESS arm').toContain('gh pr comment');
     expect(
-      pushArm.slice(0, pushArm.indexOf('gh pr comment')),
+      successArm.slice(0, successArm.indexOf('gh pr comment')),
       'the diagnosis comment picked up a condition of its own'
-    ).not.toMatch(/\n\s*if\b/);
+    ).not.toMatch(/&&|\|\||\bif\b/);
     const comment = workflow.match(/gh pr comment[\s\S]{0,200}?--body-file (\S+)/);
     expect(comment, 'the later-cycle diagnosis is no longer posted as a comment').not.toBeNull();
     expect(comment![1]).toBe('/tmp/diagnosis.md');
 
-    // (iii) Nothing rewrites a rendering in place. The ONLY later body write is
-    // the marking step's `${NB}` — the body with the verdict block spliced
-    // between its markers, not a regenerated one.
-    //
-    // Checked across BOTH spellings a rewrite would reach for, because the
-    // quoted `--field "body=@..."` form alone left five realistic mutations
-    // green (measured): a `gh pr edit --body-file` in the marking step, an
-    // unquoted `-f body=`, and so on. `gh pr edit` already appears three times
-    // in that step, so it is the natural reach.
+    // (iii) Nothing rewrites a rendering in place. The only later body write is
+    // the marking step's `${NB}`, and what matters is what `${NB}` is built
+    // FROM: the body just fetched into `${B}` plus the verdict block. Asserting
+    // that the marker NAMES appear somewhere constrains nothing — they are
+    // `env:` entries — so splicing the current diagnosis into `${verdict}`, or
+    // regenerating the whole body from the preamble plus the diagnosis, both
+    // stayed green (measured).
+    const mark = shellOf('Mark whether the PR needs a decision');
+    expect(mark, 'the marking step now reads the diagnosis — it would rewrite it in place').not.toContain(
+      '/tmp/diagnosis.md'
+    );
+    expect(mark, 'the splice no longer takes the head of the FETCHED body').toContain(
+      'head -n "${vb}" "${B}"'
+    );
+    expect(mark, 'the splice no longer takes the tail of the FETCHED body').toContain(
+      'tail -n "+${ve}" "${B}"'
+    );
+    expect(mark, 'the marking step no longer fetches the body it edits').toContain(
+      'gh pr view "${pr}" --json body'
+    );
+
+    // Both PATCH spellings, and any `gh pr edit` that grew a body. The quoted
+    // `--field "body=@..."` form alone left an unquoted `-f body=` and a
+    // `gh pr edit --body-file` green, and `gh pr edit` already appears three
+    // times in that step, so it is the natural reach.
     for (const m of workflow.matchAll(/(?:--field\s+"?|[-]f\s+)body=@?([^\s"]+)/g)) {
       expect(['${NB}'], `an unexpected whole-body write from ${m[1]}`).toContain(m[1]);
     }
     for (const m of workflow.matchAll(/gh pr edit[\s\S]{0,200}?(?=\n\s*\n|\n\s*[a-z}])/g)) {
       expect(m[0], 'a gh pr edit now writes a body').not.toMatch(/--body(-file)?\b/);
     }
-    // The one write IS the splice: assembled from the marker pair the marking
-    // step maintains, not from a fresh render.
-    expect(workflow).toContain('VERDICT_BEGIN');
-    expect(workflow).toContain('VERDICT_END');
   });
 });
