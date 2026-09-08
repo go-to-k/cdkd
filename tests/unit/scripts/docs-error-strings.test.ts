@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
 import {
   mkdtempSync,
@@ -25,6 +25,7 @@ import {
   FOREIGN_ERROR_NAMES,
   SELF_PROBE_CASES,
   MIN_TEMPLATE_LITERAL_CHARS,
+  MIN_TRUNCATION_TAIL_CHARS,
   BLOCKING,
 } from '../../../scripts/check-docs-error-strings.ts';
 
@@ -172,7 +173,7 @@ describe('docs error-string checker: template extraction', () => {
     expect(t.length).toBe(1);
   });
 
-  it('scans the comment, escape and nesting arms of the state machine', () => {
+  it('handles line comments, escapes and hole nesting', () => {
     // `//` line comment — its backticks must not open a template.
     expect(scanTemplateLiterals('// a `tick` in a line comment\nconst x = 1;')).toEqual([]);
     // An escaped backtick does not close the template.
@@ -182,6 +183,19 @@ describe('docs error-string checker: template extraction', () => {
     // A `}` inside a hole must not be read as the hole's end.
     const nested = scanTemplateLiterals('const x = `v=${ {a:1}.a } end`;');
     expect(nested.map((t) => t.raw)).toEqual(['v=${ {a:1}.a } end']);
+  });
+
+  it('refuses a file it cannot parse rather than scanning a partial tree', () => {
+    /*
+     * An unparseable file yields a PARTIAL tree, not an error, so its
+     * templates go missing while every count stays plausible — and the
+     * templates floor carries thousands of slack, enough to hide the largest
+     * files dropping out entirely. The sibling critics hard-fail on
+     * diagnostics for the same reason.
+     */
+    expect(() => scanTemplateLiterals('const a = ;;; function (')).toThrow(/parse diagnostic/);
+    // Control: a valid file does not throw.
+    expect(() => scanTemplateLiterals('const a = `fine ${x}`;')).not.toThrow();
   });
 
   it('treats an empty or whitespace-only template as no template', () => {
@@ -227,11 +241,8 @@ describe('docs error-string checker: template extraction', () => {
 
   it('does not end a template at a brace nested inside a hole', () => {
     /*
-     * The fixture needs a NESTED TEMPLATE after the object literal, or it
-     * scans correctly with or without the fix and pins nothing. Review
-     * measured exactly that: the first version of this case stayed green with
-     * the brace arm deleted, while the real tree lost a template and gained
-     * six bogus ones. This shape is `src/cli/commands/state.ts`'s.
+     * A shape the hand-rolled scanner ended early, losing one real template
+     * and manufacturing six bogus ones. `src/cli/commands/state.ts` has it.
      */
     const src = 'throw new E(`Run: ${ f({ a: 1 }) || `fallback text here` } tail`);';
     const tokens = scanTemplateLiterals(src);
@@ -239,8 +250,8 @@ describe('docs error-string checker: template extraction', () => {
   });
 
   it('does not desync on a brace inside a STRING inside a hole', () => {
-    // The brace-counting arm introduced this one; both arms have to land
-    // together or `${ f("{") }` swallows past the closing backtick.
+    // A shape the hand-rolled scanner got wrong twice. Kept as a regression
+    // against ever replacing the parser with heuristics again.
     const src = 'const a = `pre ${ f("{") } post`; const b = `a second template ${x} here`;';
     const tokens = scanTemplateLiterals(src);
     expect(tokens.map((x) => x.raw)).toEqual([
@@ -275,14 +286,51 @@ describe('docs error-string checker: template extraction', () => {
     expect(matchesSourceTemplate('Added the node named MyBucket of type (AWS ...', t)).toBe(true);
   });
 
+  it('refuses a second literal of a single character', () => {
+    /*
+     * Round 4's finding: requiring the tail to be merely NON-EMPTY was the
+     * same defect one character up. `(`, `:` and `,` are second literals on
+     * many real templates and turn up by chance in invented prose, so the
+     * tail must clear MIN_TRUNCATION_TAIL_CHARS rather than just exist.
+     */
+    // Second literal is a single `:` — enough to "exist", not enough to mean
+    // anything, since a colon turns up in arbitrary prose.
+    const weak = templatesOf('throw new E(`Something big happened ${a}: ${b} at the end here`);');
+    expect(
+      matchesSourceTemplate('Something big happened TOTAL FABRICATION: invented ...', weak)
+    ).toBe(false);
+
+    /*
+     * ACCEPT twin, so the case cannot pass merely because the extractor
+     * returned nothing: same shape, second literal widened past the margin.
+     */
+    const strong = templatesOf('throw new E(`Something big happened ${a} while ${b} at the end`);');
+    expect(matchesSourceTemplate('Something big happened THING while other ...', strong)).toBe(true);
+    expect(MIN_TRUNCATION_TAIL_CHARS).toBeGreaterThan(1);
+  });
+
+  it('counts the head in substantive characters, not raw length', () => {
+    /*
+     * Fences the FIRST substantive() guard, which review mutation-tested as
+     * unfenced: reverting it to `head.join('').length` left every other case
+     * green. The template's head is long in raw characters and short in real
+     * ones, so only the substantive count refuses it.
+     */
+    const t = templatesOf('throw new E(`a b c d e ${x} xyz ${y} Z`);');
+    // Head is 17 raw characters but only 9 substantive ones, and the trailing
+    // ` Z` keeps the whole-template matcher from accepting outright — so the
+    // ONLY thing standing between this subject and a pass is which unit the
+    // first guard counts in.
+    expect(matchesSourceTemplate('a b c d e VALUE xyz invented tail ...', t)).toBe(false);
+  });
+
   it('refuses a second literal made only of whitespace', () => {
     /*
      * Round 3's blocker. `Could not confirm that ${a} ${b} (${c})` has a
      * whitespace-only second segment; trailing-trim emptied it and the
      * cumulative prefix collapsed back to `^lead`, reinstating the k=1
-     * matcher the `k >= 2` rule forbids — for 1265 of 4522 templates. Both
-     * guards now count SUBSTANTIVE characters, so a padding segment can
-     * satisfy nothing.
+     * matcher the `k >= 2` rule forbids. Guards count SUBSTANTIVE characters
+     * now, so a padding segment satisfies nothing.
      */
     const t = templatesOf('throw new E(`Could not confirm that ${a} ${b} (${c}) is the resource`);');
     expect(matchesSourceTemplate('Could not confirm that TOTAL FABRICATION never ...', t)).toBe(false);
@@ -390,8 +438,11 @@ describe('docs error-string checker: the real tree', () => {
   });
 
   it('really is reading the tree, at magnitudes stated INDEPENDENTLY of the floors', () => {
-    // Literals, not `FLOORS.x` — measured 2026-09-08 at 73 / 489 / 4272 / 42 /
-    // 7945, banded for ordinary growth and shrinkage. Every counter gets one:
+    // Literals, not `FLOORS.x`. The bands sit well under the real magnitudes
+    // so ordinary growth and shrinkage do not touch them — deliberately no
+    // measured figure is quoted here, because a number in a comment drifts
+    // and the assertions below are the thing that must stay true. Every
+    // counter gets a band:
     // the two that previously had none are where a collapse would hide.
     expect(report.counts.pages).toBeGreaterThanOrEqual(60);
     expect(report.counts.fencedBlocks).toBeGreaterThanOrEqual(400);
@@ -446,7 +497,23 @@ describe('docs error-string checker: fails against real code', () => {
    * The properties synthetic fixtures cannot establish. Both run against a
    * COPY of the real tree so nothing is written under `src/` or `docs/`.
    */
-  function runOnCopy(mutate: (root: string) => void): { code: number; out: string } {
+  /**
+   * ONE copy, reused by every probe, with the mutated files restored after
+   * each. Copying per probe made seven ~19 MB trees and seven full-tree
+   * TypeScript parses in a single worker, which produced an intermittent
+   * `Worker exited unexpectedly` — a green summary next to a non-zero exit,
+   * the flakiest shape there is to debug later.
+   */
+  const MUTABLE = [
+    'docs/troubleshooting.md',
+    'src/state/s3-state-backend.ts',
+    'src/utils/error-handler.ts',
+    'scripts/check-docs-error-strings.ts',
+  ] as const;
+
+  let dir = '';
+
+  beforeAll(() => {
     /*
      * realpath is load-bearing on macOS: `mkdtemp` hands back `/var/...` while
      * the spawned script resolves its own path to `/private/var/...`, so the
@@ -454,17 +521,24 @@ describe('docs error-string checker: fails against real code', () => {
      * the process exits 0 having run nothing. Every probe below then "passes"
      * against a checker that never executed.
      */
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-doc-err-tree-')));
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-doc-err-tree-')));
+    for (const sub of ['src', 'docs', 'scripts']) {
+      mkdirSync(join(dir, sub), { recursive: true });
+      execFileSync('cp', ['-R', join(ROOT, sub) + '/.', join(dir, sub)]);
+    }
+    // The checker imports `typescript-v6`, so the copy needs a module
+    // resolution root. A symlink is enough and copying node_modules is not
+    // (gigabytes, and slow enough to time these probes out).
+    symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
+  }, 180_000);
+
+  afterAll(() => {
+    // `recursive` does not follow the node_modules symlink — it unlinks it.
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function runOnCopy(mutate: (root: string) => void): { code: number; out: string } {
     try {
-      // Only the directories the checker reads.
-      for (const sub of ['src', 'docs', 'scripts']) {
-        mkdirSync(join(dir, sub), { recursive: true });
-        execFileSync('cp', ['-R', join(ROOT, sub) + '/.', join(dir, sub)]);
-      }
-      // The checker imports `typescript-v6`, so the copy needs a module
-      // resolution root. A symlink is enough and copying node_modules is not
-      // (gigabytes, and slow enough to time these probes out).
-      symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
       mutate(dir);
       try {
         const out = execFileSync('node', [join(dir, 'scripts/check-docs-error-strings.ts')], {
@@ -477,7 +551,12 @@ describe('docs error-string checker: fails against real code', () => {
         return { code: err.status ?? 1, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
       }
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      // Restore every file a probe may have touched, so probes cannot leak
+      // into each other — a mutated tree that survives would make the NEXT
+      // probe pass for the previous probe's reason.
+      for (const rel of MUTABLE) {
+        writeFileSync(join(dir, rel), readFileSync(join(ROOT, rel), 'utf8'), 'utf8');
+      }
     }
   }
 
@@ -570,6 +649,17 @@ describe('docs error-string checker: fails against real code', () => {
     });
     expect(code).not.toBe(0);
     expect(out).toContain('now a real cdkd error name');
+  }, 180_000);
+
+  it('is still green AFTER every probe (proves the restores work)', () => {
+    /*
+     * The leading control cannot see a failed restore — only a trailing one
+     * can. Without this, a probe could pass on the PREVIOUS probe's lingering
+     * mutation and the suite would read as fully green.
+     */
+    const { code, out } = runOnCopy(() => {});
+    expect(code).toBe(0);
+    expect(out).toContain('check OK');
   }, 180_000);
 
   it('fails a stale allow-list entry no page quotes any more', () => {

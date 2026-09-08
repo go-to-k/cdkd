@@ -71,12 +71,12 @@
  *   text after the author's ellipsis is unexamined by construction. It must
  *   either stop inside the opening literal, or reach a SECOND literal —
  *   keeping text from both sides of a hole, counted in SUBSTANTIVE (non-
- *   whitespace) characters. Three review rounds landed here: the first
- *   revision compared only the overlapping characters; the second accepted
- *   anything whose borrowed opening aligned to a whole literal; the third
- *   found that a whitespace-only second segment collapsed the rule back to the
- *   first. A quote cut inside the first hole is refused, which is a loud,
- *   author-fixable outcome rather than a silent blessing.
+ *   whitespace) characters and required to clear a MARGIN. Four review rounds
+ *   walked this rule inward: comparing only the overlapping characters, then
+ *   accepting any borrowed opening that aligned to a whole literal, then a
+ *   whitespace-only second literal collapsing it back, then a ONE-character
+ *   one doing the same. A quote cut inside the first hole is refused, which is
+ *   a loud, author-fixable outcome rather than a silent blessing.
  *
  * COLLAPSE DEFENCES. The population is small (a couple of dozen lines
  * site-wide), so counting only findings would let a broken scanner report a
@@ -112,10 +112,10 @@ const ROOT = join(import.meta.dirname, '..');
  * nearly-all-holes template such as `` `${operation}: ${message}` `` would
  * match almost any line with a colon in it and silently bless every invention
  * on the site. Requiring real literal text means the match is carried by
- * wording somebody actually wrote. Measured against the tree: the templates
- * these pages quote carry 14 to 40 literal characters, and the shortest
- * genuine one is `` `${operation} failed for ${logicalId}: ${err.message}` ``
- * at 14.
+ * wording somebody actually wrote. The threshold clears every template the
+ * site actually quotes -- the tightest is
+ * `` `${operation} failed for ${logicalId}: ${err.message}` `` -- while
+ * refusing the ones that carry no wording of their own.
  */
 export const MIN_TEMPLATE_LITERAL_CHARS = 12;
 
@@ -247,14 +247,27 @@ const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Wildcard standing in for one `${...}` hole. */
 const HOLE = '[\\s\\S]*?';
 
+/** Literal characters that are not whitespace — the only ones that anchor anything. */
+const substantive = (s: string): number => s.replace(/\s/g, '').length;
+
+/**
+ * Substantive characters a truncated quotation must match BEYOND the opening
+ * literal before arm (b) will vouch for it.
+ *
+ * A presence test (`!== 0`) is not enough, which review established twice at
+ * one character's distance: first a whitespace-only second literal collapsed
+ * the rule to "starts with the lead", then a ONE-character one (`(`, `:`, `,`)
+ * did the same in practice, because single punctuation appears by chance in
+ * arbitrary invented prose. A margin is what makes the second literal carry
+ * signal rather than merely exist.
+ */
+export const MIN_TRUNCATION_TAIL_CHARS = 3;
+
 /**
  * Start-anchored matcher for the first `k` literal segments of a template,
  * memoised per template — arm (b) of the truncation test asks for these
  * repeatedly, and recompiling them per call is the whole cost of that path.
  */
-/** Literal characters that are not whitespace — the only ones that anchor anything. */
-const substantive = (s: string): number => s.replace(/\s/g, '').length;
-
 function prefixMatcher(t: Template, k: number): RegExp {
   const cached = t.prefixCache.get(k);
   if (cached) return cached;
@@ -298,6 +311,20 @@ export function scanTemplateLiterals(
   text: string
 ): Array<{ raw: string; start: number; end: number }> {
   const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  /*
+   * An unparseable file yields a PARTIAL tree, not an error: its templates go
+   * missing while every count stays plausible. `FLOORS.templates` carries
+   * thousands of slack, so the largest files could all fail to parse and the
+   * run would still report green — the fail-vacuous shape the sibling critics
+   * hard-fail on for the same reason.
+   */
+  const diagnostics = (sf as unknown as { parseDiagnostics?: ReadonlyArray<unknown> })
+    .parseDiagnostics;
+  if (diagnostics && diagnostics.length > 0) {
+    throw new Error(
+      `refusing to scan: ${diagnostics.length} parse diagnostic(s); a partial tree silently drops templates`
+    );
+  }
   const out: Array<{ raw: string; start: number; end: number }> = [];
 
   const visit = (node: ts.Node): void => {
@@ -348,7 +375,14 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
 
   for (const file of sourceFiles) {
     const text = readFileSync(file, 'utf8');
-    const tokens = scanTemplateLiterals(text);
+    let tokens;
+    try {
+      tokens = scanTemplateLiterals(text);
+    } catch (e) {
+      // Name the file: the scan refuses a partial tree, and a refusal that
+      // does not say which input caused it is not actionable.
+      throw new Error(`${file}: ${e instanceof Error ? e.message : String(e)}`);
+    }
     /*
      * Join runs of literals concatenated with `+`. cdkd builds its longest
      * messages that way, and neither half alone matches what a user sees.
@@ -417,19 +451,19 @@ export function matchesSourceTemplate(
       /*
        * (b) The author cut later, having crossed at least one hole.
        *
-       * Both guards count SUBSTANTIVE characters — literal text with the
-       * whitespace removed. Counting raw length was the third consecutive
-       * round's blocker: 30 real templates have a whitespace-only segment, the
-       * trailing-trim above emptied it, and `head.join(HOLE)` collapsed back to
-       * `^lead` — reinstating the very k=1 matcher the `k >= 2` rule exists to
-       * forbid, for 1265 of 4522 templates. Requiring the final segment to
-       * carry non-whitespace makes a padding segment unable to satisfy
-       * anything, which closes the class rather than the instance.
+       * Every guard counts SUBSTANTIVE characters — literal text with the
+       * whitespace removed — and the tail beyond the lead must clear a MARGIN,
+       * not merely exist. Review walked this rule inward twice: counting raw
+       * length let a whitespace-only second literal collapse the whole thing
+       * back to "starts with the lead", and requiring merely non-zero let a
+       * one-character literal do the same, since `(` or `:` turns up by chance
+       * in invented prose. The margin is what makes the second literal
+       * evidence instead of a coincidence.
        */
       for (let k = t.parts.length; k >= 2; k--) {
         const head = t.parts.slice(0, k);
         if (substantive(head.join('')) < MIN_TEMPLATE_LITERAL_CHARS) break;
-        if (substantive(t.parts[k - 1]!) === 0) continue;
+        if (substantive(head.slice(1).join('')) < MIN_TRUNCATION_TAIL_CHARS) continue;
         if (prefixMatcher(t, k).test(subject)) return true;
       }
     }
@@ -575,7 +609,7 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     what: 'a foreign name with a recorded reason',
     line: 'CredentialsProviderError: Error: self-signed certificate in certificate chain',
     errorNames: ['StateError'],
-    source: 'nothing relevant here',
+    source: 'const unrelated = 1;',
     expect: 'foreign-allowed',
   },
   {
