@@ -41,10 +41,13 @@ The layer is decided per resource, per deploy, in this order:
    fresh one: the decision is re-made every deploy. Where the type's SDK-stored
    physical id is also a valid Cloud Control identifier — true per type, not in
    general — that write is an update in place, with the physical id preserved
-   and nothing recreated. One sequence defeats it: if an earlier deploy accepted
-   the drop with `--allow-unsupported-properties`, the property is already in
-   the state record and the Cloud Control patch omits it — see
-   [Deploy: safety & compatibility flags](cli-deploy-safety.md#recreate-via-cc-api-deploy).
+   and nothing recreated. It holds after an
+   [`--allow-unsupported-properties`](cli-deploy-safety.md#the-override) deploy
+   too: cdkd records only what the SDK provider sent, so dropping the flag makes
+   the property a genuine addition and the auto-route delivers it — except for a
+   create-only property, which cdkd keeps in the record because applying one to
+   a live resource needs a replacement
+   ([the override](cli-deploy-safety.md#the-override) lists the exceptions).
    Measured on a live resource by
    [`tests/integration/sdk-to-cc-autoroute/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sdk-to-cc-autoroute/).
 4. **If no SDK provider exists for the type**, Cloud Control handles it.

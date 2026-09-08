@@ -8,6 +8,9 @@
  *   - `getPropertyCoverage` (lookup)
  *   - `findSilentDropProperties` (per-resource silent-drop detection)
  *   - `findActionableSilentDrops` (silent drops minus the override allow-set)
+ *   - `findAcceptedSilentDrops` / `withoutSilentDropProperties` /
+ *     `withoutAcceptedSilentDropProperties` (the #2750 record- and diff-side
+ *     narrowings: what the SDK route actually writes)
  *   - `unsupportedPropertyIssueUrl` (1-click GitHub issue link)
  *
  * The throw-based `ProviderRegistry.validateResourceProperties` tests were
@@ -20,10 +23,13 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   PROPERTY_COVERAGE_BY_TYPE,
+  findAcceptedSilentDrops,
   findActionableSilentDrops,
   findSilentDropProperties,
   getPropertyCoverage,
   unsupportedPropertyIssueUrl,
+  withoutAcceptedSilentDropProperties,
+  withoutSilentDropProperties,
 } from '../../../src/provisioning/property-coverage.js';
 
 describe('getPropertyCoverage', () => {
@@ -204,5 +210,240 @@ describe('findActionableSilentDrops (#614)', () => {
       new Set()
     );
     expect(drops.map((d) => d.property)).toEqual([pair.propA, pair.propB]);
+  });
+});
+
+describe('findAcceptedSilentDrops (#2750)', () => {
+  it('returns [] when nothing is allow-listed — the resource auto-routes to CC', () => {
+    const fx = pickSilentDropFixture();
+    expect(findAcceptedSilentDrops(fx.resourceType, { [fx.property]: 'x' }, new Set())).toEqual([]);
+  });
+
+  it('names the drop the user opted into when it is the only one', () => {
+    const fx = pickSilentDropFixture();
+    expect(
+      findAcceptedSilentDrops(
+        fx.resourceType,
+        { [fx.property]: 'x' },
+        new Set([`${fx.resourceType}:${fx.property}`])
+      )
+    ).toEqual([fx.property]);
+  });
+
+  /**
+   * The load-bearing case, and the one a per-property reading gets wrong: the
+   * allow set is per `<Type>:<Prop>` while the ROUTE is per resource. One
+   * un-allowed drop sends the whole resource through Cloud Control, which
+   * forwards the full property map — so the allow-listed sibling reaches AWS
+   * after all and must NOT be treated as dropped.
+   */
+  it('returns [] for a MIXED bag — one un-allowed drop routes the whole resource to CC', () => {
+    const pair = pickSilentDropPair();
+    expect(
+      findAcceptedSilentDrops(
+        pair.resourceType,
+        { [pair.propA]: 'x', [pair.propB]: 'y' },
+        new Set([`${pair.resourceType}:${pair.propA}`])
+      )
+    ).toEqual([]);
+  });
+
+  it('names both when both are allow-listed', () => {
+    const pair = pickSilentDropPair();
+    expect(
+      findAcceptedSilentDrops(
+        pair.resourceType,
+        { [pair.propA]: 'x', [pair.propB]: 'y' },
+        new Set([`${pair.resourceType}:${pair.propA}`, `${pair.resourceType}:${pair.propB}`])
+      )
+    ).toEqual([pair.propA, pair.propB]);
+  });
+
+  it('is the complement of findActionableSilentDrops on every allow-set shape', () => {
+    const pair = pickSilentDropPair();
+    const props = { [pair.propA]: 'x', [pair.propB]: 'y' };
+    const bothAllowed = new Set([
+      `${pair.resourceType}:${pair.propA}`,
+      `${pair.resourceType}:${pair.propB}`,
+    ]);
+    for (const allowed of [new Set<string>(), new Set([`${pair.resourceType}:${pair.propA}`]), bothAllowed]) {
+      const actionable = findActionableSilentDrops(pair.resourceType, props, allowed);
+      const accepted = findAcceptedSilentDrops(pair.resourceType, props, allowed);
+      // Exactly one of the two is non-empty: a bag with drops either takes the
+      // SDK route (everything accepted) or the CC route (nothing accepted).
+      expect(actionable.length === 0 || accepted.length === 0).toBe(true);
+    }
+  });
+});
+
+/**
+ * The same, restricted to a drop that is NOT create-only. The two `without*`
+ * helpers deliberately KEEP a create-only drop (#2750 / go-to-k/cdkd#2790), so
+ * a case asserting removal must not be handed one — `pickSilentDropFixture`'s
+ * first entry happens to be `AWS::ApiGateway::Deployment.DeploymentCanarySettings`,
+ * which is exactly that.
+ */
+function pickPlainSilentDropFixture(): { resourceType: string; property: string } {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    for (const property of cov.silentDrop.keys()) {
+      if (!cov.createOnlyDrops.has(property)) return { resourceType, property };
+    }
+  }
+  throw new Error('every silent drop is create-only — use a synthetic fixture');
+}
+
+/** A type with two silent drops, NEITHER of them create-only. */
+function pickPlainSilentDropPair(): { resourceType: string; propA: string; propB: string } {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    const plain = [...cov.silentDrop.keys()]
+      .filter((k) => !cov.createOnlyDrops.has(k))
+      .sort((a, b) => a.localeCompare(b));
+    if (plain.length >= 2) return { resourceType, propA: plain[0]!, propB: plain[1]! };
+  }
+  throw new Error('no type has two non-create-only silent drops — use a synthetic fixture');
+}
+
+/**
+ * A (type, property) pair whose silent drop is ALSO create-only, and whose type
+ * has at least one drop that is NOT — so the exclusion and its control can be
+ * driven off the same type. Throws rather than skipping: with no such pair the
+ * cases below would pass having exercised nothing, which is exactly how the
+ * first cut of this fence family shipped vacuous.
+ */
+function pickCreateOnlyDropFixture(): { resourceType: string; property: string } {
+  for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    if (cov.createOnlyDrops.size === 0) continue;
+    if (cov.silentDrop.size <= cov.createOnlyDrops.size) continue;
+    const property = [...cov.createOnlyDrops].sort((a, b) => a.localeCompare(b))[0]!;
+    return { resourceType, property };
+  }
+  throw new Error(
+    'No type has both a create-only silent drop and a plain one — the #2750 ' +
+      'create-only exclusion cannot be exercised against the generated map. ' +
+      'Use a synthetic fixture instead.'
+  );
+}
+
+describe('withoutSilentDropProperties (#2750, the RECORD side)', () => {
+  it('removes every silent-drop key regardless of any allow set', () => {
+    const pair = pickPlainSilentDropPair();
+    const written = withoutSilentDropProperties(pair.resourceType, {
+      [pair.propA]: 'x',
+      [pair.propB]: 'y',
+      SomeFakeUnknownProperty: 'kept',
+    });
+    expect(written).toEqual({ SomeFakeUnknownProperty: 'kept' });
+  });
+
+  it('returns the SAME object when the type has no coverage record', () => {
+    const props = { Foo: 'bar' };
+    expect(withoutSilentDropProperties('AWS::Made::Up', props)).toBe(props);
+  });
+
+  it('returns the SAME object when the bag carries no silent drop', () => {
+    const cov = getPropertyCoverage('AWS::Lambda::Function');
+    if (!cov) throw new Error('AWS::Lambda::Function should have a coverage record');
+    const handledKey = Array.from(cov.handled)[0]!;
+    const props = { [handledKey]: 'x' };
+    expect(withoutSilentDropProperties('AWS::Lambda::Function', props)).toBe(props);
+  });
+
+  it('does not mutate the input bag', () => {
+    const fx = pickPlainSilentDropFixture();
+    const props = { [fx.property]: 'x' };
+    withoutSilentDropProperties(fx.resourceType, props);
+    expect(props).toEqual({ [fx.property]: 'x' });
+  });
+
+  /**
+   * The one exclusion, and it is what stops the narrowing being destructive
+   * rather than merely incomplete: removing a CREATE-ONLY drop makes it read as
+   * an ADDITION on the next deploy, which classifies as a REPLACEMENT of a
+   * resource nobody touched. go-to-k/cdkd#2790 carries the residual that leaves
+   * (for those keys the property still does not reach AWS).
+   */
+  it('KEEPS a create-only silent drop', () => {
+    const fx = pickCreateOnlyDropFixture();
+    const props = { [fx.property]: 'x' };
+    expect(withoutSilentDropProperties(fx.resourceType, props)).toBe(props);
+  });
+
+  it('still removes a NON-create-only drop on the same type', () => {
+    // The control: without it the row above passes under an implementation
+    // that stopped narrowing altogether.
+    const fx = pickCreateOnlyDropFixture();
+    const plain = [...PROPERTY_COVERAGE_BY_TYPE.get(fx.resourceType)!.silentDrop.keys()].find(
+      (p) => !PROPERTY_COVERAGE_BY_TYPE.get(fx.resourceType)!.createOnlyDrops.has(p)
+    );
+    if (plain === undefined) {
+      throw new Error(
+        `${fx.resourceType} has only create-only silent drops — pick a type with both, ` +
+          'or this control asserts nothing.'
+      );
+    }
+    expect(
+      withoutSilentDropProperties(fx.resourceType, { [fx.property]: 'x', [plain]: 'y' })
+    ).toEqual({ [fx.property]: 'x' });
+  });
+});
+
+describe('withoutAcceptedSilentDropProperties (#2750, the DESIRED side)', () => {
+  it('removes the opted-into drop', () => {
+    const fx = pickPlainSilentDropFixture();
+    expect(
+      withoutAcceptedSilentDropProperties(
+        fx.resourceType,
+        { [fx.property]: 'x', SomeFakeUnknownProperty: 'kept' },
+        new Set([`${fx.resourceType}:${fx.property}`])
+      )
+    ).toEqual({ SomeFakeUnknownProperty: 'kept' });
+  });
+
+  /**
+   * The discriminator against the record-side helper: with no flag the drop
+   * auto-routes the resource through Cloud Control, which DOES write the
+   * property, so narrowing it here would hide a real difference.
+   */
+  it('keeps a drop the user did NOT opt into', () => {
+    const fx = pickPlainSilentDropFixture();
+    const props = { [fx.property]: 'x' };
+    expect(withoutAcceptedSilentDropProperties(fx.resourceType, props, new Set())).toBe(props);
+  });
+
+  it('keeps BOTH drops of a mixed bag — the resource takes the CC route', () => {
+    const pair = pickPlainSilentDropPair();
+    const props = { [pair.propA]: 'x', [pair.propB]: 'y' };
+    expect(
+      withoutAcceptedSilentDropProperties(
+        pair.resourceType,
+        props,
+        new Set([`${pair.resourceType}:${pair.propA}`])
+      )
+    ).toBe(props);
+  });
+
+  it('does not mutate the input bag', () => {
+    const fx = pickPlainSilentDropFixture();
+    const props = { [fx.property]: 'x' };
+    withoutAcceptedSilentDropProperties(
+      fx.resourceType,
+      props,
+      new Set([`${fx.resourceType}:${fx.property}`])
+    );
+    expect(props).toEqual({ [fx.property]: 'x' });
+  });
+
+  it('KEEPS a create-only drop even when it is opted into', () => {
+    // The desired side's half of the same exclusion: narrowing only one side
+    // is what manufactures the difference, so both must decline together.
+    const fx = pickCreateOnlyDropFixture();
+    const props = { [fx.property]: 'x' };
+    expect(
+      withoutAcceptedSilentDropProperties(
+        fx.resourceType,
+        props,
+        new Set([`${fx.resourceType}:${fx.property}`])
+      )
+    ).toBe(props);
   });
 });

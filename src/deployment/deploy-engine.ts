@@ -85,6 +85,7 @@ import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry, STICKY_CC_MIGRATION_EXEMPT } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
 import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
+import { withoutSilentDropProperties } from '../provisioning/property-coverage.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -2255,7 +2256,28 @@ export class DeployEngine {
         // Shared with `cdkd diff` (issue #1591): a preview that narrows
         // differently from the apply forecasts a change the deploy will never
         // make, which is this issue's own bug class moved one command over.
-        makeCanonicalizePropertiesFn(this.providerRegistry)
+        makeCanonicalizePropertiesFn(this.providerRegistry),
+        // Issue #2750: the drops THIS deploy opted into via
+        // `--allow-unsupported-properties` are not written, so comparing them
+        // would report a change the SDK route will never make. `cdkd diff`
+        // passes nothing here and that is correct — it registers no such flag,
+        // so its preview is of a FLAG-LESS deploy, which is the one that
+        // auto-routes and does write the property.
+        //
+        // Optional call for the TEST DOUBLES only. Many unit files hand-build
+        // a registry object literal and cast it in; an unconditional call
+        // failed 39 test FILES / 270 cases across `tests/unit/{deployment,cli}`
+        // when measured, which is a count of what BROKE, not a survey of the
+        // doubles. The sibling `makeCanonicalizePropertiesFn` survives them
+        // only because it defers its registry reads into a closure the mocked
+        // DiffCalculator never invokes. `undefined` degrades to "no flag",
+        // which is what every one of those doubles means. The real class
+        // always has the method — `providerRegistry` is typed as the concrete
+        // class, so the `undefined` branch is unreachable in production, and
+        // the method's existence is pinned directly on `ProviderRegistry` by
+        // `provider-registry-report-silent-drops.test.ts`, since a mocked
+        // registry cannot witness the real one losing it.
+        this.providerRegistry.getAllowedUnsupportedProperties?.()
       );
 
       // Issue #2668: refuse a Type change into or out of
@@ -4403,7 +4425,12 @@ export class DeployEngine {
         stateResources[logicalId] = {
           physicalId: result.physicalId,
           resourceType,
-          properties: this.propertiesToRecord(resolvedProps, result),
+          properties: this.propertiesToRecord(
+            resolvedProps,
+            result,
+            resourceType,
+            createDecision.provisionedBy
+          ),
           // The REAL attribute values, deliberately: this in-memory record is
           // what `Fn::GetAtt` serves to dependents in this same run, and
           // CloudFormation delivers a `NoEcho` custom resource's `Data` to a
@@ -4452,6 +4479,31 @@ export class DeployEngine {
 
         const desiredProps = change.desiredProperties || {};
         const currentProps = change.currentProperties || {};
+        // Issue #2750: the same bag with the keys the SDK route cannot have
+        // WRITTEN removed. For a resource recorded on that route a silent-drop
+        // key is junk by construction, and left in it makes the Cloud Control
+        // auto-route inert on a record written before this fix:
+        // `CloudControlProvider.update` builds its JSON Patch from the previous
+        // side, finds the property identical on both sides, and omits it, so
+        // the deploy reports success having sent nothing for it. A `cc-api`
+        // record is left alone — Cloud Control sends the full map, so its bag
+        // really does describe AWS.
+        //
+        // A SEPARATE binding rather than a narrowed `currentProps`, and the
+        // scope is the point: only the two consumers that ask "what does AWS
+        // hold, so what must this update send" take it — the no-op skip below
+        // and the provider `update()` call. Everything else in this arm keeps
+        // the RECORDED bag, in particular `isStatefulRecreateTargetForReplace`
+        // (a data-loss guard, which asks what the resource HOLDS) and the
+        // replacement path's `delete()` (whose providers read the recorded tags
+        // to decide whether emptying is consented to). Narrowing those is inert
+        // today — every key either reads is `handled` for its own type, fenced
+        // by `tests/unit/provisioning/silent-drop-guard-key-disjointness.test.ts`
+        // — but "inert today" is not a reason to widen a guard's input.
+        const currentPropsAsWritten =
+          currentResource.provisionedBy === 'cc-api'
+            ? currentProps
+            : withoutSilentDropProperties(resourceType, currentProps);
 
         // Resolve intrinsic functions in properties
         const context = this.buildResolverContext(
@@ -4514,9 +4566,16 @@ export class DeployEngine {
         // OWN expression, so a value-only redaction here collapses a coinciding
         // pair onto the survivor and the comparison can never match — a
         // redundant UPDATE on every deploy of such a resource.
+        //
+        // `currentPropsAsWritten`, not the recorded bag (issue #2750): on a
+        // record a pre-fix binary poisoned, the never-written key is present on
+        // BOTH sides here, so the recorded bag makes this skip fire and the
+        // deploy short-circuits before any provider is chosen — the auto-route
+        // never runs and the property still does not reach AWS. This is the
+        // second gate the healing path has to clear, after the diff's own.
         if (
           JSON.stringify(redactSecretsForState(resolvedProps, updateSecrets, desiredProps)) ===
-          JSON.stringify(currentProps)
+          JSON.stringify(currentPropsAsWritten)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
           // `UpdateReplacePolicy` may have flipped without any AWS-side
@@ -5149,7 +5208,12 @@ export class DeployEngine {
           stateResources[logicalId] = {
             physicalId: createResult.physicalId,
             resourceType,
-            properties: this.propertiesToRecord(resolvedProps, createResult),
+            properties: this.propertiesToRecord(
+              resolvedProps,
+              createResult,
+              resourceType,
+              replaceDecision.provisionedBy
+            ),
             ...(createResult.attributes && { attributes: createResult.attributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
             ...this.extractTemplateAttributes(template, logicalId),
@@ -5289,7 +5353,13 @@ export class DeployEngine {
                     currentResource.physicalId,
                     resourceType,
                     updateProps,
-                    currentProps,
+                    // `currentPropsAsWritten` (issue #2750): the ONE consumer
+                    // of the previous side that is asking what AWS holds.
+                    // `CloudControlProvider.update` diffs this into a JSON
+                    // Patch, so a key the SDK route never wrote must be absent
+                    // here or the patch omits it and the auto-route sends
+                    // nothing for it.
+                    currentPropsAsWritten,
                     // The UPDATE twin of the CREATE call's masker (issue #1932
                     // item 3): same resolved bag, same exposure, so the contract
                     // is applied on both or it has a hole in the shape of
@@ -5936,7 +6006,12 @@ export class DeployEngine {
           stateResources[logicalId] = {
             physicalId: result.physicalId,
             resourceType,
-            properties: this.propertiesToRecord(resolvedProps, result),
+            properties: this.propertiesToRecord(
+              resolvedProps,
+              result,
+              resourceType,
+              resultProvisionedBy
+            ),
             ...(carriedAttributes && { attributes: carriedAttributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
             ...this.extractTemplateAttributes(template, logicalId),
@@ -6200,12 +6275,33 @@ export class DeployEngine {
    * by `drift --revert` into another `update()` that narrows and re-reports.
    * The provider is the only layer that knows what it dropped, so it says so
    * and the engine records that instead.
+   *
+   * The SECOND narrowing (issue #2750) is the ROUTE's, not a provider's, and
+   * the provider cannot report it: a silent-drop property is one the SDK
+   * Provider has no wiring for at all, so it never sees the key to say it
+   * dropped it. `provisionedBy === 'sdk'` is the whole condition — on that
+   * route `getProviderFor` has already established that every silent drop in
+   * this bag is allow-listed (an un-allowed one would have auto-routed the
+   * resource to Cloud Control, which forwards the full map), so "what the SDK
+   * route writes" and "what this deploy's flags permit dropping" are the same
+   * set and no flag needs re-reading here.
+   *
+   * Recording the wider bag is what reopened the silent-drop class through the
+   * state file: the record claimed a value AWS did not hold, so the later
+   * Cloud Control re-route diffed the property as unchanged and its JSON Patch
+   * omitted it. Every other reader of the bag was told the same lie —
+   * `cdkd drift` (for a provider with no `readCurrentState`), rollback replay,
+   * `cdkd export`, `cdkd state`.
    */
   private propertiesToRecord(
     desiredProperties: Record<string, unknown>,
-    result: EffectivePropertiesResult
+    result: EffectivePropertiesResult,
+    resourceType: string,
+    provisionedBy: 'sdk' | 'cc-api'
   ): Record<string, unknown> {
-    return result.effectiveProperties ?? desiredProperties;
+    const effective = result.effectiveProperties ?? desiredProperties;
+    if (provisionedBy !== 'sdk') return effective;
+    return withoutSilentDropProperties(resourceType, effective);
   }
 
   /**

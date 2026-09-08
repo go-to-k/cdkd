@@ -38,7 +38,7 @@ interface StateOutputReadEntry {
 interface ResourceState {
   physicalId: string;                           // AWS physical ID
   resourceType: string;                         // e.g., "AWS::S3::Bucket"
-  properties: Record<string, unknown>;          // Resolved template intent (what cdkd was asked to deploy)
+  properties: Record<string, unknown>;          // Resolved template values cdkd SENT (a provider-narrowed bag, or an --allow-unsupported-properties silent drop, is absent — #1591 / #2750)
   observedProperties?: Record<string, unknown>; // AWS-current snapshot at deploy time (drift baseline)
   attributes?: Record<string, unknown>;         // For Fn::GetAtt resolution
   dependencies?: string[];                      // For proper deletion order

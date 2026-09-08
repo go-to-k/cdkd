@@ -14,6 +14,10 @@ import {
   getCreateOnlyPropertyPaths,
   createOnlyChangeRequiresReplacement,
 } from '../provisioning/create-only-properties.js';
+import {
+  withoutAcceptedSilentDropProperties,
+  withoutSilentDropProperties,
+} from '../provisioning/property-coverage.js';
 
 /**
  * Best-effort resolver for intrinsic functions during diff calculation.
@@ -123,13 +127,23 @@ export class DiffCalculator {
    *                  meant to fix. Injected as a function rather than as a provider
    *                  registry so the analyzer layer keeps no dependency on the
    *                  provisioning layer.
+   * @param allowedUnsupportedProperties the deploy's
+   *                  `--allow-unsupported-properties` set, as `<Type>:<Prop>`
+   *                  tokens (issue #2750). Passed as DATA, not as a function:
+   *                  the rule it feeds lives in `property-coverage.ts`, which
+   *                  this module already reaches for `create-only-properties`,
+   *                  so injecting a predicate would create a second spelling of
+   *                  the routing question. `cdkd diff` registers no such flag
+   *                  and correctly passes nothing — its preview is the
+   *                  flag-less deploy.
    * @returns Map of logical ID to resource change
    */
   async calculateDiff(
     currentState: StackState,
     desiredTemplate: CloudFormationTemplate,
     resolveFn?: IntrinsicResolveFn,
-    canonicalizeProperties?: CanonicalizePropertiesFn
+    canonicalizeProperties?: CanonicalizePropertiesFn,
+    allowedUnsupportedProperties?: ReadonlySet<string>
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -243,13 +257,49 @@ export class DiffCalculator {
         // `CloudControlProvider` sends and records the FULL bag and reports no
         // `effectiveProperties`, so its record is not a narrowing artifact and
         // narrowing it here would hide a real difference.
+        // Issue #2750, applied BEFORE the provider narrowing above and gated on
+        // the SAME `provisionedBy !== 'cc-api'` question, because it asks the
+        // same thing one layer down: does this bag describe the SDK route, on
+        // which a silent-drop property never reaches AWS?
+        //
+        // The two sides take DIFFERENT rules and the asymmetry is the fix:
+        //
+        // - RECORD side, every silent drop for the type. A resource recorded
+        //   `provisionedBy: 'sdk'` cannot have had one written, whatever flags
+        //   were passed then, so its presence is junk — and removing it is what
+        //   makes a record written before this fix heal: the key reads as an
+        //   ADDITION, so the deploy is no longer NO_CHANGE, the auto-route
+        //   fires, and Cloud Control sends the property.
+        // - DESIRED side, only the drops THIS deploy opted into. An un-allowed
+        //   drop auto-routes the resource to Cloud Control, which forwards the
+        //   full map, so narrowing it here would hide a real difference — the
+        //   same reason the current side is skipped for a `cc-api` record.
+        //
+        // Both sides narrowed together is what keeps a flag-ful redeploy quiet:
+        // record-side alone would report the template's key as added on EVERY
+        // deploy, and for a create-only property that is a REPLACEMENT of a
+        // resource nobody touched (`CanonicalizePropertiesFn`'s contract in
+        // src/types/resource.ts spells out that failure for issue #1591).
+        const sdkRouted = currentResource.provisionedBy !== 'cc-api';
+        const desiredAfterDrops =
+          sdkRouted && allowedUnsupportedProperties
+            ? withoutAcceptedSilentDropProperties(
+                desiredResource.Type,
+                resolvedDesiredProps,
+                allowedUnsupportedProperties
+              )
+            : resolvedDesiredProps;
+        const currentAfterDrops = sdkRouted
+          ? withoutSilentDropProperties(desiredResource.Type, currentResource.properties)
+          : currentResource.properties;
+
         const desiredPropsForCompare = canonicalizeProperties
-          ? canonicalizeProperties(desiredResource.Type, resolvedDesiredProps)
-          : resolvedDesiredProps;
+          ? canonicalizeProperties(desiredResource.Type, desiredAfterDrops)
+          : desiredAfterDrops;
         const currentPropsForCompare =
-          canonicalizeProperties && currentResource.provisionedBy !== 'cc-api'
-            ? canonicalizeProperties(desiredResource.Type, currentResource.properties)
-            : currentResource.properties;
+          canonicalizeProperties && sdkRouted
+            ? canonicalizeProperties(desiredResource.Type, currentAfterDrops)
+            : currentAfterDrops;
 
         // ANNOUNCE the narrowing. The whole design rests on it being a
         // deliberate, stated decision (`EffectivePropertiesResult`'s contract);
@@ -270,8 +320,14 @@ export class DiffCalculator {
         // The key-set test is what separates the two, and it needs no provider
         // opt-in: `narrowRouteDestinations` deletes the losing destination
         // keys, while `narrowIngressIpProtocol` returns the same key set.
+        // Measured against `desiredAfterDrops`, NOT the raw resolved bag: the
+        // #2750 narrowing above also drops keys, and they must not reach this
+        // warning. Its remedy ("Fix the template to declare only what the
+        // resource supports") is wrong for a drop the user opted INTO, and
+        // `ProviderRegistry.reportSilentDropDecisions` already warns about
+        // those every deploy with the accurate wording.
         const droppedKeys = canonicalizeProperties
-          ? Object.keys(resolvedDesiredProps).filter((key) => !(key in desiredPropsForCompare))
+          ? Object.keys(desiredAfterDrops).filter((key) => !(key in desiredPropsForCompare))
           : [];
         if (droppedKeys.length > 0) {
           this.logger.warn(
@@ -283,7 +339,7 @@ export class DiffCalculator {
           );
         } else if (
           canonicalizeProperties &&
-          !this.valuesEqual(desiredPropsForCompare, resolvedDesiredProps)
+          !this.valuesEqual(desiredPropsForCompare, desiredAfterDrops)
         ) {
           this.logger.debug(
             `${logicalId} (${desiredResource.Type}): the provider normalizes part of the ` +

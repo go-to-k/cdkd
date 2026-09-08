@@ -142,6 +142,44 @@ drop explicitly. The flag is `deploy`-only: destroy works from the per-resource
 physical ID and the state-recorded `provisionedBy` layer, not from the template
 properties.
 
+**The state record follows the drop.** A property accepted this way is not
+written to the resource's `properties` bag in cdkd state either — state
+describes what cdkd sent to AWS, not what the template asked for. Two
+consequences worth knowing:
+
+- **Removing the flag is usually enough to close the drop.** The property is
+  then a genuine addition against the record, so the deploy re-routes the
+  resource through Cloud Control and the value reaches AWS in place. (Older cdkd
+  versions recorded the property anyway, and the re-routed update — computed as
+  a patch against a record that already claimed the value — sent nothing.) The
+  exception is a create-only property; see below.
+- **`cdkd diff` and `cdkd deploy` disagree about the property, on purpose.**
+  `diff` registers no `--allow-unsupported-properties`, so it previews the
+  flag-less deploy and shows the property as a pending change with the
+  `[via CC API: <Prop>]` annotation. Re-running `deploy` WITH the flag reports
+  no change for it, because that deploy will not write it.
+
+Three exceptions:
+
+- **A resource carrying a second silent-drop property you did not name.** One
+  un-allowed drop routes the whole resource through Cloud Control, which
+  forwards the full map — so the property you opted out of reaches AWS anyway,
+  is recorded, and no drop warning is logged for it.
+- **A resource already recorded `provisionedBy: cc-api`.** The routing is
+  sticky, so the flag changes nothing: Cloud Control keeps writing the whole
+  map.
+- **A property CloudFormation marks create-only.** Applying one to a live
+  resource requires a replacement, so cdkd does not narrow it out of the record
+  — the drop is still accepted and still warned about, but removing the flag
+  later does not deliver it. Applying it means recreating the resource, which
+  is [`--recreate-via-cc-api`](#recreate-via-cc-api-deploy) — and that flag is
+  refused while the same property is still named in
+  `--allow-unsupported-properties`, so drop the entry in the same run. A
+  stateful type also needs
+  [`--force-stateful-recreation`](#force-stateful-recreation), and a type whose
+  provider declines the Cloud Control fallback cannot be recreated that way at
+  all.
+
 ### When to use it
 
 - **You need the SDK provider's fast synchronous-call path** and the dropped

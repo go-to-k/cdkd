@@ -286,6 +286,13 @@ Reach for it only when all three hold, or it becomes a way to hide losses:
   properties", which is why the engine gates on `??` and not on truthiness — an
   empty object is a legitimate answer.
 
+**It is not the only narrowing the record takes.** A property absent from
+`handledProperties` altogether is a SILENT DROP, narrowed out by the ROUTE
+(issue [#2750](https://github.com/go-to-k/cdkd/issues/2750);
+[layout-provisioning.md](layout-provisioning.md) has the mechanism) -- you
+cannot see such a key to report it, so `effectiveProperties` stays for what this
+provider narrowed out of what it DOES handle.
+
 **Every `update()` caller honours it, not just the deploy engine** (issue
 #1644). `cdkd drift --revert` and the rollback executor's two revert arms
 (`revert`, `revert-failed-update`) call `update()` too, and all three used to

@@ -84,6 +84,163 @@ export function findActionableSilentDrops(
 }
 
 /**
+ * The silent-drop properties in `templateProperties` the user has opted back
+ * INTO dropping via `--allow-unsupported-properties`, **and that this deploy
+ * will therefore really fail to write** (issue
+ * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
+ *
+ * Returns `[]` as soon as ONE drop is NOT in `allowedKeys`, which is the whole
+ * point and not an optimization: that single un-allowed drop auto-routes the
+ * **resource** through Cloud Control (issue
+ * [#614](https://github.com/go-to-k/cdkd/issues/614)), and CC forwards the full
+ * property map — so the allow-listed keys reach AWS too and nothing is dropped.
+ * The allow set is per `<Type>:<Prop>` while the route is per RESOURCE, so a
+ * per-property answer would be wrong for exactly the mixed bag.
+ *
+ * The complement of {@link findActionableSilentDrops}: one is empty whenever
+ * the other is not, unless the bag has no drops at all (both empty).
+ */
+export function findAcceptedSilentDrops(
+  resourceType: string,
+  templateProperties: Record<string, unknown> | undefined,
+  allowedKeys: ReadonlySet<string>
+): string[] {
+  const drops = findSilentDropProperties(resourceType, templateProperties);
+  const accepted: string[] = [];
+  for (const { property } of drops) {
+    if (!allowedKeys.has(`${resourceType}:${property}`)) return [];
+    accepted.push(property);
+  }
+  return accepted;
+}
+
+/**
+ * `properties` minus every top-level key this type's SDK Provider does not
+ * write — i.e. what the SDK route ACTUALLY sends to AWS (issue
+ * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
+ *
+ * Two callers, and both are about a bag that describes the SDK route:
+ *
+ * - the state record written after an SDK-routed create / update, so the record
+ *   stops claiming a value AWS does not hold. Recording the template bag is
+ *   what defeated the later Cloud Control re-route: `CloudControlProvider.update`
+ *   builds its JSON Patch from the recorded bag, found the property identical on
+ *   both sides, and omitted it;
+ * - the CURRENT side of the diff for a resource recorded `provisionedBy: 'sdk'`.
+ *   A silent-drop key in such a record is junk BY CONSTRUCTION (the SDK route
+ *   cannot have written it), so removing it is what lets a pre-fix record heal:
+ *   the key reads as an addition, the deploy auto-routes, and Cloud Control
+ *   sends it.
+ *
+ * No allow set: on the SDK route every drop present is allow-listed already
+ * (that is what kept the resource off the auto-route), and a record's own route
+ * is read from `provisionedBy` rather than re-derived from flags a later deploy
+ * may have changed. Returns the input UNCHANGED when nothing applies, so a
+ * caller can compare by reference.
+ */
+export function withoutSilentDropProperties(
+  resourceType: string,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  const removable = removableSilentDrops(resourceType, properties);
+  if (removable.length === 0) return properties;
+  const written = { ...properties };
+  for (const property of removable) delete written[property];
+  return written;
+}
+
+/**
+ * `properties` minus the drops this deploy's flags have opted INTO
+ * ({@link findAcceptedSilentDrops}) — the DESIRED side's twin of
+ * {@link withoutSilentDropProperties} (issue
+ * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
+ *
+ * Narrowing only the record and not the desired side is the failure mode the
+ * `canonicalizeDesiredProperties` contract in `src/types/resource.ts` spells
+ * out for issue [#1591](https://github.com/go-to-k/cdkd/issues/1591): the
+ * template's key resurfaces as a change on EVERY later deploy, and for a
+ * create-only property that change is a REPLACEMENT — a destroy-and-recreate
+ * of a resource nobody touched. It takes the allow set (unlike the record-side
+ * helper) because an un-allowed drop auto-routes to Cloud Control, which DOES
+ * write the key, so narrowing it there would hide a real difference.
+ *
+ * It declines a CREATE-ONLY drop for the same reason its record-side twin does
+ * — {@link removableSilentDrops} carries the rationale, and both go through
+ * {@link excludeCreateOnly} so they cannot decline on different rules.
+ *
+ * Returns the input UNCHANGED when nothing applies.
+ */
+export function withoutAcceptedSilentDropProperties(
+  resourceType: string,
+  properties: Record<string, unknown>,
+  allowedKeys: ReadonlySet<string>
+): Record<string, unknown> {
+  const removable = excludeCreateOnly(
+    resourceType,
+    findAcceptedSilentDrops(resourceType, properties, allowedKeys)
+  );
+  if (removable.length === 0) return properties;
+  const written = { ...properties };
+  for (const property of removable) delete written[property];
+  return written;
+}
+
+/**
+ * The silent-drop properties in `properties` it is SAFE to remove from a bag
+ * describing the SDK route — every drop except the ones this type's schema
+ * marks CREATE-ONLY (issue
+ * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
+ *
+ * A create-only drop is deliberately LEFT IN, and the exclusion is not a
+ * refinement — it is what stops the narrowing being destructive. Removing such
+ * a key makes it read as an ADDITION against the template on the next deploy,
+ * and `createOnlyChangeRequiresReplacement` classifies an added create-only
+ * path as a REPLACEMENT: a plain upgrade deploy over an unchanged template
+ * would DELETE and re-CREATE the resource and cascade to its dependents, where
+ * before the narrowing it did nothing at all. 24 types carry 80 such pairs in
+ * the committed schema snapshot, `AWS::EC2::Subnet.AvailabilityZoneId` and
+ * `AWS::RDS::DBCluster.SnapshotIdentifier` among them.
+ *
+ * The cost is stated rather than hidden: for those 80 pairs the record keeps
+ * claiming a value AWS does not hold, so removing the flag does NOT deliver
+ * the property — the go-to-k/cdkd#2750 behaviour survives there. Applying a
+ * create-only property to a live resource REQUIRES a replacement, which cdkd
+ * must not do as a side effect of a flag being dropped; issue
+ * [#2790](https://github.com/go-to-k/cdkd/issues/2790) carries the residual.
+ *
+ * The snapshot is the authority here because the narrowing is SYNCHRONOUS,
+ * while the diff's own classifier resolves `createOnlyProperties` from the
+ * LIVE registry via `DescribeType`. A property create-only at runtime but not
+ * in the snapshot is therefore still narrowed; the daily schema-refresh job is
+ * what bounds that window.
+ */
+function removableSilentDrops(
+  resourceType: string,
+  properties: Record<string, unknown> | undefined
+): string[] {
+  return excludeCreateOnly(
+    resourceType,
+    findSilentDropProperties(resourceType, properties).map(({ property }) => property)
+  );
+}
+
+/**
+ * `names` minus this type's create-only drops — the ONE spelling of the
+ * exclusion {@link removableSilentDrops} documents.
+ *
+ * Shared rather than repeated because the two narrowings it serves must decline
+ * TOGETHER: narrowing one comparison side and not the other is the difference
+ * the whole `canonicalizeDesiredProperties` contract exists to avoid, so a
+ * second exclusion class added to one copy would reintroduce it silently.
+ */
+function excludeCreateOnly(resourceType: string, names: string[]): string[] {
+  if (names.length === 0) return names;
+  const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
+  if (createOnly === undefined || createOnly.size === 0) return names;
+  return names.filter((property) => !createOnly.has(property));
+}
+
+/**
  * A 1-click pre-filled GitHub issue link requesting cdkd support for a
  * specific top-level property on a resource type. Surfaced in the pre-flight
  * error so a user hitting a silent drop lands directly in the "request

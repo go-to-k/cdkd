@@ -21,10 +21,12 @@
 #   4 allowdrop -- the property WITH --allow-unsupported-properties. CONTROL
 #                  for the premise: proves the SDK route really does drop it,
 #                  rather than importing that from the generated coverage map.
-#   5 dropagain -- the same property again with NO flag. Pins
-#                  go-to-k/cdkd#2750: the opt-out deploy RECORDED the property
-#                  it never wrote, so the Cloud Control patch diffs it as
-#                  unchanged and it never reaches AWS. Identical operation to
+#                  Also asserts the WRITE half of go-to-k/cdkd#2750: the record
+#                  must not claim a value AWS does not hold.
+#   5 dropagain -- the same property again with NO flag. Closes
+#                  go-to-k/cdkd#2750: the opt-out deploy used to RECORD the
+#                  property it never wrote, so the Cloud Control patch diffed it
+#                  as unchanged and it never reached AWS. Identical operation to
 #                  phase 2; the only difference is the recorded bag, which is
 #                  what makes the pair a clean A/B.
 #   6 destroy
@@ -278,34 +280,65 @@ awk -v t="${T_ALLOW}" 'BEGIN { exit !(t + 0 == 4) }' || { echo "FAIL: the contro
 W_ALLOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
   --query 'MetricAlarms[0].EvaluationWindow' --output text)
 [ "${W_ALLOW}" = "None" ] || [ -z "${W_ALLOW}" ] || { echo "FAIL: EvaluationWindow reached AWS on the SDK route (${W_ALLOW}); it is not a silent drop for this type, so phase 2b measured nothing" >&2; exit 1; }
-echo "    OK: stayed on SDK, other properties applied, EvaluationWindow dropped"
+# go-to-k/cdkd#2750, the WRITE half -- the record must describe what was SENT,
+# not what the template asked for. This is the assertion that fails against the
+# pre-fix binary, and the property whose presence used to make the flag-less
+# deploy below a no-op patch.
+RECORDED_ALLOW=$(record '.properties.EvaluationWindow // "ABSENT"')
+[ "${RECORDED_ALLOW}" = "ABSENT" ] || { echo "FAIL: the opt-out deploy RECORDED EvaluationWindow (${RECORDED_ALLOW}) even though DescribeAlarms does not report it. go-to-k/cdkd#2750: state must not claim a value AWS does not hold -- the Cloud Control re-route below diffs against this bag." >&2; exit 1; }
+# The record is NARROWED, not emptied: a wholesale replacement would satisfy the
+# line above while destroying every value the SDK route DID write, and the patch
+# in phase 5 would then re-send the whole bag.
+RECORDED_THRESHOLD=$(record '.properties.Threshold')
+awk -v t="${RECORDED_THRESHOLD}" 'BEGIN { exit !(t + 0 == 4) }' || { echo "FAIL: the record lost a property the SDK route DID write (Threshold=${RECORDED_THRESHOLD}, expected 4); the #2750 narrowing must drop only the silent-drop keys" >&2; exit 1; }
+echo "    OK: stayed on SDK, other properties applied, EvaluationWindow dropped and NOT recorded"
 
-echo "==> Phase 5: KNOWN BUG go-to-k/cdkd#2750 -- the recorded bag defeats the re-route"
-# The opt-out deploy above persisted EvaluationWindow into the state record
-# even though it was never written to AWS. `CloudControlProvider.update` builds
-# a JSON Patch from the RECORDED bag to the desired one, so the property is
-# identical on both sides, the patch omits it, and the flag-less deploy below
-# -- byte-identical in operation to phase 2b, which DID apply it -- silently
-# does not.
+echo "==> Phase 5: go-to-k/cdkd#2750 -- the re-route applies the property the opt-out dropped"
+# Before go-to-k/cdkd#2750 the opt-out deploy persisted EvaluationWindow into the
+# state record even though it was never written to AWS, and
+# `CloudControlProvider.update` builds a JSON Patch from the RECORDED bag to the
+# desired one -- so the property was identical on both sides, the patch omitted
+# it, and this flag-less deploy (byte-identical in operation to phase 2b, which
+# DID apply it) silently did not.
 #
-# This arm asserts the CURRENT, WRONG behaviour on purpose, so that a fix for
-# go-to-k/cdkd#2750 turns this fixture RED and forces both the fix and the
-# documentation to move together. Do not "repair" it by relaxing the assertion.
+# The fix is on the WRITE side: the record now describes what the SDK route
+# sent, so the property is an ADDITION here and the patch carries it. Phase 4
+# asserts the record half; this asserts the consequence AT AWS, which is the
+# only place the two halves meeting is observable.
 RECORDED_BEFORE=$(record '.properties.EvaluationWindow // "ABSENT"')
-[ "${RECORDED_BEFORE}" != "ABSENT" ] || { echo "FAIL: the opt-out deploy did NOT record EvaluationWindow, so go-to-k/cdkd#2750's mechanism is gone and this arm no longer pins anything -- re-read the issue before changing this" >&2; exit 1; }
+[ "${RECORDED_BEFORE}" = "ABSENT" ] || { echo "FAIL: the opt-out deploy recorded EvaluationWindow (${RECORDED_BEFORE}); go-to-k/cdkd#2750 has regressed on the write side and the patch below will diff it as unchanged" >&2; exit 1; }
+
+# RE-ARM the identity witness. Phase 3's `--recreate-via-sdk-provider` really
+# did destroy and re-create the alarm, so phase 1's tag is gone by now (that is
+# what phase 3 asserts). This deploy applies the property for real, which makes
+# "in place or by replacement?" a live question again -- and phase 3 already
+# proved the tag dies on a genuine recreate, so its survival below is evidence.
+ARN_BEFORE_AGAIN=$(alarm_arn)
+[ -n "${ARN_BEFORE_AGAIN}" ] && [ "${ARN_BEFORE_AGAIN}" != "None" ] || { echo "FAIL: could not read the alarm ARN before phase 5" >&2; exit 1; }
+aws cloudwatch tag-resource --resource-arn "${ARN_BEFORE_AGAIN}" \
+  --tags "Key=cdkd-integ-witness,Value=2750" --region "${REGION}" >/dev/null
+WITNESS_REARMED=$(aws cloudwatch list-tags-for-resource --resource-arn "${ARN_BEFORE_AGAIN}" --region "${REGION}" \
+  --query "length(Tags[?Key=='cdkd-integ-witness'])" --output text)
+[ "${WITNESS_REARMED}" = "1" ] || { echo "FAIL: identity witness not re-armed for phase 5 (tags=${WITNESS_REARMED}, expected 1)" >&2; exit 1; }
 
 env CDKD_TEST_PHASE=dropagain \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 LAYER_AGAIN=$(record '.provisionedBy')
-[ "${LAYER_AGAIN}" = "cc-api" ] || { echo "FAIL: the resource did not re-route to Cloud Control (provisionedBy=${LAYER_AGAIN}); the bug is that the ROUTE happens and the property still does not land, so without the route this proves nothing" >&2; exit 1; }
+[ "${LAYER_AGAIN}" = "cc-api" ] || { echo "FAIL: the resource did not re-route to Cloud Control (provisionedBy=${LAYER_AGAIN}); the property below can only land VIA that route, so without it the readback proves nothing about go-to-k/cdkd#2750" >&2; exit 1; }
 T_AGAIN=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
   --query 'MetricAlarms[0].Threshold' --output text)
 awk -v t="${T_AGAIN}" 'BEGIN { exit !(t + 0 == 5) }' || { echo "FAIL: the deploy did not reach AWS (Threshold=${T_AGAIN}, expected 5)" >&2; exit 1; }
 W_AGAIN=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
   --query 'MetricAlarms[0].EvaluationWindow.WallClockWindow.Timezone' --output text)
-[ "${W_AGAIN}" = "None" ] || { echo "FAIL(GOOD NEWS): EvaluationWindow reached AWS (Timezone=${W_AGAIN}). go-to-k/cdkd#2750 appears FIXED -- close it, delete this arm, and drop the caveat from docs/cli-deploy-safety.md and the case-4 entry from docs/troubleshooting.md." >&2; exit 1; }
-echo "    OK: re-routed to Cloud Control and the property still did not land (go-to-k/cdkd#2750, as filed)"
+[ "${W_AGAIN}" = "UTC" ] || { echo "FAIL: EvaluationWindow did NOT reach AWS (Timezone=${W_AGAIN}, expected UTC). go-to-k/cdkd#2750 has regressed: the re-route fired but the Cloud Control patch still omitted the property the earlier opt-out deploy dropped." >&2; exit 1; }
+# The re-route must not have replaced the alarm to apply it -- the whole promise
+# of the auto-route is an in-place update, and phase 3 proved the witness dies on
+# a real recreate.
+WITNESS_AGAIN=$(aws cloudwatch list-tags-for-resource --resource-arn "$(alarm_arn)" --region "${REGION}" \
+  --query "length(Tags[?Key=='cdkd-integ-witness'])" --output text)
+[ "${WITNESS_AGAIN}" = "1" ] || { echo "FAIL: the unmanaged tag is gone (tags=${WITNESS_AGAIN}, expected 1); the re-route applied EvaluationWindow by REPLACING the alarm rather than updating it in place" >&2; exit 1; }
+echo "    OK: re-routed to Cloud Control, the property landed, and the alarm was not replaced"
 
 echo "==> Phase 6: Destroy + gone-probe"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes

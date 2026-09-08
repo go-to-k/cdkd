@@ -4,9 +4,11 @@ import { CustomResourceProvider } from './providers/custom-resource-provider.js'
 import { getLogger } from '../utils/logger.js';
 import { isNonProvisionable, unsupportedTypeIssueUrl } from './unsupported-types.js';
 import {
+  findAcceptedSilentDrops,
   findActionableSilentDrops,
   findSilentDropProperties,
   findUnrecognizedProperties,
+  getPropertyCoverage,
   unsupportedPropertyIssueUrl,
 } from './property-coverage.js';
 import {
@@ -352,6 +354,30 @@ export class ProviderRegistry {
       this.allowedUnsupportedProperties.add(entry);
       this.logger.debug(`Allowing unsupported property via escape hatch: ${entry}`);
     }
+  }
+
+  /**
+   * The `--allow-unsupported-properties` set this registry was configured with,
+   * for the diff's desired-side narrowing (issue
+   * [#2750](https://github.com/go-to-k/cdkd/issues/2750)), which must not report
+   * a change for a property the SDK route will not write.
+   *
+   * Not the only reader of the underlying CLI value — `deploy.ts` builds a
+   * SECOND set from `options.allowUnsupportedProperties` for
+   * `validateRecreateTargets`. That copy predates this getter and is a
+   * separate question (which recreate targets are legal), not a second
+   * spelling of the routing rule; collapsing the two is issue-worthy, not
+   * something to do from here.
+   *
+   * DATA, not a predicate. Every question about the set — is this drop
+   * actionable, is it accepted — is answered by the shared helpers in
+   * `property-coverage.ts`, so a second consumer cannot re-derive the rule and
+   * disagree with `getProviderFor`. Read-only for the same reason: the flag is
+   * a deploy-time input, and a caller that could add to it here would change a
+   * routing decision from outside the routing layer.
+   */
+  getAllowedUnsupportedProperties(): ReadonlySet<string> {
+    return this.allowedUnsupportedProperties;
   }
 
   /**
@@ -779,16 +805,34 @@ export class ProviderRegistry {
     for (const { logicalId, resourceType, properties, provisionedBy } of resources) {
       const drops = findSilentDropProperties(resourceType, properties);
 
-      const overridden: string[] = [];
-      const autoRouted: string[] = [];
-      for (const { property } of drops) {
-        const allowKey = `${resourceType}:${property}`;
-        if (this.allowedUnsupportedProperties.has(allowKey)) {
-          overridden.push(property);
-        } else {
-          autoRouted.push(property);
-        }
-      }
+      // The two lists are NOT a partition of `drops`, and treating them as one
+      // was a false warn (issue #2750). The allow set is per `<Type>:<Prop>`
+      // while the ROUTE is per resource, and TWO things send a resource to
+      // Cloud Control — which forwards the full property map, so the
+      // allow-listed keys on it reach AWS after all and no drop happens:
+      //
+      //   - one UN-ALLOWED drop auto-routes it. `findAcceptedSilentDrops`
+      //     answers that and is empty in exactly that case — the same
+      //     predicate the record write and the diff read.
+      //   - a `provisionedBy: 'cc-api'` record keeps it there (rule 2), for
+      //     any bag. That is `stickyCc`, and it is the SAME test
+      //     `reportUnrecognizedProperties` already makes below; the exemption
+      //     lookup is what keeps a type that will flip BACK to the SDK route
+      //     from suppressing a warn about a drop that will then happen.
+      //
+      // Without the second, this warn told a user with a sticky `cc-api`
+      // alarm that `EvaluationWindow` "will be silently dropped" while Cloud
+      // Control was writing it, and prescribed removing the override — a
+      // no-op, since the resource was already on the route that remedy names.
+      const stickyCc = provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType);
+      const overridden = stickyCc
+        ? []
+        : findAcceptedSilentDrops(resourceType, properties, this.allowedUnsupportedProperties);
+      const autoRouted = drops
+        .map(({ property }) => property)
+        .filter(
+          (property) => !this.allowedUnsupportedProperties.has(`${resourceType}:${property}`)
+        );
 
       if (autoRouted.length > 0) {
         // The CC auto-route is only viable when Cloud Control can actually
@@ -820,11 +864,51 @@ export class ProviderRegistry {
         }
       }
       if (overridden.length > 0) {
-        const propList = overridden.join(', ');
+        // The REMEDY is per property, because "remove the override" is FALSE
+        // for a create-only one (issue #2750, residual #2790): cdkd keeps such
+        // a key in the state record -- removing it would make the next deploy
+        // read it as an addition and so as a REPLACEMENT -- so with the flag
+        // gone the diff is NO_CHANGE, nothing routes anywhere, and the property
+        // still does not reach AWS.
+        //
+        // The create-only sentence deliberately prescribes NO COMMAND. The
+        // obvious one, `--recreate-via-cc-api <LogicalId>`, is REFUSED by
+        // `validateRecreateTargets` while this very override is still set
+        // (`ambiguousIntent`), needs `--force-stateful-recreation` for the 9 of
+        // these types that are stateful, and is refused outright for a provider
+        // declaring `disableCcApiFallback`. A sentence that has to be right
+        // about all three is a sentence that will be wrong about one; the
+        // deploy-safety docs carry the remedy with its conditions, and this
+        // line carries only what is true unconditionally.
+        //
+        // The reroutable sentence has its OWN third condition, pre-dating this
+        // change and left alone: for a provider declaring
+        // `disableCcApiFallback` removing the override makes the drop
+        // actionable and rule 4 THROWS instead of routing. Issue
+        // [#2792](https://github.com/go-to-k/cdkd/issues/2792).
+        const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
+        const reroutable = overridden.filter((p) => createOnly?.has(p) !== true);
+        const needsRecreate = overridden.filter((p) => createOnly?.has(p) === true);
+        const remedies: string[] = [];
+        if (reroutable.length > 0) {
+          remedies.push(
+            `Remove the override for ${reroutable.join(', ')} to route this ` +
+              `resource via Cloud Control API instead.`
+          );
+        }
+        if (needsRecreate.length > 0) {
+          const one = needsRecreate.length === 1;
+          remedies.push(
+            `${needsRecreate.join(', ')} ${one ? 'is' : 'are'} create-only, so ` +
+              `removing the override does not apply ${one ? 'it' : 'them'} ` +
+              `either -- a create-only property can only be applied by ` +
+              `recreating the resource.`
+          );
+        }
         this.logger.warn(
-          `${logicalId} (${resourceType}): ${propList} will be silently dropped ` +
-            `(--allow-unsupported-properties override accepted). Remove the ` +
-            `override to route this resource via Cloud Control API instead.`
+          `${logicalId} (${resourceType}): ${overridden.join(', ')} will be ` +
+            `silently dropped (--allow-unsupported-properties override ` +
+            `accepted). ${remedies.join(' ')}`
         );
       }
 
