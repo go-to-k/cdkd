@@ -85,6 +85,23 @@ if ! . "$LIB_DIR/lib/command-match.sh" 2>/dev/null \
   exit 2
 fi
 
+# go-to-k/cdkd#2729: the guard above covers the FUNCTIONS this hook calls and
+# CANNOT see a missing CONSTANT. This hook reads none of its OWN, so the call
+# takes no arguments and asks only about the library's -- which is exactly the
+# case that matters here: the shared walk reads `GATE_SEP_PIPE` and its
+# siblings BARE inside a function body, where the `${X:-}` defaults on the
+# load-time assignments do nothing, and the `set -u` abort is swallowed by the
+# command substitution's subshell. Measured before this line existed: `pkill -f vitest`
+# with `GATE_SEP_AMP` stripped exited 0. NOT yet fenced as a class -- the
+# fence is split out into go-to-k/cdkd#2826, so this hook's own suite is
+# the only thing holding the call in place.
+if ! declare -F gate_require_const >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but does not define" >&2
+  echo "gate_require_const, so this gate cannot verify the constants it reads." >&2
+  exit 2
+fi
+gate_require_const
+
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 [ -n "$cmd" ] || exit 0
 

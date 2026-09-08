@@ -14,9 +14,10 @@ vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 
 - **Every hook but `post-merge-sync-reminder` ships a `*.test.sh` suite**
   (`run-tests.sh` is the runner; `stop-warn` got one via issue #2396), plus
-  two CLASS fences with no same-named `.sh` — `markgate-gate-name-class` and
-  `unresolved-target-class`. The counts that used to sit here went stale
-  twice and are gone: `ls .claude/hooks/*.sh | grep -v '\.test\.sh$' | wc -l`.
+  the CLASS fences with no same-named `.sh` — `markgate-gate-name-class`
+  and `unresolved-target-class`. The counts that used to
+  sit here went stale twice and are gone:
+  `ls .claude/hooks/*.sh | grep -v '\.test\.sh$' | wc -l`.
 - **The runner executes every suite under BOTH bashes** — PATH `bash`
   (Homebrew 5.x) and `/bin/bash` (macOS system **3.2**). Hooks are
   `#!/usr/bin/env bash`, so without newer bash first on PATH they run under
@@ -908,11 +909,39 @@ refusal took away the tools the library is repaired with (go-to-k/cdkd#2717;
 [hooks-main-tree-edit.md](hooks-main-tree-edit.md) has it). A carve-out for a
 MATCHER, not a softening: a Bash-only gate still refuses outright, and so does
 that gate's `Bash` arm.
+
+**`declare -F` covers FUNCTIONS only; issue 2729 added the CONSTANT half**:
+every hook that sources the library calls
+`gate_require_const <names it reads>` beside that chain, which also checks
+`GATE_LIB_BASE_CONSTS` — the constants the library itself interpolates, several
+BARE inside function bodies, so a hook can depend on one without naming it.
+Five read none of their own and pass no arguments. The non-blocking split
+applies: `restore-backup` and the three detectors use
+`gate_require_const_soft`, exiting 0 while saying what is missing.
+
+**The constant half takes the SAME matcher carve-out, and it was written
+without one first.** `main-tree-edit-gate`'s `gate_require_const` call sat
+ahead of the tool-arm split, so a library that could not define the helper
+refused `Edit` and `Write` as well — measured live during this change's own
+rebase, when a merge conflict in the library left `Bash`, `Edit` and `Write`
+all refused and the repair needed the maintainer's shell. That is the exact
+state the paragraph above records as already fixed once for the `declare -F`
+chain: a second liveness check placed ahead of the split re-opens it. Any
+future check added to that hook belongs INSIDE the `Bash` arm.
+
+**NOT fenced as a class yet** — the fence built alongside this change was split
+out into go-to-k/cdkd#2826 after four review rounds each measured the previous
+round's fix reporting a green tally over a live fail-open, so the calls are
+held in place by each hook's own suite and by review. A hook added before that
+lands can read a library constant with no `gate_require_const` and nothing will
+say so.
+
 The path is derived with pure-bash `${BASH_SOURCE[0]%/*}` rather
 than `dirname` (no PATH lookup), `.` fallback for the no-slash case. Count
 the sharing hooks with
-`grep -l 'lib/command-match.sh' .claude/hooks/*.sh | grep -v test | wc -l`
-rather than trusting a number here. Two smoke cases that
+`grep -l 'lib/command-match.sh' .claude/hooks/*.sh | grep -v '\.test\.sh' | wc -l`
+rather than trusting a number here. (SUFFIX-anchored: a bare `grep -v test`
+answers 31, eating `roundtrip-test-gate.sh`.) Two smoke cases that
 previously asserted the chained shape was an "accepted false-negative"
 (`branch-gate.test.sh`, `pr-review-gate.test.sh`) now assert it is CAUGHT.
 
@@ -992,10 +1021,10 @@ any of the four `integ-*` gate scripts or their suites.
 
 ## Class fences
 
-Two suites whose subject is EVERY hook at once — the
-unresolved-target-directory sweep (issue 2027) and the gate-name fence
-(issue 2198) — live in [hooks-class-fences.md](hooks-class-fences.md), loaded
-when you touch one of them or the shared matcher.
+The suites whose subject is EVERY hook at once — the unresolved-target-directory
+sweep (issue 2027), the gate-name fence (issue 2198) and the constant-liveness
+fence (issue 2729) — live in [hooks-class-fences.md](hooks-class-fences.md),
+loaded when you touch one of them or the shared matcher.
 
 ## Stop hooks
 

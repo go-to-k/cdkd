@@ -70,32 +70,46 @@ if ! declare -F gate_matches >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
   exit 2
 fi
-# `GATE_PERL_WORD` is the shared value class `extract_files` interpolates.
-# Undefined, `$GW` becomes the EMPTY string, `($GW)` matches empty at every
-# position, every extracted path is empty and the gate scans nothing -- a
-# silent fail-open, so it fails CLOSED like the two checks above.
-if [ -z "${GATE_PERL_WORD:-}" ]; then
-  echo "Blocked: .claude/hooks/lib/command-match.sh predates GATE_PERL_WORD, so this gate cannot extract a body path." >&2
-  exit 2
-fi
-# `GATE_RE_GH_BODY_CARRIER` is the VERB pattern the next line interpolates, and
-# it needs the same guard for a DIFFERENT reason than the two above. A
-# `declare -F` check cannot see a missing CONSTANT, and under `set -u` the read
-# on the next line aborts the hook with rc=1 -- which is NOT a refusal:
-# `.claude/rules/hooks.md` records that a non-2 exit propagates as a
-# non-blocking error, so the block becomes a PASS. Fail-OPEN, and silent.
+
+# go-to-k/cdkd#2729: the load guard above covers the FUNCTIONS this hook calls
+# and CANNOT see a missing CONSTANT. Reading one the library does not define
+# aborts under `set -u` with exit 1, and per .claude/rules/hooks.md any exit
+# that is not 2 propagates as a NON-BLOCKING error -- i.e. a PASS. Refuse
+# instead, unconditionally and before the first constant is read, naming every
+# GATE_* constant read below. NOT yet fenced as a class -- the fence was split
+# out of this change and is tracked by go-to-k/cdkd#2826, so nothing
+# mechanical notices a hook that reads a constant without this call.
 #
-# Found by go-to-k/cdkd#2717 rather than reasoned about. That change retired
+# It replaced two hand-written `[ -z "${NAME:-}" ]` blocks that stood here, and
+# their reasoning is worth keeping because it is what made this hook the FIRST
+# measured instance of the class:
+#
+#   * `GATE_PERL_WORD` is the shared value class `extract_files` interpolates.
+#     Undefined, `$GW` becomes the EMPTY string, `($GW)` matches empty at every
+#     position, every extracted path comes back empty and the gate scans
+#     nothing -- a silent fail-open rather than a 127. (A non-empty test is only
+#     half that guard; `gate_perl_word_or_die` further down is the other half.)
+#   * `GATE_RE_GH_BODY_CARRIER` is the VERB pattern, and under `set -u` reading
+#     it aborts the hook with rc=1 -- NOT a refusal, since a non-2 exit
+#     propagates as a non-blocking error and the block becomes a PASS.
+#
+# Found by go-to-k/cdkd#2717 rather than reasoned about: that change retired
 # `gh-body-english-gate.sh`, whose deletion made a fail-closed fence in
-# `lib/command-match.test.sh` silently skip; re-pointing that fence at THIS gate
-# measured rc=1 where it required rc=2. The retired `issue-dup-check-gate.sh`
-# had carried exactly this guard (`[ -z "${GATE_RE_GH_ISSUE_CREATE:-}" ]`) and
-# this gate did not, so the convergence those gates went through had left one
-# member behind.
-if [ -z "${GATE_RE_GH_BODY_CARRIER:-}" ]; then
-  echo "Blocked: .claude/hooks/lib/command-match.sh predates GATE_RE_GH_BODY_CARRIER, so pr-body-item-number-gate cannot recognise the command." >&2
+# `lib/command-match.test.sh` silently skip, and re-pointing that fence at THIS
+# gate measured rc=1 where it required rc=2. The retired `issue-dup-check-gate.sh`
+# had carried exactly that guard and this gate did not, so the convergence those
+# gates went through had left one member behind -- which is the whole argument
+# for a shared call and a class fence instead of a third hand-written arm.
+# (`GATE_RE_GH_ISSUE_CREATE` is named in that history but is NOT read by this
+# hook: `GATE_RE_GH_BODY_CARRIER` already covers `gh issue create`. It is not
+# required here, because a name appearing only in a comment is not a read.)
+if ! declare -F gate_require_const >/dev/null 2>&1; then
+  # The helper itself is missing, so nothing below can be trusted either.
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but does not define" >&2
+  echo "gate_require_const, so this gate cannot verify the constants it reads." >&2
   exit 2
 fi
+gate_require_const GATE_PERL_WORD GATE_RE_GH_BODY_CARRIER
 gate_matches "$cmd" "$GATE_RE_GH_BODY_CARRIER" || exit 0
 if ! printf '%s' "$cmd" | grep -qE '(--body-file|body=@)'; then
   exit 0

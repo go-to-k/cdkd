@@ -243,11 +243,26 @@ comment to cut.
 **Two wordings retired.** `git checkout -d|--detach <branch>` really
 DETACHES (measured: HEAD → raw sha); the block used to say "switches to
 feature branch '<b>'" — right verdict, wrong operation; fixed. And the
-fail-closed guard's note claimed an empty `GATE_EMBEDDING_TOKEN` makes the
-match "succeed on any input with `${BASH_REMATCH[1]}` empty" — right
-conclusion (name the constants, fail closed), wrong mechanism: an empty ERE
-matches EVERY string at position 0; the loop terminates only because
+fail-closed guard's note about `GATE_EMBEDDING_TOKEN` had the right conclusion
+(name the constants, fail closed) with the wrong mechanism — an empty ERE
+matches EVERY string at position 0, and the loop terminates only because
 `gate_tokens` breaks on an empty rest.
+
+**That guard is GONE from this hook (issue 2729), and do not re-add it.** The
+chain carried `[ -z "${GATE_EMBEDDING_TOKEN:-}" ]` and
+`[ -z "${GATE_REDIR_TOKEN:-}" ]`; both arms are retired. This gate does not READ
+either constant — `gate_tokens` / `gate_argv` do — so a guard derived from what
+the hook reads could never have found them, and the one here worked only because
+someone remembered. They are in `lib/command-match.sh`'s `GATE_LIB_BASE_CONSTS`
+now, checked by `gate_require_const` on EVERY call, so any hook using the shared
+walk is covered whether its author knew to ask — provided it CALLS one, which is
+why the class fence's population is "sources the library" and not "reads a
+constant" (review measured the weaker form leaving `broad-process-kill-gate`
+uncovered over a clean run). The mechanism, not the vigilance, is the fix. This
+hook's call names only the three verb EREs it reads, and its suite asserts the
+refusal by the CONSTANT'S NAME — the discriminator, since the hook exits 2 for
+an unrelated reason when the guard is removed. See
+[hooks-class-fences.md](hooks-class-fences.md).
 
 **KNOWN BOUND, in the message rather than the verdict**: `gate_segments`
 truncates a segment at `}`, so `git switch -c 'feat/{id}'` blocks correctly

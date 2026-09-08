@@ -86,27 +86,20 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null \
   || ! declare -F gate_tokens >/dev/null \
   || ! declare -F gate_argv >/dev/null \
-  || ! declare -F gate_word_is_literal >/dev/null \
-  || [ -z "${GATE_EMBEDDING_TOKEN:-}" ] \
-  || [ -z "${GATE_REDIR_TOKEN:-}" ]; then
+  || ! declare -F gate_word_is_literal >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
   # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
   # and the hook would `exit 0` -- silently disabling the gate, which is the
   # exact failure mode this file exists to prevent. Refuse instead.
   #
-  # `GATE_EMBEDDING_TOKEN` and `GATE_REDIR_TOKEN` are CONSTANTS, not functions,
-  # and they are named here because the shared `gate_tokens` / `gate_argv`
-  # interpolate them into the `[[ =~ ]]` that splits the argument text and the
-  # one that spots a redirection. A library predating either leaves that pattern
-  # EMPTY, and an empty ERE matches EVERY string at position 0 with every capture
-  # group empty -- so `gate_tokens` would print an empty first token forever and
-  # `gate_argv` would drop every word as a redirection. Either way the walk
-  # yields nothing usable and every command reads like a bare `git checkout`.
-  # (The earlier note here said the loop's `[[ =~ ]]` "does NOT match" with an
-  # empty token, which is the wrong mechanism: an empty pattern matches
-  # everything. The conclusion -- name the constants, fail closed -- is right,
-  # and the loop terminates only because `gate_tokens` breaks on an empty rest.)
-  # `declare -F` cannot see a missing constant; only this can.
+  # This chain used to carry two more arms, `[ -z "${GATE_EMBEDDING_TOKEN:-}" ]`
+  # and `[ -z "${GATE_REDIR_TOKEN:-}" ]`, because `declare -F` cannot see a
+  # missing CONSTANT. They moved to the shared `gate_require_const` call below
+  # (go-to-k/cdkd#2729), which covers every constant this hook reads instead of
+  # the two someone remembered, and NAMES the missing one -- this chain could
+  # only emit the message it shares with a missing function, so a refusal here
+  # never said which of the two was absent. The reason those constants matter is
+  # unchanged and is recorded on the call.
   #
   # `gate_word_is_literal` is named for a third reason: it is the ONLY thing
   # standing between the walk and a word whose expansion this gate cannot see.
@@ -119,6 +112,43 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   echo "work around the gate." >&2
   exit 2
 fi
+
+# go-to-k/cdkd#2729: the load guard above covers the FUNCTIONS this hook calls
+# and CANNOT see a missing CONSTANT. Reading one the library does not define
+# aborts under `set -u` with exit 1, and per .claude/rules/hooks.md any exit
+# that is not 2 propagates as a NON-BLOCKING error -- i.e. a PASS. Refuse
+# instead, unconditionally and before the first constant is read, naming every
+# GATE_* constant read below. NOT yet fenced as a class -- the fence was split
+# out of this change and is tracked by go-to-k/cdkd#2826, so nothing
+# mechanical notices a hook that reads a constant without this call.
+#
+# The call below names only the three verb EREs this file reads, for the
+# ordinary reason: an absent one reads as "this command is not a switch" and the
+# gate simply stops firing.
+#
+# `GATE_EMBEDDING_TOKEN` and `GATE_REDIR_TOKEN` are DELIBERATELY NOT named here,
+# and the reason is the interesting half. This hook does not read them -- the
+# shared `gate_tokens` / `gate_argv` do, interpolating them into the `[[ =~ ]]`
+# that splits the argument text and the one that spots a redirection. A library
+# predating either leaves that pattern EMPTY, and an empty ERE matches EVERY
+# string at position 0 with every capture group empty, so `gate_tokens` would
+# print an empty first token forever and `gate_argv` would drop every word as a
+# redirection: the walk yields nothing usable and every command reads like a
+# bare `git checkout`. (An older note said the loop's `[[ =~ ]]` "does NOT
+# match" with an empty token, which is the wrong mechanism: an empty pattern
+# matches everything. The conclusion -- fail closed -- is right, and the loop
+# terminates only because `gate_tokens` breaks on an empty rest.) Naming them
+# here was the old chain's answer and it only worked because someone remembered;
+# they are in the library's own `GATE_LIB_BASE_CONSTS` now, which
+# `gate_require_const` checks on EVERY call, so any hook that uses the shared
+# walk is covered whether or not its author knew to ask.
+if ! declare -F gate_require_const >/dev/null 2>&1; then
+  # The helper itself is missing, so nothing below can be trusted either.
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but does not define" >&2
+  echo "gate_require_const, so this gate cannot verify the constants it reads." >&2
+  exit 2
+fi
+gate_require_const GATE_RE_GIT_CHECKOUT GATE_RE_GIT_SWITCH GATE_RE_GIT_SWITCH_ONLY
 
 set -u
 

@@ -414,19 +414,41 @@ run_case "git checkout HEAD -- <path> allowed" 0 \
 # --- FAIL-CLOSED on a library that predates GATE_EMBEDDING_TOKEN --------------
 #
 # The token walk interpolates that CONSTANT into its `[[ =~ ]]`. A library
-# without it leaves the pattern EMPTY, the match then succeeds on any input with
-# `${BASH_REMATCH[1]}` empty, and the walk yields nothing -- so every command
-# would look like a bare `git checkout` and PASS. `declare -F` cannot see a
-# missing constant, which is why the guard names it separately.
+# without it leaves the pattern EMPTY, an empty ERE matches EVERY string at
+# position 0 with every capture group empty, and the walk yields nothing -- so
+# every command would look like a bare `git checkout` and PASS. `declare -F`
+# cannot see a missing constant, which is why the guard names it separately.
+#
+# The refusal is asserted by the CONSTANT'S NAME since go-to-k/cdkd#2729. This
+# hook used to carry `[ -z "${GATE_EMBEDDING_TOKEN:-}" ]` in the same `if` chain
+# as its `declare -F` checks, so the message was the one it shares with a
+# missing FUNCTION and a reader could not tell which of the two named constants
+# was absent. The shared `gate_require_const` replaced both arms and names what
+# it found.
+#
+# **Naming it is what makes this case discriminate, and the reason is not the
+# obvious one.** Measured with the constant removed and the guard ALSO removed:
+# the hook still exits 2 -- `unbalanced quote ... block conservatively` -- so an
+# assertion on the exit code alone passes over a hook with no constant check at
+# all. It is the NAME that separates the two. (An earlier version of this note
+# claimed the generic `command-match.sh is missing or unloadable` wording would
+# pass because the library-load guard still emits it; measured, that is false --
+# the library loads fine, so that text never appears, and the old assertion
+# would have reddened too. The conclusion was right for the wrong reason.)
 const_probe="$TMPDIR/const-probe"
 mkdir -p "$const_probe/lib"
 cp "$HOOK" "$const_probe/main-tree-branch-gate.sh"
+# A single-LINE delete, sound for THIS constant and not in general:
+# `GATE_EMBEDDING_TOKEN=` is one line. The class fence (go-to-k/cdkd#2826) strips by a
+# real quote SCAN because it strips EVERY constant, multi-line ones included,
+# where a line delete takes neighbours with it -- the two files disagree on
+# purpose, not by oversight.
 grep -v '^GATE_EMBEDDING_TOKEN=' "$(dirname "$HOOK")/lib/command-match.sh" > "$const_probe/lib/command-match.sh"
 probe_payload=$(jq -cn --arg d "$main_repo" --arg c "git switch -c feat-new" '{cwd:$d,tool_input:{command:$c}}')
 out=$(printf '%s' "$probe_payload" | "$const_probe/main-tree-branch-gate.sh" 2>&1)
 printf '%s' "$probe_payload" | "$const_probe/main-tree-branch-gate.sh" >/dev/null 2>&1
 got=$?
-if [ "$got" = 2 ] && printf '%s' "$out" | grep -qF 'command-match.sh is missing or unloadable'; then
+if [ "$got" = 2 ] && printf '%s' "$out" | grep -qF 'does not define: GATE_EMBEDDING_TOKEN'; then
   pass=$((pass + 1)); printf 'OK   library without GATE_EMBEDDING_TOKEN fails CLOSED (exit 2)\n'
 else
   fail=$((fail + 1))

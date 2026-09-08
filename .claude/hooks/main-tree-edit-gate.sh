@@ -352,6 +352,49 @@ __dedupe_candidates() {
     candidates=("${__oc[@]}"); cand_bases=("${__ob[@]}")
   fi
 }
+# go-to-k/cdkd#2729: the guard above covers the FUNCTIONS this hook calls and
+# CANNOT see a missing CONSTANT. This hook reads none of its OWN, so the call
+# takes no arguments and asks only about the library's.
+#
+# **LOAD-BEARING HERE, and measured.** With this call REMOVED and each declared
+# base stripped one at a time, payload
+# `cd <main tree> && echo hi > docs/_generated/integ-last-run.tsv` -- a tracked
+# write into the main checkout while it is on `main`, which is this gate's
+# founding incident -- **seven bases flip rc 2 -> 0**: `GATE_SUBST_MARK`,
+# `GATE_MARK_MAXSEG`, `GATE_QUOTED_VALUE` and the four `GATE_SEP_*`. The control
+# (call removed, library COMPLETE) stays rc=2; with the call present all seven
+# answer rc=2 naming the constant.
+#
+# The cause is this hook's LIBRARY load guard (the `declare -F` chain near the
+# top of the file, not the `gate_require_const` one just below): it requires
+# `gate_segments_marked`,
+# and the ordered walk go-to-k/cdkd#2650 moved this hook onto reads those
+# constants BARE inside function bodies, where the `${X:-}` defaults on the
+# library's load-time assignments do nothing.
+#
+# **Two earlier revisions of this comment were wrong, and HOW they were wrong is
+# the point.** The first asserted the sibling `broad-process-kill-gate`'s
+# measurement as if it were this hook's, with the payload left as an unfilled
+# template slot. The second called the call "PRECAUTIONARY" and claimed "zero
+# flips" -- measured against the PRE-#2650 hook, which did not use the shared
+# walk, then carried across the rebase that gave this hook the walk. Either one
+# would have made deleting a check that stops seven live fail-opens look like a
+# safe simplification: the go-to-k/cdkd#2681 class. State a measurement, or
+# state nothing.
+# NOT yet fenced as a class -- the fence is split out into
+# go-to-k/cdkd#2826.
+#
+# **THE CALL LIVES IN THE `Bash` ARM, and putting it here instead was a live
+# defect measured on this change's own rebase.** This hook's matcher takes Edit
+# and Write too, so a check ahead of the tool-arm split refuses THEM when the
+# library cannot answer -- and the library is what Edit and Write are needed to
+# repair. A merge conflict in `lib/command-match.sh` left `Bash`, `Edit` and
+# `Write` all refused with this message, from three separate attempts, and the
+# repair took the maintainer's own shell. That is the same lockout
+# go-to-k/cdkd#2717 already carved the `declare -F` chain out of, re-opened by a
+# SECOND liveness check placed ahead of the split; `__refuse_unloadable_library`
+# in the `Bash` arm is where both belong. Any future check added to this hook
+# goes inside that arm.
 
 input=$(cat 2>/dev/null || true)
 
@@ -380,6 +423,18 @@ case "$tool" in
     # cannot resolve a `cd`, and an unresolved `cd` is the difference between
     # "the write is outside the repo" and "the write lands in the main tree".
     [ "$__lib_loaded" = 1 ] || __refuse_unloadable_library
+    # The CONSTANT half of the same requirement, here rather than at the top of
+    # the file for the reason the header gives: this arm is the only one that
+    # reads a library constant, and refusing Edit / Write for a constant they
+    # never touch removes the tools the library is repaired with.
+    if ! declare -F gate_require_const >/dev/null 2>&1; then
+      echo "Blocked: .claude/hooks/lib/command-match.sh loaded but does not define" >&2
+      echo "gate_require_const, so this gate cannot verify the constants it reads." >&2
+      echo "Repair the library with Edit or Write -- this gate deliberately still" >&2
+      echo "allows those, so a broken matcher cannot lock out its own fix." >&2
+      exit 2
+    fi
+    gate_require_const
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
     [[ -z "$cmd" ]] && exit 0
     # AN ORDERED WALK OVER `gate_segments_marked`. Each segment either updates

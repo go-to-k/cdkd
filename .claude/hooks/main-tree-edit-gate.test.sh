@@ -619,6 +619,103 @@ run_broken 2 "Blocked by main-tree-edit-gate" \
   "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
 
+# THE SECOND BROKEN STATE, and it is a DIFFERENT one: a library that LOADS and
+# is missing a CONSTANT guard. `$BROKEN` above is not shell at all, so
+# `__lib_loaded` is 0 and the `Bash` arm refuses before any constant is read --
+# which means every case above says nothing about the `gate_require_const`
+# check go-to-k/cdkd#2729 added. `$LAGGING` is the state that issue is actually
+# about: a hook running against a library that has moved on without it.
+#
+# THE LOCKOUT REPEATED ITSELF HERE. That check was first written at the top of
+# the hook, ahead of the `case "$tool"` split, so it refused `Edit` and `Write`
+# for a constant those arms never read. Measured live during this change's own
+# rebase: a merge conflict in `lib/command-match.sh` left Bash, Edit and Write
+# all refused -- three separate attempts, one message -- and the repair took the
+# maintainer's own shell. The go-to-k/cdkd#2717 carve-out was already in the
+# file, in prose and in the cases above, and the new check simply sat outside
+# it. So the cases below are the same PAIR shape, against the state that
+# actually reaches the new check.
+LAGGING="$TMPDIR/lagging"
+cp -R .claude/hooks "$LAGGING"
+# Delete the two helper definitions, leaving the rest of the library intact and
+# syntactically valid -- `sed` between the function header and its closing brace
+# at column 0. Asserted below rather than assumed: the fixture must LOAD (or
+# these cases collapse into the `$BROKEN` ones) and must NOT define the helper.
+awk '
+  /^gate_require_const(_soft)?\(\) \{/ { skip = 1 }
+  skip && /^\}$/                       { skip = 0; next }
+  !skip                                { print }
+' .claude/hooks/lib/command-match.sh > "$LAGGING/lib/command-match.sh"
+
+# GUARD THE FIXTURE, in both directions. A `$LAGGING` that fails to parse would
+# make every case below pass for `$BROKEN`'s reason instead, and an awk that
+# matched nothing would make them pass for no reason at all.
+if bash -n "$LAGGING/lib/command-match.sh" 2>/dev/null; then
+  pass=$((pass + 1)); printf 'ok   (fixture) $LAGGING library still parses\n'
+else
+  fail=$((fail + 1)); printf 'FAIL (fixture) $LAGGING library does not parse -- these cases would duplicate $BROKEN\n'
+fi
+if bash -c '. "$1" >/dev/null 2>&1; declare -F gate_require_const >/dev/null 2>&1' _ "$LAGGING/lib/command-match.sh"; then
+  fail=$((fail + 1)); printf 'FAIL (fixture) $LAGGING still defines gate_require_const -- the cases below assert nothing\n'
+else
+  pass=$((pass + 1)); printf 'ok   (fixture) $LAGGING loads and does NOT define gate_require_const\n'
+fi
+
+run_lagging() { # <expected_exit> <needle|-> <desc> <json>
+  local expected="$1" needle="$2" desc="$3" json="$4" rc out ok_text
+  out=$(printf '%s' "$json" | "$HOOK_RUNNER" "$LAGGING/main-tree-edit-gate.sh" 2>&1 >/dev/null); rc=$?
+  if [[ "$needle" == "-" ]]; then ok_text=1
+  elif [[ "$out" == *"$needle"* ]]; then ok_text=1
+  else ok_text=0; fi
+  if [[ "$rc" == "$expected" && "$ok_text" == 1 ]]; then
+    pass=$((pass + 1)); printf 'ok   (exit %s, lagging lib) %s\n' "$rc" "$desc"
+  else
+    fail=$((fail + 1))
+    printf 'FAIL (exit %s want %s; text %s) %s\n' "$rc" "$expected" \
+      "$([[ "$ok_text" == 1 ]] && echo ok || echo MISSING)" "$desc"
+    printf '     wanted text: %s\n     got: %s\n' "$needle" "$(printf '%s' "$out" | head -2)"
+  fi
+}
+
+# The ENFORCEMENT half: the arm that reads the constants refuses, and NAMES the
+# helper, so the refusal is this check's and not the load guard's.
+run_lagging 2 "does not define" \
+  "a Bash call fails CLOSED when the library defines no gate_require_const" \
+  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
+# ...and it must say what still WORKS, or an agent reads the refusal as a dead
+# end -- which is exactly what happened.
+run_lagging 2 "Repair the library with Edit or Write" \
+  "the refusal names the tools that survive it" \
+  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
+
+# THE LOCKOUT HALF. These are the cases that were red when this was written:
+# both answered 2, with the `gate_require_const` message, on a payload that
+# touches no library constant at all.
+run_lagging 0 - "Edit outside the repo is ALLOWED when gate_require_const is missing" \
+  "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_lagging 0 - "Write outside the repo is ALLOWED when gate_require_const is missing" \
+  "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
+# THE REPAIR ITSELF: writing the library, in the tree where the copy an agent
+# edits lives. This is the payload that was refused during the rebase.
+run_lagging 0 - "Write to the library in a FEATURE worktree survives a missing gate_require_const" \
+  "$(jq -nc --arg fp "$WT/.claude/hooks/lib/command-match.sh" --arg cwd "$WT" \
+    '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
+
+# ...and the controls, per the rule the `$BROKEN` block states above: an
+# expect-0 case cannot say WHICH arm answered, so each needs a same-tool,
+# same-library-state ENFORCEMENT twin. Without these, deleting the whole
+# tracked-file arm would pass every lockout case.
+run_lagging 2 "Blocked by main-tree-edit-gate" \
+  "Edit of a tracked main-tree file is still BLOCKED when gate_require_const is missing" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_lagging 2 "Blocked by main-tree-edit-gate" \
+  "Write to a tracked main-tree file is still BLOCKED when gate_require_const is missing" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
+
 # THE OTHER TWO LABELS IN THE `case` PATTERN, under a broken library. The
 # HEALTHY-state cases are further down and are the load-bearing ones; these only
 # say the load split treats all four labels alike.

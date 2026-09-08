@@ -2470,7 +2470,7 @@ _GATE_WORD_BLIND_BARE='[^[:space:]"'"'"'-][^[:space:]"]*'
 # battery: this shape 3 wrong, all false refusals; forbidding it 4 wrong, all
 # bypasses; dropping the split entirely 4 wrong, all false refusals.
 _GATE_WORD_LOOSE_FLAG='-[^[:space:]"'"'"']*'"'"'[^[:space:]"'"'"']*'
-_GATE_WORD_FIRST="(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND_NOQUOTE})"
+_GATE_WORD_FIRST="(${_GATE_WORD_CHAR:-}+|${_GATE_WORD_BLIND_NOQUOTE:-})"
 # And finally the ORIGINAL quote-blind fallback, restored for later words.
 # Rounds 2, 3 and 4 each removed a little more of it to keep one false refusal
 # out, and round 5 measured what that cost: a LATER token that is not
@@ -2499,8 +2499,8 @@ _GATE_WORD_FIRST="(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND_NOQUOTE})"
 # construction, so no apostrophe count can outrun it. Its cost is a wider false
 # refusal surface, which is the LOUD direction, and the differential prices it
 # exactly: three cells on corpus id 174 become a fourth ACCEPTED_FR row.
-_GATE_WORD="(${_GATE_WORD_CHAR_NOSQ}+|${_GATE_WORD_SPANSUF}|${_GATE_WORD_BLIND_BARE}|${_GATE_WORD_LOOSE_FLAG}|${_GATE_WORD_BLIND})"
-GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND})([[:space:]]+${_GATE_WORD_FIRST})?([[:space:]]+${_GATE_WORD})*)?"
+_GATE_WORD="(${_GATE_WORD_CHAR_NOSQ:-}+|${_GATE_WORD_SPANSUF:-}|${_GATE_WORD_BLIND_BARE:-}|${_GATE_WORD_LOOSE_FLAG:-}|${_GATE_WORD_BLIND:-})"
+GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR:-}+|${_GATE_WORD_BLIND:-})([[:space:]]+${_GATE_WORD_FIRST:-})?([[:space:]]+${_GATE_WORD:-})*)?"
 # Every gh GLOBAL FLAG before the subcommand, not just `-C`. The `-C`-only form
 # meant a repo flag ahead of the verb made the verb unreachable, so
 # `gh -R owner/repo pr merge 1 --squash` matched NOTHING and walked past every
@@ -2509,28 +2509,28 @@ GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND})([[:space:]]+
 # round 4). `gate_leading_c_value` already treated `-R` / `--repo` as gh flags,
 # so the two halves of this file disagreed with each other. Same shape as
 # GATE_FLAGS, and like it its group count is nobody else's business.
-GATE_GH_C="$GATE_FLAGS"
-GATE_RE_GIT_COMMIT="^git${GATE_FLAGS}[[:space:]]+commit([[:space:]]|$)"
-GATE_RE_GIT_PUSH="^git${GATE_FLAGS}[[:space:]]+push([[:space:]]|$)"
-GATE_RE_GH_PR_CREATE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+create([[:space:]]|$)"
-GATE_RE_GH_PR_EDIT="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+edit([[:space:]]|$)"
-GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)"
+GATE_GH_C="${GATE_FLAGS:-}"
+GATE_RE_GIT_COMMIT="^git${GATE_FLAGS:-}[[:space:]]+commit([[:space:]]|$)"
+GATE_RE_GIT_PUSH="^git${GATE_FLAGS:-}[[:space:]]+push([[:space:]]|$)"
+GATE_RE_GH_PR_CREATE="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+create([[:space:]]|$)"
+GATE_RE_GH_PR_EDIT="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+edit([[:space:]]|$)"
+GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)"
 
 # --- verbs cdkd gates that the sibling repos do not --------------------------
-GATE_RE_GIT_COMMIT_OR_PUSH="^git${GATE_FLAGS}[[:space:]]+(commit|push)([[:space:]]|$)"
-GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
-GATE_RE_GIT_SWITCH="^git${GATE_FLAGS}[[:space:]]+(switch|checkout)([[:space:]]|$)"
+GATE_RE_GIT_COMMIT_OR_PUSH="^git${GATE_FLAGS:-}[[:space:]]+(commit|push)([[:space:]]|$)"
+GATE_RE_GIT_MERGE="^git${GATE_FLAGS:-}[[:space:]]+merge([[:space:]]|$)"
+GATE_RE_GIT_SWITCH="^git${GATE_FLAGS:-}[[:space:]]+(switch|checkout)([[:space:]]|$)"
 # The two halves of GATE_RE_GIT_CHECKOUT_RESTORE, separately. A caller that
 # needs the ARGUMENT TAIL has to know which verb fired -- `git checkout` is a
 # path restore only when `--` is present, while `git restore` is path-scoped by
 # default -- so it cannot use the combined form.
-GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS}[[:space:]]+checkout([[:space:]]|$)"
+GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS:-}[[:space:]]+checkout([[:space:]]|$)"
 # `switch` alone, for the same reason `checkout` is separate: a caller that
 # judges the ARGUMENT TAIL has to know which verb fired -- `-c` creates a branch
 # under `switch` and is a config override under `checkout` -- so the combined
 # GATE_RE_GIT_SWITCH cannot answer it. main-tree-branch-gate reads both.
-GATE_RE_GIT_SWITCH_ONLY="^git${GATE_FLAGS}[[:space:]]+switch([[:space:]]|$)"
-GATE_RE_GIT_RESTORE="^git${GATE_FLAGS}[[:space:]]+restore([[:space:]]|$)"
+GATE_RE_GIT_SWITCH_ONLY="^git${GATE_FLAGS:-}[[:space:]]+switch([[:space:]]|$)"
+GATE_RE_GIT_RESTORE="^git${GATE_FLAGS:-}[[:space:]]+restore([[:space:]]|$)"
 # A STRICT prefix, for the one gate whose verb is ALSO an ordinary English word
 # that shows up as an argument. `GATE_FLAGS` deliberately over-approximates --
 # one flag token then ANY words -- which is right where the verb is unambiguous
@@ -2551,31 +2551,31 @@ GATE_RE_GIT_RESTORE="^git${GATE_FLAGS}[[:space:]]+restore([[:space:]]|$)"
 # A bare `[^[:space:]]+` stopped at the quote and the whole pattern failed to
 # match, standing the gate down on exactly the form it documents.
 _GATE_GIT_GLOBAL_VALUE="(\"[^\"]*\"|'[^']*'|[^[:space:]]+)"
-GATE_GIT_GLOBAL="(-C[[:space:]]*${_GATE_GIT_GLOBAL_VALUE}|-c[[:space:]]*${_GATE_GIT_GLOBAL_VALUE}|--git-dir=${_GATE_GIT_GLOBAL_VALUE}|--work-tree=${_GATE_GIT_GLOBAL_VALUE}|--namespace=${_GATE_GIT_GLOBAL_VALUE}|--exec-path=${_GATE_GIT_GLOBAL_VALUE}|-p|--paginate|-P|--no-pager|--bare|--no-optional-locks|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-replace-objects)"
+GATE_GIT_GLOBAL="(-C[[:space:]]*${_GATE_GIT_GLOBAL_VALUE:-}|-c[[:space:]]*${_GATE_GIT_GLOBAL_VALUE:-}|--git-dir=${_GATE_GIT_GLOBAL_VALUE:-}|--work-tree=${_GATE_GIT_GLOBAL_VALUE:-}|--namespace=${_GATE_GIT_GLOBAL_VALUE:-}|--exec-path=${_GATE_GIT_GLOBAL_VALUE:-}|-p|--paginate|-P|--no-pager|--bare|--no-optional-locks|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-replace-objects)"
 # flatten-before-rebase-gate. `rebase` is a common word in commit messages, PR
 # bodies and `--grep` arguments, which is why this one takes the strict prefix.
-GATE_RE_GIT_REBASE="^git([[:space:]]+${GATE_GIT_GLOBAL})*[[:space:]]+rebase([[:space:]]|$)"
-GATE_RE_GIT_CHECKOUT_RESTORE="^git${GATE_FLAGS}[[:space:]]+(checkout|restore)([[:space:]]|$)"
-GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)"
+GATE_RE_GIT_REBASE="^git([[:space:]]+${GATE_GIT_GLOBAL:-})*[[:space:]]+rebase([[:space:]]|$)"
+GATE_RE_GIT_CHECKOUT_RESTORE="^git${GATE_FLAGS:-}[[:space:]]+(checkout|restore)([[:space:]]|$)"
+GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)"
 # non-english-text-gate guards every way PR prose reaches GitHub.
-GATE_RE_GH_PR_MERGE_OR_EDIT="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(merge|edit)([[:space:]]|$)"
-GATE_RE_GH_PR_WRITE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|edit|merge)([[:space:]]|$)"
+GATE_RE_GH_PR_MERGE_OR_EDIT="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+(merge|edit)([[:space:]]|$)"
+GATE_RE_GH_PR_WRITE="^gh${GATE_GH_C:-}[[:space:]]+pr[[:space:]]+(create|edit|merge)([[:space:]]|$)"
 # gh-label-validity-gate: the two commands that can carry --label / --add-label.
-GATE_RE_GH_LABEL_CARRIER="^gh${GATE_GH_C}[[:space:]]+(issue|pr)[[:space:]]+(create|edit)([[:space:]]|$)"
-GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
+GATE_RE_GH_LABEL_CARRIER="^gh${GATE_GH_C:-}[[:space:]]+(issue|pr)[[:space:]]+(create|edit)([[:space:]]|$)"
+GATE_RE_GH_API="^gh${GATE_GH_C:-}[[:space:]]+api([[:space:]]|$)"
 # pr-body-item-number-gate: everything that can post a body containing `#N`.
-GATE_RE_GH_BODY_CARRIER="^gh${GATE_GH_C}[[:space:]]+(pr[[:space:]]+(create|edit)|issue[[:space:]]+(create|comment)|api)([[:space:]]|$)"
+GATE_RE_GH_BODY_CARRIER="^gh${GATE_GH_C:-}[[:space:]]+(pr[[:space:]]+(create|edit)|issue[[:space:]]+(create|comment)|api)([[:space:]]|$)"
 # issue-dup-check-gate: the one verb that MINTS a new issue. `edit` and
 # `comment` are deliberately absent -- folding a finding into an issue that
 # already exists is the outcome this gate exists to steer toward, so gating it
 # would tax the cheap path and leave the expensive one untouched.
-GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
+GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C:-}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
 # issue-classification-label-gate: the CLAIM site. `/work-issues` section 3
 # says most open bodies are still in the old packed shape and are upgraded to
 # the four-line shape when the issue is claimed, so `edit` -- not `create` -- is
 # where `Severity` first exists for the bulk of the backlog. `comment` stays
 # absent: a comment is not the issue's classification.
-GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space:]]|$)"
+GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C:-}[[:space:]]+issue[[:space:]]+edit([[:space:]]|$)"
 # GATE_RE_GH_API_ISSUE_CREATE stood here -- the issue mint through the REST
 # verb, `gh api repos/<o>/<r>/issues`. Its only consumer was
 # issue-deferral-criteria-gate, retired by go-to-k/cdkd#2717, so it is removed
@@ -2598,11 +2598,11 @@ GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space
 # unquoted value shape -- so `gh --template "a b" issue create --body <text>`
 # reached gh with the gate never armed. That is the under-approximated TRIGGER
 # this issue is about, in the one hook that still had its own.
-GATE_RE_GH_PROSE_CARRIER="gh${GATE_GH_C}[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)([[:space:]]|\$|[|;&\`)])"
+GATE_RE_GH_PROSE_CARRIER="gh${GATE_GH_C:-}[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)([[:space:]]|\$|[|;&\`)])"
 GATE_RE_VP_RUN_TEST='^vp[[:space:]]+run[[:space:]]+test([[:space:]]|$)'
 # Deploy/destroy-shaped verbs (integ + bug-hunt cleanup gates).
-GATE_RE_CDK_DEPLOY="^(npx[[:space:]]+)?cdk${GATE_FLAGS}[[:space:]]+deploy([[:space:]]|$)"
-GATE_RE_CDK_DESTROY="^(npx[[:space:]]+)?cdk${GATE_FLAGS}[[:space:]]+destroy([[:space:]]|$)"
+GATE_RE_CDK_DEPLOY="^(npx[[:space:]]+)?cdk${GATE_FLAGS:-}[[:space:]]+deploy([[:space:]]|$)"
+GATE_RE_CDK_DESTROY="^(npx[[:space:]]+)?cdk${GATE_FLAGS:-}[[:space:]]+destroy([[:space:]]|$)"
 GATE_RE_DELSTACK='^delstack([[:space:]]|$)'
 
 # gate_pr_selector <command> <verb-ere>
@@ -4172,4 +4172,286 @@ gate_refuse_unevaluable_marker() {
     echo "  $diagnose status $mgate"
   } >&2
   exit 2
+}
+
+# =============================================================================
+# Constant liveness (go-to-k/cdkd#2729)
+# =============================================================================
+#
+# `declare -F` -- the chain every gate grew in go-to-k/cdkd#2027 -- guards the
+# FUNCTIONS a hook calls. It cannot see a missing CONSTANT. A hook that reads
+# `"$GATE_RE_GIT_COMMIT"` under `set -u` against a library which does not
+# define it aborts with exit **1**, and per `.claude/rules/hooks.md` any exit
+# that is not 2 propagates as a NON-BLOCKING error -- which the harness treats
+# as a PASS. So the gate does not refuse; it waves the command through,
+# silently, in the fail-open direction. That is the same root cause as
+# go-to-k/cdkd#2027 with one class of symbol left uncovered, not a new one.
+#
+# Measured on 2026-09-08 against `main` at 333f3f64, per CONSTANT READ rather
+# than per hook. The unit matters three times over. Some hooks guarded a few of
+# their constants and not the rest, so counting hooks hides reads. A `GATE_*`
+# name a hook mentions is not necessarily one this library DEFINES -- three
+# (`GATE_RE_API_MINT`, `GATE_CHECKOUT_LONG_OPTS`, `GATE_SWITCH_LONG_OPTS`) are
+# hook-local variables that merely share the prefix, and requiring one would
+# refuse on EVERY command. And a name in a COMMENT is not a read: these headers
+# quote guard spellings verbatim, and counting those made a first cut of the
+# population demand a constant one hook never touches. So the population is
+# names read in CODE, intersected with names this file assigns at column 0.
+#
+#   hooks sourcing this library                  : 32
+#   ...reading at least one constant DEFINED here: 27
+#   ...reading NONE of their own                 : 5
+#   such constant reads across those hooks       : 40
+#   ...already carrying a `[ -z "${VAR:-}" ]`    : 10
+#   ...with NO guard                             : 30
+#
+# All 32 get a call: the five that read none of their own pass no arguments and
+# ask about the library's constants only, which is the case `broad-process-kill-gate`
+# needed. The FENCE's population is those 32, not the 27 -- deriving it from
+# "reads a constant" made a hook that stops reading them leave the class
+# silently, and this file's own class fence measured that at
+# `total: 108  pass: 108  fail: 0` with `branch-gate` and `ci-green-gate` out.
+#
+# Among the unguarded were `branch-gate` (what stops a commit on `main`) and
+# `ci-green-gate` (what stops a merge over red CI) -- both Tier 1 in
+# go-to-k/cdkd#2717's sense, where the harm is unrecoverable.
+#
+# THERE IS NO CLASS FENCE YET, and that is the standing gap in this design.
+# One was built alongside this change -- for every REGISTERED hook that sources
+# this library, strip each constant that hook reads from a copied library and
+# require the hook to answer per its half of the blocking / non-blocking
+# partition, naming the constant either way -- and it was split out into
+# go-to-k/cdkd#2826 after four review rounds each found the previous round's
+# fix certifying a green tally over a live fail-open. So the call below is held
+# in place by each hook's own suite and by review, not by anything that scans
+# the class: a hook added next month can read a constant with no
+# `gate_require_const` and nothing will say so. Its
+# population is a NAMED baseline checked as a partition, so a hook leaving the
+# class fails by name rather than shrinking the tally. 145/145 here;
+# `111 total / 37 pass / 74 fail` against a materialised `origin/main` hook
+# directory, where all 40 constant reads fail.
+
+# The library's OWN constants: every name this file INTERPOLATES anywhere
+# outside a comment -- in a column-0 assignment or inside a function body -- and
+# also assigns at column 0 with a non-empty value. **Not filtered by a `GATE_`
+# prefix**: the rule is about what the library needs, not about how a name is
+# spelled, and the one non-`GATE_` member is real -- `CMD_MATCH_PLACEHOLDER` is
+# read bare inside `strip_noncommand_spans`. The fence's derivation carried that
+# prefix filter for one round while this paragraph did not, so the two disagreed
+# by exactly that name (review found it; no verdict flipped, but a rule and its
+# implementation that differ is the gap, not the flip). They are checked on every
+# `gate_require_const` call in addition to whatever the caller names, and that
+# is not belt-and-braces. Three independent reasons:
+#
+# **A hook can read NO constant of its own and still depend on this file.**
+# Five registered hooks are in that position; `broad-process-kill-gate` calls
+# `cmd_matches_verb`, which reaches `gate_segments_raw`, which reads
+# `GATE_SEP_PIPE` and its siblings BARE inside a function body -- the `${X:-}`
+# defaults below are on the load-time ASSIGNMENTS and do nothing for a runtime
+# read. Measured before those hooks got a bases-only call: `pkill -f vitest`
+# with `GATE_SEP_AMP` stripped exited **0**, waving a machine-wide kill through,
+# with the `set -u` abort swallowed by the command substitution's subshell.
+#
+# **A hook depends on constants it never mentions.** `main-tree-branch-gate`
+# calls `gate_tokens` / `gate_argv`, which interpolate `GATE_EMBEDDING_TOKEN`
+# and `GATE_REDIR_TOKEN` into the `[[ =~ ]]` that splits argument text and the
+# one that spots a redirection. A library predating either leaves that pattern
+# EMPTY, an empty ERE matches EVERY string at position 0 with every capture
+# group empty, and the walk yields nothing usable -- so every command reads like
+# a bare `git checkout` and PASSES. The hook's own text names neither constant,
+# so a check derived from what the hook READS cannot see it; only the library
+# can declare what the library needs.
+#
+# **A missing LOAD-TIME base is invisible to a caller-named check**, in two
+# different ways depending on where the hook puts `set -u`:
+#
+#   * `set -u` already active when the library is sourced (dirty-path-restore,
+#     flatten-before-rebase): the interpolation ABORTS THE SOURCING SHELL with
+#     exit 1 before any guard in the hook runs. Measured against a library with
+#     `GATE_FLAGS=` deleted: `dirty-path-restore-gate` exited 1 -- a non-blocking
+#     error, i.e. a PASS -- with `command-match.sh: line 1959: GATE_FLAGS:
+#     unbound variable` its only trace.
+#   * `set -u` set AFTER the source (check-gate, branch-gate): no abort at all.
+#     The base expands EMPTY and every derived ERE is silently DEGRADED but
+#     non-empty -- `GATE_RE_GIT_COMMIT` becomes `^git[[:space:]]+commit(...)`,
+#     which no longer matches `git -C <path> commit`. A caller-named check on
+#     `GATE_RE_GIT_COMMIT` passes it, and the gate stops firing on exactly the
+#     spelling this repo's own instructions prescribe.
+#
+# The abort is why the 43 load-time interpolations above -- across 30 column-0
+# assignment LINES -- read `${BASE:-}`
+# rather than `${BASE}`: without a default there is nothing left to refuse WITH,
+# because the shell is gone before this function is even defined. All 227
+# constant values are byte-identical under a complete library -- verified by
+# diffing every one before and after that change -- so the default costs
+# nothing and buys the loadable-but-degraded state this check can then see.
+#
+# **The non-empty-at-load filter is what keeps this list derivable rather than
+# hand-curated.** Seven of the names this file interpolates are mutable SCRATCH
+# variables that legitimately start empty and are written by a function
+# (`GATE_STRUCT_SEG`, `GATE_COMMENT_CUT`, `GATE_COMMENT_OPENQ`, `_GATE_DQ`,
+# `_GATE_STRUCT_REST`, `_GATE_STRUCT_TOK`, `__GATE_PW_OK`); requiring one of
+# those non-empty would refuse on EVERY command. They are separated by MEASUREMENT -- their
+# column-0 assignment is empty and a constant's is not -- so an EIGHTH is
+# handled the day it is written, with no list to remember to update. (This said
+# "a seventh" while the fence's twin sentence had been corrected to seven; the
+# same delta fixing one copy and not the other is the shape this pair keeps
+# producing, which is why the fence now asks BASH what this file defines rather
+# than matching an assignment by eye.)
+#
+# **KNOWN RESIDUAL of the `${BASE:-}` defaults.** A name this file interpolates
+# but never ASSIGNS -- a typo, or a forward reference to an assignment that
+# moved below its use -- is now silent: the derived ERE stays non-empty, the
+# derivation skips the name because no column-0 assignment matches it, and this
+# check therefore never asks. On `origin/main` the two hooks that set `set -u`
+# before sourcing aborted loudly on exactly that shape. The trade is deliberate
+# -- that loud abort was exit 1, which the harness reads as a PASS, so it bought
+# nothing a reader could act on -- but it is a real loss of signal. Zero
+# instances today, and nothing watches for the next one until
+# go-to-k/cdkd#2826 lands.
+#
+# Kept as a STRING rather than an array: bash 3.2 aborts on an empty array
+# expansion under `set -u`, and run-tests.sh runs every suite under 3.2.
+# Nothing re-derives this list today, so it CAN rot when a constant is added:
+# the check that would catch it is go-to-k/cdkd#2826.
+#
+# COST, measured rather than assumed, because a PreToolUse hook that outlives
+# its 10 s timeout is KILLED and a killed hook cannot emit exit 2 -- disarming
+# every gate at once, which is the failure this whole file guards against.
+# 25 invocations of five gates with an inert payload, 2026-09-08 on this
+# machine: 21.5 ms each on `origin/main`, 22.0 ms each here. The loop is the
+# declared names plus the caller's, each one an indirect expansion and a
+# `[ -z ]`, and it runs once per hook at load.
+#
+# **The list is not restated as a COUNT anywhere, and that is deliberate.** It
+# was written as 34 and go-to-k/cdkd#2650 merged two more constants
+# (`GATE_MARK_MAXSEG`, `GATE_SUBST_MARK`) into this file while the branch was in
+# review -- fence 0 caught the drift BY NAME, which is what it is for, and any
+# number in prose beside it would have been the second thing to fix.
+GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_WORD_BLIND _GATE_WORD_BLIND_BARE _GATE_WORD_BLIND_NOQUOTE _GATE_WORD_CHAR _GATE_WORD_CHAR_NOSQ _GATE_WORD_FIRST _GATE_WORD_LOOSE_FLAG _GATE_WORD_SPANSUF CMD_MATCH_PLACEHOLDER GATE_CHUNK_STOP GATE_CHUNK_STOP_DQ GATE_DQ_ACTIVE_GLOB GATE_EMBEDDING_TOKEN GATE_FLAGS GATE_GH_C GATE_GIT_GLOBAL GATE_LIB_BASE_CONSTS GATE_MARK_MAXSEG GATE_MARKER_ALIASES GATE_NOT_INERT_GLOB GATE_PATH_TOKEN GATE_PERL_WORD GATE_QUOTE_CLASS GATE_QUOTED_VALUE GATE_REDIR_TOKEN GATE_SEP_AMP GATE_SEP_PIPE GATE_SEP_SEMI GATE_SEP_SUBST GATE_SQ GATE_STRUCT_MAXSPAN GATE_STRUCT_MAXTOK GATE_STRUCT_MAXTOKLEN GATE_SUBST_MARK"
+
+# gate_require_const NAME [NAME...]
+#
+# Refuse with exit 2, naming every missing constant, unless all of NAME... AND
+# every name in `GATE_LIB_BASE_CONSTS` are defined and non-empty. Returns 0
+# otherwise.
+#
+# Called UNCONDITIONALLY at load time, beside the `declare -F` chain, before
+# the hook parses its payload -- which is deliberate on two counts. A library
+# that lags its consumers is a broken-repo state, and a broken repo should be
+# loud on every command rather than only on the ones that happen to reach a
+# particular constant read. And it lets the class fence use ONE generic payload
+# for every hook, instead of synthesising a payload per hook that reaches that
+# hook's particular read -- which is the shape in which such a fence goes quiet
+# without anyone noticing.
+#
+# Non-empty rather than merely SET: every GATE_* constant a hook reads is a
+# pattern or a character class, and an empty one is as broken as an absent one
+# -- an empty ERE matches everything, so the gate would fire on every command
+# instead of refusing. The mutable scratch variables here that legitimately
+# start empty (`GATE_STRUCT_SEG`, `GATE_COMMENT_CUT`, `GATE_COMMENT_OPENQ`) are
+# OUTPUTS, never read by a hook as a constant, and are never passed to this.
+gate_require_const() {
+  gate_missing_const "$@" && return 0
+  {
+    echo "Blocked: .claude/hooks/lib/command-match.sh does not define: $GATE_MISSING_CONSTS"
+    echo "so this gate cannot recognise the command and must not wave it through."
+    echo "The library lags the hooks that read it -- restore or finish it; do not"
+    echo "work around the gate."
+  } >&2
+  exit 2
+}
+
+# gate_require_const_soft NAME [NAME...]
+#
+# The NON-BLOCKING sibling: same check, but it WARNS and returns 1 instead of
+# exiting 2, so an observer hook can `|| exit 0`. It exists because "fail
+# closed" is not the right failure for every hook here, and writing it as an
+# exemption in the fence rather than as an API would have been the wrong shape.
+# Its callers are the four hooks `.claude/rules/hooks.md` already carves out of
+# the fail-closed rule -- `restore-backup` plus the three non-blocking detectors
+# (`integ-stale-base-detector`, `main-tree-git-cwd-detector`,
+# `post-merge-sync-reminder`). `restore-backup`'s header states the policy this
+# serves most sharply: "fail OPEN and SILENT on anything unexpected. A backup helper that
+# blocks the user's command when the snapshot fails would be worse than no
+# helper at all." Its existing library-load guard already `exit 0`s for the
+# same reason, and a constant check that exited 2 there would have made a
+# broken library BLOCK `git reset --hard` -- the opposite of that hook's
+# contract, and a far wider blast radius than the missed snapshot it is
+# trading against. It warns rather than staying silent because a snapshot NOT
+# TAKEN is invisible, and the one line on stderr is what makes it legible.
+gate_require_const_soft() {
+  gate_missing_const "$@" && return 0
+  {
+    echo "Note: .claude/hooks/lib/command-match.sh does not define: $GATE_MISSING_CONSTS"
+    echo "so this NON-BLOCKING hook is skipping rather than refusing. It cannot"
+    echo "recognise the command, and whatever it would have done -- a snapshot, a"
+    echo "warning -- did not happen. Restore or finish the library."
+  } >&2
+  return 1
+}
+
+# The shared body. Sets `GATE_MISSING_CONSTS` to the space-separated names that
+# are absent or empty and returns 1; returns 0 with that variable cleared when
+# everything is present. It prints NOTHING -- the wrappers do, because the same
+# finding is a refusal for one caller and a note for the other, and a body that
+# printed "Blocked" would have made the non-blocking hook's stderr say the
+# opposite of what it did.
+gate_missing_const() {
+  GATE_MISSING_CONSTS=""
+
+  # ZERO NAMES IS LEGITIMATE and means "check the library's own constants
+  # only". Five registered hooks source this library and read no constant of
+  # their own -- `broad-process-kill-gate`, `main-tree-edit-gate`,
+  # `integ-stale-base-detector`, `main-tree-git-cwd-detector`,
+  # `post-merge-sync-reminder` -- and they are exactly the ones that most need
+  # the base half: `broad-process-kill-gate` reaches `gate_segments_raw`, which
+  # reads `GATE_SEP_PIPE` and friends BARE inside a function body, where the
+  # `${X:-}` defaults on the load-time assignments do not help. Measured on this
+  # branch before this arm existed: payload `pkill -f vitest` with `GATE_SEP_AMP`
+  # stripped exited **0** -- a machine-wide kill waved through, the `set -u`
+  # abort swallowed by the command substitution's subshell.
+  #
+  # An earlier revision treated zero args as a CALLER bug and refused. That was
+  # wrong twice over: it made the case above unexpressible, and its stated
+  # reason -- "bash 3.2 aborts on `"$@"` with no positional parameters under
+  # `set -u`" -- is FALSE, measured on 3.2.57: `for x in "$@"` with zero
+  # positionals runs fine. Only an empty ARRAY expansion aborts, which is why
+  # `GATE_LIB_BASE_CONSTS` is a string.
+  #
+  # A hook that names TOO FEW constants is caught by nothing yet -- that is a
+  # static check over the whole class, tracked by go-to-k/cdkd#2826, and this
+  # runtime one could only guess at it.
+
+  # An empty base list means this file was truncated between the declaration
+  # above and here, so the base half of the check would pass vacuously.
+  if [ -z "${GATE_LIB_BASE_CONSTS:-}" ]; then
+    GATE_MISSING_CONSTS="GATE_LIB_BASE_CONSTS"
+    return 1
+  fi
+
+  local _gc_name
+  local _gc_missing=""
+  # Unquoted on purpose: the base list is a space-separated STRING and word
+  # splitting is how it becomes names.
+  # shellcheck disable=SC2086
+  for _gc_name in $GATE_LIB_BASE_CONSTS "$@"; do
+    # Indirect expansion with a default. Verified on bash 3.2.57 (macOS system
+    # bash, which run-tests.sh runs every suite under) and on 5.3.9: `${!n:-}`
+    # yields empty for an UNSET name under `set -u` rather than aborting, and
+    # reports a genuinely empty value as empty too.
+    if [ -z "${!_gc_name:-}" ]; then
+      # De-duplicated: a name can arrive from BOTH lists -- `GATE_FLAGS` is a
+      # load-time base AND a constant three hooks read directly -- and printing
+      # it twice reads like two different problems.
+      case " $_gc_missing " in
+        *" $_gc_name "*) ;;
+        *) _gc_missing="${_gc_missing:+$_gc_missing }$_gc_name" ;;
+      esac
+    fi
+  done
+
+  [ -n "$_gc_missing" ] || return 0
+  GATE_MISSING_CONSTS="$_gc_missing"
+  return 1
 }
