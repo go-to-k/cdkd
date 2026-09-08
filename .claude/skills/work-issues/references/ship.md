@@ -111,6 +111,22 @@ diff <(git show origin/main:docs/changelog-cdkd.md) docs/changelog-cdkd.md | gre
 already carries can never read 1 (one phrase measured 18 hits there, vacuous).
 Take the phrase from YOUR entry's own subject.
 
+**A duplicated SECTION HEADING is the same defect one level up, and none of the
+three checks above can see it.** When both sides opened a `**Recently
+Implemented** (<same day>):` heading, keep-both leaves two: main's copy is on
+BOTH sides so the `^<` residual stays empty, and your entry's phrase still reads
+1. Put your entry under the heading main already has, delete yours, and assert
+it — this holds whether or not you opened a genuinely new day:
+
+```bash
+# after resolving, before `git rebase --continue`
+grep '^\*\*Recently Implemented\*\* (' docs/changelog-cdkd.md | sort | uniq -d   # must print nothing
+```
+
+`changelog-entry-uniqueness.test.ts` fences the repeat and the date inversion it
+causes — with the measured instances in its comment — but only once the suite
+runs. This answers during the resolution, when the fix is still one line.
+
 **A GENERATED file in a conflict is REGENERATED, never hand-merged** — resolve
 however lets the generator run, re-run it, commit ITS output (a hand-merge
 matches neither side and the staleness guard rejects it; measured on
