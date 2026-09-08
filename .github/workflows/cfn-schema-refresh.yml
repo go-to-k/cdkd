@@ -57,14 +57,28 @@ name: CFn schema fixture refresh
 # wait is what shrinks from weeks to a day.
 #
 # THE PR IS ALLOWED TO LAND RED, and that is the hand-off rather than a bug. The
-# job runs only the MECHANICAL chain and touches nothing encoding judgment — no
-# `unhandledByDesign`, no `bogusTolerated` rationales, no `NESTED_KEY_ALLOW_LIST`,
-# no provider code. Measured on the first real cycle, both judgment classes fire:
-# a REMOVED property (`AWS::Route53::RecordSet.GeoProximityLocation`) turns a
-# provider declaration into a bogus entry needing a hand-written rationale, and
-# new nested keys on `AWS::Glue::Connection` take
-# `audit:nested-key-coverage:check` from rc=0 to rc=1. Neither is fixable by
-# regeneration; a job that "self-healed" them would be inventing the rationale.
+# job touches almost nothing encoding judgment — no `unhandledByDesign`, no
+# `NESTED_KEY_ALLOW_LIST`, no provider code — and the ONE exception is bounded
+# by the argument that kept it out originally. A job that "self-healed" a
+# removal would be inventing the rationale, because the silencing option always
+# turns CI green and a rule choosing under UNCERTAINTY converges on it. So the
+# job settles a removal only on evidence that leaves one answer: the name is a
+# member of a shape REACHABLE FROM AN OPERATION INPUT in the type's own client
+# (a response-only model is not deliverable), the provider READS it off the
+# template as `properties['X']` (a `.X` access cannot tell sending from a drift
+# read-back), and no name on the type — added by this refresh OR already in its
+# schema — pairs with it as a possible rename.
+#
+# What is narrow is the EVIDENCE, not the frequency: measured 2026-09-08,
+# 907 of 1240 declared properties (73%) would qualify if AWS removed them
+# today. That is the point rather than a worry — the rule exists to take work
+# off a human — but it means this is the common path, and any weakening of the
+# three tests above is a weakening of the check itself.
+# `AWS::Route53::RecordSet.GeoProximityLocation` — the case that motivated this
+# — is settled that way. Everything else still lands RED: a removal whose SDK
+# member is gone (retiring it is a behaviour change), a possible rename, and new
+# nested keys on `AWS::Glue::Connection` taking
+# `audit:nested-key-coverage:check` from rc=0 to rc=1.
 on:
   schedule:
     # 04:37 UTC daily. Off the hour on purpose — the top of the hour is heavily
@@ -246,6 +260,49 @@ jobs:
       # retire), and the PR's own CI reports it to the human anyway. Suppressing
       # the report would be wrong; letting it stop the PR from being OPENED
       # would be worse, since the PR is how the human finds out.
+      # BEFORE the checks, because the whole point is that `property-coverage`
+      # is green by the time it runs on a property nothing was going to decide
+      # differently. It holds NO token: it reads the checkout and rewrites one
+      # committed JSON file, and the step that can write to GitHub is further
+      # down.
+      #
+      # This is the one place the job touches a file that encodes judgement, and
+      # the narrowness is the whole licence for it — see the header note above.
+      # `--write-auto-tolerated` records what it settled and what it refused;
+      # the diagnosis renders both, so an automatic write is auditable in the PR
+      # rather than visible only as a diff hunk.
+      - name: Settle the removals that carry no judgement
+        id: settle
+        if: steps.drift.outputs.drifted == 'true' || steps.open_pr.outputs.number != ''
+        run: |
+          set -euo pipefail
+          node scripts/diagnose-schema-refresh.mjs \
+            --write-auto-tolerated /tmp/auto-tolerated.json
+          # The file is the report's input, and an ABSENT one reads to it as
+          # "the job settled nothing" — which would render every settled
+          # property as still needing a decision. That is the harmless
+          # direction, but it is also indistinguishable from this step not
+          # having run, so it is refused here instead.
+          [ -s /tmp/auto-tolerated.json ]
+          git --no-pager diff --stat -- tests/fixtures/cfn-schemas/_todo-backfill.json
+          # Whether anything was actually written — read from the TREE, not from
+          # the record's `written` array, because what has to be committed is a
+          # file that changed. A cycle that re-settles a property already in the
+          # tolerance file writes nothing and must not push an empty commit.
+          #
+          # This output widens Publish's guard, and without it the settlement is
+          # computed and THROWN AWAY on the arm that needs it most: an open PR
+          # carrying an outstanding removal, on a day AWS did not move. Publish
+          # was drift-only, so every quiet day would recompute the same entry
+          # and discard it, and the marking would correctly refuse to clear over
+          # a tree the branch does not carry — a stalemate that resolves only
+          # when AWS happens to drift again.
+          if [ -n "$(git status --porcelain -- tests/fixtures/cfn-schemas/_todo-backfill.json)" ]; then
+            echo "settled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "settled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Runs on drift OR while a refresh PR is open, and the second arm is what
       # makes the PR's decision marking CLEARABLE. The marking is derived from
       # the checks below, and with a `drifted`-only guard the only day it could
@@ -377,15 +434,21 @@ jobs:
             --nested-key-rc "${nested_key_rc}" \
             --failed-checks "${FAILED_CHECKS}" \
             --skipped-log /tmp/skipped.log \
+            --auto-tolerated /tmp/auto-tolerated.json \
             --decision-count-out /tmp/decision-count.txt > /tmp/diagnosis.md
 
       - name: Publish the refresh
         id: publish
-        if: steps.drift.outputs.drifted == 'true'
+        # Drift OR a settlement worth committing. The second arm only ever
+        # reaches the ADDITIVE path below: `Settle` runs on drift or an open PR,
+        # so a settle-only cycle implies an open PR, and the branch-creating arm
+        # refuses outright if it is ever reached without drift.
+        if: steps.drift.outputs.drifted == 'true' || steps.settle.outputs.settled == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Same reasoning as the switch step: no `${{ }}` inside a shell body.
           PR_NUMBER: ${{ steps.open_pr.outputs.number }}
+          DRIFTED: ${{ steps.drift.outputs.drifted }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -419,7 +482,16 @@ jobs:
             # ADDITIVE commit onto the open PR's branch. Never force: a
             # non-fast-forward here means a human pushed while this ran, and
             # overwriting that is the one outcome worth losing a cycle over.
-            git commit -m "chore(schemas): additional CFn schema drift ($(date -u +%Y-%m-%d))"
+            # The message has to match the diff. A settlement-only cycle
+            # commits a tolerance the job decided, with no schema change behind
+            # it, and calling that "additional CFn schema drift" would make the
+            # branch history describe something that did not happen.
+            if [ "${DRIFTED}" = "true" ]; then
+              subject="chore(schemas): additional CFn schema drift ($(date -u +%Y-%m-%d))"
+            else
+              subject="chore(schemas): settle removals the evidence already answers ($(date -u +%Y-%m-%d))"
+            fi
+            git commit -m "${subject}"
             if git push \
                  "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
                  "${existing_branch}"; then
@@ -441,6 +513,15 @@ jobs:
               exit 1
             fi
           else
+            # A new branch is a REFRESH's output. Reaching here without drift
+            # would mean opening a PR whose only content is a tolerance the job
+            # decided on its own, with no schema change to explain it — and the
+            # guard above says it cannot happen, so this refuses rather than
+            # inventing a cycle.
+            if [ "${DRIFTED}" != "true" ]; then
+              echo "::error::Reached the branch-creating path with no fixture drift. A settlement-only cycle has no refresh to publish and must ride on the open PR the settle step ran against."
+              exit 1
+            fi
             cycle=$(date -u +%Y-%m-%d)
             branch="bot/cfn-schema-refresh/${cycle}"
             # Explicit `--force-with-lease=<ref>:<sha>` when the branch already

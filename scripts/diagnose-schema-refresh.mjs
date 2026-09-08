@@ -38,11 +38,13 @@
  *   node scripts/diagnose-schema-refresh.mjs \
  *     [--nested-key-log <file>] [--nested-key-rc <status>] \
  *     [--failed-checks <a,b>] [--skipped-log <file>] [--fixtures-dir <dir>] \
- *     [--decision-count-out <file>] > body.md
+ *     [--decision-count-out <file>] [--auto-tolerated <file>] > body.md
  *
- * And, as a separate mode taking no other flag:
+ * And, as separate modes taking no other flag:
  *
  *   node scripts/diagnose-schema-refresh.mjs --umbrella-checklist > checklist.md
+ *
+ *   node scripts/diagnose-schema-refresh.mjs --write-auto-tolerated <file>
  *
  * `--nested-key-log` is the captured output of
  * `vp run audit:nested-key-coverage:check` and `--nested-key-rc` its exit
@@ -53,6 +55,16 @@
  * that came back red — every one of them fixture-driven, and every one reached
  * by an ordinary schema ADDITION. `--skipped-log` is the tail of the refresh's
  * own output, listing the types the public bundle does not carry.
+ *
+ * `--write-auto-tolerated` is the WRITE mode: it classifies every removed-but-
+ * declared property, writes a `bogusTolerated` entry for the ones two structural
+ * facts settle (the type's own SDK client declares a member of the name, and the
+ * provider wires it — with no rename candidate on the type), and records what it
+ * settled and what it refused into the named file. It runs as its own workflow
+ * step BEFORE the checks, so the PR arrives green on properties nothing was
+ * going to decide differently. `--auto-tolerated` hands that record back to the
+ * report, which lists the automatic writes in their own section and leaves them
+ * out of the decision count.
  *
  * `--decision-count-out` names a file to write the number of things needing a
  * decision into, as a side effect of the same run that renders the report. The
@@ -89,6 +101,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
+
+import { typedSdkMember, providerWiresProperty } from './offline-property-evidence.ts';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -736,6 +750,225 @@ export function countDecisions({
 }
 
 /**
+ * Apply {@link classifyRemovedProperty} to every removed-but-declared property,
+ * writing the settled ones into `_todo-backfill.json`'s `bogusTolerated` block
+ * and returning what happened for the report to render.
+ *
+ * The file is rewritten in place with `JSON.stringify(…, null, 2)`, which is the
+ * shape the generator already writes, so a cycle that settles nothing produces a
+ * byte-identical file and no commit noise.
+ *
+ * Existing entries are NEVER overwritten. A rationale already there was written
+ * by a human about the same property, and the automatic one would replace a
+ * considered sentence with a template — the fold that the umbrella campaign's
+ * own history is a warning about.
+ *
+ * @param {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} removed
+ * @param {Map<string, string>} providerFiles
+ * @param {string} [repoRoot]
+ * @returns {{ written: Array<{ resourceType: string, property: string, rationale: string }>,
+ *   escalated: Array<{ resourceType: string, property: string, reason: string }> }}
+ */
+export function writeAutoTolerated(removed, providerFiles, repoRoot = REPO_ROOT) {
+  const written = [];
+  const escalated = [];
+  /** The type's properties as the refreshed fixture now lists them. */
+  const currentSchemaProperties = (resourceType) => {
+    const file = join(
+      repoRoot,
+      'tests/fixtures/cfn-schemas',
+      `${resourceType.replace(/::/g, '-')}.json`
+    );
+    if (!existsSync(file)) return [];
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8'));
+      return Array.isArray(parsed.properties) ? parsed.properties : [];
+    } catch {
+      return [];
+    }
+  };
+  const path = join(repoRoot, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
+  const doc = JSON.parse(readFileSync(path, 'utf8'));
+  doc.bogusTolerated ??= {};
+
+  for (const entry of removed) {
+    for (const property of entry.properties) {
+      const already = doc.bogusTolerated[entry.resourceType]?.[property];
+      if (already !== undefined) continue;
+      // A broken provider or a malformed fixture must not take down the refresh
+      // it is describing — the same rule `sdkVersionLag` states for itself. An
+      // unclassifiable property escalates, which is where it would have gone.
+      let verdict;
+      try {
+        // Resolved INSIDE the try. Hoisted out of it, this `readFileSync` on the
+        // provider path threw uncaught for an unreadable provider — aborting the
+        // refresh AFTER the fixtures had already been rewritten, which is the
+        // one outcome the catch exists to prevent.
+        const client = clientsForType(
+          entry.resourceType,
+          sdkClientVersions(providerFiles.get(entry.resourceType), repoRoot)
+        ).find((r) => r.matched)?.client;
+        verdict = classifyRemovedProperty({
+          property,
+          client,
+          providerRelPath: providerFiles.get(entry.resourceType),
+          renameCandidates: entry.renameCandidates?.[property] ?? [],
+          // The cross-cycle half: names the type's CURRENT schema already
+          // carries that pair with this one. A rename split across two days
+          // leaves no addition in this delta at all.
+          schemaRenameCandidates: pairRenames(
+            property,
+            currentSchemaProperties(entry.resourceType)
+          ),
+          typedMember: typedSdkMember,
+          wires: providerWiresProperty,
+          repoRoot,
+        });
+      } catch (err) {
+        verdict = {
+          auto: false,
+          reason: `the evidence could not be read (${
+            err instanceof Error ? err.message : String(err)
+          }), so nothing is concluded about this property`,
+        };
+      }
+      if (!verdict.auto) {
+        escalated.push({ resourceType: entry.resourceType, property, reason: verdict.reason });
+        continue;
+      }
+      doc.bogusTolerated[entry.resourceType] ??= {};
+      doc.bogusTolerated[entry.resourceType][property] = verdict.rationale;
+      written.push({ resourceType: entry.resourceType, property, rationale: verdict.rationale });
+    }
+  }
+
+  if (written.length > 0) writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`);
+  return { written, escalated };
+}
+
+/**
+ * Whether the refresh job may settle a removed-but-declared property itself, or
+ * must hand it to a human.
+ *
+ * The default is the HUMAN, and every clause below only narrows what escapes
+ * that. This file's own reasoning at `renderDiagnosis` is why: the silencing
+ * option is always available and always turns CI green, so a rule choosing
+ * automatically under uncertainty converges on it and disables the check that
+ * caught the problem. What makes an automatic answer defensible here is that it
+ * is not a judgement under uncertainty at all — it is two structural facts, both
+ * read from the checkout:
+ *
+ * - the type's OWN service client declares a member of that name, so the SDK
+ *   call cdkd makes still carries the field; and
+ * - the provider actually reads it off the template or writes it onto a request,
+ *   so deleting the declaration would make the coverage checker under-report a
+ *   property cdkd genuinely sends.
+ *
+ * When both hold, "keep sending it" is the only answer either fact permits, and
+ * the human was being asked to restate them. When either fails the remedy is a
+ * behaviour change — deleting provider wiring — and that stays a human's.
+ *
+ * **A rename candidate escapes the rule entirely, however strong the evidence.**
+ * A rename appears as a removal plus an addition on the same type, and the SDK
+ * keeps the OLD name for backward compatibility — so both facts above hold for
+ * a property whose correct fix is repointing the declaration at the new name.
+ * Tolerating it would mark the PR "no decision needed" and bury the new name in
+ * the backfill list. `AWS::AutoScaling::AutoScalingGroup.DefaultCooldown` is the
+ * live example: its type's schema already carries `Cooldown`, and a hand-written
+ * note on the tolerance file says CFn spells the same field that way. The
+ * pairing is found against the CURRENT schema as well as this delta, because
+ * that rename landed across two cycles and `pairRenames` alone sees only one.
+ *
+ * @param {object} input
+ * @param {string} input.property
+ * @param {string | undefined} input.client the type's own SDK client package
+ * @param {string | undefined} input.providerRelPath
+ * @param {readonly string[]} input.renameCandidates additions on the same type
+ *   whose spelling extends or is extended by this name
+ * @param {readonly string[]} [input.schemaRenameCandidates] names ALREADY in the
+ *   type's current schema that pair with this one — the cross-cycle half, which
+ *   `renameCandidates` alone cannot see
+ * @param {typeof import('./offline-property-evidence.ts').typedSdkMember} input.typedMember
+ * @param {typeof import('./offline-property-evidence.ts').providerWiresProperty} input.wires
+ * @param {string} [input.repoRoot]
+ * @returns {{ auto: false, reason: string } | { auto: true, rationale: string }}
+ */
+export function classifyRemovedProperty({
+  property,
+  client,
+  providerRelPath,
+  renameCandidates,
+  schemaRenameCandidates = [],
+  typedMember,
+  wires,
+  repoRoot,
+}) {
+  // Rename candidates from THIS delta and from the type's CURRENT schema, and
+  // the second source is not belt-and-braces. `pairRenames` sees only what the
+  // same refresh added, so a rename split across two cycles escapes it — and
+  // the commit that first shipped this rule cited an example that is exactly
+  // that shape: `AWS::AutoScaling::AutoScalingGroup` already carries `Cooldown`
+  // in the committed fixture while `DefaultCooldown` is the removal, so the
+  // addition landed on an earlier day. At a daily cadence a split rename is the
+  // NORMAL case, not the corner one, and `property-coverage`'s staleness check
+  // cannot clear it later: that fires when AWS re-adds the SAME name.
+  const allCandidates = [...new Set([...renameCandidates, ...schemaRenameCandidates])];
+  if (allCandidates.length > 0) {
+    return {
+      auto: false,
+      reason:
+        `${allCandidates.map(renderName).join(', ')} on the same type ${
+          allCandidates.length === 1 ? 'extends or is extended by' : 'extend or are extended by'
+        } this name, so this may be a RENAME — and the SDK keeps the old name either way, which ` +
+        'is exactly why the evidence cannot settle it',
+    };
+  }
+  if (client === undefined) {
+    return {
+      auto: false,
+      reason: "could not determine this type's own SDK client, so there is nothing to ask",
+    };
+  }
+  const typed = typedMember(property, client, repoRoot);
+  if (typed === undefined) {
+    return {
+      auto: false,
+      reason:
+        `\`${client}\` declares no member of this name, so the SDK call cdkd makes no longer ` +
+        'carries the field — retiring the declaration is a behaviour change and stays yours',
+    };
+  }
+  const wired = wires(property, providerRelPath, repoRoot);
+  if (wired === undefined) {
+    return {
+      auto: false,
+      reason:
+        'no `properties[...]` read of this name was found, which means the evidence COULD NOT ' +
+        'DETERMINE whether the provider sends it — not that it does not. Table-driven wiring ' +
+        '(a shorthand key in a lookup map, indexed by a loop variable) is invisible to this ' +
+        'check, and `AWS::SQS::Queue` delivers `DelaySeconds` exactly that way. Look before ' +
+        'deleting anything',
+    };
+  }
+  const where = typed.interfaces.slice(0, 3).join(', ');
+  // The EARLIEST site by line, not `sites[0]`: they are `path:line` strings, so
+  // a plain sort puts `:1123` before `:987` and the rationale quotes an
+  // arbitrary one.
+  const site = [...wired.sites].sort(
+    (a, b) => Number(a.split(':').pop()) - Number(b.split(':').pop())
+  )[0];
+  return {
+    auto: true,
+    rationale:
+      `AWS removed this from the CFn schema, but \`${client}\` still declares it as a member ` +
+      `of ${where}${typed.spelling === 'lowerFirst' ? ' (under its lower-initial spelling, which several services use)' : ''}, ` +
+      `and the provider wires it at ${site}. cdkd calls the SDK directly, so the value still ` +
+      `reaches AWS; deleting the declaration would only make the coverage checker under-report ` +
+      `a property cdkd sends. Written automatically by the schema refresh job.`,
+  };
+}
+
+/**
  * Render the Markdown appended to the pull-request body.
  *
  * It NAMES what fired, where, and what the SDK says about it — then stops.
@@ -752,9 +985,17 @@ export function countDecisions({
  * The reason to stop there is the asymmetry rather than the ambiguity: the
  * silencing option (`bogusTolerated`, `NESTED_KEY_ALLOW_LIST`) is always
  * available and always turns CI green, so anything choosing automatically under
- * uncertainty converges on it — disabling the very check that caught the
- * problem, silently. Evidence shortens the human's work; it does not change who
- * accepts that risk.
+ * UNCERTAINTY converges on it — disabling the very check that caught the
+ * problem, silently.
+ *
+ * That argument is about uncertainty, and it is why the job now settles exactly
+ * the cases that have none. {@link classifyRemovedProperty} writes a
+ * `bogusTolerated` entry only when two structural facts hold together — the
+ * type's own SDK client declares a member of the name, and the provider wires
+ * the property rather than merely listing it — and refuses outright when the
+ * same refresh added a name that could be a rename, where both facts hold and
+ * still settle nothing. Where a judgement remains, the evidence shortens the
+ * human's work and does not change who accepts the risk.
  *
  * The input shape lives in the sibling `.d.mts` and is named here rather than
  * restated field by field: the per-field `@param` list was a second copy, and
@@ -772,6 +1013,8 @@ export function renderDiagnosis(input) {
     nestedKeyUnparsed = false,
     failedChecks = [],
     unreadable = [],
+    autoTolerated = [],
+    autoEscalated = [],
     skipped,
     sdkLag,
   } = input;
@@ -781,6 +1024,44 @@ export function renderDiagnosis(input) {
     countDecisions({ removed, divergences, nestedKeyUnparsed, failedChecks, unreadable }) === 0
   ) {
     lines.push('Nothing in this refresh needs a decision — additions only.', '');
+  }
+
+  if (autoTolerated.length > 0) {
+    lines.push(
+      `### Properties AWS removed that the job SETTLED itself (${autoTolerated.length}) — no decision needed`,
+      '',
+      'Each was removed from the CFn schema while the provider still declared it, and two',
+      'structural facts settled it without a judgement: the type\'s own SDK client still',
+      'declares a member of that name, and the provider actually wires the property rather',
+      'than only listing it. cdkd calls the SDK directly, so the value still reaches AWS.',
+      '',
+      'They are listed here rather than folded into the diff silently — an automatic write',
+      'to a tolerance file is the thing most worth auditing, and it is reversible: delete the',
+      'entry and the next cycle reports the property as needing a decision again.',
+      ''
+    );
+    for (const w of autoTolerated) {
+      lines.push(`- ${renderName(w.resourceType)}: ${renderName(w.property)}`);
+      lines.push(`  - ${renderDetail(w.rationale)}`);
+    }
+    lines.push('');
+  }
+
+  if (autoEscalated.length > 0) {
+    lines.push(
+      `### Why the job did NOT settle these (${autoEscalated.length})`,
+      '',
+      'The evidence is stated so you can disagree with it. Each line says which of',
+      'the three tests failed, and none of them concludes anything about the',
+      'property — "no wiring found" in particular means the check could not see it,',
+      'not that the provider does not send it.',
+      ''
+    );
+    for (const e of autoEscalated) {
+      lines.push(`- ${renderName(e.resourceType)}: ${renderName(e.property)}`);
+      lines.push(`  - ${renderDetail(e.reason)}`);
+    }
+    lines.push('');
   }
 
   if (removed.length > 0) {
@@ -827,8 +1108,9 @@ export function renderDiagnosis(input) {
           lines.push(
             `    - **Possibly a RENAME**: this refresh also ADDED ` +
               `${renames.map(renderName).join(', ')} to the same type. That is a ` +
-              'name-similarity guess, not a finding — confirm it against the live ' +
-              'registry below before repointing the declaration.'
+              'name-similarity guess, not a finding. The job refuses to settle ' +
+              'anything on this type while it stands, and repointing the ' +
+              'declaration is a decision only you can make.'
           );
         }
 
@@ -1007,10 +1289,14 @@ export function renderDiagnosis(input) {
   }
 
   lines.push(
-    '_The choice itself is deliberately not made here: both options in each case',
-    'turn CI green and mean opposite things for a user’s template, and the',
-    'silencing one always works — so anything choosing automatically under',
-    'uncertainty converges on disabling the check. See the_',
+    '_What is left here is chosen by you on purpose. Both options in each case turn',
+    'CI green and mean opposite things for a user’s template, and the silencing one',
+    'always works — so a rule choosing under UNCERTAINTY converges on disabling the',
+    'check that caught the problem. What the job settles, it settles on evidence that',
+    'leaves one answer: the name is a member of a shape reachable from an operation',
+    'INPUT in this type’s own client, the provider READS it off the template, and no',
+    'name on the type pairs with it as a possible rename. Absent evidence is never',
+    'read as absence — “no wiring found” escalates rather than concluding. See the_',
     '_[CFn schema refresh runbook](https://github.com/go-to-k/cdkd/blob/main/docs/schema-refresh-runbook.md)._'
   );
   return lines.join('\n');
@@ -1076,22 +1362,6 @@ export function renderName(name) {
     : '**[name rejected: unexpected characters]**';
 }
 
-/**
- * The literal form of a name for a paste-able SHELL command.
- *
- * Same character class as {@link renderName} and for the same reason, but the
- * consequence differs: these go inside single quotes in a `bash` block the
- * runbook tells the maintainer to paste, so a `'` in a bundle-derived name is
- * command injection into the maintainer's own terminal rather than a broken
- * Markdown span. The class excludes it. A rejected name yields a placeholder
- * that cannot be pasted by accident.
- *
- * @param {string} name
- * @returns {string}
- */
-export function renderLiteral(name) {
-  return /^[A-Za-z0-9.:]+$/.test(name) ? name : 'NAME_REJECTED_UNEXPECTED_CHARACTERS';
-}
 
 /**
  * A nested key PATH, which is dotted and may carry the `#top` sentinel.
@@ -1143,22 +1413,29 @@ function removedProcedure(removed) {
     '',
     '1. If a **RENAME** is flagged above it is a NAME-SIMILARITY guess, not a',
     '   finding — confirm with step 2 before repointing the declaration.',
-    '2. Confirm against the live registry — this is the API AWS serves,',
-    '   not the published bundle:',
+    '2. The question is whether the SDK CALL still carries the field, because',
+    '   that is what cdkd makes — a removal reaching this section is about an SDK',
+    "   Provider's declaration, not about Cloud Control. The evidence above",
+    '   already answers it: this job reads the SDK typings and the provider',
+    '   source, which is why it settles the clear cases itself and only the',
+    '   unclear ones reach you.',
+    '3. If the SDK no longer declares the name, the property is genuinely',
+    '   retired — delete the declaration AND its wiring from the provider. That',
+    '   is a behaviour change, which is why it is yours.',
+    '4. If the SDK still declares it and the provider still wires it, keep',
+    '   sending it: add the property to `bogusTolerated` in',
+    '   `tests/fixtures/cfn-schemas/_todo-backfill.json` with a one-line reason.',
+    '   (Reaching this step means something blocked the automatic write — a',
+    '   possible rename is the usual one, and it is named above.)',
+    '5. Re-run `vp test run property-coverage` — it names any entry still bogus,',
+    '   and any tolerance AWS has since made stale.',
     '',
-    '   ```bash',
-    `   aws cloudformation describe-type --type RESOURCE --type-name '${renderLiteral(type)}' \\`,
-    "     --query Schema --output text | jq -r '.properties | keys[]' | grep -i " +
-      `'${renderLiteral(property)}'`,
-    '   ```',
-    '',
-    '3. If the SDK evidence says the name is gone AND step 2 finds nothing, the',
-    '   property is genuinely retired — delete the declaration from the provider.',
-    '4. If either still knows the name, keep sending it: add the property to',
-    '   `bogusTolerated` in `tests/fixtures/cfn-schemas/_todo-backfill.json` with a',
-    '   one-line reason (why the CFn schema no longer lists it, and why cdkd still',
-    '   sends it).',
-    '5. Re-run `vp test run property-coverage` — it names any entry still bogus.',
+    '   `aws cloudformation describe-type` is available if you want corroboration,',
+    '   but it is not the authority here and it adds no independent information:',
+    "   this workflow's header records the measurement that the public bundle it",
+    '   already read was byte-identical to the authenticated capture on every',
+    '   type probed. It is also unavailable to the job itself, which holds no AWS',
+    '   credentials by design.',
     '',
     '</details>',
   ];
@@ -1509,6 +1786,8 @@ export const KNOWN_FLAGS = [
   '--skipped-log',
   '--umbrella-checklist',
   '--decision-count-out',
+  '--write-auto-tolerated',
+  '--auto-tolerated',
   // Test seam; see its use below.
   '--fixtures-dir',
 ];
@@ -1798,6 +2077,26 @@ function main() {
     declared,
   });
 
+  // The WRITE mode, and it returns here — before the report, the checkers and
+  // the nested-key log are even read. It runs as its own workflow step, BEFORE
+  // the checks, because the whole point is that `property-coverage` should be
+  // green by the time it runs on a property nothing was ever going to decide
+  // differently.
+  const autoOut = rawArg('--write-auto-tolerated');
+  if (autoOut === null || autoOut === '') {
+    throw new Error(
+      '--write-auto-tolerated was given with no value — there is nowhere to record which ' +
+        'properties were settled automatically, and the report renders that file.'
+    );
+  }
+  if (autoOut !== undefined) {
+    writeFileSync(
+      autoOut,
+      `${JSON.stringify(writeAutoTolerated(removed, providerFiles), null, 2)}\n`
+    );
+    return;
+  }
+
   // An UNREADABLE status is not a successful one: a mistyped value used to
   // return 0 — "the checker succeeded" — silently restoring the behaviour where
   // a checker that never ran renders as "additions only".
@@ -1829,6 +2128,40 @@ function main() {
     readArg('--nested-key-log'),
     readNumArg('--nested-key-rc')
   );
+  // Properties the WRITE step already settled, subtracted from `removed` so
+  // they are not also reported as needing a decision. They keep their own
+  // section below: an automatic write is exactly the thing a reader should be
+  // able to audit, and burying it would make the job's own silence the only
+  // evidence it happened.
+  const autoRecord = readArg('--auto-tolerated');
+  /** @type {Array<{resourceType: string, property: string, rationale: string}>} */
+  let autoTolerated = [];
+  /** @type {Array<{resourceType: string, property: string, reason: string}>} */
+  let autoEscalated = [];
+  if (autoRecord !== '') {
+    const parsed = JSON.parse(autoRecord);
+    autoTolerated = Array.isArray(parsed.written) ? parsed.written : [];
+    autoEscalated = Array.isArray(parsed.escalated) ? parsed.escalated : [];
+  }
+  // The record's own claim, checked against the FILE. `written` says the run
+  // meant to write an entry; only the tolerance file says one is there, and the
+  // list is what suppresses a decision and lowers the count. A stale record
+  // from an earlier run — or one naming a property this cycle did not settle —
+  // would otherwise hide a live decision behind a write that is not on the
+  // branch.
+  const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
+  if (autoTolerated.length > 0 && existsSync(tolerancePath)) {
+    const live = JSON.parse(readFileSync(tolerancePath, 'utf8')).bogusTolerated ?? {};
+    autoTolerated = autoTolerated.filter((w) => live[w.resourceType]?.[w.property] !== undefined);
+  }
+  const settled = new Set(autoTolerated.map((w) => `${w.resourceType}\u0000${w.property}`));
+  const removedForReport = removed
+    .map((e) => ({
+      ...e,
+      properties: e.properties.filter((p) => !settled.has(`${e.resourceType}\u0000${p}`)),
+    }))
+    .filter((e) => e.properties.length > 0);
+
   const failedChecks = readArgValue('--failed-checks')
     .split(',')
     .map((c) => c.trim())
@@ -1876,7 +2209,9 @@ function main() {
   // exists.
   process.stdout.write(
     renderDiagnosis({
-      removed,
+      removed: removedForReport,
+      autoTolerated,
+      autoEscalated,
       writableAdded,
       readOnlyAddedCount,
       divergences,
@@ -1892,7 +2227,7 @@ function main() {
     try {
       writeFileSync(
         countOut,
-        `${countDecisions({ removed, divergences, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable })}\n`
+        `${countDecisions({ removed: removedForReport, divergences, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable })}\n`
       );
     } catch (err) {
       process.stderr.write(

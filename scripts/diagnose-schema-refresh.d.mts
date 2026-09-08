@@ -79,6 +79,10 @@ export interface DiagnosisInput {
   nestedKeyUnparsed?: boolean;
   failedChecks?: string[];
   unreadable?: string[];
+  /** Removed properties the job settled itself, rendered in their own section. */
+  autoTolerated?: Array<{ resourceType: string; property: string; rationale: string }>;
+  /** Removed properties the job REFUSED to settle, with the test that failed. */
+  autoEscalated?: Array<{ resourceType: string; property: string; reason: string }>;
   skipped: string[];
 }
 export declare function renderDiagnosis(input: DiagnosisInput): string;
@@ -99,7 +103,6 @@ export declare function sdkVersionLag(
 ): { installed: string; latest: string; behind: boolean } | undefined;
 export declare function pairRenames(property: string, writableAdded: readonly string[]): string[];
 export declare function renderName(name: string): string;
-export declare function renderLiteral(name: string): string;
 export declare function renderKey(key: string): string;
 export declare function renderDetail(text: string): string;
 export declare function clientsForType(
@@ -149,3 +152,53 @@ export declare const UMBRELLA_EMPTY_SENTINEL: string;
 export declare function renderUmbrellaDocument(generatedSource: string): string;
 /** One `- [ ] \`Type\`: \`Prop\`` row per remaining silent-drop property. */
 export declare function renderUmbrellaChecklist(generatedSource: string): string[];
+/**
+ * Whether the refresh job may settle a removed-but-declared property itself.
+ * `auto` only when there is no rename candidate on the type, the type's own SDK
+ * client declares a member of the name, and the provider wires it.
+ */
+export declare function classifyRemovedProperty(input: {
+  property: string;
+  client: string | undefined;
+  providerRelPath: string | undefined;
+  renameCandidates: readonly string[];
+  /**
+   * Names ALREADY in the type's current schema that pair with this one — the
+   * cross-cycle half of the rename check, which `renameCandidates` cannot see.
+   */
+  schemaRenameCandidates?: readonly string[];
+  /**
+   * Structural, NOT `typeof import('./offline-property-evidence.ts')`. That
+   * spelling drags the whole module's import graph in, and this file is
+   * type-checked standalone with `skipLibCheck` OFF — where the installed
+   * `@aws-sdk/client-*` tree's own `@smithy/types` version skew surfaces as
+   * errors that have nothing to do with these declarations. The duplication is
+   * checked rather than mirrored: `main()` passes the real functions in, so a
+   * signature change that does not fit fails at that call site.
+   */
+  typedMember: (
+    property: string,
+    clientPackage: string,
+    repoRoot?: string
+  ) =>
+    | { client: string; spelling: 'exact' | 'lowerFirst'; interfaces: readonly string[] }
+    | undefined;
+  wires: (
+    property: string,
+    providerRelPath: string | undefined,
+    repoRoot?: string
+  ) => { sites: readonly string[] } | undefined;
+  repoRoot?: string;
+}): { auto: false; reason: string } | { auto: true; rationale: string };
+/**
+ * Apply the classifier across every removed entry, writing the settled ones into
+ * `_todo-backfill.json`'s `bogusTolerated` and reporting both outcomes.
+ */
+export declare function writeAutoTolerated(
+  removed: RemovedEntry[],
+  providerFiles: Map<string, string>,
+  repoRoot?: string
+): {
+  written: Array<{ resourceType: string; property: string; rationale: string }>;
+  escalated: Array<{ resourceType: string; property: string; reason: string }>;
+};
