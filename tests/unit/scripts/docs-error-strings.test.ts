@@ -189,12 +189,11 @@ describe('docs error-string checker: template extraction', () => {
 
   it('does not let a trailing HOLE absorb the ellipsis', () => {
     /*
-     * The refusal is inert unless truncated subjects are matched only against
-     * templates whose own text ends in an ellipsis: most templates end in a
-     * hole, whose wildcard swallows the author's `...` so the fabrication
-     * matches outright and never reaches the refusal. Measured on the real
-     * corpus, `Failed to ${verb} resource ${id}` vouched for a whole invented
-     * sentence this way.
+     * The refusal is inert unless it runs BEFORE the match: most templates end
+     * in a hole whose wildcard swallows the author's `...`, so a fabrication
+     * matches outright and never reaches it. Measured on the real corpus,
+     * `Failed to ${verb} resource ${id}` vouched for a whole invented sentence
+     * that way.
      */
     const t = templatesOf('throw new E(`Failed to ${verb} resource ${logicalId}`);');
     expect(

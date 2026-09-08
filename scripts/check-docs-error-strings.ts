@@ -68,7 +68,7 @@
  *   Deciding the pairing would mean knowing which errors wrap which, which is
  *   a call-graph question this cannot answer from string literals.
  * - **A quotation the author TRUNCATED with an ellipsis is REFUSED, not
- *   partially verified.** This was the opposite for six review rounds, and
+ *   partially verified.** This was the opposite for seven review rounds, and
  *   each remedy was found accepting a fabrication one step further out:
  *   comparing only the overlapping characters; accepting a borrowed opening
  *   that aligned to a whole literal; a whitespace-only second literal; a
@@ -266,7 +266,6 @@ const HOLE = '[\\s\\S]*?';
  */
 const ELLIPSIS_TAIL = /(?:\.\s*){2,}$|\u2026$/;
 
-/** Literal characters that are not whitespace — the only ones that anchor anything. */
 
 /** Longest template worth compiling. Past this it is a code block, not a message. */
 const MAX_TEMPLATE_CHARS = 600;
@@ -408,9 +407,10 @@ export function matchesSourceTemplate(
 /**
  * Does this quotation END in an ellipsis, i.e. did the author elide the rest?
  *
- * Consulted INSIDE {@link matchesSourceTemplate}: a handful of real messages
- * genuinely end in `...`, so a truncated subject is matched against those
- * templates only, rather than being refused outright.
+ * Consulted INSIDE {@link matchesSourceTemplate}, BEFORE any matching: a
+ * subject this returns true for is refused outright. The ordering is the
+ * load-bearing part — most templates end in a hole whose wildcard absorbs the
+ * trailing dots, so a refusal checked after the match never fires.
  */
 export function looksTruncated(message: string): boolean {
   return ELLIPSIS_TAIL.test(message.trim());
@@ -491,7 +491,7 @@ export function scanPage(
     } else {
       /*
        * A quotation the author ended with an ellipsis is REFUSED rather than
-       * partially verified. Six review rounds each found the partial-match
+       * partially verified. Seven review rounds each found the partial-match
        * rule accepting a fabrication one step further out, and the measurement
        * that settled it is that ZERO of the site's quoted error lines are
        * truncated — 45 lines of guarded matching served no real case while
@@ -717,7 +717,8 @@ function main(): void {
       f.verdict === 'unknown-class'
         ? `cdkd assigns no error the name '${f.errorName}'`
         : f.verdict === 'truncated-quotation'
-          ? 'a quotation ending in an ellipsis cannot be verified — quote the message in full'
+          ? 'a quotation ending in an ellipsis cannot be verified — quote the message in full ' +
+            '(if the message itself ends in one, read this script\'s header before changing that)'
           : 'no message template in src/ produces this line';
     console.error(`${f.file}:${f.line}  [${f.verdict}] ${f.errorName}: ${f.message}\n    ${why}`);
   }
