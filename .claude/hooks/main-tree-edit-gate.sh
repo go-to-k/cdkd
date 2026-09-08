@@ -102,20 +102,30 @@ fi
 # and exits 0, where the load-time refusal used to catch it. That is accepted
 # rather than overlooked. Refusing in `*)` means refusing a payload whose tool is
 # UNKNOWN, which puts Edit and Write back inside the refusal the moment `jq`
-# breaks too -- the lockout again, arriving by a second route. It costs nothing
-# real: the registered matcher is `Edit|Write|Bash`, so `*)` is unreachable for
-# any tool this hook is actually invoked on.
+# breaks too -- the lockout again, arriving by a second route. It is pinned by a
+# case, because eight lines of argument for a behaviour nothing measures is how
+# the behaviour goes away in a later refactor.
+#
+# An earlier revision of this comment justified it with "the registered matcher
+# is `Edit|Write|Bash`, so `*)` is unreachable". That was FALSE, and the file
+# contradicted it two ways at once. Claude Code matchers are UNANCHORED REGEX:
+# `Edit|Write|Bash` matches `MultiEdit` and `NotebookEdit` on the substring
+# `Edit`, so both reach this hook. `MultiEdit` was already in the file-path arm
+# and `NotebookEdit` was not -- which meant a NotebookEdit of a tracked file in
+# the main tree on `main` fell to `*)` and was ALLOWED. That hole predates this
+# change and is closed here, in the same `case` label the comment is about; the
+# sibling `worktree-owner-gate` has listed `NotebookEdit` all along.
 __refuse_unloadable_library() {
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
   echo "so main-tree-edit-gate cannot resolve the command's working directory." >&2
-  echo "Restore the file; do not work around the gate." >&2
+  echo "Restore that file; do not work around the gate." >&2
   echo "" >&2
   echo "Only Bash is refused. This hook's Edit and Write arms read the target" >&2
   echo "path directly and need no shell parsing, so FROM A FEATURE WORKTREE you" >&2
-  echo "can repair lib/command-match.sh with the Edit or Write tool." >&2
-  echo "In the main tree on main this gate refuses that edit as well -- for its" >&2
-  echo "own separate reason -- so there the repair is the operator's, run from" >&2
-  echo "their own shell ('!' prefixed, in Claude Code):" >&2
+  echo "can repair it with the Edit or Write tool -- that route is still open." >&2
+  echo "In the main tree on main this gate refuses that edit too, for its own" >&2
+  echo "separate reason, so there the repair belongs to the operator, made from" >&2
+  echo "their own shell. To inspect the file first ('!' prefixed, in Claude Code):" >&2
   echo "  bash -n .claude/hooks/lib/command-match.sh" >&2
   echo "A Bash call that is no longer refused is the proof the library loaded." >&2
   exit 2
@@ -350,7 +360,7 @@ candidates=()
 cand_bases=()
 
 case "$tool" in
-  Edit|Write|MultiEdit)
+  Edit|Write|MultiEdit|NotebookEdit)
     fp=$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")
     [[ -n "$fp" ]] && candidates+=("$fp")
     ;;

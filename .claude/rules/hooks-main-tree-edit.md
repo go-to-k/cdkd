@@ -34,7 +34,9 @@ toll only on a session actually touching these two hooks.
   the user's `git pull --ff-only`. Fires only when the target's branch is
   `main`/`master` AND the file is tracked (or is a NEW file under `src/` /
   `tests/` / `docs/` / `scripts/` / `.claude/`, excluding
-  `.claude/worktrees/*`). Edit/Write read `tool_input.file_path` (reliable);
+  `.claude/worktrees/*`). Edit / Write / MultiEdit / NotebookEdit read
+  `tool_input.file_path` (reliable) — the last two reach this hook because a
+  matcher is an unanchored regex and `Edit|Write|Bash` matches the substring;
   Bash best-effort-scans for LITERAL write targets (`> f`, `>> f`,
   `tee [-a] f`, `sed -i ... f`). **Known gap**: a variable-indirected target
   (`mv "$tmp" "$LEDGER"`) cannot be resolved statically — the next bullet,
@@ -64,57 +66,52 @@ toll only on a session actually touching these two hooks.
   two agreeing. Apply the `odd-trailing-bs` mutant and read the differential's
   own undeclared-cell list.
 
-  **Load fails CLOSED for `Bash` ONLY, and the asymmetry is the point**
-  (go-to-k/cdkd#2717). Every other gate on the shared matcher refuses outright
-  when the library will not load; this one matches `Edit|Write|Bash`, so
-  refusing at LOAD time took away the three tools the library is repaired with.
-  It happened four times in one session (go-to-k/cdkd#2650), three of them from
-  a single apostrophe inside a comment in the library's awk program, and each
-  time the maintainer ran the repair from their own shell. A safety mechanism
-  must not be able to remove the operator's means of repair.
+  **Load fails CLOSED for `Bash` ONLY** (go-to-k/cdkd#2717). Every other gate on
+  the shared matcher refuses outright; this one also matches Edit and Write, so
+  refusing at LOAD time took away the tools the library is repaired with — four
+  times in one session (go-to-k/cdkd#2650), three from one apostrophe in a
+  comment in its awk program, each needing the maintainer's own shell. A safety
+  mechanism must not remove the operator's means of repair.
 
-  What makes the split sound rather than a relaxation: the
-  `Edit|Write|MultiEdit` arm reads `tool_input.file_path` through `jq` and calls
-  no library function — the path arrives already expanded, so there is no shell
-  text to parse. Only the `Bash` arm needs the matcher. Everything between the
-  load and the dispatch is assignments and function definitions, so nothing runs
-  against the missing symbols in between. Inside the `Bash` arm the refusal is
-  UNCONDITIONAL — a write to `/tmp` is refused too, because deciding it is safe
-  is the parse the hook just failed to do.
+  Sound because the file-path arm reads `tool_input.file_path` through `jq` and
+  calls NO library function: the path arrives expanded, so there is no shell text
+  to parse, and everything between load and dispatch is assignments and function
+  definitions. Only `Bash` needs the matcher, and there the refusal is
+  UNCONDITIONAL — a `/tmp` write is refused too, since deciding it is safe is the
+  parse that just failed. Measured, same broken library: `Edit` 2 → 0, `Write`
+  2 → 0, `Bash` 2 → 2, working-library copy 0 on the old hook as control.
 
-  **The surviving arms still ENFORCE**, which is the half a fail-open would also
-  satisfy: with the library broken, an `Edit` or `Write` of a protected
-  main-tree file is still refused, by the gate's OWN message rather than the
-  load refusal. Measured against `origin/main`'s hook under the same broken
-  library and the same payloads: `Edit` 2 → 0, `Write` 2 → 0, `Bash` 2 → 2, with
-  a working-library copy giving 0 on the old hook as the control.
+  **Every expect-0 case is paired with an expect-2 case on the SAME tool label
+  and the SAME broken-library arm.** Both qualifiers were learned by being
+  wrong. With only the `Edit` control, `[ "$tool" = Write ] &&
+  [ "$__lib_loaded" != 1 ] && exit 0` survived the whole suite — an expect-0 case
+  asserts a bare exit code, so a fail-open reads identically to the arm working;
+  the `declare -F` arm then repeated it once the `. source` arm had its pair. The
+  same shape sank the worktree-repair case, which named a path under a directory
+  the fixture never created: `__norm_candidate` returns 1 on an absent parent
+  dir, so it never reached the branch lookup and its MAIN-tree twin answered 0
+  too.
 
-  **There is ONE enforcement control per tool label, and the reason is a
-  measured survivor, not symmetry.** With only the `Edit` control, injecting
-  `[ "$tool" = Write ] && [ "$__lib_loaded" != 1 ] && exit 0` into the dispatch
-  survived the whole suite: an expect-0 lockout case asserts a bare exit code,
-  so a fail-open in that arm is indistinguishable from the arm working. The same
-  shape sank the worktree-repair case, which named a path under a directory the
-  fixture never created — `__norm_candidate` returns 1 on an absent parent
-  directory, so it exited before the branch lookup and its MAIN-tree twin
-  answered 0 as well. **Every expect-0 case here is paired with a case that must
-  answer 2 for the same tool**, and the pairs differ only in the thing under
-  test.
+  The refusal TEXT is cases too, **one needle per SENTENCE**, measured by
+  deleting each line and requiring a red. It says Edit and Write survive **and
+  where** — `FROM A FEATURE WORKTREE`; in the main tree on `main` the gate
+  refuses that edit too, and there the repair belongs to the operator. `bash -n`
+  is labelled an INSPECTION: dropping the label left the colon binding it to
+  "the repair", which it is not.
 
-  The refusal TEXT is a case too, one needle per SENTENCE. It has to say that
-  Edit and Write survive **and where** — `FROM A FEATURE WORKTREE`; in the main
-  tree on `main` the gate refuses that edit as well, for its own separate
-  reason, and there the repair is the operator's. The first revision said only
-  the first half, which is the same overstatement in the other direction as the
-  text it replaced: a refusal that misstates what is available is what sends an
-  agent looking for a way around the gate.
+  **An unclassifiable `tool_name` exits 0** where the load-time refusal caught
+  it — a malformed payload, or `jq` gone too, falls to `*)`. Accepted: refusing
+  there puts Edit and Write back inside the refusal the moment `jq` breaks,
+  the lockout by a second route. PINNED by a case, because replacing that
+  `exit 0` with the refusal left the suite green until one existed.
 
-  **An unclassifiable `tool_name` now exits 0 where the load-time refusal caught
-  it** — a malformed payload, or `jq` missing as well, falls through the `case`
-  to `*)`. Accepted, not overlooked: refusing there puts Edit and Write back
-  inside the refusal the moment `jq` breaks too, which is the lockout arriving
-  by a second route, and the registered matcher is `Edit|Write|Bash`, so `*)` is
-  unreachable for any tool this hook is invoked on.
+  **A matcher is an UNANCHORED REGEX**, which is what an earlier draft of that
+  paragraph got wrong ("`Edit|Write|Bash`, so `*)` is unreachable"). It matches
+  `MultiEdit` and `NotebookEdit` on the substring, so both reach this hook.
+  `MultiEdit` sat in the file-path arm with no case; **`NotebookEdit` was in
+  neither, so a notebook write to a tracked main-tree file was allowed
+  outright** — a hole predating this change, closed with it in the same `case`
+  label. The sibling `worktree-owner-gate` has listed it all along.
 
   **This is the fifth resolution strategy the gate has carried, and the first
   that is neither anchored nor hand-rolled.** The four before it each fixed
