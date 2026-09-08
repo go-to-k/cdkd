@@ -945,11 +945,12 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
   // `Fn::GetAtt` writer behind it.
   //
   // THE 2-ARG `[template, vars]` FORM IS ACCEPTED, but ONLY when the
-  // placeholder is genuinely UNBOUND by the variable map. The test is the
-  // WRITER's: `resolveSub` consults the map FIRST and a bound variable wins
-  // outright, so a bound placeholder never reaches `resolveGetAtt` and no key
-  // was ever recorded for it -- while an UNBOUND one falls through to the
-  // same-stack lookup and IS keyed, identically to the bare-string form. An
+  // placeholder is genuinely UNBOUND by the variable map. The test follows the
+  // WRITER's, as a conservative SUPERSET (see the `in` note below):
+  // `resolveSub` consults the map FIRST and a bound variable wins outright, so
+  // a bound placeholder never reaches `resolveGetAtt` and no key was ever
+  // recorded for it -- while an UNBOUND one falls through to the same-stack
+  // lookup and IS keyed, identically to the bare-string form. An
   // earlier revision refused the whole 2-arg form on that first fact alone,
   // which left the unbound spelling in exactly the collapse this arm exists to
   // close (found by review; this PR created that population too, since
@@ -971,7 +972,9 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
       // Shapes outside `[string, object]` are left refused, but NOT because the
       // writer never records them -- measured, that is only true of some. Arity
       // 1, a `null` / number / string second element and a non-string template
-      // all THROW during resolution (0 keys recorded). But `['${A.B}', ['x']]`
+      // all THROW during resolution (0 keys recorded; since issue #2739 the
+      // primitive / `null` second element is an explicit refusal in
+      // `resolveSub` rather than an incidental `TypeError`). But `['${A.B}', ['x']]`
       // and a 3-element array both RESOLVE cleanly and ARE recorded, because
       // `resolveSub` destructures the first two elements and `Object.entries`
       // does not throw on an array. Those are refused here for a different
@@ -989,20 +992,27 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
     const only = /^\$\{(!)?([^}]*)\}$/.exec(template);
     if (only === null || only[1] === '!') return undefined;
     const varName = only[2] ?? '';
-    // `in` over `(variables ?? {})`, NOT `Object.hasOwn`, and NOT guarded on
-    // `variables !== undefined` -- this is the WRITER's predicate character for
-    // character. `resolveSub` defaults `variables = {}` and always tests
-    // `varNameStr in variables`, so BOTH arms here must test too: skipping it for
-    // the bare-string form left the identical hole one line over.
-    // `in` is a SUPERSET of `hasOwn`. For an INHERITED key the writer substitutes
-    // locally and records NO key, while a `hasOwn` reader would not refuse and
-    // would key the leaf -- certifying an expression the writer never recorded,
-    // i.e. a sibling's. Condition 2 (`association.plaintext !== bag`) does NOT
-    // fence that in the target population: two staging labels of one rotating
-    // secret resolve EQUAL during `AWSPENDING`, which is why this arm exists.
-    // Unreachable today -- it needs a dotted key on `Object.prototype`, and
-    // `JSON.parse` makes `__proto__` an own property rather than polluting -- so
-    // the old spelling was safe by a runtime property rather than by this code.
+    // `in` over `(variables ?? {})`, NOT guarded on `variables !== undefined`:
+    // the bare-string form has no map, and the test still runs there as the
+    // RETAINED CONSERVATIVE REFUSAL described below -- an earlier revision
+    // skipped it for that form and left the identical hole one line over.
+    // (`resolveSub` tests its own map on both forms too, but since issue
+    // #2739 that map is a null-prototype copy, so the two tests are no longer
+    // the same predicate; see the next paragraph for why this one stays.)
+    //
+    // NOT the writer's predicate character for character, and the difference
+    // is in the SAFE direction. Since issue #2739 the writer resolves into a
+    // null-prototype copy of this map, so its `in` sees OWN keys only and an
+    // INHERITED binding falls through to `Ref` / `GetAtt` resolution like any
+    // unbound placeholder -- recorded the ordinary way. This reader tests the
+    // caller's plain object, where `in` also answers for an inherited key, so
+    // it refuses a SUPERSET of what the writer substitutes. That over-refusal
+    // costs only the value scan, and widening to `Object.hasOwn` would be a
+    // change made for a population no CloudFormation template produces
+    // (`JSON.parse` builds no prototype chain; it makes `__proto__` an OWN
+    // key), on a path where `drift --revert` pushes the baseline to AWS. So
+    // the wider test stays, as the conservative spelling rather than as a
+    // mirror of the writer.
     if (varName in (variables ?? {})) return undefined;
     const split = splitGetAttStringForm(varName);
     if (split === undefined) return undefined;

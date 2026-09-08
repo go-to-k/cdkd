@@ -1002,12 +1002,16 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
         })
       ).toBeUndefined();
 
-      // ...and an INHERITED binding is refused for the same reason, in BOTH arms.
-      // `resolveSub` tests `varNameStr in variables`, which walks the prototype
-      // chain, so it substitutes locally and records NO key. A reader spelled
-      // `Object.hasOwn` would not refuse and would key the leaf -- certifying an
-      // expression the writer never recorded. This case is what makes the `in`
-      // spelling load-bearing: with `hasOwn` it goes GREEN.
+      // ...and an INHERITED binding is refused too, in BOTH arms -- as the
+      // CONSERVATIVE spelling, not as a mirror of the writer. Since issue
+      // #2739 `resolveSub` copies OWN keys into a null-prototype object, so an
+      // inherited binding is not substituted locally; it falls through to
+      // `GetAtt` resolution and is recorded like any unbound placeholder. The
+      // reader's `in` over the caller's plain object still answers for it and
+      // refuses (the value scan), which over-refuses rather than certifies. A
+      // `hasOwn` spelling would KEY the inherited name and turn this
+      // `toBeUndefined` RED; it is kept refusing so that the reader keys no
+      // name the caller's map can answer for, bound or inherited.
       const inherited = Object.create({ 'Child.Outputs.CurrentPw': 'x' }) as Record<
         string,
         unknown
@@ -1015,9 +1019,10 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       expect(
         crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.CurrentPw}', inherited] })
       ).toBeUndefined();
-      // The BARE-STRING arm has no variable map of its own, but the writer
-      // defaults it to `{}` and still tests -- so a dotted key on the prototype
-      // reaches it too, and this arm must refuse as well.
+      // The BARE-STRING arm has no variable map of its own; the writer tests
+      // its (empty, null-prototype) map on that form too, so a dotted key on
+      // the prototype is NOT substituted there either, and this arm refuses
+      // for the same conservative reason.
       // The name MUST be DOTTED. `splitGetAttStringForm` refuses any name
       // without a dot, so a dotless probe key is refused for THAT reason and
       // the case holds under every spelling of the binding predicate -- i.e.
@@ -1034,9 +1039,10 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       } finally {
         delete (Object.prototype as Record<string, unknown>)[proto];
       }
-      // A MALFORMED 2-arg form is refused too: `resolveSub` destructures and
-      // `Object.entries` the second element, so these THROW during resolution
-      // and were never recorded either.
+      // A MALFORMED 2-arg form is refused too: `resolveSub` refuses a `null` /
+      // primitive second element outright (an explicit refusal since issue
+      // #2739; an incidental `TypeError` before), so these THROW during
+      // resolution and were never recorded either.
       expect(crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.CurrentPw}'] })).toBeUndefined();
       expect(
         crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.CurrentPw}', 'not-an-object'] })
