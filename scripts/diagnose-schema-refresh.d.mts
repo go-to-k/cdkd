@@ -2,11 +2,26 @@
  * Type declarations for `diagnose-schema-refresh.mjs` (a `@ts-check` JS module),
  * so its unit test typechecks under `tsconfig.test.json`.
  */
+
 export interface NestedKeyDivergence {
   resourceType: string;
   nestedKey: string;
   bucket: string;
   detail: string;
+}
+/**
+ * A `definition-member-missing` divergence the PUBLISHED client already resolves
+ * — the finding plus the bump that clears it (issue go-to-k/cdkd#2819).
+ */
+export interface PendingSdkBump extends NestedKeyDivergence {
+  /** The client whose published version declares the member. */
+  client: string;
+  installed: string;
+  latest: string;
+  /** The SDK interface the checker's question was scoped to. */
+  definition: string;
+  /** The member name, in the SDK's own spelling. */
+  member: string;
 }
 export interface SdkLagRow {
   resourceType: string;
@@ -83,6 +98,8 @@ export interface DiagnosisInput {
   autoTolerated?: Array<{ resourceType: string; property: string; rationale: string }>;
   /** Removed properties the job REFUSED to settle, with the test that failed. */
   autoEscalated?: Array<{ resourceType: string; property: string; reason: string }>;
+  /** Divergences a pending dependency bump resolves, rendered in their own section. */
+  pendingSdkBump?: PendingSdkBump[];
   skipped: string[];
 }
 export declare function renderDiagnosis(input: DiagnosisInput): string;
@@ -94,8 +111,37 @@ export declare function renderDiagnosis(input: DiagnosisInput): string;
  */
 export declare function countDecisions(
   input: Pick<DiagnosisInput, 'removed' | 'divergences'> &
-    Partial<Pick<DiagnosisInput, 'nestedKeyUnparsed' | 'failedChecks' | 'unreadable'>>
+    Partial<
+      Pick<
+        DiagnosisInput,
+        'nestedKeyUnparsed' | 'failedChecks' | 'unreadable' | 'pendingSdkBump'
+      >
+    >
 ): number;
+export declare function parseDefinitionMemberMissing(
+  detail: string
+): { definition: string; member: string } | undefined;
+/** One entry per dependency bump, not per divergence. Sorted. */
+export declare function pendingBumpGroups(
+  pending: readonly PendingSdkBump[]
+): Array<{ client: string; installed: string; latest: string }>;
+export declare function partitionPendingSdkBump(input: {
+  divergences: NestedKeyDivergence[];
+  sdkLag?: SdkLagRow[];
+  /**
+   * Typed as `ReadonlyMap<..., unknown>` rather than as the producer's
+   * `SdkMemberType` index. This file is type-checked by a CONFIG-LESS `tsc`
+   * (see the sibling test), so importing from a `.ts` module is an error here
+   * — and restating the member shape would be a second copy of a declaration
+   * `gen-nested-key-coverage.ts` owns. The partition only ever asks whether a
+   * NAME is present, so the read-only, value-agnostic spelling is both what it
+   * needs and covariantly assignable from the real index.
+   */
+  publishedInterfaces?: (
+    client: string,
+    version: string
+  ) => ReadonlyMap<string, ReadonlyMap<string, unknown>> | undefined;
+}): { divergences: NestedKeyDivergence[]; pendingSdkBump: PendingSdkBump[] };
 export declare function sdkVersionLag(
   client: string,
   installed: string | undefined,

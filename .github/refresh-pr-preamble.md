@@ -17,9 +17,16 @@ template, with no name on the type that could be it renamed. Those are listed
 separately below with the evidence, and deleting the entry makes the next
 cycle report the property again.
 
+It also separates out the nested-key divergences a **dependency bump** already
+resolves. For those, the job downloads the published client and re-asks the
+finding's own interface-scoped question there; the ones the published client
+declares are grouped into one bump each rather than one decision per finding.
+They stay counted — until the bump lands the value does not reach AWS — so what
+is removed is the investigation, not the action.
+
 It touches nothing else that encodes a judgement — no `unhandledByDesign`, no
-`NESTED_KEY_ALLOW_LIST`, no provider code. The sections below name what fired,
-where, and what the AWS SDK says about it.
+`NESTED_KEY_ALLOW_LIST`, no provider code, and no dependency is bumped here. The
+sections below name what fired, where, and what the AWS SDK says about it.
 
 While this PR stays open, later runs push additional drift onto this branch
 rather than opening a second PR, and comment with the new diagnosis. Your

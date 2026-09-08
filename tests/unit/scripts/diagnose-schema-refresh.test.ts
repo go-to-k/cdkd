@@ -52,6 +52,9 @@ import {
   buildSdkLag,
   classifyRemovedProperty,
   countDecisions,
+  parseDefinitionMemberMissing,
+  partitionPendingSdkBump,
+  pendingBumpGroups,
   writeAutoTolerated,
   UMBRELLA_EMPTY_SENTINEL,
   renderUmbrellaChecklist,
@@ -3396,6 +3399,65 @@ describe('the decision labels and the count cannot disagree', () => {
         unreadable: ['AWS-S3-Bucket.json'],
       },
     ],
+    // The pending-bump section is COUNTED (one label per bump, not per
+    // divergence) and it renders before the divergences section, so it is the
+    // one place a running label can restart mid-report. Two bumps and three
+    // divergences: a per-divergence label here would emit five where the title
+    // says two.
+    [
+      'pending SDK bumps, grouped',
+      {
+        removed: [],
+        divergences: [],
+        pendingSdkBump: [
+          {
+            ...DIVERGENCE,
+            client: '@aws-sdk/client-glue',
+            installed: '3.1018.0',
+            latest: '3.1127.0',
+            definition: 'OAuth2Properties',
+            member: 'OAuth2Credentials',
+          },
+          {
+            ...DIVERGENCE,
+            nestedKey: 'AuthorizationCodeProperties',
+            client: '@aws-sdk/client-glue',
+            installed: '3.1018.0',
+            latest: '3.1127.0',
+            definition: 'OAuth2Properties',
+            member: 'AuthorizationCodeProperties',
+          },
+          {
+            ...DIVERGENCE,
+            resourceType: 'AWS::S3::Bucket',
+            nestedKey: 'SomeKey',
+            client: '@aws-sdk/client-s3',
+            installed: '3.900.0',
+            latest: '3.901.0',
+            definition: 'PutBucketRequest',
+            member: 'SomeKey',
+          },
+        ],
+      },
+    ],
+    [
+      'pending SDK bumps beside a divergence that stayed',
+      {
+        removed: [],
+        divergences: [DIVERGENCE],
+        pendingSdkBump: [
+          {
+            ...DIVERGENCE,
+            nestedKey: 'AuthorizationCodeProperties',
+            client: '@aws-sdk/client-glue',
+            installed: '3.1018.0',
+            latest: '3.1127.0',
+            definition: 'OAuth2Properties',
+            member: 'AuthorizationCodeProperties',
+          },
+        ],
+      },
+    ],
     // The NON-decision sections, present so a stray label in one breaks the
     // sequence. Without them a probe that numbered the auto-settled list — the
     // direction where the body claims MORE decisions than the title — passed
@@ -3465,5 +3527,466 @@ describe('the decision labels and the count cannot disagree', () => {
     for (const h of decisionHeadings) {
       expect(h, `decision section without a count: ${h}`).toMatch(/\(\d+\)/);
     }
+  });
+});
+
+/**
+ * The SDK-lag partition — issue go-to-k/cdkd#2819.
+ *
+ * go-to-k/cdkd#2784 spent four of its five decisions on `AWS::Glue::Connection`
+ * divergences against an `@aws-sdk/client-glue` the lockfile pinned three
+ * hundred releases behind the registry, and all four cleared on the bump alone.
+ * The job already PRINTED that version gap and escalated anyway.
+ *
+ * Two failure directions bound every case here, and they pull opposite ways:
+ *
+ * - Settling something the published client does NOT resolve would drop a real
+ *   silent-drop finding out of the report.
+ * - Settling on the NAME rather than on the interface would contradict the
+ *   checker — `sdkVersionLag`'s comment records the measurement that those same
+ *   four names are present in both clients.
+ *
+ * So the fixtures below are interface-shaped, and the negative arms carry the
+ * name in a place the interface-scoped question must refuse.
+ */
+describe('partitionPendingSdkBump', () => {
+  const detailFor = (definition: string, member: string) =>
+    `SDK interface \`${definition}\` has no \`${member}\` member`;
+
+  const glueDivergence = (nestedKey: string, definition = 'AuthenticationConfiguration') => ({
+    resourceType: 'AWS::Glue::Connection',
+    nestedKey,
+    bucket: 'definition-member-missing',
+    detail: detailFor(definition, nestedKey),
+  });
+
+  const GLUE_LAG = {
+    resourceType: 'AWS::Glue::Connection',
+    client: '@aws-sdk/client-glue',
+    installed: '3.1018.0',
+    latest: '3.1127.0',
+    behind: true,
+    matched: true,
+  };
+
+  /** An index shaped exactly like `collectSdkInterfaces`'s output. */
+  const index = (spec: Record<string, string[]>) =>
+    new Map(
+      Object.entries(spec).map(([iface, members]) => [
+        iface,
+        new Map(members.map((m) => [m, { kind: 'scalar' as const }])),
+      ])
+    );
+
+  const PUBLISHED_GLUE = index({
+    AuthenticationConfiguration: [
+      'AuthenticationType',
+      'BasicAuthenticationCredentials',
+      'CustomAuthenticationCredentials',
+    ],
+    OAuth2Properties: ['OAuth2GrantType', 'AuthorizationCodeProperties', 'OAuth2Credentials'],
+  });
+
+  it('settles the go-to-k/cdkd#2784 population against the published client', () => {
+    const divergences = [
+      glueDivergence('BasicAuthenticationCredentials'),
+      glueDivergence('CustomAuthenticationCredentials'),
+      glueDivergence('AuthorizationCodeProperties', 'OAuth2Properties'),
+      glueDivergence('OAuth2Credentials', 'OAuth2Properties'),
+    ];
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: divergences as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [GLUE_LAG] as any,
+      publishedInterfaces: () => PUBLISHED_GLUE,
+    });
+
+    expect(result.divergences).toEqual([]);
+    expect(result.pendingSdkBump.map((p) => p.nestedKey)).toEqual([
+      'BasicAuthenticationCredentials',
+      'CustomAuthenticationCredentials',
+      'AuthorizationCodeProperties',
+      'OAuth2Credentials',
+    ]);
+    // The bump the report will name, carried on every row.
+    for (const p of result.pendingSdkBump) {
+      expect(p.client).toBe('@aws-sdk/client-glue');
+      expect(p.installed).toBe('3.1018.0');
+      expect(p.latest).toBe('3.1127.0');
+    }
+    // Four findings, ONE thing to do.
+    expect(pendingBumpGroups(result.pendingSdkBump)).toEqual([
+      { client: '@aws-sdk/client-glue', installed: '3.1018.0', latest: '3.1127.0' },
+    ]);
+  });
+
+  it('keeps a divergence the published client does not resolve either', () => {
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('RetiredField')] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [GLUE_LAG] as any,
+      publishedInterfaces: () => PUBLISHED_GLUE,
+    });
+    expect(result.pendingSdkBump).toEqual([]);
+    expect(result.divergences).toHaveLength(1);
+  });
+
+  it('asks the INTERFACE, not the name — a member on another interface settles nothing', () => {
+    // The failure mode `sdkVersionLag`'s comment names: the name is present in
+    // the published client, just not on the interface the finding is about. A
+    // grep-level check would settle this and contradict the checker.
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('OAuth2Credentials')] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [GLUE_LAG] as any,
+      publishedInterfaces: () => PUBLISHED_GLUE,
+    });
+    // `OAuth2Credentials` IS in the index — on `OAuth2Properties`, not on the
+    // `AuthenticationConfiguration` the finding names.
+    expect(PUBLISHED_GLUE.get('OAuth2Properties')?.has('OAuth2Credentials')).toBe(true);
+    expect(result.pendingSdkBump).toEqual([]);
+    expect(result.divergences).toHaveLength(1);
+  });
+
+  it('leaves a no-sdk-member finding alone and downloads nothing for it', () => {
+    // It carries no detail, because it is a member-index question over the
+    // whole client rather than an interface-scoped one. There is no question to
+    // re-ask, so re-asking anything would be inventing one.
+    let fetches = 0;
+    const result = partitionPendingSdkBump({
+      divergences: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { resourceType: 'AWS::Glue::Connection', nestedKey: 'IPV6Enabled', bucket: 'no-sdk-member', detail: '' } as any,
+      ],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [GLUE_LAG] as any,
+      publishedInterfaces: () => {
+        fetches += 1;
+        return PUBLISHED_GLUE;
+      },
+    });
+    expect(result.divergences).toHaveLength(1);
+    expect(fetches, 'a bucket with no question to re-ask still triggered a download').toBe(0);
+  });
+
+  it('settles nothing for a bucket that is not definition-member-missing, however the detail reads', () => {
+    // The bucket gate is not redundant with the parse. Today the key pass emits
+    // no detail, so the parse alone would refuse — but a producer that later
+    // gave `no-sdk-member` the same sentence would start settling findings whose
+    // question is a member-index one over the whole client, which this evidence
+    // does not answer. The gate is what holds then, and only a case shaped like
+    // that future can hold the gate.
+    const result = partitionPendingSdkBump({
+      divergences: [
+        {
+          resourceType: 'AWS::Glue::Connection',
+          nestedKey: 'BasicAuthenticationCredentials',
+          bucket: 'no-sdk-member',
+          detail: detailFor('AuthenticationConfiguration', 'BasicAuthenticationCredentials'),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      ],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [GLUE_LAG] as any,
+      publishedInterfaces: () => PUBLISHED_GLUE,
+    });
+    expect(result.pendingSdkBump).toEqual([]);
+    expect(result.divergences).toHaveLength(1);
+  });
+
+  it('stops at the client that declares the interface rather than shopping for a better answer', () => {
+    // Two clients declare `AuthenticationConfiguration`; the first — the type's
+    // OWN, tried first — does not carry the member. That first answer IS the
+    // finding. Reading on until some client agrees would settle a real
+    // divergence against a client that does not serve this type.
+    const asked: string[] = [];
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
+      sdkLag: [
+        GLUE_LAG,
+        { ...GLUE_LAG, client: '@aws-sdk/client-other', matched: false, latest: '1.0.0' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+      publishedInterfaces: (client) => {
+        asked.push(client);
+        return client === '@aws-sdk/client-glue'
+          ? index({ AuthenticationConfiguration: ['AuthenticationType'] })
+          : index({ AuthenticationConfiguration: ['BasicAuthenticationCredentials'] });
+      },
+    });
+    expect(result.pendingSdkBump).toEqual([]);
+    expect(result.divergences).toHaveLength(1);
+    expect(asked, 'kept asking past the client that declared the interface').toEqual([
+      '@aws-sdk/client-glue',
+    ]);
+  });
+
+  it('downloads nothing when the installed client is already current', () => {
+    let fetches = 0;
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [{ ...GLUE_LAG, installed: '3.1127.0', behind: false }] as any,
+      publishedInterfaces: () => {
+        fetches += 1;
+        return PUBLISHED_GLUE;
+      },
+    });
+    // Nothing to bump, so the SDK-lag reading was already eliminated upstream
+    // and the finding is the service's own.
+    expect(result.divergences).toHaveLength(1);
+    expect(fetches).toBe(0);
+  });
+
+  it('escalates when the published typings could not be read', () => {
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [GLUE_LAG] as any,
+      publishedInterfaces: () => undefined,
+    });
+    // npm unreachable from CI is the ordinary way this happens, and the safe
+    // direction is the finding staying visible.
+    expect(result.pendingSdkBump).toEqual([]);
+    expect(result.divergences).toHaveLength(1);
+  });
+
+  it('tries the type’s own client before a fallback one', () => {
+    // `clientsForType` falls back to EVERY client the provider imports, so a lag
+    // row need not name the type's own service. The matched row is the one whose
+    // answer is about this type, so it has to be asked first.
+    const asked: string[] = [];
+    partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
+      sdkLag: [
+        { ...GLUE_LAG, client: '@aws-sdk/client-s3', matched: false, latest: '3.901.0' },
+        GLUE_LAG,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+      publishedInterfaces: (client) => {
+        asked.push(client);
+        return client === '@aws-sdk/client-glue' ? PUBLISHED_GLUE : index({ PutObjectRequest: ['Key'] });
+      },
+    });
+    expect(asked[0]).toBe('@aws-sdk/client-glue');
+  });
+
+  it('skips a client that does not declare the interface instead of reading it as absent', () => {
+    // Both rows UNMATCHED, so the sort leaves them in order and the client that
+    // never declared the shape is the one asked FIRST — which is the only
+    // arrangement that reaches the skip at all. Ordered the other way the type's
+    // own client answers immediately and the branch is never executed, so the
+    // case passes while fencing nothing (measured: it did).
+    //
+    // Concluding "the member is gone" from a client that never declared the
+    // shape would escalate a finding the real client resolves, and tell the
+    // reader the service dropped a field it did not.
+    const asked: string[] = [];
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
+      sdkLag: [
+        { ...GLUE_LAG, client: '@aws-sdk/client-s3', matched: false, latest: '3.901.0' },
+        { ...GLUE_LAG, matched: false },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+      publishedInterfaces: (client) => {
+        asked.push(client);
+        return client === '@aws-sdk/client-glue' ? PUBLISHED_GLUE : index({ PutObjectRequest: ['Key'] });
+      },
+    });
+    expect(asked, 'the non-declaring client was not tried first').toEqual([
+      '@aws-sdk/client-s3',
+      '@aws-sdk/client-glue',
+    ]);
+    expect(result.pendingSdkBump).toHaveLength(1);
+    expect(result.pendingSdkBump[0]!.client).toBe('@aws-sdk/client-glue');
+  });
+
+  it('downloads each client at most once however many divergences ride on it', () => {
+    const asked: string[] = [];
+    partitionPendingSdkBump({
+      divergences: [
+        glueDivergence('BasicAuthenticationCredentials'),
+        glueDivergence('CustomAuthenticationCredentials'),
+        glueDivergence('AuthorizationCodeProperties', 'OAuth2Properties'),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sdkLag: [GLUE_LAG] as any,
+      publishedInterfaces: (client, version) => {
+        asked.push(`${client}@${version}`);
+        return PUBLISHED_GLUE;
+      },
+    });
+    // An SDK client tarball is several megabytes; one per finding would be four
+    // downloads of the same file on a job that runs daily.
+    expect(asked).toEqual(['@aws-sdk/client-glue@3.1127.0']);
+  });
+});
+
+describe('parseDefinitionMemberMissing', () => {
+  it('reads the interface and member out of the producer’s exact sentence', () => {
+    // Byte-for-byte the string `gen-nested-key-coverage.ts`'s definition
+    // sub-pass writes, backticks included.
+    expect(
+      parseDefinitionMemberMissing(
+        'SDK interface `AuthenticationConfiguration` has no `BasicAuthenticationCredentials` member'
+      )
+    ).toEqual({
+      definition: 'AuthenticationConfiguration',
+      member: 'BasicAuthenticationCredentials',
+    });
+  });
+
+  it('refuses a detail it does not fully recognise', () => {
+    // Anchored end to end on purpose. A loose match would bind two identifiers
+    // out of a REWORDED sentence and settle a finding from a question nobody
+    // asked; refusing sends it to the maintainer, which is the safe direction.
+    for (const detail of [
+      '',
+      'no detail at all',
+      'SDK interface `Auth` has no `Member` member, and three others',
+      'note: SDK interface `Auth` has no `Member` member',
+      'SDK interface Auth has no Member member',
+    ]) {
+      expect(parseDefinitionMemberMissing(detail), `settled on: ${detail}`).toBeUndefined();
+    }
+  });
+});
+
+describe('countDecisions counts a pending bump per BUMP', () => {
+  const pending = (client: string, latest: string, nestedKey: string) => ({
+    resourceType: 'AWS::Glue::Connection',
+    nestedKey,
+    bucket: 'definition-member-missing',
+    detail: 'd',
+    client,
+    installed: '1.0.0',
+    latest,
+    definition: 'Iface',
+    member: nestedKey,
+  });
+
+  it('collapses several divergences on one lagging client into one decision', () => {
+    const n = countDecisions({
+      removed: [],
+      divergences: [],
+      pendingSdkBump: [
+        pending('@aws-sdk/client-glue', '3.1127.0', 'A'),
+        pending('@aws-sdk/client-glue', '3.1127.0', 'B'),
+        pending('@aws-sdk/client-glue', '3.1127.0', 'C'),
+        pending('@aws-sdk/client-glue', '3.1127.0', 'D'),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+    });
+    // go-to-k/cdkd#2784's four became one. Counting per divergence would leave
+    // the title's number unchanged and the whole partition pointless.
+    expect(n).toBe(1);
+  });
+
+  it('counts a separate decision per client, and per version of one client', () => {
+    const n = countDecisions({
+      removed: [],
+      divergences: [],
+      pendingSdkBump: [
+        pending('@aws-sdk/client-glue', '3.1127.0', 'A'),
+        pending('@aws-sdk/client-s3', '3.901.0', 'B'),
+        // Same client at a different published version is a different bump —
+        // keying on the client alone would silently merge two actions.
+        pending('@aws-sdk/client-glue', '3.1200.0', 'C'),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+    });
+    expect(n).toBe(3);
+  });
+
+  it('adds to the other kinds rather than replacing them', () => {
+    const n = countDecisions({
+      removed: [{ resourceType: 'AWS::S3::Bucket', properties: ['Gone'], candidates: {}, sdk: {} }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [{ resourceType: 'AWS::Glue::Connection', nestedKey: 'K', bucket: 'no-sdk-member', detail: '' }] as any,
+      failedChecks: ['property-coverage'],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pendingSdkBump: [pending('@aws-sdk/client-glue', '3.1127.0', 'A')] as any,
+    });
+    expect(n).toBe(4);
+  });
+});
+
+describe('the pending-bump section', () => {
+  const PENDING = [
+    {
+      resourceType: 'AWS::Glue::Connection',
+      nestedKey: 'BasicAuthenticationCredentials',
+      bucket: 'definition-member-missing',
+      detail: 'd',
+      client: '@aws-sdk/client-glue',
+      installed: '3.1018.0',
+      latest: '3.1127.0',
+      definition: 'AuthenticationConfiguration',
+      member: 'BasicAuthenticationCredentials',
+    },
+    {
+      resourceType: 'AWS::Glue::Connection',
+      nestedKey: 'OAuth2Credentials',
+      bucket: 'definition-member-missing',
+      detail: 'd',
+      client: '@aws-sdk/client-glue',
+      installed: '3.1018.0',
+      latest: '3.1127.0',
+      definition: 'OAuth2Properties',
+      member: 'OAuth2Credentials',
+    },
+  ];
+
+  const render = () =>
+    renderDiagnosis({
+      removed: [],
+      divergences: [],
+      writableAdded: [],
+      skipped: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pendingSdkBump: PENDING as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+  it('names the bump once and every divergence it resolves', () => {
+    const md = render();
+    expect(md).toContain('Bump `@aws-sdk/client-glue` from `3.1018.0` to `3.1127.0`');
+    expect(md).toContain('Resolves 2 divergences:');
+    expect(md).toContain('`AuthenticationConfiguration` declares `BasicAuthenticationCredentials`');
+    expect(md).toContain('`OAuth2Properties` declares `OAuth2Credentials`');
+    // One heading, not one per finding.
+    expect(md.match(/Bump `@aws-sdk\/client-glue`/g)).toHaveLength(1);
+  });
+
+  it('states that the value does not reach AWS until the bump lands', () => {
+    // The section is the one place a reader could take "no judgement" for
+    // "nothing is wrong". It is a LIVE silent drop at the installed version,
+    // which is why it stays in the decision count at all.
+    const md = render();
+    expect(md).toContain('does not reach AWS');
+    expect(md).toContain('silent-drop');
+  });
+
+  it('records that the question was interface-scoped, not a name search', () => {
+    // The rationale is load-bearing: the next reader deciding whether to relax
+    // this test needs to find the measurement that says a name search would
+    // have contradicted the checker.
+    const md = render();
+    expect(md).toContain('not a name search');
+  });
+
+  it('renders no section at all when nothing is pending', () => {
+    const md = renderDiagnosis({ removed: [], divergences: [], writableAdded: [], skipped: [] });
+    expect(md).not.toContain('SDK bumps that resolve');
   });
 });
