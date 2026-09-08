@@ -1489,6 +1489,22 @@ describe('clientsForType', () => {
 });
 
 describe('buildSdkLag', () => {
+  it('emits no row for a type that resolves to no client at all', () => {
+    // This is one of the upstream causes of the "no version row" route the
+    // unresolved listing now tells the reader about, and nothing pinned that it
+    // can arise: every other no-row case here comes from `versionLag` returning
+    // undefined, which is a DIFFERENT cause with the same rendering. Two types
+    // reach no client, so the route is real rather than hypothetical.
+    const rows = buildSdkLag(
+      [{ resourceType: 'AWS::Glue::Connection', bucket: 'definition-member-missing' }],
+      () => [],
+      () => {
+        throw new Error('no client means no version lookup may be attempted');
+      }
+    );
+    expect(rows).toEqual([]);
+  });
+
   const glue = { resourceType: 'AWS::Glue::Connection', bucket: 'no-sdk-member' };
   const clientsFor = () => [
     { client: '@aws-sdk/client-sts', version: '3.0.0' },
@@ -4247,10 +4263,13 @@ describe('every emitted dependency version is refused when it is not version-sha
             resourceType: 'AWS::S3::Bucket',
             properties: ['Gone'],
             // Shaped like what `collectFixtureDeltas` actually writes: it always
-            // sets `candidates[property]`, and `sdkModelsMember` never returns
-            // an empty `consulted` — an empty one renders "across 0 client(s)",
-            // a sentence the producer cannot emit.
+            // sets `candidates[property]`, `renameCandidates[property]` and
+            // `providerPath`, and `sdkModelsMember` never returns an empty
+            // `consulted` — an empty one renders "across 0 client(s)", a
+            // sentence the producer cannot emit.
             candidates: { Gone: [] },
+            renameCandidates: { Gone: [] },
+            providerPath: 'src/provisioning/providers/s3-bucket-provider.ts',
             sdk: {
               Gone: {
                 modelled,
@@ -4349,6 +4368,13 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     const md = render([]);
     expect(md).toContain('re-asks that finding’s own');
     expect(md).not.toContain(MARKER);
+    // The positive case asserts against the WHOLE document, so moving the
+    // explanation into an unconditionally-rendered section would leave both
+    // cases green while the conditional render was broken. These pin that the
+    // whole block is gated, not just its heading sentence.
+    const flat = md.replace(/\s+/g, ' ');
+    expect(flat).not.toContain('splits them two ways and no further');
+    expect(flat).not.toContain('Re-run the job before doing anything by hand');
   });
 
   it('names the unsettled findings, and only those', () => {
@@ -4359,22 +4385,24 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // never sends the value, which must not be reached over a failed download.
     const md = render([DIVERGENCE]);
     expect(md).toContain(MARKER);
-    expect(md).toContain('before allow-listing any of them');
-    // ALL FOUR causes are named. A line naming fewer sends the reader to a
-    // remedy that does not apply: the first cut named three and dropped the
-    // download-or-read failure, for which "npm was unreachable" is provably
-    // false — a version row exists, which is what proves npm answered.
+    // The line says exactly what a reader can DETERMINE, which is the split the
+    // version list can actually make: absent from it, or present and LIVE. Two
+    // earlier cuts claimed more — first that the reading was "already ruled
+    // out", then that the version line told four causes apart — and both would
+    // have walked a maintainer to an allow-list entry on a guess.
     //
     // Asserted against a whitespace-COLLAPSED body: the sentence is assembled
     // from hand-wrapped array literals, so a pure reflow would red substrings
     // that straddle a line break while changing nothing a reader sees.
     const flat = md.replace(/\s+/g, ' ');
-    expect(flat).toContain('npm was unreachable');
-    expect(flat).toContain('no client could be resolved for the type');
-    expect(flat).toContain('published tarball could not be downloaded or read');
-    expect(flat).toContain('every candidate was read and none declared the interface');
-    // And the remedy caveat, which had no assertion and could be deleted green.
-    expect(flat).toContain('when no client could be resolved there is nothing to bump');
+    expect(flat).toContain('splits them two ways and no further');
+    expect(flat).toContain('this report cannot tell which');
+    expect(flat).toContain('Those two are also indistinguishable from here');
+    // The refusal of the reading that would have been most costly: an absent
+    // type does NOT mean there is nothing to bump.
+    expect(flat).toContain('Do NOT read that as “there is nothing to bump”');
+    // And the remedy, which had no assertion at all and could be deleted green.
+    expect(flat).toContain('Re-run the job before doing anything by hand');
     // The finding itself is named, not just the class...
     expect(md).toContain('   - `AWS::Glue::Connection`: `OAuth2Credentials`');
     // ...and the OTHER divergence, which the published client DID settle, is
