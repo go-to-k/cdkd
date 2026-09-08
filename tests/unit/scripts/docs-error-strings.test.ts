@@ -178,10 +178,13 @@ describe('docs error-string checker: template extraction', () => {
      * that ZERO of the site's quoted lines are truncated. Refusing is now the
      * contract: the author quotes the message in full.
      */
-    const t = templatesOf('throw new E(`State has been modified by another process. ${tail}`);');
-    expect(matchesSourceTemplate('State has been modified by another ...', t)).toBe(false);
+    // This template DOES end in an ellipsis, with wording in front of it, so
+    // it is eligible to vouch for a truncated subject — and still refuses one
+    // that is not a complete rendering.
+    const t = templatesOf('throw new E(`State was modified by ${who}, please retry...`);');
+    expect(matchesSourceTemplate('State was modified by ...', t)).toBe(false);
     // The same quotation, complete, is accepted.
-    expect(matchesSourceTemplate('State has been modified by another process. yes', t)).toBe(true);
+    expect(matchesSourceTemplate('State was modified by alice, please retry...', t)).toBe(true);
   });
 
   it('does not let a trailing HOLE absorb the ellipsis', () => {
@@ -197,6 +200,29 @@ describe('docs error-string checker: template extraction', () => {
     expect(
       matchesSourceTemplate('Failed to reach the state bucket and every resource ...', t)
     ).toBe(false);
+  });
+
+  it('refuses a template whose ellipsis is preceded by a HOLE, not by wording', () => {
+    /*
+     * The regression round 7 caught: testing only that the template ENDS in
+     * `...` admits `<lead>${hole}...`, where the hole sits against the dots and
+     * absorbs the whole invention. Nine real templates are that shape.
+     */
+    const t = templatesOf('throw new E(`Assuming role ${roleArn}...`);');
+    expect(
+      matchesSourceTemplate('Assuming role and then quietly deleting every bucket you own ...', t)
+    ).toBe(false);
+  });
+
+  it('recognises elisions written with two dots or spaced dots', () => {
+    // A predicate matching only the canonical `...` is one character from
+    // being bypassed; measured, `..` slipped through via hole absorption.
+    const t = templatesOf('throw new E(`Failed to ${verb} resource ${logicalId}`);');
+    for (const tail of ['..', '. . .', '\u2026']) {
+      expect(matchesSourceTemplate(`Failed to delete FABRICATION resource ${tail}`, t), tail).toBe(
+        false
+      );
+    }
   });
 
   it('still accepts a message whose REAL text ends in an ellipsis', () => {

@@ -246,9 +246,15 @@ export interface Template {
   /** Whole-message matcher, holes widened to wildcards, anchored at both ends. */
   re: RegExp;
   /**
-   * Does the template's own LITERAL text end in an ellipsis? Only such a
-   * template may vouch for a quotation that ends in one — otherwise a trailing
-   * hole silently absorbs the author's `...` and the refusal never fires.
+   * Does the template's own literal text end in an ellipsis WITH real wording
+   * in front of it? Only such a template may vouch for a quotation that ends
+   * in one.
+   *
+   * "With real wording in front" is the load-bearing half. Testing only that
+   * the text ENDS in `...` admits the shape `<lead>${hole}...`, where the hole
+   * sits against the dots and absorbs the entire invention — nine real
+   * templates are that shape (`Assuming role ${roleArn}...`), and accepting
+   * them re-opened the very hole this guard exists to close.
    */
   endsWithEllipsis: boolean;
 }
@@ -258,6 +264,14 @@ const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Wildcard standing in for one `${...}` hole. */
 const HOLE = '[\\s\\S]*?';
+
+/**
+ * An elision marker at the end of a string. Deliberately wider than `...`:
+ * two dots, spaced dots and `\u2026` all read as "the author cut here", and a
+ * predicate that recognises only the canonical spelling is one character away
+ * from being bypassed.
+ */
+const ELLIPSIS_TAIL = /(?:\.\s*){2,}$|\u2026$/;
 
 /** Literal characters that are not whitespace — the only ones that anchor anything. */
 const substantive = (s: string): number => s.replace(/\s/g, '').length;
@@ -341,7 +355,9 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
     seen.add(source);
     out.push({
       re: new RegExp(`^${source}$`),
-      endsWithEllipsis: /(\.\.\.|\u2026)$/.test(collapsed),
+      endsWithEllipsis:
+        ELLIPSIS_TAIL.test(collapsed) &&
+        substantive((parts[parts.length - 1] ?? '').replace(ELLIPSIS_TAIL, '')) > 0,
     });
   };
 
@@ -378,10 +394,10 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
 /**
  * Is `message` an instance of some real template?
  *
- * A published example that ends in `...` is a deliberate truncation, so it is
- * matched as a PREFIX; anything else must match end to end. Escapes commonly
- * written into a quoted example (`\n` shown literally) are not interpreted —
- * a doc block shows what the terminal shows.
+ * A quotation must match a template end to end. One that the author cut short
+ * with an ellipsis is refused instead — see {@link looksTruncated}. Escapes
+ * commonly written into a quoted example (`\n` shown literally) are not
+ * interpreted: a doc block shows what the terminal shows.
  */
 export function matchesSourceTemplate(
   message: string,
@@ -406,12 +422,12 @@ export function matchesSourceTemplate(
 /**
  * Does this quotation END in an ellipsis, i.e. did the author elide the rest?
  *
- * Checked only AFTER {@link matchesSourceTemplate} fails, because a handful of
- * real messages genuinely end in `...` — quoting one of those in full is
- * correct and matches outright.
+ * Consulted INSIDE {@link matchesSourceTemplate}: a handful of real messages
+ * genuinely end in `...`, so a truncated subject is matched against those
+ * templates only, rather than being refused outright.
  */
 export function looksTruncated(message: string): boolean {
-  return /(\.\.\.|\u2026)$/.test(message.trim());
+  return ELLIPSIS_TAIL.test(message.trim());
 }
 
 /** Result of scanning one page: findings plus the coverage counters. */
