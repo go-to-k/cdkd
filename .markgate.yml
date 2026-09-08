@@ -121,9 +121,12 @@ gates:
       # `.claude/rules/**` is the #1592 pattern a third time: a checker's INPUT
       # sitting outside the gate that guards it. TEN tests under
       # tests/unit/scripts/ read that directory, and
-      # rule-file-payload.test.ts enforces FOUR budgets over it (per-file bytes,
-      # per-line bytes, a repo-wide ratchet on lines over the line cap, and a
-      # CUMULATIVE corpus total). Without this entry a rules edit can flip that
+      # rule-file-payload.test.ts enforces FIVE budgets over it (per-file bytes,
+      # per-line bytes, a repo-wide ratchet on lines over the line cap, a
+      # per-`paths:`-glob PAYLOAD band, and a corpus-wide deletion FLOOR). The
+      # cumulative corpus CEILING that used to be in this list was retired by
+      # issue go-to-k/cdkd#2310; the payload band is what replaced it. Without
+      # this entry a rules edit can flip that
       # suite red -- or green -- while `check` still verifies fresh, because the
       # digest never saw the file.
       #

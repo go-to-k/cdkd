@@ -18,9 +18,11 @@ located resource — and it broke three separate ways (issues
 [#2241](https://github.com/go-to-k/cdkd/issues/2241) /
 [#2245](https://github.com/go-to-k/cdkd/issues/2245)).
 
-**Short because of a BUDGET, not because the rest did not matter**: `.claude/rules`
-has a corpus byte ceiling the repo now sits against (issue
-[#2310](https://github.com/go-to-k/cdkd/issues/2310)), so anything the CODE can
+**Short because of a BUDGET, not because the rest did not matter**: every byte
+here is loaded by every session touching `src/provisioning/providers/**` and
+counts against that path's `PAYLOAD_BUDGETS` cap (issue
+[#2310](https://github.com/go-to-k/cdkd/issues/2310) retired the corpus-wide
+ceiling that bound it when this was written), so anything the CODE can
 state lives in `s3-bucket-provider.ts` — read `assertExistingBucketRegion`,
 `assertStateBucketRegion`, `announceUnverifiedBucketIdentity` and
 `probeBucketRegion` (which carries the us-east-1 legacy-200 case, and the
