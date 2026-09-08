@@ -96,17 +96,28 @@ fi
 #
 # Refusing EVERY Bash call rather than only the ones it would have parsed is
 # deliberate: deciding which calls are safe is the parse it cannot do.
+#
+# ONE arm is neither of the two: a `tool_name` this hook cannot classify -- a
+# malformed payload, or `jq` missing as well -- falls through the `case` to `*)`
+# and exits 0, where the load-time refusal used to catch it. That is accepted
+# rather than overlooked. Refusing in `*)` means refusing a payload whose tool is
+# UNKNOWN, which puts Edit and Write back inside the refusal the moment `jq`
+# breaks too -- the lockout again, arriving by a second route. It costs nothing
+# real: the registered matcher is `Edit|Write|Bash`, so `*)` is unreachable for
+# any tool this hook is actually invoked on.
 __refuse_unloadable_library() {
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
   echo "so main-tree-edit-gate cannot resolve the command's working directory." >&2
   echo "Restore the file; do not work around the gate." >&2
   echo "" >&2
   echo "Only Bash is refused. This hook's Edit and Write arms read the target" >&2
-  echo "path directly and need no shell parsing, so they still work -- repair" >&2
-  echo "lib/command-match.sh with the Edit or Write tool. A Bash call that is" >&2
-  echo "no longer refused is the proof it loaded; until then run any syntax" >&2
-  echo "check as the operator ('!' prefixed, in Claude Code):" >&2
+  echo "path directly and need no shell parsing, so FROM A FEATURE WORKTREE you" >&2
+  echo "can repair lib/command-match.sh with the Edit or Write tool." >&2
+  echo "In the main tree on main this gate refuses that edit as well -- for its" >&2
+  echo "own separate reason -- so there the repair is the operator's, run from" >&2
+  echo "their own shell ('!' prefixed, in Claude Code):" >&2
   echo "  bash -n .claude/hooks/lib/command-match.sh" >&2
+  echo "A Bash call that is no longer refused is the proof the library loaded." >&2
   exit 2
 }
 

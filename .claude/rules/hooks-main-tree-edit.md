@@ -83,14 +83,38 @@ toll only on a session actually touching these two hooks.
   is the parse the hook just failed to do.
 
   **The surviving arms still ENFORCE**, which is the half a fail-open would also
-  satisfy: with the library broken, an `Edit` of a tracked main-tree file is
-  still refused, by the gate's OWN message rather than the load refusal. Both
-  halves are cases. Measured against `origin/main`'s hook under the same broken
+  satisfy: with the library broken, an `Edit` or `Write` of a protected
+  main-tree file is still refused, by the gate's OWN message rather than the
+  load refusal. Measured against `origin/main`'s hook under the same broken
   library and the same payloads: `Edit` 2 → 0, `Write` 2 → 0, `Bash` 2 → 2, with
-  the library restored giving 0 on the old hook as the control. The refusal TEXT
-  is a case too — it has to say that Edit and Write survive, since a refusal
-  that misstates what is available is what sends an agent looking for a way
-  around the gate.
+  a working-library copy giving 0 on the old hook as the control.
+
+  **There is ONE enforcement control per tool label, and the reason is a
+  measured survivor, not symmetry.** With only the `Edit` control, injecting
+  `[ "$tool" = Write ] && [ "$__lib_loaded" != 1 ] && exit 0` into the dispatch
+  survived the whole suite: an expect-0 lockout case asserts a bare exit code,
+  so a fail-open in that arm is indistinguishable from the arm working. The same
+  shape sank the worktree-repair case, which named a path under a directory the
+  fixture never created — `__norm_candidate` returns 1 on an absent parent
+  directory, so it exited before the branch lookup and its MAIN-tree twin
+  answered 0 as well. **Every expect-0 case here is paired with a case that must
+  answer 2 for the same tool**, and the pairs differ only in the thing under
+  test.
+
+  The refusal TEXT is a case too, one needle per SENTENCE. It has to say that
+  Edit and Write survive **and where** — `FROM A FEATURE WORKTREE`; in the main
+  tree on `main` the gate refuses that edit as well, for its own separate
+  reason, and there the repair is the operator's. The first revision said only
+  the first half, which is the same overstatement in the other direction as the
+  text it replaced: a refusal that misstates what is available is what sends an
+  agent looking for a way around the gate.
+
+  **An unclassifiable `tool_name` now exits 0 where the load-time refusal caught
+  it** — a malformed payload, or `jq` missing as well, falls through the `case`
+  to `*)`. Accepted, not overlooked: refusing there puts Edit and Write back
+  inside the refusal the moment `jq` breaks too, which is the lockout arriving
+  by a second route, and the registered matcher is `Edit|Write|Bash`, so `*)` is
+  unreachable for any tool this hook is invoked on.
 
   **This is the fifth resolution strategy the gate has carried, and the first
   that is neither anchored nor hand-rolled.** The four before it each fixed

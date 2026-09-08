@@ -57,6 +57,13 @@ git -C "$OPTOUT" -c user.email=t@t -c user.name=t commit -q -m init
 WT="$MAIN/.claude/worktrees/feat"
 git -C "$MAIN" worktree add -q "$WT" -b feat/work 2>/dev/null
 mkdir -p "$WT/docs/_generated"
+# The library's own directory, in BOTH trees. `__norm_candidate` returns 1 when
+# a candidate's PARENT DIRECTORY does not exist, and the hook then exits 0
+# without ever asking which branch the tree is on -- so a case naming a path
+# under a directory nobody created passes for that reason and proves nothing
+# about the arm it was written for. Both are created so the WORKTREE case and
+# its MAIN-tree twin differ only in the tree, which is the thing under test.
+mkdir -p "$WT/.claude/hooks/lib" "$MAIN/.claude/hooks/lib"
 
 pass=0; fail=0
 # run_case <expected_exit> <desc> <json>
@@ -497,17 +504,38 @@ run_broken 2 "Restore the file" "an unloadable library refuses EVERY Bash call, 
   "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > /tmp/elsewhere.txt"}}')"
 
 # The refusal has to say what SURVIVES, or an agent reads it as a dead end and
-# starts working around the gate. Both needles are load-bearing: the first is
-# the repair route, the second is how to check it.
-run_broken 2 "Only Bash is refused" "the refusal names the arms that still work" \
-  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
-run_broken 2 "bash -n" "the refusal names the syntax check" \
-  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
+# starts working around the gate. Every SENTENCE of that advice gets a needle,
+# not just the headline: a review found lines 100-108 of the hook individually
+# deletable with the suite green, which is the same "the text is load-bearing"
+# claim going unpinned that this PR objects to in the text it replaced.
+#
+# The worktree qualifier is the one that was WRONG before this round. "Repair it
+# with the Edit or Write tool" is false in the main tree on `main`, where the
+# tracked-file arm refuses that edit -- the very case pinned below.
+__refusal_payload="$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
+run_broken 2 "Only Bash is refused" "the refusal names the arms that still work" "$__refusal_payload"
+run_broken 2 "FROM A FEATURE WORKTREE" "the refusal names WHERE the repair is possible" "$__refusal_payload"
+run_broken 2 "In the main tree on main this gate refuses" \
+  "the refusal names where it is NOT, instead of overstating the route" "$__refusal_payload"
+run_broken 2 "bash -n" "the refusal names the syntax check" "$__refusal_payload"
+run_broken 2 "no longer refused is the proof" "the refusal says how to tell the repair worked" "$__refusal_payload"
+
+# The refusal has to be the FIRST thing the arm does. Moving it below the
+# `[[ -z "$cmd" ]] && exit 0` on the next line survives every other case in this
+# file, and turns an empty or absent `command` under a broken library from 2
+# into 0. Nothing else in the suite reaches the arm with no command.
+run_broken 2 "Restore the file" "an EMPTY Bash command still hits the refusal (guard is above the -z bail)" \
+  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:""}}')"
 
 # THE LOCKOUT CASES. Each of these exits 2 against the pre-go-to-k/cdkd#2717
-# hook -- that is what "locked out" meant -- and 0 here. An Edit and a Write are
-# both asserted because the split is per-ARM in a `case` and dropping one label
-# from the pattern would be invisible to either case alone.
+# hook -- that is what "locked out" meant -- and 0 here.
+#
+# `Edit` and `Write` are asserted SEPARATELY, but not because dropping a label
+# from the `case` pattern would otherwise be invisible -- case 5 above (a Write
+# of a new `src/` file, expecting 2) already fences `Write`, and dropping the
+# label sends it to `*)` and 0. They are separate because an expect-0 case
+# proves nothing on its own about WHICH arm answered, so each needs the
+# same-tool ENFORCEMENT control below it.
 run_broken 0 - "Edit outside the repo is ALLOWED with an unloadable library" \
   "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
     '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')"
@@ -515,22 +543,39 @@ run_broken 0 - "Write outside the repo is ALLOWED with an unloadable library" \
   "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
     '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
 # The repair itself, in the tree where the library an agent actually edits
-# lives. It passes for the BRANCH reason -- a feature worktree always passes --
-# which is the point: pre-go-to-k/cdkd#2717 that reason was never reached,
-# because the arm never ran. The two cases above pass for a different reason
-# (outside any repo), so this one is not a third spelling of them.
+# lives. This one passes for the BRANCH reason -- a feature worktree always
+# passes -- where the two above pass for a different one (outside any repo).
+# The MAIN-tree twin immediately below is what makes that claim checkable: same
+# path shape, same broken library, same absent-or-present parent directory,
+# differing only in the tree. Without the twin the case was a THIRD spelling of
+# "a path the gate could not resolve" -- `$WT/.claude/hooks/lib` did not exist,
+# so it exited before the branch lookup and its MAIN-tree twin returned 0 too.
 run_broken 0 - "Write to the library in a FEATURE worktree survives an unloadable library" \
   "$(jq -nc --arg fp "$WT/.claude/hooks/lib/command-match.sh" --arg cwd "$WT" \
     '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_broken 2 "Blocked by main-tree-edit-gate" \
+  "the same library path in the MAIN tree on main is refused (the twin)" \
+  "$(jq -nc --arg fp "$MAIN/.claude/hooks/lib/command-match.sh" --arg cwd "$MAIN" \
+    '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
 
-# ...and the control that keeps the three above from being fail-open. The
-# surviving arms must still ENFORCE: a tracked main-tree target is refused by
+# ...and the controls that keep the lockout cases from being fail-open. The
+# surviving arms must still ENFORCE: a protected main-tree target is refused by
 # the gate's OWN message, not by the load refusal. The needle discriminates
 # which of the two fired.
+#
+# ONE PER TOOL LABEL, and that is not symmetry for its own sake. With only the
+# `Edit` control, inserting `[ "$tool" = Write ] && [ "$__lib_loaded" != 1 ] &&
+# exit 0` into the dispatch survived the whole suite: the `Write` lockout case
+# asserts an exit code alone, so a fail-open there is indistinguishable from the
+# arm working. Measured on this suite before the `Write` control existed.
 run_broken 2 "Blocked by main-tree-edit-gate" \
   "Edit of a tracked main-tree file is still BLOCKED with an unloadable library" \
   "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_broken 2 "Blocked by main-tree-edit-gate" \
+  "Write to a tracked main-tree file is still BLOCKED with an unloadable library" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
 # A library that LOADS CLEANLY but lacks the symbol. The broken-syntax fixture
 # above can never reach the `declare -F gate_segments_marked` clause -- it trips
 # the `. source` arm first -- so that clause was load-bearing and untested:
@@ -554,18 +599,47 @@ if [[ "$sl_rc" == 2 ]]; then
 else
   fail=$((fail + 1)); echo "not ok (exit $sl_rc, want 2) a loadable library without gate_segments_marked must fail CLOSED"
 fi
+# ...and the arm split holds on THIS arm too. The `declare -F` clause and the
+# `. source` clause are different code paths to the same flag, and only the
+# second had an Edit case -- so a split applied to one and not the other would
+# have been invisible here.
+printf '%s' \
+  "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')" \
+  | "$HOOK_RUNNER" "$STUBLIB/main-tree-edit-gate.sh" >/dev/null 2>&1
+sl_edit_rc=$?
+if [[ "$sl_edit_rc" == 0 ]]; then
+  pass=$((pass + 1)); echo "ok   (exit 0) an Edit survives a library missing gate_segments_marked"
+else
+  fail=$((fail + 1)); echo "not ok (exit $sl_edit_rc, want 0) an Edit must survive the declare -F arm too"
+fi
 
-# The same fixture with the library RESTORED is the control: it proves the two
-# assertions above came from the broken library and not from the copy itself.
-cp .claude/hooks/lib/command-match.sh "$BROKEN/lib/command-match.sh"
+# An IDENTICAL copy with a WORKING library is the control: it proves the
+# assertions above came from the broken library and not from the copying.
+#
+# It is a second copy rather than `$BROKEN` repaired in place. Repairing
+# `$BROKEN` here made every `run_broken` added BELOW this line silently run
+# against a healthy library -- an ordering hazard with no symptom, because such
+# a case does not fail, it just stops measuring anything. `$BROKEN` now stays
+# broken for the whole file, and the assertion after the control says so.
+BROKEN_CTL="$TMPDIR/broken-ctl"
+cp -R .claude/hooks "$BROKEN_CTL"
 printf '%s' \
   "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > /tmp/elsewhere.txt"}}')" \
-  | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" >/dev/null 2>&1
+  | "$HOOK_RUNNER" "$BROKEN_CTL/main-tree-edit-gate.sh" >/dev/null 2>&1
 fc_ctl=$?
 if [[ "$fc_ctl" == 0 ]]; then
-  pass=$((pass + 1)); echo "ok   (exit 0) the same copy with the library restored allows an outside write"
+  pass=$((pass + 1)); echo "ok   (exit 0) an identical copy with a WORKING library allows an outside write"
 else
   fail=$((fail + 1)); echo "not ok (exit $fc_ctl, want 0) the copied hook must work when its library loads"
+fi
+# Every `run_broken` above asserted something only because `$BROKEN`'s library
+# was still unloadable when it ran. Nothing else says so, and the thing that
+# would break it -- repairing `$BROKEN` mid-file, as this control used to --
+# leaves those cases green while they measure nothing.
+if "$HOOK_RUNNER" -n "$BROKEN/lib/command-match.sh" 2>/dev/null; then
+  fail=$((fail + 1)); echo "not ok \$BROKEN's library PARSES -- every run_broken case above measured nothing"
+else
+  pass=$((pass + 1)); echo "ok   \$BROKEN's library is still unloadable at the end of the block"
 fi
 
 # A FLOOR, which this suite never had. Its sibling `command-match.test.sh`
@@ -896,7 +970,7 @@ else
   printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
 fi
 
-CASE_FLOOR=108
+CASE_FLOOR=116
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'not ok case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
