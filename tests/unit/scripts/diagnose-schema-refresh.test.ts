@@ -2459,7 +2459,7 @@ describe('--decision-count-out', () => {
       );
       expect(readFileSync(out, 'utf8').trim()).toBe('2');
       // And the report it was written beside agrees.
-      expect(md).toContain('### CI checks that FAILED — a decision is needed');
+      expect(md).toContain('### CI checks that FAILED (2) — a decision is needed');
       expect(md).not.toContain('Nothing in this refresh needs a decision');
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -3308,4 +3308,119 @@ describe('writeAutoTolerated', () => {
       ).toBe(true);
     }
   }, 60_000);
+});
+
+describe('the decision labels and the count cannot disagree', () => {
+  // The PR that motivated this said "5 decisions needed" in its title over
+  // four nested-key divergences and one failed check, rendered in two
+  // differently-shaped sections with no counts and no numbering — so the
+  // number a reader sees first could not be reached from the body at all.
+  //
+  // The labels run straight through the sections, and this is the fence that
+  // keeps them honest: a section that stops labelling, or one that labels
+  // something `countDecisions` does not count, is a body disagreeing with its
+  // own title. That is the exact class this file keeps finding elsewhere.
+  const REMOVED = {
+    resourceType: 'AWS::S3::Bucket',
+    properties: ['Gone', 'AlsoGone'],
+    candidates: {},
+    sdk: {},
+  };
+  const DIVERGENCE = {
+    resourceType: 'AWS::Glue::Connection',
+    nestedKey: 'OAuth2Credentials',
+    bucket: 'definition-member-missing',
+    detail: 'd',
+  };
+
+  /** Every `Dn` the report emits, in order. */
+  const labels = (md: string): number[] =>
+    [...md.matchAll(/\*\*D(\d+)\.\*\*/g)].map((m) => Number(m[1]));
+
+  const CASES: Array<[string, Record<string, unknown>]> = [
+    ['removed only', { removed: [REMOVED], divergences: [] }],
+    ['divergences only', { removed: [], divergences: [DIVERGENCE] }],
+    ['failed checks only', { removed: [], divergences: [], failedChecks: ['property-coverage'] }],
+    ['unparsed checker only', { removed: [], divergences: [], nestedKeyUnparsed: true }],
+    ['unreadable only', { removed: [], divergences: [], unreadable: ['AWS-S3-Bucket.json'] }],
+    [
+      'every kind at once',
+      {
+        removed: [REMOVED],
+        divergences: [DIVERGENCE, { ...DIVERGENCE, nestedKey: 'OtherKey' }],
+        failedChecks: ['property-coverage', 'audit:sdk-attr-coverage:check'],
+        nestedKeyUnparsed: true,
+        unreadable: ['AWS-S3-Bucket.json'],
+      },
+    ],
+    // The NON-decision sections, present so a stray label in one breaks the
+    // sequence. Without them a probe that numbered the auto-settled list — the
+    // direction where the body claims MORE decisions than the title — passed
+    // every case: the fence only saw sections that were already labelled.
+    [
+      'beside the sections that must NOT be labelled',
+      {
+        removed: [],
+        divergences: [DIVERGENCE],
+        autoTolerated: [
+          {
+            resourceType: 'AWS::Route53::RecordSet',
+            property: 'GeoProximityLocation',
+            rationale: 'settled by the job',
+          },
+        ],
+        autoEscalated: [
+          { resourceType: 'AWS::SQS::Queue', property: 'DelaySeconds', reason: 'could not tell' },
+        ],
+        writableAdded: [{ resourceType: 'AWS::S3::Bucket', properties: ['NewOne'] }],
+        skipped: ['AWS::Foo::Bar'],
+      },
+    ],
+  ];
+
+  for (const [name, extra] of CASES) {
+    it(`labels exactly as many decisions as it counts — ${name}`, () => {
+      const input = { writableAdded: [], skipped: [], ...extra };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const n = countDecisions(input as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md = renderDiagnosis(input as any);
+      const seen = labels(md);
+      expect(n, `${name}: the case exercises no decision at all`).toBeGreaterThan(0);
+      expect(seen, `${name}: a section stopped labelling, or labelled twice`).toEqual(
+        Array.from({ length: n }, (_, i) => i + 1)
+      );
+      // And the index line a reader lands on first names the same range.
+      expect(md).toContain(`labelled **D1**–**D${n}**`);
+    });
+  }
+
+  it('says nothing about labels when there is nothing to decide', () => {
+    const md = renderDiagnosis({ removed: [], divergences: [], writableAdded: [], skipped: [] });
+    expect(md).toContain('Nothing in this refresh needs a decision');
+    expect(labels(md), 'a label was emitted with no decision behind it').toEqual([]);
+    expect(md).not.toContain('labelled **D1**');
+  });
+
+  it('gives every decision SECTION a count in its heading', () => {
+    // The settled and added sections already carried one; the decision ones did
+    // not, so the reader could not even total the sections up, let alone the
+    // items. Asserted as a property of the headings rather than a list, so a
+    // new decision section cannot ship without one.
+    const md = renderDiagnosis({
+      removed: [REMOVED],
+      divergences: [DIVERGENCE],
+      failedChecks: ['property-coverage'],
+      writableAdded: [],
+      skipped: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    const decisionHeadings = md
+      .split('\n')
+      .filter((l) => l.startsWith('### ') && l.includes('a decision is needed'));
+    expect(decisionHeadings.length, 'no decision section rendered').toBeGreaterThan(0);
+    for (const h of decisionHeadings) {
+      expect(h, `decision section without a count: ${h}`).toMatch(/\(\d+\)/);
+    }
+  });
 });
