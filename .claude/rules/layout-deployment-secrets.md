@@ -74,7 +74,29 @@ Index of every area: [code-layout.md](code-layout.md).
     `resolveSub` / `resolveJoin` re-enter `resolveDynamicReferences` with the
     assembled string. `DeployEngine.handleOutputResolutionFailure` masks the
     same two bags in the same order, the text with `maskSecretsInText` and
-    the strict arm's `cause` with `maskSecretsInError`.
+    the strict arm's `cause` with `maskSecretsInError`. `cdkd import`'s
+    `resolveImportedProperties` joins them (issue #2803) — NOT the third of
+    that shape: `drift.ts` and `rollback-executor.ts` already hoist their bags
+    above the `try` for the same reason and say so at their own declarations,
+    so import was the site that had been MISSED, not a new pattern. Two halves,
+    and each alone is insufficient: the bag is HOISTED above the `try` so the
+    `catch` can name it at all, and the message is then MASKED — keeping the
+    hoist and dropping the mask still puts the plaintext on stderr (measured).
+    **Where a caller masks an error the RESOLVER THREW, it is masking text the
+    resolver built unmasked** (the #2728 sites above are a different half of
+    the same file: the resolver's own debug / warn ECHOES, which it masks
+    itself). So every new caller of a throwing resolver inherits the
+    obligation, which is why the class keeps recurring one boundary at a time
+    (#2728, then #2803 — NOT #2531, which replaced scrub's PRIVATE name map
+    with a view of the pass map, a bag-identity change carrying no mask and no
+    throw). **Every one of these masks is BOUNDED** — `maskSecretsInText`
+    matches literally, so a plaintext that arrives truncated or re-encoded is
+    not masked, and neither is one below `MIN_NEEDLE_LENGTH` (4) unless it is
+    the ENTIRE string. Embedding alone is NOT a limit: the substring arm masks
+    a plaintext inside a longer message. Do not restate WHICH shapes
+    escape or where a fix would sit: issue #2827 carries that enumeration with
+    its measurements, and five review rounds on #2803 each wrote a version of
+    it here and in the code that measurement then refuted.
   - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
     mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
     no-ops on absent bags, so masking the LINE left a live `cdkd diff` printing

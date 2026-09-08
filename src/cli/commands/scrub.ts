@@ -3045,8 +3045,15 @@ export async function scrubStack(
     try {
       parameters = await resolver.resolveParameters(stack.template);
     } catch (err) {
+      // MASKED for UNIFORMITY, not for a live leak (issue #2803). This throw IS
+      // reachable, unlike the condition catch below — but `resolveParameters`
+      // is called here with no context at all, so it threads no
+      // `recordedSecretValues` and can record nothing; `outputSecrets` is
+      // provably empty at this point and `maskSecretsInText` returns the text
+      // unchanged on an empty map. Kept so that adding a context argument later
+      // does not also require remembering this line.
       logger.debug(
-        `Parameter resolution skipped for ${stack.stackName}: ${err instanceof Error ? err.message : String(err)}`
+        `Parameter resolution skipped for ${stack.stackName}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
       );
     }
     // Issue #2133: the ONE resolve context every resolution in this function
@@ -3168,8 +3175,19 @@ export async function scrubStack(
       // the run-scoped map, registered before anything that can throw.
       conditions = await resolver.evaluateConditions(resolverContext(outputSecrets));
     } catch (err) {
+      // MASKED (issue #2803), and UNREACHABLE for a resolver error today —
+      // measured, not assumed. `evaluateConditions` wraps every
+      // `evaluateByName` call in its own `try`, masks the error there (issue
+      // #2748) and downgrades that condition to `false`; a detected cycle
+      // takes the same path, and there is no throw before the loop. So this
+      // catch cannot receive what the mask is for. Kept because the bag CAN be
+      // non-empty by then — `outputSecrets` is threaded in and the resolver
+      // writes through it — so the day any failure escapes that loop, the
+      // needle set is already in hand rather than one more site to remember.
+      // The four sibling catches in this function mask for a reachable reason;
+      // this one is uniformity.
       logger.debug(
-        `Condition evaluation skipped for ${stack.stackName}: ${err instanceof Error ? err.message : String(err)}`
+        `Condition evaluation skipped for ${stack.stackName}: ${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
       );
     }
 

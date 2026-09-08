@@ -29,7 +29,7 @@ import {
   IntrinsicFunctionResolver,
   isUnboundTemplateParameter,
 } from '../../deployment/intrinsic-function-resolver.js';
-import { redactSecretsForState } from '../../deployment/secret-redaction.js';
+import { maskSecretsInText, redactSecretsForState } from '../../deployment/secret-redaction.js';
 import {
   resolveApp,
   resolveStateBucketWithDefault,
@@ -1446,8 +1446,13 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  * weren't re-imported in this run — selective merge preserves them as
  * already-stored, which on the v3 baseline is already resolved-shape
  * from a prior import / deploy, so re-resolving is a no-op.
+ *
+ * Exported for unit testing — internal to the command flow otherwise. The
+ * masking this walk applies (issue #2803) is only provable against the REAL
+ * resolver, since the plaintext reaches the message through the resolver's
+ * own throw rather than through anything this function writes.
  */
-async function resolveImportedProperties(
+export async function resolveImportedProperties(
   stackState: StackState,
   template: CloudFormationTemplate,
   region: string,
@@ -1529,6 +1534,16 @@ async function resolveImportedProperties(
       );
     }
   }
+  // The three `logger.debug` catches in this preamble — this one and the two
+  // `resolveParameters` arms above — interpolate the resolver's error text
+  // UNMASKED, and that is deliberate rather than the issue #2803 defect
+  // repeated. There is no bag to mask against here: the
+  // per-resource `recordedSecretValues` is created inside the walk below, and
+  // these three calls thread no `recordedSecretValues` of their own, so nothing
+  // can have been recorded when they fail. Passing a freshly-made empty map
+  // would be ceremony — `maskSecretsInText` is the identity on one — and would
+  // read as a guard where there is nothing to guard. If a future change threads
+  // a bag into any of these calls, mask that one THEN.
   try {
     conditions = await resolver.evaluateConditions({
       template,
@@ -1560,12 +1575,21 @@ async function resolveImportedProperties(
   };
 
   for (const [logicalId, resource] of entries) {
+    // Fresh PER-RESOURCE secrets map so the imported state persists the
+    // `{{resolve:...}}` expression, not the plaintext (GHSA fix), while a
+    // whole-secret value from one resource cannot rewrite another's literal
+    // (see the deploy engine's `perResourceSecrets` doc for the rationale).
+    //
+    // HOISTED above the `try` (issue #2803), and that is load-bearing rather
+    // than style: the resolver records `plaintext -> expression` into this map
+    // AS IT GOES, so a resolution that records one reference and then throws on
+    // the next has already put a plaintext here — and the `catch` below prints
+    // the resolver's error text at DEFAULT verbosity. Declared inside the
+    // `try`, the bag was out of scope exactly where it was needed as a needle
+    // set. `rollback-executor.ts` and `drift.ts` hoist for the same reason and
+    // say so at their own declarations.
+    const recordedSecretValues = new Map<string, string>();
     try {
-      // Fresh PER-RESOURCE secrets map so the imported state persists the
-      // `{{resolve:...}}` expression, not the plaintext (GHSA fix), while a
-      // whole-secret value from one resource cannot rewrite another's literal
-      // (see the deploy engine's `perResourceSecrets` doc for the rationale).
-      const recordedSecretValues = new Map<string, string>();
       // Captured BEFORE the resolve + reassignment below: this unresolved bag is
       // the POSITION source (#1910), and `resource.properties` is overwritten
       // with the resolved one two statements later.
@@ -1591,8 +1615,35 @@ async function resolveImportedProperties(
       // appended only when this template actually has an unbindable parameter
       // (issue #2285 routed that failure here), because re-importing a sibling
       // cannot fix it and `cdkd import` has no flag to bind one with.
+      //
+      // MASKED (issue #2803). `cdkd import` sets no `skipDynamicReferences`, so
+      // the resolve above really does decrypt, and the resolver's own throws
+      // interpolate the values it was handed — `key '<jsonKey>' not found in
+      // secret '<id>'` carries a plaintext whenever a later reference's secret
+      // id or JSON key was ASSEMBLED from an earlier one through `Fn::Sub` /
+      // `Fn::Join`. This warn prints at default verbosity, in the command whose
+      // stated contract is to persist the `{{resolve:...}}` expression and
+      // never the value.
+      //
+      // THE MASK IS BOUNDED, and this comment deliberately does NOT enumerate
+      // how. `maskSecretsInText` matches a needle LITERALLY, so a plaintext
+      // that reaches the message truncated or re-encoded is not masked here,
+      // and neither is one below `MIN_NEEDLE_LENGTH` (4) unless it is the
+      // ENTIRE string. (Embedding on its own is NOT a limit — the substring
+      // arm masks `key '<plaintext>' not found` fine; an earlier revision of
+      // this line said otherwise.) Which of those a fix elsewhere could
+      // close, and where such a fix would have to sit, is enumerated WITH ITS
+      // MEASUREMENTS on issue #2827 — five review rounds on this PR each
+      // rewrote a taxonomy in this spot and each was wrong in a NEW way
+      // (`no mask can fix it`, then `a raw-value mask closes it`, both refuted
+      // by measurement), because nothing here re-checks a claim about the
+      // masker's semantics. The issue is where the claims are acted on and
+      // where they are kept true; a pointer cannot go stale in the same way.
+      //
+      // What this site owns, and what the test file pins: the bag is hoisted
+      // so the `catch` can name it, and the message is masked against it.
       logger.warn(
-        `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${err instanceof Error ? err.message : String(err)}. ` +
+        `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}. ` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.` +
           (unboundParameterNames.length > 0
             ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
