@@ -1627,8 +1627,11 @@ export async function resolveImportedProperties(
       //
       // THE MASK IS BOUNDED, and this comment deliberately does NOT enumerate
       // how. `maskSecretsInText` matches a needle LITERALLY, so a plaintext
-      // that reaches the message shortened, re-encoded, or embedded in a
-      // longer string is not masked here. Which of those a fix elsewhere could
+      // that reaches the message truncated or re-encoded is not masked here,
+      // and neither is one below `MIN_NEEDLE_LENGTH` (4) unless it is the
+      // ENTIRE string. (Embedding on its own is NOT a limit — the substring
+      // arm masks `key '<plaintext>' not found` fine; an earlier revision of
+      // this line said otherwise.) Which of those a fix elsewhere could
       // close, and where such a fix would have to sit, is enumerated WITH ITS
       // MEASUREMENTS on issue #2827 — five review rounds on this PR each
       // rewrote a taxonomy in this spot and each was wrong in a NEW way

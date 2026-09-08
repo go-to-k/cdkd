@@ -311,7 +311,8 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
   });
 
   it('RESIDUAL, pinned rather than only described: a sub-floor plaintext still prints', async () => {
-    // `import.ts`'s residual 1. `buildNeedleRegex` filters a needle shorter
+    // One of the bounds `import.ts`'s warn comment points at issue #2827 for.
+    // `buildNeedleRegex` filters a needle shorter
     // than `MIN_NEEDLE_LENGTH` (4), and the plaintext is EMBEDDED here rather
     // than being the whole string, so the whole-value arm does not apply
     // either. Asserted so the day the floor changes, this reds and the comment

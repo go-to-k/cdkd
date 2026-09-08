@@ -90,8 +90,10 @@ Index of every area: [code-layout.md](code-layout.md).
     (#2728, then #2803 — NOT #2531, which replaced scrub's PRIVATE name map
     with a view of the pass map, a bag-identity change carrying no mask and no
     throw). **Every one of these masks is BOUNDED** — `maskSecretsInText`
-    matches literally, so a plaintext that arrives shortened, re-encoded or
-    embedded in a longer string is not masked. Do not restate WHICH shapes
+    matches literally, so a plaintext that arrives truncated or re-encoded is
+    not masked, and neither is one below `MIN_NEEDLE_LENGTH` (4) unless it is
+    the ENTIRE string. Embedding alone is NOT a limit: the substring arm masks
+    a plaintext inside a longer message. Do not restate WHICH shapes
     escape or where a fix would sit: issue #2827 carries that enumeration with
     its measurements, and five review rounds on #2803 each wrote a version of
     it here and in the code that measurement then refuted.
