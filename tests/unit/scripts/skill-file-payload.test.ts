@@ -133,9 +133,17 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // 176,464 after two rounds of review reworded ship.md, on top of the
     // 176,352 the floor below was derived against. Recorded rather than
     // re-deriving the floor each time: the margins stayed POSITIVE throughout
-    // (now 479 largest-side, 252 binding), so only this measurement moved.
-    corpusBytes: 176_464,
-    largest: { file: 'implement.md', bytes: 28_743 },
+    // (479 largest-side, 252 binding), so only this measurement moved.
+    // 176,621 after the go-to-k/cdkd#2750 retro added two rules to
+    // implement.md 5-f' -- the COMPARAND floor and the injected-defect
+    // spelling. The floor below is NOT raised: retro.md section 10-c forbids a
+    // retro buying room that way, so the +157 B was paid for by merging four
+    // near-duplicate probe bullets into one (5-e's probe-INPUT bullet moved
+    // into 5-f''s list) and by cutting the worktree recipe CLAUDE.md already
+    // states verbatim. Margins now 479 largest-side and 95 binding -- thin, so
+    // the next round here opens by compressing rather than adding.
+    corpusBytes: 176_621,
+    largest: { file: 'implement.md', bytes: 28_900 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },
 };

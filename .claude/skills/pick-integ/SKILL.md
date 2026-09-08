@@ -165,9 +165,14 @@ past drops orphans). Treat a large sweep as a **multi-session relay**:
   sweep'", and leave a project memory with the remaining list + findings.
 - The sweep is DONE only when `/pick-integ` shows no stale tests left; the
   committed ledger is the source of truth.
-- A `FAIL` that is fixture staleness (AWS retired an engine/instance tier the
-  fixture hardcodes) is NOT a cdkd bug — record it as such and queue a
-  fixture version-bump follow-up.
+- **A `FAIL` that never reached the fixture's assertions is not a cdkd bug** —
+  open the log before recording it. Two classes: fixture staleness (AWS
+  retired an engine/instance tier the fixture hardcodes), and a fixture whose
+  own previous run blocks the next, because it pins a name AWS holds a
+  cooldown on (`export` recreates one FIXED S3 bucket, so a second run inside
+  ~58 min dies at `OperationAborted` before phase 1 — go-to-k/cdkd#2796).
+  Record it as such, queue the fixture fix, and refresh the gate from a
+  SIBLING in the same set rather than re-running the blocked fixture.
 
 ## Important
 
