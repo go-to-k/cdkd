@@ -77,24 +77,25 @@ or CI lane writes NONE, and its reasoning goes to the commit message,
 `docs/design/`, or the implementing module's or test's doc comment
 instead. (Issue
 go-to-k/cdkd#2779; the full rule and the measurement behind it are in
-`docs/changelog-cdkd.md`'s header.)
+`changelog.d/_header.md`.)
 
-**A no-entry lane still runs everything below.** What stops applying is only
-what is ABOUT an entry — the keep-both rule, the entry-phrase residual, and
-the duplicated-heading check, since a lane that opened no dated heading cannot
-duplicate one. The FLATTEN step, the `^<` residual and the ledger-normalize
-step do not.
-`flatten-before-rebase-gate.sh`'s `APPEND_SHAPED` covers
-`docs/_generated/integ-last-run.tsv` as well, so any lane that ran `/run-integ`
-is gate-scoped with no changelog entry at all — and touching
-`docs/changelog-cdkd.md` WITHOUT adding an entry is enough on its own, which is
-the shape of the PR that wrote this sentence. Reading "no entry" as "this
-section is moot" gets the rebase refused, or keep-boths the ledger into two
-rows CI rejects.
+**Where the entry goes.** One file, `changelog.d/entries/<YYYY-MM-DD>-<issue>-<slug>.md`,
+containing the bullet and nothing else — no dated heading, which the assembler
+emits from your filename's date. The issue number in the path is what makes two
+lanes structurally unable to collide. `vp run gen:changelog` rebuilds
+`docs/changelog-cdkd.md` if you want to read the result; it is gitignored and
+never committed.
 
-**FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The changelog
-conflicts on nearly every parallel-lane rebase for a lane that DOES write one,
-and a commit-by-commit rebase re-conflicts once per commit. The repo
+**Whether you write one no longer changes anything in the rest of this
+section.** It used to: a lane with an entry inherited a keep-both rule, an
+entry-phrase residual and a duplicated-heading check, all of which existed
+because every lane wrote to one anchor. Issue go-to-k/cdkd#2779 removed the
+anchor and they went with it. What remains below applies to every lane.
+
+**FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ
+ledger `docs/_generated/integ-last-run.tsv` gains a row at the same place on
+every lane that ran an integ, so it conflicts on nearly every parallel-lane
+rebase, and a commit-by-commit rebase re-conflicts once per commit. The repo
 squash-merges, so flattening loses nothing:
 
 ```bash
@@ -104,54 +105,27 @@ git rebase origin/main                                   # at most one conflict
 ```
 
 Enforced by `.claude/hooks/flatten-before-rebase-gate.sh` (refuses `git rebase
-<upstream>` on a 2+-commit branch touching the append-shaped files).
+<upstream>` on a 2+-commit branch touching an append-shaped file).
 `CDKD_SKIP_FLATTEN_GATE=1` for a deliberate history-preserving rebase.
 
-After resolving, verify BOTH sides survived:
-
-```bash
-diff <(git show origin/main:docs/changelog-cdkd.md) docs/changelog-cdkd.md | grep '^<'
-# nothing printed = every line main had is still there; the '^>' lines are yours
-```
-
-Keep BOTH changelog entries when both sides have one — under the entry-policy
-rule above, main's side may carry one where yours does not, and then there is
-nothing of yours to keep. Never reflexively keep-both a SHARED
-paragraph (main's copy of a bullet both sides edited once described this
-lane's own issue as still open — word-level diff shows whether it is two
-additions or one contested sentence). **Keep-both also DUPLICATES any entry
-your side carries that main already has** — present on both sides, so the `^<`
-check stays empty while the file gains a second copy. Make the resolution
-mechanical: take main's side whole, append only your lines main lacks, and
-assert the residual:
+Resolve the ledger by keep-both, then normalize — its rows record real-AWS
+RUNS, so taking upstream whole drops this lane's own row. Two rows for one test
+violate its one-row-per-test invariant and CI rejects them:
 
 ```bash
 # after resolving, before `git rebase --continue`
-PHRASE="<a phrase unique to the entry you kept>"
-git show origin/main:docs/changelog-cdkd.md | grep -c "$PHRASE"   # must be 0
-grep -c "$PHRASE" docs/changelog-cdkd.md                          # must be 1
-diff <(git show origin/main:docs/changelog-cdkd.md) docs/changelog-cdkd.md | grep -c '^<'   # must be 0
+vp run integ-ledger-normalize
 ```
 
-**The first line is what makes the second mean anything** — a needle main
-already carries can never read 1 (one phrase measured 18 hits there, vacuous).
-Take the phrase from YOUR entry's own subject.
-
-**A duplicated SECTION HEADING is the same defect one level up, and none of the
-three checks above can see it.** When both sides opened a `**Recently
-Implemented** (<same day>):` heading, keep-both leaves two: main's copy is on
-BOTH sides so the `^<` residual stays empty, and your entry's phrase still reads
-1. Put your entry under the heading main already has, delete yours, and assert
-it — this holds whether or not you opened a genuinely new day:
-
-```bash
-# after resolving, before `git rebase --continue`
-grep '^\*\*Recently Implemented\*\* (' docs/changelog-cdkd.md | sort | uniq -d   # must print nothing
-```
-
-`changelog-entry-uniqueness.test.ts` fences the repeat and the date inversion it
-causes — with the measured instances in its comment — but only once the suite
-runs. This answers during the resolution, when the fix is still one line.
+**The changelog no longer appears here, and that is issue go-to-k/cdkd#2779
+option A rather than an omission.** Entries live one-per-file under
+`changelog.d/entries/`, so two lanes write two different files and there is
+nothing to resolve; the shipped `docs/changelog-cdkd.md` is assembled and
+gitignored, so it cannot appear in a branch diff at all. Everything this
+section used to carry for it — the `^<` residual, the keep-both rule, the
+entry-phrase count, and the duplicated-heading check — went with the anchor.
+The heading in particular is now EMITTED by the assembler from each fragment's
+filename date, so no lane writes one and two lanes cannot write the same one.
 
 **A GENERATED file in a conflict is REGENERATED, never hand-merged** — resolve
 however lets the generator run, re-run it, commit ITS output (a hand-merge

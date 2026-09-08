@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { LOOSE_HEADING, assembleChangelog } from '../../../scripts/assemble-changelog.js';
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
@@ -63,7 +64,8 @@ import { describe, expect, it } from 'vite-plus/test';
  * reason of its own rather than being filed under a merge that is not pending.
  */
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
-const CHANGELOG = join(REPO_ROOT, 'docs', 'changelog-cdkd.md');
+/** Assembled in memory -- see assemble-changelog.ts (issue go-to-k/cdkd#2779). */
+const assembled = () => assembleChangelog(REPO_ROOT);
 
 /** A top-level changelog entry: a list bullet at column 0. */
 const BULLET = '- ';
@@ -224,7 +226,12 @@ const STRICT_HEADING = /^\*\*Recently Implemented\*\* \((\d{4}-\d{2}-\d{2})[^)]*
  * not without it. A mask cannot suppress a false positive here; it can only
  * manufacture one. Measured: 51 hits, every one a real heading.
  */
-const LOOSE_HEADING = /^(?:[>#*+-]\s*)*\*\*recently implemented\*\*/;
+// IMPORTED from the assembler rather than spelled again. The two used to be
+// separate copies of one regex: the assembler REFUSES a fragment this matches,
+// and this fence reports one it matches as an unparsed heading, so widening
+// only this copy re-opens exactly the case the refusal closes -- the fence reds
+// over the assembled document while the fragment anyone could fix goes
+// unnamed. One constant, so they cannot disagree.
 
 function looksLikeHeading(text: string): boolean {
   return LOOSE_HEADING.test(text.trimStart().toLowerCase());
@@ -437,7 +444,7 @@ const HEADING_PROBES: readonly {
 ];
 
 describe('changelog entry uniqueness', () => {
-  const lines = readFileSync(CHANGELOG, 'utf-8').split('\n');
+  const lines = assembled().split('\n');
   const bullets = lines.flatMap((text, i) => (text.startsWith(BULLET) ? [{ line: i + 1, text }] : []));
   const entries = bullets.flatMap((b) => {
     const e = keyOf(b.line, b.text);

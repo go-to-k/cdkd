@@ -72,6 +72,13 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./tests/setup.ts'],
+    // Materialises the gitignored docs/changelog-cdkd.md before any suite
+    // runs. Two suites read it by PATH -- a link-target check cannot be
+    // satisfied in memory -- and a fresh clone does not have it, so both were
+    // measured RED without this and green locally only by accident. It runs
+    // whatever the entry point, which a task `dependsOn` does not: `vp test
+    // run` invokes vitest directly. See the file's own header.
+    globalSetup: ['./tests/assemble-changelog-setup.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
@@ -179,16 +186,31 @@ export default defineConfig({
       // Documentation site (https://cdkd.dev, Ox Content SSG). Separate config
       // file because this root config's buildApp hook claims every environment
       // as built — see the header comment in vite.docs.config.ts.
+      // Assembles docs/changelog-cdkd.md from changelog.d/ (issue
+      // go-to-k/cdkd#2779). The output is GITIGNORED -- committing it would
+      // restore the single shared anchor the fragment layout exists to remove
+      // -- so anything that reads the shipped document has to build it first.
+      // The three docs tasks below depend on it for that reason; the unit
+      // suite does NOT, because those tests assemble in memory instead. That
+      // is deliberate: `vp test run` is the canonical test command and it
+      // invokes vitest directly, so a `dependsOn` here would never fire for it.
+      'gen:changelog': {
+        command: 'node scripts/assemble-changelog.ts',
+        cache: false,
+      },
       'docs:dev': {
         command: 'vp dev --config vite.docs.config.ts',
+        dependsOn: ['gen:changelog'],
         cache: false,
       },
       'docs:build': {
         command: 'vp build --config vite.docs.config.ts',
+        dependsOn: ['gen:changelog'],
         cache: false,
       },
       'docs:preview': {
         command: 'vp preview --config vite.docs.config.ts',
+        dependsOn: ['gen:changelog'],
         cache: false,
       },
       // `vp run check` is CI's required step and `/check` step 1 calls it "the

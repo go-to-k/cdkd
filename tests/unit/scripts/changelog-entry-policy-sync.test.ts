@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { assembleChangelog } from '../../../scripts/assemble-changelog.js';
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
  * The rule deciding WHETHER a change writes a changelog entry lives in four
  * places, and none of them can execute it:
  *
- *   a. `docs/changelog-cdkd.md` -- the "WHEN an entry is required" section,
+ *   a. `changelog.d/_header.md` -- the "WHEN an entry is required" section,
  *      the long form with the measurement behind it, and the source of truth.
  *   b. `CLAUDE.md` -- the "Recently Implemented" paragraph, read by every
  *      session whether or not it opens the changelog.
@@ -56,7 +57,7 @@ interface Copy {
 const COPIES: readonly Copy[] = [
   {
     label: 'changelog contract (source of truth)',
-    path: 'docs/changelog-cdkd.md',
+    path: 'changelog.d/_header.md',
     section: { from: '## WHEN an entry is required', to: '## What a SECTION HEADING must be' },
   },
   {
@@ -72,7 +73,11 @@ const COPIES: readonly Copy[] = [
   {
     label: 'ship.md rebase section',
     path: '.claude/skills/work-issues/references/ship.md',
-    section: { from: '**Does this lane write a changelog entry at all?**', to: 'After resolving' },
+    // The `to` anchor was 'After resolving' until issue go-to-k/cdkd#2779
+    // option A deleted the changelog conflict machinery that phrase headed.
+    // The region ran to EOF at 17,770 characters and the CEILING added one
+    // round earlier caught it -- which is the whole reason that half exists.
+    section: { from: '**Does this lane write a changelog entry at all?**', to: '**FLATTEN BEFORE YOU REBASE' },
   },
 ];
 
@@ -259,7 +264,7 @@ describe('changelog entry-policy sync', () => {
     // that today (measured: no `## ` heading below the first dated one), and
     // the size test's own orphan verdict plus the uniqueness check cover that
     // region.
-    const changelog = readFileSync(join(REPO_ROOT, 'docs', 'changelog-cdkd.md'), 'utf-8').split('\n');
+    const changelog = assembleChangelog(REPO_ROOT).split('\n');
     const firstEntryHeading = changelog.findIndex((l) => l.startsWith('**Recently Implemented** ('));
     expect(firstEntryHeading, 'no dated heading found -- the file shape changed').toBeGreaterThan(0);
     const preamble = changelog.slice(0, firstEntryHeading);
@@ -270,12 +275,13 @@ describe('changelog entry-policy sync', () => {
     const headings = preamble.filter((l) => l.startsWith('## '));
     expect(
       headings,
-      'the contract sections above the first dated heading are not the three expected ones. FEWER means ' +
+      'the contract sections above the first dated heading are not the expected ones, in order. FEWER means ' +
         'the scanned region stops short and one section goes unscanned; MORE means a section was added ' +
         'and should be listed here so it is covered too'
     ).toEqual([
       '## What ONE entry may carry (issue [#2552](https://github.com/go-to-k/cdkd/issues/2552))',
       '## WHEN an entry is required (issue [#2779](https://github.com/go-to-k/cdkd/issues/2779))',
+      '## WHERE an entry goes (issue [#2779](https://github.com/go-to-k/cdkd/issues/2779))',
       '## What a SECTION HEADING must be (issue [#1837](https://github.com/go-to-k/cdkd/issues/1837))',
     ]);
     const offenders = preamble

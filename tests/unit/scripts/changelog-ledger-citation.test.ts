@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { assembleChangelog } from '../../../scripts/assemble-changelog.js';
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
@@ -23,7 +24,13 @@ import { describe, expect, it } from 'vite-plus/test';
  * violated anyway.
  */
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
-const CHANGELOG = join(REPO_ROOT, 'docs', 'changelog-cdkd.md');
+/**
+ * ASSEMBLED in memory rather than read off disk: the shipped document is a
+ * build artifact since issue go-to-k/cdkd#2779, so a test reading the PATH
+ * would pass or fail on whether someone had run the generator. Assembling
+ * makes the fragments the subject, which is what a lane actually edits.
+ */
+const assembled = () => assembleChangelog(REPO_ROOT);
 const LEDGER = join(REPO_ROOT, 'docs', '_generated', 'integ-last-run.tsv');
 
 /**
@@ -60,7 +67,7 @@ function prose(markdown: string): string {
 
 describe('changelog citations of the integ ledger', () => {
   const ledger = readLedger();
-  const text = prose(readFileSync(CHANGELOG, 'utf8'));
+  const text = prose(assembled());
   const citations = [...text.matchAll(CITATION)];
 
   it('parses the ledger it checks against', () => {

@@ -588,7 +588,14 @@ const JOIN_FLOOR = [
   '.claude/hooks/integ-broad-gate.sh',
   '.claude/hooks/pr-review-gate.sh',
   'docs/cli-deploy.md',
-  'docs/changelog-cdkd.md',
+  // 'docs/changelog-cdkd.md' was here until issue go-to-k/cdkd#2779 option A.
+  // It is REMOVED rather than replaced: the three changelog fences now
+  // ASSEMBLE the document in memory from changelog.d/, so nothing under
+  // tests/unit joins a changelog path at all, and substituting a fragment path
+  // would put a name here that the JOIN parser cannot find -- a floor asserting
+  // something no test does. The fragments are covered by the gate scopes
+  // (.markgate.yml gained changelog.d/** in both `check` and `docs`), which is
+  // the property this floor stands in for.
 ] as const;
 
 describe('gate-scope resolution matches markgate (include MINUS exclude)', () => {

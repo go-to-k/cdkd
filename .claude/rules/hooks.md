@@ -325,10 +325,14 @@ These one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/flatten-before-rebase-gate.sh`** blocks
   `git rebase <upstream>` when the branch carries 2+ commits AND its diff
-  touches an APPEND-SHAPED generated file — `docs/changelog-cdkd.md` or
-  `docs/_generated/integ-last-run.tsv` (they conflict on nearly every
-  parallel-lane rebase, once PER COMMIT; the repo squash-merges, so
-  flattening loses nothing). **An ESCALATION, not a new rule**: ship.md §9's
+  touches an APPEND-SHAPED generated file — `docs/_generated/integ-last-run.tsv`
+  (it gains a row at the same place on every lane that ran an integ, so it
+  conflicts on nearly every parallel-lane rebase, once PER COMMIT; the repo
+  squash-merges, so flattening loses nothing). `docs/changelog-cdkd.md` WAS the
+  other one and was the reason this hook exists; issue go-to-k/cdkd#2779 retired
+  it by removing the shared anchor — entries live one-per-file under
+  `changelog.d/` and the shipped document is assembled and gitignored, so no
+  branch diff can contain it and an entry here could never match. **An ESCALATION, not a new rule**: ship.md §9's
   "FLATTEN BEFORE YOU REBASE" was skipped on FIVE lanes across TWO runs
   (2026-08-25 ×3; 2026-09-02 go-to-k/cdkd#2428 / go-to-k/cdkd#2450, where
   flattening turned four conflicts into one). **Scope is narrow in three

@@ -154,7 +154,18 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // was stale by exactly this round's own delta, and the failure messages
     // below already PRINT both live margins and the leader's cap headroom,
     // which is the number to plan against.
-    corpusBytes: 176_660,
+    // 175,378 on this branch, and this is the first time the number goes DOWN.
+    // Issue go-to-k/cdkd#2779 option A deleted ship.md's changelog
+    // conflict-resolution machinery -- the `^<` residual, the keep-both rule,
+    // the entry-phrase count and the duplicated-heading check -- which existed
+    // only because every lane appended to one shared anchor. Removing the
+    // anchor removed the instructions for surviving it: net -1,282 B against
+    // main's 176,660, even counting what the same change adds. The floor is
+    // deliberately NOT re-derived downward -- its margins are comfortably
+    // positive (1,761 largest-side, 1,338 binding) -- and a downward
+    // re-derivation belongs to a deliberate compression pass, not to a change
+    // that happens to shrink.
+    corpusBytes: 175_378,
     largest: { file: 'implement.md', bytes: 28_939 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },
