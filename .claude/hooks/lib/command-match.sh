@@ -861,15 +861,20 @@ gate_segments_raw() {
           #
           # NO APOSTROPHE APPEARS IN THIS COMMENT. The whole awk program is ONE
           # single-quoted shell word, so one apostrophe ends that word and
-          # leaves the library unparseable -- which fails every gate CLOSED,
-          # including the one matching Edit and Write, so the ability to repair
-          # the file goes with it. That happened FIVE times while this branch
-          # was written, and the fifth was this very comment, in the draft that
-          # described the hazard. Do not read that as carelessness to be
-          # corrected by care: the hazard is structural, and go-to-k/cdkd#2717
-          # proposes the structural fix (the Edit and Write arms read
-          # tool_input.file_path and need no matcher, so only the Bash arm has
-          # any reason to fail closed on it).
+          # leaves the library unparseable -- which fails every gate CLOSED.
+          # That happened FIVE times while this branch was written, and the
+          # fifth was this very comment, in the draft that described the
+          # hazard. Do not read that as carelessness to be corrected by care:
+          # the hazard is structural.
+          #
+          # It no longer takes the ability to repair the file with it.
+          # go-to-k/cdkd#2717 SHIPPED the structural fix: main-tree-edit-gate --
+          # the one hook matching Edit and Write as well as Bash -- refuses only
+          # in its `Bash` arm, because the file-path arm reads the target from
+          # the payload (`tool_input.file_path`, or `notebook_path` for
+          # NotebookEdit) and needs no matcher at all. So a library you have
+          # just broken is still editable with the Edit and Write tools from a
+          # feature worktree.
           #
           # A retry stood here whose own comment said it repaired a backtick
           # body whose number-sign comment carries one apostrophe. It did the

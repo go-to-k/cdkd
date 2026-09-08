@@ -545,9 +545,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   //
   // The figure below was `68_626` until 2026-09-08, and it was CORRECT when
   // written: at go-to-k/cdkd#2731 the three files measured 59,133 + 5,692 +
-  // 3,801 = 68,626 exactly. It went stale by growth, not by error -- hooks.md
-  // 59,133 -> 70,168 and this satellite 5,692 -> 12,693 across #2711, #2766 and
-  // go-to-k/cdkd#2717's own commits.
+  // 3,801 = 68,626 exactly. It went stale by GROWTH, not by error. Derived per
+  // commit rather than recalled -- hooks.md 59,133 -> 70,168 is #2738 +4,736,
+  // #2766 +3,935, #2711 +1,016, #2760 +943 and this branch +405; the satellite
+  // 5,692 -> 12,693 is #2711 +4,189 and this branch +2,812. An earlier revision
+  // of this paragraph named three PRs from memory and omitted the two largest
+  // contributors to hooks.md, in a comment whose whole subject is checking the
+  // history instead of recalling it.
   //
   // Recorded because the first attempt to update it asserted the opposite: that
   // `68_626` was `86_662` with two digit pairs transposed and had never been a
