@@ -173,8 +173,8 @@ past drops orphans). Treat a large sweep as a **multi-session relay**:
   cooldown of UP TO ~58 min answers `OperationAborted` before phase 1 —
   measured at 10 min apart, go-to-k/cdkd#2796). Record it as such and queue
   the fixture fix. A gate needing a refresh takes a SIBLING from the broad
-  set above instead; the SWEEP does not — the blocked fixture still owes its
-  own ledger row, so re-schedule it after the window rather than counting it
+  set above instead; the SWEEP does not — the `FAIL` row keeps it a
+  candidate, so re-schedule it after the window rather than counting it
   covered.
 
 ## Important
