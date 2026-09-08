@@ -526,11 +526,20 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // 109 B of headroom left after two parallel lanes had spent the rest.
   // Representative path for the satellite (its four globs are the two hooks
   // and their suites, per the REACH_FLOORS entry above). Payload is hooks.md +
-  // hooks-main-tree-edit.md. The FLOOR is ~12% under the measurement, this
-  // file's convention -- the first draft said 40_000, 51% under, and a floor
-  // that loose cannot notice the satellite going dark, because hooks.md alone
-  // is 78,437 B and satisfies it unaided.
-  ['.claude/hooks/main-tree-edit-gate.sh', 56_000, 95_000], // measured 68_626 on 2026-09-07
+  // hooks-main-tree-edit.md + hooks-authoring.md -- THREE files, not the two an
+  // earlier revision of this comment named; `hooks-authoring.md`'s glob covers
+  // every hook, so it has been in this payload since it split out. The FLOOR is
+  // ~35% under the measurement -- the first draft said 40_000, and a floor that
+  // loose cannot notice the satellite going dark, because hooks.md alone
+  // satisfies it unaided.
+  //
+  // The figure below was `68_626` until 2026-09-08, which is `86_662` with two
+  // digit pairs swapped and was never a payload this row could have measured:
+  // hooks.md alone exceeded it. Re-derive it from the assertion itself (drop the
+  // cap to 1 and read `pulls in N B` off the failure), not by hand -- a
+  // hand-summed answer has to reproduce `globToRegExp`, and the obvious
+  // approximation gets a different set of files.
+  ['.claude/hooks/main-tree-edit-gate.sh', 56_000, 95_000], // measured 86_662 on 2026-09-08
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the

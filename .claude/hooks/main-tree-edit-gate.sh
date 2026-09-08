@@ -28,7 +28,11 @@
 #   sanctioned `.claude/worktrees/<branch>/` flow is never blocked.
 #
 # Candidate targets by tool:
-#   - Edit / Write: `tool_input.file_path` (reliable).
+#   - Edit / Write / MultiEdit / NotebookEdit: `tool_input.file_path`,
+#     falling back to `tool_input.notebook_path` (reliable). The last
+#     two reach this hook because a matcher is an UNANCHORED REGEX and
+#     `Edit|Write|Bash` matches the substring; NotebookEdit is the one
+#     that sends `notebook_path` instead of `file_path`.
 #   - Bash: best-effort scan of `tool_input.command` for LITERAL
 #     write targets — `> f`, `>> f`, `tee [-a] f`, `sed -i ... f`,
 #     `cp <src> f`, `mv <src> f`. Variable-indirected targets
@@ -87,8 +91,8 @@ fi
 # and each time the maintainer had to run the repair from their own shell. A
 # safety mechanism must not be able to remove the operator's means of repair.
 #
-# The asymmetry that makes the split sound: the `Edit|Write|MultiEdit` arm reads
-# `tool_input.file_path` through `jq` and calls NO library function -- the path
+# The asymmetry that makes the split sound: the file-path arm (all four labels)
+# reads its target through `jq` and calls NO library function -- the path
 # arrives already expanded, so there is no shell text to parse. Only the `Bash`
 # arm needs the matcher, so only the `Bash` arm fails closed on it. Everything
 # between here and the dispatch is variable assignments and function
@@ -122,10 +126,10 @@ __refuse_unloadable_library() {
   echo "" >&2
   echo "Only Bash is refused. This hook's Edit and Write arms read the target" >&2
   echo "path directly and need no shell parsing, so FROM A FEATURE WORKTREE you" >&2
-  echo "can repair it with the Edit or Write tool -- that route is still open." >&2
+  echo "can repair the library with the Edit or Write tool -- that route is open." >&2
   echo "In the main tree on main this gate refuses that edit too, for its own" >&2
   echo "separate reason, so there the repair belongs to the operator, made from" >&2
-  echo "their own shell. To inspect the file first ('!' prefixed, in Claude Code):" >&2
+  echo "their own shell ('!' prefixed, in Claude Code). To inspect it first:" >&2
   echo "  bash -n .claude/hooks/lib/command-match.sh" >&2
   echo "A Bash call that is no longer refused is the proof the library loaded." >&2
   exit 2
@@ -361,7 +365,14 @@ cand_bases=()
 
 case "$tool" in
   Edit|Write|MultiEdit|NotebookEdit)
-    fp=$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")
+    # `notebook_path` is NOT a guess: it is the field `worktree-owner-gate.sh`
+    # has read for `NotebookEdit` all along, and NotebookEdit is the one tool in
+    # this pattern that does not send `file_path`. Reading only `file_path` made
+    # adding the label INERT for exactly the tool it was added for -- measured,
+    # a NotebookEdit of a TRACKED main-tree file collected no candidate and
+    # exited 0, while the same payload spelled with `file_path` exited 2. Cases
+    # written against the invented spelling passed throughout.
+    fp=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null || echo "")
     [[ -n "$fp" ]] && candidates+=("$fp")
     ;;
   Bash)

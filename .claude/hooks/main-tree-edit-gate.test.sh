@@ -122,6 +122,35 @@ run_case 0 "Bash '> /tmp/scratch' " \
   "$(jq -nc --arg cmd "echo hi > /tmp/scratch.$$.log" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
+# 4b. MultiEdit and NotebookEdit, WITH A WORKING LIBRARY. These are the cases
+# that matter: the hole was that a notebook write to a tracked main-tree file
+# was allowed in an ORDINARY session, and every case for it originally sat in
+# the broken-library block. Measured there, `[ "$__lib_loaded" = 1 ] &&
+# [ "$tool" = NotebookEdit ] && exit 0` -- the hole, restored by one line --
+# left the suite fully green.
+#
+# Each tool is driven with the field it really sends. NotebookEdit sends
+# `notebook_path`; a case built with `file_path` passes while the hook ignores
+# notebooks entirely, which is exactly how the label shipped inert once.
+run_case 2 "MultiEdit tracked ledger in main tree on main" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"MultiEdit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_case 2 "NotebookEdit {notebook_path} tracked ledger in main tree on main" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"NotebookEdit", cwd:$cwd, tool_input:{notebook_path:$fp}}')"
+# The WIDENING side: adding a label to a blocking gate can only be safe if it
+# still passes where the gate always passed. Both were verified to exit 0 before
+# these cases existed -- correct, but unmeasured.
+run_case 0 "NotebookEdit {notebook_path} inside a feature worktree" \
+  "$(jq -nc --arg fp "$WT/docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"NotebookEdit", cwd:$cwd, tool_input:{notebook_path:$fp}}')"
+run_case 0 "NotebookEdit {notebook_path} in a repo with no .markgate.yml" \
+  "$(jq -nc --arg fp "$OPTOUT/article.md" --arg cwd "$OPTOUT" \
+    '{tool_name:"NotebookEdit", cwd:$cwd, tool_input:{notebook_path:$fp}}')"
+run_case 0 "MultiEdit inside a feature worktree" \
+  "$(jq -nc --arg fp "$WT/docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"MultiEdit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+
 # 5. Write a NEW source file under src/ in main tree on main -> BLOCK (2).
 run_case 2 "Write new src/ file in main tree on main" \
   "$(jq -nc --arg fp "$MAIN/src/brandnew.ts" --arg cwd "$MAIN" \
@@ -520,13 +549,15 @@ run_broken 2 "cannot resolve the command's working directory" \
 run_broken 2 "Restore that file" "the refusal says what to do" "$__refusal_payload"
 run_broken 2 "Only Bash is refused" "the refusal names the arms that still work" "$__refusal_payload"
 run_broken 2 "FROM A FEATURE WORKTREE" "the refusal names WHERE the repair is possible" "$__refusal_payload"
-run_broken 2 "can repair it with the Edit or Write tool" \
+run_broken 2 "can repair the library with the Edit or Write tool" \
   "the refusal names the repair itself, not only the place it works" "$__refusal_payload"
 run_broken 2 "In the main tree on main this gate refuses that edit too" \
   "the refusal names where it is NOT, instead of overstating the route" "$__refusal_payload"
 run_broken 2 "the repair belongs to the operator" \
   "the refusal names WHO repairs it in the main tree" "$__refusal_payload"
-run_broken 2 "To inspect the file first" \
+run_broken 2 "'!' prefixed" \
+  "the refusal keeps the how-to on the OPERATOR's line, where the repair is" "$__refusal_payload"
+run_broken 2 "To inspect it first" \
   "the refusal labels bash -n as an INSPECTION, not as the repair" "$__refusal_payload"
 run_broken 2 "bash -n" "the refusal names the inspection command" "$__refusal_payload"
 run_broken 2 "no longer refused is the proof" "the refusal says how to tell the repair worked" "$__refusal_payload"
@@ -588,24 +619,30 @@ run_broken 2 "Blocked by main-tree-edit-gate" \
   "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
 
-# THE OTHER TWO LABELS IN THE `case` PATTERN. A Claude Code matcher is an
-# UNANCHORED REGEX, so `Edit|Write|Bash` matches `MultiEdit` and `NotebookEdit`
-# on the substring `Edit` and this hook IS invoked for both. `MultiEdit` was in
-# the file-path arm with no case; `NotebookEdit` was in NEITHER, so a notebook
-# write to a tracked file in the main tree on `main` was allowed outright --
-# a hole that predates the load-refusal split and is closed with it.
+# THE OTHER TWO LABELS IN THE `case` PATTERN, under a broken library. The
+# HEALTHY-state cases are further down and are the load-bearing ones; these only
+# say the load split treats all four labels alike.
 #
-# Both are pinned with the pair, like Edit and Write: the allow case alone
-# cannot tell the arm answering from `*)` answering.
-for __t in MultiEdit NotebookEdit; do
-  run_broken 2 "Blocked by main-tree-edit-gate" \
-    "$__t of a tracked main-tree file is BLOCKED with an unloadable library" \
-    "$(jq -nc --arg t "$__t" --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
-      '{tool_name:$t, cwd:$cwd, tool_input:{file_path:$fp}}')"
-  run_broken 0 - "$__t outside the repo is ALLOWED with an unloadable library" \
-    "$(jq -nc --arg t "$__t" --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
-      '{tool_name:$t, cwd:$cwd, tool_input:{file_path:$fp}}')"
-done
+# `NotebookEdit` sends `notebook_path`, NOT `file_path` -- the field
+# `worktree-owner-gate.sh` has read for it all along. Building these payloads
+# with `file_path` is what let the label ship INERT: measured, a NotebookEdit of
+# a tracked main-tree file spelled the real way collected no candidate and
+# exited 0, while the invented spelling exited 2 and every case passed. Each
+# tool is driven with the field it actually sends.
+run_broken 2 "Blocked by main-tree-edit-gate" \
+  "MultiEdit of a tracked main-tree file is BLOCKED with an unloadable library" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"MultiEdit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_broken 0 - "MultiEdit outside the repo is ALLOWED with an unloadable library" \
+  "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
+    '{tool_name:"MultiEdit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_broken 2 "Blocked by main-tree-edit-gate" \
+  "NotebookEdit {notebook_path} of a tracked main-tree file is BLOCKED with an unloadable library" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"NotebookEdit", cwd:$cwd, tool_input:{notebook_path:$fp}}')"
+run_broken 0 - "NotebookEdit {notebook_path} outside the repo is ALLOWED with an unloadable library" \
+  "$(jq -nc --arg fp "$TMPDIR/scratch.ipynb" --arg cwd "$MAIN" \
+    '{tool_name:"NotebookEdit", cwd:$cwd, tool_input:{notebook_path:$fp}}')"
 
 # THE `*)` ARM, which the hook spends a paragraph justifying and nothing
 # measured: replacing its `exit 0` with the refusal left the suite green. An
@@ -1039,10 +1076,10 @@ else
   printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
 fi
 
-CASE_FLOOR=129
+CASE_FLOOR=135
 # `ran` is captured BEFORE the increment. Incrementing `fail` first and then
 # printing `$((pass + fail))` re-counted the floor's own failure as a case, so
-# one deleted case reported `only 129 cases ran, expected at least 129` -- a
+# one deleted case reported `only 135 cases ran, expected at least 135` -- a
 # message that reads like a bug in the check rather than the shrink it caught.
 __ran=$((pass + fail))
 if [ "$__ran" -lt "$CASE_FLOOR" ]; then

@@ -183,4 +183,40 @@ describe('.claude/settings.json PreToolUse gate reachability', () => {
       );
     }
   });
+
+  // A matcher is an UNANCHORED REGEX, and `main-tree-edit-gate` depends on that
+  // rather than merely tolerating it: its registered matcher is
+  // `Edit|Write|Bash`, and `MultiEdit` / `NotebookEdit` reach it ONLY because
+  // `Edit` matches as a substring. Both are handled in its file-path `case`
+  // label, and a NotebookEdit of a tracked file in the main tree on `main` is
+  // refused there (go-to-k/cdkd#2717).
+  //
+  // So anchoring that matcher -- `^(Edit|Write|Bash)$`, or splitting it into
+  // exact alternatives -- would silently stop routing notebook writes to the
+  // gate and reopen the hole, with the hook's own suite still green: that suite
+  // feeds payloads to the hook directly and never consults the matcher. This is
+  // the only place the two halves meet.
+  it('keeps main-tree-edit-gate reachable for the Edit-substring tools', () => {
+    const entries = preToolUseEntries().filter((e) =>
+      (e.hooks ?? []).some((spec) => gateName(spec) === 'main-tree-edit-gate'),
+    );
+    expect(entries, 'main-tree-edit-gate must be registered at PreToolUse').toHaveLength(1);
+
+    const matcher = entries[0]?.matcher ?? '';
+    // The floor is that a substring match still happens, not the exact string:
+    // `Edit|Write|Bash` and `Write|Edit|Bash` are both fine, `^Edit$|...` is not.
+    for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
+      expect(
+        new RegExp(matcher).test(tool),
+        [
+          `main-tree-edit-gate's matcher ${JSON.stringify(matcher)} no longer routes ${tool}.`,
+          'MultiEdit and NotebookEdit reach this gate only by unanchored substring',
+          'match on `Edit`. Anchoring the matcher, or listing exact tool names,',
+          'stops notebook and multi-edit writes from being gated at all -- and the',
+          "hook's own suite cannot see it, because it feeds the hook payloads",
+          'directly and never reads the matcher. Keep the matcher unanchored.',
+        ].join(' '),
+      ).toBe(true);
+    }
+  });
 });
