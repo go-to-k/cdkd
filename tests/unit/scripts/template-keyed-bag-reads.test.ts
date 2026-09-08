@@ -43,7 +43,10 @@ import {
  * probe self-DESTRUCTS the moment this merges (`origin/main:<path>` becomes
  * HEAD's content, so the findings drop to zero and main goes red on the merge
  * commit), and it cannot run in CI at all, since `actions/checkout` defaults
- * to `fetch-depth: 1` and no `origin/main` ref exists on a `pull_request` run.
+ * to `fetch-depth: 1` and no `origin/main` ref existed on a `pull_request` run.
+ * `check-build-test` now sets `fetch-depth: 0` (issue go-to-k/cdkd#2310), so that
+ * half no longer holds; the self-destruct reasoning above is what still rules a
+ * rev read out here.
  * A checked-in fixture keeps the property that matters -- this is REAL code
  * that really carried the defect, extracted verbatim at `2a6193c7` -- while
  * being stable and available offline.

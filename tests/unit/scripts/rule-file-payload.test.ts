@@ -342,11 +342,11 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `provider-custom-resources.md`, whose glob names the ONE file it
   // describes. Every `src/provisioning/**` path lost those bytes; none of
   // them but the custom-resource provider needed them.
-  ['src/provisioning/region-check.ts', 63_500, 120_000],
-  ['src/deployment/deploy-engine.ts', 43_000, 80_000],
-  ['src/cli/commands/deploy.ts', 41_000, 80_000],
-  ['src/local/docker-runner.ts', 41_500, 100_000],
-  ['src/analyzer/dag-builder.ts', 26_000, 60_000],
+  ['src/provisioning/region-check.ts', 63_500, 102_000],
+  ['src/deployment/deploy-engine.ts', 43_000, 61_000],
+  ['src/cli/commands/deploy.ts', 41_000, 63_000],
+  ['src/local/docker-runner.ts', 41_500, 67_000],
+  ['src/analyzer/dag-builder.ts', 26_000, 35_000],
   ['scripts/gen-nested-key-coverage.ts', 52_000, 90_000],
   // Review probe, 2026-08-25: with only the six rows above, 9 of the 28 rule
   // files (355,718 B -- 45% of the corpus) were matched by NO budgeted path,
@@ -355,7 +355,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // a sample. These rows put every rule file under at least one budget -- which
   // is asserted below rather than left as a claim -- and the number beside each
   // is its measured payload rounded out by roughly a tenth in each direction.
-  ['src/deployment/secret-redaction.ts', 70_000, 112_000],   // measured 101,842
+  ['src/deployment/secret-redaction.ts', 70_000, 101_000],   // 101,842 when the row was written; the cap was re-derived to 101,000 by go-to-k/cdkd#2310 after the payload had shrunk below it
   ['src/cli/commands/scrub.ts', 88_000, 118_000],            // measured 112,141 (see below)
   // 110,000 -> 118,000 (issue go-to-k/cdkd#2274). This path loads BOTH
   // `layout-deployment-secrets.md` and the new `layout-scrub.md` satellite, so the
@@ -370,10 +370,33 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // Custom Resource notes) -- and that satellite's glob names exactly ONE
   // file, which no other budgeted path matches, so without this row it sits
   // under no budget and could go dark or grow unnoticed.
-  ['src/provisioning/providers/custom-resource-provider.ts', 225_000, 290_000],
+  // 290_000 -> 288_000. This row BINDS the per-area guarantee: its slack is the
+  // largest a single rule file can grow anywhere in the table, so it alone
+  // decides whether the replacement is at least as tight as the ceiling it
+  // retires. At 290_000 it allowed 24,451 B against the ceiling's 22,458 B, and
+  // review PROVED the gap real rather than rhetorical -- appending 24,451 B to
+  // `provider-custom-resources.md` passed the whole suite while taking the
+  // corpus over the retired ceiling, which the old fence caught. 287_000 leaves
+  // 21,451 B. Deliberately tighter than this table's 15% convention (8.1% of a
+  // 265,549 B payload): a row that sets a repo-wide guarantee is held to the
+  // guarantee, not to the convention.
+  //
+  // 288_000 was the first cut and left SEVEN bytes of margin over the ceiling's
+  // 22,458 B. Review caught it: main's corpus grew 3,585 B during one review
+  // round, so any rebase adding 8 B re-inverted the claim -- which is exactly
+  // how the stale figure got there in the first place. 287_000 buys 1,007 B for
+  // nothing.
+  //
+  // AND THE GUARANTEE CANNOT BE FENCED, which is why the margin matters rather
+  // than an assertion. It compares against `CORPUS_BYTES_MAX` on `origin/main`,
+  // and this very change DELETES that constant -- once merged there is nothing
+  // left to compare to. It is a one-time, at-merge claim; re-derive it by hand
+  // if you ever need to restate it, and do not add a test that reads a constant
+  // this PR removes.
+  ['src/provisioning/providers/custom-resource-provider.ts', 225_000, 287_000],
   ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured 104,268
   ['src/cli/commands/import.ts', 63_000, 80_000],            // measured  72,035
-  ['src/utils/ip-protocol.ts', 83_000, 105_000],             // measured  95,005
+  ['src/utils/ip-protocol.ts', 83_000, 103_000],             // measured  95,005
   ['src/provisioning/cloud-control-provider.ts', 67_500, 105_000], // measured 94,925
   // The representative path for provisioning-sticky-routing.md, whose single
   // glob is exactly this file (go-to-k/cdkd#2719). Without a budgeted path the
@@ -418,7 +441,8 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
   // failed this row for a reason unrelated to itself -- the same argument that
-  // moved CORPUS_BYTES_MAX. Measured 61,358 B (the 55,681 B beside the old cap
+  // moved the global corpus ceiling eleven times before it was retired (the
+  // retirement note beside CORPUS_BYTES_MIN). Measured 61,358 B (the 55,681 B beside the old cap
   // was 5,677 B stale).
   // RE-DERIVED DOWNWARD 68_000 -> 52_000 on 2026-09-06, and the sibling
   // `tests/setup.ts` cap with it: both bound a payload that IS `testing.md`
@@ -447,7 +471,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // main-tree-branch one did two days earlier: go-to-k/cdkd#2402's review round
   // added the measured `--abort` / HEAD table and the two stated bounds, which
   // put hooks.md at 119,803 B against the 120,000 B cap (197 B of headroom, the
-  // landmine shape CORPUS_BYTES_MAX's comment names) and its branch-gate bullet
+  // landmine shape the retired corpus ceiling's history names) and its branch-gate bullet
   // one line past the >4000 B ratchet. Moved out verbatim, hooks.md is 115,030 B
   // and the satellite 6,454 B.
   // ---------------------------------------------------------------------
@@ -486,7 +510,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // under it loads BOTH files and the payload there is the sum -- which measures
   // the split not happening. `.github/workflows/pr-title-check.yml` is matched by
   // the satellite alone, so a glob narrowed there shows up as a DROP here.
-  ['.github/workflows/pr-title-check.yml', 12_000, 20_000], // measured 15_222 on 2026-09-07
+  ['.github/workflows/pr-title-check.yml', 12_000, 19_000], // measured 15_222 on 2026-09-07
   // Representative path for the PR-CONTENT satellite. A WORKFLOW path again,
   // for the reason above: `scripts/check-pr-closes-paren.ts` also matches
   // `layout-scripts.md`'s `scripts/**`, so budgeting there measures 93,728 B --
@@ -498,13 +522,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // what matters here -- narrowing the satellite's glob drops this from 22,878
   // to the parent's 15,222 alone, which 18,000 catches.
   ['.github/workflows/pr-content-checks.yml', 18_000, 30_000], // measured 22_878 on 2026-09-07
-  ['.claude/hooks/issue-deferral-criteria-gate.sh', 59_000, 120_000], // measured 72_814 on 2026-09-07
-  ['.claude/hooks/branch-gate.sh', 62_000, 140_000], // measured 75_670 on 2026-09-07
+  ['.claude/hooks/issue-deferral-criteria-gate.sh', 59_000, 96_000], // measured 72_814 on 2026-09-07
+  ['.claude/hooks/branch-gate.sh', 62_000, 100_000], // measured 75_670 on 2026-09-07
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
   // than the cap being raised -- a cap that moves when it fires is not a cap.
-  ['.claude/hooks/lib/command-match.sh', 64_000, 140_000], // measured 77_676 on 2026-09-07
+  ['.claude/hooks/lib/command-match.sh', 64_000, 120_000], // measured 77_676 on 2026-09-07
   // The four `integ-*` gates were the heaviest UNBUDGETED paths once
   // `gate-sibling-repos.md` split out of hooks.md: this row is the only one
   // that names them, so without it the satellite sits under no budget at all
@@ -512,14 +536,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // Deliberately NOT added to the command-match row above: that path already
   // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
   // adding a third file would spend down to about 1 KB.
-  ['.claude/hooks/integ-local-gate.sh', 64_000, 140_000], // measured 78_279 on 2026-09-07
+  ['.claude/hooks/integ-local-gate.sh', 64_000, 103_000], // measured 78_279 on 2026-09-07
   // The cwd-race detector's entry moved out of hooks.md when the #2363
   // widening pushed that file past the 120,000 B per-file cap (the #2236
   // precedent). This path is the representative one for the satellite
   // (its two globs are the hook and its .test.sh, per the REACH_FLOORS
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
-  ['.claude/hooks/main-tree-git-cwd-detector.sh', 61_000, 140_000], // measured 74_955 on 2026-09-07
+  ['.claude/hooks/main-tree-git-cwd-detector.sh', 61_000, 99_000], // measured 74_955 on 2026-09-07
   // main-tree-edit-gate's entry, and its main-tree-dirty-detector backstop,
   // moved out of hooks.md on 2026-09-05 when go-to-k/cdkd#2614's entry took
   // that file to 80,352 B -- past the 80,000 B per-file cap, which had only
@@ -569,7 +593,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // globs are the hook and its suite, per the REACH_FLOORS entry above);
   // without this row the satellite would sit under no budget at all. Payload is
   // hooks.md + hooks-main-tree-branch.md.
-  ['.claude/hooks/main-tree-branch-gate.sh', 70_000, 152_000], // measured 85_174 on 2026-09-07
+  ['.claude/hooks/main-tree-branch-gate.sh', 70_000, 111_000], // measured 85_174 on 2026-09-07
   //   The comment here read "measured 124,200" and the payload was already
   //   124,758 when it was written -- 558 B behind on the day it shipped, because
   //   the satellite kept being edited after the figure was taken. Re-measured at
@@ -578,20 +602,20 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   //   before/after table, its four causes and its two retired claims. The BAND
   //   moved with the measurement rather than the measurement being trimmed to
   //   the band: 140,000 left 4,862 B of headroom over the new figure, which is
-  //   the landmine shape CORPUS_BYTES_MAX's own comment names.
+  //   the landmine shape the retired corpus ceiling's own history names.
   // The Stop-hook entries moved out of hooks.md when issues #2391 / #2396 --
   // the nudge-cadence rule, the channel table and stop-warn's own suite --
   // pushed that file to 122,559 B, past the same cap. Representative path for
   // the satellite (its four globs are the two hooks and their suites, per the
   // REACH_FLOORS entry above). Payload is hooks.md + hooks-stop.md.
-  ['.claude/hooks/stop-warn.sh', 65_000, 140_000], // measured 79_357 on 2026-09-07
+  ['.claude/hooks/stop-warn.sh', 65_000, 104_000], // measured 79_357 on 2026-09-07
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
   // for "the 20-odd shared helpers" -- it does not, because that row's payload
   // is 52,459 B lighter.
-  ['src/provisioning/masked-retry-logger.ts', 94_500, 162_000], // measured 126,979
-  ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
+  ['src/provisioning/masked-retry-logger.ts', 94_500, 148_000], // measured 126,979
+  ['src/analyzer/drift-protocol-normalize.ts', 71_000, 85_000],  // measured  81,242
   ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  40,238 (was 37,183 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
   // Ceiling 48_000 -> 49_000 by go-to-k/cdkd#2717. The growth is in
   // `code-layout.md`, the family INDEX, which gained one table row because the
@@ -720,6 +744,27 @@ const SUBSTANTIVE_MIN_BYTES = 1_500;
 
 const SPLIT_ADVICE =
   'Move the detail into a NEW .claude/rules/<area>.md satellite whose `paths:` glob is as narrow as the content, and leave a one-line pointer behind. Do not summarise or delete the text.';
+
+/**
+ * The remedy for a LINE-length bound, which is not the same remedy and was for a
+ * while printed as if it were.
+ *
+ * Issue go-to-k/cdkd#2310 was filed because the corpus assertion printed
+ * SPLIT_ADVICE, and splitting is byte-NEUTRAL on a sum -- a reader who followed
+ * the message did work that could not possibly fix the failure. Retiring that
+ * assertion fixed the instance; this constant fixes the CLASS, because the same
+ * mismatch survived on both line bounds:
+ *
+ *   - the repo-wide long-line COUNT is a count. Moving a 4,000 B line into a
+ *     satellite carries the line with it and the count is unchanged.
+ *   - the per-line ceiling measures ONE line. The same move relocates it intact.
+ *
+ * Both are fixed by REFLOWING the line and neither by splitting a file, so the
+ * message says so. Splitting stays the right advice for the per-file cap and the
+ * per-path payload caps, where it genuinely reduces the number being asserted.
+ */
+const REFLOW_ADVICE =
+  'Break the line into ordinary paragraphs. Splitting the file does NOT help here -- both line bounds travel with the line, so a satellite just moves the same long line somewhere else. Reflow it; do not summarise or delete the text.';
 
 /**
  * The `.md` link targets a reader can actually SEE and follow, taken from the
@@ -993,7 +1038,18 @@ interface RuleFile {
  * reader happily returns a string for a file Claude Code would refuse to load.
  */
 function parseRuleFile(name: string): RuleFile {
-  const text = readFileSync(join(RULES_DIR, name), 'utf-8');
+  return parseRuleText(name, readFileSync(join(RULES_DIR, name), 'utf-8'));
+}
+
+/**
+ * The same parse against text from anywhere, so the merge PROJECTION below can
+ * read a rule file out of a git rev with `git show` and get a payload computed
+ * the identical way. Splitting this out is not a tidy-up: the projection has to
+ * resolve each historical file's `paths:` globs to sum a per-path payload, and a
+ * second frontmatter reader written for that job would disagree with this one on
+ * exactly the malformed files the disagreement matters for.
+ */
+function parseRuleText(name: string, text: string): RuleFile {
   const lines = text.split('\n');
   const base = {
     name,
@@ -1058,6 +1114,26 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${out}$`);
 }
 
+/**
+ * The rule files a given touched path loads, and their byte total.
+ *
+ * SHARED by the live budget cases and the merge projection ON PURPOSE. They used
+ * to carry the same filter+reduce separately, and review defeated the projection
+ * by slicing the projection's copy alone (`.slice(0, 1)`) -- 312/312 green, since
+ * the live cases computed their own answer and never noticed. Duplicated logic
+ * makes each copy independently mutable, which is the same reason a checker's
+ * comparand must not be built by the mechanism it guards: the second copy is a
+ * place for the defect to hide. One definition means any mutation to it reds the
+ * live cases too, loudly, whatever the projection's own arms do.
+ */
+function matchingRules(rules: readonly RuleFile[], touched: string): RuleFile[] {
+  return rules.filter((rule) => (rule.paths ?? []).some((glob) => globToRegExp(glob).test(touched)));
+}
+
+function payloadFor(rules: readonly RuleFile[], touched: string): number {
+  return matchingRules(rules, touched).reduce((sum, rule) => sum + rule.bytes, 0);
+}
+
 // RECURSIVE, because a non-recursive listing is a way to make this whole fence
 // vacuous without touching it. Review probe, 2026-08-25: moving 10 satellites
 // into `.claude/rules/layout/` hid 206,871 B, dropped the suite from 93 tests
@@ -1071,16 +1147,21 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
   .sort()
   .map(parseRuleFile);
 
-// The corpus as a whole, asserted as a RANGE rather than a floor. Both bounds
-// are load-bearing and they fail in opposite directions:
-//   - the LOWER bound is the only thing in this file that notices CONTENT being
-//     DELETED. Every other assertion is a one-sided upper bound, so a review
-//     probe that removed `layout-drift.md` outright, and one that gutted
-//     `layout-provisioning.md` from 53,830 B to 203 B, both left the suite
-//     green. A split that "reduces payload" by dropping text is the one
-//     outcome this refactor promised would never happen.
-//   - the UPPER bound catches growth that spreads thinly enough to stay under
-//     every per-file cap.
+// The corpus as a whole, asserted as a FLOOR only. It was a RANGE until issue
+// go-to-k/cdkd#2310 retired the ceiling (the note beside CORPUS_BYTES_MIN says
+// why); growth is now bounded per BUDGETED PATH, which is what a session
+// actually loads.
+//   - the FLOOR is what notices CONTENT being DELETED corpus-wide. Every other
+//     assertion here is an upper bound, so a review probe that removed
+//     `layout-drift.md` outright, and one that gutted `layout-provisioning.md`
+//     from 53,830 B to 203 B, both left the suite green. A split that "reduces
+//     payload" by dropping text is the one outcome this refactor promised would
+//     never happen.
+//     Its reach is BOUNDED and the bound is measured, not assumed: it cannot see
+//     a deletion smaller than its own slack, which today leaves 45 of the 51
+//     files guttable. The case named "the corpus floor still discriminates the
+//     deletion of the LARGEST satellite" carries the arithmetic; a per-file
+//     floor is go-to-k/cdkd#2810.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
 // 48 -> 50, by TWO independent satellite splits that landed in the same window
 // and each read as "48 -> 49" on its own branch:
@@ -1115,12 +1196,17 @@ const CORPUS_FILE_COUNT = 51; // + layout-ci-pr-content.md (go-to-k/cdkd#2736): 
                               //  read the ordinals in the older entries below as a running total.
                               //
                               //  A `hooks-flag-value-class.md` satellite was added on a branch and
-                              //  REMOVED before merge: it restated the library note it pointed AT,
-                              //  and splitting does not fund a CORPUS addition anyway -- the
-                              //  ceiling covers the whole tree, so a new file SPENDS its
-                              //  frontmatter and its pointer from the same budget. The per-file cap
-                              //  and the corpus ceiling want OPPOSITE moves; read which one failed
-                              //  before reaching for a split.
+                              //  REMOVED before merge: it restated the library note it pointed AT.
+                              //  The parenthetical that stood here said splitting cannot fund an
+                              //  addition because the global ceiling covers the whole tree, so a
+                              //  new file spends its own frontmatter and pointer from the same
+                              //  budget. That was true of the ceiling and is now OBSOLETE with it
+                              //  (the retirement note beside CORPUS_BYTES_MIN): against the
+                              //  per-path budgets, splitting into a NARROWER glob is exactly what
+                              //  funds an addition, because the satellite's bytes stop counting
+                              //  against every path the parent's glob reached. The frontmatter and
+                              //  pointer are still a real cost, paid by the paths that keep
+                              //  loading both.
                               //  The comment above this file's hooks.md row records the decision
                               //  that the next lane needing more room there splits rather than
                               //  trims someone else's entry or nudges the cap, and this is that
@@ -1250,16 +1336,53 @@ const CORPUS_FILE_COUNT = 51; // + layout-ci-pr-content.md (go-to-k/cdkd#2736): 
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 895_000;   // RE-DERIVED UPWARD 862_000 -> 895_000 (2026-09-06, issue
+const CORPUS_BYTES_MIN = 966_000;   // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
+                                    // go-to-k/cdkd#2310): measured 1,003,542 B on the tree that
+                                    // ships this line -- 37,542 B of slack. The constant was set
+                                    // against a 999,957 B corpus (~34 KB, the margin every previous
+                                    // setting used) and main grew 3,585 B under it during review, so
+                                    // what SHIPS is 37.5 KB. Recorded rather than re-nudged: the
+                                    // number a bound was DERIVED at, and the number it ships at, are
+                                    // different facts and this file has been burned by conflating
+                                    // them before.
+                                    //
+                                    // IT WAS VACUOUS AT 895_000 AND THE ROUND THAT RETIRED THE
+                                    // CEILING IS WHY. The comment below records that the floor and
+                                    // the ceiling were re-derived together; retiring the ceiling
+                                    // removed the occasion that used to drag this number forward,
+                                    // and the corpus had since grown to 999,957 B, leaving 104,957 B
+                                    // of slack -- MORE than the largest rule file (79,173 B), so the
+                                    // floor could not have noticed a whole satellite being deleted,
+                                    // which is the one thing it is for. Review PROVED it live:
+                                    // gutting `provider-delete-path.md` from 28,726 B to 1,512 B
+                                    // left the suite 311/311 green. So the promotion of this floor
+                                    // to a SURVIVING guard had to come with its re-derivation, not
+                                    // merely with a note that it survives.
+                                    //
+                                    // The occasion is now MECHANICAL, not a habit: the case named
+                                    // "the corpus floor still discriminates the deletion of the
+                                    // LARGEST satellite" asserts
+                                    // `corpus - largestRuleFile < CORPUS_BYTES_MIN`, so the slack
+                                    // can never again exceed the LARGEST file -- which is what
+                                    // stops the floor going wholly vacuous, and is strictly less
+                                    // than "never misses a deletion": a deletion smaller than the
+                                    // slack stays invisible, today 45 of the 51 files. That
+                                    // residual is go-to-k/cdkd#2810 and no value of this constant
+                                    // closes it. It is NOT a twin of the `tests/setup.ts` gutting
+                                    // case, which does catch gutting for its one budgeted row.
+                                    //
+                                    // 895_000 was: // RE-DERIVED UPWARD 862_000 -> 895_000 (2026-09-06, issue
                                     // go-to-k/cdkd#2310): measured 929,171 B on the tree that
                                     // ships this line -- 34,171 B of slack, the same ~34 KB every
                                     // previous setting used. Moved in the SAME change that
-                                    // re-derived CORPUS_BYTES_MAX above, because that change is
-                                    // exactly what made this one stale: left at 862_000 it held
+                                    // re-derived the then-live corpus CEILING, because that change
+                                    // is exactly what made this one stale: left at 862_000 it held
                                     // 67,171 B, double the slack its own comment claimed, and a
                                     // floor that drifts from its measurement stops being one.
-                                    // The round that re-derives the ceiling is the round that
-                                    // re-derives the floor.
+                                    // That coupling is GONE with the ceiling (note below). This
+                                    // floor is now re-derived on its own occasion: when the corpus
+                                    // has grown enough that it would no longer notice a satellite
+                                    // being deleted, which is the one thing it is for.
                                     // 862_000 was: // RE-DERIVED UPWARD 817_000 -> 862_000 (issue
                                     // go-to-k/cdkd#2447): measured 895,893 B on the REBASED tree
                                     // -- 33,893 B of slack, the same ~34 KB every previous setting
@@ -1289,181 +1412,149 @@ const CORPUS_BYTES_MIN = 895_000;   // RE-DERIVED UPWARD 862_000 -> 895_000 (202
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-// WHY THE PROJECTION BELOW DID NOT CATCH THAT BREACH, which the entry under
-// it records but does not explain: it compares against the LOCAL `origin/main`
-// ref, and a CI run's copy of that ref is frozen when the RUN STARTS.
-// go-to-k/cdkd#2695's run started 08:20:59Z; go-to-k/cdkd#2700 merged
-// 08:22:04Z, 65 s later, spending part of the same budget; go-to-k/cdkd#2695
-// went green 08:31:43Z having never seen it, nothing re-ran it, and it merged
-// 08:34:08Z.
-// So a green check attests to the base at its START, not at your merge -- and
-// no gate re-asks. `.claude/skills/check/SKILL.md` step 0 now fetches before
-// the suite, which fixes the LOCAL half only; go-to-k/cdkd#2705 tracks the
-// merge-time close.
-const CORPUS_BYTES_MAX = 1_026_000; // RE-DERIVED UPWARD 996_000 -> 1_026_000 (2026-09-08, issue
-                                  // go-to-k/cdkd#2757): measured 996,256 B on this branch, and --
-                                  // the number that decides it -- 992,361 B on `origin/main` with
-                                  // NO branch involved. That left 3,639 B of headroom, under a
-                                  // quarter of one ordinary lane and the same landmine shape the
-                                  // 2026-09-07 re-derivation names one paragraph down: main ate
-                                  // 29,571 B of that 33,210 B in a single day, so the bound was
-                                  // due independently of whoever tripped it.
-                                  //
-                                  // BOTH levers used. This lane's own restated bytes were cut
-                                  // FIRST and repeatedly: a drifting error-name count, a
-                                  // "tightest template" figure that was wrong, a Defences
-                                  // sentence describing a circular assertion the same PR had
-                                  // already replaced, and a Bounds bullet that re-explained what
-                                  // `scripts/check-docs-error-strings.ts`'s own header states --
-                                  // CLAUDE.md's contract puts a mechanism at its module and a
-                                  // POINTER in the rule file, so those were the lane's own stale
-                                  // bytes. What remains is one catalogue entry for a new checker,
-                                  // the same shape every sibling in `layout-scripts.md` carries.
-                                  // Headroom set to 33,639 B, the ~33 KB the previous three
-                                  // re-derivations chose.
-                                  //
-                                  // 996_000 was: // RE-DERIVED UPWARD 962_000 -> 996_000 (2026-09-07, issue
-                                  // go-to-k/cdkd#2736): measured 962,790 B on this branch, and
-                                  // -- the number that decides it -- 954,822 B on `origin/main`
-                                  // with NO branch involved. That left 7,178 B of headroom, under
-                                  // a quarter of one ordinary lane, which is precisely the
-                                  // landmine shape this constant's own history names: the next
-                                  // edit fails for a reason unrelated to itself. The 2026-09-06
-                                  // re-derivation set ~33 KB and main has eaten 25,650 B of it
-                                  // since, so the bound was due independently of whoever tripped
-                                  // it.
-                                  //
-                                  // BOTH levers used, not just this one. This lane's own restated
-                                  // framing was cut first (the new satellite's header, which
-                                  // re-explained a split the parent already explains, and two
-                                  // mechanism paragraphs duplicated out of
-                                  // `scripts/check-pr-closes-paren.ts`'s header -- CLAUDE.md's
-                                  // contract puts a mechanism at its module and a POINTER in the
-                                  // rule file, so those were the lane's own stale bytes). What
-                                  // remains is the entry itself. Headroom set to 33,210 B, the
-                                  // ~33 KB the previous two re-derivations chose.
-                                  //
-                                  // 962_000 was: // RE-DERIVED UPWARD 929_000 -> 962_000 (2026-09-06, issue
-                                  // go-to-k/cdkd#2310): `origin/main` at df3eb981 measured
-                                  // 929,172 B -- 172 B OVER the old ceiling with NO branch
-                                  // involved, so CI run 34022213808 was red on main and every lane
-                                  // was blocked, including branches that REMOVE bytes (the
-                                  // merge-projection assertion below reads origin/main, not the
-                                  // working tree). Re-derived rather than funded by trimming: the
-                                  // overrun belongs to no single entry, and this file's own
-                                  // instruction is not to summarise or delete the text. 32,828 B
-                                  // of headroom -- the same ~33 KB the previous ceiling was set
-                                  // with, because a bound whose headroom is smaller than one
-                                  // ordinary lane fails for a reason unrelated to whoever trips
-                                  // it. The corpus levers themselves (cut / move content out of
-                                  // .claude/rules / raise) stay open on go-to-k/cdkd#2310.
-                                  // 929_000 was: // RE-DERIVED UPWARD 890_000 -> 929_000 (issue go-to-k/cdkd#2447): measured 895,893 on the REBASED tree + 33,107 B of headroom -- NARROWER than the ~39 KB the previous ceiling held, which is deliberate and is why it is not described as "the same". The corpus crossed the old 890,000 ceiling on a lane that added ONE satellite, already trimmed once; past that the remaining text is the load-bearing decisions themselves, and this file's own instruction is not to summarise or delete it. Note the figure includes `docker-argv-redaction.md`, which landed on main while this branch was open -- FOUR earlier revisions of this comment quoted a draft or a pre-rebase tree and went stale.
-                                  // 890_000 was:// RE-DERIVED DOWNWARD 1_040_000 -> 890_000 (measured 851,451 + the ~39 KB of headroom the old ceiling held). // growth is the norm here; this catches bulk growth that stays under every per-file cap.
-                                    // 1_000_000 -> 1_040_000 (2026-09-03, go-to-k/cdkd#2402's
-                                    // third review round): measured 1,000,819 B. The previous
-                                    // bound was set at 12,808 B of slack and TWO lanes spent it
-                                    // between the setting and this one -- `origin/main` alone was
-                                    // already at 993,403 B before this branch added a byte, so a
-                                    // rebase onto it fails this assertion on someone else's text.
-                                    // Raised to ~39 KB, the same margin the 946_000 -> 985_000
-                                    // raise chose, because a bound whose headroom is smaller than
-                                    // one ordinary lane fails for a reason unrelated to whoever
-                                    // trips it.
-                                    // 985_000 -> 1_000_000 (2026-09-03, issue go-to-k/cdkd#2274's
-                                    // fix round): measured 987,192 B. The #2274 lane had already
-                                    // spent this bound down to 25 B of headroom, which is the
-                                    // landmine shape this file names elsewhere -- the NEXT edit
-                                    // fails for a reason unrelated to itself. Raised rather than
-                                    // funded by trimming, because the bytes are the review round's
-                                    // OWN corrections (the mask-only channel's needle floor, the
-                                    // cdkd-supplied exclusion, the drift path-set split, and the
-                                    // in-run cross-stack recovery), and cutting them would delete
-                                    // the record of decisions the round was called to make. Band
-                                    // set from the measurement (12,808 B of slack), the way
-                                    // CORPUS_BYTES_MIN's own history prescribes -- not nudged to
-                                    // just clear today's tree.
-                                    // 946_000 -> 985_000, measured 951,706 B in the tree and
-                                    // 961,037 B PROJECTED against origin/main (which is itself at
-                                    // 942,951 B -- a parallel lane has spent part of the same
-                                    // budget). The old bound had 4,674 B of headroom left over this
-                                    // branch's 941,326 B -- 74% of the ~18 KB the previous raise
-                                    // deliberately bought had been spent by this branch alone
-                                    // -- which is the landmine the paragraph below already names.
-                                    // Raised at the tree that spends it, rather than left for the
-                                    // next lane to hit on a file it never opened. The bound is set
-                                    // against the PROJECTION, not the working tree, since that is
-                                    // the number the merge produces: 985,000 leaves ~24 KB over it.
-                                    // What the bytes bought: a second parse round closing a
-                                    // regression this branch had introduced (shell WORDS counted as
-                                    // git ARGUMENTS) plus five more holes, with the before/after
-                                    // table, the four causes and two retired claims. That rationale
-                                    // is what a rules file is FOR.
-                                    // 928_000 -> 946_000, measured 927,952 B: FORTY-EIGHT bytes of
-                                    // headroom, which is a landmine rather than a bound -- the next
-                                    // lane to add a paragraph anywhere in `.claude/rules/**` fails a
-                                    // test about a file it never opened, and the cheapest way out of
-                                    // that failure is to trim someone else's entry, which the corpus
-                                    // FLOOR exists to forbid. Raised deliberately rather than paid
-                                    // for by compression, and the reason is legible: this lane fixed
-                                    // six hook defects (two of them live gate bypasses) and their
-                                    // rationale is what a rules file is FOR. It was already
-                                    // compressed four times to fit under the old bound, and the full
-                                    // reasoning now lives in the hook comments, which this corpus
-                                    // does not measure -- i.e. the bound was pushing text out of the
-                                    // place a reader looks and into the place they do not.
-                                    // 18,048 B of headroom restored, ~2% of the corpus, sized so an
-                                    // ordinary docs lane fits without a second raise. This is a
-                                    // CEILING, so raising it weakens the guard: re-measure before
-                                    // touching it again, and prefer a narrower-`paths:` satellite
-                                    // whenever the growth is per-area rather than corpus-wide.
-                                    //
-                                    // RE-MEASURED 2026-09-01 at 933,620 B: 12,380 B of headroom,
-                                    // and NOT raised. Every "measured N" in this file was stale by
-                                    // then -- including figures the previous lane had written --
-                                    // which is the failure this file's own comment names ("a bound
-                                    // that drifts from its measurement stops being one"), so the
-                                    // numbers were re-derived at the final tree rather than
-                                    // adjusted. The remaining headroom is roughly one ordinary
-                                    // docs lane; the next one to need more should SPLIT rather
-                                    // than raise.
-                                    //
-                                    // NOT raised again for go-to-k/cdkd#2388, and the decision is
-                                    // worth recording because it cuts against the rule of thumb one
-                                    // paragraph up. Measured at that branch's final tree: 36 files,
-                                    // 942,951 B, which FITS with 3,049 B -- but the branch's own
-                                    // delta is 9,331 B, so by the "your delta must be smaller than
-                                    // the headroom you leave" argument it should raise. It does not,
-                                    // for two reasons. The instruction directly above is to SPLIT
-                                    // rather than raise, and that branch did: its ~9 KB is already
-                                    // in a narrow-`paths:` satellite, with only one-line pointers
-                                    // left in layout-utils.md and layout-scripts.md, so there is
-                                    // nothing of its own left to move. And raising in two
-                                    // consecutive lanes is the ratchet this comment exists to slow.
-                                    // The residual is real: the next lane adding more than ~3 KB
-                                    // fails here. Flagged on the PR rather than spent unilaterally.
-                                    // 900_000 -> 915_000 (go-to-k/cdkd#2363): origin/main sat at 899,989 B --
-                                    // 11 B of headroom -- so ANY rules addition tripped it. Measured after the
-                                    // hooks-cwd-detector.md split: 902,381 B (the widening's net prose is
-                                    // 1,422 B; the satellite's frontmatter + the pointer line are the rest).
-                                    // 915_000 -> 928_000 (test-stream-fence.md): this branch added
-                                    // 3,712 B, leaving 835 B of headroom -- the next rule-file
-                                    // edit over 1 KB anywhere would have failed this suite for a
-                                    // reason unrelated to itself. Measured 914,165 B.
-                                    // 928_000 -> 940_000 (go-to-k/cdkd#2388): proxy-support.md
-                                    // takes the corpus to 923,079 B, which FITS under 928_000 with
-                                    // 4,921 B to spare -- and that is the reason to move it, not a
-                                    // reason to leave it. This ceiling is a CUMULATIVE budget spent
-                                    // by every open lane at once (see the merge-projection case
-                                    // below, and the two lanes at 899,843 B and 899,902 B that were
-                                    // each green in isolation and 25 B over together). This branch's
-                                    // own delta is 8,284 B, larger than the 4,921 B it would leave,
-                                    // so the next PR of the same shape could not land and a second
-                                    // concurrent lane would collide with this one rather than with a
-                                    // number anyone chose. 940_000 leaves 16,921 B, roughly what the
-                                    // previous raise left. Measured on origin/main at 476c0ac8:
-                                    // 34 files, 914,795 B -- which is also why the "914,165" above
-                                    // is left as the record of what THAT raise measured rather than
-                                    // silently corrected.
+// THE GLOBAL CORPUS CEILING IS RETIRED (2026-09-08, issue go-to-k/cdkd#2310).
+// `CORPUS_BYTES_MAX` used to sit here, asserted against the SUM over
+// `.claude/rules/**` in the working tree and again in the merge projection
+// below. Both assertions are gone; the projection remains, re-pointed at the
+// per-path `PAYLOAD_BUDGETS` caps. This is option 3 of the three the issue put
+// up, and the two facts that decided it are recorded here rather than in the
+// issue, because this is the file the next person to want a global sum will
+// open.
+//
+// WHY THE SUM WAS THE WRONG SUBJECT. The bound existed to cap what a session
+// LOADS. No session loads the corpus: a rule file enters context when its
+// `paths:` glob matches a file the session touched, so what a session pays is
+// the sum over the MATCHING files. `PAYLOAD_BUDGETS` measures exactly that, per
+// representative path, with a floor and a cap; and the "every rule file is
+// covered by at least one budgeted path" case below proves the cover is total.
+// So every byte in the corpus already counts against at least one cap that a
+// real session actually pays, and the global sum added one more bound over a
+// quantity nobody is charged for. That is why it was permanently full: it
+// aggregated across globs that are never loaded together.
+//
+// The redundancy is exact, not approximate. Adding bytes to an existing rule
+// file raises every budgeted path whose glob matches it. Adding a NEW satellite
+// raises the paths its own glob matches, and it cannot escape by being narrow --
+// the coverage case fails a file no budgeted path reaches. Widening a glob back
+// out raises the paths it newly reaches, which is the regression the budgets
+// were written for in the first place ("Plus 4" in the header).
+//
+// WHY NOT ANOTHER RAISE. Measured on 2026-09-08 by walking `origin/main` and
+// recomputing the corpus at each commit that moved this constant:
+//
+//   08-25 23:20  #2201    900_000    corpus 799,693   headroom 100,307
+//   08-28 17:41  #2365    915_000    corpus 902,461   headroom  12,539
+//   08-30 23:26  #2393    928_000    corpus 914,165   headroom  13,835
+//   09-01 20:10  #2401    946_000    corpus 933,620   headroom  12,380
+//   09-02 15:53  #2406    985_000    corpus 970,423   headroom  14,577
+//   09-03 02:58  #2462  1_000_000    corpus 989,636   headroom  10,364
+//   09-03 16:30  #2431  1_040_000    corpus 1,000,819 headroom  39,181
+//   09-04 12:00  #2507    890_000    corpus 853,212   headroom  36,788   (compression)
+//   09-05 20:05  #2625    929_000    corpus 895,893   headroom  33,107
+//   09-06 19:35  #2704    962_000    corpus 928,973   headroom  33,027
+//   09-08 02:29  #2760    996_000    corpus 972,475   headroom  23,525
+//   09-08 20:26  #2800  1_026_000    corpus 999,820   headroom  26,180
+//
+// Twelve settings in fourteen days: one introduction, TEN raises, one lowering
+// (the 2026-09-04 compression). The last four raises each
+// bought the ~33 KB their comments describe as "the same margin every previous
+// setting used", and each was spent inside a day: main went 954,822 -> 995,881 B
+// in the 22 hours after the 2026-09-07 raise, with no single lane responsible.
+// Read down the `headroom` column and the mechanism is legible -- the bound is
+// re-derived to whatever the corpus has already reached, so it never refuses
+// anything; it only picks which lane pays the trim round.
+//
+// The cost landed on lanes with no allowance to fix it. `.claude/rules/**`
+// budget config is outside a feature lane's file set, so the lane that arrives
+// last trims its OWN entry to fit -- go-to-k/cdkd#2311 cut +1,689 B to +102 B,
+// go-to-k/cdkd#2339 spent four rounds on a two-paragraph edit, go-to-k/cdkd#2616
+// rewrote a four-line correction five times, and go-to-k/cdkd#2797 cut a 1,689 B
+// bullet to 117 B. None of those trims made any session load less: the bytes
+// they cut were under globs the complaining sum aggregates and no session loads
+// together. Meanwhile the remedy the failure message printed was the per-file
+// one, and splitting is byte-NEUTRAL on a sum -- the second half of #2310's
+// title, and the specific way this cost people hours.
+//
+// Every raise was also made inside a PR about something else -- hooks, a state
+// fix, a docs rewrite -- so the repo-wide bound moved twelve times without one
+// review round that was ABOUT the bound. #2311's lane refused to raise it on
+// exactly that reasoning and paid a trim round instead.
+//
+// THE CAPS WERE RE-DERIVED IN THIS SAME CHANGE, and without that step this
+// would have been a removal of the guard dressed as a replacement. Review
+// measured the first attempt: `PAYLOAD_BUDGETS` carried 720,045 B of unused cap
+// across 40 rows -- eight rows at 36-56 KB each, one at 97% of its own payload
+// -- because those caps were calibrated while the CEILING was the binding
+// bound. Handing them the ceiling's job without re-deriving them let a single
+// rule file grow by 55,423 B with every assertion green, against the 22,458 B
+// the ceiling then allowed. Sound in kind, ~2x weaker in degree, and nothing
+// said so.
+//
+// Every figure in this block is re-derived at the tree that ships it, against
+// `origin/main`'s own cap values on that SAME tree -- not against the numbers
+// the first draft measured. Two rebases moved the corpus underneath them
+// (main grew `.claude/rules/hooks*.md` while this branch was open), and a
+// before/after pair taken on two different trees compares two things at once.
+//
+// Caps that EXCEEDED `max(payload * 1.15, payload + 3000)` rounded up to the
+// next 1,000 were lowered; of the 40 rows, 18 moved and 22 were left alone.
+// Eight of the 18 landed BELOW the formula rather than at it (they were rounded
+// down to a flat figure), and one -- the custom-resource-provider row above --
+// was already tighter than the formula and was lowered anyway, because it binds
+// the guarantee. Total unused cap 720,045 -> 332,045 B.
+//
+// An earlier revision said "28 of the 40 ... 17 rows moved", which sums to 45
+// over a 40-row table: 28 is the AFTER count and 17 omitted the guarantee row.
+// Two reviewers caught it and disagreed on the replacement (22 vs 23), so it was
+// re-measured rather than copied. The number that matters is not that sum, though: a rule file sits
+// in several rows at once, so what a lane can actually add is the MINIMUM slack
+// over the rows its file reaches. Measured on the tree that ships this line:
+//
+//   most a single rule file can grow   before 55,423 B   after 21,451 B
+//   retired ceiling allowed                              22,458 B
+//
+// AN EARLIER REVISION OF THIS BLOCK GOT THIS WRONG AND THE CORRECTION IS THE
+// REASON THE LAST ROW OF THE TABLE MOVED. It claimed "tighter" off a 26,043 B
+// figure taken before the last rebase; the corpus grew 3,585 B under it, the
+// ceiling actually allowed 22,458 B, and at the then-current 24,451 B the
+// replacement was ~2,000 B LOOSER. Review proved the gap was real and not
+// rhetorical -- appending 24,451 B to one satellite passed the whole suite while
+// putting the corpus over the retired ceiling. The fix was to close the gap
+// (custom-resource-provider.ts 290_000 -> 287_000), not to soften the sentence.
+//
+// The comparison is still a rough one, which is worth keeping in view: the
+// ceiling's 22,458 B was ONE POT shared by every lane and every area at once --
+// the property that made it a treadmill, since whoever arrived last paid --
+// while 21,451 B is what a single area may grow without touching any other. Two
+// quantities of different kinds; holding the second at or under the first is a
+// floor on the comparison, not proof the two are equivalent. The
+// aggregate across all 40 rows (the 332,045 B above, if every row were spent at
+// once) is deliberately NOT bounded, and that is the whole point rather than a
+// residual: those bytes are never loaded together, so no session ever pays them
+// together.
+//
+// WHAT STILL BOUNDS BULK GROWTH, so this is not a removal of the guard:
+//   - `PAYLOAD_BUDGETS` caps every representative path (and its floor catches
+//     text being moved OUT from under a path that needs it);
+//   - the merge projection below now applies those caps to the MERGE, so the
+//     cross-lane collision the global projection caught is still caught;
+//   - `MAX_RULE_FILE_BYTES` caps each file, `CORPUS_FILE_COUNT` pins the count,
+//     `REACH_FLOORS` pins each file's reached population, and the long-line
+//     ratchet only goes down.
+// `CORPUS_BYTES_MIN` stays: a FLOOR over the sum is sound in a way the ceiling
+// was not, because deletion is a corpus-wide loss regardless of which glob the
+// bytes sat under, and its pressure runs opposite to the treadmill above.
+//
+// WHY THE OLD PROJECTION DID NOT CATCH THE 2026-09-06 BREACH, kept because it
+// applies unchanged to the per-path projection that replaces it: the comparison
+// is against the LOCAL `origin/main` ref, and a CI run's copy of that ref is
+// frozen when the RUN STARTS. go-to-k/cdkd#2695's run started 08:20:59Z;
+// go-to-k/cdkd#2700 merged 08:22:04Z, 65 s later, spending part of the same
+// budget; go-to-k/cdkd#2695 went green 08:31:43Z having never seen it, nothing
+// re-ran it, and it merged 08:34:08Z. So a green check attests to the base at
+// its START, not at your merge -- and no gate re-asks.
+// `.claude/skills/check/SKILL.md` step 0 now fetches before the suite, which
+// fixes the LOCAL half only; go-to-k/cdkd#2705 tracks the merge-time close.
 
 /**
  * The repo's tracked files, read once. Memoised because two per-file suites
@@ -1536,54 +1627,202 @@ describe('.claude/rules payload fence', () => {
       total,
       `The rules corpus is ${total} B, below the ${CORPUS_BYTES_MIN} B floor. ` +
         'Payload is reduced by moving text into a narrower-`paths:` satellite, ' +
-        'NEVER by summarising or deleting it -- this floor is the only assertion ' +
-        'here that can tell the two apart.',
+        'NEVER by summarising or deleting it. This floor is what tells those two ' +
+        'apart CORPUS-WIDE: a move keeps the total, a deletion does not. It is ' +
+        'not the only such assertion -- each PAYLOAD_BUDGETS row carries the same ' +
+        'test for one path -- but it is the only one that sees text leaving the ' +
+        'corpus altogether rather than moving between globs.',
     ).toBeGreaterThanOrEqual(CORPUS_BYTES_MIN);
-    expect(
-      total,
-      `The rules corpus is ${total} B, over the ${CORPUS_BYTES_MAX} B ceiling. ` +
-        'This catches bulk growth that stays under every per-file cap by ' +
-        'spreading itself thinly. ' +
-        SPLIT_ADVICE,
-    ).toBeLessThanOrEqual(CORPUS_BYTES_MAX);
+    // There is deliberately NO ceiling here -- see the retirement note beside
+    // CORPUS_BYTES_MIN. Bulk growth is bounded per BUDGETED PATH instead, which
+    // is the quantity a session actually loads; a sum over globs no session
+    // loads together could only ever be re-derived upward.
   });
 
-  // The ceiling above measures the WORKING TREE. That is the merge result only
-  // when this branch is rebased onto current `origin/main` -- and a cumulative
-  // budget is spent by every lane at once, so two branches can each be green in
-  // isolation and land over the cap together. Neither branch's CI can see it,
-  // and whichever merges SECOND is blamed for a budget the first one spent.
+  it('the corpus floor still discriminates the deletion of the LARGEST satellite', () => {
+    // WHAT THIS DOES AND DOES NOT CLAIM, because an earlier revision of this
+    // case claimed the whole gutting class and review disproved it in one probe.
+    //
+    // The floor's slack is `corpus - CORPUS_BYTES_MIN`. A deletion or gutting
+    // SMALLER than that slack is invisible to it -- arithmetic, not calibration.
+    // Measured on the tree that ships this line: 37,542 B of slack, and 45 of
+    // the 51 rule files (658,337 B of the corpus) are small enough to be gutted
+    // to `SUBSTANTIVE_MIN_BYTES` with this floor still green. Review demonstrated
+    // exactly that, twice, on a 28,726 B file.
+    //
+    // Closing it with this bound is IMPOSSIBLE, which is why the claim is narrow
+    // rather than the number being nudged: catching the SMALLEST file (2,659 B)
+    // needs the floor at 1,002,384 -- the assertion is `>=`, so 1,002,383 would
+    // still ACCEPT that corpus -- leaving 1,158 B of compression tolerance --
+    // any ordinary reflow would red it. A single corpus-wide sum cannot both
+    // permit compression and detect a small deletion; only a PER-FILE floor can,
+    // and that is go-to-k/cdkd#2810, not this case.
+    //
+    // So what this asserts is the one thing a corpus floor CAN own: the largest
+    // satellite cannot vanish silently. `CORPUS_FILE_COUNT` catches an outright
+    // deletion of any file; the per-path `PAYLOAD_BUDGETS` floors catch text
+    // moving out from under a path; this catches the biggest file being emptied.
+    // Its real job is to stop the floor going VACUOUS again the way it did at
+    // 895,000 (104,957 B of slack, larger than any file at all).
+    const total = ruleFiles.reduce((n, r) => n + r.bytes, 0);
+    expect(ruleFiles.length, 'no rule files, so there is no largest one').toBeGreaterThan(0);
+    const largest = ruleFiles.reduce((a, b) => (a.bytes >= b.bytes ? a : b));
+    expect(
+      total - largest.bytes,
+      `deleting ${largest.name} (${largest.bytes} B, the largest rule file) would leave ` +
+        `${total - largest.bytes} B, which the ${CORPUS_BYTES_MIN} B floor must reject. ` +
+        `The corpus is ${total} B, so the floor holds ${total - CORPUS_BYTES_MIN} B of ` +
+        'slack -- once that exceeds the largest file, the floor cannot see ANY single ' +
+        'file being emptied, which is when it stops being a check at all. Re-derive ' +
+        'CORPUS_BYTES_MIN to ~34 KB under the measured corpus, the way its own history ' +
+        'prescribes.\n\n' +
+        'This case reds on GROWTH as well as on a bad floor, and that is expected: ' +
+        'the ledger beside CORPUS_BYTES_MIN records main growing ~41 KB in 22 h, and ' +
+        `this margin is ${CORPUS_BYTES_MIN - (total - largest.bytes)} B, so it comes due ` +
+        'in about a day at that rate. Raising the floor is the whole remedy and it ' +
+        'takes no judgement -- and unlike the corpus CEILING this change retired, ' +
+        'raising a FLOOR sharpens the guard instead of weakening it, so this is a ' +
+        'ratchet in the safe direction rather than the treadmill that ceiling was.',
+    ).toBeLessThan(CORPUS_BYTES_MIN);
+  });
+
+  // The per-path budgets above measure the WORKING TREE. That is the merge
+  // result only when this branch is rebased onto current `origin/main` -- and a
+  // budgeted path's payload is spent by every lane at once, so two branches can
+  // each be green in isolation and land over a cap together. Neither branch's
+  // CI can see it, and whichever merges SECOND is blamed for a budget the first
+  // one spent.
   //
   // Measured 2026-08-27, two lanes of one `/work-issues` run: go-to-k/cdkd#2291
-  // at 899,843 B and go-to-k/cdkd#2330 at 899,902 B, both green, merging to
-  // 900,025 B -- 25 B over. It was caught by hand, which is not a mechanism.
+  // and go-to-k/cdkd#2330 were both green and 25 B over together. It was caught
+  // by hand, which is not a mechanism.
   //
-  // So project the merge instead of assuming the rebase: `origin/main`'s corpus
-  // plus THIS branch's delta against its own merge base. On a rebased branch
-  // that equals the working tree and this assertion is a no-op; on a stale one
-  // it is the only thing that sees the collision.
-  it('the corpus still fits once this branch is merged into origin/main', () => {
-    const corpusAt = (rev: string): number | undefined => {
-      let names: string[];
+  // THREE RESIDUALS, measured and stated rather than implied away. Each is a
+  // ceiling on what this whole block can see, so read them before adding an arm
+  // that claims to cover one.
+  //
+  // 1. THE MERGE BASE CANNOT BE FENCED BY VALUE. Replacing the `merge-base` call
+  //    with `rev-parse origin/main` restores "assume the rebase" -- the defect
+  //    this case exists to remove -- and every check still passes, because on a
+  //    REBASED branch the two spellings resolve to the same commit and the
+  //    substitution is a no-op. It is observable only on a STALE branch, which
+  //    is exactly when the projection matters, so no assertion taken on a
+  //    rebased tree can discriminate it. The stake, measured: main's corpus
+  //    moved +11,375 B over 10 commits and +43,847 B over 25.
+  // 2. A BOUNDED SILENT WINDOW. The count arm tolerates 3 missing names plus
+  //    however many this branch ADDS (so up to 6 today), and the weight arms
+  //    tolerate 10% -- but the BYTE ceiling is unaffected by the added-file
+  //    term, since arm (e)'s denominator excludes those files. So what is
+  //    invisible is a reader losing files that together carry under a tenth of
+  //    the corpus: measured, one such trio
+  //    is 92,391 B (9.21%) and passes. The measured WORST such trio is 100,350 B
+  //    (10.00%) -- layout-provisioning.md + hooks-class-fences.md +
+  //    architecture.md -- and that, not the example, is the ceiling on what
+  //    slips through. The 213,562 B / 21.3% figure quoted below is the case that
+  //    REDS.
+  // 3. THE NAME SOURCE ALONE. The object-database cross-check further down
+  //    compares the bytes behind the names the READER produced, so rewriting
+  //    `ls-tree`'s rev argument by itself survives while the two revs hold the
+  //    same name set -- true today, and measured green. That case leaves the
+  //    content correct, which is why nothing else notices it either.
+  //
+  // So project the merge instead of assuming the rebase: `origin/main`'s payload
+  // for each budgeted path, plus THIS branch's delta against its own merge base.
+  // On a rebased branch that equals the working tree and every arm is a no-op;
+  // on a stale one it is the only thing that sees the collision.
+  //
+  // It projects the CAPS only. The floors are per-path minimums a merge cannot
+  // breach by ADDING, and a branch that removes text already fails its floor in
+  // the working tree -- projecting them would red a branch for another lane's
+  // deletion, which is the "blamed for a budget you did not spend" shape this
+  // case exists to remove.
+  it('every budgeted path still fits its cap once this branch is merged into origin/main', () => {
+    // Memoised by RESOLVED sha, not by the name passed in: on a rebased branch
+    // `origin/main` and the merge base ARE the same commit, so without this the
+    // two calls below spawn `git show` once per rule file TWICE over.
+    // The cached record carries the sha it was read AT, and the read below
+    // verifies it. A bare `Map<sha, rules>` looks self-evidently correct and is
+    // not: review re-keyed the lookup to a constant and BOTH revs returned the
+    // same list, so `projected == worktreePayload` for every row and the
+    // projection silently degenerated into a copy of the live budget case --
+    // green, and suppressing an arm that had just fired. The entry stating its
+    // own identity is what makes a mis-keyed lookup loud instead.
+    const revCache = new Map<string, { sha: string; rules: RuleFile[] }>();
+    // Records which sha each call actually read, so the caller can check it
+    // against a SEPARATELY asked resolution. Without that, rewriting this
+    // function's own `rev-parse` argument to `HEAD` makes both revs return
+    // HEAD's tree: every delta is 0, `projected == worktreePayload`, and the
+    // projection degenerates into a copy of the live budget case -- green, and
+    // invisible to the memo's identity assert, which only compares the requested
+    // sha with the recorded one and finds them equal because both are HEAD.
+    const readShas = new Map<string, string>();
+    const rulesAt = (rev: string): RuleFile[] | undefined => {
+      let sha: string;
       try {
-        names = execFileSync('git', ['ls-tree', '-r', '--name-only', rev, '.claude/rules'], {
+        sha = execFileSync('git', ['rev-parse', `${rev}^{commit}`], {
           cwd: repoRoot,
           encoding: 'utf-8',
-        })
-          .split('\n')
-          .filter((n) => n.endsWith('.md'));
+        }).trim();
       } catch {
         return undefined; // rev unresolvable (shallow clone, never fetched)
       }
-      let total = 0;
-      for (const name of names) {
-        total += execFileSync('git', ['show', `${rev}:${name}`, '--'], {
-          cwd: repoRoot,
-          maxBuffer: 64 * 1024 * 1024,
-        }).length;
+      readShas.set(rev, sha);
+      const cached = revCache.get(sha);
+      if (cached !== undefined) {
+        expect(
+          cached.sha,
+          `the rule-file memo returned an entry read at ${cached.sha} for a request for ` +
+            `${sha}. Every projected payload would then be computed against the wrong ` +
+            'commit, and when the two revs collapse to one the projection reports the ' +
+            'working tree back to itself.',
+        ).toBe(sha);
+        return cached.rules;
       }
-      return total;
+      let read: RuleFile[];
+      try {
+        // `-z` is load-bearing. Without it `git ls-tree` QUOTES any name with a
+        // non-ASCII byte (`core.quotePath`), so the name arrives ending in `"`,
+        // `.endsWith('.md')` drops it, that file's bytes vanish from every
+        // historical payload, and the projection goes GREEN with more room than
+        // the merge really has -- an under-report in the direction that reads as
+        // headroom. `-z` emits raw NUL-separated names.
+        //
+        // UNFENCED, and said out loud rather than left for the next reader to
+        // discover: no rule filename is non-ASCII today, so reverting this to
+        // `.split('\n')` leaves the suite fully green (measured in review). It
+        // is defence in depth against a filename nobody has written yet, not a
+        // fix for an observed break -- so do not read its presence as evidence
+        // that something exercises it. A case would need a rule file with a
+        // non-ASCII name, which the corpus has no reason to contain.
+        const names = execFileSync(
+          'git',
+          ['ls-tree', '-r', '-z', '--name-only', sha, '.claude/rules'],
+          { cwd: repoRoot, encoding: 'utf-8' },
+        )
+          .split('\0')
+          .filter((n) => n.endsWith('.md'));
+        read = names.map((name) =>
+          parseRuleText(
+            name.replace(/^\.claude\/rules\//, ''),
+            execFileSync('git', ['show', `${sha}:${name}`, '--'], {
+              cwd: repoRoot,
+              maxBuffer: 64 * 1024 * 1024,
+            }).toString('utf-8'),
+          ),
+        );
+      } catch (err) {
+        // The rev RESOLVED, so this is NOT the shallow-clone case the skip below
+        // covers -- listing or reading a tree that exists failed. Returning
+        // `undefined` here would route it into that skip and blame the checkout
+        // depth, so it throws with the real cause instead.
+        throw new Error(
+          `could not read .claude/rules at ${rev} (${sha}): ${(err as Error).message}`,
+        );
+      }
+      revCache.set(sha, { sha, rules: read });
+      return read;
     };
+
 
     let mergeBase: string | undefined;
     try {
@@ -1595,33 +1834,541 @@ describe('.claude/rules payload fence', () => {
       mergeBase = undefined;
     }
 
-    const mainTotal = corpusAt('origin/main');
-    const baseTotal = mergeBase === undefined ? undefined : corpusAt(mergeBase);
+    // The merge base is an INPUT to every delta below and had no arm of its own.
+    // Review replaced the `merge-base` call with `rev-parse HEAD`: on a clean
+    // tree HEAD is the working tree, so `delta` became identically 0 for every
+    // row, `projected == mainPayload`, and the branch's entire contribution went
+    // invisible -- 312/312 green. A real merge base is an ancestor of BOTH
+    // sides, which `rev-parse HEAD` is not (this branch carries a commit main
+    // does not), and `--is-ancestor` answers it without going through anything
+    // else this test computes.
+    if (mergeBase !== undefined) {
+      const isAncestor = (a: string, b: string): boolean => {
+        try {
+          execFileSync('git', ['merge-base', '--is-ancestor', a, b], {
+            cwd: repoRoot,
+            stdio: 'ignore',
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      // SELF-PROBE first: the helper must answer FALSE for a pair that is not an
+      // ancestor pair. Dropping its second argument (`--is-ancestor a a`) makes
+      // it unconditionally true and disarms the assert below with nothing to
+      // show for it -- and `noUnusedParameters` is off, so the typecheck is
+      // silent. Only meaningful when HEAD is actually ahead of the base; when
+      // the branch carries no commits the two coincide and there is no
+      // non-ancestor pair to ask about.
+      if (execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf-8' }).trim() !==
+        mergeBase) {
+        expect(
+          isAncestor('HEAD', mergeBase),
+          'HEAD is ahead of the merge base, so it cannot be an ancestor of it -- a helper ' +
+            'that says otherwise answers true for everything and the merge-base assert ' +
+            'below proves nothing.',
+        ).toBe(false);
+      }
+      expect(
+        isAncestor(mergeBase, 'origin/main') && isAncestor(mergeBase, 'HEAD'),
+        `${mergeBase} is not an ancestor of both origin/main and HEAD, so it is not the ` +
+          'merge base and every delta below is measured against the wrong tree. When it ' +
+          'resolves to HEAD the deltas are all zero and this branch contributes nothing ' +
+          'the projection can see.',
+      ).toBe(true);
+    }
+
+    const mainRules = rulesAt('origin/main');
+    const baseRules = mergeBase === undefined ? undefined : rulesAt(mergeBase);
+
+    // The BYTES each read produced, cross-checked against the object database.
+    //
+    // The arm below fences the RESOLUTION step -- which sha `rulesAt` looked up
+    // -- and review proved that is one step short: `ls-tree` and `git show` take
+    // rev arguments of their own, so rewriting either to `HEAD` (or reassigning
+    // `sha` after it has been recorded) leaves the recorded shas correct while
+    // both revs return HEAD's tree. Every delta is then 0, `projected ===
+    // worktreePayload`, and the projection is a copy of the live budget case.
+    // Four separate one-line edits do it.
+    //
+    // `cat-file --batch-check` answers from the object DB in ONE spawn per rev,
+    // bypassing `ls-tree`, `git show` AND `parseRuleText`, so it is independent
+    // of every mechanism it checks. Blob size equals the decoded byte length for
+    // this corpus (verified: 1,003,405 B both ways at origin/main), which is why
+    // the two are comparable at all.
+    //
+    // BOUND: it compares the bytes behind the names the READER produced, so a
+    // rewrite of the `ls-tree` rev ALONE survives when the two revs hold the
+    // same name set -- true today. That case leaves content correct and is
+    // caught by nothing here; it is the third residual, stated with the other
+    // two above.
+    // PER NAME, not per total: a sum lets growth in one rule file cancel a shrink
+    // in another and report the right number for the wrong reason. Same single
+    // spawn either way, so the weaker comparison bought nothing.
+    //
+    // The catch THROWS rather than returning a sentinel the caller skips on. A
+    // silent skip disarms this whole arm on any `cat-file` failure -- review
+    // renamed the flag to `--batch-chekc` and the suite stayed green with no
+    // output at all. Unreachable in the field, since `rulesAt` reads every blob
+    // with `git show` at the same sha and throws if THAT fails; but "unreachable"
+    // is not a reason to leave a silent path in the one arm that fences the
+    // reader.
+    const blobBytesAt = (sha: string, names: readonly string[]): Map<string, number> => {
+      const sizes = new Map<string, number>();
+      if (names.length === 0) return sizes;
+      let out: string;
+      try {
+        out = execFileSync('git', ['cat-file', '--batch-check=%(objectsize)'], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          input: names.map((n) => `${sha}:.claude/rules/${n}`).join('\n') + '\n',
+        });
+      } catch (err) {
+        throw new Error(
+          `could not read blob sizes at ${sha}: ${(err as Error).message}. That would leave ` +
+            'the reader unfenced, so this fails rather than skipping.',
+        );
+      }
+      const lines = out.trim().split('\n');
+      expect(
+        lines.length,
+        `asked git for ${names.length} blob sizes at ${sha} and got ${lines.length} lines. ` +
+          'A different count means the answers no longer line up with the names, so the ' +
+          'per-name compare below would be reading the wrong sizes.',
+      ).toBe(names.length);
+      names.forEach((n, i) => sizes.set(n, Number.parseInt(lines[i] ?? '', 10)));
+      return sizes;
+    };
+    for (const [label, rev, rules] of [
+      ['origin/main', 'origin/main', mainRules],
+      ...(mergeBase === undefined ? [] : [['the merge base', mergeBase, baseRules] as const]),
+    ] as ReadonlyArray<readonly [string, string, RuleFile[] | undefined]>) {
+      if (rules === undefined) continue;
+      const want = blobBytesAt(
+        execFileSync('git', ['rev-parse', `${rev}^{commit}`], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+        }).trim(),
+        rules.map((r) => r.name),
+      );
+      const mismatched = rules
+        .filter((r) => r.bytes !== want.get(r.name))
+        .map((r) => `${r.name}: read ${r.bytes} B, object database has ${want.get(r.name)} B`);
+      expect(
+        mismatched,
+        `${mismatched.length} rule file(s) read for ${label} disagree with the object ` +
+          `database at that commit:\n${mismatched.join('\n')}\n\nThe read came from a ` +
+          'different tree than the one it claims -- and when both revs collapse to HEAD, ' +
+          'every delta is zero and the projection compares the working tree with itself.',
+      ).toEqual([]);
+    }
+
+    // Each read must have used the sha the caller asked for, resolved HERE and
+    // not by `rulesAt`. Rewriting that function's own `rev-parse` argument is
+    // otherwise invisible: both revs come back as HEAD, every delta is 0, and
+    // the projection reports the working tree to itself.
+    for (const [rev, expected] of [
+      ['origin/main', 'origin/main'],
+      ...(mergeBase === undefined ? [] : [['the merge base', mergeBase] as const]),
+    ] as ReadonlyArray<readonly [string, string]>) {
+      const used = readShas.get(rev === 'the merge base' ? mergeBase! : rev);
+      if (used === undefined) continue; // the rev did not resolve; the skip below owns that
+      let want: string;
+      try {
+        want = execFileSync('git', ['rev-parse', `${expected}^{commit}`], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+        }).trim();
+      } catch {
+        continue;
+      }
+      expect(
+        used,
+        `the rule files for ${rev} were read at ${used}, but ${expected} resolves to ` +
+          `${want}. Every projected payload below is then computed against the wrong ` +
+          'commit -- and when both revs resolve to the same one, the projection compares ' +
+          'the working tree with itself and passes unconditionally.',
+      ).toBe(want);
+    }
 
     // No `origin/main` to project against -- a shallow clone, or a fresh clone
-    // that has never fetched. Skipping is right: this assertion is ABOUT the
-    // relationship to that ref, so without it there is nothing to be wrong.
-    // The working-tree ceiling above still applies either way.
-    if (mainTotal === undefined || baseTotal === undefined) return;
+    // that has never fetched. Locally that is a legitimate state and skipping is
+    // right: this assertion is ABOUT the relationship to that ref, so without it
+    // there is nothing to be wrong, and the per-path caps above still apply.
+    //
+    // In CI it is NOT legitimate, and the silence is the defect issue #2310
+    // recorded on 2026-09-05: `actions/checkout` clones at depth 1 by default,
+    // `origin/main` does not resolve, and this case returned before asserting on
+    // every PR run for weeks -- so the projection existed only on developer
+    // machines. The workflow now sets `fetch-depth: 0`; failing closed here is
+    // what stops that regressing silently a second time, since a skipped
+    // assertion and a passing one are the same green.
+    //
+    // `CI` is read by VALUE, not by presence. `CI=false` / `CI=0` / `CI=''` all
+    // mean "not CI" (it is the spelling this repo's own toolchain tests), and a
+    // presence check hard-reds a developer with a legitimately shallow clone,
+    // telling them to go edit a workflow they are not running.
+    const ci = process.env['CI'];
+    const underCi = ci !== undefined && ci !== '' && ci !== '0' && ci !== 'false';
+    if (mainRules === undefined || baseRules === undefined || mergeBase === undefined) {
+      expect(
+        underCi,
+        'origin/main (or this branch\'s merge base) does not resolve, so the merge ' +
+          'projection cannot run. On a CI runner that means the checkout is shallow: ' +
+          'set `fetch-depth: 0` on every job running this suite. Skipping here would ' +
+          'be indistinguishable from passing, which is how this went unenforced on ' +
+          'PR runs (issue go-to-k/cdkd#2310).',
+      ).toBe(false);
+      return;
+    }
 
-    const worktreeTotal = ruleFiles.reduce((n, r) => n + r.bytes, 0);
-    const delta = worktreeTotal - baseTotal;
-    const projected = mainTotal + delta;
+    // GUARD THE GUARD. If the historical read degenerates, every `mainPayload`
+    // and `basePayload` is 0, `delta` becomes the whole working-tree payload,
+    // `projected` equals it, and every cap passes because the live budget case
+    // already passed -- the projection silently becomes a second copy of that
+    // case. Three independent ways in, so three arms:
+    //
+    //   (a) the rev yields no files at all (an `ls-tree` path or filter that
+    //       stopped matching);
+    //   (b) the files are read but no `paths:` parses (the frontmatter reader
+    //       disagreeing with itself across revs), so nothing matches any glob;
+    //   (c) the NAMES stop lining up with `ruleFiles` -- the prefix strip
+    //       regressing. This one needs its own arm rather than a comment,
+    //       because `payloadFor` never reads `name`: it filters on `rule.paths`
+    //       and sums `rule.bytes`. An earlier revision of this block asserted
+    //       that a name regression would trip arm (a); review measured the
+    //       opposite -- payloads stay correct and the name-dependent check just
+    //       stops finding anything, which DISARMS a guard rather than firing it.
+    // Names this BRANCH adds, asked of git DIRECTLY -- one `cat-file -e` per
+    // candidate -- and deliberately NOT derived from `mainRules` / `baseRules`.
+    //
+    // The derived form is the same defect this block has spent five rounds
+    // chasing, in its purest shape yet. A reader defect is SYMMETRIC across
+    // revs, so every name it drops is "absent at both" and lands in this set --
+    // which then removes those bytes from arm (e)'s numerator AND denominator
+    // together, holding the ratio at 100%. Measured: dropping the three largest
+    // files from the rev read, 213,562 B and 21.3% of the corpus, left the suite
+    // green THROUGH the arm written to catch exactly that. Arm (e) had zero true
+    // positives and only false-red exposure -- worse than no arm, because it
+    // reads as coverage.
+    //
+    // `cat-file -e` does not go through `rulesAt`, so a defect in the listing,
+    // the name strip or the parse cannot reach it: a file the reader loses is
+    // still present in git, so it stays in the denominator and arm (e) fires.
+    // One `cat-file -e` per rule file against origin/main (51 spawns, measured
+    // 0.25 s); the merge-base call is short-circuited by `&&` for every name
+    // already found there. An earlier revision of this sentence claimed only
+    // MISSING names were asked about, which the `.filter` below plainly does
+    // not do.
+    const existsAtRev = (rev: string, name: string): boolean => {
+      try {
+        execFileSync('git', ['cat-file', '-e', `${rev}:.claude/rules/${name}`], {
+          cwd: repoRoot,
+          stdio: 'ignore',
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // `mergeBase` is in the skip condition above so it is narrowed to a string
+    // here. It is listed there for the TYPE, not only for the guard: a
+    // `baseRules === undefined` test already covers the case at runtime, but the
+    // narrowing is what lets this pass the merge base to git without an
+    // assertion -- and `vp run typecheck:test` is the only check that sees it,
+    // since `vp check` does not type-check `tests/**` and the suite ran green
+    // with the error present.
+    // A branch adds a handful of satellites at most, and `ruleFiles.length` comes
+    // from `readdirSync` -- so this bounds `existsAtRev` with a comparand that
+    // helper cannot influence.
+    //
+    // It is the arm that stops the class moving one more time. `existsAtRev`
+    // closed round 6's hole; review then collapsed IT to `return false`, which
+    // puts every name in the added set, empties `accountableBytes`, and reduces
+    // arm (e) to `expect(0).toBeGreaterThanOrEqual(0)` -- round 6's hole
+    // restored through the very helper that closed it, with nothing observing
+    // the collapse. The failure modes are NOT symmetric: always-TRUE only
+    // enlarges the denominator (safe), always-FALSE empties it.
+    const addedFileTolerance = 3;
+    // Bounded so widening it is a visible decision rather than a quiet one: at
+    // 51 it disarms both this arm and (c), which review demonstrated.
+    expect(
+      addedFileTolerance,
+      'the added-file tolerance has been widened past a handful. It is the slack in two ' +
+        'arms at once, and at the corpus size it stops bounding either.',
+    ).toBeLessThanOrEqual(5);
+    const branchAddedNames = new Set(
+      ruleFiles
+        .filter((r) => !existsAtRev('origin/main', r.name) && !existsAtRev(mergeBase, r.name))
+        .map((r) => r.name),
+    );
+    expect(
+      branchAddedNames.size,
+      `${branchAddedNames.size} of the ${ruleFiles.length} rule files read as ADDED by ` +
+        'this branch -- present in the working tree and at neither rev. A branch adds a ' +
+        `handful of satellites at most. If this branch genuinely added that many, raise ` +
+        `addedFileTolerance (itself capped at 5, so a larger split needs that cap re-derived ` +
+        `too) and say so in the commit; a count near the corpus size means ` +
+        'instead that `existsAtRev` stopped answering. Every name it swallows leaves arm ' +
+        "(e)'s denominator, and at the limit that arm compares 0 against 0.",
+    ).toBeLessThanOrEqual(addedFileTolerance);
+
+    // On a REBASED branch the merge base IS origin/main, and `revCache` hands
+    // back the same array object -- so the arms below would run twice on
+    // identical input. The body spawns nothing (the reads happen above, memoised)
+    // and a failing `expect` throws, so the cost is not doubled work or doubled
+    // findings, as an earlier revision of this comment claimed: it is that the
+    // second pass is provably vacuous, and a loop whose second iteration cannot
+    // say anything new invites a reader to look for the difference.
+    const revPasses: ReadonlyArray<readonly [string, RuleFile[]]> =
+      mainRules === baseRules
+        ? [['origin/main', mainRules]]
+        : [
+            ['origin/main', mainRules],
+            ['the merge base', baseRules],
+          ];
+    for (const [rev, rules] of revPasses) {
+      // THE RULE FOR EVERY ARM HERE, because this class has now recurred THREE
+      // times in this one block: an arm's comparand must survive the failure the
+      // arm exists to catch. Twice the convenient reference value was the one the
+      // broken code also produces, and the arm passed on two zeroes --
+      // `unexplainedZeros` built its match set with the suspect MATCHER, then
+      // `rowsLoadingAtMain` compared against a worktree count computed with that
+      // same matcher, then the parsable-`paths:` arm compared against a count
+      // produced by the suspect PARSER (`parseRuleFile` IS `parseRuleText`;
+      // forcing `paths` to undefined sent both sides to 0 and `0 >= -3` passed).
+      // Each fix moved the defect one arm along. So each comparand is now named
+      // with the mechanism it is independent OF:
+      //
+      //   (a) emptiness      -> literal 0
+      //   (b) parsable paths -> `rules.length`, from `git ls-tree` (not the parser)
+      //   (c) name overlap   -> `ruleFiles.length`, from `readdirSync` (not the strip)
+      //   (d) glob reach     -> `PAYLOAD_BUDGETS.length`, a constant (not the matcher)
+      //   (e) NAME weight    -> the WORKING TREE's bytes for the names the rev
+      //                         produced; the added-set that scopes it comes from
+      //                         `git cat-file -e`, NOT from the reader
+      //   (f) CONTENT weight -> the rev's own bytes vs the working tree's, over
+      //                         the names the two share
+      //
+      // Arm (e) exists because arms (b)-(d) are COUNTS and therefore unbounded in
+      // bytes: review dropped the three LARGEST files -- 213,562 B, 21% of the
+      // corpus -- and every count arm stayed green, since only three files went
+      // missing. A first cut compared the rev's OWN byte sum at 80%, and review
+      // defeated that twice: swapping the third-largest file for the fourth
+      // dropped ~19.8% of the corpus and passed, and a file present-but-UNPARSABLE
+      // kept its bytes in the sum while contributing nothing to any payload
+      // (149,341 B invisible, suite green).
+      //
+      // So the weight comes from the WORKING TREE and the rev supplies only the
+      // set of names it could both read and parse. A name the rev loses -- by
+      // vanishing from the listing or by failing the prefix strip -- costs exactly
+      // the bytes that name is worth here, which is the quantity the projection
+      // actually loses. (A name it produces UNPARSABLE reds arm (b) first, which
+      // is exact; arm (e) is the backstop for the case where a name never arrives
+      // at all.) Bound, stated at the strength it has: neither (e) nor (f) can see
+      // the byte FIELD being wrong for BOTH sides at once, since `RuleFile.bytes`
+      // is one mechanism -- halving it reds 43 of the live payload cases instead,
+      // which is where that shows up.
+      //
+      // The tolerances are three separate quantities and no longer share a
+      // literal: FILES a branch may add (arm c), ROWS a branch may add (arm d),
+      // and byte WEIGHT (arm e). Arm (b) has NO tolerance -- every rule file is
+      // required to declare `paths:`, asserted separately, so at any rev the two
+      // counts must agree exactly; the `- 2` that stood here was slack nothing
+      // derived, and it was the hole review walked through.
+      expect(
+        rules.length,
+        `${rev} yielded no .claude/rules/*.md files. The projection would then ` +
+          'compare this branch against an empty corpus and pass unconditionally.',
+      ).toBeGreaterThan(0);
+      // ALWAYS_ON_ALLOWLIST is filtered out on BOTH sides, the way the
+      // working-tree case does it. Without that, the moment anyone lands the
+      // documented always-on hatch on main, every open branch's projection reds
+      // and points at the branch. Empty today, which is exactly when the filter
+      // is free to add and impossible to remember later.
+      const declaring = rules.filter((r) => !ALWAYS_ON_ALLOWLIST.includes(r.name));
+      const parsable = declaring.filter((r) => (r.paths ?? []).length > 0).length;
+      expect(
+        parsable,
+        `${rev} yielded ${declaring.length} rule files that must declare a glob, but ` +
+          `only ${parsable} with a parsable ` +
+          '`paths:` list. A file whose frontmatter does not parse matches no glob, so ' +
+          'its bytes vanish from every projected payload -- in the direction that reads ' +
+          'as headroom. Every rule file is required to declare `paths:` (asserted ' +
+          'separately for the working tree), so at any rev these two counts must ' +
+          'agree exactly. Measured over all 464 revs that have touched ' +
+          '.claude/rules: every file at every one of them parses with a non-empty ' +
+          'list, so this is exact rather than tolerant. The one legitimate way to ' +
+          'red it is ALWAYS_ON_ALLOWLIST, the documented always-on hatch, which is ' +
+          'empty today -- a file added to it needs this arm to exclude it.',
+      ).toBe(declaring.length);
+      const overlap = rules.filter((r) => ruleFiles.some((live) => live.name === r.name)).length;
+      expect(
+        overlap,
+        `only ${overlap} of ${rev}'s ${rules.length} rule-file names match a name in the ` +
+          `working tree (which has ${ruleFiles.length}). Either the \`.claude/rules/\` ` +
+          'prefix strip has regressed, or the historical listing stopped seeing most of ' +
+          `the corpus. The threshold is ${ruleFiles.length - branchAddedNames.size - addedFileTolerance} ` +
+          `(${ruleFiles.length} live, less ${branchAddedNames.size} this branch adds, less a ` +
+          `${addedFileTolerance} tolerance). Payloads stay plausible under both -- what stops ` +
+          'working is every name-keyed check here, silently.',
+      ).toBeGreaterThanOrEqual(ruleFiles.length - branchAddedNames.size - addedFileTolerance);
+      // (e) NAME weight and (f) CONTENT weight. Two arms, because review defeated
+      // each single form in turn and they are complementary rather than
+      // successive: (e) sees a name the rev never usably produced, (f) sees a
+      // name it produced with the wrong bytes behind it. A first cut summed the
+      // rev's own bytes over the listing -- blind to a present-but-unparsable
+      // file. Replacing it with the name-weighted form alone then left NOTHING
+      // reading the rev's bytes, and truncating `git show` to the frontmatter hid
+      // 98.7% of the historical corpus with all five arms green.
+      const usableNames = new Set(
+        rules.filter((r) => (r.paths ?? []).length > 0).map((r) => r.name),
+      );
+      // Files this BRANCH adds are not evidence of a degraded read and must
+      // leave the denominator -- otherwise a lane adding ~100 KB of satellites
+      // reds this, and a "rebase" remedy cannot help, since a branch-added file
+      // is at no rev to be found. That set is asked of git directly (see
+      // `existsAtRev` above); deriving it from the reader is what made this arm
+      // vacuous, and the note there carries the measurement.
+      // ALWAYS_ON_ALLOWLIST leaves BOTH sides. Filtering it out of `usableNames`
+      // alone (which the `paths:`-length test does implicitly, since an
+      // always-on file declares none) while leaving its bytes in the
+      // denominator is the very false-red the arm-(b) filter was added to
+      // prevent, moved one arm along and capped by the 10% tolerance instead of
+      // being loud.
+      const accountableBytes = ruleFiles
+        .filter((r) => !branchAddedNames.has(r.name) && !ALWAYS_ON_ALLOWLIST.includes(r.name))
+        .reduce((n, r) => n + r.bytes, 0);
+      const coveredBytes = ruleFiles
+        .filter((r) => usableNames.has(r.name))
+        .reduce((n, r) => n + r.bytes, 0);
+      expect(
+        coveredBytes,
+        `the names ${rev} usably produced account for ${coveredBytes} B of the ` +
+          `${accountableBytes} B of corpus that existed there ` +
+          `(${((coveredBytes / accountableBytes) * 100).toFixed(1)}%), under 90%. That ` +
+          'share contributes nothing to any projected payload, so the caps below pass on ' +
+          'a fraction of the real merge. The count arms above cannot see it: a few LARGE ' +
+          'names carry a fifth of the corpus between them.',
+      ).toBeGreaterThanOrEqual(Math.floor(accountableBytes * 0.9));
+      // (f) The bytes BEHIND those names. Restricted to names present at the rev
+      // so a branch-added file cannot red it, and compared against the working
+      // tree's own bytes for the same names -- so a rev whose CONTENT collapsed
+      // (a truncated read, a decode that lost most of the file) fails here even
+      // though every name and every `paths:` list survived.
+      const sharedWorktreeBytes = ruleFiles
+        .filter((r) => rules.some((h) => h.name === r.name))
+        .reduce((n, r) => n + r.bytes, 0);
+      const revSharedBytes = rules
+        .filter((h) => ruleFiles.some((r) => r.name === h.name))
+        .reduce((n, h) => n + h.bytes, 0);
+      expect(
+        revSharedBytes,
+        `${rev} holds ${revSharedBytes} B behind the names it shares with the working ` +
+          `tree, which holds ${sharedWorktreeBytes} B for the same names ` +
+          `(${((revSharedBytes / sharedWorktreeBytes) * 100).toFixed(1)}%), under 90%. The ` +
+          'names and their globs survived, so every arm keyed on those passes while the ' +
+          'CONTENT behind them did not arrive -- a truncated `git show`, a decode that ' +
+          'dropped most of each file. Every projected payload is then a fraction of the ' +
+          'real one, in the direction that reads as headroom.',
+      ).toBeGreaterThanOrEqual(Math.floor(sharedWorktreeBytes * 0.9));
+    }
+
+    const offenders: string[] = [];
+    let rowsLoadingAtMain = 0;
+    for (const [touched, , cap] of PAYLOAD_BUDGETS) {
+      const mainPayload = payloadFor(mainRules, touched);
+      const basePayload = payloadFor(baseRules, touched);
+      const worktreePayload = payloadFor(ruleFiles, touched);
+      if (mainPayload > 0) rowsLoadingAtMain += 1;
+      const delta = worktreePayload - basePayload;
+      const projected = mainPayload + delta;
+      if (projected > cap) {
+        // The "passes on its own" clause is CONDITIONAL, because it is false
+        // whenever the working tree is over the cap too -- and that is the
+        // ordinary case (a lane that simply added too much fails both this and
+        // the live budget above). Printing it unconditionally told the reader
+        // their tree was fine and only the merge was the problem, sending them
+        // to rebase when the fix was to cut their own bytes.
+        offenders.push(
+          `\`${touched}\`: this branch adds ${delta} B to what that path loads. ` +
+            `Against origin/main's current ${mainPayload} B that projects to ` +
+            `${projected} B, over the ${cap} B cap` +
+            // Branch on the DELTA, not on whether the tree is over. A branch
+            // that rebased onto a main already over the cap has `delta <= 0`
+            // and a tree over the cap, and telling that lane "this is your own
+            // delta" is the same misattribution as the arm above, inverted.
+            (delta <= 0
+              ? `. This branch does not ADD to that path (delta ${delta} B) -- the ` +
+                'overrun arrived on origin/main, so it is not yours to fund.'
+              : worktreePayload <= cap
+                ? ` -- even though the working tree loads ${worktreePayload} B there and ` +
+                  "passes on its own, so a parallel lane has spent part of this path's budget."
+                : `. The working tree is already over on its own (${worktreePayload} B), so ` +
+                  'this is your own delta, not a collision.'),
+        );
+      }
+    }
+
+    // Fourth arm, and the one the three above cannot cover: the files are read,
+    // parsed and named correctly, but the MATCHER stops reaching them, so every
+    // payload is 0 again. Stated at the strength it actually has -- TOTAL
+    // collapse, not per row.
+    //
+    // A per-row version was tried and withdrawn. It asked whether a row reading
+    // 0 B at origin/main was explained by its matching files being ABSENT there,
+    // which is wrong twice over: it false-fires on a lane that WIDENS an
+    // existing file's glob onto a newly-budgeted path (file present at main, its
+    // main-rev glob simply did not reach the row) and, worse, it computed
+    // `liveMatches` with the very matcher under suspicion, so a broken matcher
+    // left it empty and it never fired at all. Review demonstrated both.
+    //
+    // What it does NOT catch, said plainly rather than implied away: a PARTIAL
+    // matcher break, which leaves some rows loading and under-reports the rest.
+    // Nothing in this shape can -- a per-row check has no independent reference
+    // value to compare against, and the live case's matcher is the same one.
+    // The comparand is `PAYLOAD_BUDGETS.length`, a CONSTANT, and that is the
+    // whole point. An earlier revision of this arm compared against the count of
+    // rows loading in the WORKING TREE -- computed with `payloadFor`, i.e. with
+    // the matcher under suspicion. Under the never-match mutation both sides
+    // went to 0 and the arm passed: the same "comparand built from the suspect
+    // mechanism" defect this block's own history already records one paragraph
+    // up, reintroduced while fixing it. The class recurs because the convenient
+    // reference value is always the one the broken code produces.
+    //
+    // `- 3` tolerates rows a branch legitimately adds along with the satellite
+    // that reaches them. Every row loads something in the working tree today,
+    // and what makes that observable is the per-row FLOOR in the `it.each` over
+    // PAYLOAD_BUDGETS further down -- a row loading nothing fails it. NOT the
+    // loop just above, which checks caps only, and NOT the coverage case below,
+    // which is the CONVERSE (every FILE is reached by some row). Two earlier
+    // revisions of this comment cited each of those in turn; the third names the
+    // assertion that actually holds it up.
+    expect(
+      rowsLoadingAtMain,
+      `only ${rowsLoadingAtMain} of the ${PAYLOAD_BUDGETS.length} budgeted paths load ` +
+        'any rule file at origin/main. The glob matcher no longer reaches the ' +
+        'historical corpus, so the caps above just passed on a payload of nothing.',
+    ).toBeGreaterThanOrEqual(PAYLOAD_BUDGETS.length - 3);
 
     expect(
-      projected,
-      `This branch adds ${delta} B to the rules corpus. Against origin/main's ` +
-        `current ${mainTotal} B that projects to ${projected} B, over the ` +
-        `${CORPUS_BYTES_MAX} B ceiling -- even though the working tree is ` +
-        `${worktreeTotal} B and passes on its own.\n\n` +
-        'A parallel lane has spent part of the same budget. Rebase onto ' +
-        'origin/main and re-measure: the number this fails on is the one the ' +
-        'merge produces. Then fund your addition by cutting what your own ' +
-        'change made stale -- never by trimming another lane\'s entry, which ' +
-        'is not yours to spend. ' +
+      offenders,
+      `${offenders.join('\n')}\n\n` +
+        'Rebase onto origin/main and re-measure: the number this fails on is the ' +
+        'one the merge produces. Then fund your addition by cutting what your own ' +
+        "change made stale -- never by trimming another lane's entry, which is not " +
+        'yours to spend. ' +
         SPLIT_ADVICE,
-    ).toBeLessThanOrEqual(CORPUS_BYTES_MAX);
-  });
+    ).toEqual([]);
+    // `.claude/rules/testing.md`: a case that SPAWNS subprocesses declares its
+    // own bound, because vitest's 5 s default is an IN-PROCESS one. Measured
+    // 737 ms here on a rebased branch; a STALE branch -- the only case this
+    // projection exists for -- misses the memo on the merge-base read and adds
+    // ~52 spawns, and a loaded CI runner is slower again. go-to-k/cdkd#2553 is
+    // the precedent: 5 spawns, ~2 s locally, timed out at 5000 ms in CI. The
+    // bound's job is to stop a HANG, not to police latency.
+  }, 120_000);
 
   it.each(ruleFiles.map((r) => [r.name] as const))(
     '%s stays under the per-file byte cap',
@@ -1672,7 +2419,7 @@ describe('.claude/rules payload fence', () => {
       );
       expect(
         worst,
-        `.claude/rules/${name} has a ${worst} B line, over the ${ABSOLUTE_MAX_LINE_BYTES} B ceiling. This is how a 47,795-char bullet happened: one line per area, appended to PR after PR. Break it into paragraphs or move it to a satellite. ${SPLIT_ADVICE}`,
+        `.claude/rules/${name} has a ${worst} B line, over the ${ABSOLUTE_MAX_LINE_BYTES} B ceiling. This is how a 47,795-char bullet happened: one line per area, appended to PR after PR. ${REFLOW_ADVICE}`,
       ).toBeLessThanOrEqual(ABSOLUTE_MAX_LINE_BYTES);
     },
   );
@@ -1692,17 +2439,15 @@ describe('.claude/rules payload fence', () => {
         .sort((a, b) => b.bytes - a.bytes)
         .slice(0, 5)
         .map((l) => `${l.where} (${l.bytes} B)`)
-        .join(', ')}. ${SPLIT_ADVICE}`,
+        .join(', ')}. ${REFLOW_ADVICE}`,
     ).toBeLessThanOrEqual(LEGACY_LONG_LINE_BUDGET);
   });
 
   it.each(PAYLOAD_BUDGETS.map(([p, lo, hi]) => [p, lo, hi] as const))(
     'touching %s loads between %d and %d B of rule files',
     (touched, floor, cap) => {
-      const matched = ruleFiles.filter((rule) =>
-        (rule.paths ?? []).some((glob) => globToRegExp(glob).test(touched)),
-      );
-      const total = matched.reduce((sum, rule) => sum + rule.bytes, 0);
+      const matched = matchingRules(ruleFiles, touched);
+      const total = payloadFor(ruleFiles, touched);
       const from = matched
         .sort((a, b) => b.bytes - a.bytes)
         .map((r) => `${r.name} (${r.bytes} B)`)
@@ -1835,11 +2580,21 @@ describe('.claude/rules payload fence', () => {
     ).toBeLessThanOrEqual(cap);
   });
 
-  it('the two corpus bounds are ordered, so neither can be satisfied by crossing', () => {
-    // Redundant with the corpus case, which asserts the total against BOTH
-    // bounds and so already fails when they cross. Kept only because it names
-    // the cause directly instead of reporting a total that satisfies neither.
-    expect(CORPUS_BYTES_MIN).toBeLessThan(CORPUS_BYTES_MAX);
+  it('every payload budget is a band, so no row can be satisfied by crossing', () => {
+    // The corpus-bound version of this case (CORPUS_BYTES_MIN < CORPUS_BYTES_MAX)
+    // went with the global ceiling. Its job moves here, where the two-sided
+    // bounds now live: a row whose floor exceeds its cap is unsatisfiable, and
+    // its per-path case would report a payload that fails both without naming
+    // the cause.
+    const crossed = PAYLOAD_BUDGETS.filter(([, floor, cap]) => floor >= cap).map(
+      ([path, floor, cap]) => `${path} (floor ${floor} >= cap ${cap})`,
+    );
+    expect(
+      crossed,
+      `These budget rows are unsatisfiable: ${crossed.join(', ')}. A floor at or ` +
+        'above its cap fails whatever the payload is, so the row stops measuring ' +
+        'the path and starts measuring itself.',
+    ).toEqual([]);
   });
 
   it('no rule file renders a surviving HTML comment, so nothing can hide in one', () => {

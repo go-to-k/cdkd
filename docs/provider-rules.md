@@ -604,9 +604,10 @@ fail-closed guard into a fail-open one. See
 `.claude/rules/provider-resource-identity.md` for the full rule, including the
 two legacy `GetBucketLocation` spellings the fold must absorb and why the
 refusal is `markNonRetryable`. (`.claude/rules/providers.md` is a routing index
-now — the rules corpus was split under its byte ceiling in issue
-[#2310](https://github.com/go-to-k/cdkd/issues/2310) — so it points on rather
-than carrying the rule itself.)
+now — the rules corpus was split under the corpus-wide byte ceiling that issue
+[#2310](https://github.com/go-to-k/cdkd/issues/2310) has since retired in
+favour of a per-`paths:`-glob budget — so it points on rather than carrying the
+rule itself.)
 
 That guard is scoped to the `BucketAlreadyOwnedByYou` catch on the CREATE path,
 which leaves two neighbouring routes to the wrong bucket that it cannot see —

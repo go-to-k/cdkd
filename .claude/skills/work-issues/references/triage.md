@@ -69,14 +69,14 @@ Two rules:
 - **Re-read the claim thread at each checkpoint** — before the first edit,
   before the push, and before opening the PR.
 
-**File-disjoint lanes are not BUDGET-disjoint.** A cumulative cap (the
-`.claude/rules` corpus ceiling; any tree-wide SUM) is spent by every lane at
-once and no probe above sees it, so measure the headroom HERE against
-`CORPUS_BYTES_MAX` in `tests/unit/scripts/rule-file-payload.test.ts`, and drop
-a candidate whose fix must GROW it by more than is left — funding one out of
-another lane's bytes is what the fence's own message forbids (one run measured
-247 B free and had to drop go-to-k/cdkd#2599; re-measure, never re-quote — that
-figure was obsolete within the day).
+**File-disjoint lanes are not BUDGET-disjoint.** A cumulative cap is spent by
+every lane at once and no probe above sees it, so measure the headroom HERE and
+drop a candidate whose fix must GROW it by more than is left — funding one out
+of another lane's bytes is what the fence's own message forbids. For
+`.claude/rules` the subject is the `PAYLOAD_BUDGETS` row for each path your
+edits load (go-to-k/cdkd#2310 retired the corpus-wide sum, so lanes editing
+rule files under DISJOINT globs no longer collide). Re-measure, never
+re-quote: one run's 247 B was obsolete within the day.
 
 **Treat any `origin/*` branch pushed within roughly the last hour as a LIVE
 lane, whatever its PR state**, and read what it owns first:

@@ -9,7 +9,26 @@ jobs:
   check-build-test:
     runs-on: ubuntu-latest
     steps:
+      # `fetch-depth: 0` is load-bearing, not a default anyone forgot to trim.
+      # `rule-file-payload.test.ts` projects this branch's rule-file payload onto
+      # `origin/main` to catch two lanes each green in isolation and over a cap
+      # together. At the default depth 1 that ref does not resolve, the case
+      # returned before asserting, and the projection ran on developer machines
+      # ONLY -- silently, since a skipped assertion and a passing one are the
+      # same green (issue go-to-k/cdkd#2310, measured 2026-09-05).
+      #
+      # What this buys HERE is precise, and worth stating so nobody removes it
+      # believing the projection is the point: on a `pull_request` run the
+      # checked-out merge ref already has `origin/main` as a parent, so the
+      # projection is usually a no-op. The suite fails closed when the ref is
+      # missing under `CI`, so what this line really keeps alive is the
+      # SHALLOW-CLONE DETECTOR -- remove it and the job reds instead of quietly
+      # skipping, which is the whole repair. On a `push: main` run the
+      # projection does assert something real: that `main` itself is inside
+      # every per-path cap.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
 
       - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
         with:
@@ -392,7 +411,12 @@ jobs:
   once-leak-detect:
     runs-on: ubuntu-latest
     steps:
+      # Same reason as check-build-test: this job runs the unit suite too, so it
+      # reaches the same `origin/main` projection and would fail closed without
+      # the full history.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
 
       - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
         with:

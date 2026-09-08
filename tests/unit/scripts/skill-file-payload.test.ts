@@ -161,11 +161,22 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // only because every lane appended to one shared anchor. Removing the
     // anchor removed the instructions for surviving it: net -1,282 B against
     // main's 176,660, even counting what the same change adds. The floor is
-    // deliberately NOT re-derived downward -- its margins are comfortably
-    // positive (1,761 largest-side, 1,338 binding) -- and a downward
-    // re-derivation belongs to a deliberate compression pass, not to a change
-    // that happens to shrink.
-    corpusBytes: 175_378,
+    // deliberately NOT re-derived downward -- a downward re-derivation belongs
+    // to a deliberate compression pass, not to a change that happens to shrink.
+    //
+    // Then go-to-k/cdkd#2310 retired the `.claude/rules` corpus CEILING, and
+    // triage.md and ship.md each described that ceiling as the live cumulative
+    // bound; re-pointing them at the per-path budgets is a correction, not an
+    // addition, and it came out NEGATIVE too because the retirement makes text
+    // stale rather than needing more of it (ship.md's restatement of the
+    // go-to-k/cdkd#2695 incident is now a citation, the incident itself living
+    // beside the projection in rule-file-payload.test.ts, per CLAUDE.md's
+    // mechanism-at-its-module contract). Neither bound moved for either change,
+    // which is the point: a change should not spend another fence's margin.
+    //
+    // The value below is MEASURED on the merged tree, not the two deltas added
+    // up -- both changes edit ship.md, so their sum is not their composition.
+    corpusBytes: 175_335,
     largest: { file: 'implement.md', bytes: 28_939 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },
@@ -361,7 +372,9 @@ const MIN_REFERENCE_FILES = 6;
 // rider, derivable from the table's stated in-order application. One figure
 // was de-authorised in place -- the budget-disjointness paragraph's 247 B of
 // rules-corpus headroom now reads as a disclaimed anecdote, having been
-// obsolete within a day of CORPUS_BYTES_MAX being re-derived.
+// obsolete within a day of the global corpus ceiling being re-derived -- that
+// ceiling is itself retired since issue go-to-k/cdkd#2310, so the figure now
+// measures a bound that no longer exists.
 //
 // Read the first deletion as the shape to look for whenever a ranking rule is
 // REVERSED: the rows are cross-referenced from prose that never names the rule
@@ -514,8 +527,11 @@ const MIN_REFERENCE_FILES = 6;
 // round caught this comment claiming both files project. That breach was
 // resolved on `main` by go-to-k/cdkd#2704 re-deriving the ceiling upward,
 // not by this branch; what this branch does to the rules corpus is remove
-// 504 B of duplication net, and the WHY-it-was-not-caught note sits beside
-// that ceiling in rule-file-payload.test.ts.
+// 504 B of duplication net. That corpus ceiling is retired (issue
+// go-to-k/cdkd#2310) and the projection now runs per BUDGETED PATH, so the
+// contrast above still holds -- rule-file-payload.test.ts projects, this file
+// does not. The WHY-it-was-not-caught note moved with the retirement and now
+// sits in the retirement block beside CORPUS_BYTES_MIN.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller
