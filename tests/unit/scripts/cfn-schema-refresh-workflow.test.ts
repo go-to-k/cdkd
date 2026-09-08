@@ -1750,30 +1750,49 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     // gets a fence rather than a third careful rewrite.
     //
     // Change the workflow's surfacing and this reds, naming the prose to fix.
+    // (i) The day-one reading goes into the BODY, composed from the diagnosis.
+    // Dropping the `cat` would leave the body without it while every call shape
+    // below stayed identical.
     const body = workflow.match(/gh pr create[\s\S]{0,400}?--body-file (\S+)/);
     expect(body, 'the PR is no longer created with a --body-file').not.toBeNull();
     expect(body![1]).toBe('/tmp/pr-body.md');
+    expect(workflow, 'the created body no longer carries the diagnosis').toContain(
+      'cat /tmp/diagnosis.md'
+    );
 
-    // The later-cycle path posts a comment, and does NOT edit the body.
-    expect(workflow).toContain('gh pr comment');
+    // (ii) A later publishing cycle posts a COMMENT — exactly one poster, and it
+    // sits directly on the push-success arm. A guarded or duplicated comment
+    // makes "the newest comment holds the newest reading" false without
+    // changing any call shape.
+    const posters = [...workflow.matchAll(/gh pr comment/g)];
+    expect(posters.length, 'there is no longer exactly one comment poster').toBe(1);
+    const pushArm = guardArm(workflow, 'if git push \\');
+    expect(pushArm, 'the diagnosis comment left the push-success arm').toContain('gh pr comment');
+    expect(
+      pushArm.slice(0, pushArm.indexOf('gh pr comment')),
+      'the diagnosis comment picked up a condition of its own'
+    ).not.toMatch(/\n\s*if\b/);
     const comment = workflow.match(/gh pr comment[\s\S]{0,200}?--body-file (\S+)/);
     expect(comment, 'the later-cycle diagnosis is no longer posted as a comment').not.toBeNull();
     expect(comment![1]).toBe('/tmp/diagnosis.md');
 
-    // And nothing rewrites the whole body afterwards. Exactly one later write
-    // exists — the marking step's `${NB}`, which is the body with the verdict
-    // block spliced between its two markers, not a regenerated one. A third
-    // source appearing here is a full-body rewrite slipping in under the same
-    // call shape, which would make the prose wrong again.
-    const bodyWrites = [...workflow.matchAll(/--field "body=@(\S+?)"/g)].map((m) => m[1]);
-    expect(bodyWrites.length, 'no body write found — the matcher stopped matching').toBeGreaterThan(
-      0
-    );
-    for (const src of bodyWrites) {
-      expect(['${NB}'], `an unexpected whole-body write from ${src}`).toContain(src);
+    // (iii) Nothing rewrites a rendering in place. The ONLY later body write is
+    // the marking step's `${NB}` — the body with the verdict block spliced
+    // between its markers, not a regenerated one.
+    //
+    // Checked across BOTH spellings a rewrite would reach for, because the
+    // quoted `--field "body=@..."` form alone left five realistic mutations
+    // green (measured): a `gh pr edit --body-file` in the marking step, an
+    // unquoted `-f body=`, and so on. `gh pr edit` already appears three times
+    // in that step, so it is the natural reach.
+    for (const m of workflow.matchAll(/(?:--field\s+"?|[-]f\s+)body=@?([^\s"]+)/g)) {
+      expect(['${NB}'], `an unexpected whole-body write from ${m[1]}`).toContain(m[1]);
     }
-    // The one write IS the splice: it is assembled from the marker pair the
-    // marking step maintains, not from a fresh render.
+    for (const m of workflow.matchAll(/gh pr edit[\s\S]{0,200}?(?=\n\s*\n|\n\s*[a-z}])/g)) {
+      expect(m[0], 'a gh pr edit now writes a body').not.toMatch(/--body(-file)?\b/);
+    }
+    // The one write IS the splice: assembled from the marker pair the marking
+    // step maintains, not from a fresh render.
     expect(workflow).toContain('VERDICT_BEGIN');
     expect(workflow).toContain('VERDICT_END');
   });

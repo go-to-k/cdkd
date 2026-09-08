@@ -4375,7 +4375,7 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // whole block is gated, not just its heading sentence.
     const flat = md.replace(/\s+/g, ' ');
     expect(flat).not.toContain('splits them two ways and no further');
-    expect(flat).not.toContain('Do not wait for this section to answer it');
+    expect(flat).not.toContain('No rendering of this report is ever rewritten in place');
   });
 
   it('names the unsettled findings, and only those', () => {
@@ -4403,17 +4403,25 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // type does NOT mean there is nothing to bump.
     expect(flat).toContain('Do NOT read that as “there is nothing to bump”');
     // The remedy, which had no assertion at all and could be deleted green.
-    // TWO earlier cuts promised an outcome the reader cannot observe: "re-run
-    // the job" (the fresh reading is computed and discarded on an idle cycle),
-    // then "the body is only rewritten on a cycle that publishes" (no cycle
-    // rewrites it — the body is written once at `gh pr create` and later cycles
-    // `gh pr comment`). The mechanism sentence is asserted, not just the
-    // imperative, because both wrong versions kept a plausible imperative.
-    expect(flat).toContain('Do not wait for this section to answer it');
-    expect(flat).toContain('written once, on the day the pull request opened');
-    expect(flat).toContain('posts its fresh reading as a new COMMENT');
-    expect(flat).toContain('read the newest comment for a current answer');
+    // THREE earlier cuts were wrong, each in the same way — a claim about the
+    // workflow, made from another file: "re-run the job" (the fresh reading is
+    // computed and discarded on an idle cycle); "the body is only rewritten on
+    // a cycle that publishes" (no cycle rewrites it); and "this text was
+    // written once, on the day the PR opened" — false read inside a COMMENT,
+    // because `divergenceProcedure` takes no destination and this same string
+    // is rendered into the body AND into every later comment.
+    //
+    // So the wording must hold from either destination, which is what these
+    // pin. The mechanism sentence is asserted, not just the imperative: all
+    // three wrong versions kept a plausible imperative. The workflow behaviour
+    // it rests on is fenced separately, in
+    // `tests/unit/scripts/cfn-schema-refresh-workflow.test.ts`.
+    expect(flat).toContain('No rendering of this report is ever rewritten in place');
+    expect(flat).toContain('the newest comment holds the newest reading');
+    expect(flat).toContain('if there is no comment, the body is all there is');
     expect(flat).toContain('npm view @aws-sdk/client-<service> version');
+    // Nothing may claim WHERE this particular instance is being read.
+    expect(flat).not.toContain('written once, on the day');
     // The finding itself is named, not just the class...
     expect(md).toContain('   - `AWS::Glue::Connection`: `OAuth2Credentials`');
     // ...and the OTHER divergence, which the published client DID settle, is
