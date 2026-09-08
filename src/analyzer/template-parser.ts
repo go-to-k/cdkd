@@ -22,7 +22,14 @@ export class TemplateParser {
    * Get a specific resource from template
    */
   getResource(template: CloudFormationTemplate, logicalId: string): TemplateResource | undefined {
-    return template.Resources[logicalId];
+    // `Object.hasOwn` (issue #2767). Three of the four callers pass an id that
+    // came out of `Object.keys`, but `DagBuilder`'s Custom-Resource edge passes
+    // `extractLogicalIdFromReference(serviceToken)` — fully template-controlled
+    // — so a bare read answered `Object.prototype.constructor` with the `Object`
+    // FUNCTION. Benign today only because the caller then compares
+    // `.Type !== 'AWS::Lambda::Function'`; that is a property of the caller, not
+    // of this method's contract.
+    return Object.hasOwn(template.Resources, logicalId) ? template.Resources[logicalId] : undefined;
   }
 
   /**
@@ -253,7 +260,10 @@ export class TemplateParser {
       }
 
       const obj = current as Record<string, unknown>;
-      if (!(part in obj)) {
+      // `Object.hasOwn` (issue #2767): `part` is a template-controlled path
+      // segment, so a bare `in` reported an `Object.prototype` member as
+      // present and the walk continued into the prototype.
+      if (!Object.hasOwn(obj, part)) {
         return false;
       }
 
@@ -280,7 +290,10 @@ export class TemplateParser {
       }
 
       const obj = current as Record<string, unknown>;
-      if (!(part in obj)) {
+      // `Object.hasOwn` (issue #2767): `part` is a template-controlled path
+      // segment, so a bare `in` reported an `Object.prototype` member as
+      // present and the walk continued into the prototype.
+      if (!Object.hasOwn(obj, part)) {
         return undefined;
       }
 
@@ -394,11 +407,35 @@ export class TemplateParser {
     const filteredResources: Record<string, TemplateResource> = {};
     for (const [logicalId, resource] of Object.entries(template.Resources)) {
       const conditionName = resource.Condition;
-      if (conditionName !== undefined && conditions[conditionName] === false) {
+      // `Object.hasOwn` on the conditions read (issue #2767): `conditionName` is
+      // template-controlled. The bag `evaluateConditions` hands us has no
+      // prototype today, which would make the bare read safe — but that is a
+      // property of ANOTHER FILE, and this method is exported and called with
+      // whatever a caller has.
+      if (
+        conditionName !== undefined &&
+        Object.hasOwn(conditions, conditionName) &&
+        conditions[conditionName] === false
+      ) {
         this.logger.debug(`Excluding resource ${logicalId} — condition ${conditionName} is false`);
         continue;
       }
-      filteredResources[logicalId] = resource;
+      // The WRITE twin of the `resolveValue` bug this sweep fixes (issue #2767).
+      // `Object.entries` yields a `__proto__` logical id -- an OWN key after
+      // `JSON.parse` -- and a plain assignment routes it through the inherited
+      // setter: the resource is silently DROPPED from the effective template, so
+      // the diff sees "in state, absent from desired" and issues a DELETE, and
+      // `filteredResources` gets the resource object as its PROTOTYPE.
+      if (logicalId === '__proto__') {
+        Object.defineProperty(filteredResources, logicalId, {
+          value: resource,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      } else {
+        filteredResources[logicalId] = resource;
+      }
     }
     return { ...template, Resources: filteredResources };
   }

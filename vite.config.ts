@@ -517,6 +517,20 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/check-withretry-interrupt.ts',
         cache: false,
       },
+      // Issue #2802 — every read of a bag keyed by TEMPLATE text must be
+      // own-key. A CloudFormation template supplies logical ids, parameter and
+      // condition names, mapping keys, attribute names and dynamic-reference
+      // JSON keys, so reading one off a plain object walks the prototype chain
+      // and a name like `constructor` answers where no entry exists. Each
+      // instance is a WRONG RESULT, not a refusal. Four review rounds on
+      // PR #2777 each surfaced sites the last had missed, which is what made
+      // this mechanical rather than a checklist item. `cache: false` for the
+      // sibling critics' reason: a green replayed from cache is a checker
+      // reporting "all guarded" without having looked.
+      'audit:template-keyed-bag-reads:check': {
+        command: 'node --experimental-strip-types scripts/check-template-keyed-bag-reads.ts',
+        cache: false,
+      },
       // Issue #2178 — a provider interpolating a `properties`-derived value into
       // a message must mask it BEFORE `JSON.stringify`, not after. Masking the
       // finished message cannot recover it: `JSON.stringify` escapes `"` / `\` /

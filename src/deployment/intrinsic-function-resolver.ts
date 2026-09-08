@@ -409,6 +409,8 @@ export function refStateLookupFromResource(resource: {
     for (const source of [resource.properties, resource.attributes]) {
       if (!source) continue;
       for (const key of keys) {
+        // allow-template-keyed-bag-read: `keys` is the fixed list cdkd passes to a
+        // `RefStateLookup`, not template text.
         const value = source[key];
         if (typeof value === 'string' && value.length > 0) {
           return value;
@@ -1683,7 +1685,10 @@ export function isUnboundTemplateParameter(
   }
   if ('Default' in definition) return false;
   if (boundParameters === undefined) return true;
-  return !(name in boundParameters) || boundParameters[name] === undefined;
+  // `Object.hasOwn` to match the declared-side test above (issue #2767):
+  // a bare `in` read a parameter named `constructor` as BOUND, suppressing
+  // the #2285 refusal for exactly the shape it exists to catch.
+  return !Object.hasOwn(boundParameters, name) || boundParameters[name] === undefined;
 }
 
 /**
@@ -2396,7 +2401,16 @@ export class IntrinsicFunctionResolver {
       inheritedSecrets && inheritedSecrets.size > 0
         ? maskSecretsInText(text, inheritedSecrets)
         : text;
-    const parameters: Record<string, unknown> = {};
+    // `Object.create(null)` (issue #2802). Every key here is a template
+    // PARAMETER NAME, and the three writes below are plain assignments, so on a
+    // plain object `parameters['__proto__'] = v` went to the inherited setter
+    // and the value was lost. Safe as a null-prototype bag: the four callers of
+    // `resolveParameters` index it or `Object.keys` it, and it is never coerced
+    // or `Object.assign`ed. `diff-recursive.ts` DOES spread it, which is safe
+    // for the opposite reason: a spread copies with DEFINE semantics, so a
+    // `__proto__` own key survives into the target rather than hitting its
+    // setter. An `Object.assign` would not, and there is none.
+    const parameters: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     const templateParameters = template.Parameters;
 
     if (!templateParameters || typeof templateParameters !== 'object') {
@@ -2423,7 +2437,10 @@ export class IntrinsicFunctionResolver {
       }
 
       // User-provided value takes precedence
-      if (userParameters && name in userParameters) {
+      // `Object.hasOwn` (issue #2767): `name` is a declared parameter NAME, so
+      // a bare `in` answered for an `Object.prototype` member and handed the
+      // `Object` FUNCTION to `coerceParameterValue` as the user's value.
+      if (userParameters && Object.hasOwn(userParameters, name)) {
         const userValue = userParameters[name];
         if (userValue !== undefined) {
           this.refuseCoercedInheritedSecret(name, paramDef, userValue, inheritedSecrets);
@@ -2541,7 +2558,16 @@ export class IntrinsicFunctionResolver {
    * and can reference parameters and pseudo parameters
    */
   async evaluateConditions(context: ResolverContext): Promise<Record<string, boolean>> {
-    const conditions: Record<string, boolean> = {};
+    // `Object.create(null)` (issue #2767). This is the PRODUCER of the bag
+    // `resolveIf` and `filterResourcesByCondition` read, and every key in it is
+    // a template-controlled condition NAME: on a plain object the memo test
+    // below answered for an `Object.prototype` member before the definition was
+    // ever evaluated, and `conditions['__proto__'] = false` routed through the
+    // inherited setter and was lost, so a resource CloudFormation omits was
+    // kept. Unlike `resolveValue`'s bag this one holds only booleans and is
+    // never coerced or `Object.assign`ed -- its three readers index it or call
+    // `Object.keys` -- so the null prototype costs nothing here.
+    const conditions: Record<string, boolean> = Object.create(null) as Record<string, boolean>;
     const templateConditions = context.template.Conditions;
 
     if (!templateConditions || typeof templateConditions !== 'object') {
@@ -2595,13 +2621,24 @@ export class IntrinsicFunctionResolver {
     const inProgress = new Set<string>();
 
     const evaluateByName = async (name: string): Promise<boolean> => {
-      if (name in conditions) {
+      // `Object.hasOwn` rather than `in`. UNFALSIFIABLE while the bag above
+      // carries no prototype -- a probe restoring `in` here is green, and that
+      // is stated rather than left for the next reader to discover -- but this
+      // memo decides whether a definition is evaluated at all, so it should not
+      // depend on a property of a line 50 above it.
+      if (Object.hasOwn(conditions, name)) {
         return conditions[name]!;
       }
       if (inProgress.has(name)) {
         throw new Error(`Circular condition reference detected involving condition "${name}"`);
       }
-      const definition = (templateConditions as Record<string, unknown>)[name];
+      // The TEMPLATE's own `Conditions` object comes from `JSON.parse`, so this
+      // read needs the same own-key test (issue #2767): a condition named
+      // `constructor` found the `Object` FUNCTION as its "definition", skipped
+      // the not-declared arm below, and was handed to the resolver as a
+      // condition body.
+      const bag = templateConditions as Record<string, unknown>;
+      const definition = Object.hasOwn(bag, name) ? bag[name] : undefined;
       if (definition === undefined) {
         // A `{Condition: X}` reference to an undeclared condition. Match the
         // Fn::If not-found behavior: warn and treat as false.
@@ -2798,13 +2835,41 @@ export class IntrinsicFunctionResolver {
       throw buildUnknownIntrinsicError(unknownIntrinsicKey);
     }
 
-    // Not an intrinsic function: recursively resolve object properties
+    // Not an intrinsic function: recursively resolve object properties.
+    //
+    // A `__proto__` key is written with `defineProperty` (issue #2767). The keys
+    // come from the TEMPLATE and `JSON.parse` makes `__proto__` an OWN key, so
+    // `Object.entries` yields it -- but `resolved['__proto__'] = v` routes
+    // through the inherited setter and the key is simply ABSENT from the result,
+    // with no error and no warning. This object is what deploy hands the
+    // provider, so a free-form property bag lost the entry silently: a custom
+    // resource's properties, ECS `DockerLabels`, a Step Functions
+    // `DefinitionSubstitutions` map.
+    //
+    // `Object.create(null)` is the obvious fix and is what `secret-redaction.ts`
+    // uses at its four comparable walks. It is WRONG HERE, because this bag is a
+    // resolved VALUE and callers coerce one: `String()` on a null-prototype
+    // object throws `Cannot convert object to primitive value` where it returned
+    // `[object Object]` -- reachable from `resolveJoin`'s `String(resolved)` on
+    // an object-valued part, and from `resolveSub`, whose catch would launder
+    // the throw into a retained `${...}` placeholder. Shadowing the one key
+    // keeps the prototype, so every consumer and every coercion is untouched and
+    // the fix carries no behaviour change beyond the key surviving.
     const resolved: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(obj)) {
       const resolvedVal = await this.resolveValue(val, context);
       // Skip properties that resolve to AWS::NoValue
       if (resolvedVal !== AWS_NO_VALUE) {
-        resolved[key] = resolvedVal;
+        if (key === '__proto__') {
+          Object.defineProperty(resolved, key, {
+            value: resolvedVal,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
+        } else {
+          resolved[key] = resolvedVal;
+        }
       } else {
         this.logger.debug(`Property ${key} resolved to AWS::NoValue, omitting from object`);
       }
@@ -3061,8 +3126,18 @@ export class IntrinsicFunctionResolver {
    * 3. Pseudo parameters (AWS::Region, AWS::AccountId, etc.)
    */
   private async resolveRef(logicalId: string, context: ResolverContext): Promise<unknown> {
-    // Check if it's a resource
-    const resource = context.resources[logicalId];
+    // `Object.hasOwn`, not a bare property read (issue #2767). `logicalId` is
+    // template-controlled, and a plain-object read walks the PROTOTYPE chain:
+    // `resources['constructor']` is the `Object` function, which is truthy, so
+    // this arm was TAKEN and the not-found throw at the end of this method never
+    // ran. `resolveRefValue(Object)` then reached `cfnRefValueFromPhysicalId`
+    // with an undefined physical id, fell through every `resourceType` guard,
+    // and returned `undefined` -- which `resolveSub` `String()`s, shipping the
+    // literal text `undefined` into a live property. The name now misses like
+    // any other unknown one and reaches the ordinary refusal below.
+    const resource = Object.hasOwn(context.resources, logicalId)
+      ? context.resources[logicalId]
+      : undefined;
     if (resource) {
       const refValue = this.resolveRefValue(resource);
       this.logger.debug(`Resolved Ref to resource: ${logicalId} -> ${refValue}`);
@@ -3070,9 +3145,29 @@ export class IntrinsicFunctionResolver {
     }
 
     // Check if it's a parameter
-    if (context.parameters && logicalId in context.parameters) {
+    // `Object.hasOwn` for the same reason as the resource read above (issue
+    // #2767): `'constructor' in {}` is true, so the bare `in` bound this arm to
+    // an `Object.prototype` member and read the function as the parameter's
+    // value. Swept together because a name that misses the resource bag lands
+    // here next, so fixing only one moves the wrong answer one line down rather
+    // than removing it. Membership, NOT a value test: a DECLARED parameter
+    // holding `undefined` must still take this arm and return `undefined`,
+    // which is the pre-existing behaviour issue #2285 recorded deliberately.
+    if (context.parameters && Object.hasOwn(context.parameters, logicalId)) {
       const value = context.parameters[logicalId];
-      const paramDef = context.template.Parameters?.[logicalId] as ParameterDefinition | undefined;
+      // `Object.hasOwn` (issue #2802): the TEMPLATE's `Parameters` object comes
+      // from `JSON.parse`, so a bare read answered the `Object` FUNCTION as the
+      // definition for a parameter named `constructor` and handed it to
+      // `stringifyParameterForLog`.
+      const declared = context.template.Parameters;
+      // `!= null`, NOT `!== undefined`, for the reason spelled out at the
+      // `Fn::FindInMap` read: the optional chain this replaced short-circuited
+      // on NULL too, and `Object.hasOwn(null, k)` throws. A YAML `Parameters:`
+      // with an empty body parses to `null` and reaches here through
+      // `cdkd import --migrate-from-cloudformation`.
+      const paramDef = (
+        declared != null && Object.hasOwn(declared, logicalId) ? declared[logicalId] : undefined
+      ) as ParameterDefinition | undefined;
       // Masked BEFORE the pair is recorded below, which is why it goes through
       // `maskSecretsForLog` (which consults `context.inheritedSecrets`) rather
       // than relying on `recordedSecretValues`: at this instant that bag is
@@ -3254,7 +3349,17 @@ export class IntrinsicFunctionResolver {
       attributeName = split.attributeName;
     }
 
-    const resource = context.resources[logicalId];
+    // `Object.hasOwn` for the reason given at the `resolveRef` resource read
+    // (issue #2767): a bare read walks the prototype chain, so
+    // `Fn::GetAtt: ["constructor", "Arn"]` bound an `Object.prototype` member,
+    // skipped the refusal below, and carried a function into the attribute
+    // lookup -- where `resource.resourceType` and `resource.attributes` are both
+    // `undefined` and the failure surfaces further from its cause than this
+    // throw (measured: it reaches a live AWS call). Swept with the two
+    // `resolveRef` arms because a template reaches all three by the same name.
+    const resource = Object.hasOwn(context.resources, logicalId)
+      ? context.resources[logicalId]
+      : undefined;
     if (!resource) {
       // `markNonRetryable` for the reason given at the `Invalid Fn::GetAtt
       // format` throw above: `logicalId` is template-controlled and the retry
@@ -3275,7 +3380,14 @@ export class IntrinsicFunctionResolver {
     if (!skipCachedAttribute && resource.attributes !== undefined) {
       // Flat-key lookup first (SDK providers store nested attributes as flat
       // dot-keys, e.g. `attributes['Endpoint.Port'] = '3306'`).
-      const flatValue = resource.attributes[attributeName];
+      // `Object.hasOwn` (issue #2767). `attributeName` is free-form template text
+      // -- the only validation is `typeof === 'string'` -- and `attributes` comes
+      // from `JSON.parse` of state.json, so `Fn::GetAtt: [R, "constructor"]` read
+      // the `Object` function, passed the `!== undefined` test below, and was
+      // returned as the attribute VALUE into a live property.
+      const flatValue = Object.hasOwn(resource.attributes, attributeName)
+        ? resource.attributes[attributeName]
+        : undefined;
       if (flatValue !== undefined) {
         this.rejectPlaceholderArnAttribute(resource, attributeName, flatValue, logicalId);
         // Earlier cdkd versions stored Route 53 HostedZone NameServers as a
@@ -3372,7 +3484,14 @@ export class IntrinsicFunctionResolver {
         const parts = attributeName.split('.');
         let cursor: unknown = resource.attributes;
         for (const part of parts) {
-          if (cursor && typeof cursor === 'object' && part in (cursor as Record<string, unknown>)) {
+          // `Object.hasOwn` for the same reason as the flat read above (issue
+          // #2767): `Fn::GetAtt: [R, "Endpoint.constructor"]` walked into
+          // `Object.prototype` and returned the function it found there.
+          if (
+            cursor &&
+            typeof cursor === 'object' &&
+            Object.hasOwn(cursor as Record<string, unknown>, part)
+          ) {
             cursor = (cursor as Record<string, unknown>)[part];
           } else {
             cursor = undefined;
@@ -4917,6 +5036,8 @@ export class IntrinsicFunctionResolver {
     const keys = Object.keys(value as Record<string, unknown>);
     if (keys.length !== 1) return undefined;
     const key = keys[0] as string;
+    // allow-template-keyed-bag-read: `key` came out of `Object.keys(value)` two
+    // lines up, so it is an OWN key by construction.
     const args = (value as Record<string, unknown>)[key];
 
     if (key === 'Ref') {
@@ -5095,8 +5216,12 @@ export class IntrinsicFunctionResolver {
   ): Promise<unknown> {
     const [conditionName, valueIfTrue, valueIfFalse] = ifArgs;
 
-    // Check if condition is evaluated in context
-    if (!context.conditions || !(conditionName in context.conditions)) {
+    // Check if condition is evaluated in context. `Object.hasOwn` (issue
+    // #2767): `conditionName` is template-controlled, so a bare `in` answered
+    // for an `Object.prototype` member -- `Fn::If: ["constructor", A, B]`
+    // skipped this warn, read the `Object` FUNCTION as the condition value, and
+    // selected the TRUE branch, where the not-found path assumes false.
+    if (!context.conditions || !Object.hasOwn(context.conditions, conditionName)) {
       this.logger.warn(`Condition ${conditionName} not found in context, assuming false`);
       return await this.resolveValue(valueIfFalse, context);
     }
@@ -5165,7 +5290,16 @@ export class IntrinsicFunctionResolver {
       return await context.conditionResolver(conditionName);
     }
 
-    if (context.conditions && conditionName in context.conditions) {
+    // `Object.hasOwn` for the same reason as `resolveIf`'s test (issue #2767) —
+    // but DEFENSIVE, and known to be so: the only call site gates on
+    // `context.conditionResolver` being present, and the branch above returns
+    // for exactly that case, so nothing reaches this line today. It is left
+    // correct rather than pinned, since a test for it would have to construct a
+    // context the resolver never builds. Were it reachable, the bare `in` would
+    // hand `Fn::And` / `Fn::Or` / `Fn::Not` the `Object` FUNCTION behind the
+    // `boolean` assertion below, which hides the mismatch rather than reporting
+    // it.
+    if (context.conditions && Object.hasOwn(context.conditions, conditionName)) {
       return context.conditions[conditionName]!;
     }
 
@@ -5762,6 +5896,8 @@ export class IntrinsicFunctionResolver {
         // the bag also holds every plain Output name, and matching on those
         // bound an import to a stack that exports nothing of that name.
         if (importableOutputKeys(state).includes(exportName)) {
+          // allow-template-keyed-bag-read: membership was just established by
+          // `importableOutputKeys(state).includes(exportName)` above.
           const value = state.outputs[exportName];
           // No VALUE, for the reason the index arm above states (issue #2133).
           // This is the arm `cdkd scrub` actually takes, since scrub
@@ -6019,6 +6155,11 @@ export class IntrinsicFunctionResolver {
       const outputs: Record<string, string> = {};
       for (const out of stack.Outputs ?? []) {
         if (out.OutputKey && out.OutputValue !== undefined) {
+          // allow-template-keyed-bag-read: `OutputKey` is a CloudFormation output
+          // LOGICAL ID, which CFn constrains to alphanumerics -- so it cannot be
+          // `__proto__` and the write never reaches the inherited setter. (It IS
+          // template text, the producer stack's; the constraint is what makes it
+          // safe, not the provenance.)
           outputs[out.OutputKey] = out.OutputValue;
         }
       }
@@ -6287,7 +6428,10 @@ export class IntrinsicFunctionResolver {
       if (!roleArn && this.cfnFallback) {
         const cfnOutputs = await this.lookupCfnStackOutputs(stackName, region, context);
         if (cfnOutputs) {
-          if (!(outputName in cfnOutputs)) {
+          // `Object.hasOwn` (issue #2767): `outputName` is template-controlled and
+          // `cfnOutputs` is built from an AWS response, so a bare `in` let
+          // `OutputName: "constructor"` past this refusal and returned the function.
+          if (!Object.hasOwn(cfnOutputs, outputName)) {
             const available = this.describeAvailableOutputs(Object.keys(cfnOutputs), context);
             throw new Error(
               `Fn::GetStackOutput: output '${outputName}' not found in CloudFormation stack ` +
@@ -6325,7 +6469,10 @@ export class IntrinsicFunctionResolver {
     }
 
     const outputs = stateData.state.outputs ?? {};
-    if (!(outputName in outputs)) {
+    // `Object.hasOwn` for the same reason as the CloudFormation-sourced arm
+    // above (issue #2767); the sibling `Fn::ImportValue` path was already safe
+    // because it tests membership through `importableOutputKeys`.
+    if (!Object.hasOwn(outputs, outputName)) {
       const available = this.describeAvailableOutputs(Object.keys(outputs), context);
       throw new Error(
         `Fn::GetStackOutput: output '${outputName}' not found in stack '${stackName}' (${region}). ` +
@@ -6583,7 +6730,22 @@ export class IntrinsicFunctionResolver {
 
     // Access the Mappings section of the template
     const mappings = context.template.Mappings;
-    const map = mappings?.[mapName] as Record<string, Record<string, unknown>> | undefined;
+    // `Object.hasOwn` on all three lookups below (issue #2767). Every one of
+    // `mapName` / `topLevelKey` / `secondLevelKey` is template-controlled, and
+    // mapping keys are FREE-FORM text rather than logical ids, so this is the
+    // most reachable site of the class: `Fn::FindInMap: [M, K, "constructor"]`
+    // returned the `Object` function as the resolved VALUE instead of throwing,
+    // and a `__proto__` top-level key returned `Object.prototype`.
+    // `!= null`, NOT `!== undefined`: the read this replaced was `mappings?.[…]`,
+    // whose optional chain short-circuits on NULL as well, and `Object.hasOwn`
+    // throws `Cannot convert undefined or null to object`. A YAML `Mappings:`
+    // with an empty body parses to `null` and reaches here through
+    // `cdkd import --migrate-from-cloudformation`, so the narrower test turned
+    // the `DefaultValue` arm and the named refusal below into a raw `TypeError`.
+    // The `!mappings` guard underneath is falsy-checked for exactly that reason.
+    const map = (
+      mappings != null && Object.hasOwn(mappings, mapName) ? mappings[mapName] : undefined
+    ) as Record<string, Record<string, unknown>> | undefined;
 
     if (!mappings) {
       if (hasDefaultValue) {
@@ -6599,7 +6761,7 @@ export class IntrinsicFunctionResolver {
       throw new Error(`Fn::FindInMap: mapping '${mapName}' not found in Mappings section`);
     }
 
-    const topLevel = map[topLevelKey];
+    const topLevel = Object.hasOwn(map, topLevelKey) ? map[topLevelKey] : undefined;
     if (!topLevel || typeof topLevel !== 'object') {
       if (hasDefaultValue) {
         return await resolveDefault();
@@ -6609,7 +6771,7 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    if (!(secondLevelKey in topLevel)) {
+    if (!Object.hasOwn(topLevel, secondLevelKey)) {
       if (hasDefaultValue) {
         return await resolveDefault();
       }
@@ -7368,7 +7530,13 @@ export class IntrinsicFunctionResolver {
     if (jsonKey) {
       try {
         const parsed = JSON.parse(secretString) as Record<string, unknown>;
-        const keyValue = parsed[jsonKey];
+        // `Object.hasOwn` (issue #2767), and the worst site of the class:
+        // `jsonKey` comes from the dynamic reference's own text, so
+        // `{{resolve:secretsmanager:<id>:SecretString:constructor}}` read the
+        // `Object` function out of the parsed secret, passed the not-found
+        // throw below, and `stringifyValue` rendered its SOURCE TEXT as the
+        // resolved secret value.
+        const keyValue = Object.hasOwn(parsed, jsonKey) ? parsed[jsonKey] : undefined;
         if (keyValue === undefined) {
           throw new Error(`Dynamic reference: key '${jsonKey}' not found in secret '${secretId}'`);
         }
