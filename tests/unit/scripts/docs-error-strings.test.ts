@@ -171,20 +171,20 @@ describe('docs error-string checker: template extraction', () => {
   });
 
 
-  it('REFUSES a quotation the author truncated with an ellipsis', () => {
+  it('REFUSES any quotation the author ended with an ellipsis', () => {
     /*
-     * Six review rounds each found the partial-match rule accepting a
-     * fabrication one step further out, and the measurement that settled it is
-     * that ZERO of the site's quoted lines are truncated. Refusing is now the
-     * contract: the author quotes the message in full.
+     * Seven review rounds landed on this path. The refusal is UNCONDITIONAL:
+     * an earlier cut exempted templates whose own text ends in an ellipsis and
+     * the exemption re-opened the hole within one commit, because a template
+     * like `Assuming role ${roleArn}...` ends in one too and its hole sits
+     * against the dots. Zero quotations on the site need the exemption.
      */
-    // This template DOES end in an ellipsis, with wording in front of it, so
-    // it is eligible to vouch for a truncated subject — and still refuses one
-    // that is not a complete rendering.
-    const t = templatesOf('throw new E(`State was modified by ${who}, please retry...`);');
-    expect(matchesSourceTemplate('State was modified by ...', t)).toBe(false);
-    // The same quotation, complete, is accepted.
-    expect(matchesSourceTemplate('State was modified by alice, please retry...', t)).toBe(true);
+    const t = templatesOf('throw new E(`Executing UPDATE changeset...`);');
+    // Refused even though the template's own text ends in an ellipsis.
+    expect(matchesSourceTemplate('Executing UPDATE changeset...', t)).toBe(false);
+    // A message with no ellipsis is matched normally.
+    const u = templatesOf('throw new E(`Executing UPDATE changeset now`);');
+    expect(matchesSourceTemplate('Executing UPDATE changeset now', u)).toBe(true);
   });
 
   it('does not let a trailing HOLE absorb the ellipsis', () => {
@@ -202,17 +202,6 @@ describe('docs error-string checker: template extraction', () => {
     ).toBe(false);
   });
 
-  it('refuses a template whose ellipsis is preceded by a HOLE, not by wording', () => {
-    /*
-     * The regression round 7 caught: testing only that the template ENDS in
-     * `...` admits `<lead>${hole}...`, where the hole sits against the dots and
-     * absorbs the whole invention. Nine real templates are that shape.
-     */
-    const t = templatesOf('throw new E(`Assuming role ${roleArn}...`);');
-    expect(
-      matchesSourceTemplate('Assuming role and then quietly deleting every bucket you own ...', t)
-    ).toBe(false);
-  });
 
   it('recognises elisions written with two dots or spaced dots', () => {
     // A predicate matching only the canonical `...` is one character from
@@ -225,11 +214,6 @@ describe('docs error-string checker: template extraction', () => {
     }
   });
 
-  it('still accepts a message whose REAL text ends in an ellipsis', () => {
-    // The narrow legitimate case the refusal must not break.
-    const t = templatesOf('throw new E(`Reticulating splines, please wait...`);');
-    expect(matchesSourceTemplate('Reticulating splines, please wait...', t)).toBe(true);
-  });
 
   it('drops a template longer than the cap, and keeps one just under it', () => {
     const long = 'x'.repeat(700);

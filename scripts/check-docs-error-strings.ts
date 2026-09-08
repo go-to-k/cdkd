@@ -80,10 +80,15 @@
  *   while admitting thousands of vouchers. Refusing costs an author one more
  *   clause; the alternative made `...` the documented way past the fence.
  *
- *   The one legitimate case is preserved: a message whose OWN text ends in an
- *   ellipsis matches in full. That is why a truncated subject is compared only
- *   against templates ending in one — otherwise a trailing hole absorbs the
- *   author's `...` and the refusal never fires.
+ *   The refusal is UNCONDITIONAL, and that is the seventh round's lesson. An
+ *   earlier cut exempted templates whose own text ends in an ellipsis, to keep
+ *   a message like `Executing UPDATE changeset...` quotable — and the
+ *   exemption immediately re-opened the hole, because `Assuming role
+ *   ${roleArn}...` also ends in one and its hole sits against the dots. Zero
+ *   quotations on the site need the exemption, so it is gone: every guard that
+ *   served no real case has cost a review round. If a page ever must quote an
+ *   ellipsis-terminated message, restore it deliberately, with the
+ *   wording-before-the-dots test the exemption turned out to need.
  *
  * COLLAPSE DEFENCES. The population is small (a couple of dozen lines
  * site-wide), so counting only findings would let a broken scanner report a
@@ -245,18 +250,6 @@ export function collectDocPages(dir: string, out: string[] = []): string[] {
 export interface Template {
   /** Whole-message matcher, holes widened to wildcards, anchored at both ends. */
   re: RegExp;
-  /**
-   * Does the template's own literal text end in an ellipsis WITH real wording
-   * in front of it? Only such a template may vouch for a quotation that ends
-   * in one.
-   *
-   * "With real wording in front" is the load-bearing half. Testing only that
-   * the text ENDS in `...` admits the shape `<lead>${hole}...`, where the hole
-   * sits against the dots and absorbs the entire invention — nine real
-   * templates are that shape (`Assuming role ${roleArn}...`), and accepting
-   * them re-opened the very hole this guard exists to close.
-   */
-  endsWithEllipsis: boolean;
 }
 
 /** Escape a literal for embedding in a regex. */
@@ -274,7 +267,6 @@ const HOLE = '[\\s\\S]*?';
 const ELLIPSIS_TAIL = /(?:\.\s*){2,}$|\u2026$/;
 
 /** Literal characters that are not whitespace — the only ones that anchor anything. */
-const substantive = (s: string): number => s.replace(/\s/g, '').length;
 
 /** Longest template worth compiling. Past this it is a code block, not a message. */
 const MAX_TEMPLATE_CHARS = 600;
@@ -355,9 +347,6 @@ export function extractTemplates(sourceFiles: ReadonlyArray<string>): Template[]
     seen.add(source);
     out.push({
       re: new RegExp(`^${source}$`),
-      endsWithEllipsis:
-        ELLIPSIS_TAIL.test(collapsed) &&
-        substantive((parts[parts.length - 1] ?? '').replace(ELLIPSIS_TAIL, '')) > 0,
     });
   };
 
@@ -406,16 +395,13 @@ export function matchesSourceTemplate(
   const subject = message.trim();
   if (subject.length === 0) return false;
   /*
-   * A quotation ending in an ellipsis is matched ONLY against templates whose
-   * own text ends in one. Without that restriction the check is inert: most
-   * templates end in a hole, whose wildcard absorbs the author's `...`, so a
-   * truncated fabrication matches outright and never reaches the refusal.
-   * Measured — `Failed to ${verb} resource ${id}` vouched for an entire
-   * invented sentence that way, and 2728 templates could do the same.
+   * A quotation the author cut short is refused outright — see the header for
+   * why the exemption that used to live here is gone. This must sit BEFORE the
+   * match, not after it: most templates end in a hole whose wildcard absorbs
+   * the trailing dots, so a fabrication matches outright and a refusal checked
+   * afterwards never fires.
    */
-  if (looksTruncated(subject)) {
-    return templates.some((t) => t.endsWithEllipsis && t.re.test(subject));
-  }
+  if (looksTruncated(subject)) return false;
   return templates.some((t) => t.re.test(subject));
 }
 
@@ -610,11 +596,11 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     expect: 'truncated-quotation',
   },
   {
-    what: 'a message whose real text ENDS in an ellipsis still matches in full',
+    what: 'an ellipsis-ending message is refused too — the refusal is unconditional',
     line: 'StateError: Reticulating splines, please wait...',
     errorNames: ['StateError'],
     source: 'throw new StateError(`Reticulating splines, please wait...`)',
-    expect: 'anchored',
+    expect: 'truncated-quotation',
   },
   {
     what: 'a line outside any fenced block is not a finding',
