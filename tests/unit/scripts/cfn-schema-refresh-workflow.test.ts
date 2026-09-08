@@ -1811,32 +1811,50 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       'gh pr view "${pr}" --json body'
     );
 
-    // Matched on the PAYLOAD, not on the flag. Enumerating flag spellings lost
-    // the race twice: first the quoted `--field "body=@..."` form alone, then a
-    // `--field`/`-f` pair — while `gh api` spells the same two flags FOUR ways
-    // (`--field`/`-F`, `--raw-field`/`-f`), and `-F` is the short form of the
-    // one this workflow already uses. A `-F body=@/tmp/pr-body.md` added to the
-    // publish step passed every other clause of this case (measured). `body=`
-    // cannot be reached by any read — the body FETCH spells it `--json body` —
-    // so the payload is the stable thing to bind.
-    const code = workflow
-      .split('\n')
-      .filter((l) => !/^\s*#/.test(l))
-      .join('\n');
-    const bodyWrites = [...code.matchAll(/\bbody=@?([^\s"']+)/g)].map((m) => m[1]);
-    expect(bodyWrites.length, 'no body write found — the matcher stopped matching').toBe(1);
-    expect(bodyWrites[0], 'a body write from something other than the verdict splice').toBe(
-      '${NB}'
-    );
-    // And that one write lives in the marking step, not anywhere a fresh
-    // rendering is in scope.
-    expect([...mark.matchAll(/\bbody=@?/g)].length, 'the splice left the marking step').toBe(1);
-    expect(publish, 'the publish step now writes a PR body payload').not.toMatch(/\bbody=@?/);
+    // ALLOW-LIST, not a deny-list, and the polarity is the whole point.
+    //
+    // Four consecutive review rounds defeated the deny-list forms of this
+    // check, each fix moving the hole one spelling over: `--field "body=@…"`
+    // only; then `--field`/`-f` while `gh api` spells the same two flags FOUR
+    // ways and `-F` is the short form of the one already in use; then a payload
+    // matcher, which `gh pr comment --edit-last` walks past (same call shape, no
+    // payload — it changes the VERB) and `gh api --input file.json` walks past
+    // (the payload is JSON `body:`, never argv `body=`). The set of ways to
+    // rewrite a rendering in place is not enumerable, so stop enumerating it.
+    //
+    // Every `gh` invocation in the two steps is pinned instead. A new call, a
+    // new flag on an existing one, or a changed target all red — including
+    // every falsification above, without naming any of them. The cost is that
+    // an unrelated edit to these steps reds too: that is intended, because the
+    // prose in `divergenceProcedure` describes exactly this surfacing and has
+    // to be re-read when it changes.
+    const ghCalls = (shell: string) =>
+      [
+        ...shell
+          .replace(/\\\n\s*/g, ' ')
+          .split('\n')
+          .filter((l) => !/^\s*echo\b/.test(l))
+          .join('\n')
+          .matchAll(/\bgh [^\n|;&]*/g),
+      ]
+        .map((m) => m[0].replace(/\s+/g, ' ').trim())
+        .sort();
 
-    // `gh pr edit` is the other reach — it already appears three times in the
-    // marking step, so a `--body-file` there is one word away.
-    for (const m of workflow.matchAll(/gh pr edit[\s\S]{0,200}?(?=\n\s*\n|\n\s*[a-z}])/g)) {
-      expect(m[0], 'a gh pr edit now writes a body').not.toMatch(/--body(-file)?\b/);
-    }
+    expect(ghCalls(publish), 'the publish step gained, lost or altered a gh call').toEqual([
+      'gh pr comment "${PR_NUMBER}" --body-file /tmp/diagnosis.md',
+      'gh pr create --title "chore(schemas): refresh CFn schema fixtures (${cycle})" --body-file /tmp/pr-body.md --head "${branch}" --base main',
+      'gh pr list --head "${branch}" --state open --json number --jq \'.[0].number // empty\')',
+      'gh pr view "${PR_NUMBER}" --json state --jq .state)',
+    ]);
+    expect(ghCalls(mark), 'the marking step gained, lost or altered a gh call').toEqual([
+      'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --field "body=@${NB}" > /dev/null',
+      'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" -f title="${title}" > /dev/null',
+      'gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"',
+      'gh pr edit "${pr}" --add-label "${DECISION_LABEL}"',
+      'gh pr edit "${pr}" --remove-label "${DECISION_LABEL}"',
+      'gh pr view "${pr}" --json body --jq .body',
+      'gh pr view "${pr}" --json state --jq .state)',
+      'gh pr view "${pr}" --json title --jq .title)',
+    ]);
   });
 });
