@@ -161,7 +161,15 @@ function observingRelease(): {
  * reach: the ordering on the success path, and what a signal arriving during
  * the release actually does to the command's exit.
  */
-function installReplayableSetup(releaseLock: ReturnType<typeof vi.fn>): void {
+function installReplayableSetup(
+  releaseLock: ReturnType<typeof vi.fn>,
+  // Extra top-level fields on the state the command reads back, for the cases
+  // that care what the SAVE carries forward rather than when it happens.
+  stateExtra: Record<string, unknown> = {},
+  // The `saveState` mock, for the case that needs the first save to REJECT so
+  // the fresh-ETag retry runs.
+  saveState: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue('etag-1')
+): void {
   setupMock.mockResolvedValue({
     stateBackend: {
       listStacks: vi.fn().mockResolvedValue([{ stackName: STACK, region: REGION }]),
@@ -182,6 +190,7 @@ function installReplayableSetup(releaseLock: ReturnType<typeof vi.fn>): void {
           },
           outputs: {},
           lastModified: 1,
+          ...stateExtra,
         },
         etag: 'e0',
       }),
@@ -205,7 +214,7 @@ function installReplayableSetup(releaseLock: ReturnType<typeof vi.fn>): void {
           },
         ],
       }),
-      saveState: vi.fn().mockResolvedValue('etag-1'),
+      saveState,
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
       setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
       deleteState: vi.fn().mockResolvedValue(undefined),
@@ -310,6 +319,64 @@ describe('rollbackCommand releases the lock BEFORE unregistering its signal hand
     expect(releaseLock).toHaveBeenCalledOnce();
     expect(observed().sigint.length).toBe(before.length + 1);
     expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('DROPS the skipped-outputs record it read back (issue #2740)', async () => {
+    // `cdkd rollback` is one of the out-of-band state writers that can ADD an
+    // attribute key (`cdkd import` is another): the replacement / re-adopt arm in
+    // `rollback-executor.ts` rebuilds a record with
+    // `attributes: createResult.attributes ?? {}`, and a fresh create can
+    // return a fuller set than the record the old state held. An Output the
+    // last deploy skipped for want of that attribute can therefore resolve
+    // after a rollback — while every resource reports NO_CHANGE against the
+    // reverted template, so the diff's change map has nothing to un-bind on.
+    // Carried, the record would preview that key as absent while the next
+    // deploy publishes it and its `Export.Name`. `cdkd import` and
+    // `cdkd drift --accept` drop it for the same reason.
+    const releaseLock = vi.fn().mockResolvedValue(undefined);
+    installReplayableSetup(releaseLock, {
+      skippedOutputs: { Broken: 'digest-recorded-by-the-last-deploy' },
+    });
+
+    await rollbackCommand(STACK, baseOpts);
+
+    const setup = await setupMock.mock.results[0]!.value;
+    const saveState = setup.stateBackend.saveState as ReturnType<typeof vi.fn>;
+    expect(saveState).toHaveBeenCalled();
+    const saved = saveState.mock.calls[0]![2] as Record<string, unknown>;
+    // The writer's OWN work is the control, as in the other six drop cases:
+    // the journal segment replays a CREATE, and rolling a create back deletes
+    // the resource, so the save must show that deletion — not merely carry
+    // the identity — before the drop assertion means anything.
+    expect(saved['stackName']).toBe(STACK);
+    expect(saved['resources']).toEqual({});
+    expect('skippedOutputs' in saved).toBe(false);
+  });
+
+  it('...and DROPS it on the fresh-ETag RETRY save too (issue #2740, round 6 n18)', async () => {
+    // `saveState()` rebuilds `next()` for the retry, so a regression would have
+    // to be introduced at the retry site alone. Nothing exercised that path:
+    // the first save REJECTS here (a 412 shape), the command re-reads the etag
+    // and saves again, and BOTH payloads must lack the field.
+    const releaseLock = vi.fn().mockResolvedValue(undefined);
+    const saveState = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('PreconditionFailed: etag mismatch'))
+      .mockResolvedValue('etag-2');
+    installReplayableSetup(
+      releaseLock,
+      { skippedOutputs: { Broken: 'digest-recorded-by-the-last-deploy' } },
+      saveState
+    );
+
+    await rollbackCommand(STACK, baseOpts);
+
+    expect(saveState).toHaveBeenCalledTimes(2);
+    for (const call of saveState.mock.calls) {
+      const payload = call[2] as Record<string, unknown>;
+      expect(payload['resources']).toEqual({});
+      expect('skippedOutputs' in payload).toBe(false);
+    }
   });
 
   it('DELIBERATE: a Ctrl-C landing during the release does not fail the rollback', async () => {

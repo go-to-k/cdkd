@@ -3,6 +3,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
+import { skippedOutputDigest } from '../../../src/analyzer/skipped-outputs.js';
 
 // Logger silenced (the no-change path may emit a warn we don't want in output).
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -380,10 +381,12 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
     expect(result.outputs).toEqual({ BucketArn: 'arn:aws:s3:::bucket-a' });
   });
 
-  it('keeps existing outputs (no save / no index) when an output cannot be resolved', async () => {
+  it('keeps existing outputs (bag carried, no index) when an output cannot be resolved; the one save is the #2740 record', async () => {
     // resolveOutputs stores `undefined` for any output it could not resolve
     // (e.g. a Fn::If → AWS::NoValue). The guard must NOT overwrite the good
     // persisted outputs with a partial map, and must NOT touch the index.
+    // Since issue #2740 the skipped key IS persisted — as `skippedOutputs`,
+    // beside the carried bag — so exactly one save happens, for that record.
     mockStateBackend.getState.mockResolvedValue({
       state: makeState({ Existing: 'keep-me' }),
       etag: 'etag-old',
@@ -400,7 +403,13 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
     const engine = makeEngine();
     await engine.deploy(stackName, template);
 
-    expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(saved.outputs).toEqual({ Existing: 'keep-me' });
+    expect(saved.skippedOutputs).toEqual({
+      // From a FRESH copy: the digest must equal what a re-parse produces.
+      Unresolvable: skippedOutputDigest(structuredClone(template), 'Unresolvable'),
+    });
     expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
   });
 

@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-output-never-resolved-diff",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd fixture for an Output that never resolves at deploy (secret JSON key missing) and the cdkd diff --fail phantom ADD it used to produce (issue #2740)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

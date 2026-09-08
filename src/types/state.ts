@@ -248,6 +248,79 @@ export interface StackState {
   exportNames?: string[];
 
   /**
+   * The template `Outputs` keys the last deploy could NOT resolve and SKIPPED
+   * — the resolver threw under the default (non-`--strict-getatt`) arm, or
+   * returned nothing at all — each mapped to a digest of
+   * every template input that fed its resolution (issue
+   * [#2740](https://github.com/go-to-k/cdkd/issues/2740)). Such a key is
+   * absent from `outputs` when the save re-resolved the bag; the no-change
+   * path keeps the PREVIOUS bag when any output fails, so a key that resolved
+   * on an earlier deploy can sit in `outputs` beside its record — the diff
+   * then ignores the record for it (it checks absence first). `cdkd diff`
+   * cannot reproduce the failure when
+   * it happened inside a secret lookup the diff deliberately skips — so
+   * without this record the diff previewed an `ADD` the deploy would never
+   * perform, on every run of an unchanged stack. The diff previews a recorded
+   * key as ABSENT (no row; its siblings are previewed normally) while three
+   * things hold: the key is still absent from `outputs`, today's digest
+   * equals the recorded one, and no resource the output references is
+   * changing on this run (`Resources` is not digested, so that last one comes
+   * from the resource diff). Any change to the digested inputs puts it back
+   * under the ordinary
+   * preview rules (usually an `ADD`; an intrinsic `Export.Name` that stays
+   * unresolvable still suppresses the section as before), and the next deploy
+   * re-decides it — publishing it if the repair took, or recording it again
+   * under the new digest. The digest is computed by
+   * `skippedOutputDigest` in `src/analyzer/skipped-outputs.ts`, the ONE place
+   * both writer and reader spell what it covers, always from a snapshot taken
+   * before any resolution (that module says why).
+   *
+   * Informational, NO schema bump (the `outputReads` read policy): absent on a
+   * record written before this field existed, in which case the diff behaves
+   * as before and the next deploy under this binary writes it. Omitted from
+   * JSON when the last deploy skipped nothing — a record that carries the
+   * field says at least one output was skipped. Writers that re-resolve
+   * outputs replace the whole map (an output that resolved, or left the
+   * template, drops out) — the no-change path included, even when it keeps
+   * the previous bag because an output failed; a failed deploy's partial saves
+   * carry `outputs` forward WITHOUT re-resolving and carry this field with it,
+   * through {@link skippedOutputsCarriedFrom}, and a partial-destroy snapshot
+   * carries it through its `...rest` spread, which the next deploy re-decides.
+   *
+   * Every writer that rebuilds state OUTSIDE a deploy DROPS the field — with
+   * ONE enumerated exception, the partial-destroy snapshot above, which
+   * carries it deliberately: a destroy removes resources, every removed one
+   * returns as a CREATE on the next diff, and the change map un-binds any
+   * record that references it, so a repair-through-destroy could not be
+   * constructed by either side of the review. The droppers:
+   * `cdkd import`, `cdkd drift --accept`, `cdkd drift --revert`,
+   * `cdkd rollback`, `cdkd scrub`, the orphan rewrite behind `cdkd orphan`,
+   * and `cdkd state refresh-observed`. The record says what the last DEPLOY
+   * could not resolve; six of those can change the values an output's
+   * resolution reads while every resource still reports `NO_CHANGE`, so the
+   * diff's change map has nothing to un-bind on and a carried record would
+   * preview a key as absent while the next deploy publishes it. The seventh,
+   * `refresh-observed`, writes only `observedProperties`, which the resolver
+   * does not read — it drops anyway once it refreshed at least one resource,
+   * because the rule is flat; a run that refreshed nothing rebuilt nothing
+   * and keeps the record.
+   *
+   * It is a flat rule ON PURPOSE. Three per-writer arguments for carrying it
+   * were written during review. Two were shown wrong: substituting a value
+   * can repair an output when an enclosing intrinsic was choking on what was
+   * there, and scrubbing a plaintext back to its expression changes a string
+   * outputs read verbatim. The third — that DELETING a property can expose an
+   * attribute of the same name — could not be settled between two careful
+   * readers: `refStateLookupFromResource` already falls through from
+   * `properties` to `attributes` when the property holds nothing usable, so
+   * a deletion may remove a hit rather than reveal one. A case that hard to
+   * settle is the strongest reason for a flat rule. A new writer owes the
+   * drop, not an argument. The cost is bounded and visible: those keys return
+   * to pre-#2740 behaviour until the next deploy recomputes the record.
+   */
+  skippedOutputs?: Record<string, string>;
+
+  /**
    * Parent stack's physical name when THIS state record describes a
    * nested-stack child (issue [#459](https://github.com/go-to-k/cdkd/issues/459)).
    * Undefined on top-level stacks. The pre-v6 reader sees the field as
@@ -540,6 +613,21 @@ export function exportNamesCarriedFrom(
   previous: Pick<StackState, 'exportNames'>
 ): Pick<StackState, 'exportNames'> {
   return previous.exportNames === undefined ? {} : { exportNames: previous.exportNames };
+}
+
+/**
+ * The `skippedOutputs` field to write when a save carries the PREVIOUS
+ * record's `outputs` bag forward instead of re-resolving it (issue #2740). The
+ * record describes that bag — which keys the deploy that wrote it could not
+ * resolve — so it travels with the bag, exactly like {@link
+ * exportNamesCarriedFrom}: absent stays absent, present stays as it was. A
+ * writer that re-resolves outputs does NOT call this; it writes the set the
+ * resolution produced, or omits the field when nothing was skipped.
+ */
+export function skippedOutputsCarriedFrom(
+  previous: Pick<StackState, 'skippedOutputs'>
+): Pick<StackState, 'skippedOutputs'> {
+  return previous.skippedOutputs === undefined ? {} : { skippedOutputs: previous.skippedOutputs };
 }
 
 /**

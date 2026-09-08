@@ -332,16 +332,35 @@ function valuesEqual(a: unknown, b: unknown): boolean {
  * the expression that state stores post-redaction.
  *
  * `storedOutputs` is the bag currently in state. It is consulted for exactly
- * one decision — the LITERAL `Export.Name` of a secret-bearing stack, see issue
- * #1942 at that branch — and never merged into the result: everything else here
+ * two decisions — the LITERAL `Export.Name` of a secret-bearing stack, see issue
+ * #1942 at that branch, and whether a skipped-output record still applies, see
+ * issue #2740 below — and never merged into the result: everything else here
  * previews what the template says, and reading state anywhere else would make
  * the preview agree with the past instead of with the next deploy.
+ *
+ * `skippedOutputKeys` (issue #2740) are the keys the LAST DEPLOY could not
+ * resolve and skipped, already narrowed by the caller on BOTH halves of the
+ * binding rule: the recorded digest still matches today's template, AND no
+ * resource the output references is changing on this run
+ * (`bindingSkippedOutputs`, over a pre-resolution snapshot and this run's
+ * resource diff — see `skipped-outputs.ts` for why the snapshot is the
+ * caller's and why the change map cannot come from the digest). Such a key,
+ * while still absent from `storedOutputs`, is previewed as ABSENT — skipped
+ * without resolving, no bag entry, no row — because that is what the next
+ * deploy will leave in state: this resolver runs
+ * with `skipDynamicReferences`, so a failure that happened inside a secret
+ * lookup would otherwise assemble cleanly and preview an `ADD` the deploy will
+ * never perform. NOT a resolution failure: the sibling outputs are previewed
+ * normally, so a genuine change beside the broken output still renders and
+ * `--fail` still exits 1 for it. The key appearing in state (a later deploy
+ * resolved it) ends the suppression.
  */
 export async function resolveTemplateOutputs(
   template: CloudFormationTemplate,
   resolveFn: IntrinsicResolveFn,
   conditions?: Record<string, boolean>,
-  storedOutputs?: Record<string, unknown>
+  storedOutputs?: Record<string, unknown>,
+  skippedOutputKeys?: ReadonlySet<string>
 ): Promise<ResolvedTemplateOutputs> {
   const logger = getLogger().child('OutputsDiff');
   // `Object.create(null)`, not `{}` (issue #1943's class). Two writes below
@@ -425,12 +444,40 @@ export async function resolveTemplateOutputs(
       // deploy drops it from the bag too and a REMOVE here is CORRECT.
       continue;
     }
+    // Issue #2740: the last deploy could not resolve this output and the
+    // template has not changed in any way its resolution reads — so the next
+    // deploy will skip it again, and previewing it would be a phantom ADD.
+    // Previewed as ABSENT instead, the way the deploy leaves it: no bag entry,
+    // and — deliberately — neither `resolutionFailed` nor `failedKeys`, which
+    // would suppress the whole section and hide a sibling's genuine change.
+    // Only while the key is ABSENT from state: present means a later deploy did
+    // resolve it, and the record is stale rather than binding. Checked BEFORE
+    // resolving, so the lookup this resolver would skip is not even attempted.
+    if (
+      skippedOutputKeys?.has(outputKey) &&
+      !(
+        storedOutputs !== undefined &&
+        Object.prototype.hasOwnProperty.call(storedOutputs, outputKey)
+      )
+    ) {
+      logger.debug(
+        `Diff previewing output ${stripControlChars(outputKey)} as absent — the last deploy could not resolve it and its template inputs are unchanged`
+      );
+      continue;
+    }
     const sourceUsedSub = templateUsesSub(output.Value);
 
     let value: unknown;
     try {
-      // Resolve a CLONE: the intrinsic resolver mutates its input in place, and
-      // the template is shared with the resource diff that already ran.
+      // Resolve a CLONE. The reason is the INVARIANT, not a call site: this
+      // template is shared with the resource diff that already ran and with
+      // the skipped-output digests computed above, so nothing here may leave
+      // a resolved value — a decrypted secret among them — reachable by
+      // either. Resolving a copy makes that true whatever the resolver does.
+      // (It is not true that the resolver mutates its input today: `resolveSub`
+      // wrote back until go-to-k/cdkd#2764 retired it, and this comment named
+      // that write-back in three places. Kept as history so the clone is not
+      // deleted as dead weight, which is exactly what the invariant forbids.)
       value = await resolveFn(structuredClone(output.Value));
     } catch (error) {
       logger.debug(`Diff could not resolve output ${outputKey}: ${String(error)}`);

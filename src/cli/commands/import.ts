@@ -1379,6 +1379,20 @@ function buildStackState(
     // (issue #2193); a record built from nothing exports nothing, and that is
     // a KNOWN `[]`, not an unknown.
     ...(existingState ? exportNamesCarriedFrom(existingState) : { exportNames: [] }),
+    // ...but the skipped-outputs record (issue #2740) is DROPPED, not carried,
+    // even though it describes that same bag. It records what the last DEPLOY
+    // could not resolve, and an import refreshes `attributes` for every
+    // resource it imports (see the `rowAttributes ?? priorAttributes` above;
+    // selective mode leaves the rest alone), so a key the deploy skipped for
+    // want of an attribute may now resolve — with no template resource change
+    // to un-bind the record. Carried forward it would make `cdkd diff` preview
+    // that key as absent while the next deploy publishes it and its
+    // `Export.Name`: the record's silent "nothing to do" over a row that is
+    // coming, which is the direction the whole field exists to avoid. Dropping
+    // it returns that key to pre-#2740 behaviour until the next deploy
+    // recomputes the record: resolved like any other output, so a row when the
+    // diff can resolve it and the ordinary whole-section suppression when it
+    // cannot. Either way the diff stops asserting that nothing is coming.
     lastModified: Date.now(),
   };
 }

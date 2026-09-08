@@ -1390,6 +1390,45 @@ describe('cdkd drift', () => {
       });
     });
 
+    it('DROPS the skipped-outputs record it was handed (issue #2740)', async () => {
+      // Accepting drift rewrites the very properties an attribute may be
+      // constructed FROM, so an Output the last deploy skipped for want of one
+      // can become resolvable here — with no template resource change, which
+      // is the only thing `cdkd diff`'s change map un-binds on. Carried
+      // through, the record would preview that key as absent while the next
+      // deploy publishes it and its `Export.Name`. `cdkd import` drops it for
+      // the same reason.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      const handed = makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b', VersioningConfiguration: { Status: 'Enabled' } },
+        }),
+      });
+      handed.state.skippedOutputs = { Broken: 'digest-recorded-by-the-last-deploy' };
+      mockGetState.mockResolvedValueOnce(handed);
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          BucketName: 'b',
+          VersioningConfiguration: { Status: 'Suspended' },
+        }),
+      });
+
+      const { error } = await runDrift(['TestStack', '--accept', '--yes']);
+      expect(error).toBeUndefined();
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , savedState] = mockSaveState.mock.calls[0]!;
+      // The accepted VALUE lands, so the save itself is the one under test...
+      expect(savedState.resources['Bucket1']!.properties).toEqual({
+        BucketName: 'b',
+        VersioningConfiguration: { Status: 'Suspended' },
+      });
+      // ...and the record is gone, not merely emptied.
+      expect('skippedOutputs' in savedState).toBe(false);
+    });
+
     it('--accept with --dry-run does NOT call saveState or acquire a lock', async () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
@@ -1558,6 +1597,50 @@ describe('cdkd drift', () => {
       const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warned).toContain('partial (');
       expect(warned).toContain('is still in use');
+    });
+
+    it('--revert DROPS the skipped-outputs record it was handed (issue #2740)', async () => {
+      // The flat rule: every writer that rebuilds state outside a deploy drops
+      // the record. This save narrows `observedProperties` and can DELETE a
+      // property, and even a deletion can expose an attribute of the same
+      // name to `Ref` resolution — one of three per-writer safety arguments
+      // that were each wrong in review, which is why the rule is flat.
+      //
+      // `--revert`'s state write is the NARROWING save (issue #1644): it runs
+      // only when the provider reports `effectiveProperties` that differ from
+      // what was asked, so this mirrors that case's shape exactly.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      const handed = makeState({
+        Ingress1: makeResource({
+          physicalId: 'sgr-1',
+          resourceType: 'AWS::EC2::SecurityGroupIngress',
+          properties: { IpProtocol: 6, FromPort: 443 },
+          observedProperties: { IpProtocol: 6, FromPort: 443 },
+        }),
+      });
+      handed.state.skippedOutputs = { Broken: 'digest-recorded-by-the-last-deploy' };
+      mockGetState.mockResolvedValueOnce(handed);
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
+        update: vi.fn(async () => ({
+          physicalId: 'sgr-1',
+          wasReplaced: false,
+          effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
+        })),
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+      expect(error).toBeUndefined();
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , savedState] = mockSaveState.mock.calls[0]!;
+      // The narrowing save landed (the control from #1644's own case), so the
+      // save under test is the real one.
+      expect(savedState.resources['Ingress1']!.observedProperties).toEqual({
+        IpProtocol: 'tcp',
+        FromPort: 443,
+      });
+      expect('skippedOutputs' in savedState).toBe(false);
     });
 
     it('--revert with --dry-run does NOT call provider.update or acquire a lock', async () => {

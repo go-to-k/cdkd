@@ -329,6 +329,36 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
     expect(state.outputReads).toHaveLength(1);
   });
 
+  it('CARRIES skippedOutputs through the partial-destroy snapshot, unlike outputs / exportNames (issue #2740)', async () => {
+    // A deliberate asymmetry, pinned because the neighbours above are blanked
+    // and nothing said which way this one goes. `outputs` and `exportNames`
+    // describe WHAT THE STACK PUBLISHES, which a partial destroy invalidates.
+    // `skippedOutputs` answers a different question — "will the next deploy
+    // leave this key absent from the bag?" — and a destroyed resource does not
+    // change that answer for a key whose template inputs are untouched. The
+    // record also cannot mislead the diff here: every resource this destroy
+    // removed comes back as a CREATE in the next diff, and `cdkd diff` refuses
+    // to bind a record whose output references a changed logical id.
+    const record = { NeverResolved: 'digest-recorded-by-the-last-deploy' };
+    const state = makeState(
+      { Failing: res(), Ok: res() },
+      { outputs: { BucketArn: 'arn:aws:s3:::my-bucket' }, skippedOutputs: record }
+    );
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'Failing' ? Promise.reject(new Error('boom')) : Promise.resolve()
+    );
+
+    await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(mockSaveState.mock.calls.length).toBeGreaterThanOrEqual(1);
+    for (let i = 0; i < mockSaveState.mock.calls.length; i++) {
+      const saved = savedStateAt(i);
+      expect(saved.outputs).toEqual({});
+      expect(saved.exportNames).toEqual([]);
+      expect(saved.skippedOutputs).toEqual(record);
+    }
+  });
+
   it('also clears outputs in incremental snapshots on a clean destroy', async () => {
     // Even when the destroy fully succeeds (state-file deleted at the end),
     // the intermediate incremental snapshots must already be output-free —

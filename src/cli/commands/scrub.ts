@@ -3727,8 +3727,16 @@ export async function scrubStack(
     if (outputsChanged) recordsChanged++;
 
     if (recordsChanged > 0 && !opts.dryRun) {
+      // `skippedOutputs` (issue #2740) is dropped, as every writer that
+      // rebuilds state outside a deploy drops it. Replacing a plaintext with
+      // the expression it came from is not monotonically less resolvable: an
+      // ordinary resource `GetAtt` returns the stored string verbatim, so an
+      // output that splits that string and uses a segment can start resolving
+      // once the shape changes. The record must not outlive a rewrite of the
+      // values outputs read.
+      const { skippedOutputs: _droppedByScrub, ...carriedState } = state;
       const nextState: StackState = {
-        ...state,
+        ...carriedState,
         resources: newResources,
         // The cast restates what `StackState` already gets wrong rather than
         // introducing a lie: `outputs` is TYPED as required while every
