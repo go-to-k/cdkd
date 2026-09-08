@@ -1648,8 +1648,9 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
                 '   reading is UNKNOWN, not ruled out.** The version list above splits',
                 '   them two ways and no further:',
                 '',
-                '   - The type is ABSENT from it. No readable client version was found',
-                '     — npm was unreachable, the type resolved to no client, or the',
+                '   - The type is ABSENT from it. The PUBLISHED version could not be',
+                '     established — npm was unreachable, npm answered with something',
+                '     that is not a version, the type resolved to no client, or the',
                 '     client’s own manifest could not be read — and this report cannot',
                 '     tell which. Do NOT read that as “there is nothing to bump”: under',
                 '     an unreachable npm the bump is precisely what went unchecked.',
@@ -1658,10 +1659,20 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
                 '     it was read and declared no such interface. Those two are also',
                 '     indistinguishable from here.',
                 '',
-                '   Re-run the job before doing anything by hand — a transient npm or',
-                '   download failure clears on the next cycle, and only a finding that',
-                '   survives a second run has earned the hand check, let alone an',
-                '   allow-list entry:',
+                '   **Do not wait for this pull request to answer it.** The reading is',
+                '   recomputed every cycle, but the body you are reading is only',
+                '   rewritten on a cycle that publishes a change, so a transient npm or',
+                '   download failure clears silently and this section stays as it is.',
+                '   Settle it where you are, before allow-listing anything:',
+                '',
+                '   ```bash',
+                '   node -p "require(\'@aws-sdk/client-<service>/package.json\').version"',
+                '   npm view @aws-sdk/client-<service> version',
+                '   # then, if it is behind, bump and re-run:',
+                '   vp run audit:nested-key-coverage:check',
+                '   ```',
+                '',
+                '   The findings:',
                 '',
                 ...unresolved.map(
                   (d) => `   - ${renderName(d.resourceType)}: ${renderKey(d.nestedKey)}`
@@ -1973,13 +1984,20 @@ export function partitionPendingSdkBump({
     // IS the latest and the checker's own verdict already stands. Reporting
     // that as unknown would send the maintainer to bump a current client.
     //
+    // TWO states are real answers and neither is unknown: this one, and the
+    // `answered` case above — a published index that declared the interface and
+    // did not carry the member, which is the finding CONFIRMED and is this
+    // module's own motivating measurement (the four Glue divergences in the
+    // header).
+    //
     // Everything else is unknown, by THREE routes: no row for the type at all;
     // a lagging row whose published index could not be downloaded or read,
     // which breaks out of the loop above; and lagging rows read fine that
     // declare no such interface, which exhausts it. (The first route has
-    // several upstream causes — npm unreachable, no client resolved, an
-    // unreadable manifest — and this function cannot tell them apart, which is
-    // why the rendered line does not claim to either.)
+    // several upstream causes — npm unreachable, npm answering with a string
+    // that is not a version, no client resolved, an unreadable manifest — and
+    // this function cannot tell them apart, which is why the rendered line does
+    // not claim to either.)
     //
     // Nor are the second and third cleanly disjoint: a run that reads one row
     // without the interface and then fails to read the next satisfies neither

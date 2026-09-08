@@ -4263,10 +4263,11 @@ describe('every emitted dependency version is refused when it is not version-sha
             resourceType: 'AWS::S3::Bucket',
             properties: ['Gone'],
             // Shaped like what `collectFixtureDeltas` actually writes: it always
-            // sets `candidates[property]`, `renameCandidates[property]` and
-            // `providerPath`, and `sdkModelsMember` never returns an empty
-            // `consulted` — an empty one renders "across 0 client(s)", a
-            // sentence the producer cannot emit.
+            // sets the `candidates[property]` and `renameCandidates[property]`
+            // keys and a `providerPath` key (whose VALUE is undefined when the
+            // type maps to no provider file — a separate render arm), and
+            // `sdkModelsMember` never returns an empty `consulted`, which would
+            // render "across 0 client(s)", a sentence the producer cannot emit.
             candidates: { Gone: [] },
             renameCandidates: { Gone: [] },
             providerPath: 'src/provisioning/providers/s3-bucket-provider.ts',
@@ -4374,7 +4375,7 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // whole block is gated, not just its heading sentence.
     const flat = md.replace(/\s+/g, ' ');
     expect(flat).not.toContain('splits them two ways and no further');
-    expect(flat).not.toContain('Re-run the job before doing anything by hand');
+    expect(flat).not.toContain('Do not wait for this pull request to answer it');
   });
 
   it('names the unsettled findings, and only those', () => {
@@ -4401,8 +4402,15 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // The refusal of the reading that would have been most costly: an absent
     // type does NOT mean there is nothing to bump.
     expect(flat).toContain('Do NOT read that as “there is nothing to bump”');
-    // And the remedy, which had no assertion at all and could be deleted green.
-    expect(flat).toContain('Re-run the job before doing anything by hand');
+    // The remedy, which had no assertion at all and could be deleted green. It
+    // must NOT tell the reader to wait for this PR: the diagnosis is recomputed
+    // every cycle but the body is rewritten only on one that publishes, so a
+    // transient failure clears while this section stands unchanged. An earlier
+    // cut said "re-run the job", which promised an outcome the reader cannot
+    // observe.
+    expect(flat).toContain('Do not wait for this pull request to answer it');
+    expect(flat).toContain('only rewritten on a cycle that publishes a change');
+    expect(flat).toContain('npm view @aws-sdk/client-<service> version');
     // The finding itself is named, not just the class...
     expect(md).toContain('   - `AWS::Glue::Connection`: `OAuth2Credentials`');
     // ...and the OTHER divergence, which the published client DID settle, is
