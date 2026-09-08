@@ -502,7 +502,7 @@ run_case 0 "Bash PAST the byte bound: a write OUTSIDE the repo still passes" \
 # satisfiable by the bug it replaces: refusing everything passes the first, and
 # passing everything passes the second.
 BROKEN="$TMPDIR/broken"
-cp -R .claude/hooks "$BROKEN"
+cp -R "$(dirname "$HOOK")" "$BROKEN"
 echo 'this is not shell(' > "$BROKEN/lib/command-match.sh"
 
 # run_broken <expected_exit> <needle|-> <desc> <json>
@@ -636,7 +636,7 @@ run_broken 2 "Blocked by main-tree-edit-gate" \
 # it. So the cases below are the same PAIR shape, against the state that
 # actually reaches the new check.
 LAGGING="$TMPDIR/lagging"
-cp -R .claude/hooks "$LAGGING"
+cp -R "$(dirname "$HOOK")" "$LAGGING"
 # Delete the two helper definitions, leaving the rest of the library intact and
 # syntactically valid -- `sed` between the function header and its closing brace
 # at column 0. Asserted below rather than assumed: the fixture must LOAD (or
@@ -731,12 +731,18 @@ run_lagging 2 "Blocked by main-tree-edit-gate" \
 # quote SCAN because it strips every constant, multi-line ones included. The two
 # sibling suites carry the same note; they disagree with the fence on purpose.
 STRIPPED="$TMPDIR/stripped-const"
-cp -R .claude/hooks "$STRIPPED"
-grep -v '^GATE_SEP_AMP=' .claude/hooks/lib/command-match.sh > "$STRIPPED/lib/command-match.sh"
-if grep -q '^GATE_SEP_AMP=' "$STRIPPED/lib/command-match.sh"; then
+cp -R "$(dirname "$HOOK")" "$STRIPPED"
+grep -v '^GATE_SEP_AMP=' "$(dirname "$HOOK")/lib/command-match.sh" > "$STRIPPED/lib/command-match.sh"
+# BOTH halves, because `grep -q` on a MISSING file returns 2, and a bare
+# `if grep -q ...; then FAIL; else ok; fi` reads that as "successfully
+# stripped" -- a fixture that does not exist would print `ok`. So the file must
+# be there and still be a library, and only then must the anchor be gone.
+if [ ! -s "$STRIPPED/lib/command-match.sh" ] || ! grep -q '^GATE_SEP_PIPE=' "$STRIPPED/lib/command-match.sh"; then
+  fail=$((fail + 1)); printf 'FAIL (fixture) $STRIPPED has no library to strip from\n'
+elif grep -q '^GATE_SEP_AMP=' "$STRIPPED/lib/command-match.sh"; then
   fail=$((fail + 1)); printf 'FAIL (fixture) could not stage a library without GATE_SEP_AMP (anchor drifted)\n'
 else
-  pass=$((pass + 1)); printf 'ok   (fixture) $STRIPPED library no longer assigns GATE_SEP_AMP\n'
+  pass=$((pass + 1)); printf 'ok   (fixture) $STRIPPED library still loads and no longer assigns GATE_SEP_AMP\n'
   __sc_payload=$(jq -nc --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')
   __sc_out=$(printf '%s' "$__sc_payload" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" 2>&1 >/dev/null)
@@ -760,6 +766,39 @@ else
   else
     fail=$((fail + 1)); printf 'FAIL Edit outside the repo must survive a missing constant\n'
   fi
+  # ...and its ENFORCEMENT twin, on the same state and the same tool, per the
+  # rule the `$BROKEN` block above states: an expect-0 case cannot say WHICH
+  # arm answered, so without this one deleting the tracked-file arm outright
+  # would pass the case above.
+  __sc_edit_main=$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')
+  __sc_em_out=$(printf '%s' "$__sc_edit_main" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" 2>&1 >/dev/null)
+  printf '%s' "$__sc_edit_main" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" >/dev/null 2>&1
+  if [[ $? == 2 && "$__sc_em_out" == *"Blocked by main-tree-edit-gate"* ]]; then
+    pass=$((pass + 1)); printf 'ok   (exit 2, stripped const) Edit of a tracked main-tree file is still BLOCKED\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL Edit of a tracked main-tree file must still be BLOCKED with a constant missing\n'
+  fi
+
+  # THE REFUSAL TEXT, one needle per SENTENCE. Review measured that deleting the
+  # whole "how do I repair this" paragraph from `gate_require_const` left every
+  # suite in the repo green -- this file, `main-tree-branch-gate`,
+  # `restore-backup`, `branch-gate` -- while the sibling refusal fifteen lines
+  # away carries ten such cases. Text an agent ACTS ON is load-bearing, and its
+  # first revision was wrong in one tree, which is exactly what an unasserted
+  # message lets through.
+  for __sc_needle in \
+    "EVERY Bash call is refused" \
+    "FROM A FEATURE WORKTREE" \
+    "In the MAIN tree on main" \
+    "belongs to the operator" \
+    "bash -n .claude/hooks/lib/command-match.sh"; do
+    if [[ "$__sc_out" == *"$__sc_needle"* ]]; then
+      pass=$((pass + 1)); printf 'ok   (refusal text) names: %s\n' "$__sc_needle"
+    else
+      fail=$((fail + 1)); printf 'FAIL the constant refusal must say: %s\n' "$__sc_needle"
+    fi
+  done
 fi
 
 # THE OTHER TWO LABELS IN THE `case` PATTERN, under a broken library. The
@@ -808,7 +847,7 @@ run_broken 0 - "an ABSENT tool_name does the same" \
 # not this one does; a stub is used rather than a git object so the case does
 # not depend on the repo's history being fetched.
 STUBLIB="$TMPDIR/stublib"
-cp -R .claude/hooks "$STUBLIB"
+cp -R "$(dirname "$HOOK")" "$STUBLIB"
 {
   printf 'gate_unquote_span() { printf %%s "$1"; }\n'
   printf 'gate_unquote() { printf %%s "$1"; }\n'
@@ -863,7 +902,7 @@ run_stublib 2 "Blocked by main-tree-edit-gate" \
 # a case does not fail, it just stops measuring anything. `$BROKEN` now stays
 # broken for the whole file, and the assertion after the control says so.
 BROKEN_CTL="$TMPDIR/broken-ctl"
-cp -R .claude/hooks "$BROKEN_CTL"
+cp -R "$(dirname "$HOOK")" "$BROKEN_CTL"
 printf '%s' \
   "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > /tmp/elsewhere.txt"}}')" \
   | "$HOOK_RUNNER" "$BROKEN_CTL/main-tree-edit-gate.sh" >/dev/null 2>&1
@@ -1219,7 +1258,7 @@ else
   printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
 fi
 
-CASE_FLOOR=135
+CASE_FLOOR=150
 # `ran` is captured BEFORE the increment. Incrementing `fail` first and then
 # printing `$((pass + fail))` re-counted the floor's own failure as a case, so
 # one deleted case reported `only 135 cases ran, expected at least 135` -- a

@@ -4375,17 +4375,30 @@ gate_require_const() {
     echo "The library lags the hooks that read it -- restore or finish it; do not"
     echo "work around the gate."
     echo
-    # THE REMEDIATION HAS TO NAME A ROUTE THAT STILL WORKS. In this state every
-    # gate on the shared matcher refuses every Bash call -- measured, 25 of them
-    # refuse a bare `ls -la` -- so "restore it", read as `git restore <file>`,
-    # is itself refused. An agent that finds the advised repair blocked starts
-    # working around the gate, which is the failure this whole layer exists to
-    # prevent; the repo has the incident on record. Edit and Write stay allowed
-    # (see main-tree-edit-gate's Bash-only carve-out), so they are the route,
-    # and saying so is what makes this a refusal rather than a dead end.
+    # THE REMEDIATION HAS TO NAME A ROUTE THAT STILL WORKS. In this state the
+    # gates on the shared matcher refuse every Bash call -- measured, 27 of the
+    # 31 refuse a bare `ls -la`, the other four being the `_soft` callers -- so
+    # "restore it", read as `git restore <file>`, is itself refused. An agent
+    # that finds the advised repair blocked starts working around the gate,
+    # which is the failure this whole layer exists to prevent; the repo has the
+    # incident on record, and this branch's own rebase is one of them.
+    #
+    # AND THE ROUTE HAS TO BE STATED WHERE IT HOLDS. The first revision of this
+    # message said "repair it with the Edit or Write tool" flatly, which is
+    # false in the MAIN tree on `main`: main-tree-edit-gate's tracked-file arm
+    # refuses that edit for its own separate reason, measured rc=2. Replacing an
+    # unfollowable instruction with one that is wrong in one tree is the same
+    # defect. The wording below mirrors that gate's own refusal, which had the
+    # distinction right and has cases pinning both halves.
     echo "EVERY Bash call is refused while the library is in this state, this"
-    echo "one included. Repair it with the Edit or Write tool -- those stay"
-    echo "allowed, deliberately, so a broken matcher cannot block its own fix."
+    echo "one included, so a command-line repair is not available."
+    echo "FROM A FEATURE WORKTREE the Edit and Write tools stay allowed --"
+    echo "deliberately, so a broken matcher cannot block its own fix -- and that"
+    echo "is the route. In the MAIN tree on main, main-tree-edit-gate refuses"
+    echo "that edit too, for its own separate reason, so there the repair"
+    echo "belongs to the operator, made from their own shell ('!' prefixed, in"
+    echo "Claude Code). To inspect the file first:"
+    echo "  bash -n .claude/hooks/lib/command-match.sh"
   } >&2
   exit 2
 }
@@ -4451,6 +4464,17 @@ gate_missing_const() {
   # static check over the whole class, tracked by go-to-k/cdkd#2826, and this
   # runtime one could only guess at it.
 
+  # COLLATION, not decoration. The shape guard below is a `case` glob, and
+  # `[!A-Za-z0-9_]` is a RANGE -- what falls inside a range is locale-dependent.
+  # Measured: an accented or full-width name is REJECTED on bash 5.3.9 and
+  # ACCEPTED on 3.2.57, while all 127 ASCII bytes agree on both. The divergence
+  # is fail-CLOSED here (the name is reported missing; nothing aborts and
+  # nothing executes), but a guard that answers differently per shell is the
+  # class this helper exists to close, so it runs under C, where the range
+  # means bytes. `local` keeps it off every caller.
+  local LC_ALL=C
+  local LC_COLLATE=C
+
   # An empty base list means this file was truncated between the declaration
   # above and here, so the base half of the check would pass vacuously.
   if [ -z "${GATE_LIB_BASE_CONSTS:-}" ]; then
@@ -4462,6 +4486,8 @@ gate_missing_const() {
   local _gc_bad
   local _gc_label
   local _gc_missing=""
+  local _gc_nl='
+'
   # Unquoted on purpose: the base list is a space-separated STRING and word
   # splitting is how it becomes names.
   # shellcheck disable=SC2086
@@ -4491,11 +4517,21 @@ gate_missing_const() {
       *[!A-Za-z0-9_]*)  _gc_bad=1 ;;  # any character after it
       *)                _gc_bad=0 ;;
     esac
-    # Dedup on the RECORDED TEXT, not on the raw name. With `_gc_name` empty,
-    # `" $_gc_missing "` and the pattern `*" $_gc_name "*` are both two spaces,
-    # so an empty name matched the not-yet-populated list and was dropped in
-    # silence -- the `""` arm above fired and recorded nothing. Measured before
-    # this line: `gate_missing_const ""` returned 0.
+    # Dedup on the RECORDED TEXT, delimited by NEWLINE rather than by a space.
+    # Two measured reasons, both silent drops:
+    #
+    #   With `_gc_name` empty, `" $_gc_missing "` and the pattern
+    #   `*" $_gc_name "*` are both two spaces, so an empty name matched the
+    #   not-yet-populated list. `gate_missing_const ""` returned 0.
+    #
+    #   A malformed name can CONTAIN a space -- `"GATE_A GATE_B"`, the quoting
+    #   slip this guard exists for -- so with a space delimiter its label
+    #   `GATE_A GATE_B(not-a-variable-name)` swallows a later, genuinely
+    #   missing `GATE_A`: measured, the report named only the compound.
+    #
+    # A name cannot contain a newline (the shape guard rejects one), so a
+    # newline-delimited membership test is exact. The stored form is converted
+    # back to spaces once, at the end.
     # Spelled as an `if`, never `[ -n ... ] && continue`: under a caller's
     # `set -e` a trailing false test is the last command of the branch and
     # aborts the function. `gate_segments` carries the same note for the same
@@ -4512,13 +4548,13 @@ gate_missing_const() {
       fi
       _gc_label="$_gc_name"
     fi
-    case " $_gc_missing " in
-      *" $_gc_label "*) ;;
-      *) _gc_missing="${_gc_missing:+$_gc_missing }$_gc_label" ;;
+    case "$_gc_nl$_gc_missing$_gc_nl" in
+      *"$_gc_nl$_gc_label$_gc_nl"*) ;;
+      *) _gc_missing="${_gc_missing:+$_gc_missing$_gc_nl}$_gc_label" ;;
     esac
   done
 
   [ -n "$_gc_missing" ] || return 0
-  GATE_MISSING_CONSTS="$_gc_missing"
+  GATE_MISSING_CONSTS="${_gc_missing//$_gc_nl/ }"
   return 1
 }
