@@ -589,7 +589,6 @@ flatten-before-rebase-gate        no rebase template exists to block -- see the 
 gated-command-preamble-gate       verdict is the command SHAPE, target-independent
 integ-coverage-matrix-gate        needs the real repo toolchain (node + the regen script) in the target
 integ-stale-base-detector         NON-BLOCKING: it refuses nothing, so it has no refusal to exercise
-issue-deferral-criteria-gate      verdict is the published BODY, not the target tree
 main-tree-dirty-detector          PostToolUse, non-blocking by design
 main-tree-edit-gate               fires on a WRITE-shaped command, not a git/gh verb
 main-tree-git-cwd-detector        PostToolUse, non-blocking by design
@@ -668,9 +667,12 @@ fence4_hazard() {
       # `$END` terminates the NAME. Without it `$f` prefix-matches
       # `$fence_open_re`, and a hook with a one-letter local plus any
       # `=~ $some_local_re` was reported as coupled to a shared constant --
-      # measured on issue-deferral-criteria-gate.sh, whose `f` is a body-file
-      # PATH and whose regex is local. A false positive here is worse than a
-      # miss: it makes a clean state unreachable without an exemption list.
+      # measured on the since-retired issue-deferral-criteria-gate.sh
+      # (go-to-k/cdkd#2717), whose `f` was a body-file PATH and whose regex was
+      # local. The file is gone and the MEASUREMENT is kept: it is why the
+      # terminator is here, and re-deriving it would need a hook with that shape.
+      # A false positive here is worse than a miss: it makes a clean state
+      # unreachable without an exemption list.
       grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv}\}?\"?${END}" "$f" && { m=1; break; }
       # A name copied into another name, one hop -- enough for the shapes seen.
       for gv2 in $(grep -oE "[A-Za-z_][A-Za-z0-9_]*=\"?\\\$\{?${gv}\}?\"?${END}" "$f" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*'); do

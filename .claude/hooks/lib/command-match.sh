@@ -1914,13 +1914,17 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # ── A shell WORD, for the gates that extract with PERL ─────────────────────
 #
 # `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
-# `[[ =~ ]]`. TWO gates -- issue-deferral-criteria and pr-body-item-number --
-# pull a `--body-file` / `-F` path or an inline `--body` value out of RAW
-# command text with `perl -0777` instead, because they need a GLOBAL scan over a
-# multi-line slurp and `[[ =~ ]]` gives neither.
+# `[[ =~ ]]`. ONE gate -- pr-body-item-number -- pulls a `--body-file` / `-F`
+# path or an inline `--body` value out of RAW command text with `perl -0777`
+# instead, because it needs a GLOBAL scan over a multi-line slurp and
+# `[[ =~ ]]` gives neither. Do not trust that count from this comment: the
+# header undercounted its own consumers once and the fence
+# `tests/unit/scripts/gate-perl-word-consumers.test.ts` now derives the set from
+# the hooks directory and fails when the two disagree.
 #
 # It was FIVE until go-to-k/cdkd#2717 retired gh-body-english,
-# issue-dup-check and issue-classification-label to CI. Their subject is a body
+# issue-dup-check and issue-classification-label to CI, and then
+# issue-deferral-criteria outright. Their subject is a body
 # PUBLISHED to GitHub, which a workflow receives whole in the event payload --
 # so the extraction problem this constant exists to solve does not arise there
 # either, for the same reason it does not arise for a `gate_argv` consumer
@@ -1948,7 +1952,8 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 #   gh issue create --body-file "<dir with space>/x.md"
 #     The bare class cannot span the space, and with the optional quote group
 #     unset it cannot start on the quote either, so NOTHING is extracted and
-#     the gate judges an empty body. Measured: issue-deferral-criteria-gate
+#     the gate judges an empty body. Measured on the since-retired
+#     issue-deferral-criteria-gate (go-to-k/cdkd#2717):
 #     rc=0 on a PR-shaped deferral where the unquoted spelling gave 2, and
 #     gh-body-english-gate rc=0 on a JAPANESE body where the unquoted spelling
 #     gave 2 -- the English-only rule was bypassable by putting the body file
@@ -1957,7 +1962,7 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 #   gh api repos/O/R/issues -f body='<text>'
 #     gh's OWN documented spelling puts the quote INSIDE the value, after the
 #     `body=`. An alternation tried AFTER the literal `body=` falls through to
-#     `\S+` and captures `body='a`. Measured on issue-deferral-criteria-gate:
+#     `\S+` and captures `body='a`. Measured on the same since-retired gate:
 #     rc=0, where `-f 'body=<text>'` (quote OUTSIDE, the only shape its suite
 #     covered) gave 2.
 #

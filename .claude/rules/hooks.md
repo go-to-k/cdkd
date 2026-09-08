@@ -83,14 +83,16 @@ mistake is:
   way. **CI**, which additionally re-checks on every push; the hook fired once,
   at `gh pr create`, and never saw a web-UI retitle at all.
 
-Applying it retired nine gates in one change (go-to-k/cdkd#2717): **two
-deleted outright** — `closes-paren-form` and `vp-run-test-path` — and seven
+Applying it retired ten gates (go-to-k/cdkd#2717), nine in one change and
+`issue-deferral-criteria` once go-to-k/cdkd#2711 released the `REACH_FLOORS` row
+its removal had to edit: **three deleted outright** — `closes-paren-form`,
+`vp-run-test-path` and `issue-deferral-criteria` — and seven
 moved to `.github/workflows/`: `non-english-text`, `commit-prefix-scope` and
 `pr-title-prefix-scope` (the last two are one check now, since squash-only
 merging makes the PR title the release subject), `internal-pr-labels`,
 `issue-classification-label`, `issue-dup-check` and `gh-body-english`.
 
-**One of the two deletions got a CI successor afterwards, and the correction is
+**One of the three deletions got a CI successor afterwards, and the correction is
 worth reading before applying the rule again.** `closes-paren-form` was deleted
 on the criterion and the criterion holds — but what the deletion LEFT was a
 prose row in `.claude/skills/verify-pr/SKILL.md`, and a skill step is exactly
@@ -111,10 +113,16 @@ future gh release fixes the deprecation, this gate can be removed"). Every
 sentence in this repo saying that spelling fails silently was retracted in the
 same change — do not reinstate one from an old transcript.
 
-**One more is on the settled DELETE list and is still present**, deliberately,
-so do not read its survival as the rule passing it:
-`issue-deferral-criteria-gate`, whose removal must edit a `REACH_FLOORS` row
-that go-to-k/cdkd#2711 holds. It goes when that clears.
+**The tenth and last member of the DELETE list is gone too**:
+`issue-deferral-criteria-gate`, retired once go-to-k/cdkd#2711 released the
+`REACH_FLOORS` row its removal had to edit. Its subject was whether a sentence
+of prose gives a PR-shaped reason for deferring work — a rhetorical property, so
+the gate was 1,005 lines and its suite 990 more, spent refusing an issue whose
+justification line is slightly wrong. Nothing replaced it: unlike
+`closes-paren-form`, the class it guarded is not mechanically decidable, so
+there is no CI successor to write, and the rule's third option — "or nowhere" —
+is the honest answer here. `Session-fit`'s criteria are still stated in
+[session-report.md](session-report.md), where a reviewer reads them.
 
 Two consequences worth carrying forward:
 
@@ -379,17 +387,6 @@ These one-shot hooks block known foot-guns at the source.
   now carries both polarities as cases. Library-load failure is CLOSED; a
   missing `jq` or `awk` degrades to a pass, as in every sibling. Suite runs
   under both bashes via `HOOK_BASH`.
-
-- **`.claude/hooks/issue-deferral-criteria-gate.sh`** blocks `gh issue create`
-  (and the `gh api repos/<o>/<r>/issues` mint) when the body's
-  `Session-fit: next` line defers the work for a PR-SHAPED reason. **An
-  ESCALATION, not a new rule**: `Session-fit` decides whether the work is
-  finished in THIS session and none of its criteria is about the pull request.
-  Only `next` is gated; `gh issue edit` / `comment` are not. The vocabulary,
-  the body CHANNELS it reads and their precedence, the reason boundary, the
-  bypass, and every measured number live in
-  [hooks-deferral-criteria.md](hooks-deferral-criteria.md), whose `paths:`
-  glob loads it only when that gate or its suite is open.
 
 ## Bug-hunt cleanup safety
 

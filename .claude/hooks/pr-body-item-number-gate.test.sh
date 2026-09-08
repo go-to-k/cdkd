@@ -568,8 +568,10 @@ run_case "a SPACE-indented terminator does NOT end a <<- body" 2 \
 
 
 # --- the quoted-value holes (2026-09-05) --------------------------------
-# The FIFTH site of one root cause (gh-body-english / issue-dup-check /
-# issue-deferral-criteria / issue-classification-label are the others). The old
+# The FIFTH site of one root cause; the other four (gh-body-english /
+# issue-dup-check / issue-deferral-criteria / issue-classification-label) were
+# retired by go-to-k/cdkd#2717, so these cases are the only surviving
+# regression coverage for the class. The old
 # value class `(["\x27]?)([^"\x27\s]+)\1` cannot span a QUOTED PATH
 # CONTAINING A SPACE and requires a separator before a short flag's value, so
 # nothing was extracted and NO BODY WAS SCANNED — the fail-open direction for

@@ -112,10 +112,13 @@ claim about a MOVING target: the lane keeps editing after the reason is written
 (go-to-k/cdkd#2440 was deferred on it, and the lane's merged PR then changed
 that very file `+9/-2`). `/work-issues` `references/retro.md` §10-0 re-checks
 every `next` at end of run and has promoted on this shape in two consecutive
-runs (go-to-k/cdkd#2544, go-to-k/cdkd#2595). No vocabulary gate closes it:
-`.claude/hooks/issue-deferral-criteria-gate.sh` passes go-to-k/cdkd#2595's body
+runs (go-to-k/cdkd#2544, go-to-k/cdkd#2595). **No vocabulary gate closes it, and
+one was tried**: `issue-deferral-criteria-gate` passed go-to-k/cdkd#2595's body
 as filed (measured rc=0, versus rc=2 for the same body reworded to "its own PR"
-or "unreviewable"), and its own header rules out chasing one more spelling.
+or "unreviewable") — it refused three spellings and the fourth walked through.
+That gate was retired outright by go-to-k/cdkd#2717: whether a sentence gives a
+PR-shaped reason is a rhetorical property, not a mechanical one, and 1,995 lines
+of hook and suite could not decide it. The criteria below are the control.
 
 **Before writing `next`, NAME the next session's verification** — the
 concrete command a FRESH session will run, and that it will be able to run
@@ -137,9 +140,10 @@ Review of a larger diff also grows superlinearly, and that cost is real —
 but it is a reason to SPLIT the PR, not to end the session, and it belongs
 under `Effort`. An earlier revision listed it here as a third thing to
 "defer on", which is the PR-shaped criterion removed above arriving through
-the back door twenty-five lines later; a body wording it as `unreviewable`
-is now refused by `.claude/hooks/issue-deferral-criteria-gate.sh`, so the
-two halves of this file would have contradicted each other AND the gate.
+the back door twenty-five lines later, so the two halves of this file
+contradicted each other. `issue-deferral-criteria-gate` refused a body wording
+it as `unreviewable` until go-to-k/cdkd#2717 retired it; the contradiction is
+the reason this paragraph exists, and it does not depend on the gate.
 
 **Classify by PURPOSE, never by MEANS.** Misfires to avoid: "the release PR
 is tagpr's, so out of scope" (the purpose was a usable release); "toolchain
