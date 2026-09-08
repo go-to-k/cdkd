@@ -1,14 +1,24 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  readdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import {
   analyze,
   extractTemplates,
   scanTemplateLiterals,
   matchesSourceTemplate,
   scanPage,
+  collectDocPages,
   runSelfProbe,
   deriveErrorNames,
   FLOORS,
@@ -259,10 +269,24 @@ describe('docs error-string checker: template extraction', () => {
      * left everything after it in an unexamined hole. A truncation past the
      * opening must now reach a SECOND literal.
      */
-    const t = templatesOf('throw new E(`Added node: ${id} (${type})`);');
-    expect(matchesSourceTemplate('Added node: TOTAL FABRICATION never emitted ...', t)).toBe(false);
+    const t = templatesOf('throw new E(`Added the node named ${id} of type (${type})`);');
+    expect(matchesSourceTemplate('Added the node named TOTAL FABRICATION never ...', t)).toBe(false);
     // Reaching the second literal is what makes it a real prefix.
-    expect(matchesSourceTemplate('Added node: MyBucket (AWS::S3 ...', t)).toBe(true);
+    expect(matchesSourceTemplate('Added the node named MyBucket of type (AWS ...', t)).toBe(true);
+  });
+
+  it('refuses a second literal made only of whitespace', () => {
+    /*
+     * Round 3's blocker. `Could not confirm that ${a} ${b} (${c})` has a
+     * whitespace-only second segment; trailing-trim emptied it and the
+     * cumulative prefix collapsed back to `^lead`, reinstating the k=1
+     * matcher the `k >= 2` rule forbids — for 1265 of 4522 templates. Both
+     * guards now count SUBSTANTIVE characters, so a padding segment can
+     * satisfy nothing.
+     */
+    const t = templatesOf('throw new E(`Could not confirm that ${a} ${b} (${c}) is the resource`);');
+    expect(matchesSourceTemplate('Could not confirm that TOTAL FABRICATION never ...', t)).toBe(false);
+    expect(matchesSourceTemplate('Could not confirm that FABRICATIONXYZQ ...', t)).toBe(false);
   });
 
   it('requires a truncated quote to overlap the opening literal by a real margin', () => {
@@ -377,9 +401,18 @@ describe('docs error-string checker: the real tree', () => {
   });
 
   it('walks past the generated directory rather than into it', () => {
-    // docs/_generated is written by generators and guarded by its own
-    // staleness checks; a finding there would point at the wrong file.
-    expect(report.findings.some((f) => f.file.startsWith('docs/_generated/'))).toBe(false);
+    /*
+     * Asserting no FINDING under `docs/_generated/` pins nothing — those pages
+     * contain no `Error:` line, so the assertion is green with the skip
+     * deleted. Assert the walk itself: the directory exists and has pages, and
+     * none of them is collected.
+     */
+    const generated = join(ROOT, 'docs/_generated');
+    const rawCount = readdirSync(generated).filter((f) => f.endsWith('.md')).length;
+    expect(rawCount).toBeGreaterThan(0);
+    const walked = collectDocPages(join(ROOT, 'docs'));
+    expect(walked.some((p) => p.includes(`docs${sep}_generated${sep}`))).toBe(false);
+    expect(walked.length).toBeGreaterThan(0);
   });
 
   it('finds its subject on more than one page', () => {
@@ -423,11 +456,15 @@ describe('docs error-string checker: fails against real code', () => {
      */
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-doc-err-tree-')));
     try {
-      // Only the two directories the checker reads.
+      // Only the directories the checker reads.
       for (const sub of ['src', 'docs', 'scripts']) {
         mkdirSync(join(dir, sub), { recursive: true });
         execFileSync('cp', ['-R', join(ROOT, sub) + '/.', join(dir, sub)]);
       }
+      // The checker imports `typescript-v6`, so the copy needs a module
+      // resolution root. A symlink is enough and copying node_modules is not
+      // (gigabytes, and slow enough to time these probes out).
+      symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
       mutate(dir);
       try {
         const out = execFileSync('node', [join(dir, 'scripts/check-docs-error-strings.ts')], {

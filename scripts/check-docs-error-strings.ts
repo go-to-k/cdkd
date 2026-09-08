@@ -34,9 +34,12 @@
  * a discrimination no word-run or substring test makes, because the
  * interpolation sits in the MIDDLE of the phrase.
  *
- * Two properties of the corpus had to be handled or the check reports nothing
- * but false alarms, and both were found by running it:
+ * Three properties of the corpus had to be handled or the check reports nothing
+ * but false alarms, and all three were found by running it:
  *
+ * - **Templates are read with TypeScript's own parser.** A backtick regex, and
+ *   then a hand-rolled character scanner, each desynced on real code; the
+ *   scanner's history is in `scanTemplateLiterals`.
  * - **Concatenated literals are rejoined.** cdkd builds its longest messages as
  *   `` `part one ` + `part ${two}` ``, and neither half alone matches what the
  *   user sees.
@@ -67,11 +70,13 @@
  * - **A truncated quotation is judged on a PREFIX of the template**, so the
  *   text after the author's ellipsis is unexamined by construction. It must
  *   either stop inside the opening literal, or reach a SECOND literal —
- *   keeping text from both sides of a hole. Two review rounds landed here:
- *   the first revision compared only the overlapping characters, and the
- *   second still accepted anything whose borrowed opening aligned to a whole
- *   literal. A quote cut inside the first hole is now refused, which is a
- *   loud, author-fixable outcome rather than a silent blessing.
+ *   keeping text from both sides of a hole, counted in SUBSTANTIVE (non-
+ *   whitespace) characters. Three review rounds landed here: the first
+ *   revision compared only the overlapping characters; the second accepted
+ *   anything whose borrowed opening aligned to a whole literal; the third
+ *   found that a whitespace-only second segment collapsed the rule back to the
+ *   first. A quote cut inside the first hole is refused, which is a loud,
+ *   author-fixable outcome rather than a silent blessing.
  *
  * COLLAPSE DEFENCES. The population is small (a couple of dozen lines
  * site-wide), so counting only findings would let a broken scanner report a
@@ -93,6 +98,7 @@
 
 import { readFileSync, readdirSync, statSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import ts from 'typescript-v6';
 import { join, relative, sep } from 'node:path';
 
 /** Repo root, resolved from this file's location. */
@@ -246,6 +252,9 @@ const HOLE = '[\\s\\S]*?';
  * memoised per template — arm (b) of the truncation test asks for these
  * repeatedly, and recompiling them per call is the whole cost of that path.
  */
+/** Literal characters that are not whitespace — the only ones that anchor anything. */
+const substantive = (s: string): number => s.replace(/\s/g, '').length;
+
 function prefixMatcher(t: Template, k: number): RegExp {
   const cached = t.prefixCache.get(k);
   if (cached) return cached;
@@ -269,112 +278,45 @@ const MAX_TEMPLATE_CHARS = 600;
 
 /**
  * Template literals in one source file, in source order, each paired with the
- * source offset just past its closing backtick.
+ * source offsets of its delimiters.
  *
- * A real scanner rather than a backtick regex, because this repo's JSDoc is
- * dense with `backticked` prose: pairing backticks across a file — let alone
- * across a concatenated corpus — pairs a comment's opening tick with an
- * unrelated one thousands of characters later and yields a "template" made of
- * whole object literals. Tracking string, comment and template state is the
- * only way to know which backticks are delimiters.
+ * TypeScript's own parser, not a hand-rolled scanner. The first cut paired
+ * backticks with a regex and produced "templates" made of whole object
+ * literals, because this repo's JSDoc is dense with `backticked` prose. The
+ * replacement was a character-level state machine, and three review rounds
+ * each found a fresh desync in it — a regex literal containing a quote, a
+ * brace inside a hole, then a quote inside a hole, then a quote inside a
+ * REGEX inside a hole. Every fix was correct and every fix exposed the next
+ * case, which is the signal to stop patching a hand-rolled parser and use the
+ * real one (`.claude/rules/testing.md`'s oracle rule).
+ *
+ * `typescript-v6` is an npm alias of typescript@6 — TS7 ships the stable
+ * compiler API only under `typescript/unstable/*`, so the codegen scripts in
+ * this directory all import the alias.
  */
 export function scanTemplateLiterals(
   text: string
 ): Array<{ raw: string; start: number; end: number }> {
+  const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const out: Array<{ raw: string; start: number; end: number }> = [];
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i]!;
-    const next = text[i + 1];
 
-    if (c === '/' && next === '/') {
-      while (i < text.length && text[i] !== '\n') i++;
-      continue;
+  const visit = (node: ts.Node): void => {
+    if (ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)) {
+      const start = node.getStart(sf);
+      const end = node.getEnd();
+      // The raw source BETWEEN the backticks, holes included — the same shape
+      // the character scanner produced, so the rest of the pipeline is
+      // unchanged.
+      out.push({ raw: text.slice(start + 1, end - 1), start, end });
+      // Do NOT descend: a template nested inside a hole is part of this
+      // template's text, and emitting it again would double-count it.
+      return;
     }
-    if (c === '/' && next === '*') {
-      i += 2;
-      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
-      i += 2;
-      continue;
-    }
-    if (c === "'" || c === '"') {
-      i++;
-      while (i < text.length && text[i] !== c) i += text[i] === '\\' ? 2 : 1;
-      i++;
-      continue;
-    }
-    /*
-     * REGEX LITERALS. Without this arm a `/` whose regex body contains a quote
-     * desynchronises everything after it: the scanner treats the quote as a
-     * string start and swallows to the next stray one. Measured on the real
-     * tree, two such regexes (in `cloud-control-provider.ts` and
-     * `docker-cmd.ts`) dropped 11 genuine templates AND manufactured four
-     * bogus matchers out of JSDoc prose — the precise failure this scanner
-     * exists to avoid, one level down.
-     *
-     * `/` is a regex only in EXPRESSION position, which the preceding
-     * non-space token decides: after a value (identifier, literal, `)`, `]`)
-     * it is division. This is the standard heuristic and it is why the
-     * previous-token scan below is not optional.
-     */
-    if (c === '/') {
-      let j = i - 1;
-      while (j >= 0 && /\s/.test(text[j]!)) j--;
-      const prev = j >= 0 ? text[j]! : '';
-      const afterValue = /[A-Za-z0-9_$)\]]/.test(prev);
-      const kw =
-        /(?:^|[^A-Za-z0-9_$])(return|typeof|case|in|of|delete|void|instanceof|do|else|await|yield|new|throw)$/;
-      const isRegex = !afterValue || kw.test(text.slice(Math.max(0, j - 12), j + 1));
-      if (isRegex) {
-        i++;
-        let inClass = false;
-        while (i < text.length) {
-          const ch = text[i]!;
-          if (ch === '\\') { i += 2; continue; }
-          if (ch === '[') inClass = true;
-          else if (ch === ']') inClass = false;
-          else if (ch === '/' && !inClass) break;
-          else if (ch === '\n') break; // unterminated: not a regex after all
-          i++;
-        }
-        i++;
-        continue;
-      }
-    }
-    if (c === '`') {
-      i++;
-      const start = i;
-      let depth = 0;
-      while (i < text.length) {
-        const ch = text[i]!;
-        if (ch === '\\') { i += 2; continue; }
-        if (ch === '$' && text[i + 1] === '{') { depth++; i += 2; continue; }
-        /*
-         * Inside a hole, skip quoted spans whole. Counting braces without this
-         * makes `${ f("{") }` unbalance the depth and swallow past the closing
-         * backtick — a desync the pre-brace-counting version did not have, so
-         * the two arms have to land together.
-         */
-        if (depth > 0 && (ch === "'" || ch === '"')) {
-          i++;
-          while (i < text.length && text[i] !== ch) i += text[i] === '\\' ? 2 : 1;
-          i++;
-          continue;
-        }
-        // A brace nested INSIDE a hole (an object literal argument) must not
-        // be read as the hole's end, or the template stops early and the
-        // following comment's backticks open bogus ones.
-        if (ch === '{' && depth > 0) { depth++; i++; continue; }
-        if (ch === '}' && depth > 0) { depth--; i++; continue; }
-        if (ch === '`' && depth === 0) break;
-        i++;
-      }
-      out.push({ raw: text.slice(start, i), start: start - 1, end: i + 1 });
-      i++;
-      continue;
-    }
-    i++;
-  }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sf, visit);
+
+  out.sort((a, b) => a.start - b.start);
   return out;
 }
 
@@ -472,10 +414,22 @@ export function matchesSourceTemplate(
       // (a) The author cut inside the opening literal.
       if (t.lead.startsWith(subject) && subject.length >= MIN_TEMPLATE_LITERAL_CHARS) return true;
 
-      // (b) The author cut later, having crossed at least one hole.
+      /*
+       * (b) The author cut later, having crossed at least one hole.
+       *
+       * Both guards count SUBSTANTIVE characters — literal text with the
+       * whitespace removed. Counting raw length was the third consecutive
+       * round's blocker: 30 real templates have a whitespace-only segment, the
+       * trailing-trim above emptied it, and `head.join(HOLE)` collapsed back to
+       * `^lead` — reinstating the very k=1 matcher the `k >= 2` rule exists to
+       * forbid, for 1265 of 4522 templates. Requiring the final segment to
+       * carry non-whitespace makes a padding segment unable to satisfy
+       * anything, which closes the class rather than the instance.
+       */
       for (let k = t.parts.length; k >= 2; k--) {
         const head = t.parts.slice(0, k);
-        if (head.join('').length < MIN_TEMPLATE_LITERAL_CHARS) break;
+        if (substantive(head.join('')) < MIN_TEMPLATE_LITERAL_CHARS) break;
+        if (substantive(t.parts[k - 1]!) === 0) continue;
         if (prefixMatcher(t, k).test(subject)) return true;
       }
     }
@@ -684,7 +638,7 @@ export function runSelfProbe(): string[] {
 
 export interface Report {
   findings: Finding[];
-  counts: { pages: number; fencedBlocks: number; fencedLines: number; errorNames: number; templates: number; quotedLines: number };
+  counts: { pages: number; fencedBlocks: number; fencedLines: number; errorNames: number; templates: number };
   floorViolations: string[];
   staleForeignNames: string[];
 }
@@ -717,7 +671,6 @@ export function analyze(root: string = ROOT): Report {
     fencedLines,
     errorNames: errorNames.size,
     templates: templates.length,
-    quotedLines: findings.length,
   };
 
   const floorViolations: string[] = [];
