@@ -156,12 +156,21 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 **Recently Implemented**: per-PR shipped-feature notes live in
 [docs/changelog-cdkd.md](docs/changelog-cdkd.md) — new entries go there, never
 back into this CLAUDE.md (per the official guidance that a CLAUDE.md should
-stay small so context-window usage and instruction adherence stay high). One
-entry is capped at **2000 characters** — behavior delta, changed files, issue /
+stay small so context-window usage and instruction adherence stay high).
+**Only a change with a user-visible behavior delta writes one** — what the
+SHIPPED BINARY does — in practice `src/**` plus anything feeding data the runtime reads
+(a `scripts/**` generator whose output the deploy path consumes is IN, since a
+schema refresh can silently drop a property). Agent instructions, tests, CI,
+hooks and behavior-describing docs write NO entry; their reasoning goes to the
+commit message, `docs/design/`, or the implementing module's or test's doc comment (issue [#2779](https://github.com/go-to-k/cdkd/issues/2779)).
+One entry is capped at **2000 characters** — behavior delta, changed files, issue /
 PR + residual numbers; a design decision goes to `docs/design/<issue>-<slug>.md`
 and a mechanism to the implementing module's or test's doc comment, linked from
-the entry. Contract and the forward-only cutoff in that file's header, enforced by
-`tests/unit/scripts/changelog-entry-size.test.ts` (issue [#2552](https://github.com/go-to-k/cdkd/issues/2552)).
+the entry. Both contracts, the forward-only cutoff and the section-heading rules
+live in that file's header, enforced by
+`tests/unit/scripts/changelog-entry-size.test.ts`,
+`changelog-entry-uniqueness.test.ts` and `changelog-entry-policy-sync.test.ts`
+(issues [#2552](https://github.com/go-to-k/cdkd/issues/2552), [#1837](https://github.com/go-to-k/cdkd/issues/1837), [#2779](https://github.com/go-to-k/cdkd/issues/2779)).
 
 ## Dependencies
 

@@ -130,7 +130,11 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // the arithmetic this record exists to replace with a measurement. Re-read
     // it from the tree after every rebase; the failure message prints the
     // number to paste.
-    corpusBytes: 174_869,
+    // 176,464 after two rounds of review reworded ship.md, on top of the
+    // 176,352 the floor below was derived against. Recorded rather than
+    // re-deriving the floor each time: the margins stayed POSITIVE throughout
+    // (now 479 largest-side, 252 binding), so only this measurement moved.
+    corpusBytes: 176_464,
     largest: { file: 'implement.md', bytes: 28_743 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },
@@ -516,7 +520,21 @@ const MIN_REFERENCE_FILES = 6;
 // at this date: corpus 174,869, largest implement.md 28,743, runner-up
 // verify.md 28,516, so the two thresholds are 146,126 (largest-side) and
 // 146,353 (runner-up side, binding); 146,700 clears the binding one by 347 B.
-const MIN_REFERENCE_CORPUS_BYTES = 146_700;
+// RAISED 146_700 -> 147_600 by go-to-k/cdkd#2779, which gave ship.md's rebase
+// section the entry-policy question that decides whether the whole subsection
+// applies (+890 B, corpus 174,869 -> 175,759). Same mechanical raise: the
+// growth is in a non-leader file, so it pushes the derived floor up. Inputs at
+// this date: corpus 175,759, largest implement.md 28,743, runner-up verify.md
+// 28,516, so the two thresholds are 147,016 (largest-side) and 147,243
+// (runner-up side, binding); 147,600 clears the binding one by 357 B.
+// RAISED AGAIN 147_600 -> 148_200 in the same lane, after code review found
+// ship.md's new paragraph asserting that a no-entry lane may skip the whole
+// rebase section -- false, since the flatten gate's APPEND_SHAPED also covers
+// the integ ledger. Correcting it cost another 593 B (corpus 175,759 ->
+// 176,352). Inputs now: largest implement.md 28,743, runner-up verify.md
+// 28,516, thresholds 147,609 (largest-side) and 147,836 (runner-up side,
+// binding); 148,200 clears the binding one by 364 B.
+const MIN_REFERENCE_CORPUS_BYTES = 148_200;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
