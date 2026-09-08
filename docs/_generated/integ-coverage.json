@@ -3647,6 +3647,7 @@
         "sdk-ccapi-crossref",
         "serverless-api",
         "sns-sqs-event",
+        "stepfunctions-logging",
         "stepfunctions-s3-definition",
         "synthetics-canary",
         "tags-propagation",
@@ -3855,6 +3856,9 @@
           "l2"
         ],
         "sns-sqs-event": [
+          "l2"
+        ],
+        "stepfunctions-logging": [
           "l2"
         ],
         "stepfunctions-s3-definition": [

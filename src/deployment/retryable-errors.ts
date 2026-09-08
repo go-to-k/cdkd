@@ -181,8 +181,65 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // before surfacing. CloudFormation tolerates this via deployment latency;
   // cdkd retries. Surfaced by a bug-hunt sweep deploying a canonical Express
   // state machine with LoggingConfiguration (StateMachine + fresh Role +
-  // DefaultPolicy); pinned by tests/integration/stepfunctions-logging.
+  // DefaultPolicy). NOT pinned by an integ today: stepfunctions-logging used to
+  // exercise this window, but its Phase 0 now settles the trust policy on
+  // purpose so the log-destination window below is reachable at all — and the
+  // two are mutually exclusive. Restoring a live pin is issue
+  // https://github.com/go-to-k/cdkd/issues/2801; the unit test still pins the
+  // classification.
   'authorized to assume the provided role',
+  // Step Functions CreateStateMachine / UpdateStateMachine, SECOND rejection of
+  // the same deploy — the one that surfaces once the trust policy HAS settled.
+  // `LoggingConfiguration` makes the call validate that the role can reach the
+  // log destination, and cdkd issues it ~1s after the role's DefaultPolicy
+  // CREATE, before IAM has propagated the `logs:CreateLogDelivery` /
+  // `PutResourcePolicy` / ... grants, so AWS rejects it with "The state machine
+  // IAM Role is not authorized to access the Log Destination".
+  //
+  // This phrase was DELIBERATELY classified permanent when the assume-role
+  // pattern above landed (2026-07-02), on the reasoning that "authorized to
+  // ACCESS" is a different, genuine role misconfiguration from "authorized to
+  // ASSUME". Issue #2783 reported it as propagation-timed instead, and a live
+  // A/B settles it — us-east-1, 2026-09-08, two runs differing in ONE variable:
+  //
+  //   - grants ABSENT, trust policy settled 20s  -> the same message, permanent.
+  //   - grants PUT 1s before the create          -> the same message on 5
+  //     consecutive attempts, then the IDENTICAL call SUCCEEDS at t+7.8s.
+  //
+  // So the wording is ambiguous between a permanent misconfiguration and the
+  // propagation window, and the permanent reading alone is wrong. The A/B also
+  // shows why the window was easy to miss: against a brand-new role the
+  // assume-role check fires FIRST and masks this one entirely (6 consecutive
+  // 'Neither the global service principal ...' rejections over ~10s), so the
+  // log-destination race is only reachable once that earlier pattern has
+  // already been retried through.
+  //
+  // Anchored on the full "not authorized to access the Log Destination"
+  // sentence so the permanent causes AWS reports it for only burn the bounded
+  // ~47.75s propagation budget before surfacing, rather than failing a
+  // legitimate deploy outright: a role that genuinely lacks the grants
+  // (MEASURED — the A/B's first arm is exactly this), and a CloudWatch Logs
+  // resource policy at one of its quotas (READ from AWS's docs, not exercised
+  // here — no fixture reaches either). Both are documented for users in
+  // docs/troubleshooting.md, which is the copy to keep correct.
+  //
+  // Several entries here make the same trade, one of them more loosely than
+  // this: 'is unable to assume the role' above deliberately drops its service
+  // anchor. Note it is a trade about ADMISSION to the table, which the header
+  // rule does not speak to — that rule governs WHICH of the two lists an
+  // already-retryable pattern belongs in, i.e. the cadence.
+  //
+  // The budget is ONE shared `attemptLimit` per `withRetry` sequence, not one
+  // per window, and the assume-role window above draws on it first — so size it
+  // against what the two consume TOGETHER, not against this window alone.
+  // Count ATTEMPTS, not seconds: the delay comes from the GLOBAL attempt index,
+  // so this window's attempts cost more when they follow the other one, and two
+  // separately-measured wall-clock figures do not add up to the composed cost.
+  // Observed per window (tests/integration/stepfunctions-logging isolates each,
+  // so the COMPOSED case is derived rather than measured): 6 attempts for the
+  // assume-role window, up to 10 for this one. 16 of the 26 attempts is 27.75s
+  // of the 47.75s grid, leaving 10 attempts / 20s spare.
+  'not authorized to access the Log Destination',
   // DynamoDB Streams / Kinesis: IAM role not yet propagated
   'Cannot access stream',
   'Please ensure the role can perform',
