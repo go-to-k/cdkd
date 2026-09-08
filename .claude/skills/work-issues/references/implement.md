@@ -16,10 +16,10 @@ Never edit in the main checkout (`main-tree-branch-gate` blocks branching
 there). Per lane:
 
 ```bash
-# MAIN-CHECKOUT mode only; CLAUDE.md holds this recipe and why IN-PLACE
-# (launched inside a linked worktree) creates NO worktree. IN-PLACE skips
-# these two and still takes a branch, by the unconditional recipe below.
-# (The mode probe lives in references/launch-mode.md, its only copy.)
+# MAIN-CHECKOUT only; CLAUDE.md holds this recipe and why IN-PLACE (launched
+# inside a linked worktree) creates NO worktree. IN-PLACE skips these two and
+# still branches, by the unconditional recipe below. (The mode probe lives in
+# references/launch-mode.md, its only copy.)
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
@@ -305,17 +305,18 @@ and report the HIT's own line.
 real tree:**
 
 - **Spell the injected defect the way its SOURCE would** — not the easiest to
-  inject, nor one you have proved you can see. Four wrong choices: the line
-  you just removed (a fence caught it, missing computed members,
-  `Object.assign`, a literal, a spread rebuild); the injectable spelling over
-  the one a PERSON types (go-to-k/cdkd#2052); one spelling where the language
-  allows several (`||` matched while four sites used `??`, and widening it
-  found a real bug — go-to-k/cdkd#2111); and, for GENERATED input, the
-  UPSTREAM form over the generator's output (go-to-k/cdkd#2788 injected
+  inject, nor one you have proved you can see. Every wrong spelling in turn:
+  the line you just removed (a fence caught that while missing computed
+  members, `Object.assign`, an object literal, a spread); the injectable
+  spelling over the one a PERSON types (go-to-k/cdkd#2052); one spelling
+  where the language allows several (`||` matched while four sites used `??`;
+  widening it found a bug — go-to-k/cdkd#2111); and, for GENERATED input, the
+  UPSTREAM form not the generator's output (go-to-k/cdkd#2788 injected
   `/properties/X`, a prefix the generator strips, so the probe "proving" it
-  discriminated used a shape the repo never holds). Same for a probe's VALUE
-  input (a mask-before-stringify fix stayed green under its own mutation
-  until the secret was a JSON document, not a scalar).
+  discriminated used a shape no fixture holds). It governs any probe's VALUE
+  input too — ask what property of it the defect depends on (a
+  mask-before-stringify fix stayed green under its own mutation until the
+  secret was a JSON document, not a scalar).
 - **Delete the thing the fence REQUIRES and watch it fail.** An OR of
   whole-file substrings is satisfied by any one; a population derived from
   the DEFECT itself drops the subject out instead of failing (a gate-parity
@@ -331,7 +332,7 @@ real tree:**
   RELATION also needs a floor on the COMPARAND** — walk floors count what you
   ITERATED, and a set-vs-set claim is vacuously TRUE when the other operand
   parses empty (go-to-k/cdkd#2788: 134 fixtures compared nothing under two
-  healthy walk floors, and the invariant read correctly was FALSE).
+  healthy walk floors; the invariant was FALSE).
 - **Is anything RUNNING it?** (nine shell hook harnesses were invoked by no
   CI step and no task — exercised only by hand since written).
 

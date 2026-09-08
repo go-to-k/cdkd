@@ -134,16 +134,24 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // 176,352 the floor below was derived against. Recorded rather than
     // re-deriving the floor each time: the margins stayed POSITIVE throughout
     // (479 largest-side, 252 binding), so only this measurement moved.
-    // 176,621 after the go-to-k/cdkd#2750 retro added two rules to
+    // 176,654 after the go-to-k/cdkd#2750 retro added two rules to
     // implement.md 5-f' -- the COMPARAND floor and the injected-defect
-    // spelling. The floor below is NOT raised: retro.md section 10-c forbids a
-    // retro buying room that way, so the +157 B was paid for by merging four
-    // near-duplicate probe bullets into one (5-e's probe-INPUT bullet moved
-    // into 5-f''s list) and by cutting the worktree recipe CLAUDE.md already
-    // states verbatim. Margins now 479 largest-side and 95 binding -- thin, so
-    // the next round here opens by compressing rather than adding.
-    corpusBytes: 176_621,
-    largest: { file: 'implement.md', bytes: 28_900 },
+    // spelling. Components: implement.md 28,743 -> 28,933 (+190); no other
+    // stage file touched, so the corpus moves by the same +190. Within the
+    // file, measured per hunk: the COMPARAND rule is +284 and the merged
+    // spelling bullet +241, against -276 for deleting 5-e's probe-INPUT
+    // bullet (its rule moved into that merged bullet, which now folds THREE
+    // 5-f' bullets plus it into one) and -59 for the 5-a comment's
+    // restatement of the IN-PLACE rationale CLAUDE.md owns -- so 335 B of the
+    // 525 B added is paid, and the merge is what makes the pair cheaper than
+    // two fresh bullets rather than a saving in itself. The floor below is
+    // NOT raised: retro.md section 10-c forbids a retro buying room that way.
+    // Margins now 479 largest-side and 62 binding -- the thinnest this record
+    // has held, so the next edit to implement.md opens with a compression
+    // pass and not an addition; verify.md has 384 B before it overtakes as
+    // largest, and growth there does not move the binding margin at all.
+    corpusBytes: 176_654,
+    largest: { file: 'implement.md', bytes: 28_933 },
     runnerUp: { file: 'verify.md', bytes: 28_516 },
   },
 };
