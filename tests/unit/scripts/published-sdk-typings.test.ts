@@ -254,12 +254,18 @@ describe('publishedSdkInterfaces', () => {
       mkdirSync(models, { recursive: true });
       writeFileSync(join(models, 'models_0.d.ts'), GLUE_DECLARATION);
       let attempted = 0;
+      // Captured so the test can clean up what the refusing remover left: the
+      // injected failure means the module's own `mkdtemp` directory survives,
+      // and a suite that leaks one per run is the thing the sibling case exists
+      // to catch.
+      let leaked: string | undefined;
       const interfaces = publishedSdkInterfaces(
         '@aws-sdk/client-glue',
         '9.9.9',
         () => models,
-        () => {
+        (workDir) => {
           attempted += 1;
+          leaked = workDir;
           const err: NodeJS.ErrnoException = new Error('EPERM: operation not permitted');
           err.code = 'EPERM';
           throw err;
@@ -269,6 +275,7 @@ describe('publishedSdkInterfaces', () => {
       expect(interfaces?.get('AuthenticationConfiguration')?.has('BasicAuthenticationCredentials')).toBe(
         true
       );
+      if (leaked !== undefined) rmSync(leaked, { recursive: true, force: true });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

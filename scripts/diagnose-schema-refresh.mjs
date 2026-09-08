@@ -1160,14 +1160,14 @@ export function renderDiagnosis(input) {
         } else if (sdk.modelled) {
           lines.push(
             `    - SDK evidence: \`${sdk.client}\`${
-              sdk.version ? ` (${sdk.version})` : ''
+              sdk.version ? ` (${renderKey(sdk.version)})` : ''
             } **still models this name** (case-insensitively), so the API likely ` +
               'still accepts it — leans toward keeping it (`bogusTolerated`)'
           );
         } else {
           lines.push(
             `    - SDK evidence: \`${sdk.client}\`${
-              sdk.version ? ` (${sdk.version})` : ''
+              sdk.version ? ` (${renderKey(sdk.version)})` : ''
             } **no longer models this name**, searched case-insensitively across ` +
               `${(sdk.consulted ?? [sdk.client]).length} client(s) — both of AWS's ` +
               'descriptions have dropped it, which leans toward retiring the ' +
@@ -1202,11 +1202,14 @@ export function renderDiagnosis(input) {
         (p) => p.client === group.client && p.latest === group.latest
       );
       // Same split as `divergenceProcedure`'s lag lines, and for the same
-      // reason: `client` and `latest` are shape-fenced upstream, `installed` is
-      // not — it is whatever the dependency's own `package.json` says, taken on
-      // nothing but `typeof === 'string'` — so it goes through `renderKey`.
-      // Both readers of that value are guarded; leaving one raw would have made
-      // the guard decorative.
+      // reason: `client` and `latest` are shape-fenced upstream, a version read
+      // out of a dependency's own `package.json` is not — `installed` is taken
+      // on nothing but `typeof === 'string'` and `sdkModelsMember`'s
+      // `sdk.version` on nothing at all — so every one of them goes through
+      // `renderKey`. There are FIVE such emission sites, not two: this heading,
+      // `divergenceProcedure`'s two lag lines, and the removed-property
+      // evidence's two arms. Guarding a subset is a guard that looks present
+      // and is not, which is how the first cut of this shipped.
       //
       // `renderKey` is the guard for BUNDLE-derived names and it rejects a
       // scoped package outright (`@` and `/`), which is why the client name is
@@ -1631,17 +1634,18 @@ function divergenceProcedure(divergences, sdkLag, unresolved = []) {
           '   For a `definition-member-missing` the job re-asks that finding’s own',
           '   interface-scoped question in the PUBLISHED client, so one reaching',
           '   this section is one the published client does not resolve either —',
-          '   EXCEPT where the lookup could not be made, which is named below',
-          '   whenever it happens. A finding the bump DOES resolve is listed in its',
-          '   own section above instead.',
+          '   EXCEPT where the published client did not settle it, which is named',
+          '   below whenever it happens. A finding the bump DOES resolve is listed',
+          '   in its own section above instead.',
           ...(unresolved.length > 0
             ? [
                 '',
                 '   **The published client could not settle these, so their SDK-lag',
-                '   reading is UNKNOWN, not ruled out** — npm unreachable from CI is',
-                '   the ordinary cause, and no client declaring the interface at all',
-                '   is the other. Bump and re-check by hand before allow-listing any',
-                '   of them:',
+                '   reading is UNKNOWN, not ruled out.** Three causes: npm was',
+                '   unreachable, no client could be resolved for the type at all, or',
+                '   every candidate was read and none declared the interface. Check',
+                '   which applies before allow-listing any of them — there is nothing',
+                '   to bump in the second case:',
                 '',
                 ...unresolved.map(
                   (d) => `   - ${renderName(d.resourceType)}: ${renderKey(d.nestedKey)}`

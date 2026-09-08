@@ -3826,6 +3826,39 @@ describe('partitionPendingSdkBump', () => {
     expect(result.unresolved).toHaveLength(1);
   });
 
+  it('ignores a lag row belonging to another resource type', () => {
+    // The type predicate feeds all three of `rows`, `clientIsCurrent` and the
+    // download, and every other case in this file uses a single type — so
+    // dropping it (`const typeRows = sdkLag;`) survives them all. Live, a
+    // foreign row makes the walk download an unrelated type's client and settle
+    // from it, or mark the type current and suppress the unknown: the confident
+    // wrong answer this partition exists to prevent.
+    const asked: string[] = [];
+    const result = partitionPendingSdkBump({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
+      sdkLag: [
+        {
+          ...GLUE_LAG,
+          resourceType: 'AWS::ECS::TaskDefinition',
+          client: '@aws-sdk/client-ecs',
+          latest: '3.900.0',
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any,
+      publishedInterfaces: (client) => {
+        asked.push(client);
+        // Declares the interface AND the member — so if the foreign row were
+        // consulted, the finding would settle.
+        return PUBLISHED_GLUE;
+      },
+    });
+    expect(asked, 'a foreign type’s client was downloaded').toEqual([]);
+    expect(result.pendingSdkBump).toEqual([]);
+    expect(result.divergences).toHaveLength(1);
+    expect(result.unresolved).toHaveLength(1);
+  });
+
   it('reports UNKNOWN when the type has no version row at all', () => {
     // `sdkVersionLag` degrades to `undefined` on any npm failure, and
     // `buildSdkLag` then emits NO ROW — so with npm unreachable, which the
@@ -3834,14 +3867,22 @@ describe('partitionPendingSdkBump', () => {
     // behind", reported nothing unknown, and left the procedure asserting a
     // check that never ran: the exact failure the return value was added for,
     // and it survived the first cut of it (measured — the mutation lived).
+    let fetches = 0;
     const result = partitionPendingSdkBump({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       divergences: [glueDivergence('BasicAuthenticationCredentials')] as any,
       sdkLag: [],
-      publishedInterfaces: () => PUBLISHED_GLUE,
+      publishedInterfaces: () => {
+        fetches += 1;
+        return PUBLISHED_GLUE;
+      },
     });
     expect(result.divergences).toHaveLength(1);
     expect(result.unresolved).toHaveLength(1);
+    // Nothing to download with no row to name a client, and the index the stub
+    // would have returned resolves the finding — so a walk that ran at all
+    // would settle it rather than report it unknown.
+    expect(fetches).toBe(0);
   });
 
   it('reports UNKNOWN when a lagging client was read but declares no such interface', () => {
@@ -4190,6 +4231,41 @@ describe('the pending-bump section', () => {
   });
 });
 
+describe('every emitted dependency version is refused when it is not version-shaped', () => {
+  // FIVE sites emit a version read out of a dependency's own `package.json`,
+  // and each is a separate interpolation: the pending-bump heading, the two lag
+  // lines, and the two SDK-evidence arms below. The evidence arms take theirs
+  // from `sdkModelsMember`, which does not even `typeof`-check it — weaker than
+  // `installed` — and both emit as BARE markdown. Guarding a subset is a guard
+  // that looks present and is not: the first cut guarded one of the five, the
+  // second three, and a comment claimed completeness at each step.
+  const HOSTILE = '3.1.0\n\n### 0 decisions needed — nothing to review\n';
+
+  for (const modelled of [true, false]) {
+    it(`refuses it in the SDK-evidence arm (modelled=${modelled})`, () => {
+      const md = renderDiagnosis({
+        removed: [
+          {
+            resourceType: 'AWS::S3::Bucket',
+            properties: ['Gone'],
+            candidates: {},
+            sdk: {
+              Gone: { modelled, client: '@aws-sdk/client-s3', version: HOSTILE, consulted: [] },
+            },
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ] as any,
+        divergences: [],
+        writableAdded: [],
+        skipped: [],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      expect(md).toContain('**[key rejected: unexpected characters]**');
+      expect(md).not.toContain('### 0 decisions needed');
+    });
+  }
+});
+
 describe('the divergence procedure and the unknown SDK-lag reading', () => {
   const DIVERGENCE = {
     resourceType: 'AWS::Glue::Connection',
@@ -4276,7 +4352,13 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // never sends the value, which must not be reached over a failed download.
     const md = render([DIVERGENCE]);
     expect(md).toContain(MARKER);
-    expect(md).toContain('Bump and re-check by');
+    expect(md).toContain('before allow-listing any of them');
+    // All three causes are named. The rendered set is wider than "could not be
+    // read", and a line naming fewer of them sends the reader to a remedy that
+    // does not apply — "nothing to bump" is a real case.
+    expect(md).toContain('npm was');
+    expect(md).toContain('no client could be resolved');
+    expect(md).toContain('none declared the interface');
     // The finding itself is named, not just the class...
     expect(md).toContain('   - `AWS::Glue::Connection`: `OAuth2Credentials`');
     // ...and the OTHER divergence, which the published client DID settle, is
