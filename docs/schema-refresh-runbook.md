@@ -17,12 +17,24 @@ why the job is allowed to fail — is in
 
 ## The short version
 
+**Do not wait for CI to tell you.** GitHub holds the workflows on a
+bot-created pull request at `action_required` until a maintainer approves
+them, on every push — measured on this repository's release pull requests,
+which have been merged many times and are still held, so merging one does not
+earn the bot an exemption. Until you approve, the checks that would catch a
+schema decision have not started.
+
+The **title and the label are the signal**, and they are not a proxy for CI.
+The job runs every fixture-driven check itself, inside the run, and the count
+in the title is that result — it exists before the pull request's own CI is
+allowed to start. Approving the workflows re-runs the same checks; it does not
+tell you anything the title has not already said.
+
 | What you see | What to do |
 | --- | --- |
 | No pull request | Nothing. Most days are this. |
-| A pull request, CI green | Read the diff, squash merge. |
-| A pull request, CI red | Something needs a decision — the PR names which class. |
-| A pull request labelled `needs-decision`, assigned to you | The same thing, said where you can see it without opening the PR. |
+| A pull request with a plain title, no label | Nothing needs a decision. Read the diff, squash merge. |
+| `— N decisions needed` in the title, `needs-decision` label, assigned to you | N things need your call. They are labelled **D1**–**DN** in the body. |
 | A pull request saying the nested-key check failed unreadably | Read that job's log; the other sections still hold. |
 | A comment on an open pull request | New drift was added to it. Same classes. |
 | A section naming a failed CI check | That check's own guidance is in the PR; its findings are not covered by the other sections. |
@@ -108,8 +120,9 @@ verdict line is rewritten every cycle, so it does not age the way the rest of
 the body does.
 
 GitHub holds CI on a bot-created pull request at `action_required` until a
-maintainer approves the workflows, so a decision-carrying PR does not
-necessarily show a red check — before this marking existed it was
+maintainer approves the workflows — on every push, and merging an earlier bot
+pull request does not change that. So a decision-carrying PR does not show a
+red check; it shows no check at all. Before this marking existed it was
 indistinguishable, in every list view, from a refresh that needed nothing.
 
 The marking is **cleared by the next run** once you have committed the
