@@ -97,6 +97,9 @@ Index of every area: [code-layout.md](code-layout.md).
     escape or where a fix would sit: issue #2827 carries that enumeration with
     its measurements, and five review rounds on #2803 each wrote a version of
     it here and in the code that measurement then refuted.
+  - **Concurrent resolutions DRAIN before a rejection surfaces, BOUNDED by
+    one cap per resolution** (#2563, residual #2814; see
+    `allSettledKeepingFirstRejection`).
   - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
     mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
     no-ops on absent bags, so masking the LINE left a live `cdkd diff` printing

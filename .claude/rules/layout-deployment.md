@@ -10,6 +10,13 @@ Secret redaction / masking / `cdkd scrub`: [layout-deployment-secrets.md](layout
 
 Index of every area: [code-layout.md](code-layout.md).
 
+- **`drain-budget.ts`** — the drain budget, REMAINING wait rather than a
+  deadline (#2563). Its own module because the many unit files that mock the
+  resolver's exports do not carry a new one. The resource / output /
+  parameter loops that hold a lock wrap in `withSharedDrainBudget` (the
+  engine's outputs pass, `scrub`, `import`, `export`); condition evaluation
+  deliberately keeps a budget per condition.
+
 ## Core Directories
 
 - **src/deployment/** - DeployEngine (orchestration), WorkGraph (DAG-based asset+deploy scheduling)
