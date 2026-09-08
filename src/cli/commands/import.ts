@@ -1614,6 +1614,11 @@ export async function resolveImportedProperties(
       // `Fn::Join`. This warn prints at default verbosity, in the command whose
       // stated contract is to persist the `{{resolve:...}}` expression and
       // never the value.
+      //
+      // Residual, the same one `evaluateConditions`' mask states: a plaintext
+      // shorter than `MIN_NEEDLE_LENGTH` (4) is EMBEDDED here rather than
+      // being the whole string, so the whole-value arm does not apply and
+      // `buildNeedleRegex` filters the needle out — it still prints.
       logger.warn(
         `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}. ` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.` +

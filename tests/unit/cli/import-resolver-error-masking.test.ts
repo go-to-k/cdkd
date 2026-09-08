@@ -164,22 +164,30 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
     ).toContain(PASSWORD);
   });
 
-  it('the warn carries the mask, not the plaintext', async () => {
+  it('the warn carries the mask, not the plaintext, and masks only the NEEDLE', async () => {
     await runWalk({ Password: ECHOING_PROPERTY });
 
     const text = warnedText();
     expect(text, 'the failure is still reported').toContain('Failed to resolve intrinsics');
     expect(text, 'the plaintext must not reach the terminal').not.toContain(PASSWORD);
     expect(text, 'and it is masked rather than dropped').toContain('***');
+    // THE CONTROL, and it has to live INSIDE the masked segment. Only
+    // `err.message` is passed through `maskSecretsInText`; the logical id, the
+    // resource type and the remedy sentence are concatenated OUTSIDE it, so
+    // asserting those survives a `secrets.size > 0 -> mask the whole message`
+    // regression untouched — measured, and it is why an earlier version of
+    // this case was vacuous. This literal is part of the resolver's own
+    // message and is not a needle, so it must survive.
+    expect(text, 'the surrounding diagnosis inside the masked segment survives').toContain(
+      `not found in secret '${SECRET_ID}'`
+    );
   });
 
-  it('a value the walk never recorded is left alone — the mask is a needle set, not a blanket', async () => {
-    // The control. Without it, a fix that replaced the whole message with `***`
-    // would pass the case above and destroy every diagnostic in the process.
-    await runWalk({
-      Password: ECHOING_PROPERTY,
-      Note: 'queue-for-billing',
-    });
+  it('the text outside the masked segment is untouched', async () => {
+    // Cheap and separate from the control above: these three are concatenated
+    // outside `maskSecretsInText`, so this pins that the fix did not move the
+    // mask boundary outward to swallow them.
+    await runWalk({ Password: ECHOING_PROPERTY });
 
     const text = warnedText();
     expect(text, 'the resource id is still named').toContain('Res');
