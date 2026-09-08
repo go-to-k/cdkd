@@ -27,10 +27,13 @@ import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   cpSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,9 +49,10 @@ import {
   parseNestedKeyDivergences,
   renderDetail,
   renderKey,
-  renderLiteral,
   buildSdkLag,
+  classifyRemovedProperty,
   countDecisions,
+  writeAutoTolerated,
   UMBRELLA_EMPTY_SENTINEL,
   renderUmbrellaChecklist,
   renderUmbrellaDocument,
@@ -66,6 +70,10 @@ import {
   sdkModelsMember,
   sdkVersionLag,
 } from '../../../scripts/diagnose-schema-refresh.mjs';
+import {
+  providerWiresProperty,
+  typedSdkMember,
+} from '../../../scripts/offline-property-evidence.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -771,15 +779,41 @@ describe('renderDiagnosis', () => {
     expect(md).toContain('no decision needed');
   });
 
-  it('always closes by saying the decision is deliberately not made', () => {
-    // Without this the report reads as a recommendation, which is exactly the
-    // reading the asymmetry argument exists to prevent.
-    for (const input of [
-      { removed: [removedEntry], writableAdded: [], divergences: [], skipped: [] },
-      { removed: [], writableAdded: [], divergences: [], skipped: [] },
-    ]) {
-      expect(renderDiagnosis(input)).toContain('deliberately not made here');
-    }
+  it('always closes by naming who chooses what is left, and why', () => {
+    // The closing note used to say the decision is "deliberately not made
+    // here", and that stopped being true when the job started settling the
+    // removals with no uncertainty to resolve (go-to-k/cdkd#2774). What still
+    // has to reach every reader is the ASYMMETRY the note exists for — the
+    // silencing option always turns CI green — plus the bound that makes an
+    // automatic answer defensible: it fires only where the evidence leaves one
+    // possible answer, never under uncertainty.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      skipped: [],
+    });
+    expect(md).toContain('chosen by you');
+    expect(md).toContain('UNCERTAINTY');
+    expect(md, 'the closing note no longer says what the job settles itself').toMatch(
+      /reachable from an operation\nINPUT in this type’s own client/
+    );
+    expect(md, 'the closing note no longer names the wiring test').toMatch(
+      /the provider READS it off the template/
+    );
+    // The half a review added, and the reason the wording moved: the note used
+    // to describe the rule as "the SDK still declares the member AND the
+    // provider still wires it", and BOTH of those read an absence as a finding.
+    // A member on a response-only model is declared and unsendable, and a
+    // provider with no `properties['X']` read may still deliver the value from
+    // a lookup table. The note now says what the absence means.
+    expect(md, 'the note no longer says an absence concludes nothing').toContain(
+      'Absent evidence is never'
+    );
+    expect(md, 'the retired claim is back').not.toContain('deliberately not made here');
+    expect(md, 'the retired, unsound summary of the rule is back').not.toMatch(
+      /SDK still declares the member AND the provider still/
+    );
   });
 
   it('renders every divergence field, and names both options', () => {
@@ -900,10 +934,14 @@ describe('the render guards, at every site that reaches Markdown', () => {
     expect(md).not.toMatch(/^## Nothing in this refresh needs a decision$/m);
   });
 
-  it('keeps a hostile name out of the paste-able shell command', () => {
-    // These go inside single quotes in a bash block the runbook tells the
-    // maintainer to paste, so a `'` is command injection in their own terminal
-    // rather than a broken Markdown span.
+  it('keeps a hostile name out of the rendered report', () => {
+    // There is no paste-able `describe-type` block any more — it was demoted
+    // (go-to-k/cdkd#2774: the CFn registry is not the authority for an SDK
+    // Provider's declaration, and it re-reads the same upstream description
+    // this job already read), and `renderLiteral`, which existed only to keep a
+    // `'` out of that block's single quotes, went with it. The names still reach
+    // Markdown, so the hostile-input case stays — through `renderName` now,
+    // which is what the surviving path uses.
     const md = renderDiagnosis({
       removed: [
         {
@@ -917,7 +955,9 @@ describe('the render guards, at every site that reaches Markdown', () => {
       skipped: [],
     });
     expect(md).not.toContain('curl evil.example');
-    expect(md).toContain('NAME_REJECTED_UNEXPECTED_CHARACTERS');
+    // And the rejection is VISIBLE, not a silent drop: a reader must be able to
+    // tell a refused name from a type that simply had nothing to report.
+    expect(md).toMatch(/rejected/i);
   });
 
   it('renderKey admits a real nested path and refuses a span-breaking one', () => {
@@ -929,10 +969,6 @@ describe('the render guards, at every site that reaches Markdown', () => {
     expect(renderKey('Foo [x](https://evil.example)')).toContain('rejected');
   });
 
-  it('renderLiteral admits a real name and refuses a quote', () => {
-    expect(renderLiteral('AWS::Glue::Connection')).toBe('AWS::Glue::Connection');
-    expect(renderLiteral("a'b")).toBe('NAME_REJECTED_UNEXPECTED_CHARACTERS');
-  });
 
   it('renderDetail strips what could end the line, and keeps the prose', () => {
     expect(renderDetail('SDK has `OAuth2Properties`, but the provider never writes it')).toBe(
@@ -2636,4 +2672,640 @@ export const PROPERTY_COVERAGE = new Map([
     );
     expect(renderUmbrellaDocument(REMAINING)).not.toContain(UMBRELLA_EMPTY_SENTINEL);
   });
+});
+
+/**
+ * The offline classifier and the automatic tolerance write (issue #2774).
+ *
+ * `renderDiagnosis`'s own reasoning is why these two are fenced harder than the
+ * rest of the module: the silencing option is always available and always turns
+ * CI green, so a rule that chooses automatically under uncertainty converges on
+ * it and disables the check that caught the problem. What makes the automatic
+ * answer defensible is that it is not a judgement at all — two structural facts,
+ * both read from the checkout. So every case below asserts WHICH clause decided,
+ * not merely that a decision was reached, and the auto arm is only ever entered
+ * from real repo data.
+ */
+
+const ROUTE53_PROVIDER = 'src/provisioning/providers/route53-provider.ts';
+const APIGW_PROVIDER = 'src/provisioning/providers/apigateway-provider.ts';
+const NESTED_STACK_PROVIDER = 'src/provisioning/providers/nested-stack-provider.ts';
+const SQS_PROVIDER = 'src/provisioning/providers/sqs-queue-provider.ts';
+const ASG_PROVIDER = 'src/provisioning/providers/asg-provider.ts';
+
+/** The two real evidence readers, so no case can pass against a stub. */
+const EVIDENCE = {
+  typedMember: typedSdkMember,
+  wires: providerWiresProperty,
+  repoRoot: REPO_ROOT,
+} as const;
+
+describe('classifyRemovedProperty', () => {
+  it('settles the case the feature was built for, and says WHY in the rationale', () => {
+    // `AWS::Route53::RecordSet.GeoProximityLocation`: AWS dropped it from the
+    // CFn schema while `@aws-sdk/client-route-53` still declares it and the
+    // provider still reads it off the template. Both facts hold, so "keep
+    // sending it" is the only answer either fact permits.
+    const verdict = classifyRemovedProperty({
+      property: 'GeoProximityLocation',
+      client: '@aws-sdk/client-route-53',
+      providerRelPath: ROUTE53_PROVIDER,
+      renameCandidates: [],
+      ...EVIDENCE,
+    });
+    expect(verdict.auto, JSON.stringify(verdict)).toBe(true);
+    const rationale = (verdict as { rationale: string }).rationale;
+    // The rationale is what a human audits the automatic write BY, so it has to
+    // carry both facts and where each was read — not a template sentence.
+    expect(rationale).toContain('@aws-sdk/client-route-53');
+    expect(rationale).toContain('ResourceRecordSet');
+    expect(rationale).toMatch(/wires it at src\/provisioning\/providers\/route53-provider\.ts:\d+/);
+    expect(rationale).toContain('Written automatically by the schema refresh job');
+    // PascalCase here, so the camelCase note must NOT appear — it is a claim
+    // about the service's modelling convention, wrong on this one.
+    expect(rationale).not.toContain('camelCase');
+  });
+
+  it('names the lower-initial spelling when that is what the evidence was', () => {
+    // `@aws-sdk/client-api-gateway` models `stageName`, so the member was found
+    // under the lowerFirst spelling. Saying so is the difference between a
+    // rationale a reader can re-derive and one they have to take on trust.
+    const verdict = classifyRemovedProperty({
+      property: 'StageName',
+      client: '@aws-sdk/client-api-gateway',
+      providerRelPath: APIGW_PROVIDER,
+      renameCandidates: [],
+      ...EVIDENCE,
+    });
+    expect(verdict.auto, JSON.stringify(verdict)).toBe(true);
+    // The note used to call the spelling "camelCase, the SDK convention for
+    // this service", which is a claim about the SERVICE's modelling that the
+    // evidence never established — the walk found one spelling, not a
+    // convention. The replacement states only what was read.
+    expect((verdict as { rationale: string }).rationale).toContain(
+      '(under its lower-initial spelling, which several services use)'
+    );
+    expect((verdict as { rationale: string }).rationale).not.toContain('camelCase');
+  });
+
+  it('refuses a rename candidate even when BOTH facts hold', () => {
+    // The clause that cannot be argued out of: a rename is a removal plus an
+    // addition, and the SDK keeps the OLD name for compatibility — so the
+    // evidence is fully satisfied for a property whose correct fix is
+    // repointing the declaration. Tolerating it would mark the PR "no decision
+    // needed" and bury the new name.
+    const input = {
+      property: 'GeoProximityLocation',
+      client: '@aws-sdk/client-route-53',
+      providerRelPath: ROUTE53_PROVIDER,
+      ...EVIDENCE,
+    };
+    const refused = classifyRemovedProperty({
+      ...input,
+      renameCandidates: ['GeoProximity', 'GeoProximityLocationV2'],
+    });
+    expect(refused.auto).toBe(false);
+    const reason = (refused as { reason: string }).reason;
+    expect(reason).toContain('`GeoProximity`');
+    expect(reason).toContain('`GeoProximityLocationV2`');
+    expect(reason).toContain('RENAME');
+    // The control that isolates the guard: the SAME input with an empty
+    // candidate list is the auto arm, so the refusal above is the rename clause
+    // and not the evidence failing to load.
+    expect(classifyRemovedProperty({ ...input, renameCandidates: [] }).auto).toBe(true);
+  });
+
+  it('refuses when the type\'s own SDK client could not be determined', () => {
+    // `clientsForType` deliberately reports `matched: false` rather than
+    // guessing, and this is the arm that consumes that: with no client there is
+    // no question to ask, which is different from having asked and got no.
+    const verdict = classifyRemovedProperty({
+      property: 'GeoProximityLocation',
+      client: undefined,
+      providerRelPath: ROUTE53_PROVIDER,
+      renameCandidates: [],
+      ...EVIDENCE,
+    });
+    expect(verdict.auto).toBe(false);
+    expect((verdict as { reason: string }).reason).toContain(
+      "could not determine this type's own SDK client"
+    );
+  });
+
+  it('refuses when the client declares no member of the name', () => {
+    // Retiring the declaration then IS a behaviour change — the field stops
+    // being sent — and that stays a human's call. The reason names the client
+    // so the reader knows which typings were walked.
+    const verdict = classifyRemovedProperty({
+      property: 'CdkdNotAMemberName',
+      client: '@aws-sdk/client-route-53',
+      providerRelPath: ROUTE53_PROVIDER,
+      renameCandidates: [],
+      ...EVIDENCE,
+    });
+    expect(verdict.auto).toBe(false);
+    expect((verdict as { reason: string }).reason).toContain(
+      '`@aws-sdk/client-route-53` declares no member of this name'
+    );
+  });
+
+  it('refuses when no template read was found, WITHOUT calling it a cleanup', () => {
+    // INVERTED from the case that used to live here, and the inversion is the
+    // whole point rather than a reword. This arm used to conclude "the provider
+    // names it in a declaration list but wires it nowhere, so removing the
+    // declaration changes no behaviour — that is a cleanup, not a tolerance",
+    // and that conclusion was measured WRONG on both verdicts the tree could
+    // produce: `providerWiresProperty` sees only `properties['X']`, and
+    // table-driven delivery is invisible to it. The runbook built on the old
+    // wording told a maintainer to delete a declaration for a property cdkd
+    // genuinely sends — the silent-drop class this whole job exists to watch,
+    // reached through the job's own advice.
+    //
+    // `AWS::CloudFormation::Stack.TemplateURL` still reaches the arm the same
+    // way: `@aws-sdk/client-cloudformation` declares the member, so the third
+    // clause passes, and `nested-stack-provider.ts` names it in a declaration
+    // list with no template read.
+    expect(
+      typedSdkMember('TemplateURL', '@aws-sdk/client-cloudformation', REPO_ROOT),
+      'the SDK no longer declares it, so this case would exercise the THIRD arm'
+    ).toBeDefined();
+    const verdict = classifyRemovedProperty({
+      property: 'TemplateURL',
+      client: '@aws-sdk/client-cloudformation',
+      providerRelPath: NESTED_STACK_PROVIDER,
+      renameCandidates: [],
+      ...EVIDENCE,
+    });
+    expect(verdict.auto).toBe(false);
+    const reason = (verdict as { reason: string }).reason;
+    expect(reason).toContain('COULD NOT DETERMINE');
+    expect(reason, 'the reason no longer says what it failed to find').toContain(
+      '`properties[...]` read'
+    );
+    // The retired claims, each asserted absent by name: a reader must not be
+    // told the property is unused, nor that deleting it is free.
+    expect(reason, 'the retired "wires it nowhere" conclusion is back').not.toContain(
+      'wires it nowhere'
+    );
+    expect(reason, 'the retired "cleanup" verdict is back').not.toContain('cleanup');
+    expect(reason, 'the retired "changes no behaviour" claim is back').not.toContain(
+      'changes no behaviour'
+    );
+  });
+
+  it('refuses the real property whose wiring the check cannot see', () => {
+    // `AWS::SQS::Queue.DelaySeconds` is why the arm above had to be inverted,
+    // and it is a live property rather than a constructed one:
+    // `sqs-queue-provider.ts` delivers it through `CDK_TO_SQS_ATTRIBUTES`, a
+    // shorthand-keyed lookup iterated as `properties[cdkKey]`, so no literal
+    // `properties['DelaySeconds']` exists and the wiring reader reports
+    // nothing. Under the old wording the job would have told a maintainer this
+    // declaration was dead weight.
+    expect(
+      typedSdkMember('DelaySeconds', '@aws-sdk/client-sqs', REPO_ROOT),
+      'the SDK no longer declares it, so this case would stop at the THIRD arm'
+    ).toBeDefined();
+    expect(
+      providerWiresProperty('DelaySeconds', SQS_PROVIDER, REPO_ROOT),
+      'the provider now reads it by literal, so this case no longer shows invisible wiring'
+    ).toBe(undefined);
+    const verdict = classifyRemovedProperty({
+      property: 'DelaySeconds',
+      client: '@aws-sdk/client-sqs',
+      providerRelPath: SQS_PROVIDER,
+      renameCandidates: [],
+      ...EVIDENCE,
+    });
+    expect(verdict.auto, JSON.stringify(verdict)).toBe(false);
+    const reason = (verdict as { reason: string }).reason;
+    expect(reason).toContain('COULD NOT DETERMINE');
+    // The reason NAMES this case, so the next reader of a refusal has the
+    // counter-example in front of them rather than in a commit message.
+    expect(reason).toContain('AWS::SQS::Queue');
+    expect(reason).toContain('DelaySeconds');
+  });
+
+  it('refuses a member that only a RESPONSE model declares', () => {
+    // `AWS::ApiGateway::Method.MethodResponses` was AUTO-SETTLED before the
+    // evidence was narrowed: the name matches `Method`, which
+    // `@aws-sdk/client-api-gateway` only ever returns, and the rationale
+    // written from it asserted "the value still reaches AWS" about a shape cdkd
+    // can never send. The refusal now comes from the SDK arm, one clause
+    // earlier than the wiring arm, so the reason names the client.
+    const verdict = classifyRemovedProperty({
+      property: 'MethodResponses',
+      client: '@aws-sdk/client-api-gateway',
+      providerRelPath: APIGW_PROVIDER,
+      renameCandidates: [],
+      ...EVIDENCE,
+    });
+    expect(verdict.auto, JSON.stringify(verdict)).toBe(false);
+    expect((verdict as { reason: string }).reason).toContain(
+      '`@aws-sdk/client-api-gateway` declares no member of this name'
+    );
+    // The control that makes this the REACHABILITY test and not an ordinary
+    // miss: the same client, the same provider, a name an operation input does
+    // reach — that one settles.
+    expect(
+      classifyRemovedProperty({
+        property: 'StageName',
+        client: '@aws-sdk/client-api-gateway',
+        providerRelPath: APIGW_PROVIDER,
+        renameCandidates: [],
+        ...EVIDENCE,
+      }).auto
+    ).toBe(true);
+  });
+
+  it('refuses a rename split across two cycles, seen only in the CURRENT schema', () => {
+    // `renameCandidates` carries what THIS refresh added, and at a daily cadence
+    // a rename usually does not land as one delta: AWS adds the new name on one
+    // day and drops the old one on another, so the removal arrives with an
+    // empty candidate list and the strongest refusal disarms itself. The second
+    // source is names ALREADY in the type's schema.
+    const input = {
+      property: 'GeoProximityLocation',
+      client: '@aws-sdk/client-route-53',
+      providerRelPath: ROUTE53_PROVIDER,
+      renameCandidates: [],
+      ...EVIDENCE,
+    };
+    // The control FIRST, because it is what makes the refusal attributable:
+    // with both sources empty this exact input is the AUTO arm, so the only
+    // thing changing below is the cross-cycle candidate.
+    expect(classifyRemovedProperty(input).auto).toBe(true);
+    const refused = classifyRemovedProperty({
+      ...input,
+      schemaRenameCandidates: ['GeoProximity'],
+    });
+    expect(refused.auto, JSON.stringify(refused)).toBe(false);
+    const reason = (refused as { reason: string }).reason;
+    expect(reason).toContain('`GeoProximity`');
+    expect(reason).toContain('RENAME');
+    // The wording had to move with the source: "this refresh also ADDED …" is
+    // false about a name that has been on the type for cycles.
+    expect(reason, 'the reason still claims THIS refresh added the pair').not.toContain(
+      'this refresh also ADDED'
+    );
+    expect(reason).toContain('on the same type');
+  });
+});
+
+describe('writeAutoTolerated', () => {
+  /**
+   * A scratch repo root the call may WRITE into.
+   *
+   * `writeAutoTolerated` rewrites `tests/fixtures/cfn-schemas/_todo-backfill.json`
+   * in place, and that file is COMMITTED — a case pointed at the real root would
+   * silently edit a tolerance file whose entries are human rationales. So the
+   * only real thing borrowed is `node_modules` (symlinked, read-only: the SDK
+   * typings are the input these cases exist to read) and the provider sources
+   * (copied). Everything the call writes lands under the scratch root, and the
+   * committed file's bytes are asserted UNCHANGED around every case, so the
+   * protection cannot rot into a comment.
+   */
+  const withScratchRoot = (
+    seed: Record<string, unknown>,
+    run: (root: string, backfill: string) => void
+  ): void => {
+    const committed = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
+    const before = readFileSync(committed);
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-auto-tolerated-'));
+    try {
+      mkdirSync(join(root, 'tests/fixtures/cfn-schemas'), { recursive: true });
+      mkdirSync(join(root, 'src/provisioning/providers'), { recursive: true });
+      symlinkSync(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'));
+      for (const rel of [ROUTE53_PROVIDER, APIGW_PROVIDER, NESTED_STACK_PROVIDER, ASG_PROVIDER]) {
+        cpSync(join(REPO_ROOT, rel), join(root, rel));
+      }
+      const backfill = join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
+      writeFileSync(backfill, `${JSON.stringify(seed, null, 2)}\n`);
+      run(root, backfill);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      expect(
+        readFileSync(committed).equals(before),
+        'the case wrote to the COMMITTED tolerance file'
+      ).toBe(true);
+    }
+  };
+
+  const PROVIDER_FILES = new Map([
+    ['AWS::Route53::RecordSet', ROUTE53_PROVIDER],
+    ['AWS::ApiGateway::Deployment', APIGW_PROVIDER],
+    ['AWS::CloudFormation::Stack', NESTED_STACK_PROVIDER],
+  ]);
+
+  it('writes the settled ones and escalates the rest, in one pass', () => {
+    withScratchRoot({ types: {} }, (root, backfill) => {
+      const result = writeAutoTolerated(
+        [
+          {
+            resourceType: 'AWS::Route53::RecordSet',
+            properties: ['GeoProximityLocation', 'CdkdNotAMemberName'],
+            candidates: {},
+          },
+          {
+            resourceType: 'AWS::ApiGateway::Deployment',
+            properties: ['StageName'],
+            candidates: {},
+          },
+        ],
+        PROVIDER_FILES,
+        root
+      );
+
+      expect(result.written.map((w) => `${w.resourceType}.${w.property}`)).toEqual([
+        'AWS::Route53::RecordSet.GeoProximityLocation',
+        'AWS::ApiGateway::Deployment.StageName',
+      ]);
+      expect(result.escalated.map((e) => `${e.resourceType}.${e.property}`)).toEqual([
+        'AWS::Route53::RecordSet.CdkdNotAMemberName',
+      ]);
+      expect(result.escalated[0]!.reason).toContain('declares no member of this name');
+
+      // The write is the deliverable, not the return value: the next cycle
+      // reads this file, and a `bogusTolerated` block absent from the seed has
+      // to be created rather than dropped.
+      const doc = JSON.parse(readFileSync(backfill, 'utf8'));
+      expect(doc.bogusTolerated['AWS::Route53::RecordSet'].GeoProximityLocation).toBe(
+        result.written[0]!.rationale
+      );
+      expect(doc.bogusTolerated['AWS::ApiGateway::Deployment'].StageName).toBe(
+        result.written[1]!.rationale
+      );
+      // The pre-existing content survives, and the shape is the one the
+      // generator already writes — 2-space indent, trailing newline — so a
+      // cycle that settles nothing produces no diff noise.
+      expect(doc.types).toEqual({});
+      const text = readFileSync(backfill, 'utf8');
+      expect(text.endsWith('}\n')).toBe(true);
+      expect(text).toContain('\n  "bogusTolerated": {');
+    });
+  }, 60_000);
+
+  it('NEVER overwrites an entry a human already wrote', () => {
+    // A rationale already there was written by a person about the same
+    // property, and the automatic one would replace a considered sentence with
+    // a template. The property is one that WOULD otherwise be settled, so the
+    // case is about the skip and not about the evidence failing.
+    const HUMAN = 'CFn spells the same field differently; see the umbrella issue.';
+    withScratchRoot(
+      { bogusTolerated: { 'AWS::Route53::RecordSet': { GeoProximityLocation: HUMAN } } },
+      (root, backfill) => {
+        const before = readFileSync(backfill);
+        const result = writeAutoTolerated(
+          [
+            {
+              resourceType: 'AWS::Route53::RecordSet',
+              properties: ['GeoProximityLocation'],
+              candidates: {},
+            },
+          ],
+          PROVIDER_FILES,
+          root
+        );
+        // Skipped outright — neither written nor escalated. Escalating it would
+        // put a settled decision back in front of a human every cycle.
+        expect(result).toEqual({ written: [], escalated: [] });
+        expect(readFileSync(backfill).equals(before)).toBe(true);
+        expect(JSON.parse(readFileSync(backfill, 'utf8')).bogusTolerated[
+          'AWS::Route53::RecordSet'
+        ].GeoProximityLocation).toBe(HUMAN);
+      }
+    );
+  }, 60_000);
+
+  it('does not touch the file at all when nothing was settled', () => {
+    // Byte-identity is the visible half; the mtime is the stronger claim — the
+    // file was not REWRITTEN with identical content, which on a daily job is
+    // the difference between a clean tree and a commit every morning.
+    withScratchRoot({ types: {}, bogusTolerated: {} }, (root, backfill) => {
+      const before = readFileSync(backfill);
+      const stamp = statSync(backfill).mtimeMs;
+      const result = writeAutoTolerated(
+        [
+          {
+            resourceType: 'AWS::Route53::RecordSet',
+            properties: ['CdkdNotAMemberName'],
+            candidates: {},
+          },
+          {
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: ['TemplateURL'],
+            candidates: {},
+          },
+        ],
+        PROVIDER_FILES,
+        root
+      );
+      expect(result.written).toEqual([]);
+      expect(result.escalated).toHaveLength(2);
+      // `nested-stack-provider.ts` imports no `@aws-sdk/client-*`, so its type
+      // reaches the second clause — the real instance of "nothing to ask".
+      expect(result.escalated[1]!.reason).toContain(
+        "could not determine this type's own SDK client"
+      );
+      expect(readFileSync(backfill).equals(before)).toBe(true);
+      expect(statSync(backfill).mtimeMs, 'the file was rewritten with identical bytes').toBe(stamp);
+    });
+  }, 60_000);
+
+  it('escalates a rename candidate carried on the entry', () => {
+    // The clause is reached through `entry.renameCandidates[property]`, which is
+    // a per-PROPERTY map on the entry — a plumbing step of its own, and the one
+    // place a wrong key would silently disarm the strongest refusal.
+    withScratchRoot({ bogusTolerated: {} }, (root, backfill) => {
+      const before = readFileSync(backfill);
+      const result = writeAutoTolerated(
+        [
+          {
+            resourceType: 'AWS::Route53::RecordSet',
+            properties: ['GeoProximityLocation'],
+            candidates: {},
+            renameCandidates: { GeoProximityLocation: ['GeoProximity'] },
+          },
+        ],
+        PROVIDER_FILES,
+        root
+      );
+      expect(result.written).toEqual([]);
+      expect(result.escalated[0]!.reason).toContain('RENAME');
+      expect(readFileSync(backfill).equals(before)).toBe(true);
+    });
+  }, 60_000);
+
+  it('escalates a property with no template read as COULD NOT DETERMINE', () => {
+    // The fourth clause needs a type whose client RESOLVES and whose provider
+    // only names the property — a pair the real tree does not offer
+    // (`nested-stack-provider.ts` is the unwired one, and it imports no client
+    // at all, so it stops at the second clause). A synthetic provider under the
+    // scratch root is the honest instrument: it imports the REAL route-53
+    // client, so the SDK half is measured, and names the property exactly the
+    // way `handledProperties` does.
+    //
+    // The assertion is inverted from what it was: this used to require the
+    // escalation to read "names it in a declaration list but wires it nowhere",
+    // which is a CONCLUSION the evidence does not support — the reader of a
+    // refusal must be told the check could not see the wiring, not that there
+    // is none. See `AWS::SQS::Queue.DelaySeconds` in the classifier suite.
+    withScratchRoot({ bogusTolerated: {} }, (root, backfill) => {
+      const rel = 'src/provisioning/providers/probe-provider.ts';
+      writeFileSync(
+        join(root, rel),
+        [
+          "import { Route53Client } from '@aws-sdk/client-route-53';",
+          'export class ProbeProvider {',
+          "  handledProperties = new Set(['GeoProximityLocation']);",
+          '  client = Route53Client;',
+          '}',
+          '',
+        ].join('\n')
+      );
+      const before = readFileSync(backfill);
+      const result = writeAutoTolerated(
+        [
+          {
+            resourceType: 'AWS::Route53::HostedZone',
+            properties: ['GeoProximityLocation'],
+            candidates: {},
+          },
+        ],
+        new Map([['AWS::Route53::HostedZone', rel]]),
+        root
+      );
+      expect(result.written).toEqual([]);
+      expect(result.escalated[0]!.reason).toContain('COULD NOT DETERMINE');
+      expect(result.escalated[0]!.reason).not.toContain('wires it nowhere');
+      expect(result.escalated[0]!.reason).not.toContain('cleanup');
+      expect(readFileSync(backfill).equals(before)).toBe(true);
+    });
+  }, 60_000);
+
+  it('escalates a rename the CURRENT schema carries, with no addition in this delta', () => {
+    // The cross-cycle plumbing, end to end and on the real pair the feature was
+    // built around: `AWS::AutoScaling::AutoScalingGroup` already carries
+    // `Cooldown` in the committed fixture while `DefaultCooldown` is the
+    // removal — so the addition landed on an earlier day and `renameCandidates`
+    // for this delta is EMPTY. Only `writeAutoTolerated` reading the type's
+    // current schema can see the pair, which is why the case runs through it
+    // rather than through `classifyRemovedProperty`.
+    //
+    // The property list is copied from the committed fixture rather than
+    // fabricated, so if AWS ever re-splits these names the case fails instead
+    // of asserting against a shape that no longer exists.
+    const committedAsg = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, 'tests/fixtures/cfn-schemas/AWS-AutoScaling-AutoScalingGroup.json'),
+        'utf8'
+      )
+    ) as { properties: string[] };
+    expect(
+      committedAsg.properties,
+      'the schema no longer carries the surviving half of the pair'
+    ).toContain('Cooldown');
+    expect(
+      committedAsg.properties,
+      'the schema carries BOTH names, so nothing here is a removal'
+    ).not.toContain('DefaultCooldown');
+
+    const ENTRY = [
+      {
+        resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+        properties: ['DefaultCooldown'],
+        candidates: {},
+      },
+    ];
+    const PROVIDERS = new Map([['AWS::AutoScaling::AutoScalingGroup', ASG_PROVIDER]]);
+
+    withScratchRoot({ bogusTolerated: {} }, (root, backfill) => {
+      const before = readFileSync(backfill);
+      // Control FIRST, with the type's schema absent from the scratch root. It
+      // SETTLES — every other test passes, because `@aws-sdk/client-auto-scaling`
+      // declares `DefaultCooldown` on `CreateAutoScalingGroupType` and the
+      // provider reads it. So the schema read is the ONLY thing standing between
+      // this property and an automatic tolerance, which is a stronger control
+      // than "it fails on some other arm": the arm under test is the arm that
+      // decides.
+      //
+      // (This control asserted the opposite until the input-root suffixes grew
+      // `Type` / `Message`. Before that, the whole query-protocol family was
+      // unreachable, and the case passed for a reason that had nothing to do
+      // with renames.)
+      const blind = writeAutoTolerated(ENTRY, PROVIDERS, root);
+      expect(
+        blind.written.map((w) => w.property),
+        'the control no longer settles, so the rename verdict below proves nothing'
+      ).toEqual(['DefaultCooldown']);
+      expect(blind.escalated, JSON.stringify(blind)).toEqual([]);
+      // The control WROTE, so the tolerance file must be reset before the real
+      // arm runs — an existing entry is never overwritten, which would make the
+      // second call a no-op that trivially "escalates nothing".
+      writeFileSync(backfill, before);
+
+      writeFileSync(
+        join(root, 'tests/fixtures/cfn-schemas/AWS-AutoScaling-AutoScalingGroup.json'),
+        JSON.stringify(committedAsg, null, 2)
+      );
+      const result = writeAutoTolerated(ENTRY, PROVIDERS, root);
+      expect(result.written).toEqual([]);
+      expect(result.escalated[0]!.reason, JSON.stringify(result)).toContain('RENAME');
+      expect(result.escalated[0]!.reason).toContain('`Cooldown`');
+      expect(readFileSync(backfill).equals(before)).toBe(true);
+    });
+  }, 60_000);
+
+  it('escalates when the evidence cannot be READ, instead of aborting the refresh', () => {
+    // A malformed checkout must not take down the refresh it is describing —
+    // the refresh has already rewritten the fixtures by the time this runs, so
+    // a throw here loses the whole cycle's work over one unreadable input. The
+    // property escalates, which is where it would have gone anyway.
+    //
+    // The unreadable input is the SDK typings: a directory sitting where
+    // `models_0.d.ts` belongs, so `collectSdkInterfaces` raises EISDIR from
+    // inside the classification. It is fabricated because there is no way to
+    // corrupt the real symlinked `node_modules` without corrupting it for every
+    // other case in the file.
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-auto-tolerated-unreadable-'));
+    const committed = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
+    const before = readFileSync(committed);
+    try {
+      mkdirSync(join(root, 'tests/fixtures/cfn-schemas'), { recursive: true });
+      mkdirSync(join(root, 'src/provisioning/providers'), { recursive: true });
+      const backfill = join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
+      writeFileSync(backfill, `${JSON.stringify({ bogusTolerated: {} }, null, 2)}\n`);
+
+      const CLIENT = '@aws-sdk/client-cdkdprobe';
+      const pkg = join(root, 'node_modules', CLIENT);
+      mkdirSync(join(pkg, 'dist-types/models/models_0.d.ts'), { recursive: true });
+      writeFileSync(join(pkg, 'package.json'), JSON.stringify({ version: '3.0.0' }));
+      const rel = 'src/provisioning/providers/probe-provider.ts';
+      writeFileSync(
+        join(root, rel),
+        [`import { X } from '${CLIENT}';`, "const v = properties['Thing'];", ''].join('\n')
+      );
+
+      const result = writeAutoTolerated(
+        [{ resourceType: 'AWS::Cdkdprobe::Thing', properties: ['Thing'], candidates: {} }],
+        new Map([['AWS::Cdkdprobe::Thing', rel]]),
+        root
+      );
+      expect(result.written).toEqual([]);
+      expect(result.escalated).toHaveLength(1);
+      expect(result.escalated[0]!.reason).toContain('the evidence could not be read');
+      // The failure is CARRIED, not swallowed into a generic sentence: a reader
+      // has to be able to tell an unreadable checkout from a real verdict.
+      expect(result.escalated[0]!.reason).toContain('EISDIR');
+      expect(result.escalated[0]!.reason).toContain('nothing is concluded about this property');
+      expect(readFileSync(backfill, 'utf8')).toBe(
+        `${JSON.stringify({ bogusTolerated: {} }, null, 2)}\n`
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      expect(
+        readFileSync(committed).equals(before),
+        'the case wrote to the COMMITTED tolerance file'
+      ).toBe(true);
+    }
+  }, 60_000);
 });

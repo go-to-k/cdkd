@@ -169,26 +169,39 @@ A provider still declares a property AWS no longer publishes.
 **Removal from the schema does not mean the API rejects it.** The schema is a
 published model; the API is the behaviour.
 
-The pull request does most of this for you — it says whether the AWS SDK still
-models the name, and flags a **possible rename** when the same refresh added a
-settable name to the same type whose spelling extends or is extended by the
-removed one. That test is deliberately narrow: a rename that changes the middle
-of a name is not flagged, so the absence of a flag is not evidence there was no
-rename. To settle the rest:
+**Most of these never reach you.** The job settles a removal itself when two
+facts hold together — the type's own AWS SDK client still declares a member of
+that name, and the provider actually wires the property rather than only listing
+it — and it writes the tolerance with those facts as the reason. Both are read
+from the checkout, and where both hold, "keep sending it" is the only answer
+either one permits.
+
+A removal reaches this section when one of them fails, or when the same refresh
+added a name that could be the same field renamed. The pull request says which.
+
+| What the PR says | What to do |
+| --- | --- |
+| Possible **rename** | Confirm it, then repoint the declaration at the new name. The SDK keeps the old name either way, so no evidence settles this. |
+| The SDK **no longer declares** the name | Delete the declaration *and its wiring* from the provider. This is a behaviour change, which is why it is yours. |
+| The job **could not find wiring** | Look before deleting. The evidence only sees a template read spelled `properties['X']`; table-driven wiring — a shorthand key in a lookup map, indexed by a loop variable — is invisible to it, and `AWS::SQS::Queue`'s `DelaySeconds` is delivered that way. Absence of evidence here is not evidence of absence. |
+
+The rename test is deliberately narrow — it flags an addition whose spelling
+extends or is extended by the removed name, so a rename that changes the middle
+of a name is not flagged, and the absence of a flag is not evidence there was no
+rename.
 
 ```bash
-# 1. Confirm against the live registry — the API AWS serves, not the bundle.
-aws cloudformation describe-type --type RESOURCE --type-name 'AWS::Service::Type' \
-  --query Schema --output text | jq -r '.properties | keys[]' | grep -i 'PropertyName'
-
-# 2. After editing, this names anything still bogus.
+# After editing, this names anything still bogus — and any tolerance AWS has
+# since made stale by re-adding the property.
 vp test run property-coverage
 ```
 
-A flagged rename is a name-similarity guess, not a finding — confirm it in step
-1 before repointing the declaration at the new name. If both the SDK and the
-live registry have dropped the name, delete the declaration. If either still
-knows it, add a `bogusTolerated` entry with a one-line reason.
+**`aws cloudformation describe-type` is corroboration, not the authority.** A
+removal here is about an SDK Provider's declaration, and cdkd's SDK Providers
+call service APIs directly — the CFn type registry is the API being served only
+for Cloud Control-routed types. It also adds no independent information: the
+public bundle this job already read was measured byte-identical to the
+authenticated capture on every type probed.
 
 ### A nested key diverged
 

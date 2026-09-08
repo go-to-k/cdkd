@@ -51,6 +51,7 @@ const parsed: any = parseYaml(workflow);
 
   const steps: Array<{
     name?: string;
+    id?: string;
     if?: string;
     run?: string;
     uses?: string;
@@ -124,6 +125,9 @@ const REFRESH_TASK = 'gen:cfn-schemas-from-zip';
 /** The step this file's decision-marking cases are about. */
 const MARK_STEP = 'Mark whether the PR needs a decision';
 
+/** The step that writes the tolerances no human needs to decide. */
+const SETTLE_STEP = 'Settle the removals that carry no judgement';
+
 /** The branch namespace the job creates AND the one its skip-guard looks for. */
 const BRANCH_PREFIX = 'bot/cfn-schema-refresh/';
 
@@ -165,7 +169,9 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // decision marking also run while a refresh PR is open, so the marking
       // can be CLEARED on a day AWS did not move — see the case for that
       // below; here the point is that neither runs unconditionally.
-      expect(byName('Publish the refresh').if).toBe("steps.drift.outputs.drifted == 'true'");
+      expect(byName('Publish the refresh').if).toBe(
+        "steps.drift.outputs.drifted == 'true' || steps.settle.outputs.settled == 'true'"
+      );
       for (const name of ['Regenerate the derived artifacts', 'Diagnose what needs a decision']) {
         expect(byName(name).if).toContain("steps.drift.outputs.drifted == 'true'");
         expect(byName(name).if, `${name} runs unconditionally`).not.toBeUndefined();
@@ -237,6 +243,105 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       ).not.toHaveProperty('issues');
     });
 
+    it('settles the judgement-free removals BEFORE the checks grade them', () => {
+      // Order is the whole feature. The write exists so `property-coverage` is
+      // green when it runs on a property nothing was going to decide
+      // differently; run after the checks, it would settle the case and still
+      // hand the human a red PR about it.
+      const names = steps.map((s) => s.name).filter((n): n is string => n !== undefined);
+      const settleAt = names.indexOf(SETTLE_STEP);
+      expect(settleAt, 'the settle step is gone').toBeGreaterThan(-1);
+      expect(settleAt, 'the removals are settled after the checks have graded them').toBeLessThan(
+        names.indexOf('Regenerate the derived artifacts')
+      );
+      // And after the drift probe, since it classifies what the refresh changed.
+      expect(names.indexOf('Detect drift')).toBeLessThan(settleAt);
+      // Same guard as the steps it feeds: with a refresh PR open, a human may
+      // have committed classifications and a later cycle still has to write the
+      // ones that need none.
+      expect(byName(SETTLE_STEP).if).toBe(
+        "steps.drift.outputs.drifted == 'true' || steps.open_pr.outputs.number != ''"
+      );
+    });
+
+    it('holds NO token while it rewrites a committed judgement file', () => {
+      // This is the one step that writes a file encoding judgement, and it is
+      // also the one that spawns `node` over the whole SDK typing tree. The
+      // repo's split is that a step doing either does not carry the write-scoped
+      // token — the same reasoning `persist-credentials: false` gives.
+      expect(byName(SETTLE_STEP).env, 'the settle step carries a token').toBeUndefined();
+      expect(shellOf(SETTLE_STEP)).toContain('--write-auto-tolerated');
+    });
+
+    it('refuses an absent settle record rather than reading it as "settled nothing"', () => {
+      // The report takes the record and subtracts what it names from the
+      // decision count. An ABSENT file is the permissive arm there — every
+      // settled property would be reported as still needing a decision — which
+      // is harmless in direction but indistinguishable from this step never
+      // having run.
+      const settle = shellOf(SETTLE_STEP);
+      expect(settle).toContain('[ -s /tmp/auto-tolerated.json ]');
+      expect(
+        settle.indexOf('--write-auto-tolerated'),
+        'the emptiness test runs before the write it inspects'
+      ).toBeLessThan(settle.indexOf('[ -s /tmp/auto-tolerated.json ]'));
+      // And the report is actually handed the record; without this the section
+      // and the subtraction are dead code.
+      expect(shellOf('Diagnose what needs a decision')).toContain(
+        '--auto-tolerated /tmp/auto-tolerated.json'
+      );
+    });
+
+    it('COMMITS a settlement even on a day AWS did not move', () => {
+      // The arm that needs it most, and the one a drift-only Publish guard
+      // threw away: an open PR carrying an outstanding removal, on a quiet day.
+      // Settle would write the tolerance, Publish would skip, the write would be
+      // discarded — and the marking would correctly refuse to clear over a tree
+      // the branch does not carry. A stalemate that resolves only when AWS
+      // happens to drift again.
+      expect(byName('Publish the refresh').if).toBe(
+        "steps.drift.outputs.drifted == 'true' || steps.settle.outputs.settled == 'true'"
+      );
+      // The output exists and is read from the TREE, not from the record's
+      // `written` array: what has to be committed is a file that CHANGED, and a
+      // cycle re-settling a property already tolerated writes nothing.
+      expect(byName(SETTLE_STEP).id).toBe('settle');
+      const settle = shellOf(SETTLE_STEP);
+      expect(settle).toContain(
+        'git status --porcelain -- tests/fixtures/cfn-schemas/_todo-backfill.json'
+      );
+      expect(settle).toContain('echo "settled=true" >> "$GITHUB_OUTPUT"');
+      expect(settle).toContain('echo "settled=false" >> "$GITHUB_OUTPUT"');
+    });
+
+    it('refuses to open a NEW PR for a settlement with no refresh behind it', () => {
+      // The widened guard admits a settle-only cycle, and a branch is a
+      // REFRESH's output — a PR whose only content is a tolerance the job
+      // decided on its own has no schema change to explain it. Unreachable by
+      // construction (Settle needs drift or an open PR, so settle-only implies
+      // the additive path), which is exactly when a guard stops being written
+      // and the next change makes it reachable.
+      const publish = shellOf('Publish the refresh');
+      const arm = guardArm(publish, 'if [ "${DRIFTED}" != "true" ]; then');
+      expect(arm, 'the branch-creating path no longer refuses a driftless cycle').toContain(
+        'exit 1'
+      );
+      expect(arm).toContain('::error::');
+      // And the variable it reads is declared, or `set -u` kills the step.
+      expect(byName('Publish the refresh').env).toHaveProperty(
+        'DRIFTED',
+        '${{ steps.drift.outputs.drifted }}'
+      );
+    });
+
+    it('commits the tolerance file the settle step wrote', () => {
+      // `_todo-backfill.json` lives under `tests/fixtures/cfn-schemas/`, so the
+      // publish step's existing `git add` covers it — but only while that path
+      // is there. Narrow the add and the job settles a property, reports it as
+      // settled, and pushes a branch that does not carry the entry.
+      expect(shellOf('Publish the refresh')).toContain('tests/fixtures/cfn-schemas/');
+    });
+
     it('derives the decision count from the SAME run that rendered the body', () => {
       // A second invocation would re-read `--failed-checks` and
       // `--nested-key-log` from its own argv, so a copy that drifted by one
@@ -264,8 +369,15 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
           "steps.drift.outputs.drifted == 'true' || steps.open_pr.outputs.number != ''"
         );
       }
-      // Publish stays drift-only: nothing may be COMMITTED on the open-PR arm.
-      expect(byName('Publish the refresh').if).toBe("steps.drift.outputs.drifted == 'true'");
+      // Publish takes drift OR a settlement worth committing — and NOT the bare
+      // open-PR arm, which would push the regeneration on every quiet day.
+      expect(byName('Publish the refresh').if).toBe(
+        "steps.drift.outputs.drifted == 'true' || steps.settle.outputs.settled == 'true'"
+      );
+      expect(
+        byName('Publish the refresh').if,
+        'Publish now commits on the bare open-PR arm, every quiet day'
+      ).not.toContain('steps.open_pr.outputs.number');
     });
 
     it('marks the PR this cycle published, or the one already open', () => {
@@ -889,14 +1001,36 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       const publish = shellOf('Publish the refresh');
       expect(publish).toContain('base_sha=$(git rev-parse HEAD)');
       const baseAt = publish.indexOf('base_sha=$(git rev-parse HEAD)');
-      const commitAt = publish.indexOf('git commit -m "chore(schemas): additional');
-      expect(commitAt).toBeGreaterThan(-1);
+      // The additive commit, whose subject is now chosen rather than literal —
+      // a settlement-only cycle commits no drift and must not say it did.
+      const commitAt = publish.indexOf('git commit -m "${subject}"');
+      expect(commitAt, 'the additive commit is gone or spelled differently').toBeGreaterThan(-1);
       expect(baseAt, 'the baseline is captured after the commit it describes').toBeLessThan(
         commitAt
       );
       expect(publish, 'the baseline is still read off the remote').not.toMatch(
         /base_sha=\$\(git ls-remote/
       );
+    });
+
+    it('does not call a settlement-only cycle a schema drift', () => {
+      // The message has to match the diff. Publish now runs on drift OR a
+      // settlement, and the additive path is where a settlement-only cycle
+      // lands — committing a tolerance the job decided, with no schema change
+      // behind it. Calling that "additional CFn schema drift" would make the
+      // branch history describe something that did not happen.
+      const publish = shellOf('Publish the refresh');
+      const arm = guardArm(publish, 'if [ "${DRIFTED}" = "true" ]; then');
+      expect(arm, 'the drifted subject is gone').toContain('additional CFn schema drift');
+      expect(arm, 'both cycles claim a drift again').toContain(
+        'settle removals the evidence already answers'
+      );
+      // And the chosen subject is what is actually committed.
+      expect(publish).toContain('git commit -m "${subject}"');
+      expect(
+        publish.indexOf('subject="chore(schemas): additional'),
+        'the subject is chosen after the commit that uses it'
+      ).toBeLessThan(publish.indexOf('git commit -m "${subject}"'));
     });
 
     it('passes the checker’s EXIT CODE, not only its output', () => {
