@@ -124,7 +124,7 @@ __refuse_unloadable_library() {
   echo "so main-tree-edit-gate cannot resolve the command's working directory." >&2
   echo "Restore that file; do not work around the gate." >&2
   echo "" >&2
-  echo "Only Bash is refused. This hook's Edit and Write arms read the target" >&2
+  echo "Only Bash is refused. This hook's file-path arms read the target" >&2
   echo "path directly and need no shell parsing, so FROM A FEATURE WORKTREE you" >&2
   echo "can repair the library with the Edit or Write tool -- that route is open." >&2
   echo "In the main tree on main this gate refuses that edit too, for its own" >&2

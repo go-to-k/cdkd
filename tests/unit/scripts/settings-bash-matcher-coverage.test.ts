@@ -202,12 +202,30 @@ describe('.claude/settings.json PreToolUse gate reachability', () => {
     );
     expect(entries, 'main-tree-edit-gate must be registered at PreToolUse').toHaveLength(1);
 
-    const matcher = entries[0]?.matcher ?? '';
+    const matcher = entries[0]?.matcher;
+    // WITHOUT THIS, the assertion below is satisfiable by an ABSENT matcher: the
+    // `?? ''` an earlier revision used makes `new RegExp('')` match every tool,
+    // so a settings schema change that dropped the key entirely went green. A
+    // fence whose subject can vanish is the shape this whole PR exists to fix.
+    expect(
+      typeof matcher === 'string' && matcher.length > 0,
+      `main-tree-edit-gate's entry has no \`matcher\` (got ${JSON.stringify(matcher)}). An absent or empty matcher makes every assertion below vacuous, because an empty pattern matches everything.`,
+    ).toBe(true);
+    // A legal Claude Code wildcard (`*`) is not a legal JS RegExp and would throw
+    // a raw SyntaxError here instead of this test's message. Fail with the reason.
+    let re: RegExp;
+    try {
+      re = new RegExp(matcher as string);
+    } catch {
+      throw new Error(
+        `main-tree-edit-gate's matcher ${JSON.stringify(matcher)} is not a JS RegExp, so this fence cannot evaluate the reach it exists to protect. If the matcher moved to a wildcard or glob form, re-derive how the harness matches and rewrite this assertion -- do not delete it.`,
+      );
+    }
     // The floor is that a substring match still happens, not the exact string:
     // `Edit|Write|Bash` and `Write|Edit|Bash` are both fine, `^Edit$|...` is not.
     for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
       expect(
-        new RegExp(matcher).test(tool),
+        re.test(tool),
         [
           `main-tree-edit-gate's matcher ${JSON.stringify(matcher)} no longer routes ${tool}.`,
           'MultiEdit and NotebookEdit reach this gate only by unanchored substring',
