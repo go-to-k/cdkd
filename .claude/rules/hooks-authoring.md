@@ -20,8 +20,9 @@ asymmetry was per-hook `if:` conditions; cdkd carries 0 `if:` fields across
 every Bash hook it registers, and `check-gate` / `verify-pr-gate` answer rc=2
 for the bare and the `cd <wt> && ...` spellings alike). The 0 is the
 load-bearing half; the hook COUNT that used to sit beside it is gone rather
-than re-incremented, because go-to-k/cdkd#2717 retired nine of them at once and
-a hand-maintained number in a rules file is the shape that goes stale
+than re-incremented, because go-to-k/cdkd#2717 retired ten of them — nine in
+one change and one later — and a hand-maintained number in a rules file is the
+shape that goes stale
 silently — `jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") |
 .hooks[].command' .claude/settings.json | wc -l` answers it. This matters
 because `/work-issues` writes commands in exactly that form. **Fenced by

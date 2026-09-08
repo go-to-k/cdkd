@@ -5,7 +5,11 @@ import { dirname, join } from 'node:path';
 
 /**
  * `GATE_PERL_WORD` in `.claude/hooks/lib/command-match.sh` is one shared shell
- * literal that several BLOCKING gates interpolate into `perl -0777` programs.
+ * literal that a BLOCKING gate interpolates into `perl -0777` programs. It was
+ * five gates until go-to-k/cdkd#2717 retired four of them; the constant stays
+ * shared because the assertions below are what would notice a second consumer
+ * arriving and disagreeing with the header.
+ *
  * Two failure modes are invisible from any single file, and both were live:
  *
  *   1. **The canonical comment undercounts its own consumers.** The header said
@@ -65,9 +69,10 @@ function perlPrograms(source: string): { body: string; whole: string }[] {
 describe('GATE_PERL_WORD consumers', () => {
   it('the library header names the same count as the tree', () => {
     const found = consumers();
-    // Five today. Asserted as a NUMBER WORD against the header sentence rather
-    // than as a hard-coded 5 here: the point is that the two agree, so adding a
-    // sixth consumer must update the sentence, not this file.
+    // ONE today (go-to-k/cdkd#2717 retired the other four). Asserted as a
+    // NUMBER WORD against the header sentence rather than as a hard-coded count
+    // here: the point is that the two agree, so adding a second consumer must
+    // update the sentence, not this file.
     const words: Record<number, string> = {
       1: 'ONE',
       2: 'TWO',

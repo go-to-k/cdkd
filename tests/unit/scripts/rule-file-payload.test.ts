@@ -583,7 +583,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `pulls in N B` off the failure) and check the HISTORY before explaining why
   // an old figure differs -- a hand-summed answer also has to reproduce
   // `globToRegExp`, and the obvious approximation picks a different file set.
-  ['.claude/hooks/main-tree-edit-gate.sh', 78_000, 95_000], // measured 86_662 on 2026-09-08
+  ['.claude/hooks/main-tree-edit-gate.sh', 78_000, 95_000], // measured 86_991 on 2026-09-08
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the

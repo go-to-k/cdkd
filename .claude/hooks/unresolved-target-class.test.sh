@@ -616,6 +616,31 @@ else
   ng "fence 3: registered hook(s) in NEITHER list -- they are outside the fence and nothing says why:$unpartitioned"
 fi
 
+# ...and the OTHER direction, which nothing checked. `DECLARED_UNEXERCISED` is
+# read only as a membership test over REGISTERED hooks, so a row naming a hook
+# that no longer exists is inert forever: go-to-k/cdkd#2717 deleted
+# issue-deferral-criteria-gate and its row would have sat here unnoticed, since
+# a stale exemption fails nothing. This repo's sibling tables (`EXEMPT`,
+# `UPDATE_WRAP_ALLOW_LIST`) all fail on a stale entry; this one now does too.
+# The point is not tidiness -- an exemption list that cannot shrink is how a
+# gate's absence stops being visible.
+stale_declared=""
+while read -r dh _rest; do
+  [ -n "$dh" ] || continue
+  found=0
+  for h in "${HOOKS[@]}"; do
+    [ "$(basename "$h" .sh)" = "$dh" ] && { found=1; break; }
+  done
+  [ "$found" = 1 ] || stale_declared="$stale_declared $dh"
+done <<EOF
+$DECLARED_UNEXERCISED
+EOF
+if [ -z "$stale_declared" ]; then
+  ok "fence 3: every DECLARED_UNEXERCISED row names a hook that is still registered"
+else
+  ng "fence 3: DECLARED_UNEXERCISED row(s) name hooks that are not registered -- delete the row with the hook:$stale_declared"
+fi
+
 if [ -z "$leaks" ]; then
   ok "fence 3: every gate that blocks a literal target refuses all 6 unreadable spellings"
 else
