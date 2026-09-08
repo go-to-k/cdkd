@@ -901,7 +901,13 @@ CLOSED when it cannot load** (`exit 2`, with a `declare -F gate_matches`
 check for a truncated file — the liveness check covers all three exported
 functions); the three non-blocking detectors skip instead (a missed backup /
 reminder / warning is a smaller harm than refusing an operation they only
-observe). The path is derived with pure-bash `${BASH_SOURCE[0]%/*}` rather
+observe). **One gate fails closed for `Bash` and not for its other arms** —
+`main-tree-edit-gate`, whose matcher also takes Edit and Write, so a LOAD-time
+refusal took away the tools the library is repaired with (go-to-k/cdkd#2717;
+[hooks-main-tree-edit.md](hooks-main-tree-edit.md) has it). A carve-out for a
+MATCHER, not a softening: a Bash-only gate still refuses outright, and so does
+that gate's `Bash` arm.
+The path is derived with pure-bash `${BASH_SOURCE[0]%/*}` rather
 than `dirname` (no PATH lookup), `.` fallback for the no-slash case. Count
 the sharing hooks with
 `grep -l 'lib/command-match.sh' .claude/hooks/*.sh | grep -v test | wc -l`

@@ -183,4 +183,79 @@ describe('.claude/settings.json PreToolUse gate reachability', () => {
       );
     }
   });
+
+  // A matcher is an UNANCHORED REGEX, and `main-tree-edit-gate` depends on that
+  // rather than merely tolerating it: its registered matcher is
+  // `Edit|Write|Bash`, and `MultiEdit` / `NotebookEdit` reach it ONLY because
+  // `Edit` matches as a substring. Both are handled in its file-path `case`
+  // label, and a NotebookEdit of a tracked file in the main tree on `main` is
+  // refused there (go-to-k/cdkd#2717).
+  //
+  // So anchoring that matcher -- `^(Edit|Write|Bash)$`, or splitting it into
+  // exact alternatives -- would silently stop routing notebook writes to the
+  // gate and reopen the hole, with the hook's own suite still green: that suite
+  // feeds payloads to the hook directly and never consults the matcher. This is
+  // the only place the two halves meet.
+  it('keeps main-tree-edit-gate reachable for the Edit-substring tools', () => {
+    const entries = preToolUseEntries().filter((e) =>
+      (e.hooks ?? []).some((spec) => gateName(spec) === 'main-tree-edit-gate'),
+    );
+    expect(entries, 'main-tree-edit-gate must be registered at PreToolUse').toHaveLength(1);
+
+    const matcher = entries[0]?.matcher;
+    // A NARROWING GUARD, not an `expect`. Both uses below need `matcher` to be a
+    // non-empty string, and an `expect` leaves that to runtime: written as
+    // `new RegExp(matcher as string)` the cast is load-bearing, so deleting or
+    // reordering the check compiles clean and `new RegExp(undefined)` yields
+    // `/(?:)/`, which matches all four tools. That is the vacuity this whole PR
+    // is about, one refactor away and invisible to the type checker. Narrowing
+    // instead means TS refuses the reordering.
+    if (typeof matcher !== 'string' || matcher.length === 0) {
+      throw new Error(
+        `main-tree-edit-gate's entry has no \`matcher\` (got ${JSON.stringify(matcher)}). An absent or empty matcher makes every assertion below vacuous, because an empty pattern matches everything.`,
+      );
+    }
+    // A legal Claude Code wildcard (`*`) is not a legal JS RegExp and would throw
+    // a raw SyntaxError here instead of this test's message. Fail with the reason.
+    let re: RegExp;
+    try {
+      re = new RegExp(matcher);
+    } catch {
+      throw new Error(
+        `main-tree-edit-gate's matcher ${JSON.stringify(matcher)} is not a JS RegExp, so this fence cannot evaluate the reach it exists to protect. If the matcher moved to a wildcard or glob form, re-derive how the harness matches and rewrite this assertion -- do not delete it.`,
+      );
+    }
+    // The tool list is DERIVED from the hook's own `case` label, not hand-written
+    // here. A hand list catches a label REMOVAL (so does the hook's suite) and
+    // catches nothing when a label is ADDED: the new tool would reach the hook by
+    // substring, be handled by the arm, and have no assertion that the matcher
+    // still routes it. Reading the label ties the two halves together.
+    const armLabel = /^\s*(Edit\|[A-Za-z|]+)\)\s*$/m.exec(
+      readFileSync(join(repoRoot, '.claude', 'hooks', 'main-tree-edit-gate.sh'), 'utf8'),
+    )?.[1];
+    expect(
+      armLabel,
+      "could not find main-tree-edit-gate's file-path `case` label; this fence derives its tool list from it, so a parse failure here would silently assert nothing",
+    ).toBeTruthy();
+    const tools = (armLabel ?? '').split('|').filter(Boolean);
+    // Floor: the label must still carry the two substring-reached tools this
+    // fence exists for, so a label rewritten down to `Edit|Write` cannot quietly
+    // shrink the list the loop below iterates.
+    expect(tools).toEqual(expect.arrayContaining(['MultiEdit', 'NotebookEdit']));
+    // The floor is that a substring match still happens, not the exact string:
+    // `Edit|Write|Bash` and `Write|Edit|Bash` are both fine, `^Edit$|...` is not.
+    for (const tool of tools) {
+      expect(
+        re.test(tool),
+        [
+          `main-tree-edit-gate's matcher ${JSON.stringify(matcher)} no longer routes ${tool}.`,
+          'MultiEdit and NotebookEdit reach this gate only by unanchored substring',
+          'match on `Edit`. Anchoring the matcher, or listing exact tool names,',
+          'stops notebook and multi-edit writes from being gated at all -- and the',
+          "hook's own suite cannot see it, because it feeds the hook payloads",
+          'directly and never reads the matcher. Keep the matcher unanchored.',
+        ].join(' '),
+      ).toBe(true);
+    }
+  });
 });

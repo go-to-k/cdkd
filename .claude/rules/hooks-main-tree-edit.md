@@ -34,7 +34,11 @@ toll only on a session actually touching these two hooks.
   the user's `git pull --ff-only`. Fires only when the target's branch is
   `main`/`master` AND the file is tracked (or is a NEW file under `src/` /
   `tests/` / `docs/` / `scripts/` / `.claude/`, excluding
-  `.claude/worktrees/*`). Edit/Write read `tool_input.file_path` (reliable);
+  `.claude/worktrees/*`). Edit / Write / MultiEdit / NotebookEdit read
+  `tool_input.file_path`, falling back to `tool_input.notebook_path` (reliable)
+  — the last two reach this hook because a matcher is an unanchored regex and
+  `Edit|Write|Bash` matches the substring, and NotebookEdit is the one that
+  sends `notebook_path`;
   Bash best-effort-scans for LITERAL write targets (`> f`, `>> f`,
   `tee [-a] f`, `sed -i ... f`). **Known gap**: a variable-indirected target
   (`mv "$tmp" "$LEDGER"`) cannot be resolved statically — the next bullet,
@@ -62,7 +66,45 @@ toll only on a session actually touching these two hooks.
   published as eleven, then fourteen, then twenty-eight, and a reviewer
   re-measuring got fourteen against a different comparand: four attempts, no
   two agreeing. Apply the `odd-trailing-bs` mutant and read the differential's
-  own undeclared-cell list. Load fails CLOSED.
+  own undeclared-cell list.
+
+  **Load fails CLOSED for `Bash` ONLY** (go-to-k/cdkd#2717). Every other gate on
+  the shared matcher refuses outright; this one also matches Edit and Write, so
+  refusing at LOAD time took away the tools the library is repaired with — four
+  times in one session (go-to-k/cdkd#2650), three from one apostrophe in a
+  comment in its awk program, each needing the maintainer's own shell. A safety
+  mechanism must not remove the operator's means of repair.
+
+  Sound because the file-path arm calls NO library function; the hook's own
+  header carries that argument and the `*)` one, so they are not repeated here.
+  Measured **against `origin/main`'s hook**, same broken library and payloads:
+  `Edit` 2 → 0, `Write` 2 → 0, `Bash` 2 → 2, working-library copy 0 on the old
+  hook as control. Keep the comparand — a compression dropped it once, and
+  `2 → 0` alone reads as THIS hook going block to allow, the opposite of the
+  claim. Surviving arms refuse **by the gate's OWN message**, the only way to
+  tell enforcement from lockout.
+
+  Three test properties, each bought by a measured survivor rather than by
+  taste. **Every expect-0 case is paired with an expect-2 case on the SAME tool
+  label AND the SAME library state** — a bare exit code cannot tell a fail-open
+  from the arm working, so `Write`, the `declare -F` arm, and the healthy-library
+  state each shipped a hole once the others had pairs. **One needle per
+  refusal SENTENCE**, measured by deleting each line. **A case must reach the
+  branch it names**: the worktree-repair case sat under a directory the fixture
+  never created, so `__norm_candidate` returned 1 and its MAIN-tree twin
+  answered 0 too.
+
+  **A matcher is an UNANCHORED REGEX** — an earlier draft asserted the opposite
+  ("`Edit|Write|Bash`, so `*)` is unreachable"). It matches `MultiEdit` and
+  `NotebookEdit` on the substring, so both reach this hook. `MultiEdit` sat in
+  the file-path arm with no case; **`NotebookEdit` was in neither, so a notebook
+  write to a tracked main-tree file was allowed outright** — a hole predating
+  this change. Closing it took TWO edits: the label, and the FIELD. NotebookEdit
+  sends `notebook_path`, so the label alone was inert for the only tool it was
+  added for — measured, exit 0 with the label in place, 2 for the same payload
+  spelled `file_path`, every case green. `tests/unit/scripts/settings-bash-matcher-coverage.test.ts`
+  now fails if that matcher is anchored, which the hook's own suite cannot see:
+  it feeds the hook payloads directly and never reads the matcher.
 
   **This is the fifth resolution strategy the gate has carried, and the first
   that is neither anchored nor hand-rolled.** The four before it each fixed

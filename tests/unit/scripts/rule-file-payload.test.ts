@@ -526,11 +526,42 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // 109 B of headroom left after two parallel lanes had spent the rest.
   // Representative path for the satellite (its four globs are the two hooks
   // and their suites, per the REACH_FLOORS entry above). Payload is hooks.md +
-  // hooks-main-tree-edit.md. The FLOOR is ~12% under the measurement, this
-  // file's convention -- the first draft said 40_000, 51% under, and a floor
-  // that loose cannot notice the satellite going dark, because hooks.md alone
-  // is 78,437 B and satisfies it unaided.
-  ['.claude/hooks/main-tree-edit-gate.sh', 56_000, 95_000], // measured 68_626 on 2026-09-07
+  // hooks-main-tree-edit.md + hooks-authoring.md -- THREE files, not the two an
+  // earlier revision of this comment named; `hooks-authoring.md`'s glob covers
+  // every hook, so it has been in this payload since it split out.
+  //
+  // THE FLOOR IS DERIVED, not a percentage. It was 56_000 and fenced nothing:
+  // its own comment claimed a looser floor "cannot notice the satellite going
+  // dark, because hooks.md alone satisfies it unaided", which was true of 56_000
+  // too -- hooks.md is 70,168 B, so BOTH satellites could go dark and the row
+  // still passed. A floor here has exactly one job, so it has to sit above the
+  // largest payload that job would let through: hooks.md alone (70,168). At
+  // 78_000, hooks-main-tree-edit.md going dark leaves 73,969 and reds.
+  //
+  // The residual is named rather than papered over: hooks-authoring.md going
+  // dark alone leaves 82,861 and still passes. It is 3,801 B against a 12,693 B
+  // sibling, so no floor catches it without false-firing on ordinary edits to
+  // the other two; that one is covered by its own REACH_FLOORS row.
+  //
+  // The figure below was `68_626` until 2026-09-08, and it was CORRECT when
+  // written: at go-to-k/cdkd#2731 the three files measured 59,133 + 5,692 +
+  // 3,801 = 68,626 exactly. It went stale by GROWTH, not by error. Derived per
+  // commit rather than recalled -- hooks.md 59,133 -> 70,168 is #2738 +4,736,
+  // #2766 +3,935, #2711 +1,016, #2760 +943 and this branch +405; the satellite
+  // 5,692 -> 12,693 is #2711 +4,189 and this branch +2,812. An earlier revision
+  // of this paragraph named three PRs from memory and omitted the two largest
+  // contributors to hooks.md, in a comment whose whole subject is checking the
+  // history instead of recalling it.
+  //
+  // Recorded because the first attempt to update it asserted the opposite: that
+  // `68_626` was `86_662` with two digit pairs transposed and had never been a
+  // payload this row could measure. That was invented to fit a digit
+  // coincidence, and `git log -S'68_626'` refutes it in one command. Re-derive
+  // the number from the assertion itself (drop the cap to 1 and read
+  // `pulls in N B` off the failure) and check the HISTORY before explaining why
+  // an old figure differs -- a hand-summed answer also has to reproduce
+  // `globToRegExp`, and the obvious approximation picks a different file set.
+  ['.claude/hooks/main-tree-edit-gate.sh', 78_000, 95_000], // measured 86_662 on 2026-09-08
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the

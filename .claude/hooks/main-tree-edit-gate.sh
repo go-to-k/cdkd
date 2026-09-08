@@ -28,7 +28,11 @@
 #   sanctioned `.claude/worktrees/<branch>/` flow is never blocked.
 #
 # Candidate targets by tool:
-#   - Edit / Write: `tool_input.file_path` (reliable).
+#   - Edit / Write / MultiEdit / NotebookEdit: `tool_input.file_path`,
+#     falling back to `tool_input.notebook_path` (reliable). The last
+#     two reach this hook because a matcher is an UNANCHORED REGEX and
+#     `Edit|Write|Bash` matches the substring; NotebookEdit is the one
+#     that sends `notebook_path` instead of `file_path`.
 #   - Bash: best-effort scan of `tool_input.command` for LITERAL
 #     write targets — `> f`, `>> f`, `tee [-a] f`, `sed -i ... f`,
 #     `cp <src> f`, `mv <src> f`. Variable-indirected targets
@@ -65,33 +69,71 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as
 # `bash main-tree-edit-gate.sh` from inside the hooks dir).
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+__lib_loaded=1
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_unquote_span >/dev/null \
   || ! declare -F gate_unquote >/dev/null \
   || ! declare -F gate_segments_marked >/dev/null; then
-  # FAIL CLOSED, as every other blocking gate does: a hook that cannot parse
-  # the command cannot say the edit is safe, and `|| exit 0` on an unloadable
-  # library is the shape that made twelve sibling gates inert
-  # (go-to-k/cdkd#2027).
+  __lib_loaded=0
+fi
+
+# The refusal is DEFERRED to the `Bash` arm, and that is the whole point of
+# separating these two statements.
+#
+# FAIL CLOSED is still right for `Bash`: a hook that cannot parse the command
+# cannot say the write is safe, and `|| exit 0` on an unloadable library is the
+# shape that made twelve sibling gates inert (go-to-k/cdkd#2027).
+#
+# But this hook's matcher is `Edit|Write|Bash`, and refusing at LOAD time
+# refused all three at once -- taking away the tools the library is repaired
+# with. That happened four times in one session (go-to-k/cdkd#2650), three of
+# them from a single apostrophe inside a comment in the library's awk program,
+# and each time the maintainer had to run the repair from their own shell. A
+# safety mechanism must not be able to remove the operator's means of repair.
+#
+# The asymmetry that makes the split sound: the file-path arm (all four labels)
+# reads its target through `jq` and calls NO library function -- the path
+# arrives already expanded, so there is no shell text to parse. Only the `Bash`
+# arm needs the matcher, so only the `Bash` arm fails closed on it. Everything
+# between here and the dispatch is variable assignments and function
+# definitions, so nothing runs against the missing functions in between.
+#
+# Refusing EVERY Bash call rather than only the ones it would have parsed is
+# deliberate: deciding which calls are safe is the parse it cannot do.
+#
+# ONE arm is neither of the two: a `tool_name` this hook cannot classify -- a
+# malformed payload, or `jq` missing as well -- falls through the `case` to `*)`
+# and exits 0, where the load-time refusal used to catch it. That is accepted
+# rather than overlooked. Refusing in `*)` means refusing a payload whose tool is
+# UNKNOWN, which puts Edit and Write back inside the refusal the moment `jq`
+# breaks too -- the lockout again, arriving by a second route. It is pinned by a
+# case, because eight lines of argument for a behaviour nothing measures is how
+# the behaviour goes away in a later refactor.
+#
+# An earlier revision of this comment justified it with "the registered matcher
+# is `Edit|Write|Bash`, so `*)` is unreachable". That was FALSE, and the file
+# contradicted it two ways at once. Claude Code matchers are UNANCHORED REGEX:
+# `Edit|Write|Bash` matches `MultiEdit` and `NotebookEdit` on the substring
+# `Edit`, so both reach this hook. `MultiEdit` was already in the file-path arm
+# and `NotebookEdit` was not -- which meant a NotebookEdit of a tracked file in
+# the main tree on `main` fell to `*)` and was ALLOWED. That hole predates this
+# change and is closed here, in the same `case` label the comment is about; the
+# sibling `worktree-owner-gate` has listed `NotebookEdit` all along.
+__refuse_unloadable_library() {
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
   echo "so main-tree-edit-gate cannot resolve the command's working directory." >&2
-  echo "Restore the file; do not work around the gate." >&2
-  # THIS HOOK MATCHES Edit AND Write AS WELL AS Bash, so an unloadable library
-  # takes away the three tools an agent would repair it with. Fail-closed is
-  # still right -- a gate that cannot parse the command cannot bless the edit --
-  # but a refusal with no way out reads as a broken harness rather than a
-  # working gate, so it has to name the one route that does not weaken it: a
-  # human running the fix in their own shell. In Claude Code that is the `!`
-  # prefix in the prompt. Measured the hard way (go-to-k/cdkd#2650): an
-  # apostrophe inside a comment in the library's awk program closed the shell
-  # string, and the session that wrote it could not undo it.
+  echo "Restore that file; do not work around the gate." >&2
   echo "" >&2
-  echo "If you are an agent and Edit/Write/Bash are all refused, you cannot fix" >&2
-  echo "this yourself -- that is by design. Ask the operator to run the repair" >&2
-  echo "from their own shell (in Claude Code, prefix the command with '!')." >&2
-  echo "Check it first with: bash -n .claude/hooks/lib/command-match.sh" >&2
+  echo "Only Bash is refused. This hook's file-path arms read the target" >&2
+  echo "path directly and need no shell parsing, so FROM A FEATURE WORKTREE you" >&2
+  echo "can repair the library with the Edit or Write tool -- that route is open." >&2
+  echo "In the main tree on main this gate refuses that edit too, for its own" >&2
+  echo "separate reason, so there the repair belongs to the operator, made from" >&2
+  echo "their own shell ('!' prefixed, in Claude Code). To inspect it first:" >&2
+  echo "  bash -n .claude/hooks/lib/command-match.sh" >&2
+  echo "A Bash call that is no longer refused is the proof the library loaded." >&2
   exit 2
-fi
+}
 
 # Every `cd` target in the RAW command text becomes an additional base for every
 # candidate already collected. Used wherever the walk's own `cd` following is
@@ -322,11 +364,22 @@ candidates=()
 cand_bases=()
 
 case "$tool" in
-  Edit|Write|MultiEdit)
-    fp=$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")
+  Edit|Write|MultiEdit|NotebookEdit)
+    # `notebook_path` is NOT a guess: it is the field `worktree-owner-gate.sh`
+    # has read for `NotebookEdit` all along, and NotebookEdit is the one tool in
+    # this pattern that does not send `file_path`. Reading only `file_path` made
+    # adding the label INERT for exactly the tool it was added for -- measured,
+    # a NotebookEdit of a TRACKED main-tree file collected no candidate and
+    # exited 0, while the same payload spelled with `file_path` exited 2. Cases
+    # written against the invented spelling passed throughout.
+    fp=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null || echo "")
     [[ -n "$fp" ]] && candidates+=("$fp")
     ;;
   Bash)
+    # Before anything is read off the command: without the matcher this arm
+    # cannot resolve a `cd`, and an unresolved `cd` is the difference between
+    # "the write is outside the repo" and "the write lands in the main tree".
+    [ "$__lib_loaded" = 1 ] || __refuse_unloadable_library
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
     [[ -z "$cmd" ]] && exit 0
     # AN ORDERED WALK OVER `gate_segments_marked`. Each segment either updates
