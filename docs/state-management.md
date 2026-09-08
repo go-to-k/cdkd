@@ -1554,20 +1554,13 @@ const updatedState: StackState = {
 };
 
 // 3. Save with ETag (optimistic lock)
-try {
-  const newEtag = await s3StateBackend.saveState(
-    'MyStack',
-    updatedState,
-    current.etag  // ← Expected ETag
-  );
-  console.log(`Updated with new ETag: ${newEtag}`);
-} catch (error) {
-  if (error.name === 'PreconditionFailed') {
-    // Another process modified the state
-    throw new Error('State was modified by another process');
-  }
-  throw error;
-}
+const newEtag = await s3StateBackend.saveState(
+  'MyStack',
+  'us-east-1',
+  updatedState,
+  { expectedEtag: current.etag }  // ← refuse the write if state moved
+);
+console.log(`Updated with new ETag: ${newEtag}`);
 ```
 
 ### ETag Handling

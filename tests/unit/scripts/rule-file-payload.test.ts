@@ -1269,7 +1269,29 @@ const CORPUS_BYTES_MIN = 895_000;   // RE-DERIVED UPWARD 862_000 -> 895_000 (202
 // no gate re-asks. `.claude/skills/check/SKILL.md` step 0 now fetches before
 // the suite, which fixes the LOCAL half only; go-to-k/cdkd#2705 tracks the
 // merge-time close.
-const CORPUS_BYTES_MAX = 996_000; // RE-DERIVED UPWARD 962_000 -> 996_000 (2026-09-07, issue
+const CORPUS_BYTES_MAX = 1_026_000; // RE-DERIVED UPWARD 996_000 -> 1_026_000 (2026-09-08, issue
+                                  // go-to-k/cdkd#2757): measured 996,256 B on this branch, and --
+                                  // the number that decides it -- 992,361 B on `origin/main` with
+                                  // NO branch involved. That left 3,639 B of headroom, under a
+                                  // quarter of one ordinary lane and the same landmine shape the
+                                  // 2026-09-07 re-derivation names one paragraph down: main ate
+                                  // 29,571 B of that 33,210 B in a single day, so the bound was
+                                  // due independently of whoever tripped it.
+                                  //
+                                  // BOTH levers used. This lane's own restated bytes were cut
+                                  // FIRST and repeatedly: a drifting error-name count, a
+                                  // "tightest template" figure that was wrong, a Defences
+                                  // sentence describing a circular assertion the same PR had
+                                  // already replaced, and a Bounds bullet that re-explained what
+                                  // `scripts/check-docs-error-strings.ts`'s own header states --
+                                  // CLAUDE.md's contract puts a mechanism at its module and a
+                                  // POINTER in the rule file, so those were the lane's own stale
+                                  // bytes. What remains is one catalogue entry for a new checker,
+                                  // the same shape every sibling in `layout-scripts.md` carries.
+                                  // Headroom set to 33,639 B, the ~33 KB the previous three
+                                  // re-derivations chose.
+                                  //
+                                  // 996_000 was: // RE-DERIVED UPWARD 962_000 -> 996_000 (2026-09-07, issue
                                   // go-to-k/cdkd#2736): measured 962,790 B on this branch, and
                                   // -- the number that decides it -- 954,822 B on `origin/main`
                                   // with NO branch involved. That left 7,178 B of headroom, under

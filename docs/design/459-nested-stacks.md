@@ -416,11 +416,10 @@ the user runs `cdkd destroy MyParent~MyChild` (or the equivalent state
 key), the CLI refuses with a clear error pointing at the parent:
 
 ```
-Error: stack 'MyParent~MyChild' is a nested child of 'MyParent';
-       destroy the parent instead to cascade-delete this child, or
-       run `cdkd state destroy MyParent~MyChild` (the state-only path)
-       if you intentionally want to leave the parent's reference
-       dangling.
+NestedStackChildDirectDestroyError: Stack 'MyParent~MyChild' is a nested child of 'MyParent';
+directly destroying a nested stack is not supported. Either run 'cdkd destroy MyParent' to
+cascade-delete this child along with its parent, or run 'cdkd state destroy MyParent~MyChild'
+if you intentionally want to leave the parent's reference dangling (the state-only escape hatch).
 ```
 
 The check fires in `destroy.ts` BEFORE lock acquisition by reading the
