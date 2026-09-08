@@ -2576,15 +2576,16 @@ GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:s
 # where `Severity` first exists for the bulk of the backlog. `comment` stays
 # absent: a comment is not the issue's classification.
 GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space:]]|$)"
-# The same mint through the REST verb. `gh api repos/<o>/<r>/issues` with a
-# `title=` field creates an issue; the path must NOT continue past `issues`,
-# which is what separates it from `/issues/<n>/comments` (a comment) and
-# `/issues/<n>` (an edit) -- neither of which mints anything. Sibling
-# GATE_RE_GH_BODY_CARRIER already carries `api` for exactly this reason; this
-# gate omitting it left the trigger under-approximated, against the
-# "over-approximate the TRIGGER, be strict on RESOLUTION" rule in
-# .claude/rules/hooks.md.
-GATE_RE_GH_API_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$).*repos/[^[:space:]/]+/[^[:space:]/]+/issues([[:space:]]|$|\")"
+# GATE_RE_GH_API_ISSUE_CREATE stood here -- the issue mint through the REST
+# verb, `gh api repos/<o>/<r>/issues`. Its only consumer was
+# issue-deferral-criteria-gate, retired by go-to-k/cdkd#2717, so it is removed
+# WITH that consumer rather than left as a constant nothing reads: an unused
+# regex reads as a supported trigger and is the same invisible-residue class
+# that change's other findings were about. `git log -S` recovers it with its
+# rationale if a future gate needs the shape; the discrimination it encoded --
+# the path must NOT continue past `issues`, which separates a MINT from
+# `/issues/<n>/comments` and `/issues/<n>` -- is the part worth re-reading
+# there.
 # gh-body-english-gate: every gh verb that PUBLISHES prose. UNANCHORED, because
 # that hook feeds the same ERE to `cmd_matches_verb` (which wraps it in `^(...)`)
 # and to `cmd_last_cd_target` (which needs the bare verb). The terminator is
