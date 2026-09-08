@@ -366,7 +366,7 @@ __dedupe_candidates() {
 # answer rc=2 naming the constant.
 #
 # The cause is this hook's LIBRARY load guard (the `declare -F` chain near the
-# top of the file, not the `gate_require_const` one just below): it requires
+# top of the file, not the `gate_require_const` one inside the `Bash` arm): it requires
 # `gate_segments_marked`,
 # and the ordered walk go-to-k/cdkd#2650 moved this hook onto reads those
 # constants BARE inside function bodies, where the `${X:-}` defaults on the

@@ -716,6 +716,52 @@ run_lagging 2 "Blocked by main-tree-edit-gate" \
   "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
 
+# THE CALL ITSELF, which nothing above tests. Every case so far strips the
+# HELPER; this one strips a CONSTANT, which is the state this hook's own header
+# measured -- seven bases each taking `cd <main tree> && echo hi > <tracked>`
+# from rc 2 to rc 0. Review measured the gap the obvious way: DELETE the
+# `gate_require_const` line from this hook and the suite stayed at
+# `passed=144 failed=0`. Two of the thirty hooks that call it catch that
+# deletion in their own suite (`main-tree-branch-gate`, `restore-backup`); this
+# makes three, and the general answer is the class fence in go-to-k/cdkd#2826.
+#
+# The single-LINE delete is sound for THIS constant and not in general --
+# `GATE_SEP_AMP=` is one line, so the span ends where the line does -- and the
+# `grep -q` below is the guard that it landed. The class fence needs a real
+# quote SCAN because it strips every constant, multi-line ones included. The two
+# sibling suites carry the same note; they disagree with the fence on purpose.
+STRIPPED="$TMPDIR/stripped-const"
+cp -R .claude/hooks "$STRIPPED"
+grep -v '^GATE_SEP_AMP=' .claude/hooks/lib/command-match.sh > "$STRIPPED/lib/command-match.sh"
+if grep -q '^GATE_SEP_AMP=' "$STRIPPED/lib/command-match.sh"; then
+  fail=$((fail + 1)); printf 'FAIL (fixture) could not stage a library without GATE_SEP_AMP (anchor drifted)\n'
+else
+  pass=$((pass + 1)); printf 'ok   (fixture) $STRIPPED library no longer assigns GATE_SEP_AMP\n'
+  __sc_payload=$(jq -nc --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')
+  __sc_out=$(printf '%s' "$__sc_payload" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" 2>&1 >/dev/null)
+  printf '%s' "$__sc_payload" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" >/dev/null 2>&1
+  __sc_rc=$?
+  if [[ "$__sc_rc" == 2 && "$__sc_out" == *"does not define: GATE_SEP_AMP"* ]]; then
+    pass=$((pass + 1)); printf 'ok   (exit 2, stripped const) a library without GATE_SEP_AMP refuses and NAMES it\n'
+  else
+    fail=$((fail + 1))
+    printf 'FAIL a library missing GATE_SEP_AMP must refuse naming it: got exit %s, output [%s]\n' \
+      "$__sc_rc" "$(printf '%s' "$__sc_out" | head -2)"
+  fi
+  # The same carve-out, on the same state: stripping a constant must not take
+  # away Edit and Write either. Without this the case above is satisfiable by
+  # putting the call back at the top of the file.
+  __sc_edit=$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')
+  printf '%s' "$__sc_edit" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" >/dev/null 2>&1
+  if [[ $? == 0 ]]; then
+    pass=$((pass + 1)); printf 'ok   (exit 0, stripped const) Edit outside the repo survives a missing constant\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL Edit outside the repo must survive a missing constant\n'
+  fi
+fi
+
 # THE OTHER TWO LABELS IN THE `case` PATTERN, under a broken library. The
 # HEALTHY-state cases are further down and are the load-bearing ones; these only
 # say the load split treats all four labels alike.

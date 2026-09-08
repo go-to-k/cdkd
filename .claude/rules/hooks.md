@@ -931,17 +931,24 @@ future check added to that hook belongs INSIDE the `Bash` arm.
 
 **NOT fenced as a class yet** — the fence built alongside this change was split
 out into go-to-k/cdkd#2826 after four review rounds each measured the previous
-round's fix reporting a green tally over a live fail-open, so the calls are
-held in place by each hook's own suite and by review. A hook added before that
-lands can read a library constant with no `gate_require_const` and nothing will
-say so.
+round's fix reporting a green tally over a live fail-open. **What holds the
+calls in place meanwhile is THREE suites and review, not thirty.** Measured by
+deleting the `gate_require_const` line from each hook and re-running that hook's
+own suite: `main-tree-branch-gate`, `restore-backup` and `main-tree-edit-gate`
+redden; the other 28 report an identical tally before and after, because a suite
+that never stages a library missing the constant cannot see the call go away. So
+a hook added before go-to-k/cdkd#2826 lands can read a library constant with no
+`gate_require_const` and nothing will say so — and so can an existing one whose
+call is deleted. The three that catch it stage a stripped library and assert the
+refusal by the CONSTANT'S NAME; that is the shape to copy if the fence is
+delayed.
 
 The path is derived with pure-bash `${BASH_SOURCE[0]%/*}` rather
 than `dirname` (no PATH lookup), `.` fallback for the no-slash case. Count
 the sharing hooks with
 `grep -l 'lib/command-match.sh' .claude/hooks/*.sh | grep -v '\.test\.sh' | wc -l`
 rather than trusting a number here. (SUFFIX-anchored: a bare `grep -v test`
-answers 31, eating `roundtrip-test-gate.sh`.) Two smoke cases that
+answers 30, eating `roundtrip-test-gate.sh`.) Two smoke cases that
 previously asserted the chained shape was an "accepted false-negative"
 (`branch-gate.test.sh`, `pr-review-gate.test.sh`) now assert it is CAUGHT.
 
@@ -1022,9 +1029,10 @@ any of the four `integ-*` gate scripts or their suites.
 ## Class fences
 
 The suites whose subject is EVERY hook at once — the unresolved-target-directory
-sweep (issue 2027), the gate-name fence (issue 2198) and the constant-liveness
-fence (issue 2729) — live in [hooks-class-fences.md](hooks-class-fences.md),
-loaded when you touch one of them or the shared matcher.
+sweep (issue 2027) and the gate-name fence (issue 2198) — live in
+[hooks-class-fences.md](hooks-class-fences.md), loaded when you touch one of
+them or the shared matcher. A third, for constant liveness, is designed and
+measured but NOT in the tree: go-to-k/cdkd#2826.
 
 ## Stop hooks
 

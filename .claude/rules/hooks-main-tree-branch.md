@@ -255,14 +255,15 @@ either constant — `gate_tokens` / `gate_argv` do — so a guard derived from w
 the hook reads could never have found them, and the one here worked only because
 someone remembered. They are in `lib/command-match.sh`'s `GATE_LIB_BASE_CONSTS`
 now, checked by `gate_require_const` on EVERY call, so any hook using the shared
-walk is covered whether its author knew to ask — provided it CALLS one, which is
-why the class fence's population is "sources the library" and not "reads a
-constant" (review measured the weaker form leaving `broad-process-kill-gate`
-uncovered over a clean run). The mechanism, not the vigilance, is the fix. This
-hook's call names only the three verb EREs it reads, and its suite asserts the
-refusal by the CONSTANT'S NAME — the discriminator, since the hook exits 2 for
-an unrelated reason when the guard is removed. See
-[hooks-class-fences.md](hooks-class-fences.md).
+walk is covered whether its author knew to ask — provided it CALLS one, and
+nothing yet checks that it does. That is go-to-k/cdkd#2826's job, and the
+measurement that decides its design is already taken: the population has to be
+"sources the library", not "reads a constant", because the weaker form left
+`broad-process-kill-gate` uncovered over a clean run. The mechanism, not the
+vigilance, is the fix. This hook's call names only the three verb EREs it reads,
+and its suite is one of the three that assert the refusal by the CONSTANT'S NAME
+— the discriminator, since the hook exits 2 for an unrelated reason when the
+guard is removed.
 
 **KNOWN BOUND, in the message rather than the verdict**: `gate_segments`
 truncates a segment at `}`, so `git switch -c 'feat/{id}'` blocks correctly

@@ -4198,16 +4198,20 @@ gate_refuse_unevaluable_marker() {
 # population demand a constant one hook never touches. So the population is
 # names read in CODE, intersected with names this file assigns at column 0.
 #
-#   hooks sourcing this library                  : 32
-#   ...reading at least one constant DEFINED here: 27
-#   ...reading NONE of their own                 : 5
-#   such constant reads across those hooks       : 40
-#   ...already carrying a `[ -z "${VAR:-}" ]`    : 10
-#   ...with NO guard                             : 30
+#   hooks sourcing this library                  : 31
+#   ...reading at least one constant DEFINED here: 26
+#   ...reading NONE of their own                 :  5
 #
-# All 32 get a call: the five that read none of their own pass no arguments and
+# Re-derive rather than trusting those: the block was first written at
+# `333f3f64`, where the first two were 32 and 27, and go-to-k/cdkd#2822 deleted
+# `issue-deferral-criteria-gate` out from under it. The reads-per-hook and
+# already-guarded tallies that sat here are gone rather than refreshed, for the
+# same reason -- they were measured against the pre-2822 set and nothing keeps
+# them true.
+#
+# All 31 get a call: the five that read none of their own pass no arguments and
 # ask about the library's constants only, which is the case `broad-process-kill-gate`
-# needed. The FENCE's population is those 32, not the 27 -- deriving it from
+# needed. The FENCE's population is those 31, not the 26 -- deriving it from
 # "reads a constant" made a hook that stops reading them leave the class
 # silently, and this file's own class fence measured that at
 # `total: 108  pass: 108  fail: 0` with `branch-gate` and `ci-green-gate` out.
@@ -4318,10 +4322,13 @@ gate_refuse_unevaluable_marker() {
 # COST, measured rather than assumed, because a PreToolUse hook that outlives
 # its 10 s timeout is KILLED and a killed hook cannot emit exit 2 -- disarming
 # every gate at once, which is the failure this whole file guards against.
-# 25 invocations of five gates with an inert payload, 2026-09-08 on this
-# machine: 21.5 ms each on `origin/main`, 22.0 ms each here. The loop is the
-# declared names plus the caller's, each one an indirect expansion and a
-# `[ -z ]`, and it runs once per hook at load.
+# 25 invocations with an inert payload, 2026-09-08 on this machine, and the
+# figure is PER SHELL because they disagree: bash 5.3.9 20.7 -> 21.4 ms, bash
+# 3.2.57 21.0 -> 26.0 ms (+24%). `run-tests.sh` exercises both, and a
+# single-shell number here read as if it covered them. Either way it is three
+# orders of magnitude under the 10 s budget. The loop is the declared names plus
+# the caller's, each one a shape check and an indirect expansion, run once per
+# hook at load.
 #
 # **The list is not restated as a COUNT anywhere, and that is deliberate.** It
 # was written as 34 and go-to-k/cdkd#2650 merged two more constants
@@ -4351,6 +4358,15 @@ GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_W
 # instead of refusing. The mutable scratch variables here that legitimately
 # start empty (`GATE_STRUCT_SEG`, `GATE_COMMENT_CUT`, `GATE_COMMENT_OPENQ`) are
 # OUTPUTS, never read by a hook as a constant, and are never passed to this.
+#
+# KNOWN BOUND, stated because it is narrow rather than absent: the check asks
+# what the NAME holds, so an EXPORTED variable of the same name satisfies it.
+# Measured -- `GATE_FLAGS=` deleted from the library and `GATE_FLAGS=ZZZ` in the
+# hook's environment takes `branch-gate` to rc=0 on a commit to `main`. It needs
+# a truncated library AND a colliding exported name, and the hooks run in the
+# session's own environment rather than an attacker's, so it is a residue and
+# not a hole -- but "the library defines it" and "the name is non-empty here"
+# are not the same question, and only the second is asked.
 gate_require_const() {
   gate_missing_const "$@" && return 0
   {
@@ -4358,6 +4374,18 @@ gate_require_const() {
     echo "so this gate cannot recognise the command and must not wave it through."
     echo "The library lags the hooks that read it -- restore or finish it; do not"
     echo "work around the gate."
+    echo
+    # THE REMEDIATION HAS TO NAME A ROUTE THAT STILL WORKS. In this state every
+    # gate on the shared matcher refuses every Bash call -- measured, 25 of them
+    # refuse a bare `ls -la` -- so "restore it", read as `git restore <file>`,
+    # is itself refused. An agent that finds the advised repair blocked starts
+    # working around the gate, which is the failure this whole layer exists to
+    # prevent; the repo has the incident on record. Edit and Write stay allowed
+    # (see main-tree-edit-gate's Bash-only carve-out), so they are the route,
+    # and saying so is what makes this a refusal rather than a dead end.
+    echo "EVERY Bash call is refused while the library is in this state, this"
+    echo "one included. Repair it with the Edit or Write tool -- those stay"
+    echo "allowed, deliberately, so a broken matcher cannot block its own fix."
   } >&2
   exit 2
 }
@@ -4431,24 +4459,63 @@ gate_missing_const() {
   fi
 
   local _gc_name
+  local _gc_bad
+  local _gc_label
   local _gc_missing=""
   # Unquoted on purpose: the base list is a space-separated STRING and word
   # splitting is how it becomes names.
   # shellcheck disable=SC2086
   for _gc_name in $GATE_LIB_BASE_CONSTS "$@"; do
-    # Indirect expansion with a default. Verified on bash 3.2.57 (macOS system
-    # bash, which run-tests.sh runs every suite under) and on 5.3.9: `${!n:-}`
-    # yields empty for an UNSET name under `set -u` rather than aborting, and
-    # reports a genuinely empty value as empty too.
-    if [ -z "${!_gc_name:-}" ]; then
-      # De-duplicated: a name can arrive from BOTH lists -- `GATE_FLAGS` is a
-      # load-time base AND a constant three hooks read directly -- and printing
-      # it twice reads like two different problems.
-      case " $_gc_missing " in
-        *" $_gc_name "*) ;;
-        *) _gc_missing="${_gc_missing:+$_gc_missing }$_gc_name" ;;
-      esac
+    # SHAPE FIRST, because `${!n}` on a name that is not one is not merely
+    # useless -- it is two live defects, both measured.
+    #
+    # A quoted-together argument (`gate_require_const "GATE_A GATE_B"`, one
+    # plausible authoring slip) makes bash 5.3.9 print `invalid variable name`
+    # and ABORT the loop, so every name after it goes unchecked: with that
+    # hook's own constant also missing, `branch-gate` answered rc=1 on a commit
+    # to `main` -- a non-2 exit, i.e. a PASS. bash 3.2.57 answers 2 for the same
+    # input, so the inertness is version-divergent, which is exactly the class
+    # this helper exists to close.
+    #
+    # And a name carrying an array subscript EXECUTES it: `EVIL[$(cmd)]` ran
+    # `cmd` on both 3.2.57 and 5.3.9. No caller passes a non-literal name today,
+    # so that one is unreachable rather than exploitable -- but the guard is the
+    # same guard, and an unreachable code-execution path in the file every hook
+    # sources is not worth keeping for the sake of two fewer lines.
+    # Three REJECT arms and a catch-all accept, rather than one accept pattern:
+    # a single-character name is valid, and an accept-shaped glob spelled
+    # `[A-Za-z_]*[A-Za-z0-9_]*` quietly is not (measured -- it rejects `X`).
+    case "$_gc_name" in
+      "")               _gc_bad=1 ;;  # empty
+      [!A-Za-z_]*)      _gc_bad=1 ;;  # first character
+      *[!A-Za-z0-9_]*)  _gc_bad=1 ;;  # any character after it
+      *)                _gc_bad=0 ;;
+    esac
+    # Dedup on the RECORDED TEXT, not on the raw name. With `_gc_name` empty,
+    # `" $_gc_missing "` and the pattern `*" $_gc_name "*` are both two spaces,
+    # so an empty name matched the not-yet-populated list and was dropped in
+    # silence -- the `""` arm above fired and recorded nothing. Measured before
+    # this line: `gate_missing_const ""` returned 0.
+    # Spelled as an `if`, never `[ -n ... ] && continue`: under a caller's
+    # `set -e` a trailing false test is the last command of the branch and
+    # aborts the function. `gate_segments` carries the same note for the same
+    # reason -- it dropped every remaining segment that way once.
+    if [ "$_gc_bad" = 1 ]; then
+      _gc_label="${_gc_name:-(empty)}(not-a-variable-name)"
+    else
+      # Indirect expansion with a default. Verified on bash 3.2.57 (macOS
+      # system bash, which run-tests.sh runs every suite under) and on 5.3.9:
+      # `${!n:-}` yields empty for an UNSET name under `set -u` rather than
+      # aborting, and reports a genuinely empty value as empty too.
+      if [ -n "${!_gc_name:-}" ]; then
+        continue
+      fi
+      _gc_label="$_gc_name"
     fi
+    case " $_gc_missing " in
+      *" $_gc_label "*) ;;
+      *) _gc_missing="${_gc_missing:+$_gc_missing }$_gc_label" ;;
+    esac
   done
 
   [ -n "$_gc_missing" ] || return 0
