@@ -1737,4 +1737,44 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).not.toContain('AWS_SECRET_ACCESS_KEY');
     expect(workflow).not.toContain('role-to-assume');
   });
+
+  it('writes the diagnosis into the BODY only at creation, and as a COMMENT thereafter', () => {
+    // `divergenceProcedure`'s unresolved block tells the reader this section is
+    // never updated in place and to read the newest COMMENT for a current
+    // answer. That is a claim about THIS file, made from another one, and it
+    // was wrong twice in a row: first "re-run the job" (the fresh reading is
+    // computed and discarded on an idle cycle), then "the body is rewritten
+    // only on a cycle that publishes" (no cycle rewrites it at all). Six
+    // consecutive review rounds found a defect of exactly this shape — a
+    // sentence asserting a mechanism that lives somewhere else — so the claim
+    // gets a fence rather than a third careful rewrite.
+    //
+    // Change the workflow's surfacing and this reds, naming the prose to fix.
+    const body = workflow.match(/gh pr create[\s\S]{0,400}?--body-file (\S+)/);
+    expect(body, 'the PR is no longer created with a --body-file').not.toBeNull();
+    expect(body![1]).toBe('/tmp/pr-body.md');
+
+    // The later-cycle path posts a comment, and does NOT edit the body.
+    expect(workflow).toContain('gh pr comment');
+    const comment = workflow.match(/gh pr comment[\s\S]{0,200}?--body-file (\S+)/);
+    expect(comment, 'the later-cycle diagnosis is no longer posted as a comment').not.toBeNull();
+    expect(comment![1]).toBe('/tmp/diagnosis.md');
+
+    // And nothing rewrites the whole body afterwards. Exactly one later write
+    // exists — the marking step's `${NB}`, which is the body with the verdict
+    // block spliced between its two markers, not a regenerated one. A third
+    // source appearing here is a full-body rewrite slipping in under the same
+    // call shape, which would make the prose wrong again.
+    const bodyWrites = [...workflow.matchAll(/--field "body=@(\S+?)"/g)].map((m) => m[1]);
+    expect(bodyWrites.length, 'no body write found — the matcher stopped matching').toBeGreaterThan(
+      0
+    );
+    for (const src of bodyWrites) {
+      expect(['${NB}'], `an unexpected whole-body write from ${src}`).toContain(src);
+    }
+    // The one write IS the splice: it is assembled from the marker pair the
+    // marking step maintains, not from a fresh render.
+    expect(workflow).toContain('VERDICT_BEGIN');
+    expect(workflow).toContain('VERDICT_END');
+  });
 });

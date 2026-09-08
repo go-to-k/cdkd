@@ -4375,7 +4375,7 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // whole block is gated, not just its heading sentence.
     const flat = md.replace(/\s+/g, ' ');
     expect(flat).not.toContain('splits them two ways and no further');
-    expect(flat).not.toContain('Do not wait for this pull request to answer it');
+    expect(flat).not.toContain('Do not wait for this section to answer it');
   });
 
   it('names the unsettled findings, and only those', () => {
@@ -4402,14 +4402,17 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     // The refusal of the reading that would have been most costly: an absent
     // type does NOT mean there is nothing to bump.
     expect(flat).toContain('Do NOT read that as “there is nothing to bump”');
-    // The remedy, which had no assertion at all and could be deleted green. It
-    // must NOT tell the reader to wait for this PR: the diagnosis is recomputed
-    // every cycle but the body is rewritten only on one that publishes, so a
-    // transient failure clears while this section stands unchanged. An earlier
-    // cut said "re-run the job", which promised an outcome the reader cannot
-    // observe.
-    expect(flat).toContain('Do not wait for this pull request to answer it');
-    expect(flat).toContain('only rewritten on a cycle that publishes a change');
+    // The remedy, which had no assertion at all and could be deleted green.
+    // TWO earlier cuts promised an outcome the reader cannot observe: "re-run
+    // the job" (the fresh reading is computed and discarded on an idle cycle),
+    // then "the body is only rewritten on a cycle that publishes" (no cycle
+    // rewrites it — the body is written once at `gh pr create` and later cycles
+    // `gh pr comment`). The mechanism sentence is asserted, not just the
+    // imperative, because both wrong versions kept a plausible imperative.
+    expect(flat).toContain('Do not wait for this section to answer it');
+    expect(flat).toContain('written once, on the day the pull request opened');
+    expect(flat).toContain('posts its fresh reading as a new COMMENT');
+    expect(flat).toContain('read the newest comment for a current answer');
     expect(flat).toContain('npm view @aws-sdk/client-<service> version');
     // The finding itself is named, not just the class...
     expect(md).toContain('   - `AWS::Glue::Connection`: `OAuth2Credentials`');
