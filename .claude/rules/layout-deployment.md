@@ -424,9 +424,9 @@ Index of every area: [code-layout.md](code-layout.md).
     dense IAM grid, which needed its own ceiling).
   - All special grids apply ONLY on the default schedule: any explicit
     `maxRetries` / `initialDelayMs` / `maxDelayMs` / `isRetryable` means the
-    caller owns the cadence verbatim (the DELETE path's 3 retries from 5s —
-    5s/8s/8s, since it sets `initialDelayMs` and leaves `maxDelayMs` at the 8s
-    default — `describe-type.ts`'s throttle-only retry).
+    caller owns the cadence verbatim: the DELETE path's 3 retries from 5s
+    (5s/8s/8s, since it passes `initialDelayMs` and leaves `maxDelayMs` at the
+    8s default), and `describe-type.ts`'s throttle-only retry.
   - Dense-grid rationale: cdkd creates an IAM entity and consumes it ~1-3s
     later, so propagation resolves in single-digit seconds — the generic
     4s/8s steps overshoot (measured: ~10.2s of a 25.9s deploy burned in
