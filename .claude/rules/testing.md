@@ -510,6 +510,45 @@ Enforced by `tests/unit/scripts/integ-fixture-removal-policy.test.ts`
 (classifier: `scripts/check-fixture-removal-policy.ts`); user-facing writeup in
 [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
+### The `/new-integ` scaffold's `aws-cdk-lib` floor may not fall behind the corpus (mandatory)
+
+The scaffold template in `.claude/skills/new-integ/SKILL.md` emits an
+`aws-cdk-lib` floor into every fixture `package.json` it creates. It was pinned
+at `^2.169.0` while dependabot moved individual fixtures forward around it, and
+the result was FOUR floors across 292 fixtures (`^2.169.0` ×172, `^2.172.0` ×91,
+`^2.176.0` ×15, `^2.257.0` ×6) — cleaned up in issue
+[#2838](https://github.com/go-to-k/cdkd/pull/2838), fenced by issue
+[#2839](https://github.com/go-to-k/cdkd/issues/2839).
+
+The rule is **template floor >= the LOWEST floor in the corpus**, and the
+non-obvious half is why it is not "all floors are equal". Dependabot bumps
+`aws-cdk-lib` **one directory at a time** (go-to-k/cdkd#2487 / #2488 / #2834 are
+each a single fixture), so the corpus is legitimately non-uniform between such
+merges and an equality fence would red-flag every one of those PRs — and a fence
+that fires on correct, routine, bot-authored changes gets disabled, not obeyed.
+So the subject is the GENERATOR: the corpus may spread, the template may not
+fall behind the back of it. The cost is deliberate and stated — a fixture
+hand-authored with an old floor lowers the minimum and the template still
+passes.
+
+Every unreadable input is a REFUSAL, never a skip: a template floor that fails
+to extract (which would make the checker permanently, silently green), a
+manifest that does not parse, a spec with no decidable floor (`*` / `latest` /
+`>=X` / an `||` union), and a malformed dependency bucket. Skipping any of them
+drops a fixture out of the minimum, which can only LOOSEN the verdict. Only
+`dependencies` and `devDependencies` are the population — a fixture is an app,
+not a library, so `peerDependencies` is deliberately not consulted.
+
+Enforced by `tests/unit/scripts/integ-cdk-lib-floor.test.ts` (classifier:
+`scripts/check-integ-cdk-lib-floor.ts`), which IS the CI enforcement: no
+`vp run` task and no `ci.yml` step, the shape
+`check-verification-depth-rule.ts` and `check-source-control-bytes.ts` use. Its
+probes build a **non-uniform** corpus on purpose — the real one is uniform
+today, so min-selection, dedup and ordering are unobservable through it, and a
+`sorted[0]` → last-element mutant stayed green until they existed (the
+"fixture pins the value under test" trap, one layer up from
+[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md)).
+
 ### A `local-*` fixture's Lambdas must declare the HOST architecture (mandatory)
 
 cdk-local pins `docker --platform` to each Lambda's declared `Architectures` —
