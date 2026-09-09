@@ -134,6 +134,33 @@ describe('the canonical secret-scan class', () => {
     });
   });
 
+  it('deletes the ENCLOSING marks, which render at zero advance width', () => {
+    // `\p{Me}` is the sibling of the `\p{Mn}` residual (issue #2889) and is
+    // CLOSED here rather than deferred with it, because #2889's cost argument
+    // -- deleting `\p{Mn}` would mangle Devanagari, Arabic, Hebrew and
+    // Vietnamese names -- does not transfer to about a dozen code points with
+    // no legitimate use in a resource name.
+    const secrets = new Map([[SECRET, EXPR]]);
+    for (const mark of ['\u20dd', '\u0488']) {
+      expect(/\p{Me}/u.test(mark)).toBe(true);
+      const key = `alias-${SECRET.slice(0, 5)}${mark}${SECRET.slice(5)}-suffix`;
+      expect(secretSafeKeyDisplay(key, secrets)).toEqual({
+        kind: 'masked',
+        text: 'alias-***-suffix',
+      });
+    }
+  });
+
+  it('a NONSPACING mark is the recorded residual, and stays one', () => {
+    // Pinned so the residual cannot be quietly closed OR quietly widen. If a
+    // future change deletes `\p{Mn}` too, this reds and the author has to
+    // reckon with issue #2889's cost argument rather than discover it in a
+    // bug report about mangled non-Latin names.
+    const secrets = new Map([[SECRET, EXPR]]);
+    const key = `alias-${SECRET.slice(0, 5)}\u09bc${SECRET.slice(5)}-suffix`;
+    expect(secretSafeKeyDisplay(key, secrets).kind).toBe('safe');
+  });
+
   it('does NOT delete an ordinary visible character', () => {
     // The floor for all three. A class that deleted everything would satisfy
     // every assertion above and destroy every name cdkd prints.

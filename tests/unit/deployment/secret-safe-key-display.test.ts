@@ -526,11 +526,41 @@ describe('secretSafeKeyDisplay', () => {
     expect(message).toContain('Output ApiGatewayEndpoint has an Export.Name');
   });
 
+  it('a whole-key force-mask needle differing only by an invisible is still masked', () => {
+    // The CANONICAL half of the output key's whole-value rule. With only the
+    // raw comparison the filter implemented half the rule its comment names,
+    // and a key differing from the needle by one invisible character printed
+    // RAW (measured `Output ab has an Export.Name ...`).
+    //
+    // Unreachable through the deploy engine -- its corpus is a superset of
+    // `exposure`, so containment catches this first -- and driven directly
+    // here, because a branch added to make a comment true and reachable by
+    // nothing is worse than the divergence it closed.
+    const sub = new Map([['ab', EXPR]]);
+    const message = secretBearingExportNameWarning('a\u200bb', 'x-ab-y', sub, new Map());
+    expect(message).toContain(`Output ${SECRET_MASK} has an Export.Name`);
+  });
+
   it('a WHOLE-KEY force-mask needle is still masked, at any length', () => {
     // The bound on the output key is whole-vs-embedded, not a flat floor: a
     // sub-floor value that IS the whole key is not a coincidence.
     const sub = new Map([['ab', EXPR]]);
     const message = secretBearingExportNameWarning('ab', 'x-ab-y', sub, sub);
     expect(message).toContain(`Output ${SECRET_MASK} has an Export.Name`);
+  });
+
+  it('a needle whose EDGE whitespace the haystack trims away is a RESIDUAL, not a match', () => {
+    // The rule the two-arm comment now states: the effective embedded floor is
+    // the rendered length AFTER the haystack's trim. A recorded value whose
+    // own leading space the trim removes matches neither arm however long it
+    // renders, and the display prints the secret minus that character.
+    //
+    // PINNED AS A RESIDUAL rather than left implicit: `origin/main` does the
+    // same, and two successive revisions of that comment stated the rule
+    // without the trim. If a future change closes this, the test reds and the
+    // comment gets corrected with it instead of drifting again.
+    const secret = ' a\u200bbcd';
+    const shown = secretSafeKeyDisplay(' abcd-x', new Map([[secret, EXPR]]));
+    expect(shown).toEqual({ kind: 'safe', text: 'abcd-x' });
   });
 });

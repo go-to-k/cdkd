@@ -271,13 +271,19 @@ const MIN_SECRET_NEEDLE = 4;
  *   variation selectors, the Hangul fillers and `U+034F` COMBINING GRAPHEME
  *   JOINER.
  *
- * NAMED RESIDUAL, because that last bullet is NOT "everything that renders as
- * nothing" and an earlier revision of this comment said it was. Nonspacing
- * marks (`\p{Mn}`) carry zero advance width, so a secret split by one renders
- * contiguous while this class keeps it -- measured with `U+09BC`, which
- * verdicts `safe` AND publishes the alias. It is not widened here: `\p{Mn}` is
- * the diacritics of Devanagari, Arabic, Hebrew and Vietnamese, so deleting it
- * would mangle legitimate names for every user. Tracked as issue
+ * - `\p{Me}` ENCLOSING marks. The same zero-advance-width shape as `\p{Mn}`
+ *   below, and INCLUDED rather than deferred because the cost argument that
+ *   defers `\p{Mn}` does not transfer: `\p{Me}` is about a dozen code points
+ *   with no legitimate use in a resource name.
+ *
+ * NAMED RESIDUAL, because `\p{Default_Ignorable_Code_Point}` is Unicode's
+ * INTENT-TO-BE-IGNORED property and NOT "everything that renders as nothing"
+ * -- an earlier revision of this comment claimed the latter and review refuted
+ * it. NONSPACING marks (`\p{Mn}`) carry zero advance width, so a secret split
+ * by one renders contiguous while this class keeps it: measured with `U+09BC`,
+ * which verdicts `safe` AND publishes the alias. Not widened here, because
+ * `\p{Mn}` is the diacritics of Devanagari, Arabic, Hebrew and Vietnamese and
+ * deleting it would mangle legitimate names for every user. Tracked as issue
  * [#2889](https://github.com/go-to-k/cdkd/issues/2889), which also carries the
  * homoglyph question. `origin/main` behaves identically, so this is a recorded
  * residual rather than something this change introduced.
@@ -304,7 +310,7 @@ const MIN_SECRET_NEEDLE = 4;
  * does not cover reds -- the failure mode a hand list has and a derivation
  * does not.
  */
-const SECRET_SCAN_INVISIBLES = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+const SECRET_SCAN_INVISIBLES = /[\p{Cc}\p{Cf}\p{Me}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
  * The one string space in which this module tests for, masks, and prints a
@@ -408,9 +414,17 @@ function secretsPresentIn(
   //   a key that carries the invisible characters ITSELF -- the raw forms
   //   match there even when the canonical needle is too short.
   //
-  // THE EFFECTIVE RULE FOR AN EMBEDDED MATCH IS THE RENDERED LENGTH, and this
-  // is stated rather than implied because an earlier revision of this comment
-  // claimed the two arms COVER the shortening case and measurement refuted it:
+  // THE EFFECTIVE RULE FOR AN EMBEDDED MATCH IS THE RENDERED LENGTH AFTER THE
+  // HAYSTACK'S TRIM. The trim is part of the rule, not a detail: a recorded
+  // value whose own EDGE whitespace the haystack trims away matches neither
+  // arm however long it renders -- measured, a recorded `' a<ZWSP>bcd'`
+  // against the key `' abcd-x'` returns `safe` and prints the secret minus one
+  // character. `origin/main` does the same, so it is a residual rather than a
+  // regression, and it is written here because two successive revisions of
+  // this comment stated the rule WITHOUT the trim and review refuted both.
+  //
+  // The rule is spelled out at all because an earlier revision claimed the two
+  // arms COVER the shortening case, which measurement also refuted:
   // a recorded `a<U+200E>b<U+200E>c` renders as `abc`, and a key spelling the
   // VISIBLE form (`x-abc-y`, no invisibles of its own) matches neither arm --
   // the canonical needle is three characters and the raw plaintext is not in
@@ -421,14 +435,21 @@ function secretsPresentIn(
   const haystack = canonicalForSecretScan(text);
   const exposure: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of secrets) {
-    // No empty-needle guard HERE. It was written and measured dead: the
-    // embedded arm is bounded by `needle.length >= MIN_SECRET_NEEDLE`, so an
-    // empty needle never reaches `includes`, and the whole-value arms are
-    // equality comparisons an empty needle cannot win against a name. The LIVE
-    // guard is in `canonicalNeedles`, which keeps an empty needle out of
-    // `maskEveryOccurrence` -- `''.split()` would interleave the mask between
-    // every character. A guard in both places reads as defence in depth and is
-    // one dead branch plus one test asserting a mechanism that cannot occur.
+    // NO EMPTY-NEEDLE GUARD HERE, and the reason is narrower than an earlier
+    // revision of this comment claimed. It said an empty needle "cannot win
+    // against a name"; review measured that it CAN -- `haystack === needle`
+    // holds when BOTH are empty, i.e. against a name that canonicalises away
+    // entirely. Removing the guard therefore does change behaviour for that
+    // degenerate input: `safe` becomes `withheld`, and PUBLISHED becomes
+    // REFUSED. That direction is fail-closed over a name with no visible
+    // characters at all, so the guard stays out.
+    //
+    // What an empty needle cannot do is reach `includes`: the embedded arm is
+    // bounded by `needle.length >= MIN_SECRET_NEEDLE`.
+    //
+    // The guard that matters is in `canonicalNeedles`, keeping an empty needle
+    // out of `maskEveryOccurrence` -- `''.split()` interleaves the mask
+    // between every character of the key.
     const needle = canonicalNeedle(plaintext);
     const canonicalHit =
       haystack === needle || (needle.length >= MIN_SECRET_NEEDLE && haystack.includes(needle));
@@ -571,7 +592,17 @@ export function secretBearingExportNameWarning(
   // masked here, which is the identical tradeoff containment already makes.
   const ownerForceMask: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of exposure) {
-    if (plaintext === outputKey || plaintext.length >= MIN_SECRET_NEEDLE) {
+    // The CANONICAL whole-value comparison sits beside the raw one, or the
+    // filter implements half the rule the sentence above names and a key
+    // differing from its needle by one invisible character prints raw.
+    // Unreachable through the engine -- its corpus is a superset of
+    // `exposure`, so containment catches that case first -- and included so
+    // the code and the comment say the same thing.
+    if (
+      plaintext === outputKey ||
+      canonicalNeedle(plaintext) === canonicalForSecretScan(outputKey) ||
+      plaintext.length >= MIN_SECRET_NEEDLE
+    ) {
       ownerForceMask.set(plaintext, expression);
     }
   }
