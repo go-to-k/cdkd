@@ -557,8 +557,9 @@ describe('secretSafeKeyDisplay', () => {
     //
     // PINNED AS A RESIDUAL rather than left implicit: `origin/main` does the
     // same, and two successive revisions of that comment stated the rule
-    // without the trim. If a future change closes this, the test reds and the
-    // comment gets corrected with it instead of drifting again.
+    // without the trim. Tracked as issue #2890 -- a pinned residual with no
+    // issue is one that never closes. If a future change closes this, the test
+    // reds and the comment gets corrected with it instead of drifting again.
     const secret = ' a\u200bbcd';
     const shown = secretSafeKeyDisplay(' abcd-x', new Map([[secret, EXPR]]));
     expect(shown).toEqual({ kind: 'safe', text: 'abcd-x' });

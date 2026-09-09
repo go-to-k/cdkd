@@ -420,8 +420,13 @@ function secretsPresentIn(
   // arm however long it renders -- measured, a recorded `' a<ZWSP>bcd'`
   // against the key `' abcd-x'` returns `safe` and prints the secret minus one
   // character. `origin/main` does the same, so it is a residual rather than a
-  // regression, and it is written here because two successive revisions of
-  // this comment stated the rule WITHOUT the trim and review refuted both.
+  // regression -- tracked as issue
+  // [#2890](https://github.com/go-to-k/cdkd/issues/2890) -- and it is written
+  // here because two successive revisions of this comment stated the rule
+  // WITHOUT the trim and review refuted both. Its scope is narrower than the
+  // sentence alone suggests: only `\p{Zs}` edges qualify, since a tab or
+  // newline at a needle's edge is `\p{Cc}`, which this class DELETES rather
+  // than trims.
   //
   // The rule is spelled out at all because an earlier revision claimed the two
   // arms COVER the shortening case, which measurement also refuted:
@@ -435,14 +440,21 @@ function secretsPresentIn(
   const haystack = canonicalForSecretScan(text);
   const exposure: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of secrets) {
-    // NO EMPTY-NEEDLE GUARD HERE, and the reason is narrower than an earlier
-    // revision of this comment claimed. It said an empty needle "cannot win
-    // against a name"; review measured that it CAN -- `haystack === needle`
-    // holds when BOTH are empty, i.e. against a name that canonicalises away
-    // entirely. Removing the guard therefore does change behaviour for that
-    // degenerate input: `safe` becomes `withheld`, and PUBLISHED becomes
-    // REFUSED. That direction is fail-closed over a name with no visible
-    // characters at all, so the guard stays out.
+    // NO EMPTY-NEEDLE GUARD HERE, and the reason has now been wrong twice, so
+    // it is stated per-CALLER rather than as a property of this function.
+    // `haystack === needle` DOES hold when both are empty -- against a name
+    // that canonicalises away entirely -- so this scan returns the entry.
+    // What each caller then does with it differs:
+    //
+    // - `exportNameSecretExposure` -> the deploy REFUSES the alias where it
+    //   previously published it. Fail-closed, over a name with no visible
+    //   characters at all, so the guard stays out.
+    // - `secretSafeKeyDisplay` -> unchanged, `safe`. Its own needle loop and
+    //   `canonicalNeedles` both drop the empty needle, so `mask.size === 0`
+    //   short-circuits before any `withheld` arm is reachable. A previous
+    //   revision of this comment claimed `safe` became `withheld` here; it
+    //   was reasoning at THIS function's layer about a result produced two
+    //   layers up.
     //
     // What an empty needle cannot do is reach `includes`: the embedded arm is
     // bounded by `needle.length >= MIN_SECRET_NEEDLE`.
@@ -595,9 +607,11 @@ export function secretBearingExportNameWarning(
     // The CANONICAL whole-value comparison sits beside the raw one, or the
     // filter implements half the rule the sentence above names and a key
     // differing from its needle by one invisible character prints raw.
-    // Unreachable through the engine -- its corpus is a superset of
-    // `exposure`, so containment catches that case first -- and included so
-    // the code and the comment say the same thing.
+    // Hard to reach through the engine, whose corpus is USUALLY a superset of
+    // `exposure` so containment catches the case first -- but not provably so:
+    // `recordedSecretValues` is optional on the context, and issue #2563 loses
+    // a `nameSecrets` entry a still-pending `Fn::Join` part records. Driven
+    // directly by a test rather than left to that argument.
     if (
       plaintext === outputKey ||
       canonicalNeedle(plaintext) === canonicalForSecretScan(outputKey) ||
