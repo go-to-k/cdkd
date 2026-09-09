@@ -61,7 +61,7 @@ context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-r
 cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression sweep; cross-region bucket round-trip ok, temp bucket removed
 cross-stack-cfn-fallback	2026-08-12T10:36:46Z	PASS	170	verify.sh	re-run post-rebase + review fixes (typed miss + memoized lookups); clean
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
-cross-stack-secret-import	2026-09-09T14:27:38Z	PASS	345	verify.sh	issue 2667 lane: new step 11c exercised the exports-index repair live -- --dry-run --fail exited 1 on the index divergence alone (producer state.json already clean), the real run converged the owned entry to state.outputs with the CONSUMER-owned entry and the key set unchanged, and a second run converged nothing. 80 assertions, 3 stacks destroyed, 0 errors, 0 orphans, 0 surviving state object versions
+cross-stack-secret-import	2026-09-09T23:51:27Z	PASS	331	verify.sh	rc ok, 0 errors, 0 orphans, 0 surviving versions
 custom-resource-getatt-data	2026-09-02T17:40:08Z	PASS	150	verify.sh	issue 2274 NoEcho mask channel; new NoEcho arm, 10 del 0 err 0 orph
 custom-resource-provider	2026-09-05T23:03:46Z	PASS	750	verify.sh	PR2662 gate run; skip-arm then clean re-destroy 26 deleted 0 errors, 0 orphans
 data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
@@ -78,7 +78,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-05T22:48:21Z	PASS	94	verify.sh	PR2662 gate run; destroy 3 deleted 0 errors, 0 orphans
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-09-05T14:04:48Z	PASS	75	verify.sh	rc 0, real deploy+destroy 2 deleted 0 errors, 0 ECR orphans, state gone
-drift-revert	2026-09-03T18:10:00Z	PASS	225	verify.sh	issue #2482 drift-side sweep (survivor secret-by-spelling arms removed; look-alike survivors kept); 13 deleted 0 errors 0 orphans
+drift-revert	2026-09-09T23:55:02Z	PASS	159	verify.sh	rc ok, 13 deleted 0 errors, 0 orphans
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
 drift-revert-vpc	2026-09-09T20:48:16Z	PASS	299	verify.sh	broad gate for #2878 (resolver comment); 21 deleted, 0 errors, 0 orphans
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
