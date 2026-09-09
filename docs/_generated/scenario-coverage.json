@@ -1145,6 +1145,11 @@
       ]
     },
     {
+      "name": "import-secret-observed",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-value-strong-ref",
       "annotated": true,
       "scenarios": [
@@ -2848,6 +2853,7 @@
     "iam-managed-policy",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
+    "import-secret-observed",
     "inplace-attr-propagation",
     "kinesis-esm-filter",
     "kinesis-stream-mode-switch",

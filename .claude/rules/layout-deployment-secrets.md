@@ -378,13 +378,58 @@ Index of every area: [code-layout.md](code-layout.md).
     the map is empty here BY CONSTRUCTION, the DERIVED NEEDLES
     `deriveReadbackNeedles` learns from the positions that pass certified —
     which only runs on an empty map, so this site is the one where they apply.
+    A SEVENTH is `cdkd import`'s OBSERVED capture
+    (`captureObservedForImportedResources`, issue #2828) — the same shape one
+    command over, and missed for the same reason: the sweep that found the
+    sixth searched for CALLERS of this module, and import already had one in
+    `resolveImportedProperties`, so the file read as covered while its second
+    writer persisted the decrypted readback verbatim. Same empty map, same
+    `STATE_SOURCED_READBACK_RULES`, positioned against the record's own
+    `properties` at both call sites (the root walk and the recursive
+    `--migrate-from-cloudformation` child walk). An earlier revision of this paragraph
+    asserted the properties were "already redacted", and review measured two
+    ways for that to be false. `resolveImportedProperties` now
+    returns the logical ids for which a baseline must NOT be captured and the
+    capture SKIPS them, refusing toward `observedProperties: undefined` — the
+    same FIELD a provider with no `readCurrentState` leaves empty, but NOT the
+    same situation: there `properties` are the resolved template, while on the
+    throw arm they are RAW intrinsics, which is why a refused resource
+    phantom-drifts until its next deploy.
+    The predicate is deliberately COARSE, and every attempt to sharpen it has
+    shipped a leak. TWO arms: the resolve THREW (refuse, FULL STOP -- no
+    inspection of the bag), or the resolve SUCCEEDED and LOST a `{{resolve:`
+    opener the raw template spelled. Two successively cleverer throw-arm tests
+    were written, reviewed and MEASURED LEAKING -- admitting when the openers
+    are already COMPLETE tokens let a token wrapped in a single-element
+    `Fn::Join` / `Fn::Sub` / `Fn::If` through; admitting when the raw bag
+    carries NO opener let a reference sourced from OUTSIDE the bag through --
+    which is why the arm now inspects nothing.
+    **NOTHING IS CLAIMED HERE ABOUT WHAT THIS CLOSES.** Successive review rounds
+    falsified, in turn, a closure claim, a closed-set list and a "reduces"
+    claim; the mechanism survived every round of measurement and the sentences
+    about it did not. State only the DANGER direction, which can become false
+    only once the residue is gone: **plaintext can still be persisted by this
+    capture**, by a dropped or traded reference
+    ([#2850](https://github.com/go-to-k/cdkd/issues/2850)), a parameter bound to
+    a placeholder `Default`
+    ([#2854](https://github.com/go-to-k/cdkd/issues/2854)), a position the walk
+    cannot pair ([#2852](https://github.com/go-to-k/cdkd/issues/2852), which
+    carries the measured probe table), or a secret with no counterpart in the
+    source at all ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). The
+    list is not proven exhaustive, for a mechanical reason: the only evidence is
+    a POST-HOC comparison of the persisted bag against the readback, so whatever
+    that comparison cannot see is trusted. The instrument is
+    `tests/unit/cli/import-observed-baseline-refusal-matrix.test.ts`, which
+    asserts the SAFETY property per row alongside the verdict and replays each
+    EARNED refusal to prove it would really have leaked.
   - **`refuseUncertifiedReadbackPositions`** closes the MIXED-leaf row
     (`postgres://u:{{resolve:...}}@h`, an `Fn::Join` around
     `secretValueFromJson`) on every empty-map readback path — the path pass
     certifies only WHOLE-TOKEN source leaves, and a mixed leaf fell to a value
     scan with no needles. It lives inside `redactSecretsForState`, so every
-    caller inherits it with no call-site change: `cdkd state refresh-observed`
-    and — why it belongs in the module — a plain `cdkd deploy`, whose
+    caller inherits it with no call-site change: `cdkd state refresh-observed`,
+    `cdkd import`'s observed capture (issue #2828), and — why it belongs in the
+    module — a plain `cdkd deploy`, whose
     `drainObservedCaptures` baseline reaches the persist choke point with the
     same empty-map / state-source configuration. `cdkd scrub` is NOT an
     inheritor (its observed walk passes

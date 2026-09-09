@@ -5606,6 +5606,7 @@
         "getstackoutput-crossregion",
         "import-attributes",
         "import-nested-stack",
+        "import-secret-observed",
         "import-value-strong-ref",
         "importvalue-chain",
         "infra-security",
@@ -5718,6 +5719,10 @@
           "literal"
         ],
         "import-nested-stack": [
+          "l2",
+          "literal"
+        ],
+        "import-secret-observed": [
           "l2",
           "literal"
         ],
@@ -5885,6 +5890,7 @@
         "event-driven",
         "full-stack-demo",
         "iam-access-key",
+        "import-secret-observed",
         "lambda-esm-self-managed-kafka",
         "local-run-task-from-state",
         "replacement-immutable-name",
@@ -5909,6 +5915,10 @@
         ],
         "iam-access-key": [
           "l2"
+        ],
+        "import-secret-observed": [
+          "l2",
+          "literal"
         ],
         "lambda-esm-self-managed-kafka": [
           "l2",
