@@ -2040,7 +2040,13 @@ This dumps every unaccounted property per type into `tests/fixtures/cfn-schemas/
 
 AWS adds properties to existing resource types fairly regularly — measured at roughly **3 writable properties per month** across the whole Tier 1 surface. Until a property is in the fixture, cdkd does not merely leave it unwired: it **silently drops it**, because the SDK-vs-Cloud-Control routing table is derived offline from these fixtures and a property absent from them produces no `silentDrop` entry to auto-route on. That is the issue [#614](https://github.com/go-to-k/cdkd/issues/614) failure class arriving through the one input the #614 machinery cannot see (issue [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
 
-Two mechanisms cover it.
+Two mechanisms cover it. The operator's side of the first — what arrives, what
+to do with each class, and what to do when NOTHING arrives because the job
+failed or never fired — is the
+[CFn schema refresh runbook](schema-refresh-runbook.md). That page is `unlisted`
+and is linked from the pull requests the job opens, so this is the pointer that
+still works when there is no pull request to read.
+
 
 **Daily, automatically.** `.github/workflows/cfn-schema-refresh.yml` runs `vp run gen:cfn-schemas-from-zip` every day and, on drift, opens a PR carrying the mechanical regeneration. A day with no drift opens nothing — the job stops at the drift check — and the open-PR guard bounds concurrency at one, so the cadence costs a short run per quiet day rather than a review cycle. It reads AWS's **public** schema bundle, so no AWS credentials and no CI IAM role are involved — the prerequisite that kept this manual. Only fixtures that actually changed are rewritten (`generatedAt`-only churn is excluded from the comparison), so the PR diff is the real drift.
 

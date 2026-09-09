@@ -31,6 +31,12 @@ on:
   # untouched and asks a human to fix the label or the markers, and this is how
   # the sync is retried afterwards without waiting for the next coverage-map
   # change — which, on a quiet week, may not come.
+  #
+  # How and when to use it, and what it will NOT fix:
+  # https://github.com/go-to-k/cdkd/blob/main/docs/schema-refresh-runbook.md
+  # (linked HERE because this file is what a person opens when the job
+  # misbehaves — and the runbook's only other inbound links are written by a
+  # pull request that, in exactly that case, does not exist)
   workflow_dispatch:
 
 permissions: {}

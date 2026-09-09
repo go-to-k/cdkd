@@ -88,6 +88,9 @@ on:
   # property mid-cycle, the recovery path if GitHub suspends the schedule on an
   # inactive repo, and the only way to exercise this job before its first
   # scheduled fire.
+  #
+  # How and when to use it, and what it will NOT fix:
+  # https://github.com/go-to-k/cdkd/blob/main/docs/schema-refresh-runbook.md
   workflow_dispatch:
 
 # Deny by default, grant per job — the house style set by release.yml.
