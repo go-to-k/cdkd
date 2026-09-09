@@ -161,19 +161,33 @@ describe('secretSafeKeyDisplay', () => {
   });
 
   it('the raw-key check is kept as a FALLBACK, not replaced', () => {
-    // The other direction: a secret the RAW key exposes must still trip even
-    // when sanitising breaks it up. Here the secret is contiguous in the raw
-    // key and `U+2028` sits INSIDE it, so `displaySafe` replaces that with a
-    // space and the sanitised text no longer contains it — only the raw check
-    // can see it. Without the fallback this would report `safe`.
-    const raw = `alias-${SECRET}-suffix`;
-    const secretWithSep = `${SECRET.slice(0, 5)}\u2028${SECRET.slice(5)}`;
-    const shown = secretSafeKeyDisplay(raw, new Map([[SECRET, EXPR]]));
+    // THE ONLY SHAPE THAT REACHES THE RAW ARM, and the first cut of this test
+    // reached it in neither of its two cases (issue #2667 review): a
+    // contiguous secret fires the SANITISED arm too, so `masked` was the right
+    // answer for the wrong reason, and a `U+2028` inside the secret made BOTH
+    // arms miss, so `safe` passed on a needle that never matched anything.
+    //
+    // The raw arm fires only when the RECORDED PLAINTEXT itself carries a
+    // stripped character: it then survives in the raw key and is destroyed in
+    // the sanitised one. Measured — `shown-arm=false raw-arm=true`.
+    const secretWithCtl = `secret-value\u0007with-ctl`;
+    const secrets = new Map([[secretWithCtl, EXPR]]);
+    const shown = secretSafeKeyDisplay(`alias-${secretWithCtl}-suffix`, secrets);
+    // WITHHELD, not `masked`: masking runs over `shown`, which no longer
+    // contains the secret, so it changes nothing and the omit-if-unchanged rule
+    // fires. That is fail-closed and is the point — the fallback's job is to
+    // stop this returning `safe`, not to produce a printable name.
+    expect(shown).toEqual({ kind: 'withheld' });
+    expect(JSON.stringify(shown)).not.toContain(secretWithCtl);
+  });
+
+  it('a contiguous secret fires the SANITISED arm, not the fallback', () => {
+    // The control for the case above: pinned separately so a future edit
+    // cannot make the fallback test pass through this path instead.
+    const secrets = new Map([[SECRET, EXPR]]);
+    const shown = secretSafeKeyDisplay(`alias-${SECRET}-suffix`, secrets);
     expect(shown.kind).toBe('masked');
     expect(JSON.stringify(shown)).not.toContain(SECRET);
-    // And the contrived inverse still resolves to a non-leaking answer.
-    const inverse = secretSafeKeyDisplay(`alias-${secretWithSep}-suffix`, new Map([[SECRET, EXPR]]));
-    expect(JSON.stringify(inverse)).not.toContain(SECRET);
   });
 
   it('WITHHELD: a secret whose masking leaves the text unchanged yields no text', () => {
