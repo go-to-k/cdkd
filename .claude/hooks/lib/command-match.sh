@@ -4213,8 +4213,9 @@ gate_refuse_unevaluable_marker() {
 # ask about the library's constants only, which is the case `broad-process-kill-gate`
 # needed. The FENCE's population is those 31, not the 26 -- deriving it from
 # "reads a constant" made a hook that stops reading them leave the class
-# silently, and this file's own class fence measured that at
-# `total: 108  pass: 108  fail: 0` with `branch-gate` and `ci-green-gate` out.
+# silently -- the fence that measured that is the one split out to
+# go-to-k/cdkd#2826, so the finding survives here as the reason for the
+# population while the measurement lives with the artifact that produced it.
 #
 # Among the unguarded were `branch-gate` (what stops a commit on `main`) and
 # `ci-green-gate` (what stops a merge over red CI) -- both Tier 1 in
@@ -4226,14 +4227,21 @@ gate_refuse_unevaluable_marker() {
 # require the hook to answer per its half of the blocking / non-blocking
 # partition, naming the constant either way -- and it was split out into
 # go-to-k/cdkd#2826 after four review rounds each found the previous round's
-# fix certifying a green tally over a live fail-open. So the call below is held
-# in place by each hook's own suite and by review, not by anything that scans
-# the class: a hook added next month can read a constant with no
-# `gate_require_const` and nothing will say so. Its
-# population is a NAMED baseline checked as a partition, so a hook leaving the
-# class fails by name rather than shrinking the tally. 145/145 here;
-# `111 total / 37 pass / 74 fail` against a materialised `origin/main` hook
-# directory, where all 40 constant reads fail.
+# fix certifying a green tally over a live fail-open.
+#
+# WHAT HOLDS THE CALL IN PLACE MEANWHILE IS THREE SUITES, not thirty-one.
+# Measured by deleting the call from each hook and re-running that hook's own
+# suite: `main-tree-branch-gate`, `restore-backup` and `main-tree-edit-gate`
+# redden; the other 27 report an identical tally, and
+# `post-merge-sync-reminder` has no suite at all. What the rest rest on is the
+# `${BASE:-}` defaults keeping the library loadable so the call is reached, and
+# review. A hook added next month can read a constant with no
+# `gate_require_const` and nothing will say so.
+#
+# No tally from that fence is quoted here. Two revisions of this paragraph
+# carried its numbers as though they described something in the tree, twelve
+# lines after saying there is no fence -- which is the "state a measurement or
+# state nothing" rule broken in the direction that reads as coverage.
 
 # The library's OWN constants: every name this file INTERPOLATES anywhere
 # outside a comment -- in a column-0 assignment or inside a function body -- and
@@ -4282,13 +4290,18 @@ gate_refuse_unevaluable_marker() {
 #     `GATE_RE_GIT_COMMIT` passes it, and the gate stops firing on exactly the
 #     spelling this repo's own instructions prescribe.
 #
-# The abort is why the 43 load-time interpolations above -- across 30 column-0
-# assignment LINES -- read `${BASE:-}`
-# rather than `${BASE}`: without a default there is nothing left to refuse WITH,
-# because the shell is gone before this function is even defined. All 227
-# constant values are byte-identical under a complete library -- verified by
-# diffing every one before and after that change -- so the default costs
-# nothing and buys the loadable-but-degraded state this check can then see.
+# The abort is why the load-time interpolations above read `${BASE:-}` rather
+# than `${BASE}`: without a default there is nothing left to refuse WITH,
+# because the shell is gone before this function is even defined. EVERY
+# load-time constant value is byte-identical under a complete library --
+# verified by dumping and diffing all of them before and after that change --
+# so the default costs nothing and buys the loadable-but-degraded state this
+# check can then see.
+#
+# No count of the interpolations is given. Two revisions carried one ("43
+# across 30 lines"), and review measured 42 across 29 -- a figure nothing keeps
+# true, restated in a file whose own rule is that a list is not restated as a
+# count. `grep -cE '^[A-Za-z_][A-Za-z0-9_]*=.*:-\}'` answers it.
 #
 # **The non-empty-at-load filter is what keeps this list derivable rather than
 # hand-curated.** Seven of the names this file interpolates are mutable SCRATCH
@@ -4362,18 +4375,29 @@ GATE_LIB_BASE_CONSTS="_GATE_DQ_CHANGED _GATE_GIT_GLOBAL_VALUE _GATE_WORD _GATE_W
 # KNOWN BOUND, stated because it is narrow rather than absent: the check asks
 # what the NAME holds, so an EXPORTED variable of the same name satisfies it.
 # Measured -- `GATE_FLAGS=` deleted from the library and `GATE_FLAGS=ZZZ` in the
-# hook's environment takes `branch-gate` to rc=0 on a commit to `main`. It needs
-# a truncated library AND a colliding exported name, and the hooks run in the
-# session's own environment rather than an attacker's, so it is a residue and
-# not a hole -- but "the library defines it" and "the name is non-empty here"
-# are not the same question, and only the second is asked.
+# hook's environment takes `branch-gate` to rc=0 on a commit to `main`.
+#
+# THE BLAST RADIUS IS PER-LIST, NOT PER-CONSTANT, and an earlier wording of this
+# paragraph implied otherwise. `GATE_LIB_BASE_CONSTS` is itself read this way,
+# so with ITS assignment line absent an exported
+# `GATE_LIB_BASE_CONSTS=GATE_FLAGS` satisfies the emptiness guard and silently
+# disables the base half entirely: measured, `main-tree-edit-gate` with
+# `GATE_SEP_AMP` also stripped went rc=2 to rc=0 on this gate's founding
+# payload. One variable buys 37 constants, not one. The control holds -- with
+# the assignment intact the library overwrites the export and rc stays 2 -- so
+# it is inside the bound, but the bound is wider than one name.
+#
+# It needs a truncated library AND a colliding exported name, and the hooks run
+# in the session's own environment rather than an attacker's, so it is a residue
+# and not a hole -- but "the library defines it" and "the name is non-empty
+# here" are not the same question, and only the second is asked.
 gate_require_const() {
   gate_missing_const "$@" && return 0
   {
     echo "Blocked: .claude/hooks/lib/command-match.sh does not define: $GATE_MISSING_CONSTS"
     echo "so this gate cannot recognise the command and must not wave it through."
-    echo "The library lags the hooks that read it -- restore or finish it; do not"
-    echo "work around the gate."
+    echo "The library lags the hooks that read it. Do not work around the gate;"
+    echo "the route that still works is below."
     echo
     # THE REMEDIATION HAS TO NAME A ROUTE THAT STILL WORKS. In this state the
     # gates on the shared matcher refuse every Bash call -- measured, 27 of the
@@ -4505,8 +4529,15 @@ gate_missing_const() {
   # nothing executes), but a guard that answers differently per shell is the
   # class this helper exists to close, so it runs under C, where the range
   # means bytes. `local` keeps it off every caller.
+  # ONE line, not two. An earlier revision set `LC_COLLATE=C` beside this, and
+  # review measured the pair mutually masking: `LC_ALL` always outranks
+  # `LC_COLLATE`, so with either line present the other is unobservable and no
+  # case can distinguish them -- deleting either ALONE left the suite green in
+  # seven of eight environment x shell cells. A guard no test can tell apart
+  # from its absence is the defect this file has spent the PR closing, so the
+  # redundant half is gone and the survivor is pinned by a case that EXPORTS a
+  # UTF-8 locale rather than inheriting one.
   local LC_ALL=C
-  local LC_COLLATE=C
 
   # An empty base list means this file was truncated between the declaration
   # above and here, so the base half of the check would pass vacuously.

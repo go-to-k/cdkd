@@ -748,7 +748,7 @@ run_lagging 2 "Blocked by main-tree-edit-gate" \
 # measured -- seven bases each taking `cd <main tree> && echo hi > <tracked>`
 # from rc 2 to rc 0. Review measured the gap the obvious way: DELETE the
 # `gate_require_const` line from this hook and the suite stayed at
-# `passed=144 failed=0`. Two of the thirty hooks that call it catch that
+# `passed=144 failed=0`. Two of the thirty-one hooks that call it catch that
 # deletion in their own suite (`main-tree-branch-gate`, `restore-backup`); this
 # makes three, and the general answer is the class fence in go-to-k/cdkd#2826.
 #
@@ -807,7 +807,13 @@ else
     fail=$((fail + 1)); printf 'FAIL Edit of a tracked main-tree file must still be BLOCKED with a constant missing\n'
   fi
 
-  # THE REFUSAL TEXT, one needle per SENTENCE. Review measured that deleting the
+  # THE REFUSAL TEXT. Seven needles over fourteen lines, and the coverage is
+  # stated exactly because an earlier wording claimed "one per SENTENCE" and
+  # review measured 5 of 7 -- deleting line 2, 3, 4, 8, 10 or 13 leaves this
+  # suite AND main-tree-branch-gate green. What IS fully pinned is the half an
+  # agent ACTS on: which tools survive, where that route holds and does not,
+  # and who repairs it in the main tree. Whole-message deletion is caught by
+  # the population guard below. Review measured that deleting the
   # whole "how do I repair this" paragraph from `gate_require_const` left every
   # suite in the repo green -- this file, `main-tree-branch-gate`,
   # `restore-backup`, `branch-gate` -- while the sibling refusal fifteen lines

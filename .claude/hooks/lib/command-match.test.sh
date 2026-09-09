@@ -2521,6 +2521,67 @@ __gmc '(empty)(not-a-variable-name)' 'a space-only name reports as (empty)' ' '
 # so the cases above are not passing because everything is reported.
 __gmc '' 'a defined constant is not reported' 'GATE_FLAGS'
 
+# THE FOUR CONTRACTS THE HELPER STATES AND NOTHING ASSERTED. Review round 22
+# broke each in turn and the whole repo stayed green -- the same
+# asserted-by-CONSTRUCTION shape this file has been closing all PR, one layer
+# in. Each case below was verified by making the mutation it names.
+
+# 1. The truncation guard. `[ -z "${GATE_LIB_BASE_CONSTS:-}" ]` -> `if false`
+#    left 650/0: with the list empty the shipped code returns 1 naming
+#    GATE_LIB_BASE_CONSTS, the mutant returns 0 reporting NOTHING -- the "base
+#    half passes vacuously" its own comment names.
+__gmc_saved_base="$GATE_LIB_BASE_CONSTS"
+GATE_LIB_BASE_CONSTS=""
+__gmc 'GATE_LIB_BASE_CONSTS' 'an empty base list is itself reported, not silently skipped' 'GATE_FLAGS'
+GATE_LIB_BASE_CONSTS="$__gmc_saved_base"
+
+# 2. NON-EMPTY rather than merely SET. `${!n:-}` -> `${!n+x}` left everything
+#    green, and this PR's own `${BASE:-}` change is what produces the state:
+#    with `GATE_FLAGS=` gone, `GATE_GH_C="${GATE_FLAGS:-}"` is set-but-EMPTY,
+#    and an empty ERE matches everything -- the gate fires on every command
+#    instead of refusing.
+__gmc_probe_empty=""
+__gmc '__gmc_probe_empty' 'a name that is SET but empty is reported, not accepted' '__gmc_probe_empty'
+
+# 3. Plain duplicate. The two cases above exercise the label COLLISION; the
+#    ordinary "same name twice" path was untested, and breaking the membership
+#    test left it green.
+__gmc 'GATE_NOPE' 'the same missing name twice is reported once' 'GATE_NOPE' 'GATE_NOPE'
+
+# 4. `local LC_ALL=C`, the helper's only shell-divergence guard: the shape test
+#    is a `case` glob and `[!A-Za-z0-9_]` is a RANGE, so what falls inside it is
+#    locale-dependent -- under a UTF-8 locale bash 3.2.57 ACCEPTS an accented
+#    name as an identifier while 5.3.9 rejects it.
+#
+#    THE CASE ESTABLISHES THE LOCALE, it does not inherit one, and that is the
+#    correction review round 22 forced. The first version simply called the
+#    helper: measured under the ambient `LANG=en_US.UTF-8` that `run-tests.sh`
+#    and CI actually pass down, deleting the guard left the suite GREEN -- the
+#    case reddened in 1 of 8 environment x shell cells and none that the runner
+#    produces. Exporting `LC_ALL` for the call is what makes the guard
+#    observable, because that is the variable it shadows.
+#
+#    The POSITIVE CONTROL is not optional: on a box with no UTF-8 locale the
+#    export is inert and this case would pass for the wrong reason forever, the
+#    `feedback_lint_must_prove_it_sees_input` shape. If none is available the
+#    case FAILS and says so, rather than going quiet.
+#
+#    The name is built with `printf` rather than written as a literal so
+#    `check-pr-non-english-text.ts` stays quiet.
+__gmc_utf8=""
+for __l in en_US.UTF-8 C.UTF-8 en_GB.UTF-8 UTF-8; do
+  if [ "$(LC_ALL="$__l" locale charmap 2>/dev/null)" = "UTF-8" ]; then __gmc_utf8="$__l"; break; fi
+done
+if [ -z "$__gmc_utf8" ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL no UTF-8 locale available, so the LC_ALL guard case cannot discriminate -- it would pass whether or not the guard exists\n"
+else
+  pass=$((pass + 1)); printf 'ok   a UTF-8 locale (%s) is available, so the next case can discriminate\n' "$__gmc_utf8"
+  __gmc_accent="$(printf 'GATE_\303\251BAD')"
+  LC_ALL="$__gmc_utf8" __gmc "$__gmc_accent(not-a-variable-name)" \
+    'an accented name is rejected under a UTF-8 locale, on either shell' "$__gmc_accent"
+fi
+
 # A FLOOR ON THIS BLOCK ALONE, and the end marker is taken HERE, before the
 # shape cases below. `CASE_FLOOR` is evaluated in the middle of the file,
 # upstream of this block, so a block that shrinks below it is invisible -- which
@@ -2537,9 +2598,9 @@ __gmc '' 'a defined constant is not reported' 'GATE_FLAGS'
 # forces whoever adds a case to bump the count with it, which is the only
 # spelling that cannot drift.
 __gmc_count=$((pass + fail - __gmc_ran))
-if [ "$__gmc_count" -ne 10 ]; then
+if [ "$__gmc_count" -ne 15 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_missing_const block ran $__gmc_count cases, expected exactly 10 -- a case vanished, or one was added without bumping the count\n"
+  fail_log="${fail_log}FAIL gate_missing_const block ran $__gmc_count cases, expected exactly 15 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_missing_const block ran all %s cases\n' "$__gmc_count"
 fi
