@@ -210,6 +210,10 @@ describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
     // The regression this pins: it used to return refusals:[] AND violations:[]
     // here, i.e. a fully clean report over a corpus it never read.
     expect(report.violations.join('\n')).toContain('the corpus was not read');
+    // ...and it must name the root ACTUALLY checked. A hardcoded
+    // `tests/integration` label sent the reader to a directory never read.
+    expect(report.violations.join('\n')).toContain(empty);
+    expect(report.violations.join('\n')).not.toContain(INTEG_ROOT_REL);
   });
 
   it('reports a violation when manifests exist but none declares a floor', () => {
@@ -220,6 +224,19 @@ describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
     expect(report.fixtures).toBe(1);
     expect(report.declaringFixtures).toBe(0);
     expect(report.violations.join('\n')).toContain('none declaring a decidable aws-cdk-lib floor');
+  });
+
+  // The two ways `minFloor` can be null read identically in a summary line, and
+  // only one of them is true at a time. The refusals carry the detail; the
+  // summary must not assert the wrong one.
+  it('says NONE WERE READABLE when every manifest failed to parse', () => {
+    const dir = scratch('cdkd-floor-unparseable-');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    writeFileSync(join(dir, 'a', 'package.json'), '{ "name": "a", ');
+    const report = checkIntegCdkLibFloor({ integRoot: dir, templatePath: REAL_TEMPLATE });
+    expect(report.fixtures).toBe(1);
+    expect(report.violations.join('\n')).toContain('none of them readable');
+    expect(report.violations.join('\n')).not.toContain('none declaring a decidable');
   });
 });
 
@@ -411,19 +428,23 @@ describe('real-code failure probes (the checker must prove it FAILS)', () => {
     TIMEOUT,
   );
 
+  // A per-case needle, not one alternation for all four: with a shared
+  // `/unknown argument|requires a non-empty value/`, deleting the
+  // `--integ-root=` branch routes it to `unknown argument` and the case still
+  // passes — an arm passing on another arm's message.
   it.each([
-    ['unknown flag', '--chekc'],
-    ['empty integ-root', '--integ-root='],
-    ['empty template', '--template='],
-    ['positional', 'tests/integration'],
+    ['unknown flag', '--chekc', 'unknown argument: --chekc'],
+    ['empty integ-root', '--integ-root=', '--integ-root= requires a non-empty value'],
+    ['empty template', '--template=', '--template= requires a non-empty value'],
+    ['positional', 'tests/integration', 'unknown argument: tests/integration'],
   ])(
     'refuses the malformed argument: %s',
-    (_label, arg) => {
+    (_label, arg, needle) => {
       const res = runCli([arg]);
       // `not.toBe(0)` alone is satisfied by a spawn that never ran; `runCli`
       // now throws on that, and the exact code plus a needle pins the arm.
       expect(res.status).toBe(1);
-      expect(res.stderr).toMatch(/unknown argument|requires a non-empty value/);
+      expect(res.stderr).toContain(needle);
     },
     TIMEOUT,
   );

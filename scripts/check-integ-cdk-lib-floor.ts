@@ -41,8 +41,8 @@
  *
  * REFUSALS ARE NOT PASSES
  *
- * Every input this cannot read is a hard failure, never a skip. The two
- * fail-open shapes that would otherwise make a broken run look clean:
+ * Every input this cannot read is a hard failure, never a skip. The fail-open
+ * shapes that would otherwise make a broken run look clean:
  *
  *  - The template floor failing to extract (a markdown edit moving the block,
  *    a renamed skill). Reporting `null` as "nothing to compare" would make the
@@ -58,11 +58,16 @@
  *    not only in the CLI.
  *
  * Two skips are deliberate and are NOT refusals, because neither can loosen the
- * verdict by hiding a floor: a directory with no `package.json` at all (not a
- * fixture), and a manifest that declares no `aws-cdk-lib` (not a member of this
- * population). Both are counted — `fixtures` and `declaringFixtures` — and the
- * test pins them EQUAL, so a reader that silently stopped seeing one dependency
- * bucket shows up as a gap rather than as a smaller minimum.
+ * verdict by hiding a floor. They are pinned by DIFFERENT instruments, which is
+ * worth stating because they look symmetric and are not:
+ *
+ *  - A directory with no `package.json` (not a fixture) increments NEITHER
+ *    counter, so the `fixtures === declaringFixtures` pin cannot see it. Only
+ *    `FLOORS.fixtures` catches a walk that stopped finding manifests.
+ *  - A manifest declaring no `aws-cdk-lib` (not a member of this population)
+ *    increments `fixtures` but not `declaringFixtures`, so it IS visible to
+ *    that pin — which is what makes a reader silently losing one dependency
+ *    bucket show up as a gap rather than as a smaller minimum.
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -313,11 +318,19 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
   // existing-but-empty root previously produced a fully clean report, and a
   // caller reaching for the exported function gets no `FLOORS` check.
   if (fixtures === 0) {
-    violations.push(`${INTEG_ROOT_REL}: no fixture manifest found — the corpus was not read`);
+    // `integRoot`, not INTEG_ROOT_REL: under the `--integ-root=` seam the
+    // hardcoded label pointed the reader at a directory that was never read.
+    violations.push(`${integRoot}: no fixture manifest found — the corpus was not read`);
   } else if (minFloor === null) {
-    violations.push(
-      `${INTEG_ROOT_REL}: ${fixtures} fixture manifests read, none declaring a decidable aws-cdk-lib floor`,
-    );
+    // `fixtures === 0` implies `minFloor === null`, so this arm is only ever
+    // reached with manifests present. Distinguish "they parsed and declared
+    // nothing" from "none of them parsed" — the refusals carry the detail, but
+    // the summary line should not assert the wrong one of the two.
+    const detail =
+      refusals.length === fixtures
+        ? `none of them readable (see the ${refusals.length} refusals above)`
+        : 'none declaring a decidable aws-cdk-lib floor';
+    violations.push(`${integRoot}: ${fixtures} fixture manifests read, ${detail}`);
   }
   if (minFloor !== null && templateFloor !== null && compareFloors(templateFloor, minFloor) < 0) {
     const lowest = sorted[0];
