@@ -814,9 +814,16 @@ describe('a CROSS-REGION producer is read in ITS region (issues #2109 + #2133)',
 describe('scrub supplies NO exports index (issue #2133)', () => {
   it('every resolve context carries a stateBackend and no exportIndex', async () => {
     // The index is a performance hint whose scan arm PATCHES it — an S3 write
-    // from a command documented to perform no AWS mutation, `--dry-run`
-    // included. Nothing red if a future edit supplied one, so read the context
-    // the command actually builds.
+    // as a side effect of RESOLUTION, at a point in the run nothing chose, and
+    // under `--dry-run` too. Since issue #2667 the command DOES write the index
+    // (`repairExportIndexForStack`, its own step after `scrubStack`; under
+    // `dryRun` the READ still happens and only `patchEntry` is withheld), so
+    // the claim is no longer "scrub never writes it". What
+    // this case fences is the PRECONDITION for that write being the only one:
+    // every resolve context carries a `stateBackend` and no `exportIndex`. It
+    // counts no `patchEntry` calls and cannot see a second write added
+    // elsewhere. Nothing red if a future edit supplied an index here, so read
+    // the context the command actually builds.
     const contexts: Array<Record<string, unknown>> = [];
     const original = IntrinsicFunctionResolver.prototype.resolve;
     const spy = vi

@@ -944,8 +944,15 @@ export interface ResolverContext {
    * When true, SECRET `{{resolve:...}}` dynamic references are left UNRESOLVED
    * (the expression string is returned verbatim). Set by the diff / no-op
    * comparison paths (GHSA fix): cdkd now persists the unresolved expression to
-   * state (CloudFormation semantics — the secret value never lands in a
-   * persisted artifact), so a comparison must keep the desired side as its
+   * state (CloudFormation semantics — the substitution keeps the secret value
+   * out of the persisted bag wherever the redaction can certify the position).
+   * That is a redaction pass, not a guarantee about `state.json`: positions it
+   * cannot certify keep what they were handed, ON THE DEPLOY PATH TOO — an
+   * unchanged resource's `drainObservedCaptures` baseline reaches the persist
+   * choke point with an empty secrets map (go-to-k/cdkd#2012,
+   * go-to-k/cdkd#2852) — and other commands widen it further
+   * (go-to-k/cdkd#2846, go-to-k/cdkd#2847). So a
+   * comparison must keep the desired side as its
    * expression too, otherwise a resolved-plaintext-vs-stored-expression compare
    * reports a spurious change on every run and `cdkd diff` would also fetch and
    * print the value. A changed EXPRESSION still shows as a diff; a rotated

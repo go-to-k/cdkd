@@ -78,10 +78,25 @@ gate means the CURRENT object is clean and nothing more. See
 cdkd resolves CloudFormation dynamic references —
 `{{resolve:secretsmanager:...}}`, and `{{resolve:ssm:...}}` pointing at a
 **SecureString** parameter — to their concrete value so the secret can be
-handed to the AWS API on create or update. When it PERSISTS state, it stores
-the UNRESOLVED expression rather than the resolved plaintext, so the secret
-does not land in the `state.json` cdkd writes, nor in `cdkd state show`,
-`cdkd diff` or `cdkd drift` output.
+handed to the AWS API on create or update. When the DEPLOY path persists state,
+it stores the UNRESOLVED expression rather than the resolved plaintext, so the
+secret does not land in the `state.json` a deploy writes, nor in
+`cdkd state show`, `cdkd diff` or `cdkd drift` output for such a record.
+
+That describes what the deploy path is designed to do; it is not a guarantee
+about `state.json`. The redaction substitutes only at positions it can certify
+against the template, and where it cannot — a readback whose container was
+reshaped, an identity key AWS normalised, a bag refreshed with no recorded
+secrets to match on — it leaves the value it was handed. That configuration is
+reachable on the deploy path itself, through the observed-properties refresh of
+an unchanged resource. Other commands widen it further: `cdkd state
+refresh-observed` when the stored properties hold a raw intrinsic shape rather
+than the reference as a string, and `cdkd import` for the `attributes` bag it
+captures from a live read.
+
+So treat a value ever persisted in plaintext as compromised and rotate it, and
+run `cdkd scrub --dry-run --fail` as a standing check rather than assuming any
+command never writes one.
 
 That is a statement about what cdkd WRITES from here on. It says nothing about
 a `state.json` version an older binary already wrote: on a versioned state

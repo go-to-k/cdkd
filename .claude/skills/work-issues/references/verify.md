@@ -296,13 +296,9 @@ run blocked before its assertions is not a failing fix (with its ledger note).
 ### 8-g. Prose claims are verified to the same bar as code
 
 Only the code half of a diff has tests behind it; commit messages, changelog
-entries, PR bodies and rationale comments have none — one pair of PRs
-(go-to-k/cdkd#1882 / go-to-k/cdkd#1887) took four review rounds finding zero
-code defects and FIVE false statements in prose. Habits that each caught one:
+entries, PR bodies and rationale comments have none. Habits that each caught a
+false claim a review round had read past:
 
-- **Grep the SHAPE, never the phrase** — two sweeps for a stale claim
-  searched the known copies' exact wording and each missed a differently
-  worded one. Count the population BEFORE editing; assert the count after.
 - **A claim inherited from the ISSUE BODY is the least trustworthy of all** —
   re-verify an issue's mechanism against current `main` before restating it
   (a later PR may already have falsified it).
@@ -315,29 +311,51 @@ code defects and FIVE false statements in prose. Habits that each caught one:
   it names.
 - **In a FIX round, the fix invalidated your own prose** — every past-tense
   measurement is stale until re-derived (one run: one code defect, TEN false
-  claims, among them a fence called "claimed rather than probed" whose named
-  case did not exist). Before a fix round is final, re-derive every
+  claims). Before a fix round is final, re-derive every
   `file:line`, ledger citation and "measured" verb, and say which tree they
-  came from; for NUMBERS see the next bullet.
-- **The remedy is to DELETE the unproved clause, not rewrite it** — the
-  recurring shape is a CONSEQUENCE bolted onto a verified claim ("X is
-  load-bearing: deleting it would hard-fail" — X probed, the consequence
-  never). Deleting a whole CLAIM cannot introduce a new false one; deleting a
-  clause from INSIDE a sentence can falsify the survivor, so re-read what
-  remains. When the false claim was that something IS fenced, BUILD the fence
-  instead.
+  came from; for NUMBERS see the COUNT bullet below.
+- **The remedy is to DELETE the unproved clause, not rewrite it — and write
+  the survivor in the DANGER direction**: say what the code mechanically does
+  and what can still go wrong. The falsified ones were REASSURANCES — a closure
+  claim, a closed-set enumeration, a "reduces", "nothing makes that case worse"
+  — asserting over inputs nobody enumerated. Every surviving
+  affirmative NAMES its backing; one that cannot is DELETED rather than
+  verified. The recurring form is a CONSEQUENCE bolted onto a verified claim
+  ("X is load-bearing: deleting it would hard-fail" — X probed, the consequence
+  never). Dated measurement (2026-09-09, go-to-k/cdkd#2842 / go-to-k/cdkd#2873):
+  over ten rounds, nine reassurances falsified — re-READING caught none, running
+  the claim caught all, two survived a security reviewer's endorsement. Deleting
+  a whole CLAIM cannot introduce a new false one; deleting a clause from INSIDE
+  a sentence can falsify the survivor.
+- **A claim outlives the sweep that corrected it. Sweep by CLAIM, over
+  NORMALISED text** — every TRACKED file, comment leaders stripped, whitespace
+  collapsed, matched ACROSS line breaks — **subtracting only what you can name a
+  reason to exclude**; never a list of the trees you expect it in, and never
+  `git grep`, which does no normalising. Derive the spellings from the
+  PROPOSITION, not the wording in front of you: a value *lands in* / *reaches* /
+  *appears in* / *is written to*.
+- **Then STOP hardening the sweep: a claim falsified ONCE becomes a FENCE.**
+  Enumerating spellings has no termination proof. In go-to-k/cdkd#2878 one
+  proposition beat five vocabularies in turn — two tree lists, a line-oriented
+  grep (copies wrapped as `performs no\n# AWS mutation`), a normalised grep
+  holding `lands in` but not `reaches`, and an independently derived synonym set
+  that found three more — so **report what the METHOD returned, never that the
+  claim is gone**, and register the proposition instead. A sweep audits once and
+  nobody can prove it complete; a fence reds on the NEXT occurrence, including
+  one worded in a vocabulary nobody thought of, because it tests the CODE's
+  truth rather than the text's phrasing. cdkd's home is `FALSIFIED_CLAIMS` in
+  `tests/unit/scripts/integ-s3-versions-harness.test.ts` — each entry carries
+  why the claim is false and a `retired` sample the pattern MUST still match, so
+  a rotted regex fails loudly.
 - **A COUNT is never repaired by recounting** — give every number in published
-  prose one of three DISPOSITIONS: delete it (preferred — a changelog bullet
-  cannot be re-derived, and an enumeration IS its own count), fence it with a
+  prose one of three DISPOSITIONS: delete it (preferred — an enumeration IS its
+  own count), fence it with a
   floor AND a cap from a test that reads the code, or attribute it as a dated,
   explicitly non-derivable measurement. Recounting fails because a set that
   GAINS or LOSES a member — a fix closing one counts — falsifies counters in
-  files the diff never touches (go-to-k/cdkd#2410 / go-to-k/cdkd#2275: four in
-  one run, all caught by reviewers and none by the author; go-to-k/cdkd#2519
-  drifted its per-type lists seven times, once inside the sentence announcing
-  the previous three were wrong). Sweep them with
-  `grep -rn "<the set's noun, then its cardinal>" src/ docs/ .claude/`, then
-  dispose of each — a silent renumber is what makes the next reader re-file it.
+  files the diff never touches (go-to-k/cdkd#2519: seven drifts, one inside the
+  sentence announcing the previous three). Sweep them by the bullet above, then
+  dispose of each — a silent renumber makes the next reader re-file it.
 - **Write the rationale FIRST in a fix round** — the one rationale-first
   round of four was the only one that introduced no new prose defect.
 

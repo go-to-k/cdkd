@@ -1073,8 +1073,24 @@ question.
   region-LESS reference resolves in the stack's own region, which is the
   CloudFormation behaviour; if that is not what you want, spell it as an ARN.
 - SECRET-bearing references are resolved for the AWS call but persisted as the
-  UNRESOLVED expression, so no plaintext reaches `state.json` / the rollback
-  journal / CLI output. Which references count as secret-bearing is decided by
+  UNRESOLVED expression, which is what keeps plaintext out of `state.json`, the
+  rollback journal and CLI output on the ordinary path. It is a redaction pass,
+  not an invariant: the substitution happens only at positions it can certify
+  against the source bag, and where it cannot — a readback whose elements were
+  reordered or normalised, an unpaired element beside a paired one, an observed
+  key the source does not carry — it persists what it was handed. Those three
+  are measured LEAKs reachable by a plain `cdkd deploy`, whose
+  `drainObservedCaptures` baseline hits the persist choke point with an empty
+  secrets map; they are tracked as issue
+  [#2012](https://github.com/go-to-k/cdkd/issues/2012) and the per-row table
+  lives in `src/deployment/secret-redaction.ts`. A separate floor,
+  `MIN_NEEDLE_LENGTH`, bounds the SUBSTRING and derived arms only: an
+  expression-bearing needle below it is still substituted on the whole-value
+  arm, and masking still replaces an exact whole-value match at any length —
+  what a very short secret escapes is the substring SCAN, so it can survive
+  inside a larger string such as an echoed AWS error. Treat a value ever
+  persisted in plaintext as compromised and rotate it. Which references count
+  as secret-bearing is decided by
   TYPE, not spelling: every `secretsmanager` reference, plus an `ssm` reference
   whose parameter is a `SecureString` (issue
   [#1901](https://github.com/go-to-k/cdkd/issues/1901)). A `String` /

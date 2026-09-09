@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 
 /**
  * The fake-AWS HARNESS for `tests/integration/s3-versions.sh` (issue #2106).
@@ -2319,56 +2319,196 @@ const FALSIFIED_CLAIMS: readonly {
     // any growth reds this entry and forces both numerators to be re-derived.
     re: /\bof the (ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|nineteen|twenty) callers\b/i,
   },
+  // The two entries below come from go-to-k/cdkd#2878, and they are here for a
+  // reason that generalises past their content. That lane corrected one
+  // proposition by SWEEPING for it, and each successive vocabulary -- two tree
+  // lists, a line-oriented grep, a normalised grep, then an independently
+  // derived synonym set -- found sites the previous one had passed. Enumerating
+  // spellings has no termination proof, so the sweep was converted into these
+  // fences: a sweep audits once and nobody can prove it complete, while a fence
+  // reds on the NEXT occurrence including one worded in a vocabulary nobody
+  // thought of.
+  {
+    retired: 'On today\'s code the plaintext does NOT reach state -- the GHSA-p5qg-v9gv-hc7w fix', // falsified sample
+    why:
+      'FALSE on the DEPLOY path: `secret-redaction.ts`\'s own table carries three `LEAK (#2012)` rows ' +
+      'reachable by a plain `cdkd deploy`, whose `drainObservedCaptures` baseline reaches the persist ' +
+      'choke point with an empty secrets map. The redaction substitutes only where it can certify the ' +
+      'position; say that, rather than asserting the outcome. This sentence had THREE verbatim copies.',
+    // Matches the ASSERTION, not the scoped statement that replaced it: the
+    // corrections read "what the redaction is FOR" and name the uncertifiable
+    // positions, so they carry no "does not reach state" of their own.
+    re: /plaintext does\s+(not|n't)\s+reach\s+state/i,
+  },
+  {
+    retired: 'persisted as the UNRESOLVED expression, so no plaintext reaches `state.json` / the rollback journal', // falsified sample
+    why:
+      'FALSE on all three destinations, and it sat in `docs/architecture.md`, which CLAUDE.md tells ' +
+      'every session to trust. `state.json` and the journal: the three `LEAK (#2012)` rows above. CLI ' +
+      'output: `maskSecretsInText` only SCANS for substrings of at least `MIN_NEEDLE_LENGTH`, so a ' +
+      'shorter secret survives inside a larger echoed string.',
+    // Anchored on "no plaintext reaches", the universal form. A sentence naming
+    // WHICH write it describes ("the `state.json` a deploy writes") does not
+    // match, which is the distinction the corrections turn on.
+    re: /no plaintext reach(es)?\s/i,
+  },
+  {
+    retired: 'an S3 write from a command that performs no AWS mutation, so the scan is the only route', // falsified sample
+    why:
+      'FALSE since issue #2667: `cdkd scrub` writes the region-wide exports index via ' +
+      '`repairExportIndexForStack`. It was ALSO false before that -- `scrubStack` PUTs the stack lock ' +
+      'and the state object. Say "mutates no AWS RESOURCE" and name the S3 writes. This is the ' +
+      'proposition that beat five successive vocabularies (two tree lists, a line-oriented grep, a ' +
+      'normalised grep, an independently derived synonym set) across six sites, which is why it is ' +
+      'fenced here rather than swept again.',
+    // Deliberately NOT anchored on the word `scrub`: two of the six sites named
+    // neither the command nor the file it lives in, referring to it only as
+    // "a command". The claim is the phrase itself.
+    re: /performs?\s+no\s+AWS\s+mutation/i,
+  },
 ];
 
 describe('claims this lane corrected stay corrected TREE-WIDE', () => {
-  const ROOTS = ['docs', '.claude/rules', 'tests/unit/scripts', 'tests/integration'];
+  // `src` and `plugins` joined the roots in go-to-k/cdkd#2878. The secret-
+  // persistence claims registered below were live in BOTH -- a `src/` doc
+  // comment and the shipped plugin skill -- and a fence that cannot see the
+  // tree a claim lives in reads as coverage while providing none, which is the
+  // failure that PR spent five rounds on.
+  const ROOTS = ['docs', '.claude/rules', 'tests/unit/scripts', 'tests/integration', 'src', 'plugins'];
 
+  // TRACKED files only, and enumerated by git rather than by walking the disk.
+  // A `readdirSync` walk reads whatever happens to be on this machine, so
+  // `docs/changelog-cdkd.md` -- gitignored, present only after `gen:changelog`
+  // -- was in the corpus locally and absent in CI, giving the fence two
+  // different populations. `git ls-files` is also what section 8-g's own
+  // subtraction rule prescribes (go-to-k/cdkd#2878).
   function proseFiles(): { path: string; text: string }[] {
-    const out: { path: string; text: string }[] = [];
     const repo = join(import.meta.dirname, '../../..');
-    const walk = (dir: string): void => {
-      for (const e of readdirSync(dir, { withFileTypes: true })) {
-        if (e.name === 'node_modules' || e.name.startsWith('.git')) continue;
-        const full = join(dir, e.name);
-        if (e.isDirectory()) {
-          walk(full);
-          continue;
-        }
-        if (!/\.(md|sh|ts)$/.test(e.name)) continue;
-        out.push({ path: full.slice(repo.length + 1), text: readFileSync(full, 'utf8') });
-      }
-    };
-    for (const r of ROOTS) {
-      const d = join(repo, r);
-      if (existsSync(d)) walk(d);
-    }
-    return out;
+    return execFileSync('git', ['ls-files', '-z', '--', ...ROOTS], {
+      cwd: repo,
+      encoding: 'utf8',
+      maxBuffer: 1 << 28,
+    })
+      .split('\0')
+      .filter((p) => p !== '' && /\.(md|sh|ts)$/.test(p) && p !== SELF)
+      .map((p) => ({ path: p, text: readFileSync(join(repo, p), 'utf8') }));
   }
+
+  // This file is the CATALOGUE: every entry's `retired` sample quotes its claim
+  // verbatim, by design, and the liveness test below asserts that it does. So
+  // it can never be a residual and must not be scanned -- the alternative is
+  // annotating each sample to look like a correction, which would defeat the
+  // sample's purpose. Scoped to this ONE path rather than to a pattern, so no
+  // other file can inherit the exemption.
+  const SELF = 'tests/unit/scripts/integ-s3-versions-harness.test.ts';
 
   const files = proseFiles();
 
+  // ONE ANCHOR PER ROOT, not a total. The old guard asserted `length > 300`
+  // plus three anchors that all lived in three of the six roots, so a root
+  // could vanish entirely and another would carry the floor: measured on
+  // go-to-k/cdkd#2878, renaming `plugins/` away with two live violations
+  // inside left every test GREEN, and so did renaming `src/`. That is
+  // references/implement.md 5-f''s rule -- a floor must count at the GRAIN it
+  // protects -- and `plugins` is the sharp case, because its population is 1.
+  const ROOT_ANCHORS: readonly [string, string][] = [
+    ['docs', 'docs/testing.md'],
+    ['.claude/rules', '.claude/rules/testing.md'],
+    ['tests/unit/scripts', 'tests/unit/scripts/integ-secret-fixture-sweep.test.ts'],
+    ['tests/integration', 'tests/integration/s3-versions.sh'],
+    ['src', 'src/deployment/secret-redaction.ts'],
+    ['plugins', 'plugins/cdkd-skills/skills/cdkd/SKILL.md'],
+  ];
+
   it('scans a real corpus (guards against passing by reading nothing)', () => {
+    // Every declared root is anchored, and the anchor list covers them all --
+    // so adding a root without an anchor fails here rather than silently
+    // widening the corpus with nothing asserting the widening took effect.
+    expect(ROOT_ANCHORS.map(([r]) => r)).toEqual([...ROOTS]);
+    for (const [root, anchor] of ROOT_ANCHORS) {
+      expect(
+        files.some((f) => f.path === anchor),
+        `root '${root}' contributed nothing: '${anchor}' is missing, so this fence is blind to that tree`
+      ).toBe(true);
+    }
     expect(files.length).toBeGreaterThan(300);
-    expect(files.some((f) => f.path === 'docs/testing.md')).toBe(true);
-    expect(files.some((f) => f.path === '.claude/rules/testing.md')).toBe(true);
-    expect(files.some((f) => f.path === 'tests/integration/s3-versions.sh')).toBe(true);
+  });
+
+  /**
+   * A line may QUOTE a retired claim while correcting it ("this used to say
+   * ..."), and such a line is not a residual. But the escape must be BOUNDED,
+   * or it is a silencer: the previous form dropped any line containing `used
+   * to` / `no longer` / `FALSE` / `falsified` anywhere, so
+   * `"The plaintext does not reach state at all (a false alarm otherwise)."`
+   * passed -- no reason given, no count, invisible in review, four common words
+   * triggering it. It was already load-bearing by accident, sparing a
+   * changelog line only because that line happened to contain "is `false` for
+   * it" (go-to-k/cdkd#2878).
+   *
+   * So a quotation must ALSO cite the issue that retired the claim, on the
+   * same line. That makes every silencing traceable to a decision, and the
+   * count below makes the population finite and visible.
+   */
+  const RETIREMENT_MARKER = /used to|no longer|falsified|\bFALSE\b/;
+  const ISSUE_CITATION = /#\d{3,5}\b|go-to-k\/[a-z-]+#\d+/;
+  /**
+   * The marker must be on the matching line, but the CITATION is looked for in
+   * a window around it: a retired quotation is usually a paragraph, and its
+   * issue reference lands wherever the prose wrapped. Requiring both on one
+   * line reproduced the line-wrap defeat that
+   * `references/verify.md` section 8-g exists to warn about -- measured on
+   * `tests/integration/s3-versions.sh`, whose quotation carries `issue #2107`
+   * FIVE lines below the marker.
+   */
+  // MEASURED over the corpus: three silenced quotations, whose nearest citation
+  // sits at offset 0, -5 and +5. So 5 covers the tree today and 6 carries ONE
+  // line of deliberate slack, because a paragraph reflow that pushes a citation
+  // one line further should not red a legitimate quotation. The 5 is the
+  // measurement and the 6 is the choice -- widen it only when a real quotation
+  // needs it, never to silence a fresh hit. To re-derive the 5 rather than
+  // argue it: lower this constant until the suite reds and take the last green
+  // value. Measured that way, 5 is green and 4 reds BOTH signals -- two live
+  // residuals, and the silenced count below at 1 instead of 3.
+  const CITATION_WINDOW = 6;
+  const isRetiredQuotation = (lines: readonly string[], i: number): boolean => {
+    if (!RETIREMENT_MARKER.test(lines[i]!)) return false;
+    const from = Math.max(0, i - CITATION_WINDOW);
+    return ISSUE_CITATION.test(lines.slice(from, i + CITATION_WINDOW + 1).join(' '));
+  };
+
+  it('the quotation escape stays BOUNDED and enumerated', () => {
+    const silenced = files
+      .flatMap((f) => {
+        const lines = f.text.split('\n');
+        return lines
+          .map((line, i) => ({ line, i }))
+          .filter(({ line, i }) => FALSIFIED_CLAIMS.some((c) => c.re.test(line)) && isRetiredQuotation(lines, i))
+          .map(({ i }) => `${f.path}:${i + 1}`);
+      })
+      .sort();
+    // A LITERAL, not a computed bound: the point is that growth is visible in
+    // review. A lane that legitimately adds a quotation updates this number and
+    // says why in its PR; a lane that silences a real residual cannot do it
+    // quietly.
+    expect(
+      silenced.length,
+      `the retired-quotation escape now covers ${silenced.length} line(s):\n  ${silenced.join('\n  ')}\n` +
+        'If that is intended, raise the literal here in the same commit and say why. ' +
+        'If it is not, the new line is silencing a live claim.'
+    ).toBe(3);
   });
 
   it.each(FALSIFIED_CLAIMS.map((c) => [c.re.source, c] as const))(
     'no file still asserts /%s/',
     (_src, claim) => {
       const hits = files
-        .flatMap((f) =>
-          f.text
-            .split('\n')
-            .map((line, i) => ({ line, n: i + 1 }))
-            // The claim text is QUOTED in the corrections themselves ("this
-            // used to say ..."), so a line that explicitly marks it as former
-            // is not a residual.
-            .filter(({ line }) => claim.re.test(line) && !/used to|no longer|FALSE|falsified/i.test(line))
-            .map(({ n }) => `${f.path}:${n}`)
-        )
+        .flatMap((f) => {
+          const lines = f.text.split('\n');
+          return lines
+            .map((line, i) => ({ line, i }))
+            .filter(({ line, i }) => claim.re.test(line) && !isRetiredQuotation(lines, i))
+            .map(({ i }) => `${f.path}:${i + 1}`);
+        })
         .sort();
       expect(hits, claim.why).toEqual([]);
     }
