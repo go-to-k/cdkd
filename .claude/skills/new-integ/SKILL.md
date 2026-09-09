@@ -60,7 +60,7 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
        "typescript": "^5.0.0"
      },
      "dependencies": {
-       "aws-cdk-lib": "^2.169.0",
+       "aws-cdk-lib": "^2.260.0",
        "constructs": "^10.0.0"
      },
      "type": "module"

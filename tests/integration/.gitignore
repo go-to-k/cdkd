@@ -6,6 +6,9 @@
 # Dependencies
 node_modules/
 package-lock.json
+# The pnpm twin `*/pnpm-lock.yaml` is ignored by the ROOT .gitignore instead —
+# `check-scope-checker-inputs.test.ts` counts only the top-level file as a rule
+# source (go-to-k/cdkd#2838).
 
 # CDK output
 cdk.out/
