@@ -851,10 +851,12 @@ export function countDecisions({
  * @param {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} removed
  * @param {Map<string, string>} providerFiles
  * @param {string} [repoRoot]
+ * @param {import('./diagnose-schema-refresh.d.mts').EvidenceDeps} [deps] The evidence
+ *   helpers. Defaults to the LOADED ones and refuses when nothing loaded them; tests
+ *   inject doubles here instead. Not `unknown`: the declaration file argues at its own
+ *   `EvidenceDeps` that `unknown` is too weak to be worth declaring.
  * @returns {{ written: Array<{ resourceType: string, property: string, rationale: string }>,
  *   escalated: Array<{ resourceType: string, property: string, reason: string }> }}
- * @param {unknown} [deps] The evidence helpers. Defaults to the loaded ones and
- *   REFUSES when nothing loaded them; tests inject doubles here instead.
  */
 export function writeAutoTolerated(
   removed,
@@ -2399,20 +2401,21 @@ export function renderUmbrellaDocument(generatedSource) {
   return rows.length > 0 ? rows.join('\n') : UMBRELLA_EMPTY_SENTINEL;
 }
 
-function main() {
-  const args = process.argv.slice(2);
+/** Flags that take no value, so a following token is never theirs. */
+const VALUELESS_FLAGS = new Set(['--umbrella-checklist']);
 
-  // An unrecognised flag must NOT silently fall through: every reader's
-  // absent-flag arm is the permissive one (`''` for the logs, "nothing failed"
-  // for the check list), so a typo, a retired flag or a single-dash spelling
-  // all render as clean. Same guard, and the same reasoning, as the sibling
-  // producer `refresh-cfn-schemas.mjs` carries.
-  // EVERY unrecognised argument, not just the dash-leading ones: this script
-  // takes no positionals, and `failed-checks property-coverage` — one spelling
-  // over from the `-failed-checks` the first guard caught — fell straight
-  // through to the permissive arms and rendered the clean verdict. A guard
-  // covering fewer spellings than its subject accepts is the shape this whole
-  // file kept producing.
+/**
+ * Classify an argv list the way {@link main} does — ONE implementation, because
+ * the entry point has to make the same call BEFORE loading anything and two
+ * spellings of "is this argv valid" is how they come to disagree. It already
+ * had: the first cut tested only dash-leading tokens, so `failed-checks
+ * property-coverage` still reported a missing dependency and named the wrong
+ * file, which is the misreport the pre-check exists to remove.
+ *
+ * @param {string[]} args
+ * @returns {{ unknown: string[], repeated: string[] }}
+ */
+export function classifyArgs(args) {
   /** @type {string[]} */
   const unknown = [];
   /** @type {string[]} */
@@ -2437,15 +2440,38 @@ function main() {
     // last argv shape that still reached a confident answer.
     if (seen.has(flag)) repeated.push(flag);
     seen.add(flag);
-    if (a === flag) {
+    if (a === flag && !VALUELESS_FLAGS.has(flag)) {
       // Its value is consumed only if it could BE one. A dash-leading token is
       // not a value here — the same rule `rawArg` applies — so consuming it
       // blindly would let `--failed-checks --skipped-log <path>` swallow the
       // second flag and report the PATH as the unknown argument.
+      //
+      // And only for a flag that TAKES one: `--umbrella-checklist` is boolean,
+      // so it used to swallow a following positional and render a full
+      // checklist for an invocation nobody wrote.
       const next = args[i + 1];
       if (next !== undefined && !next.startsWith('-')) i += 1;
     }
   }
+  return { unknown, repeated };
+}
+
+function main() {
+  const args = process.argv.slice(2);
+
+  // An unrecognised flag must NOT silently fall through: every reader's
+  // absent-flag arm is the permissive one (`''` for the logs, "nothing failed"
+  // for the check list), so a typo, a retired flag or a single-dash spelling
+  // all render as clean. Same guard, and the same reasoning, as the sibling
+  // producer `refresh-cfn-schemas.mjs` carries.
+  // EVERY unrecognised argument, not just the dash-leading ones: this script
+  // takes no positionals, and `failed-checks property-coverage` — one spelling
+  // over from the `-failed-checks` the first guard caught — fell straight
+  // through to the permissive arms and rendered the clean verdict. A guard
+  // covering fewer spellings than its subject accepts is the shape this whole
+  // file kept producing.
+  const { unknown, repeated } = classifyArgs(args);
+
   if (repeated.length > 0) {
     throw new Error(
       `flag(s) given more than once: ${[...new Set(repeated)].join(', ')} — only one would ` +
@@ -2763,12 +2789,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // a missing dependency as a report cdkd chose to write, which is the same
   // misread the lazy import removes one layer down.
   let inputsReady = true;
-  // A MISTYPED flag must reach `main()`'s own guard rather than the loader: the
+  // A BAD INVOCATION must reach `main()`'s own guard rather than the loader: the
   // load runs first, so without this a typo on the no-install runner reports a
-  // missing dependency and names the wrong file.
+  // missing dependency and names the wrong file. Classified by the SAME
+  // function `main()` uses, so the two cannot disagree about what "bad" means —
+  // the first cut tested only dash-leading tokens and left the non-dash
+  // spelling, which `main()`'s own comment calls the load-bearing one.
   const argv = process.argv.slice(2);
-  const mistyped = argv.some((a) => a.startsWith('-') && knownFlagFor(a) === undefined);
-  if (!argv.includes('--umbrella-checklist') && !mistyped) {
+  const { unknown, repeated } = classifyArgs(argv);
+  const badInvocation = unknown.length > 0 || repeated.length > 0;
+  if (!argv.includes('--umbrella-checklist') && !badInvocation) {
     try {
       await loadEvidenceDeps();
     } catch (err) {

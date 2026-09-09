@@ -3060,6 +3060,21 @@ describe('writeAutoTolerated', () => {
     await loadEvidenceDeps();
   });
 
+  it('loads the evidence helpers ONCE', () => {
+    // Asserted in the loader's docblock and by nothing else: deleting the
+    // memoization guard reds no other case, and ESM module caching does not
+    // rescue it — the loader builds a FRESH object literal each call, so a
+    // second run returns a different one.
+    //
+    // It lives here rather than beside the no-deps cases because those depend
+    // on the module NOT having loaded, and a case that loads would make that
+    // ordering load-bearing — measured: with one there, two shuffle seeds
+    // failed the unloaded-refusal case. This file loads in `beforeAll` anyway.
+    return Promise.all([loadEvidenceDeps(), loadEvidenceDeps()]).then(([a, b]) => {
+      expect(b).toBe(a);
+    });
+  });
+
   /**
    * A scratch repo root the call may WRITE into.
    *

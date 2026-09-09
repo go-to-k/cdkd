@@ -30,6 +30,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -47,7 +48,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
  * `offline-property-evidence.ts` and `published-sdk-typings.ts` export — and a
  * copy with nothing comparing it drifts silently.
  *
- * FOUR assignments, because one is not a comparison. `Real -> Declared` proves
+ * SIX assignments, because one is not a comparison. `Real -> Declared` proves
  * only that the real helpers SATISFY the declaration, so every drift making the
  * declaration LOOSER passes it. The inverse closes that direction, `keyof`
  * closes a deleted member, and `Required` closes a member turned OPTIONAL —
@@ -61,23 +62,27 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
  * against a locally written expectation below: without it, the one member the
  * inverse cannot cover was the one member nothing covered.
  *
- * BOUND, measured against these four assignments over eleven drifts of the
- * declaration. RED: a changed parameter type, a narrowed return, a widened
- * return, an extra member, a deleted member, a member dropped from a return
- * shape, a narrowed parameter, and — on `publishedSdkInterfaces` specifically —
- * a widened return and an optional member. The two that PASS:
+ * BOUND. Measured over ~45 drifts of the declaration, the fence is blind to
+ * exactly two PROPERTIES, and they are stated as properties rather than as a
+ * list of drifts — an earlier revision enumerated "seven red, one passes" from
+ * a matrix run over TWO of the three members, and read as exhaustive:
  *
- *   1. an EXTRA TRAILING OPTIONAL parameter on any helper. TS compares function
- *      parameters by arity-tolerant assignability in BOTH directions, so no
- *      assignment-shaped fence can see it; `Parameters<…>` tuple comparison is
- *      the tool if it ever matters. Least damaging of the eleven — the
- *      parameter is optional, so every real call still typechecks.
- *   2. `(...args: any[]) => any`. `any` is assignable in both directions by
- *      definition, so it defeats every type-level fence, not just this one.
+ *   1. Any TRAILING-OPTIONAL ARITY difference, in either direction — an added
+ *      optional parameter or a dropped one, and an added optional MEMBER of a
+ *      return shape. TS compares those arity-tolerantly both ways, so no
+ *      assignment-shaped fence sees them; `Parameters<…>` tuple comparison is
+ *      the tool if it ever matters. (Not uniform across members, which is why
+ *      the property and not the drift is what is stated: an added optional
+ *      parameter DOES red on `publishedSdkInterfaces`, whose real signature
+ *      already declares two optionals for it to collide with.)
+ *   2. `any` anywhere — `(...args: any[]) => any` is assignable in both
+ *      directions by definition, so it defeats every type-level fence, not
+ *      just this one.
  *
- * State the bound rather than the fence's strength: an earlier revision of this
- * comment generalized a measurement taken over TWO of the three members and read
- * as exhaustive. It was not.
+ * Everything else measured reds: a changed parameter type, a narrowed or
+ * widened return, an added or deleted member, a member dropped from a return
+ * shape, a narrowed parameter, and a member turned optional — each on every
+ * one of the three helpers.
  *
  * TYPE-ONLY on purpose: a value import would pull `typescript-v6` and the whole
  * SDK-model graph into a file whose entire subject is running WITHOUT them.
@@ -111,10 +116,6 @@ const _publishedSdkInterfacesIsNotLooser: EvidenceDeps['publishedSdkInterfaces']
 const WORKFLOW_SHAPE = /^- \[ \] |^_No remaining silent-drop properties/m;
 
 /**
- * A corpus carrying what the mode READS and nothing else — no `node_modules`,
- * no `package.json`, so a resolution of any bare specifier must fail.
- */
-/**
  * Every corpus this file creates, removed in `afterEach`.
  *
  * `makeCorpus` copies the whole ~2 MB `scripts/` tree and is called once per
@@ -128,6 +129,10 @@ afterEach(() => {
   while (corpora.length > 0) rmSync(corpora.pop()!, { recursive: true, force: true });
 });
 
+/**
+ * A corpus carrying what the mode READS and nothing else — no `node_modules`,
+ * no `package.json`, so a resolution of any bare specifier must fail.
+ */
 function makeCorpus(): string {
   const root = mkdtempSync(join(tmpdir(), 'cdkd-umbrella-nodeps-'));
   corpora.push(root);
@@ -284,6 +289,42 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     expect(run.stdout).toContain('unrecognized flag(s): --umbrella-checklists');
     expect(run.stdout).not.toContain('could not load the evidence helpers');
     expect(run.stderr).toBe('');
+    // Exit 0 is the REPORT mode's contract — a broken diagnosis must not take
+    // down the PR it describes — and pinning it here is what keeps this case
+    // from passing in a world where the typo starts exiting non-zero for some
+    // unrelated reason.
+    expect(run.status).toBe(0);
+  }, 60_000);
+
+  it('reports a NON-DASH typo as a flag error too', () => {
+    // The first pre-check tested only dash-leading tokens, so this spelling —
+    // the one `main()`'s own guard comment calls load-bearing — still reported
+    // "could not load the evidence helpers" and named the wrong file. Both
+    // spellings now go through the SAME classifier `main()` uses.
+    const root = makeCorpus();
+    const run = spawnSync(
+      process.execPath,
+      ['scripts/diagnose-schema-refresh.mjs', 'failed-checks', 'property-coverage'],
+      { cwd: root, encoding: 'utf8' }
+    );
+    expect(run.stdout).toContain('unrecognized flag(s): failed-checks, property-coverage');
+    expect(run.stdout).not.toContain('could not load the evidence helpers');
+    expect(run.status).toBe(0);
+  }, 60_000);
+
+  it('REFUSES a positional swallowed by the one boolean flag', () => {
+    // `--umbrella-checklist` takes no value, and the shared classifier used to
+    // consume a following token as one — so this invocation rendered a full
+    // checklist for a command nobody wrote.
+    const root = makeCorpus();
+    const run = spawnSync(
+      process.execPath,
+      ['scripts/diagnose-schema-refresh.mjs', '--umbrella-checklist', 'extra-positional'],
+      { cwd: root, encoding: 'utf8' }
+    );
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('unrecognized flag(s): extra-positional');
+    expect(run.stdout).not.toMatch(WORKFLOW_SHAPE);
   }, 60_000);
 
   it('names EVERY hollow member, not just the first', () => {
@@ -329,42 +370,66 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
 });
 
 describe('the evidence-helper seam', () => {
-  it('accepts INJECTED helpers, so a caller need not load anything', async () => {
-    // The 4th parameter is the seam the three type assignments above fence, and
-    // until now nothing passed it — the source comment "tests that inject
-    // doubles never reach the loader" described a test that did not exist.
+  it('USES the injected helpers — an AUTO verdict is unreachable without them', async () => {
+    // The 4th parameter is the seam the six type assignments above fence.
+    //
+    // The first cut of this case was VACUOUS, and in the way that keeps
+    // recurring: it passed `AWS::Fake::Thing` with an empty `providerFiles`, so
+    // `classifyRemovedProperty` returned "could not determine this type's own
+    // SDK client" BEFORE reading either helper — the doubles were never
+    // invoked, and passing `{}` produced a byte-identical verdict. It pinned
+    // that the parameter bypasses `requireEvidenceDeps`, nothing more.
+    //
+    // So the outcome asserted here is one ONLY the doubles can produce: a real
+    // type whose SDK client resolves, a property name no real SDK declares, and
+    // doubles that report it typed AND wired. The real helpers answer
+    // `undefined` for such a name and the property ESCALATES; the doubles make
+    // it `written`. Both helpers are recorded, so "used" is asserted rather
+    // than inferred from the verdict.
     const { writeAutoTolerated } = await import('../../../scripts/diagnose-schema-refresh.mjs');
     const root = mkdtempSync(join(tmpdir(), 'cdkd-deps-seam-'));
     corpora.push(root);
     mkdirSync(join(root, 'tests/fixtures/cfn-schemas'), { recursive: true });
     writeFileSync(join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json'), '{}\n');
+    // The client is derived by reading the PROVIDER SOURCE for its
+    // `@aws-sdk/client-*` imports and checking that package is installed, so the
+    // scratch root needs both: a provider file naming the client, and the real
+    // `node_modules` to resolve it against. Without the first, `client` is
+    // `undefined` and the classifier returns before reading either helper —
+    // which is exactly how the first cut of this case came out vacuous.
+    mkdirSync(join(root, 'src/provisioning/providers'), { recursive: true });
+    writeFileSync(
+      join(root, 'src/provisioning/providers/sqs-queue-provider.ts'),
+      "import { SQSClient } from '@aws-sdk/client-sqs';\n"
+    );
+    symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'));
 
+    const typedCalls: string[] = [];
+    const wiresCalls: string[] = [];
     const result = writeAutoTolerated(
-      [{ resourceType: 'AWS::Fake::Thing', properties: ['Gone'] }] as never,
-      new Map<string, string>(),
+      [{ resourceType: 'AWS::SQS::Queue', properties: ['NoSuchSdkMember'] }] as never,
+      new Map([['AWS::SQS::Queue', 'src/provisioning/providers/sqs-queue-provider.ts']]),
       root,
-      // Doubles: no load has happened in this module instance, so reaching the
-      // loader at all would throw the refusal instead.
       {
-        typedSdkMember: () => undefined,
-        providerWiresProperty: () => undefined,
+        typedSdkMember: (property: string, client: string) => {
+          typedCalls.push(`${property}@${client}`);
+          return { client, spelling: 'exact', interfaces: ['SendMessageRequest'] };
+        },
+        providerWiresProperty: (property: string) => {
+          wiresCalls.push(property);
+          return { sites: ['src/provisioning/providers/sqs-queue-provider.ts:42'] };
+        },
         publishedSdkInterfaces: () => undefined,
       } as never
     );
-    // The verdict itself belongs to `classifyRemovedProperty`'s own suite; what
-    // this pins is that the injected helpers were USED — with no load, any
-    // other path throws.
-    expect(result.escalated.map((e) => e.property)).toEqual(['Gone']);
-    expect(result.written).toEqual([]);
+
+    // Both helpers were consulted, with the property and the resolved client.
+    expect(typedCalls).toEqual(['NoSuchSdkMember@@aws-sdk/client-sqs']);
+    expect(wiresCalls).toEqual(['NoSuchSdkMember']);
+    // And their answer DECIDED the verdict: nothing else in this file can make
+    // a name the SDK does not declare come out as settled.
+    expect(result.written.map((w) => w.property)).toEqual(['NoSuchSdkMember']);
+    expect(result.escalated).toEqual([]);
   });
 
-  it('loads once — a second call returns the same helpers', async () => {
-    // Asserted in the loader's docblock and by nothing else: deleting the
-    // memoization guard reds no case, and a second import of a module that
-    // THREW would re-throw rather than re-run.
-    const mod = await import('../../../scripts/diagnose-schema-refresh.mjs');
-    const first = await mod.loadEvidenceDeps();
-    const second = await mod.loadEvidenceDeps();
-    expect(second).toBe(first);
-  });
 });
