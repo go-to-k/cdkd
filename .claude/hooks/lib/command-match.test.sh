@@ -2521,9 +2521,22 @@ __gmc '(empty)(not-a-variable-name)' 'a space-only name reports as (empty)' ' '
 # so the cases above are not passing because everything is reported.
 __gmc '' 'a defined constant is not reported' 'GATE_FLAGS'
 
-# A FLOOR on this block alone. `CASE_FLOOR` is checked in the middle of the
-# file, upstream of here, so a block that shrinks below it is invisible -- which
-# is exactly how eight vanished cases went unnoticed above.
+# A FLOOR ON THIS BLOCK ALONE, and the end marker is taken HERE, before the
+# shape cases below. `CASE_FLOOR` is evaluated in the middle of the file,
+# upstream of this block, so a block that shrinks below it is invisible -- which
+# is exactly how eight vanished cases went unnoticed. The first revision of this
+# floor took the end marker AFTER the shape loop, so it counted 12 against a
+# `-lt 10` test and carried two cases of slack: measured, deleting TWO `__gmc`
+# cases left it printing `ran all 10 cases` over a green suite. A floor that
+# spans two populations is not a floor.
+__gmc_count=$((pass + fail - __gmc_ran))
+if [ "$__gmc_count" -lt 10 ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gate_missing_const block: only $__gmc_count of 10 cases ran -- cases are vanishing, not failing\n"
+else
+  pass=$((pass + 1)); printf 'ok   gate_missing_const block ran all %s cases\n' "$__gmc_count"
+fi
+
 # THE TWO MESSAGES THIS HELPER EMITS, held to the same shape rule as the hook
 # refusals. Both fire while EVERY Bash call is refused, so an indented recipe
 # line in either would offer a command that cannot be run -- the defect that
@@ -2532,13 +2545,21 @@ __gmc '' 'a defined constant is not reported' 'GATE_FLAGS'
 # here, where the helper lives, and review round 19 found the soft one outside
 # every scan. The assertion is TOTAL -- no line may begin with whitespace --
 # because the enumerating version was walked past by six spellings.
+# CONTENT, not only shape. Review round 20 measured that deleting the soft
+# note's three prose lines left this suite at 644/0 AND `restore-backup.test.sh`
+# at 17/0 -- its only content assertion is satisfied by the first line alone. A
+# shape fence over an empty message passes; these needles are what make the
+# shape fence be about something. The last one is the route: the soft note ended
+# "Restore or finish the library" full stop, which is the same unfollowable
+# advice the hard arm took three revisions to shed -- prose rather than an
+# indented recipe, so the shape scan could never have caught it.
 __msg_hard=$( (gate_require_const GATE_NO_SUCH_CONST_PROBE) 2>&1 >/dev/null || true )
 __msg_soft=$( gate_require_const_soft GATE_NO_SUCH_CONST_PROBE 2>&1 >/dev/null || true )
 for __m in hard soft; do
   eval "__msg_body=\$__msg_$__m"
   if [ -z "$__msg_body" ]; then
     fail=$((fail + 1))
-    fail_log="${fail_log}FAIL gate_require_const${__m#hard} emitted nothing -- the shape case would pass over a message it never saw\n"
+    fail_log="${fail_log}FAIL the $__m arm of gate_require_const emitted nothing -- the shape case would pass over a message it never saw\n"
   elif printf '%s\n' "$__msg_body" | grep -qE '^[[:space:]]'; then
     fail=$((fail + 1))
     fail_log="${fail_log}FAIL the $__m refusal indents a line; every Bash call is refused in that state, so a recipe cannot be run -- advise a TOOL in running prose\n"
@@ -2547,13 +2568,22 @@ for __m in hard soft; do
   fi
 done
 
-__gmc_count=$((pass + fail - __gmc_ran))
-if [ "$__gmc_count" -lt 10 ]; then
-  fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_missing_const block: only $__gmc_count of 10 cases ran -- cases are vanishing, not failing\n"
-else
-  pass=$((pass + 1)); printf 'ok   gate_missing_const block ran all %s cases\n' "$__gmc_count"
-fi
+# ONE NEEDLE PER LINE of the note's body, verified by deleting each line and
+# watching exactly one case redden. The first attempt had four needles for five
+# lines and one of them sat on the line ABOVE the one it was meant to cover, so
+# deleting the last line left the suite green -- the needle asserted a line it
+# was not about, which is the defect this block exists to prevent one level up.
+for __n in "so this NON-BLOCKING hook is skipping rather than refusing" \
+           "recognise the command" \
+           "did not happen" \
+           "no Bash spelling" \
+           "refuse every Bash call in this state"; do
+  case "$__msg_soft" in
+    *"$__n"*) pass=$((pass + 1)); printf 'ok   the soft note says: %s\n' "$__n" ;;
+    *) fail=$((fail + 1))
+       fail_log="${fail_log}FAIL the soft note must say: $__n\n" ;;
+  esac
+done
 
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

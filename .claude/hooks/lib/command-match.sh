@@ -4400,13 +4400,26 @@ gate_require_const() {
     # and reached for the next shell command in line. Nothing about this state
     # admits a shell command: every Bash call is refused, including the one that
     # would diagnose it. Read and Grep are TOOLS and no matcher covers them, so
-    # they are the only followable advice. `main-tree-edit-gate.test.sh` asserts
-    # that NO LINE of the FOUR refusals reachable in this state -- this one,
-    # `gate_require_const_soft`'s note, and main-tree-edit-gate's two -- begins
-    # with whitespace. The assertion is total rather than a list of recipe
-    # shapes: an enumerating version shipped for one round and six plausible
-    # spellings walked past it, which is the same losing game as enumerating
-    # command names.
+    # they are the only followable advice.
+    #
+    # WHAT IS ACTUALLY FENCED, stated exactly, because two earlier revisions of
+    # this paragraph overstated it and a comment is the map the next revision
+    # navigates by. `command-match.test.sh` asserts that neither message THIS
+    # HELPER emits -- the refusal here and `gate_require_const_soft`'s note --
+    # begins any line with whitespace. `main-tree-edit-gate.test.sh` asserts the
+    # same for the two refusals THAT HOOK owns. Each suite fences what its own
+    # file emits.
+    #
+    # That is four of the ELEVEN distinct message families reachable while the
+    # library is broken, lagging or stripped -- a reviewer swept all 31
+    # library-sourcing hooks and counted them; a previous revision of this
+    # comment said "four" as though it were the whole set. None of the other
+    # seven indents a line today (same sweep, with a positive control), so this
+    # ships no defect, but nothing watches them: go-to-k/cdkd#2853.
+    #
+    # The assertion is TOTAL rather than a list of recipe shapes: an enumerating
+    # version shipped for one round and six plausible spellings walked past it,
+    # which is the same losing game as enumerating command names.
     echo "EVERY Bash call is refused while the library is in this state, this"
     echo "one included, so a command-line repair is not available."
     echo "FROM A FEATURE WORKTREE the Edit and Write tools stay allowed --"
@@ -4445,7 +4458,9 @@ gate_require_const_soft() {
     echo "Note: .claude/hooks/lib/command-match.sh does not define: $GATE_MISSING_CONSTS"
     echo "so this NON-BLOCKING hook is skipping rather than refusing. It cannot"
     echo "recognise the command, and whatever it would have done -- a snapshot, a"
-    echo "warning -- did not happen. Restore or finish the library."
+    echo "warning -- did not happen. Restore or finish the library: the Edit and"
+    echo "Write tools reach it from a feature worktree, and no Bash spelling"
+    echo "does, because the blocking gates refuse every Bash call in this state."
   } >&2
   return 1
 }
