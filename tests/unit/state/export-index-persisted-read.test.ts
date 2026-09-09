@@ -204,6 +204,93 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
     expect(sent.map((s) => s.name)).toEqual(['GetObjectCommand']);
   });
 
+  it('the corrupt throw carries NO bytes of the body (issue #2667 review)', async () => {
+    // V8 embeds a window of the INPUT in its `JSON.parse` message, and this
+    // index holds resolved Output VALUES — for the unscrubbed state this
+    // command targets, exactly the plaintext. The message reaches a
+    // `logger.error` and the command's failure text, i.e. `--dry-run --fail`
+    // CI logs. Same class as the `import.ts` parse-snippet leak (#2829).
+    //
+    // The needle is placed where V8's window lands: adjacent to the syntax
+    // error, which is what makes this discriminate rather than assert over a
+    // message that never had a chance to carry it.
+    const SECRET = 'hunter2SECRETPASSWORD';
+    const { client } = mockS3((cmd) => {
+      if (cmd.name === 'GetObjectCommand') {
+        return Promise.resolve({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(`{"indexVersion":1,"exports":{"K":{"value":${SECRET}}}}`),
+          },
+          ETag: '"etag-1"',
+        });
+      }
+      throw new Error(`unexpected ${cmd.name}`);
+    });
+    const store = new ExportIndexStore(
+      client,
+      'cdkd-state-bucket',
+      'cdkd',
+      'us-east-1',
+      noRebuildBackend()
+    );
+
+    const err = await store.readPersistedEntries().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(Error);
+    // PREMISE: the raw V8 message really does carry it, so this case is not
+    // asserting over an input V8 would never have echoed.
+    let rawCarriedIt = false;
+    try {
+      JSON.parse(`{"indexVersion":1,"exports":{"K":{"value":${SECRET}}}}`);
+    } catch (e) {
+      rawCarriedIt = (e as Error).message.includes(SECRET.slice(0, 8));
+    }
+    expect(rawCarriedIt).toBe(true);
+    // THE ASSERTION: not one byte of that window survives into cdkd's message.
+    expect(err!.message).not.toContain(SECRET.slice(0, 8));
+    expect(err!.message).not.toContain('hunter');
+    // What DOES survive is content-independent and still locates the damage.
+    expect(err!.message).toMatch(/invalid JSON/);
+    expect(err!.message).toMatch(/byte\(s\) read/);
+  });
+
+  it('the indexVersion refusal renders the TYPE, never a body-controlled value', async () => {
+    // `String(x)` renders a JSON string as itself and a one-element array as
+    // its element — measured on node v24.19.0 — so only an object degrades to
+    // `[object Object]`. The array shape is the one that leaks verbatim.
+    const SECRET = 'hunter2SECRETPASSWORD';
+    const { client } = mockS3((cmd) => {
+      if (cmd.name === 'GetObjectCommand') {
+        return Promise.resolve({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(`{"indexVersion":["${SECRET}"],"region":"us-east-1","exports":{}}`),
+          },
+          ETag: '"etag-1"',
+        });
+      }
+      throw new Error(`unexpected ${cmd.name}`);
+    });
+    const store = new ExportIndexStore(
+      client,
+      'cdkd-state-bucket',
+      'cdkd',
+      'us-east-1',
+      noRebuildBackend()
+    );
+
+    const err = await store.readPersistedEntries().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).not.toContain(SECRET);
+    expect(err!.message).toContain('a non-numeric value (object)');
+  });
+
   it('THROWS on an indexVersion this binary cannot interpret', async () => {
     // Not downgraded to the `undefined` the two arms above return: a rebuild —
     // or a caller reading "no index" — would replace a newer binary's object

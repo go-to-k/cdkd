@@ -127,6 +127,7 @@
 
 import type { TemplateOutput } from '../types/resource.js';
 import { stripControlChars } from '../utils/regexp.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { SECRET_MASK, type RecordedSecretValues } from './secret-redaction.js';
 
 /**
@@ -415,16 +416,32 @@ export type SecretSafeKeyDisplay =
  * warnings below use, rather than restating either: two spellings of "is this
  * key safe to print" would disagree on the boundary cases those two encode
  * (the whole-key match for a sub-floor needle, longest-needle-first masking).
+ *
+ * SANITISED WITH `displaySafe`, not with `stripControlChars` (issue #2667
+ * review). The two are not interchangeable here: `stripControlChars`'s class
+ * omits `U+2028` / `U+2029`, which `display-safe.ts` strips precisely because
+ * this text is PERSISTED and re-rendered by JSON and web log viewers that
+ * treat both as line terminators — the CI-log surface this whole masking
+ * change exists to protect, where an `Fn::Sub`-built export name carrying one
+ * could forge a log line. It also covers the ANSI / bidi set, and it is
+ * idempotent, so applying it to the already-masked string is safe. The callers
+ * render `reason` through `displaySafe` too, so one message no longer mixes
+ * two sanitizers.
+ *
+ * The sibling warnings in this file still use `stripControlChars` and carry
+ * the same gap; widening that helper would change call sites this issue did
+ * not touch, so it is filed as issue
+ * [#2874](https://github.com/go-to-k/cdkd/issues/2874) rather than done here.
  */
 export function secretSafeKeyDisplay(
   key: string,
   secrets: RecordedSecretValues
 ): SecretSafeKeyDisplay {
-  const stripped = stripControlChars(key);
+  const shown = displaySafe(key);
   const exposure = stateKeySecretExposure(key, secrets);
-  if (!exposure) return { kind: 'safe', text: stripped };
-  const masked = stripControlChars(maskEveryOccurrence(key, exposure));
-  if (masked === stripped) return { kind: 'withheld' };
+  if (!exposure) return { kind: 'safe', text: shown };
+  const masked = displaySafe(maskEveryOccurrence(key, exposure));
+  if (masked === shown) return { kind: 'withheld' };
   return { kind: 'masked', text: masked };
 }
 

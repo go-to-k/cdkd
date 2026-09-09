@@ -84,6 +84,52 @@ function mapsEqual(a: Map<string, ExportIndexEntry>, b: Map<string, ExportIndexE
 }
 
 /**
+ * Describe a `JSON.parse` failure WITHOUT echoing the body (issue
+ * [#2667](https://github.com/go-to-k/cdkd/issues/2667) review).
+ *
+ * V8 embeds a window of the INPUT in its parse error, so interpolating
+ * `err.message` republishes whatever bytes sat near the syntax error. Measured
+ * on node v24.19.0:
+ *
+ * ```
+ * JSON.parse('{"exports":{"K":{"value":hunter2SECRET}}}')
+ * -> Unexpected token 'h', ..."K":{"value":hunter2SEC"... is not valid JSON
+ * ```
+ *
+ * This index holds resolved Output VALUES, and for the unscrubbed state
+ * `cdkd scrub` targets those are exactly the plaintext — which then reaches a
+ * `logger.error` and the command's failure message, i.e. `--dry-run --fail` CI
+ * logs. Same class as the `import.ts` parse-snippet leak issue
+ * [#2829](https://github.com/go-to-k/cdkd/issues/2829) closed.
+ *
+ * What survives is the OFFSET and the SIZE: both locate the damage for an
+ * operator holding the object, and neither is a function of its content. The
+ * offset is extracted by pattern rather than passed through, so a future V8
+ * message that words it differently yields no offset instead of leaking the
+ * rest of the sentence.
+ */
+function describeParseFailure(err: unknown, bytes: number): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const at = /at position (\d+)/.exec(raw);
+  const where = at ? ` at position ${at[1]}` : '';
+  return `invalid JSON${where}; ${bytes} byte(s) read`;
+}
+
+/**
+ * Describe an `indexVersion` that is not a usable number, WITHOUT rendering it.
+ *
+ * `String(x)` renders a body-controlled value verbatim for two of the three
+ * non-number shapes — measured on node v24.19.0: a JSON string yields itself
+ * and a one-element array yields its element, while only an object degrades to
+ * `[object Object]`. The field is attacker-controlled in the same sense the
+ * rest of the body is, so the message reports its TYPE and, for a number, its
+ * value — the only shape whose value is safe because it is a number.
+ */
+function describeIndexVersion(value: unknown): string {
+  return typeof value === 'number' ? String(value) : `a non-numeric value (${typeof value})`;
+}
+
+/**
  * On-disk shape of `_index/{region}/exports.json`.
  *
  * Note: the index intentionally does NOT carry a `consumers[]` list
@@ -300,8 +346,15 @@ export class ExportIndexStore {
    * A snapshot of the persisted index, read WITHOUT the rebuild that
    * {@link lookup} triggers on a missing or corrupt object.
    *
-   * Every S3 call on this path is a GET, so a caller that must perform no S3
-   * write (`cdkd scrub --dry-run`) can read the entries here.
+   * Every S3 call THIS METHOD makes is a GET, so a caller that must perform no
+   * S3 write (`cdkd scrub --dry-run`) can read the entries here — with ONE
+   * documented exception, which such a caller has to know about: when another
+   * caller on the same instance already has a `doLoad` in flight, the first
+   * line below awaits IT, and `doLoad` rebuilds (a PUT) on a missing or
+   * corrupt object. Unreachable from `cdkd scrub`, which never calls `lookup`
+   * and drives one store per region serially — but the guarantee is the thing
+   * a future no-write caller would rely on, so it is stated with its bound
+   * rather than unconditionally.
    *
    * THREE OUTCOMES, and only ONE of them is `undefined`. A MISSING object
    * returns `undefined`: there is nothing to audit and nothing to repair. A
@@ -327,7 +380,7 @@ export class ExportIndexStore {
     if (outcome.kind === 'corrupt') {
       throw new Error(
         `Exports index at ${this.indexKey()} could not be parsed ` +
-          `(${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}). ` +
+          `(${describeParseFailure(outcome.error, outcome.bytes)}). ` +
           `Its contents were NOT examined.`
       );
     }
@@ -436,7 +489,7 @@ export class ExportIndexStore {
   private async loadPersisted(): Promise<
     | { kind: 'loaded'; entries: Map<string, ExportIndexEntry> }
     | { kind: 'missing' }
-    | { kind: 'corrupt'; error: unknown }
+    | { kind: 'corrupt'; error: unknown; bytes: number }
   > {
     const raw = await this.readIndexRaw();
     if (raw === null) return { kind: 'missing' };
@@ -445,14 +498,14 @@ export class ExportIndexStore {
     try {
       parsed = JSON.parse(body) as ExportIndexFile;
     } catch (err) {
-      return { kind: 'corrupt', error: err };
+      return { kind: 'corrupt', error: err, bytes: body.length };
     }
     if (typeof parsed.indexVersion !== 'number' || parsed.indexVersion > EXPORT_INDEX_VERSION) {
       // Newer index version written by a future cdkd binary. We can't
       // safely interpret unknown fields; surface a clear error so the
       // user upgrades rather than silently mishandling.
       throw new Error(
-        `Exports index uses indexVersion ${String(parsed.indexVersion)} which is newer than this cdkd binary supports (max ${EXPORT_INDEX_VERSION}). Upgrade cdkd.`
+        `Exports index uses indexVersion ${describeIndexVersion(parsed.indexVersion)} which is newer than this cdkd binary supports (max ${EXPORT_INDEX_VERSION}). Upgrade cdkd.`
       );
     }
     const entries = new Map<string, ExportIndexEntry>();

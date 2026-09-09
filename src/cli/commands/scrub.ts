@@ -109,6 +109,26 @@ export class ScrubNeededError extends CdkdError {
  * leak" from "scrub refused to look" — the two call for opposite responses
  * (rotate the secret vs. re-spell the reference and re-run).
  */
+/**
+ * An internal invariant of the exports-index repair, thrown where this code
+ * believes a case is unreachable (issue #2667 review).
+ *
+ * A distinct CLASS because the repair runs inside the per-stack `try` whose
+ * `catch` attributes everything to "the exports index could not be READ": a
+ * plain `Error` there is reported as an S3 read failure, sending an operator to
+ * their bucket policy over a bug in cdkd. That catch rethrows this class
+ * instead, so it surfaces as the per-stack failure it actually is.
+ */
+class ScrubIndexInvariantError extends CdkdError {
+  readonly exitCode: number = 2;
+
+  constructor(message: string) {
+    super(message, 'SCRUB_EXPORT_INDEX_INVARIANT');
+    this.name = 'ScrubIndexInvariantError';
+    Object.setPrototypeOf(this, ScrubIndexInvariantError.prototype);
+  }
+}
+
 class ScrubRefusalError extends CdkdError {
   readonly exitCode: number = 2;
 
@@ -688,6 +708,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
             return '(name withheld: it holds a secret this run recorded)';
         }
       };
+      const unwrittenNames = new Set(repair.unwritten);
       for (const exportName of repair.unwritten) {
         indexUnwritten.push({ region: stackRegion, shown: named(exportName) });
       }
@@ -695,11 +716,27 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         if (finding.kind === 'converge') {
           totalIndexEntriesConverged++;
           indexConverged++;
-          logger.info(
-            `${options.dryRun ? 'Would converge' : 'Converged'} exports index entry ` +
-              `${named(finding.exportName)} (${stackRegion}) to ${stack.stackName}'s ` +
-              `state.outputs value.`
-          );
+          // The past-tense line is for entries the write LANDED on. An entry
+          // whose `patchEntry` returned `false` is in `repair.unwritten` and
+          // is about to be named by `SCRUB_EXPORT_INDEX_INCOMPLETE`, so
+          // logging `Converged X` for it would have the command assert a
+          // repair it did not perform and then error that it did not perform
+          // it — in the run whose whole subject is a false success report
+          // (issue #2667 review). `--dry-run` never writes, so its line stays
+          // conditional-tense for every finding.
+          if (!options.dryRun && unwrittenNames.has(finding.exportName)) {
+            logger.warn(
+              `Exports index entry ${named(finding.exportName)} (${stackRegion}) differs from ` +
+                `${stack.stackName}'s state.outputs and could NOT be written — it keeps the ` +
+                `value it holds.`
+            );
+          } else {
+            logger.info(
+              `${options.dryRun ? 'Would converge' : 'Converged'} exports index entry ` +
+                `${named(finding.exportName)} (${stackRegion}) to ${stack.stackName}'s ` +
+                `state.outputs value.`
+            );
+          }
         } else {
           totalIndexEntriesAbsent++;
           logger.warn(
@@ -711,6 +748,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         }
       }
     } catch (err) {
+      // A cdkd INVARIANT is not an S3 read failure. This catch attributes
+      // everything to "the index could not be read", which would send an
+      // operator to their bucket policy over a bug in this code, so the
+      // invariant class is rethrown as the per-stack failure it is.
+      if (err instanceof ScrubIndexInvariantError) throw err;
       // A read that failed is an audit this run did not perform. Recorded and
       // raised after the summary rather than swallowed: reporting the state
       // records clean while the index was never opened is the shape this issue

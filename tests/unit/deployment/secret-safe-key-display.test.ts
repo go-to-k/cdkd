@@ -45,6 +45,29 @@ describe('secretSafeKeyDisplay', () => {
     expect(shown.kind === 'safe' && shown.text).not.toContain('\u001b');
   });
 
+  it('SAFE: strips U+2028 / U+2029, which stripControlChars does NOT (issue #2667 review)', () => {
+    // The regression the masking change nearly shipped. `stripControlChars`'s
+    // class omits both; `displaySafe` strips them precisely because this text
+    // is PERSISTED and re-rendered by JSON and web log viewers that treat both
+    // as line terminators — the CI-log surface the masking exists to protect,
+    // where an `Fn::Sub`-built export name carrying one could forge a line.
+    const shown = secretSafeKeyDisplay('alias\u2028injected', secrets());
+    expect(shown.kind).toBe('safe');
+    expect(shown.kind === 'safe' && shown.text).not.toContain('\u2028');
+    expect(secretSafeKeyDisplay('alias\u2029injected', secrets())).not.toMatchObject({
+      text: expect.stringContaining('\u2029'),
+    });
+  });
+
+  it('MASKED: the masked arm strips them too, not just the safe arm', () => {
+    // Both arms sanitise, and only the masked one runs the mask first, so it
+    // is a separate path that could regress on its own.
+    const shown = secretSafeKeyDisplay(`alias\u2028${SECRET}`, secrets());
+    expect(shown.kind).toBe('masked');
+    expect(shown.kind === 'masked' && shown.text).not.toContain('\u2028');
+    expect(JSON.stringify(shown)).not.toContain(SECRET);
+  });
+
   it('MASKED: a key EMBEDDING a secret is masked, and the plaintext is gone', () => {
     const shown = secretSafeKeyDisplay(`alias-${SECRET}-suffix`, secrets());
     expect(shown.kind).toBe('masked');

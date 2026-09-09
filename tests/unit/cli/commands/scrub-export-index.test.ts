@@ -554,6 +554,56 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(err!.message).toContain("'MyStack:Db' in us-east-1");
   });
 
+  it('a FAILED write is NOT logged as Converged', async () => {
+    // Issue #2667 review. The `info` line fired for every `converge` finding,
+    // including ones `patchEntry` refused — so a failing run printed
+    // `Converged X` and then errored that X was unwritten. That is the
+    // claim-a-thing-it-did-not-perform shape this command exists to remove,
+    // in the command whose subject is a false success report.
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({
+        entries: new Map([['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]),
+        patchOk: false,
+      })
+    );
+
+    await expect(scrubCommand([], commandOptions())).rejects.toMatchObject({
+      code: 'SCRUB_EXPORT_INDEX_INCOMPLETE',
+    });
+
+    const out = logLines();
+    expect(out).not.toContain('Converged exports index entry');
+    // POSITIVE marker, so the assertion above cannot be satisfied by a run
+    // that logged nothing at all: the entry is still REPORTED, as the thing
+    // that was not written.
+    expect(out).toContain('could NOT be written');
+  });
+
+  it('a SUCCESSFUL write is still logged as Converged', async () => {
+    // The other direction of the same guard — it must not silence the line it
+    // was narrowed for.
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]) })
+    );
+
+    await scrubCommand([], commandOptions());
+
+    expect(logLines()).toContain('Converged exports index entry');
+    expect(logLines()).not.toContain('could NOT be written');
+  });
+
   it('an UNREADABLE index is an explicit failure too, under --dry-run as well', async () => {
     synthStacks.push(makeStackInfo('MyStack'));
     commandStateBackend.getState.mockResolvedValue({
