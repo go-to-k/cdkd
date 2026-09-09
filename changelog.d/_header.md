@@ -26,7 +26,9 @@ continuation line under it, and enforced by
 `tests/unit/scripts/changelog-entry-size.test.ts`. In a fragment the count is
 the **whole file** as it reads, trailing whitespace stripped — so a blank line
 *between* two prose lines counts, where the assembled document's own check
-skips it. The two agree unless you pad. The entry keeps the
+skips it, and a `---` at column 0 counts along with everything below it, where
+that check stops at the rule. The two agree unless you pad or park a `---`
+mid-entry. The entry keeps the
 user-visible behavior delta, the changed files, the issue / PR numbers, and the
 residual's issue number — roughly the headline plus the file list plus a few
 sentences of mechanism.
