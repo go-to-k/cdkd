@@ -23,7 +23,10 @@ The CLAUDE.md `## Known Limitations` section retains the load-bearing summary
 
 An entry is capped at **2000 characters**, counted over the bullet and every
 continuation line under it, and enforced by
-`tests/unit/scripts/changelog-entry-size.test.ts`. The entry keeps the
+`tests/unit/scripts/changelog-entry-size.test.ts`. In a fragment the count is
+the **whole file** as it reads, trailing whitespace stripped — so a blank line
+*between* two prose lines counts, where the assembled document's own check
+skips it. The two agree unless you pad. The entry keeps the
 user-visible behavior delta, the changed files, the issue / PR numbers, and the
 residual's issue number — roughly the headline plus the file list plus a few
 sentences of mechanism.
@@ -55,8 +58,14 @@ buys an exemption.
 The cap is still **forward-only**, but the forward-only part now applies only
 to the ARCHIVE: everything in `changelog.d/_archive.md` was written under no
 cap, is already correct, and rewriting it buys nothing, so entries under a
-heading dated before **2026-09-05** stay exempt *there*. Nothing can be filed
-into the archive any more, so nothing new can reach that exemption.
+heading dated before **2026-09-05** stay exempt *there*.
+
+That exemption is reachable, and saying otherwise would be papering over it:
+`_archive.md` is an ordinary tracked file the assembler reads on its own path,
+so a bullet appended to it under a pre-cutoff heading bypasses the fragment cap
+entirely. Nothing fences that. "No lane edits the archive again" is a
+convention, not a mechanism — what the fragment cap buys is that the *ordinary*
+way to write an entry is capped.
 
 Until issue [#2859](https://github.com/go-to-k/cdkd/issues/2859) the cap keyed
 on the heading date alone, which meant a fragment named with a pre-cutoff date

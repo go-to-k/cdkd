@@ -111,11 +111,22 @@ import { describe, expect, it } from 'vite-plus/test';
  * The date cutoff below is therefore no longer the cap's main instrument. It
  * survives to keep the ARCHIVED text -- settled before the fragment layout
  * existed, and edited by no lane again -- exempt in exactly the way it always
- * was. Nothing can be filed into the archive any more, so nothing new can reach
- * the exemption. (No count is quoted here on purpose: the one in
+ * was. (No count is quoted here on purpose: the one in
  * `assemble-changelog.ts`'s header has already drifted, reading 574 against 575
  * column-0 bullets measured 2026-09-09, and a second copy would drift the same
  * way with nothing watching either.)
+ *
+ * THE MISDATING CHANNEL IS CLOSED FOR FRAGMENTS, WHICH IS NOT THE SAME AS
+ * CLOSED. `assembleChangelog` reads `_archive.md` on its own path, so a bullet
+ * APPENDED to that file reaches the assembled document without ever passing
+ * through `readEntries` -- and appended under a pre-cutoff heading it is exempt
+ * from both predicates. `_archive.md` is an ordinary tracked file and nothing
+ * fences it. "No lane edits the archive again" is a CONVENTION, and an earlier
+ * revision of this comment stated it as a mechanism, which is the papering-over
+ * this section is named against. What the fragment cap buys is that the
+ * ORDINARY way to write an entry is now capped; the archive remains a way
+ * around it for anyone who decides to take it, and that is a residual, not a
+ * closure.
  *
  * What made the residual urgent rather than theoretical: go-to-k/cdkd#2813
  * refused any fragment dated at or inside the archive's span, so the dates that
@@ -634,12 +645,21 @@ describe('changelog entry size', () => {
     // one reads the fragments and exempts nothing.
     const fragments = readEntries(REPO_ROOT);
 
-    // A checker must prove it sees its input: with zero fragments read, the
-    // verdict below is green for the wrong reason, and that is the state the
-    // repo was in for the whole day the layout landed. Recounted from the
-    // DIRECTORY rather than from `readEntries`, so a parser that silently
-    // dropped a file cannot satisfy its own floor.
+    // A checker must prove it sees its input, and that takes BOTH assertions
+    // below -- the equality alone is a CONSISTENCY check, satisfied at 0 === 0.
+    // `entries/` held nothing but `.gitkeep` for the whole day the layout
+    // landed, and in that state `offenders` is empty for the wrong reason with
+    // the equality green.
+    //
+    // The floor is safe because the population only GROWS: nothing moves a
+    // fragment into `_archive.md` (no script, and no fragment has ever been
+    // deleted -- `git log --diff-filter=D` over the directory is empty), so the
+    // day-zero state cannot recur. If an archiving step is ever added, this
+    // assertion is the right place to fail and force the question.
     const onDisk = readdirSync(join(REPO_ROOT, FRAGMENT_DIR, ENTRIES_DIR)).filter((n) => n !== '.gitkeep');
+    expect(onDisk.length, 'no fragment on disk at all -- this verdict has no subject').toBeGreaterThan(0);
+    // Recounted from the DIRECTORY rather than from `readEntries`, so a parser
+    // that silently dropped a file cannot satisfy its own floor.
     expect(fragments.length, 'readEntries lost a fragment the directory still holds').toBe(onDisk.length);
 
     const offenders = fragmentsOverLimit(fragments).map(
@@ -681,6 +701,15 @@ describe('changelog entry size', () => {
       // Exactly at the limit, so `> LIMIT` cannot be loosened to `>=`. The
       // prefix is counted in, which is the point: the FILE is the unit.
       write('2026-09-09-2859-exactly-at-limit.md', `- **Exact** ${'e'.repeat(LIMIT - '- **Exact** '.length)}`);
+      // Exactly ONE over, so `> LIMIT` cannot be shifted to `> LIMIT + 1`.
+      // Every other over-limit case here clears the limit by a dozen-plus
+      // characters and survives that mutation; the assembled-document sibling
+      // carries a `Just over` entry for exactly this reason, and without one
+      // the fragment suite is a mutation weaker than the predicate it mirrors.
+      write(
+        '2026-09-09-2859-just-over.md',
+        `- **Just over** ${'j'.repeat(LIMIT + 1 - '- **Just over** '.length)}`
+      );
       // Comfortably short: the negative control. Without one, a predicate that
       // returned every fragment would satisfy every other expectation here.
       write('2026-09-09-2859-short.md', '- **Short** short enough.');
@@ -691,14 +720,16 @@ describe('changelog entry size', () => {
       // is worthless unless they straddle it.
       const paddedProse = `- **Blank padded** ${'b'.repeat(LIMIT - 60)}`;
       const padded = [paddedProse, ...Array.from({ length: 40 }, () => ''), '  tail'].join('\n');
-      const asAssembledEntry = padded
-        .split('\n')
-        .filter((l, i) => i === 0 || l.trim() !== '')
-        .join('\n');
+      // The second measure comes from the REAL `parseEntries`, not a hand-rolled
+      // "skip the blanks". Re-implementing it here would keep this straddle
+      // green while the claim it pins went false -- if that parser ever stops
+      // skipping blank lines, or its `---` flush arm moves, the divergence
+      // simply is not there any more and this case must say so.
+      const asAssembledEntry = parseEntries(padded).entries[0]!.text;
       expect(padded.length, 'the blank-padded case must exceed the limit').toBeGreaterThan(LIMIT);
       expect(
         asAssembledEntry.length,
-        'and must fall UNDER it once blank lines are skipped, or it does not discriminate the two measures'
+        'and must fall UNDER it as an assembled entry, or it does not discriminate the two measures'
       ).toBeLessThanOrEqual(LIMIT);
       write('2026-09-09-2859-blank-padded.md', padded);
 
@@ -710,7 +741,9 @@ describe('changelog entry size', () => {
       // including the three the heading-date filter would have exempted -- plus
       // the one that is over only because internal blank lines are counted. NOT
       // selected: the short one, nor the one sitting exactly ON the limit.
-      expect(flagged).toEqual(['Ancient', 'After cutoff', 'Blank padded', 'In span', 'Just under cutoff'].sort());
+      expect(flagged).toEqual(
+        ['Ancient', 'After cutoff', 'Blank padded', 'In span', 'Just over', 'Just under cutoff'].sort()
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
