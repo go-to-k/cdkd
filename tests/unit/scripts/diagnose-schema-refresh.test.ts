@@ -3076,8 +3076,10 @@ describe('writeAutoTolerated', () => {
     // closed and it is NOT: this compares NAMES. A declaration whose SIGNATURE
     // drifted passes — measured in the same commit that added this fence, where
     // `classifyArgs` had grown a third return bucket the declaration did not
-    // name. `export let` / `export var` / `export { x }` are invisible to the
-    // runtime-side pattern, so an export in those spellings ships undeclared.
+    // name. And NEITHER pattern sees `let` / `var` / `namespace` / `interface` /
+    // `type` / `default`, nor `export { x }`: on the runtime side that ships an
+    // export undeclared, and on the declared side it is a FALSE RED, since the
+    // name has no runtime counterpart for the scan to pair it with.
     const mjs = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
     const dmts = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
     const names = (src: string, re: RegExp): string[] =>
@@ -3107,9 +3109,15 @@ describe('writeAutoTolerated', () => {
     // declaration cannot restate. `typeof import(...)` is no use here — it
     // resolves to the DECLARATION, so it would compare the file with itself.
     const dmts = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
-    const block = /export declare function classifyArgs\([^)]*\): \{([\s\S]*?)\n\};/.exec(dmts);
+    // `[^}]*`, not `[\s\S]*?`: the lazy form binds THROUGH a reformatted
+    // declaration to a later type's `\n};` and collects ITS members — measured,
+    // 13 unrelated names. The case still failed, but named the wrong thing;
+    // this form yields NO MATCH there, which is the message the reader needs.
+    const block = /export declare function classifyArgs\([^)]*\): \{([^}]*)\n\};/.exec(dmts);
     expect(block, 'classifyArgs is no longer declared as an inline object return').not.toBeNull();
-    const declared = [...block![1]!.matchAll(/^\s{2}(\w+):/gm)].map((m) => m[1]!).sort();
+    // `\??` so an OPTIONAL member counts: without it an over-declared
+    // `valued?: string[]` passes silently — the same drift one modifier over.
+    const declared = [...block![1]!.matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]!).sort();
     expect(declared.length, 'the member scan found nothing to compare').toBeGreaterThan(0);
     expect(Object.keys(classifyArgs([])).sort()).toEqual(declared);
   });
