@@ -102,12 +102,88 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 
-import { typedSdkMember, providerWiresProperty } from './offline-property-evidence.ts';
-import { publishedSdkInterfaces } from './published-sdk-typings.ts';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
+
+/**
+ * The two evidence helpers, loaded ON DEMAND rather than imported at the top.
+ *
+ * `--umbrella-checklist` renders from one committed file and calls neither, but
+ * ESM resolves a module's WHOLE graph before any of its code runs — so a static
+ * import made the mode die at load time on `Cannot find package 'typescript-v6'`
+ * (reached through `offline-property-evidence.ts`, and again through
+ * `published-sdk-typings.ts` -> `gen-nested-key-coverage.ts`). That is why
+ * `.github/workflows/backfill-umbrella-sync.yml` — which deliberately runs
+ * WITHOUT `vp install`, so its token-less render step cannot fail on dependency
+ * resolution — failed on both of the only two runs it has ever had, from the
+ * day it landed (issue [#2858](https://github.com/go-to-k/cdkd/issues/2858)).
+ * The workflow's comment asserting the mode needs no dependencies was a true
+ * statement about what the mode CALLS and a false one about what it LOADS.
+ *
+ * Kept as an explicit loader rather than an `await import()` at each use site
+ * because both consumers are synchronous exported functions with their own
+ * injection seams, and making them async would ripple through `main()` and
+ * every caller for no gain.
+ *
+ * @type {{ typedSdkMember: typeof import('./offline-property-evidence.ts').typedSdkMember,
+ *          providerWiresProperty: typeof import('./offline-property-evidence.ts').providerWiresProperty,
+ *          publishedSdkInterfaces: typeof import('./published-sdk-typings.ts').publishedSdkInterfaces } | undefined}
+ */
+let evidenceDeps;
+
+/** Load the evidence helpers. Idempotent; call before any mode that needs them. */
+export async function loadEvidenceDeps() {
+  if (evidenceDeps !== undefined) return evidenceDeps;
+  const [evidence, published] = await Promise.all([
+    import('./offline-property-evidence.ts'),
+    import('./published-sdk-typings.ts'),
+  ]);
+  const loaded = {
+    typedSdkMember: evidence.typedSdkMember,
+    providerWiresProperty: evidence.providerWiresProperty,
+    publishedSdkInterfaces: published.publishedSdkInterfaces,
+  };
+  // VALIDATED before it is stored. The message names only EXPORT-level causes on
+  // purpose: the `Promise.all` above has already resolved, so a module that
+  // moved or was renamed failed there with `Cannot find module` and never
+  // reaches this line — naming it here would point a maintainer at the wrong
+  // file. A renamed upstream export leaves the object
+  // defined but hollow, which `requireEvidenceDeps` cannot see — and the
+  // failure would then surface as `undefined` callables inside the classifier,
+  // whose own catch reports "the evidence could not be read" for EVERY
+  // property. That is silence where this module promises a refusal, and it
+  // reads as a legitimate could-not-determine verdict.
+  const missing = Object.entries(loaded)
+    .filter(([, fn]) => typeof fn !== 'function')
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(
+      `the evidence helpers did not export ${missing.join(', ')} AS A FUNCTION — the export ` +
+        'was removed, renamed, or is no longer a function, and continuing would report every ' +
+        'property as unreadable rather than saying so.'
+    );
+  }
+  evidenceDeps = loaded;
+  return evidenceDeps;
+}
+
+/**
+ * REFUSES rather than defaulting. A caller reaching this without having loaded
+ * is running a mode whose evidence is missing, and the one outcome that must
+ * not be reached on a guess is an allow-list entry — so it must not silently
+ * behave as though the evidence answered nothing.
+ */
+function requireEvidenceDeps() {
+  if (evidenceDeps === undefined) {
+    throw new Error(
+      'the evidence helpers are not loaded — call `await loadEvidenceDeps()` before a mode ' +
+        'that reads the SDK typings or the provider sources, or pass the helpers explicitly.'
+    );
+  }
+  return evidenceDeps;
+}
 
 /**
  * Distinguishes "this fixture is not in HEAD" (nothing to compare — a brand-new
@@ -775,10 +851,21 @@ export function countDecisions({
  * @param {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} removed
  * @param {Map<string, string>} providerFiles
  * @param {string} [repoRoot]
+ * @param {import('./diagnose-schema-refresh.d.mts').EvidenceDeps} [deps] The evidence
+ *   helpers. Defaults to the LOADED ones and refuses when nothing loaded them; tests
+ *   inject doubles here instead. Not `unknown`: the declaration file argues at its own
+ *   `EvidenceDeps` that `unknown` is too weak to be worth declaring.
  * @returns {{ written: Array<{ resourceType: string, property: string, rationale: string }>,
  *   escalated: Array<{ resourceType: string, property: string, reason: string }> }}
  */
-export function writeAutoTolerated(removed, providerFiles, repoRoot = REPO_ROOT) {
+export function writeAutoTolerated(
+  removed,
+  providerFiles,
+  repoRoot = REPO_ROOT,
+  // Resolved at CALL time, not at module load: see `loadEvidenceDeps`. Tests
+  // that inject doubles never reach the loader; the CLI loads before `main()`.
+  deps = requireEvidenceDeps()
+) {
   const written = [];
   const escalated = [];
   /** The type's properties as the refreshed fixture now lists them. */
@@ -829,8 +916,8 @@ export function writeAutoTolerated(removed, providerFiles, repoRoot = REPO_ROOT)
             property,
             currentSchemaProperties(entry.resourceType)
           ),
-          typedMember: typedSdkMember,
-          wires: providerWiresProperty,
+          typedMember: deps.typedSdkMember,
+          wires: deps.providerWiresProperty,
           repoRoot,
         });
       } catch (err) {
@@ -1911,7 +1998,7 @@ export function pendingBumpGroups(pending) {
 export function partitionPendingSdkBump({
   divergences,
   sdkLag = [],
-  publishedInterfaces = publishedSdkInterfaces,
+  publishedInterfaces = requireEvidenceDeps().publishedSdkInterfaces,
 }) {
   /** @type {import('./diagnose-schema-refresh.d.mts').PendingSdkBump[]} */
   const pendingSdkBump = [];
@@ -2186,6 +2273,21 @@ export const KNOWN_FLAGS = [
 ];
 
 /**
+ * The flag a token names, or `undefined`.
+ *
+ * Shared with the entry point so it can tell a MISTYPED flag from a real mode
+ * before loading anything: the load runs ahead of `main()`'s own guard, so on
+ * the no-install runner `--umbrella-checklists` used to report "could not load
+ * the evidence helpers" — pointing at the wrong file, which is exactly what the
+ * loader's own comment argues against.
+ *
+ * @param {string} arg
+ */
+export function knownFlagFor(arg) {
+  return KNOWN_FLAGS.find((f) => arg === f || arg.startsWith(`${f}=`));
+}
+
+/**
  * Refuse a fixture listing too small to have been produced by a real refresh.
  *
  * The LAST input in this file without a floor, and the same class as every
@@ -2299,6 +2401,92 @@ export function renderUmbrellaDocument(generatedSource) {
   return rows.length > 0 ? rows.join('\n') : UMBRELLA_EMPTY_SENTINEL;
 }
 
+/**
+ * Flags that take no value, so a following token is never theirs.
+ *
+ * EXPORTED for its fence: this is a second copy of a `KNOWN_FLAGS` fact, and
+ * nothing compared them — a future boolean flag left out re-opens the swallowed
+ * positional this set exists to stop, and a value-taking flag wrongly added
+ * makes its value report as unrecognized. `tests/unit/scripts/umbrella-checklist-no-deps.test.ts`
+ * pins the partition.
+ */
+export const VALUELESS_FLAGS = new Set(['--umbrella-checklist']);
+
+/**
+ * Classify an argv list the way {@link main} does — ONE implementation, because
+ * the entry point has to make the same call BEFORE loading anything and two
+ * spellings of "is this argv valid" is how they come to disagree. It already
+ * had: the first cut tested only dash-leading tokens, so `failed-checks
+ * property-coverage` still reported a missing dependency and named the wrong
+ * file, which is the misreport the pre-check exists to remove.
+ *
+ * @param {string[]} args
+ * @returns {{ unknown: string[], repeated: string[], valued: string[] }}
+ */
+export function classifyArgs(args) {
+  /** @type {string[]} */
+  const unknown = [];
+  /** @type {string[]} */
+  const repeated = [];
+  /** Valueless flags given a glued value. */
+  const valued = [];
+  const seen = new Set();
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    // One classification per token, so the glued and space spellings take the
+    // SAME path — an earlier revision `continue`d on the glued form before the
+    // repeat check and `--nested-key-rc=0 --nested-key-rc=3` still rendered
+    // clean.
+    //
+    // The `valued` arm below DOES `continue` before `seen`, and that is not
+    // the same hazard: it refuses the invocation outright, so a repeat it
+    // leaves unreported changes nothing about the outcome. Traced:
+    // `--umbrella-checklist --umbrella-checklist=x` reports the glued value,
+    // not the repeat, and still exits 1 on stderr.
+    const flag = knownFlagFor(a);
+    if (flag === undefined) {
+      unknown.push(a);
+      continue;
+    }
+    // A GLUED spelling of a flag that takes no value is not a valid
+    // invocation, and accepting it was worse than cosmetic: `main()` selects
+    // the checklist mode with `args.includes('--umbrella-checklist')`, which
+    // the `=` form misses, so `--umbrella-checklist=x` fell through to the full
+    // refresh-report path — reporting a missing dependency and naming the wrong
+    // file on the no-install runner, the exact misread this classifier exists
+    // to remove.
+    if (a !== flag && VALUELESS_FLAGS.has(flag)) {
+      // Its own bucket, not `unknown`: reporting it there produced a
+      // self-contradicting sentence — "unrecognized flag(s):
+      // --umbrella-checklist=true — known flags are …, --umbrella-checklist, …"
+      // — leaving the reader to spot the `=true` themselves.
+      valued.push(flag);
+      continue;
+    }
+    // A REPEAT is not a valid invocation: `rawArg` reads exactly ONE of them and
+    // WHICH one depends on the spelling — it looks for the glued form before
+    // the space form, so `--nested-key-rc 0 --nested-key-rc=3` reads 3 while
+    // the other three orderings read 0. Either way a value is silently
+    // discarded, which rendered the clean verdict over a failing checker: the
+    // last argv shape that still reached a confident answer.
+    if (seen.has(flag)) repeated.push(flag);
+    seen.add(flag);
+    if (a === flag && !VALUELESS_FLAGS.has(flag)) {
+      // Its value is consumed only if it could BE one. A dash-leading token is
+      // not a value here — the same rule `rawArg` applies — so consuming it
+      // blindly would let `--failed-checks --skipped-log <path>` swallow the
+      // second flag and report the PATH as the unknown argument.
+      //
+      // And only for a flag that TAKES one: `--umbrella-checklist` is boolean,
+      // so it used to swallow a following positional and render a full
+      // checklist for an invocation nobody wrote.
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith('-')) i += 1;
+    }
+  }
+  return { unknown, repeated, valued };
+}
+
 function main() {
   const args = process.argv.slice(2);
 
@@ -2313,44 +2501,21 @@ function main() {
   // through to the permissive arms and rendered the clean verdict. A guard
   // covering fewer spellings than its subject accepts is the shape this whole
   // file kept producing.
-  /** @type {string[]} */
-  const unknown = [];
-  /** @type {string[]} */
-  const repeated = [];
-  const seen = new Set();
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    // One classification per token, so the glued and space spellings take the
-    // SAME path — an earlier revision `continue`d on the glued form before the
-    // repeat check and `--nested-key-rc=0 --nested-key-rc=3` still rendered
-    // clean.
-    const flag = KNOWN_FLAGS.find((f) => a === f || a.startsWith(`${f}=`));
-    if (flag === undefined) {
-      unknown.push(a);
-      continue;
-    }
-    // A REPEAT is not a valid invocation: `rawArg` reads exactly ONE of them and
-    // WHICH one depends on the spelling — it looks for the glued form before
-    // the space form, so `--nested-key-rc 0 --nested-key-rc=3` reads 3 while
-    // the other three orderings read 0. Either way a value is silently
-    // discarded, which rendered the clean verdict over a failing checker: the
-    // last argv shape that still reached a confident answer.
-    if (seen.has(flag)) repeated.push(flag);
-    seen.add(flag);
-    if (a === flag) {
-      // Its value is consumed only if it could BE one. A dash-leading token is
-      // not a value here — the same rule `rawArg` applies — so consuming it
-      // blindly would let `--failed-checks --skipped-log <path>` swallow the
-      // second flag and report the PATH as the unknown argument.
-      const next = args[i + 1];
-      if (next !== undefined && !next.startsWith('-')) i += 1;
-    }
-  }
+  const { unknown, repeated, valued } = classifyArgs(args);
+
   if (repeated.length > 0) {
     throw new Error(
       `flag(s) given more than once: ${[...new Set(repeated)].join(', ')} — only one would ` +
         'have been read, and which one depends on the spelling. Refusing to report from an ' +
         'invocation this script did not understand.'
+    );
+  }
+  if (valued.length > 0) {
+    throw new Error(
+      `${[...new Set(valued)].join(', ')} takes no value — the \`=\` spelling is not the same ` +
+        'flag, and this script selects that mode by an exact match, so it would have run ' +
+        'something else entirely. Refusing to report from an invocation this script did not ' +
+        'understand.'
     );
   }
   if (unknown.length > 0) {
@@ -2649,8 +2814,47 @@ function main() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // The one mode that must run with NO dependencies installed keeps its graph to
+  // `node:` builtins; every other mode loads the evidence helpers first. Written
+  // as a positive test of THIS mode rather than a list of the others, so a mode
+  // added later loads them by default — the safe direction, since the cost is an
+  // install the workflow already performs and the alternative is a mode that
+  // silently reaches `requireEvidenceDeps`'s refusal.
+  //
+  // OUTSIDE the swallow below, deliberately. A failure HERE is not a failed
+  // diagnosis — it is the run never having had its inputs — and the swallow's
+  // justification ("a broken diagnosis must not take down the PR it describes")
+  // does not carry: rendering the could-not-run sentence at exit 0 would report
+  // a missing dependency as a report cdkd chose to write, which is the same
+  // misread the lazy import removes one layer down.
+  let inputsReady = true;
+  // A BAD INVOCATION must reach `main()`'s own guard rather than the loader: the
+  // load runs first, so without this a typo on the no-install runner reports a
+  // missing dependency and names the wrong file. Classified by the SAME
+  // function `main()` uses, so the two cannot disagree about what "bad" means —
+  // the first cut tested only dash-leading tokens and left the non-dash
+  // spelling, which `main()`'s own comment calls the load-bearing one.
+  const argv = process.argv.slice(2);
+  const { unknown, repeated, valued } = classifyArgs(argv);
+  const badInvocation = unknown.length > 0 || repeated.length > 0 || valued.length > 0;
+  if (!argv.includes('--umbrella-checklist') && !badInvocation) {
+    try {
+      await loadEvidenceDeps();
+    } catch (err) {
+      process.stderr.write(
+        `diagnose-schema-refresh: could not load the evidence helpers ` +
+          `(${err instanceof Error ? err.message : String(err)}). This run read nothing; ` +
+          'do not treat its output as a diagnosis.\n'
+      );
+      process.exitCode = 1;
+      inputsReady = false;
+    }
+  }
+  // The `try` wraps nothing when the load failed, which is deliberate rather
+  // than dead: hoisting `main()` into an `else` on the arm above would need a
+  // second copy of this catch, and the two copies are exactly what drifts.
   try {
-    main();
+    if (inputsReady) main();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // A broken diagnosis must never take down the PR it describes — but that
@@ -2669,7 +2873,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // at all. Its unwritten count is caught one step later instead, where the
     // marking step refuses an absent file rather than reading it as zero. The
     // write itself is wrapped where it happens, above.
-    const consumedByAWorkflow = process.argv.slice(2).some((a) => a === '--umbrella-checklist');
+    // By the FLAG, not the exact token: `--umbrella-checklist=x` is refused, and
+    // routing that refusal to stdout at exit 0 would hand the workflow's
+    // redirect a file whose only content is an error sentence.
+    const consumedByAWorkflow = process.argv
+      .slice(2)
+      .some((a) => knownFlagFor(a) === '--umbrella-checklist');
     if (consumedByAWorkflow) {
       // `process.exitCode`, and no `return`: this catch sits at MODULE top
       // level, not inside a function, so a `return` here is a SyntaxError that

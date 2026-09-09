@@ -23,7 +23,7 @@
  * synthetic fixture for either would encode the same assumption the parser
  * makes.
  */
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, beforeAll } from 'vite-plus/test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   cpSync,
@@ -56,6 +56,8 @@ import {
   partitionPendingSdkBump,
   pendingBumpGroups,
   writeAutoTolerated,
+  loadEvidenceDeps,
+  classifyArgs,
   UMBRELLA_EMPTY_SENTINEL,
   renderUmbrellaChecklist,
   renderUmbrellaDocument,
@@ -2122,7 +2124,12 @@ describe('the module’s own doc comments', () => {
       const attaches = seenBlocks > 1 && !/@typedef/.test(body);
       const nextLine = (lines[i + 1] ?? '').trim();
       const declares =
-        /^(export\s+)?(export\s+default\s+)?(async\s+)?(function|class|const|let|var)\s/.test(
+        // `declare` / `interface` / `type` are the DECLARATION-FILE spellings.
+        // Without them this predicate could not be pointed at the `.d.mts` at
+        // all, and that is where the orphan it exists to catch actually landed
+        // (issue go-to-k/cdkd#2858): a new `export declare function` inserted
+        // between `writeAutoTolerated`'s block and its own signature.
+        /^(export\s+)?(export\s+default\s+)?(declare\s+)?(async\s+)?(function|class|const|let|var|interface|type)\s/.test(
           nextLine
         ) || /^\/\*\*.*\*\/$/.test(nextLine);
       if (attaches && !declares) found.push(`line ${i + 2}: ${JSON.stringify(nextLine)}`);
@@ -2168,6 +2175,38 @@ describe('the module’s own doc comments', () => {
     const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
     expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
     expect(src.split('\n').filter((l) => l === ' */').length).toBeGreaterThan(20);
+  });
+
+  it('holds for the DECLARATION file too', () => {
+    // The `.mjs` arm above is where this predicate has always pointed, and the
+    // orphan it exists to catch landed in the `.d.mts` instead (issue
+    // go-to-k/cdkd#2858). The SHAPE matters, because it is what makes the
+    // incident catchable at all: a new declaration was inserted WITH ITS OWN
+    // DOCBLOCK between `writeAutoTolerated`'s docblock and its signature, so
+    // the file read `block, block, declaration` — and `block followed by
+    // another block` is the one orphan spelling this predicate detects. A
+    // declaration inserted WITHOUT a docblock would read as
+    // `block, declaration` and pass, which is the bound the `.mjs` arm above
+    // states. Caught by review, by nothing mechanical.
+    const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
+    expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
+    // BOUND, stated rather than implied: `orphansIn` matches ` */` EXACTLY, so
+    // it examines only the 7 top-level docblocks here and not the 5 INDENTED
+    // interface-member ones (`SdkLagRow.matched`, `DiagnosisInput`'s members),
+    // where the same class — a member inserted between a docblock and its
+    // symbol — is equally reachable. Widening the predicate to indented blocks
+    // is a change to the shared `.mjs` arm too, so it is not made here.
+    //
+    // Non-vacuity: the widened `declares` regex must actually MATCH this
+    // file's spellings, or every block would read as unattached and the
+    // assertion above would be reporting on a parse that found nothing.
+    expect(src).toMatch(/^export declare function /m);
+    expect(src).toMatch(/^export interface /m);
+    // Measured 7 at the tip; a floor of 5 fails on a collapse, not on an edit.
+    // It counts ` */` in the SOURCE, independent of `orphansIn` — so it bounds
+    // the file, not the predicate's reach; the two assertions above are what
+    // say the predicate parsed this file's spellings.
+    expect(src.split('\n').filter((l) => l === ' */').length).toBeGreaterThan(5);
   });
 });
 
@@ -3014,6 +3053,90 @@ describe('classifyRemovedProperty', () => {
 });
 
 describe('writeAutoTolerated', () => {
+  // The evidence helpers are loaded ON DEMAND now (issue go-to-k/cdkd#2858), so the
+  // cases below that exercise the REAL `typedSdkMember` / `providerWiresProperty`
+  // have to ask for them; the CLI does the same before `main()`. Cases that
+  // inject doubles never reach the loader.
+  beforeAll(async () => {
+    await loadEvidenceDeps();
+  });
+
+  it('declares every runtime export in the .d.mts, and nothing else', () => {
+    // The declaration file is a SECOND COPY of the module's surface and nothing
+    // compared them, so an export could ship undeclared — measured: two had
+    // (`knownFlagFor`, `loadDeclaredPropertiesSource`). A TS consumer then gets
+    // "has no exported member" for a function that exists, and the file's
+    // config-less `tsc` check cannot see the gap because it only asks whether
+    // the declarations are self-consistent.
+    //
+    // Both directions: a declaration with no export is the more dangerous half,
+    // since it type-checks at every call site and fails at runtime.
+    //
+    // BOUND, stated because the first cut of this comment read as if drift were
+    // closed and it is NOT: this compares NAMES. A declaration whose SIGNATURE
+    // drifted passes — measured in the same commit that added this fence, where
+    // `classifyArgs` had grown a third return bucket the declaration did not
+    // name. And NEITHER pattern sees `let` / `var` / `namespace` / `interface` /
+    // `type` / `default`, nor `export { x }`: on the runtime side that ships an
+    // export undeclared, and on the declared side it is a FALSE RED, since the
+    // name has no runtime counterpart for the scan to pair it with.
+    const mjs = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+    const dmts = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
+    const names = (src: string, re: RegExp): string[] =>
+      [...src.matchAll(re)].map((m) => m[1]!).sort();
+
+    const exported = names(mjs, /^export (?:const|function|async function|class) (\w+)/gm);
+    // `class` on BOTH sides: the runtime pattern matched it and the declared one
+    // did not, so the first `export class` added here would have been a
+    // permanent false red. `async function` is deliberately absent from the
+    // declared alternation — TS forbids `declare async function`.
+    const declared = names(dmts, /^export declare (?:const|function|class) (\w+)/gm);
+    expect(exported).toEqual(declared);
+    // Non-vacuity: both scans must have matched something, or two empty lists
+    // compare equal and the fence asserts nothing.
+    expect(exported.length).toBeGreaterThan(20);
+  });
+
+  it('declares every bucket classifyArgs actually returns', () => {
+    // The name-only fence above cannot see a SIGNATURE drift, and one shipped:
+    // `classifyArgs` grew a third return bucket while its declaration still
+    // named two, so a TS consumer destructuring `valued` got "Property does not
+    // exist" for a property that is there. Reverting the declaration produces
+    // ZERO type errors — measured — because nothing compares the two.
+    //
+    // Scoped to this one function rather than to the whole surface: it is the
+    // drift that actually happened, and a runtime key set is a fact the
+    // declaration cannot restate. `typeof import(...)` is no use here — it
+    // resolves to the DECLARATION, so it would compare the file with itself.
+    const dmts = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
+    // `[^}]*`, not `[\s\S]*?`: the lazy form binds THROUGH a reformatted
+    // declaration to a later type's `\n};` and collects ITS members — measured,
+    // 13 unrelated names. The case still failed, but named the wrong thing;
+    // this form yields NO MATCH there, which is the message the reader needs.
+    const block = /export declare function classifyArgs\([^)]*\): \{([^}]*)\n\};/.exec(dmts);
+    expect(block, 'classifyArgs is no longer declared as an inline object return').not.toBeNull();
+    // `\??` so an OPTIONAL member counts: without it an over-declared
+    // `valued?: string[]` passes silently — the same drift one modifier over.
+    const declared = [...block![1]!.matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]!).sort();
+    expect(declared.length, 'the member scan found nothing to compare').toBeGreaterThan(0);
+    expect(Object.keys(classifyArgs([])).sort()).toEqual(declared);
+  });
+
+  it('loads the evidence helpers ONCE', () => {
+    // Asserted in the loader's docblock and by nothing else: deleting the
+    // memoization guard reds no other case, and ESM module caching does not
+    // rescue it — the loader builds a FRESH object literal each call, so a
+    // second run returns a different one.
+    //
+    // It lives here rather than beside the no-deps cases because those depend
+    // on the module NOT having loaded, and a case that loads would make that
+    // ordering load-bearing — measured: with one there, two shuffle seeds
+    // failed the unloaded-refusal case. This file loads in `beforeAll` anyway.
+    return Promise.all([loadEvidenceDeps(), loadEvidenceDeps()]).then(([a, b]) => {
+      expect(b).toBe(a);
+    });
+  });
+
   /**
    * A scratch repo root the call may WRITE into.
    *

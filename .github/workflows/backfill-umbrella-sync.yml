@@ -58,6 +58,19 @@ jobs:
       # refresh-report setup and uses only `node:` builtins to read one
       # committed file, so a dependency install would add a failure surface to
       # a step that cannot use it.
+      #
+      # That was a true statement about what the mode CALLS and a false one
+      # about what it LOADS, and the difference cost this workflow every run it
+      # had: ESM resolves a module's WHOLE graph before any of its code runs,
+      # so a static import of `offline-property-evidence.ts` reached
+      # `typescript-v6` and the step died at load time on BOTH of the only two
+      # runs since it landed (issue
+      # https://github.com/go-to-k/cdkd/issues/2858). The helpers are loaded on
+      # demand now, and `tests/unit/scripts/umbrella-checklist-no-deps.test.ts`
+      # SPAWNS the mode against a corpus with no `node_modules` — so the claim
+      # above is checked rather than asserted. That test also asserts THIS job
+      # still declares `run-install: false`, so adding an install here does not
+      # quietly de-fang the fence: it fails it. Fix the graph instead.
       - uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1
         with:
           node-version: "24"

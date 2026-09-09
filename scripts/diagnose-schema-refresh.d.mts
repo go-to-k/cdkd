@@ -203,6 +203,36 @@ export declare function collectFixtureDeltas(input: {
 export declare function loadDeclaredProperties(repoRoot?: string): Map<string, Set<string>>;
 export declare function classifyGitShowFailure(stderr: string): undefined | typeof UNREADABLE;
 export declare const KNOWN_FLAGS: string[];
+
+/**
+ * Flags that take no value, so a following token is never theirs.
+ *
+ * Exported for its fence: it is a second copy of a `KNOWN_FLAGS` fact, and a
+ * boolean flag left out of it swallows the next token as a value.
+ */
+export declare const VALUELESS_FLAGS: ReadonlySet<string>;
+
+/** The flag a token names, or `undefined`. Shared by `main()` and the entry point. */
+export declare function knownFlagFor(arg: string): string | undefined;
+
+/**
+ * Read the coverage map `--umbrella-checklist` renders from.
+ *
+ * Declared because the runtime exports it; the sibling test compares the two
+ * lists, so an export with no declaration fails rather than going unnoticed.
+ */
+export declare function loadDeclaredPropertiesSource(repoRoot?: string): string;
+
+/**
+ * Classify an argv list the way `main()` does — one implementation, shared with
+ * the entry point so the two cannot disagree about what a bad invocation is.
+ */
+export declare function classifyArgs(args: string[]): {
+  unknown: string[];
+  repeated: string[];
+  /** Valueless flags given a glued value (`--umbrella-checklist=x`). */
+  valued: string[];
+};
 export declare function assertFixtureFloor(fixtureCount: number, declaredCount: number): void;
 /** What `--umbrella-checklist` emits when the campaign is finished. */
 export declare const UMBRELLA_EMPTY_SENTINEL: string;
@@ -249,13 +279,64 @@ export declare function classifyRemovedProperty(input: {
   repoRoot?: string;
 }): { auto: false; reason: string } | { auto: true; rationale: string };
 /**
+ * The evidence helpers `loadEvidenceDeps` resolves.
+ *
+ * Structural, for the config-less-`tsc` reason recorded on the loader below;
+ * `typedSdkMember` / `providerWiresProperty` repeat the shapes
+ * `classifyRemovedProperty` already declares for its own `typedMember` /
+ * `wires` inputs, which is what those two are passed as.
+ */
+export interface EvidenceDeps {
+  typedSdkMember: (
+    property: string,
+    clientPackage: string,
+    repoRoot?: string
+  ) =>
+    | { client: string; spelling: 'exact' | 'lowerFirst'; interfaces: readonly string[] }
+    | undefined;
+  providerWiresProperty: (
+    property: string,
+    providerRelPath: string | undefined,
+    repoRoot?: string
+  ) => { sites: readonly string[] } | undefined;
+  publishedSdkInterfaces: (
+    client: string,
+    version: string
+  ) => ReadonlyMap<string, ReadonlyMap<string, unknown>> | undefined;
+}
+
+/**
+ * Load the evidence helpers the non-checklist modes need.
+ *
+ * They are NOT imported at the top of the script: ESM resolves a module's whole
+ * graph before any of its code runs, so a static import made
+ * `--umbrella-checklist` die on `typescript-v6` in the sync workflow, which
+ * deliberately installs nothing (issue
+ * https://github.com/go-to-k/cdkd/issues/2858). Idempotent. The CLI calls it
+ * before `main()` for every mode but the checklist; a caller reaching
+ * `writeAutoTolerated` or `partitionPendingSdkBump` without it, and without
+ * injecting doubles, gets a REFUSAL rather than a silent empty verdict.
+ *
+ * The members are declared STRUCTURALLY rather than imported: this file is
+ * type-checked by a CONFIG-LESS `tsc` (see the sibling test), so it cannot
+ * import from a `.ts` module — the same constraint the `partitionPendingSdkBump`
+ * note above records. `unknown` was the first cut and is too weak to be worth
+ * declaring: a caller passing `{}` compiles, the helpers read as `undefined`
+ * callables, and the classifier's own `catch` turns that into "the evidence
+ * could not be read" for every property — silence exactly where this contract
+ * promises a refusal.
+ */
+export declare function loadEvidenceDeps(): Promise<EvidenceDeps>;
+
+/**
  * Apply the classifier across every removed entry, writing the settled ones into
  * `_todo-backfill.json`'s `bogusTolerated` and reporting both outcomes.
  */
 export declare function writeAutoTolerated(
   removed: RemovedEntry[],
   providerFiles: Map<string, string>,
-  repoRoot?: string
+  repoRoot?: string,
+  deps?: EvidenceDeps
 ): {
   written: Array<{ resourceType: string; property: string; rationale: string }>;
   escalated: Array<{ resourceType: string; property: string; reason: string }>;
