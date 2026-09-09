@@ -9,6 +9,7 @@ import {
   ENTRIES_DIR,
   FRAGMENT_DIR,
   HEADER_FILE,
+  HEADING,
   assembleChangelog,
   byNewest,
   headingFor,
@@ -144,8 +145,9 @@ function assertEveryHeadingOpensItsBlock(d: string): void {
  * INSERT before a heading is absorbed (an insertion is what a subsequence
  * tolerates). A DELETED one is caught for THIS archive, whose body bullets are
  * unique, but not in general: a deleted line re-syncs against a later duplicate
- * of itself, and `assertArchiveConserved(['a','b','','b'], ['a','','b'])`
- * passes. The corpus is what makes the stronger reading true here, not the
+ * of itself, and
+ * `assertArchiveConserved(['a','b','','b'].join('\n'), ['a','','b'].join('\n'))`
+ * passes -- the joins are load-bearing, since both parameters are strings. The corpus is what makes the stronger reading true here, not the
  * check.
  *
  * ## The insertion budget is part of the assertion, not a separate nicety
@@ -441,14 +443,17 @@ describe('assemble-changelog', () => {
     ].join('\n');
 
     /**
-     * What ONE probe fragment may add to this fixture: the `# header` line and
-     * the blank after it, the probe's own bullet, at most one generated heading
-     * when the date opens a new section, and at most two seam blanks around it,
-     * plus the trailing newline. Stated as a number the caller can defend
-     * rather than a measured constant, so it fails if the assembler starts
-     * padding settled history.
+     * What ONE probe fragment may add to a TWO-SECTION fixture: the `# header`
+     * line and the blank after it, the probe's own bullet, at most one
+     * generated heading when the date opens a new section, at most two seam
+     * blanks around it, and the trailing newline.
+     *
+     * Named for its shape rather than for `WIDE`, because the variant-heading
+     * arm below applies it to a different two-section archive; tying the number
+     * to one fixture would let widening that fixture loosen the other case
+     * silently.
      */
-    const WIDE_BUDGET = 7;
+    const TWO_SECTION_BUDGET = 7;
 
     for (const [date, where] of [
       ['2026-09-09', 'newer than the newest archived section'],
@@ -461,9 +466,7 @@ describe('assemble-changelog', () => {
         const doc = withTree(WIDE, { [`${date}-2813-probe.md`]: '- probe entry' }, (root) =>
           assembleChangelog(root)
         );
-        // header line + the blank after it + the probe + at most a new heading
-        // and the seam blanks around it + the trailing newline.
-        assertArchiveConserved(doc, WIDE, WIDE_BUDGET);
+        assertArchiveConserved(doc, WIDE, TWO_SECTION_BUDGET);
         // Not vacuous: the fragment really did land, exactly once. Conservation
         // alone is satisfied by an assembler that dropped the fragment.
         expect(doc.split('- probe entry').length - 1, 'the fragment did not land exactly once').toBe(1);
@@ -501,9 +504,10 @@ describe('assemble-changelog', () => {
       const doc = withTree(archive, { '2026-07-02-2813-probe.md': '- probe entry' }, (root) =>
         assembleChangelog(root)
       );
-      assertArchiveConserved(doc, archive, WIDE_BUDGET);
+      assertArchiveConserved(doc, archive, TWO_SECTION_BUDGET);
+      // No presence assertion here: `assertArchiveConserved` above already
+      // requires VARIANT present and in order, so one could not fail.
       const lines = doc.split('\n');
-      expect(lines.indexOf(VARIANT), 'the variant heading was rewritten rather than kept').toBeGreaterThan(-1);
       expect(
         lines[lines.indexOf(VARIANT) + 1],
         'the fragment did not merge under the variant heading it shares a date with'
@@ -521,7 +525,7 @@ describe('assemble-changelog', () => {
         (root) => assembleChangelog(root)
       );
       // Two probes, so two bullets plus the one new heading and its seams.
-      assertArchiveConserved(doc, WIDE, WIDE_BUDGET + 1);
+      assertArchiveConserved(doc, WIDE, TWO_SECTION_BUDGET + 1);
       const lines = doc.split('\n');
       expect(lines[lines.indexOf(headingFor('2026-09-08')) + 1], 'the same-date fragment did not merge').toBe(
         '- merged entry'
@@ -607,9 +611,10 @@ describe('assemble-changelog', () => {
     const doc = assembleChangelog(root);
     // Read count == file count, so a `readEntries` that silently returned
     // nothing fails HERE rather than leaving every verdict above green over an
-    // empty set. It is 0 today and that is the honest state: the archive holds
-    // every pre-migration entry and no fragment has been written yet, so this
-    // assertion is a TRIPWIRE for the first one rather than coverage now.
+    // empty set. It was 0 when this was written -- the archive held every
+    // pre-migration entry and no fragment existed -- and `changelog.d/entries/`
+    // has since been populated, which the budget's `fragmentLines` term now
+    // reads, so it is live coverage rather than the tripwire it started as.
     // Both claims this migration rests on, asserted rather than measured once
     // by hand. (1) The ARCHIVE comes out verbatim -- the whole reason it is one
     // file and not 574 is that settled history must not be reformatted, and
@@ -618,36 +623,58 @@ describe('assemble-changelog', () => {
     // and both live seam defects on this branch were found against the real
     // archive, not a fixture.
     const archive = readFileSync(join(root, FRAGMENT_DIR, ARCHIVE_FILE), 'utf-8').replace(/\s+$/, '');
-    // The insertion budget, derived rather than measured-and-pinned: the header
-    // and the blank after it, every fragment's own lines, one generated heading
-    // per fragment date the archive does not already head, at most one seam
-    // blank per emitted heading, and the trailing newline.
+    // The insertion budget, DERIVED from what the assembler can emit rather than
+    // allowed generously: the header and the blank after it, every fragment's
+    // own lines, one generated heading per fragment date the archive does not
+    // already head, the seams, and the trailing newline.
+    //
+    // The seam term is derived too, and that is the point of it. The assembler
+    // inserts a blank before a section only when the line already there is not
+    // one, so a seam is emitted only where the PREVIOUS body ends non-blank --
+    // one section of 51 on this archive, not 51. Budgeting one per heading made
+    // 51 of the 52-line slack the seam term alone, and worse, it grew by one
+    // for every dated section the archive would ever gain: a widening window
+    // for unattributed text inside settled history rather than a constant
+    // (go-to-k/cdkd#2813 review, M1b).
+    //
+    // A merged fragment PREPENDS to a section's body, so it cannot change
+    // whether that body ends blank. A NEW section can, at both of its edges --
+    // one seam before its heading, and one before the heading that follows it
+    // if the fragment text ends non-blank -- hence two per new heading. The
+    // preamble contributes one only when it exists and ends non-blank; it is
+    // empty on this archive, whose first line IS a heading.
     //
     // Residual, stated because the count alone does not establish it: an
-    // insertion SMALLER than the seam allowance is inside the budget, so the
-    // delta bounds a bulk reformat (the 575-blank padding measured in review is
-    // far outside it) without bounding a few foreign lines. Attributing every
-    // unconsumed line rather than counting it is the stronger form; this is the
-    // one the review asked for and it closes the class that was measured open.
+    // insertion smaller than the remaining slack still fits. Attributing every
+    // unconsumed line to the header, a fragment, a heading or a seam is the
+    // stronger form and needs no slack at all; this is the one the review asked
+    // for, and with the seam term derived the slack is 2 lines rather than 51.
     const headerLines = readFileSync(join(root, FRAGMENT_DIR, HEADER_FILE), 'utf-8').replace(/\s+$/, '').split('\n')
       .length;
-    const archiveHeadingLines = archive
-      .split('\n')
-      .map((l) => /^\*\*Recently Implemented\*\* \((\d{4}-\d{2}-\d{2})/.exec(l)?.[1])
-      .filter((d): d is string => d !== undefined);
-    const archiveDates = new Set(archiveHeadingLines);
+    // The assembler's OWN pattern, imported rather than re-spelled: a looser
+    // copy sees a section it does not, and every count below would disagree
+    // with the document while both forms happen to return 51 today.
+    const archiveLines = archive.split('\n');
+    const archiveDates = new Set(
+      archiveLines.map((l) => HEADING.exec(l)?.[1]).filter((d): d is string => d !== undefined)
+    );
+    // Split into sections the way the assembler does, then count the bodies
+    // that end with text -- those are the ones a following heading needs a seam
+    // in front of.
+    const firstHeading = archiveLines.findIndex((l) => HEADING.test(l));
+    const bodies: string[][] = [];
+    for (const line of archiveLines.slice(firstHeading)) {
+      if (HEADING.test(line)) bodies.push([]);
+      else bodies[bodies.length - 1]!.push(line);
+    }
+    const sectionEndsNonBlank = bodies.filter((b) => b.length > 0 && b[b.length - 1]!.trim() !== '').length;
+    const preamble = archiveLines.slice(0, firstHeading);
+    const preambleSeam = preamble.length > 0 && preamble[preamble.length - 1]!.trim() !== '' ? 1 : 0;
     const fragments = readEntries(root);
     const fragmentLines = fragments.reduce((n, e) => n + e.text.split('\n').length, 0);
     const newHeadings = new Set(fragments.map((e) => e.date).filter((d) => !archiveDates.has(d))).size;
-    // Heading LINES, not distinct dates: the seam is emitted per heading, and
-    // 2026-07-02 has two of them (the variant `(2026-07-02, second batch):`),
-    // so the two counts differ by one on this archive -- 51 against 50.
-    const emittedHeadings = archiveHeadingLines.length + newHeadings;
-    assertArchiveConserved(
-      doc,
-      archive,
-      headerLines + 1 + fragmentLines + newHeadings + emittedHeadings + 1
-    );
+    const seams = sectionEndsNonBlank + 2 * newHeadings + preambleSeam;
+    assertArchiveConserved(doc, archive, headerLines + 1 + fragmentLines + newHeadings + seams + 1);
     assertEveryHeadingOpensItsBlock(doc);
     const onDisk = readdirSync(join(root, FRAGMENT_DIR, ENTRIES_DIR)).filter((n) => n !== '.gitkeep');
     expect(readEntries(root).length, 'a fragment on disk was not read into the assembly').toBe(onDisk.length);
