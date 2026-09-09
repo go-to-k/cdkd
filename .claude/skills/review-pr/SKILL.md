@@ -20,6 +20,48 @@ issues the `Agent` calls.
 
 ## Steps
 
+0. **A PUSH is not a round-completion signal — a REPLY is. Check for one
+   before opening a round on a head you have not reviewed.**
+
+   ```bash
+   # The newest push, and whether the author has said anything since it.
+   PUSH=$(gh api repos/go-to-k/cdkd/issues/<N>/timeline --paginate \
+     -q '[.[] | select(.event=="head_ref_force_pushed" or .event=="committed")
+          | .created_at // .committer.date] | last')
+   AUTHOR=$(gh pr view <N> --json author -q .author.login)
+   gh api repos/go-to-k/cdkd/issues/<N>/comments --paginate \
+     -q "[.[] | select(.user.login==\"$AUTHOR\" and .created_at > \"$PUSH\")] | length"
+   # 0 = the author has not spoken since the push. Wait.
+   ```
+
+   A contributor pushes MID-round routinely — to bank work before a rebase,
+   to start CI on a partial change, after a fix they know is not the whole
+   round. Nothing distinguishes those from the push that finishes a round, so
+   a push alone does not say "your turn": go-to-k/cdkd#2840 measured 7 pairs
+   of adjacent opposite-author comments under 5 minutes across 15 PRs, the
+   tightest 39 s, and the concrete cost on go-to-k/cdkd#2753 was a review
+   round answering a head the author had already moved past plus a second
+   comment repeating requests their reply had crossed.
+
+   **The rule is on the REVIEWER side on purpose.** Both contributor-side
+   signals proposed in that issue — mark the PR draft while responding, or
+   apply a `review ok` label — were refused: nothing can enforce either, the
+   label needs triage permission a fork contributor does not have (measured:
+   403 on go-to-k/cdkd#2809), and both fail SILENTLY, so a contributor who
+   forgets the ritual is punished by a review that never arrives and no way
+   to see why. This version requires nothing of the contributor, is not
+   opt-in, and applies to every contributor uniformly.
+
+   **Bounded, so a contributor who does not write replies is never stuck**:
+   wait for a reply, and if none has landed ~30 minutes after the push, open
+   the round anyway and say in the comment which head you reviewed. Skip the
+   wait outright when the maintainer asked for the review explicitly, when
+   the PR is yours, or when the push is the FIRST one on a PR that has had no
+   review round yet — there is no round for it to be completing.
+
+   When you do open a round, name the head sha you reviewed. That is what
+   lets a crossed reply be recognised as crossed instead of re-litigated.
+
 1. **Fetch PR stats**:
 
    ```bash
