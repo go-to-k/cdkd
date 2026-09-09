@@ -23,16 +23,51 @@ issues the `Agent` calls.
 0. **A PUSH is not a round-completion signal — a REPLY is. Check for one
    before opening a round on a head you have not reviewed.**
 
+   Decide it from WHOSE TURN IT IS, never from a push timestamp. A round is a
+   conversation turn: your comment ends yours, the author's ends theirs. Two
+   push-timestamp spellings were tried and both skip the wait SILENTLY — a
+   `committed` timeline event carries the COMMIT date, not the push time (and
+   that is the ordinary non-force-push shape, so the error is the common
+   case), and an empty `$PUSH` makes jq's `.created_at > ""` true for every
+   comment ever written, which reads as "they replied". Neither errors.
+
    ```bash
-   # The newest push, and whether the author has said anything since it.
-   PUSH=$(gh api repos/go-to-k/cdkd/issues/<N>/timeline --paginate \
-     -q '[.[] | select(.event=="head_ref_force_pushed" or .event=="committed")
-          | .created_at // .committer.date] | last')
-   AUTHOR=$(gh pr view <N> --json author -q .author.login)
-   gh api repos/go-to-k/cdkd/issues/<N>/comments --paginate \
-     -q "[.[] | select(.user.login==\"$AUTHOR\" and .created_at > \"$PUSH\")] | length"
-   # 0 = the author has not spoken since the push. Wait.
+   PR=<N>; REPO=go-to-k/cdkd
+   ME=$(gh api user -q .login)
+   THEM=$(gh pr view "$PR" --repo "$REPO" --json author -q .author.login)
+   # All three surfaces: issue comments, review BODIES, and review-thread
+   # replies. A contributor answering from "Files changed" -- GitHub's default
+   # -- writes only the last two, and `issues/<N>/comments` never shows them.
+   said() { # said <login> -> newest ISO timestamp, or empty
+     { gh api "repos/$REPO/issues/$PR/comments" --paginate -q ".[]|select(.user.login==\"$1\")|.created_at"
+       gh api "repos/$REPO/pulls/$PR/comments"  --paginate -q ".[]|select(.user.login==\"$1\")|.created_at"
+       gh api "repos/$REPO/pulls/$PR/reviews"   --paginate -q ".[]|select(.user.login==\"$1\" and .submitted_at!=null)|.submitted_at"
+     } | sort | tail -1
+   }
+   MINE=$(said "$ME"); THEIRS=$(said "$THEM")
    ```
+
+   Then, in order — the first match wins:
+
+   - `MINE` empty → **no round has happened**; nothing to complete. Proceed.
+   - `THEIRS` newer than `MINE` → **their turn ended**. Proceed. ISO-8601
+     sorts lexically, so compare with bash's `[[ "$THEIRS" > "$MINE" ]]` — NOT
+     `[ ... ]`, whose `>` is undefined for strings and which zsh rejects
+     outright (`condition expected: >`, measured while writing this). In a
+     shell you do not control:
+     `[ "$(printf '%s\n%s\n' "$MINE" "$THEIRS" | sort | tail -1)" = "$THEIRS" ]`
+     with an added `!=` guard for the equal case.
+   - otherwise → **you spoke last and they have not answered**. Compute
+     `now - MINE`; under ~30 minutes, WAIT. Waiting means arming a signal, not
+     a bare intention: a foreground `sleep` is blocked, so start a background
+     poll (or a `Monitor`) and end the turn as WAITING naming it. At ~30
+     minutes or more, proceed and say in the comment which head you reviewed.
+
+   Residual, stated rather than papered over: a contributor who replies and
+   THEN pushes again reads as "their turn ended", so that push is reviewed
+   immediately. That is the pre-rule behaviour, and erring toward reviewing is
+   the safe direction — an unnecessary round costs a comment, a missed one
+   costs the contributor a stall.
 
    A contributor pushes MID-round routinely — to bank work before a rebase,
    to start CI on a partial change, after a fix they know is not the whole
@@ -52,12 +87,14 @@ issues the `Agent` calls.
    to see why. This version requires nothing of the contributor, is not
    opt-in, and applies to every contributor uniformly.
 
-   **Bounded, so a contributor who does not write replies is never stuck**:
-   wait for a reply, and if none has landed ~30 minutes after the push, open
-   the round anyway and say in the comment which head you reviewed. Skip the
-   wait outright when the maintainer asked for the review explicitly, when
-   the PR is yours, or when the push is the FIRST one on a PR that has had no
-   review round yet — there is no round for it to be completing.
+   The ~30 minute bound is measured, not picked: across this contributor's
+   PRs, 41 of 43 replies landed within 30 minutes of the push they answered.
+
+   Skip the wait outright, each condition decidable from a command rather than
+   a judgement: the maintainer asked for this review in the current turn; the
+   PR is yours (`[ "$ME" = "$THEM" ]`); or `MINE` is empty, which is the same
+   first-branch test as above — there is no round for the push to be
+   completing.
 
    When you do open a round, name the head sha you reviewed. That is what
    lets a crossed reply be recognised as crossed instead of re-litigated.
@@ -269,7 +306,11 @@ issues the `Agent` calls.
    waits for all, and synthesizes:
 
    - Any **blocker** → the marker is NOT set; address the blockers and
-     re-run `/review-pr <N>` **from step 1**, on the PR's CURRENT stats. A
+     re-run `/review-pr <N>` **from step 0**, on the PR's CURRENT stats —
+     step 0 and not step 1, because a fix-round re-review IS the case step 0
+     exists for: go-to-k/cdkd#2753's crossing happened on exactly this
+     re-entry, so starting at step 1 leaves the rule inert on its own
+     motivating case. A
      fix round adds LOC and files AND a `fix:` commit, so the tier is not
      fixed for the life of a PR and neither is whether `pr-review-gate.sh`
      requires the marker at all: go-to-k/cdkd#2593 opened at 306 LOC / 4
