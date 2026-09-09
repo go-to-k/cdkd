@@ -116,7 +116,7 @@ echo "[verify] step 1: install fixture deps"
 # plain `vp install` here hoists the fixture's aws-cdk-lib resolution to the
 # repo-root's pinned version (2.244.0, which carries only the L1
 # `aws-bedrockagentcore` constructs) instead of the fixture's declared
-# `^2.257.0` (which carries the L2 `Runtime` / `AgentRuntimeArtifact` this
+# `^2.260.0` (which carries the L2 `Runtime` / `AgentRuntimeArtifact` this
 # fixture uses). Install standalone so the fixture floats to its own aws-cdk-lib.
 [ -d node_modules ] || pnpm install --ignore-workspace --prefer-offline
 

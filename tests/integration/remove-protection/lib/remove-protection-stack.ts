@@ -137,8 +137,11 @@ export class RemoveProtectionStack extends cdk.Stack {
     alb.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     // ── AWS::AutoScaling::AutoScalingGroup with DeletionProtection ───
-    // L2 AutoScalingGroup in aws-cdk-lib v2.169 does NOT yet expose
-    // the `DeletionProtection` property — set via L1 addPropertyOverride.
+    // Set via L1 addPropertyOverride. The L2 AutoScalingGroup did not expose
+    // `deletionProtection` when this fixture was written; it does now
+    // (`CommonAutoScalingGroupProps.deletionProtection`), but the override is
+    // kept deliberately — it is the raw template shape `--remove-protection`
+    // reads, and switching to the L2 prop would change what is under test.
     //
     // The group launches ONE instance (DesiredCapacity: 1) whose launch
     // template sets `DisableApiTermination: true` (issue #796). ASG-level
