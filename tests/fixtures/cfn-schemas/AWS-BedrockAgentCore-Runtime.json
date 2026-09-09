@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Runtime",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-09",
   "properties": [
     "AgentRuntimeArn",
     "AgentRuntimeArtifact",
@@ -8,6 +8,7 @@
     "AgentRuntimeName",
     "AgentRuntimeVersion",
     "AuthorizerConfiguration",
+    "CapacityProviderConfiguration",
     "CreatedAt",
     "Description",
     "EnvironmentVariables",
@@ -98,10 +99,15 @@
     ],
     "FilesystemConfigurations": [
       "AccessPointArn",
+      "CapacityProviderVolume",
       "EfsAccessPoint",
       "MountPath",
       "S3FilesAccessPoint",
-      "SessionStorage"
+      "SessionStorage",
+      "VolumeName"
+    ],
+    "CapacityProviderConfiguration": [
+      "CapacityProviderArn"
     ],
     "WorkloadIdentityDetails": [
       "WorkloadIdentityArn"
@@ -175,6 +181,9 @@
       "RequestHeaderAllowlist"
     ],
     "FilesystemConfigurations": [
+      "CapacityProviderVolume",
+      "CapacityProviderVolume.MountPath",
+      "CapacityProviderVolume.VolumeName",
       "EfsAccessPoint",
       "EfsAccessPoint.AccessPointArn",
       "EfsAccessPoint.MountPath",
@@ -183,6 +192,9 @@
       "S3FilesAccessPoint.MountPath",
       "SessionStorage",
       "SessionStorage.MountPath"
+    ],
+    "CapacityProviderConfiguration": [
+      "CapacityProviderArn"
     ],
     "WorkloadIdentityDetails": [
       "WorkloadIdentityArn"
@@ -203,6 +215,7 @@
       "LifecycleConfiguration": "object",
       "RequestHeaderConfiguration": "object",
       "FilesystemConfigurations": "array",
+      "CapacityProviderConfiguration": "object",
       "AgentRuntimeVersion": "scalar",
       "WorkloadIdentityDetails": "object",
       "CreatedAt": "scalar",
@@ -293,10 +306,18 @@
       "AccessPointArn": "scalar",
       "MountPath": "scalar"
     },
+    "CapacityProviderConfiguration": {
+      "CapacityProviderArn": "scalar"
+    },
+    "CapacityProviderVolumeConfiguration": {
+      "VolumeName": "scalar",
+      "MountPath": "scalar"
+    },
     "FilesystemConfiguration": {
       "SessionStorage": "object",
       "EfsAccessPoint": "object",
-      "S3FilesAccessPoint": "object"
+      "S3FilesAccessPoint": "object",
+      "CapacityProviderVolume": "object"
     },
     "SelfManagedLatticeResource": {
       "ResourceConfigurationIdentifier": "scalar"
@@ -318,7 +339,6 @@
     "#top": [
       "AgentRuntimeArtifact",
       "AgentRuntimeName",
-      "NetworkConfiguration",
       "RoleArn"
     ],
     "NetworkConfiguration": [
@@ -368,6 +388,13 @@
     "S3FilesAccessPointConfiguration": [
       "AccessPointArn",
       "MountPath"
+    ],
+    "CapacityProviderConfiguration": [
+      "CapacityProviderArn"
+    ],
+    "CapacityProviderVolumeConfiguration": [
+      "MountPath",
+      "VolumeName"
     ],
     "SelfManagedLatticeResource": [
       "ResourceConfigurationIdentifier"

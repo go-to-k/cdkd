@@ -25,6 +25,19 @@ vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
   };
 });
 
+// `Api create()` builds `ExecuteApiArn` from the account (issue #2833), and
+// `getAccountInfo` reaches STS. Unmocked, the network fence in `tests/setup.ts`
+// fails the file — which is how this mock came to be added rather than the call
+// going unnoticed.
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => {
+  const orig = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...orig,
+    getAccountInfo: () =>
+      Promise.resolve({ accountId: '111122223333', region: 'us-east-1', fabricated: false }),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),

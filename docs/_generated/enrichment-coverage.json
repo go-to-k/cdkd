@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "enriched": 50,
-    "noComputedAttr": 15,
+    "enriched": 47,
+    "noComputedAttr": 17,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 69,
-    "allowListedTypes": 87
+    "sdkFallbackGap": 70,
+    "allowListedTypes": 85
   },
   "types": [
     {
@@ -101,7 +101,8 @@
       "sdkBacked": true,
       "readOnlyProperties": [
         "ApiEndpoint",
-        "ApiId"
+        "ApiId",
+        "ExecuteApiArn"
       ],
       "enrichedKeys": [],
       "attributes": [
@@ -113,10 +114,15 @@
           "name": "ApiId",
           "status": "allow-listed",
           "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "ExecuteApiArn",
+          "status": "gap"
         }
       ],
       "gaps": [
-        "ApiEndpoint"
+        "ApiEndpoint",
+        "ExecuteApiArn"
       ]
     },
     {
@@ -768,8 +774,8 @@
         "Arn",
         "CloneUrlHttp",
         "CloneUrlSsh",
-        "Id",
-        "Name"
+        "Name",
+        "RepositoryId"
       ],
       "enrichedKeys": [],
       "attributes": [
@@ -786,13 +792,13 @@
           "status": "gap"
         },
         {
-          "name": "Id",
-          "status": "allow-listed",
-          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
-        },
-        {
           "name": "Name",
           "status": "gap"
+        },
+        {
+          "name": "RepositoryId",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
@@ -844,7 +850,7 @@
       "sdkBacked": true,
       "readOnlyProperties": [
         "Arn",
-        "Id"
+        "PolicyId"
       ],
       "enrichedKeys": [],
       "attributes": [
@@ -853,7 +859,7 @@
           "status": "gap"
         },
         {
-          "name": "Id",
+          "name": "PolicyId",
           "status": "allow-listed",
           "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
@@ -930,19 +936,11 @@
     },
     {
       "resourceType": "AWS::DocDB::DBSubnetGroup",
-      "bucket": "enriched",
+      "bucket": "no-computed-attr",
       "sdkBacked": true,
-      "readOnlyProperties": [
-        "Id"
-      ],
+      "readOnlyProperties": [],
       "enrichedKeys": [],
-      "attributes": [
-        {
-          "name": "Id",
-          "status": "allow-listed",
-          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
-        }
-      ],
+      "attributes": [],
       "gaps": []
     },
     {
@@ -1729,10 +1727,11 @@
     },
     {
       "resourceType": "AWS::Events::Rule",
-      "bucket": "enriched",
+      "bucket": "sdk-fallback-gap",
       "sdkBacked": true,
       "readOnlyProperties": [
-        "Arn"
+        "Arn",
+        "RuleName"
       ],
       "enrichedKeys": [],
       "attributes": [
@@ -1740,9 +1739,15 @@
           "name": "Arn",
           "status": "allow-listed",
           "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "RuleName",
+          "status": "gap"
         }
       ],
-      "gaps": []
+      "gaps": [
+        "RuleName"
+      ]
     },
     {
       "resourceType": "AWS::FSx::FileSystem",
@@ -1791,12 +1796,12 @@
       "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
-        "Id"
+        "Name"
       ],
       "enrichedKeys": [],
       "attributes": [
         {
-          "name": "Id",
+          "name": "Name",
           "status": "allow-listed",
           "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
@@ -2497,7 +2502,9 @@
         "ReadReplicaDBInstanceIdentifiers",
         "ResumeFullAutomationModeTime",
         "SecondaryAvailabilityZone",
-        "StatusInfos"
+        "StatusInfos",
+        "StorageOperationPercentProgress",
+        "StorageOperationStatus"
       ],
       "enrichedKeys": [
         "Arn",
@@ -2569,6 +2576,14 @@
         {
           "name": "StatusInfos",
           "status": "gap"
+        },
+        {
+          "name": "StorageOperationPercentProgress",
+          "status": "gap"
+        },
+        {
+          "name": "StorageOperationStatus",
+          "status": "gap"
         }
       ],
       "gaps": [
@@ -2586,7 +2601,9 @@
         "ReadReplicaDBInstanceIdentifiers",
         "ResumeFullAutomationModeTime",
         "SecondaryAvailabilityZone",
-        "StatusInfos"
+        "StatusInfos",
+        "StorageOperationPercentProgress",
+        "StorageOperationStatus"
       ]
     },
     {
@@ -2716,19 +2733,11 @@
     },
     {
       "resourceType": "AWS::Route53::RecordSet",
-      "bucket": "enriched",
+      "bucket": "no-computed-attr",
       "sdkBacked": true,
-      "readOnlyProperties": [
-        "Id"
-      ],
+      "readOnlyProperties": [],
       "enrichedKeys": [],
-      "attributes": [
-        {
-          "name": "Id",
-          "status": "allow-listed",
-          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
-        }
-      ],
+      "attributes": [],
       "gaps": []
     },
     {

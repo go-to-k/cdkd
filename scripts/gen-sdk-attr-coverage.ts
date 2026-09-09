@@ -173,6 +173,15 @@ export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   // drives each path's real create / update / import result into the resolver),
   // never from this list or its fence.
   //
+  // `AWS::ApiGatewayV2::Api` (`ExecuteApiArn`) was very nearly the third KNOWN
+  // GAP entry: the issue-2821 schema refresh published the attribute, the
+  // provider recorded only `ApiId` / `ApiEndpoint`, and an entry here would
+  // have turned the critic green in one line. It was FIXED instead
+  // (`ApiGatewayV2Provider.buildExecuteApiArn`, the constructed-ARN shape from
+  // issue 1824), because the fence in `gen-sdk-attr-coverage.test.ts` asserts
+  // this list carries no known gap at all — a ratchet that only holds while
+  // nobody weakens it to admit their own case.
+  //
   // The list is deliberately EMPTY. That is a green state, not a broken one —
   // `UPDATE_WRAP_ALLOW_LIST` in `gen-update-wrap-coverage.ts` reached the same
   // place once its gaps were fixed. Adding an entry back is a decision that

@@ -4119,6 +4119,33 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // `AWS::ApiGatewayV2::Api` (physicalId is the bare api id). The provider
+    // RECORDS `ExecuteApiArn` on create / import / update (issue
+    // [#2833](https://github.com/go-to-k/cdkd/issues/2833)), so the cached-attribute
+    // read above answers for every resource cdkd has touched since. This
+    // branch is for the ones it has NOT: a record written by an earlier
+    // binary carries no `ExecuteApiArn`, and an API whose own properties are
+    // unchanged diffs NO_CHANGE, so `update()` never runs and the heal never
+    // fires — the HEADLINE case, since adding an `Fn::GetAtt` to a consumer
+    // changes the consumer, not the API. Without this the read reached
+    // `guardedPhysicalIdFallback`, which hard-throws on an `*Arn` whose
+    // fallback is a bare api id (the #1179 class), and told the user to file
+    // an issue for an attribute cdkd can construct from what it already holds.
+    // Constructed rather than fetched: no ApiGatewayV2 API returns this ARN.
+    // `constructGuardedAttribute` refuses the result when STS did not report
+    // the real account, so a fabricated account cannot be baked in here any
+    // more than in the provider's own builder.
+    if (resourceType === 'AWS::ApiGatewayV2::Api') {
+      switch (attributeName) {
+        case 'ExecuteApiArn':
+          return `arn:${partition}:execute-api:${region}:${accountId}:${physicalId}`;
+        case 'ApiId':
+          return physicalId;
+        default:
+          return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
+      }
+    }
+
     // ServiceDiscovery namespaces (physicalId is the namespace id). All
     // three kinds share the ARN shape; the DNS kinds additionally expose
     // `HostedZoneId` (the Route 53 hosted zone AWS creates alongside the

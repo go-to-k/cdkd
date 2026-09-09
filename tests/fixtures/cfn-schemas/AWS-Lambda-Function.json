@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::Function",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-09",
   "properties": [
     "Architectures",
     "Arn",
@@ -75,7 +75,9 @@
     ],
     "FileSystemConfigs": [
       "Arn",
-      "LocalMountPath"
+      "DirectS3Read",
+      "LocalMountPath",
+      "S3FilesConfig"
     ],
     "TenancyConfig": [
       "TenantIsolationMode"
@@ -151,7 +153,9 @@
     ],
     "FileSystemConfigs": [
       "Arn",
-      "LocalMountPath"
+      "LocalMountPath",
+      "S3FilesConfig",
+      "S3FilesConfig.DirectS3Read"
     ],
     "TenancyConfig": [
       "TenantIsolationMode"
@@ -289,6 +293,9 @@
       "S3ObjectStorageMode": "scalar",
       "ImageUri": "scalar"
     },
+    "S3FilesConfig": {
+      "DirectS3Read": "scalar"
+    },
     "LoggingConfig": {
       "LogFormat": "scalar",
       "ApplicationLogLevel": "scalar",
@@ -299,6 +306,7 @@
       "Variables": "object"
     },
     "FileSystemConfig": {
+      "S3FilesConfig": "object",
       "Arn": "scalar",
       "LocalMountPath": "scalar"
     },

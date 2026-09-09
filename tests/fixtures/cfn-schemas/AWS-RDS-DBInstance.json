@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBInstance",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-09",
   "properties": [
     "AdditionalStorageVolumes",
     "AllocatedStorage",
@@ -92,6 +92,8 @@
     "SourceRegion",
     "StatusInfos",
     "StorageEncrypted",
+    "StorageOperationPercentProgress",
+    "StorageOperationStatus",
     "StorageThroughput",
     "StorageType",
     "Tags",
@@ -118,7 +120,9 @@
     "ReadReplicaDBInstanceIdentifiers",
     "ResumeFullAutomationModeTime",
     "SecondaryAvailabilityZone",
-    "StatusInfos"
+    "StatusInfos",
+    "StorageOperationPercentProgress",
+    "StorageOperationStatus"
   ],
   "createOnlyProperties": [
     "BackupTarget",
@@ -180,6 +184,8 @@
       "AllocatedStorage",
       "Iops",
       "MaxAllocatedStorage",
+      "StorageOperationPercentProgress",
+      "StorageOperationStatus",
       "StorageThroughput",
       "StorageType",
       "VolumeName"
@@ -226,6 +232,8 @@
       "AllocatedStorage",
       "Iops",
       "MaxAllocatedStorage",
+      "StorageOperationPercentProgress",
+      "StorageOperationStatus",
       "StorageThroughput",
       "StorageType",
       "VolumeName"
@@ -321,6 +329,8 @@
       "SourceRegion": "scalar",
       "StatusInfos": "array",
       "StorageEncrypted": "scalar",
+      "StorageOperationStatus": "scalar",
+      "StorageOperationPercentProgress": "scalar",
       "StorageType": "scalar",
       "StorageThroughput": "scalar",
       "Tags": "array",
@@ -370,7 +380,9 @@
       "AllocatedStorage": "scalar",
       "Iops": "scalar",
       "MaxAllocatedStorage": "scalar",
-      "StorageThroughput": "scalar"
+      "StorageThroughput": "scalar",
+      "StorageOperationStatus": "scalar",
+      "StorageOperationPercentProgress": "scalar"
     }
   },
   "definitionRequired": {

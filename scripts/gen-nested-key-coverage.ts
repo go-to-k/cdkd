@@ -2612,6 +2612,21 @@ export interface SdkMemberType {
    * one of its `refName` tests is guarded by `kind === 'ref'`.
    */
   readonly refName?: string;
+  /**
+   * The VALUE type of a map-shaped member (`Record<string, Y>` /
+   * `Map<string, Y>` -> `Y`), when it is a bare reference.
+   *
+   * `refName` cannot carry it: for these the member's own type name is the
+   * useless `Record` / `Map`, and overwriting it with the value type would
+   * make the shape pass's `kind === 'ref'` tests read a wrapper's name for a
+   * member that is not one. Separate field, so every existing consumer is
+   * unchanged and only {@link inputReachableInterfaces} — which asks what a
+   * REQUEST can carry — follows the edge. Without it a shape reachable ONLY
+   * as a map value looked unreachable, and a definition of that name fell to
+   * the twin branch, which is the one place an unrelated interface can be
+   * bound (issue [#2843](https://github.com/go-to-k/cdkd/pull/2843) review).
+   */
+  readonly valueRefName?: string;
 }
 
 /**
@@ -2654,6 +2669,17 @@ export function collectSdkInterfaces(modelsDir: string): Map<string, Map<string,
           ts.isIdentifier(element.typeName)
           ? { kind: 'array', refName: element.typeName.text }
           : { kind: 'array' };
+      }
+      // `Record<string, Y>` / `Map<string, Y>`: keep the member's own type name
+      // in `refName` (what the shape pass reads) and carry the VALUE type
+      // separately, so the reachability walk can follow it. AWS models a
+      // map-valued member this way, and a shape reachable only through one
+      // would otherwise never be input-reachable.
+      if (node.typeName.text === 'Record' || node.typeName.text === 'Map') {
+        const value = node.typeArguments?.[1];
+        return value !== undefined && ts.isTypeReferenceNode(value) && ts.isIdentifier(value.typeName)
+          ? { kind: 'ref', refName: node.typeName.text, valueRefName: value.typeName.text }
+          : { kind: 'ref', refName: node.typeName.text };
       }
       return { kind: 'ref', refName: node.typeName.text };
     }
@@ -2699,6 +2725,164 @@ export function wrapperInterfaceNames(
     if (members.has('Quantity')) wrappers.add(name);
   }
   return wrappers;
+}
+
+/**
+ * How AWS SDK v3 names an operation's INPUT shape.
+ *
+ * Kept in step with `scripts/offline-property-evidence.ts`'s list of the same
+ * name, which reached this set the hard way: leaving the QUERY-protocol
+ * spellings (`Type`, `Message`) out made whole services — rds, neptune,
+ * auto-scaling, docdb, elasticache — unreachable from any input root.
+ */
+const INPUT_ROOT_SUFFIXES = ['Request', 'Input', 'CommandInput', 'Type', 'Message'] as const;
+
+/**
+ * Every interface REACHABLE from an operation input, by walking member type
+ * references out of the input roots.
+ *
+ * The WRITE direction is what this critic judges — "does the template key reach
+ * AWS" — so the interface a CFn definition is compared against has to be one a
+ * request can carry. Reachability rather than a name suffix, because most
+ * definitions are NESTED inside a request rather than being one.
+ *
+ * Array edges are followed as well as plain references: {@link SdkMemberType}
+ * carries the element type for `T[]` / `Array<T>`, and a list-valued member is
+ * how most nested shapes hang off a request. MAP-VALUE edges too
+ * ({@link SdkMemberType.valueRefName}) — a member typed `Record<string, Y>`
+ * carries `Y` on the wire exactly as a list-valued one carries its element,
+ * and a walk that stops at the map declares `Y` unreachable, which pushes a
+ * definition of that name onto the twin branch below.
+ */
+export function inputReachableInterfaces(
+  interfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>
+): Set<string> {
+  const queue = [...interfaces.keys()].filter((n) =>
+    INPUT_ROOT_SUFFIXES.some((s) => n.endsWith(s))
+  );
+  const reachable = new Set<string>();
+  while (queue.length > 0) {
+    const name = queue.shift()!;
+    if (reachable.has(name)) continue;
+    reachable.add(name);
+    for (const type of interfaces.get(name)?.values() ?? []) {
+      if (type.refName !== undefined && !reachable.has(type.refName)) queue.push(type.refName);
+      if (type.valueRefName !== undefined && !reachable.has(type.valueRefName)) {
+        queue.push(type.valueRefName);
+      }
+    }
+  }
+  return reachable;
+}
+
+/** The SDK interface a CFn definition is judged against, and how it was found. */
+export interface ResolvedDefinition {
+  readonly name: string;
+  readonly members: ReadonlyMap<string, SdkMemberType>;
+  /**
+   * `exact` when the definition's own name resolved AND is input-reachable;
+   * `exact-unreachable` when the exact name was the only candidate but nothing
+   * reaches it from an operation input; otherwise the suffix used.
+   *
+   * The two exact arms are told apart deliberately: they are the SAME name and
+   * members but not the same claim — one says a request can carry this shape,
+   * the other that no request provably can — and a single value would leave a
+   * later consumer branching on `via` unable to see the difference.
+   */
+  readonly via: 'exact' | 'exact-unreachable' | (typeof INPUT_ROOT_SUFFIXES)[number];
+}
+
+/**
+ * Resolve a CFn definition name to the SDK interface the WRITE path would carry.
+ *
+ * The exact name wins whenever it is input-reachable — every currently-green
+ * verdict resolves that way and none moves. The fallback exists because CFn and
+ * the SDK are independent namespaces: several services name the request shape
+ * `<X>Input` and the RESPONSE shape `<X>`, so an exact-name match lands on the
+ * shape a request can never carry, and every member that exists only on the
+ * request twin reports `definition-member-missing` about a key the provider
+ * delivers perfectly well.
+ *
+ * That is not hypothetical and not stable over time — AWS RENAMED the
+ * `AWS::Glue::Connection` definitions from `AuthenticationConfigurationInput` to
+ * `AuthenticationConfiguration` in a schema refresh, which is what turned four
+ * previously-clean keys into blocking divergences whose documented remedy is a
+ * `NESTED_KEY_ALLOW_LIST` entry: a standing promise cdkd never sends the value,
+ * recorded about a value it does send (issue
+ * [#2821](https://github.com/go-to-k/cdkd/issues/2821)).
+ *
+ * Measured across every target after that refresh, with the resolution as it
+ * ships: 357 definitions, 6 whose exact match is not input-reachable, 5 of
+ * which have a qualifying twin. The other one (`AWS::Glue::Crawler`'s
+ * `Schedule`) has no twin and keeps resolving exactly — an unreachable
+ * interface is still the best available answer, and refusing to resolve at all
+ * would turn it into an `unmatchedDefinitions` entry instead.
+ *
+ * Suffixes are tried in {@link INPUT_ROOT_SUFFIXES} order, so `Request` beats
+ * `Input` when a service somehow declares both; the order is the shared list's,
+ * not a preference of this function.
+ */
+export function resolveDefinitionInterface(
+  defName: string,
+  interfaces: ReadonlyMap<string, ReadonlyMap<string, SdkMemberType>>,
+  /** From {@link inputReachableInterfaces}. Consulted for the EXACT name only. */
+  inputReachable: ReadonlySet<string>
+): ResolvedDefinition | undefined {
+  const exact = interfaces.get(defName);
+  if (exact !== undefined && inputReachable.has(defName)) {
+    return { name: defName, members: exact, via: 'exact' };
+  }
+  // Gated on the exact name EXISTING. Without it, a definition that matches no
+  // interface at all — 53 of the 357 across the current targets, which today
+  // report as `unmatchedDefinitions` — could be silently rebound to an
+  // unrelated `<X>Type` or `<X>Message` shape, since those suffixes are in the
+  // list for the query protocol. Measured over the refreshed fixtures the
+  // no-exact-but-twin-exists case is EMPTY, so the gate is behaviour-identical
+  // today and exists to keep it that way.
+  //
+  // No `inputReachable` test on the twin, and that is not an omission: its name
+  // ENDS in a root suffix, so `inputReachableInterfaces` seeds it as a root and
+  // it is reachable by construction. A guard there read as defence and was
+  // unfalsifiable — no fixture can make it fire (measured: the mutation that
+  // deleted it survived every case written for it).
+  //
+  // The twin must also LOOK LIKE the same shape, evidenced by member overlap:
+  // `Type` and `Message` are in the list for the query protocol, so a
+  // definition named `Filter` would otherwise bind to an unrelated `FilterType`
+  // on the strength of the name alone, and a false CLEAN there is silent (a
+  // request shape carries many members, so the audited key is likely present in
+  // it by accident). The bar is HALF the exact shape's members; measured over
+  // every target, the five real pairs sit at 100 / 100 / 83 / 100 / 100 percent,
+  // and the one shape with no twin is unaffected. Failing the bar falls back
+  // to the exact match, whose divergences BLOCK CI — the loud direction, and the
+  // right one, since the hazard being closed is a silent wrong binding.
+  //
+  // An EMPTY exact shape is REFUSED, and deliberately rather than by accident of
+  // the arithmetic: `shared * 2 >= 0` is vacuously true there, so `shared > 0` is
+  // the only decider and can never hold. With no members to compare there is no
+  // relatedness evidence at all, and binding on the NAME alone is precisely what
+  // this gate exists to stop. No definition REACHES this gate in that shape
+  // today — `AWS::S3::Bucket`'s `EventBridgeConfiguration` does resolve to a
+  // member-less interface, but it is input-reachable, so it returns at the
+  // `exact` arm above and never gets here. The distinction is worth keeping:
+  // "no such shape exists" is measurably false.
+  if (exact !== undefined) {
+    for (const suffix of INPUT_ROOT_SUFFIXES) {
+      const twin = interfaces.get(defName + suffix);
+      if (twin === undefined) continue;
+      let shared = 0;
+      for (const member of exact.keys()) if (twin.has(member)) shared++;
+      if (shared > 0 && shared * 2 >= exact.size) {
+        return { name: defName + suffix, members: twin, via: suffix };
+      }
+    }
+  }
+  // No input-reachable candidate. The exact match, reachable or not, is still
+  // the closest thing to an answer — dropping it here would report the
+  // definition as UNMATCHED, which says something different and louder.
+  return exact === undefined
+    ? undefined
+    : { name: defName, members: exact, via: 'exact-unreachable' };
 }
 
 /**
@@ -5586,6 +5770,7 @@ export function classifyTargetShapes(
   allowList: ReadonlyMap<string, AllowListEntry> = NESTED_KEY_ALLOW_LIST
 ): ShapePassResult {
   const wrappers = wrapperInterfaceNames(sdkInterfaces);
+  const inputReachable = inputReachableInterfaces(sdkInterfaces);
   const shapeLiterals = expandLiteralSegments(providerLiterals);
 
   // Global SDK member index: styled name -> every declared kind.
@@ -5641,7 +5826,15 @@ export function classifyTargetShapes(
   };
 
   for (const [defName, members] of Object.entries(definitionShapes)) {
-    const sdkIface = defName === '#top' ? undefined : sdkInterfaces.get(defName);
+    // Resolved to the interface a REQUEST can carry, not to the same-spelled one
+    // — see `resolveDefinitionInterface`. `resolved.name` is what the reported
+    // detail must name, or a reader chases a member on an interface the check
+    // never consulted.
+    const resolved =
+      defName === '#top'
+        ? undefined
+        : resolveDefinitionInterface(defName, sdkInterfaces, inputReachable);
+    const sdkIface = resolved?.members;
     if (defName !== '#top' && !sdkIface) unmatchedDefinitions.push(defName);
 
     for (const [key, shape] of Object.entries(members)) {
@@ -5705,7 +5898,11 @@ export function classifyTargetShapes(
           defName,
           'definition',
           'definition-member-missing',
-          `SDK interface \`${defName}\` has no \`${styled(key)}\` member`
+          // Names the interface actually CONSULTED, which is not always the
+          // definition's own spelling. A reader sent to `AuthenticationConfiguration`
+          // when the check read `AuthenticationConfigurationInput` looks at the
+          // wrong shape and reaches the opposite conclusion.
+          `SDK interface \`${resolved!.name}\` has no \`${styled(key)}\` member`
         );
       }
     }

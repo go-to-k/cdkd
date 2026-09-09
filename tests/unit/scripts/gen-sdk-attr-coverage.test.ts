@@ -14,12 +14,22 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * The two (type, ARN attribute) pairs issue 1824 fixed by caching, shared by the
- * two fences in `real repo coverage` below so they cannot name different pairs.
+ * Every (type, ARN attribute) pair fixed by CACHING rather than by an allow-list
+ * entry, shared by the two fences in `real repo coverage` below so they cannot
+ * name different pairs. Named for the RULE rather than for issue 1824, which
+ * contributed only the first two — a name that dates itself invites the third
+ * entry to be filed somewhere else.
+ *
+ * The first two are issue 1824's. `AWS::ApiGatewayV2::Api` joined them in issue
+ * [#2833](https://github.com/go-to-k/cdkd/issues/2833): the issue-2821 schema
+ * refresh published `ExecuteApiArn`, and a `knownGap` entry would have turned
+ * the critic green in one line — the option the `carries no KNOWN GAP entries`
+ * fence below exists to refuse, including to the author who found the gap.
  */
-const ISSUE_1824_CACHED_PAIRS = [
+const CACHED_ARN_PAIRS = [
   ['AWS::RDS::DBSubnetGroup', 'DBSubnetGroupArn'],
   ['AWS::SSM::Parameter', 'Arn'],
+  ['AWS::ApiGatewayV2::Api', 'ExecuteApiArn'],
 ] as const;
 
 describe('collectStoredAttributeKeys', () => {
@@ -253,7 +263,7 @@ describe('real repo coverage (regression floor)', () => {
     // `tests/unit/provisioning/uncached-arn-attributes-issue-1824.test.ts`, which
     // drives each path's real result through the resolver, and this fence's job
     // is only to keep the type off the allow list.
-    for (const [resourceType, attr] of ISSUE_1824_CACHED_PAIRS) {
+    for (const [resourceType, attr] of CACHED_ARN_PAIRS) {
       const classified = report.types.find((t) => t.resourceType === resourceType);
       expect(classified, `${resourceType} classifies nothing`).toBeDefined();
       const found = classified!.arnAttributes.find((a) => a.name === attr);

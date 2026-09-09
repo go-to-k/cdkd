@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::FSx::FileSystem",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-09",
   "properties": [
     "BackupId",
     "DNSName",
@@ -48,12 +48,15 @@
       "DataCompressionType",
       "DataReadCacheConfiguration",
       "DeploymentType",
+      "Destination",
       "DriveCacheType",
       "EfaEnabled",
       "ExportPath",
       "ImportPath",
       "ImportedFileChunkSize",
       "Iops",
+      "Level",
+      "LogConfiguration",
       "MetadataConfiguration",
       "Mode",
       "PerUnitStorageThroughput",
@@ -161,6 +164,9 @@
       "ExportPath",
       "ImportPath",
       "ImportedFileChunkSize",
+      "LogConfiguration",
+      "LogConfiguration.Destination",
+      "LogConfiguration.Level",
       "MetadataConfiguration",
       "MetadataConfiguration.Iops",
       "MetadataConfiguration.Mode",
@@ -295,6 +301,7 @@
       "ImportedFileChunkSize": "scalar",
       "DeploymentType": "scalar",
       "ThroughputCapacity": "scalar",
+      "LogConfiguration": "object",
       "DataCompressionType": "scalar",
       "DataReadCacheConfiguration": "object",
       "ImportPath": "scalar",
@@ -320,6 +327,10 @@
       "AutomaticBackupRetentionDays": "scalar",
       "EndpointIpv6AddressRange": "scalar",
       "PreferredSubnetId": "scalar"
+    },
+    "LogConfiguration": {
+      "Destination": "scalar",
+      "Level": "scalar"
     },
     "RootVolumeConfiguration": {
       "ReadOnly": "scalar",
@@ -409,6 +420,9 @@
     ],
     "OntapConfiguration": [
       "DeploymentType"
+    ],
+    "LogConfiguration": [
+      "Level"
     ],
     "WindowsConfiguration": [
       "ThroughputCapacity"
