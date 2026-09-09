@@ -2401,8 +2401,16 @@ export function renderUmbrellaDocument(generatedSource) {
   return rows.length > 0 ? rows.join('\n') : UMBRELLA_EMPTY_SENTINEL;
 }
 
-/** Flags that take no value, so a following token is never theirs. */
-const VALUELESS_FLAGS = new Set(['--umbrella-checklist']);
+/**
+ * Flags that take no value, so a following token is never theirs.
+ *
+ * EXPORTED for its fence: this is a second copy of a `KNOWN_FLAGS` fact, and
+ * nothing compared them — a future boolean flag left out re-opens the swallowed
+ * positional this set exists to stop, and a value-taking flag wrongly added
+ * makes its value report as unrecognized. `tests/unit/scripts/umbrella-checklist-no-deps.test.ts`
+ * pins the partition.
+ */
+export const VALUELESS_FLAGS = new Set(['--umbrella-checklist']);
 
 /**
  * Classify an argv list the way {@link main} does — ONE implementation, because
@@ -2429,6 +2437,17 @@ export function classifyArgs(args) {
     // clean.
     const flag = knownFlagFor(a);
     if (flag === undefined) {
+      unknown.push(a);
+      continue;
+    }
+    // A GLUED spelling of a flag that takes no value is not a valid
+    // invocation, and accepting it was worse than cosmetic: `main()` selects
+    // the checklist mode with `args.includes('--umbrella-checklist')`, which
+    // the `=` form misses, so `--umbrella-checklist=x` fell through to the full
+    // refresh-report path — reporting a missing dependency and naming the wrong
+    // file on the no-install runner, the exact misread this classifier exists
+    // to remove.
+    if (a !== flag && VALUELESS_FLAGS.has(flag)) {
       unknown.push(a);
       continue;
     }

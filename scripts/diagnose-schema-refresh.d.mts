@@ -203,6 +203,23 @@ export declare function collectFixtureDeltas(input: {
 export declare function loadDeclaredProperties(repoRoot?: string): Map<string, Set<string>>;
 export declare function classifyGitShowFailure(stderr: string): undefined | typeof UNREADABLE;
 export declare const KNOWN_FLAGS: string[];
+
+/**
+ * Flags that take no value, so a following token is never theirs.
+ *
+ * Exported for its fence: it is a second copy of a `KNOWN_FLAGS` fact, and a
+ * boolean flag left out of it swallows the next token as a value.
+ */
+export declare const VALUELESS_FLAGS: ReadonlySet<string>;
+
+/**
+ * Classify an argv list the way `main()` does — one implementation, shared with
+ * the entry point so the two cannot disagree about what a bad invocation is.
+ */
+export declare function classifyArgs(args: string[]): {
+  unknown: string[];
+  repeated: string[];
+};
 export declare function assertFixtureFloor(fixtureCount: number, declaredCount: number): void;
 /** What `--umbrella-checklist` emits when the campaign is finished. */
 export declare const UMBRELLA_EMPTY_SENTINEL: string;

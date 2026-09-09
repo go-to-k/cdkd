@@ -327,6 +327,74 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     expect(run.stdout).not.toMatch(WORKFLOW_SHAPE);
   }, 60_000);
 
+  it('reports a REPEATED flag as a flag error, not as a failed load', () => {
+    // The pre-check has THREE arms — unknown, repeated, and the mode test — and
+    // only the first two were fenced. Deleting `|| repeated.length > 0` red
+    // nothing while changing what a user sees on the no-install runner: the
+    // "given more than once" refusal became "could not load the evidence
+    // helpers", which is the wrong-file misreport the other cases fence.
+    const root = makeCorpus();
+    const run = spawnSync(
+      process.execPath,
+      ['scripts/diagnose-schema-refresh.mjs', '--nested-key-rc', '0', '--nested-key-rc', '3'],
+      { cwd: root, encoding: 'utf8' }
+    );
+    expect(run.stdout).toContain('flag(s) given more than once: --nested-key-rc');
+    expect(run.stdout).not.toContain('could not load the evidence helpers');
+    expect(run.status).toBe(0);
+  }, 60_000);
+
+  it('REFUSES a glued value on the flag that takes none', () => {
+    // `knownFlagFor` matches the `=` prefix, so `--umbrella-checklist=x` read as
+    // VALID — while `main()` selects the mode with an exact `includes`, which
+    // that spelling misses. It fell through to the full refresh-report path:
+    // on the no-install runner a dependency error naming the wrong file, and
+    // with dependencies a report at exit 0 that the sync workflow would splice
+    // into the umbrella in place of the checklist.
+    const root = makeCorpus();
+    const run = spawnSync(
+      process.execPath,
+      ['scripts/diagnose-schema-refresh.mjs', '--umbrella-checklist=x'],
+      { cwd: root, encoding: 'utf8' }
+    );
+    expect(run.stdout).toContain('unrecognized flag(s): --umbrella-checklist=x');
+    expect(run.stdout).not.toContain('could not load the evidence helpers');
+    expect(run.stdout).not.toMatch(WORKFLOW_SHAPE);
+  }, 60_000);
+
+  it('partitions KNOWN_FLAGS against what the READERS actually consume', async () => {
+    // `VALUELESS_FLAGS` is a second copy of a `KNOWN_FLAGS` fact and nothing
+    // compared them: a boolean flag left out of it swallows the next token as a
+    // value, which is the bug the sibling case above fences for the one flag
+    // that has it today.
+    //
+    // The comparison has to be against a THIRD fact, not against the two
+    // constants. A first cut asserted `classifyArgs` consumes a value exactly
+    // when the flag is not in `VALUELESS_FLAGS` — which is what `classifyArgs`
+    // is written to do, so it was tautological and a new unlisted boolean flag
+    // passed it (measured). The third fact is the READER: a flag takes a value
+    // iff `main()` reads one for it.
+    const { KNOWN_FLAGS, VALUELESS_FLAGS } = await import(
+      '../../../scripts/diagnose-schema-refresh.mjs'
+    );
+    const source = readFileSync(join(repoRoot, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+    const READERS = ['rawArg', 'readArg', 'readArgValue', 'readNumArg'];
+    const readsAValueFor = (flag: string): boolean =>
+      READERS.some((reader) => source.includes(`${reader}('${flag}')`));
+
+    const declaredValueless = [...VALUELESS_FLAGS].sort();
+    const withoutAReader = KNOWN_FLAGS.filter((f) => !readsAValueFor(f)).sort();
+    expect(withoutAReader).toEqual(declaredValueless);
+
+    // Non-vacuity: the reader scan must actually MATCH, or every flag lands in
+    // `withoutAReader` and the equality above would be comparing two lists
+    // built by a scan that found nothing.
+    expect(KNOWN_FLAGS.filter((f) => readsAValueFor(f)).length).toBe(
+      KNOWN_FLAGS.length - VALUELESS_FLAGS.size
+    );
+    expect(VALUELESS_FLAGS.size).toBeGreaterThan(0);
+  });
+
   it('names EVERY hollow member, not just the first', () => {
     // `missing.join(', ')` is only exercised at length 1 by the case above, and
     // only for `typedSdkMember`. A one-name report would read as "the rest are
