@@ -2529,13 +2529,21 @@ __gmc '' 'a defined constant is not reported' 'GATE_FLAGS'
 # `-lt 10` test and carried two cases of slack: measured, deleting TWO `__gmc`
 # cases left it printing `ran all 10 cases` over a green suite. A floor that
 # spans two populations is not a floor.
+#
+# `-ne`, not `-lt`, and that is the second half. A one-sided floor re-opens the
+# same slack the moment the block GROWS: measured, adding an 11th case makes it
+# print `ran all 11` green, and deleting an original then reports `ran all 10`
+# green -- the identical failure arriving by the other direction. Equality
+# forces whoever adds a case to bump the count with it, which is the only
+# spelling that cannot drift.
 __gmc_count=$((pass + fail - __gmc_ran))
-if [ "$__gmc_count" -lt 10 ]; then
+if [ "$__gmc_count" -ne 10 ]; then
   fail=$((fail + 1))
-  fail_log="${fail_log}FAIL gate_missing_const block: only $__gmc_count of 10 cases ran -- cases are vanishing, not failing\n"
+  fail_log="${fail_log}FAIL gate_missing_const block ran $__gmc_count cases, expected exactly 10 -- a case vanished, or one was added without bumping the count\n"
 else
   pass=$((pass + 1)); printf 'ok   gate_missing_const block ran all %s cases\n' "$__gmc_count"
 fi
+__gmc_tail_start=$((pass + fail))
 
 # THE TWO MESSAGES THIS HELPER EMITS, held to the same shape rule as the hook
 # refusals. Both fire while EVERY Bash call is refused, so an indented recipe
@@ -2584,6 +2592,22 @@ for __n in "so this NON-BLOCKING hook is skipping rather than refusing" \
        fail_log="${fail_log}FAIL the soft note must say: $__n\n" ;;
   esac
 done
+
+# A CARDINALITY GUARD ON THE TAIL, for the same reason the block above has one
+# and by the same measurement. `CASE_FLOOR` is evaluated far upstream and the
+# block floor ends before these run, so nothing counted the two shape cases or
+# the five needles: measured, dropping `soft` from the shape loop reports 648/0
+# in silence -- the round-19 soft-shape fence gone -- and dropping the last
+# needle does the same. Cases asserted by construction rather than by mutation
+# is the defect this whole file has been chasing; these were the last instance
+# of it in here.
+__gmc_tail=$((pass + fail - __gmc_tail_start))
+if [ "$__gmc_tail" -ne 7 ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL the helper-message block ran $__gmc_tail cases, expected exactly 7 (2 shape + 5 needles) -- a case vanished, or one was added without bumping the count\n"
+else
+  pass=$((pass + 1)); printf 'ok   the helper-message block ran all 7 cases\n'
+fi
 
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
