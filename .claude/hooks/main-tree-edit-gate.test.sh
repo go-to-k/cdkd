@@ -807,10 +807,11 @@ else
     fail=$((fail + 1)); printf 'FAIL Edit of a tracked main-tree file must still be BLOCKED with a constant missing\n'
   fi
 
-  # THE REFUSAL TEXT. Seven needles over fourteen lines, and the coverage is
-  # stated exactly because an earlier wording claimed "one per SENTENCE" and
-  # review measured 5 of 7 -- deleting line 2, 3, 4, 8, 10 or 13 leaves this
-  # suite AND main-tree-branch-gate green. What IS fully pinned is the half an
+  # THE REFUSAL TEXT. Seven needles over the refusal's fourteen LINES, and the
+  # coverage is stated exactly because an earlier wording claimed "one per
+  # SENTENCE". Measured by deleting each line in turn: six of the fourteen --
+  # lines 2, 3, 4, 8, 10 and 13 -- leave this suite AND main-tree-branch-gate
+  # green; line 1 reddens two cases and every other line reddens one. What IS fully pinned is the half an
   # agent ACTS on: which tools survive, where that route holds and does not,
   # and who repairs it in the main tree. Whole-message deletion is caught by
   # the population guard below. Review measured that deleting the

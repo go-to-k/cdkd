@@ -2573,7 +2573,13 @@ for __l in en_US.UTF-8 C.UTF-8 en_GB.UTF-8 UTF-8; do
   if [ "$(LC_ALL="$__l" locale charmap 2>/dev/null)" = "UTF-8" ]; then __gmc_utf8="$__l"; break; fi
 done
 if [ -z "$__gmc_utf8" ]; then
+  # BOTH counters move: `fail` because the control could not discriminate, and
+  # `pass` because the accented case below did not run and the block guard
+  # counts cases, not verdicts. Without the second the guard ALSO fires
+  # ("a case vanished"), which misdirects on the one box this control exists
+  # for -- a C-only runner -- by blaming the harness for the environment.
   fail=$((fail + 1))
+  pass=$((pass + 1))
   fail_log="${fail_log}FAIL no UTF-8 locale available, so the LC_ALL guard case cannot discriminate -- it would pass whether or not the guard exists\n"
 else
   pass=$((pass + 1)); printf 'ok   a UTF-8 locale (%s) is available, so the next case can discriminate\n' "$__gmc_utf8"

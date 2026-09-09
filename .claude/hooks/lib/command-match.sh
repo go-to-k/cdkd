@@ -4301,7 +4301,12 @@ gate_refuse_unevaluable_marker() {
 # No count of the interpolations is given. Two revisions carried one ("43
 # across 30 lines"), and review measured 42 across 29 -- a figure nothing keeps
 # true, restated in a file whose own rule is that a list is not restated as a
-# count. `grep -cE '^[A-Za-z_][A-Za-z0-9_]*=.*:-\}'` answers it.
+# count. Two units, two recipes, because a third revision offered the LINE
+# recipe for the INTERPOLATION number:
+#
+#   interpolations: grep -E '^[A-Za-z_][A-Za-z0-9_]*=' <this file> \
+#                     | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:-\}' | wc -l
+#   lines:          grep -cE '^[A-Za-z_][A-Za-z0-9_]*=.*:-\}' <this file>
 #
 # **The non-empty-at-load filter is what keeps this list derivable rather than
 # hand-curated.** Seven of the names this file interpolates are mutable SCRATCH

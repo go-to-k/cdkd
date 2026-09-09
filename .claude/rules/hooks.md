@@ -932,10 +932,11 @@ future check added to that hook belongs INSIDE the `Bash` arm.
 **NOT fenced as a class yet** — the fence built alongside this change was split
 out into go-to-k/cdkd#2826 after four review rounds each measured the previous
 round's fix reporting a green tally over a live fail-open. **What holds the
-calls in place meanwhile is THREE suites and review, not thirty.** Measured by
-deleting the `gate_require_const` line from each hook and re-running that hook's
-own suite: `main-tree-branch-gate`, `restore-backup` and `main-tree-edit-gate`
-redden; the other 28 report an identical tally before and after, because a suite
+calls in place meanwhile is THREE suites and review, not thirty-one.**
+Measured by deleting the `gate_require_const` line from each hook and re-running
+that hook's own suite: `main-tree-branch-gate`, `restore-backup` and
+`main-tree-edit-gate` redden; the other 27 report an identical tally before and
+after, and `post-merge-sync-reminder` has no suite at all -- because a suite
 that never stages a library missing the constant cannot see the call go away. So
 a hook added before go-to-k/cdkd#2826 lands can read a library constant with no
 `gate_require_const` and nothing will say so — and so can an existing one whose
