@@ -284,7 +284,7 @@ stack-lock-renewal	2026-08-23T02:58:02Z	PASS	539	verify.sh	issue #2168 lock rene
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-08-02T05:07:05Z	PASS	31	verify.sh	new verify.sh (#1335): state info human+json, flag+env sources, 1 del/0 err, 0 orphans
 stepfunctions	2026-09-08T08:09:51Z	PASS	130	verify.sh	rc 0, ACTIVE w/ auto role, destroy 0 orphans (SFN arm for #2783)
-stepfunctions-logging	2026-09-08T09:12:07Z	PASS	195	verify.sh	rc 0; 3rd run of phase 1a: 10 log-destination retries, 0 assume-role (#2783)
+stepfunctions-logging	2026-09-09T03:36:24Z	PASS	310	verify.sh	rc 0; 1a 6 log-dest retries, 4a 5 assume-role (+1 log-dest tail); 2 destroys 0 errors (#2801)
 stepfunctions-s3-definition	2026-07-26T19:45:58Z	PASS	43	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 synthetics-canary	2026-07-26T19:25:15Z	PASS	144	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 tags-propagation	2026-07-26T18:49:34Z	PASS	63	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean

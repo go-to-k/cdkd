@@ -13,11 +13,25 @@
 # cdkd retries them on the dense cadence (src/deployment/retryable-errors.ts).
 #
 # Which race you get depends on the AGE GAP between the trust policy and the
-# grants, and window 1 MASKS window 2 (SFN checks assume-role first). Phase 0
-# exists to make window 2 deterministic — it deploys the role alone and lets it
-# settle, so the Phase 1 create races the log-delivery grants only. Phase 1a
-# then ASSERTS the retry happened, because a run that never reaches window 2
-# would pass identically with the #2783 fix reverted.
+# grants, and window 1 MASKS window 2 (SFN checks assume-role first). So ONE
+# deploy can only ever pin ONE of them, and this fixture pins both by deploying
+# twice from different starting states:
+#
+#   Phase 0-1a  role deployed ALONE and left to settle, so only the
+#               log-delivery grants are still propagating -> window 2 (#2783).
+#   Phase 4-4a  everything redeployed from nothing after Phase 3, so the role
+#               is fresh again -> window 1 (#2801).
+#
+# Each phase ASSERTS its retry fired, because a run that never reaches its
+# window would pass identically with the corresponding fix reverted.
+#
+# The two directions are NOT symmetric, and each assertion keys on its own
+# needle rather than on exclusivity for that reason. Phase 1 is pure by
+# construction -- Phase 0's settle closes window 1, measured 0 assume-role
+# rejections across runs. Phase 4 only LEADS with window 1: once the trust
+# policy settles mid-deploy the grants may still be propagating, so a
+# log-destination retry can follow in the same phase (measured: 5 then 1).
+# Both are absorbed and the deploy succeeds, which is the property under test.
 #
 # Also the integ coverage for SFN LoggingConfiguration + TracingConfiguration
 # removal-clear on UPDATE (issue #978): UpdateStateMachine is patch-style, so a
@@ -35,6 +49,10 @@
 #      template). Assert AWS now reports logging level OFF and tracing disabled
 #      (the removal actually reached AWS, not just cdkd state).
 #   3. Destroy + assert the state machine is gone and cdkd state is removed.
+#   4. Redeploy from scratch (role + policy + state machine together), so the
+#      assume-role window is the one still open.
+#   4a. Assert cdkd RETRIED the assume-role rejection (needle + sentinel).
+#   5. Destroy again + the same gone-probes.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -178,7 +196,108 @@ dump_retry_evidence() {
   echo "      --- last propagation-retry lines seen (may be empty) ---" >&2
   grep -E 'Retrying|attempt [0-9]+/' "${DEPLOY_LOG:-/dev/null}" | tail -5 >&2 || true
   echo "      --- last AccessDenied / authorization lines seen ---" >&2
-  grep -iE 'accessdenied|not authorized' "${DEPLOY_LOG:-/dev/null}" | tail -5 >&2 || true
+  # `authorized to assume` is NOT redundant with `not authorized`: window 1's
+  # sentence reads "...nor the regional one IS authorized to assume the provided
+  # role", carrying neither "not authorized" nor "AccessDenied". Without it this
+  # digest prints empty on exactly the regression Phase 4 exists to catch.
+  grep -iE 'accessdenied|not authorized|authorized to assume' "${DEPLOY_LOG:-/dev/null}" | tail -5 >&2 || true
+}
+
+# Assert that cdkd RETRIED a propagation rejection, for ONE named phrase.
+#
+# $1 needle   AWS's own sentence for the window under test
+# $2 label    what to call it in the output
+# $3 wrong-window hint, for the case where retries fired carrying some OTHER
+#             propagation phrase (each caller's neighbouring window differs)
+# $4 no-retry hint, for the case where nothing raced at all -- also per window,
+#             because the knob that would widen each gap is a different one
+#
+# The needle is AWS's text; the SENTINEL is cdkd's own propagation-retry line,
+# present whenever ANY propagation retry happened. Checking both distinguishes
+# "the race did not occur" from "the retry line was reworded and this grep went
+# blind" -- a bare needle grep returning 0 cannot tell them apart
+# (.claude/rules/testing.md, "a fixture that greps cdkd's OWN output").
+#
+# ONE helper for both windows: they are mutually exclusive by construction (SFN
+# checks assume-role first), so each phase closes one and asserts the other, and
+# a copy per phase is a copy that can drift away from the sentinel it shares.
+assert_propagation_retry() {
+  local needle="$1" label="$2" wrong_window_hint="$3" no_retry_hint="$4"
+  local hits propagation_hits
+  hits="$(grep -cF "${needle}" "${DEPLOY_LOG}" || true)"
+  propagation_hits="$(grep -cE 'attempt [0-9]+/26' "${DEPLOY_LOG}" || true)"
+  echo "    ${label} retries: ${hits}; propagation-retry lines: ${propagation_hits}"
+  if [ "${hits}" -gt 0 ]; then
+    echo "    OK: cdkd retried the ${label} rejection and the deploy still succeeded"
+    return 0
+  fi
+  if [ "${propagation_hits}" -gt 0 ]; then
+    echo "FAIL: propagation retries fired but none carried the ${label} phrase." >&2
+    echo "      Either AWS reworded the message (update the pattern in" >&2
+    echo "      src/deployment/retryable-errors.ts and this grep), or ${wrong_window_hint}." >&2
+    dump_retry_evidence
+    exit 1
+  fi
+  echo "FAIL: no propagation retry at all -- the deploy never raced IAM, so this run" >&2
+  echo "      proves nothing about the ${label} pattern. Either the retry debug line" >&2
+  echo "      moved off --verbose (it is logger.debug, so --verbose is required), or" >&2
+  echo "      IAM now propagates inside the gap cdkd leaves before the create." >&2
+  echo "      ${no_retry_hint}" >&2
+  dump_retry_evidence
+  exit 1
+}
+
+# Destroy the stack and assert it is really gone, for a named phase.
+#
+# $1 the state machine ARN captured BEFORE the destroy
+# $2 the phase label, for the failure messages
+#
+# ONE helper for both destroys, by the same argument as
+# assert_propagation_retry: Phase 5 began as a verbatim copy of Phase 3 and had
+# already lost one of its comments. A drifting copy here fails SILENTLY -- a
+# broken poll still exits 0 whenever the machine happens to be gone already.
+destroy_and_assert_gone() {
+  local sm_arn="$1" phase="$2"
+  node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+
+  # SFN DeleteStateMachine is ASYNC: accept DELETING and poll until gone.
+  local sm_gone="" attempt status describe_rc
+  for attempt in $(seq 1 15); do
+    # The capture sits in the `if` CONDITION, not in a bare assignment: errexit
+    # does not apply there, so the status is readable without `|| true`
+    # swallowing it -- which also keeps "the describe FAILED" distinguishable
+    # from "the describe answered something unexpected", two cases the swallowed
+    # form conflated.
+    if status="$(aws stepfunctions describe-state-machine --state-machine-arn "${sm_arn}" \
+      --region "${REGION}" --query 'status' --output text 2>&1)"; then
+      describe_rc=0
+    else
+      describe_rc=$?
+    fi
+    if [ "${describe_rc}" != "0" ]; then
+      if echo "${status}" | grep -q "StateMachineDoesNotExist"; then
+        sm_gone="yes"
+        break
+      fi
+      # A describe that failed for any OTHER reason (throttle, network) is most
+      # likely transient — keep polling rather than hard-failing after a clean
+      # destroy; the 15-attempt bound terminates the loop either way.
+      echo "    describe failed (attempt ${attempt}/15, rc=${describe_rc}): ${status}"
+    elif [ "${status}" != "DELETING" ]; then
+      echo "    describe returned unexpected status (attempt ${attempt}/15): ${status}"
+    else
+      echo "    state machine still DELETING (attempt ${attempt}/15), waiting..."
+    fi
+    sleep 4
+  done
+  if [ -z "${sm_gone}" ]; then
+    echo "FAIL: state machine ${sm_arn} did not finish deleting within ~60s (${phase})" >&2
+    exit 1
+  fi
+  echo "    state machine deleted"
+
+  assert_gone "state file ${STATE_KEY} still exists after ${phase}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+  echo "    cdkd state removed"
 }
 
 # --- Phase 1: deploy baseline (logging level ALL + tracing enabled) ----
@@ -229,29 +348,11 @@ fi
 # this grep went blind" — a bare needle grep returning 0 cannot tell them apart
 # (.claude/rules/testing.md, "a fixture that greps cdkd's OWN output").
 echo "==> Phase 1a: assert the log-destination propagation race was retried (#2783)"
-LOG_DEST_HITS="$(grep -c 'not authorized to access the Log Destination' "${DEPLOY_LOG}" || true)"
-PROPAGATION_HITS="$(grep -cE 'attempt [0-9]+/26' "${DEPLOY_LOG}" || true)"
-echo "    log-destination retries: ${LOG_DEST_HITS}; propagation-retry lines: ${PROPAGATION_HITS}"
-if [ "${LOG_DEST_HITS}" -gt 0 ]; then
-  echo "    OK: cdkd retried the log-destination rejection and the deploy still succeeded"
-elif [ "${PROPAGATION_HITS}" -gt 0 ]; then
-  echo "FAIL: propagation retries fired but none carried the log-destination phrase." >&2
-  echo "      Either AWS reworded the message (update the pattern in" >&2
-  echo "      src/deployment/retryable-errors.ts and this grep), or window 1 is" >&2
-  echo "      still open despite the Phase 0 settle (raise TRUST_SETTLE_S)." >&2
-  dump_retry_evidence
-  exit 1
-else
-  echo "FAIL: no propagation retry at all -- the deploy never raced IAM, so this run" >&2
-  echo "      proves nothing about issue #2783. Either the retry debug line moved off" >&2
-  echo "      --verbose (it is logger.debug, so --verbose is required), or IAM now" >&2
-  echo "      propagates the log-delivery grants inside the ~1s cdkd leaves between" >&2
-  echo "      the DefaultPolicy CREATE and CreateStateMachine. Raising TRUST_SETTLE_S" >&2
-  echo "      does NOT help that second case -- it widens the TRUST-policy gap only." >&2
-  dump_retry_evidence
-  exit 1
-fi
-rm -f "${DEPLOY_LOG}"
+assert_propagation_retry \
+  'not authorized to access the Log Destination' \
+  'log-destination' \
+  'window 1 is still open despite the Phase 0 settle (raise TRUST_SETTLE_S)' \
+  'Raising TRUST_SETTLE_S does NOT help here -- it widens the TRUST-policy gap, not the grants gap this window races.'
 
 SM_ARN="$(sm_arn)"
 echo "    state machine: ${SM_ARN}"
@@ -311,34 +412,47 @@ fi
 
 # --- Phase 3: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+destroy_and_assert_gone "${SM_ARN}" "Phase 3"
 
-# SFN DeleteStateMachine is ASYNC: accept DELETING and poll until gone.
-sm_gone=""
-for attempt in $(seq 1 15); do
-  STATUS="$(aws stepfunctions describe-state-machine --state-machine-arn "${SM_ARN}" \
-    --region "${REGION}" --query 'status' --output text 2>&1 || true)"
-  if echo "${STATUS}" | grep -q "StateMachineDoesNotExist"; then
-    sm_gone="yes"
-    break
-  fi
-  # Anything other than DELETING / gone is most likely a transient describe
-  # error (throttle, network) — keep polling instead of hard-failing after a
-  # clean destroy; the 15-attempt bound terminates the loop either way.
-  if [ "${STATUS}" != "DELETING" ]; then
-    echo "    describe returned unexpected output (attempt ${attempt}/15): ${STATUS}"
-  else
-    echo "    state machine still DELETING (attempt ${attempt}/15), waiting..."
-  fi
-  sleep 4
-done
-if [ -z "${sm_gone}" ]; then
-  echo "FAIL: state machine ${SM_ARN} did not finish deleting within ~60s" >&2
+# --- Phase 4: the ORIGINAL shape, which pins the ASSUME-ROLE window -----
+# Phase 0 exists to CLOSE window 1 so window 2 is reachable, and the two are
+# mutually exclusive -- so the phases above can no longer exercise the
+# assume-role race at all. That left `authorized to assume the provided role`
+# with no live pin (issue #2801). This phase restores it by redeploying the
+# whole template from nothing: Phase 3 destroyed the role, so role, policy and
+# state machine are created together again and SFN's assume-role check -- which
+# runs FIRST -- is the window still open.
+#
+# No template change is needed for this; "everything at once" IS the default
+# stage. What makes it the other window is only that no role survives Phase 3.
+echo "==> Phase 4: redeploy from scratch (role + policy + state machine together)"
+set +e
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_STAGE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose 2>&1 |
+  tee "${DEPLOY_LOG}"
+PHASE4_RCS=("${PIPESTATUS[@]}")
+P4_DEPLOY_RC="${PHASE4_RCS[0]}"
+P4_TEE_RC="${PHASE4_RCS[1]}"
+set -e
+if [ "${P4_DEPLOY_RC}" != "0" ]; then
+  echo "FAIL: Phase 4 deploy exited ${P4_DEPLOY_RC}" >&2
+  dump_retry_evidence
+  exit "${P4_DEPLOY_RC}"
+fi
+if [ "${P4_TEE_RC}" != "0" ]; then
+  echo "FAIL: could not capture the Phase 4 deploy log (tee exited ${P4_TEE_RC})" >&2
   exit 1
 fi
-echo "    state machine deleted"
 
-assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    cdkd state removed"
+echo "==> Phase 4a: assert the assume-role propagation race was retried"
+assert_propagation_retry \
+  'authorized to assume the provided role' \
+  'assume-role' \
+  'the trust policy propagated inside this deploy, closing window 1 before the create' \
+  'Nothing to raise here: this phase opens window 1 by CREATING the role in the same deploy, and that gap is cdkd own DAG ordering.'
 
-echo "[verify] PASS — SFN Express + Logging/Tracing deploy (log-destination propagation retry, #2783), removal-clear update (#978), destroy: all phases passed"
+echo "==> Phase 5: destroy again"
+SM_ARN_P4="$(sm_arn)"
+destroy_and_assert_gone "${SM_ARN_P4}" "Phase 5"
+
+echo "[verify] PASS — SFN Express + Logging/Tracing: log-destination propagation retry (#2783), assume-role propagation retry (#2801), removal-clear update (#978), destroy: all phases passed"

@@ -32,7 +32,10 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 //
 // So a single-deploy fixture CANNOT exercise window 2, and asserting on it
 // "when it happens" would be a test that passes identically with the fix
-// reverted. STAGE 0 is what makes it deterministic: it deploys the LogGroup
+// reverted. It cannot exercise BOTH either, which is why verify.sh deploys
+// twice: Phase 4 redeploys this same template from nothing after the destroy,
+// so the role is fresh again and window 1 is the one still open (issue #2801).
+// STAGE 0 is what makes window 2 deterministic: it deploys the LogGroup
 // and the execution Role ALONE and lets the trust policy settle, so the next
 // deploy creates the DefaultPolicy grants ~1s before CreateStateMachine and
 // window 2 is the only race left open. Measured over two runs of this shape:

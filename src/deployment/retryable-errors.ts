@@ -181,12 +181,11 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // before surfacing. CloudFormation tolerates this via deployment latency;
   // cdkd retries. Surfaced by a bug-hunt sweep deploying a canonical Express
   // state machine with LoggingConfiguration (StateMachine + fresh Role +
-  // DefaultPolicy). NOT pinned by an integ today: stepfunctions-logging used to
-  // exercise this window, but its Phase 0 now settles the trust policy on
-  // purpose so the log-destination window below is reachable at all — and the
-  // two are mutually exclusive. Restoring a live pin is issue
-  // https://github.com/go-to-k/cdkd/issues/2801; the unit test still pins the
-  // classification.
+  // DefaultPolicy); pinned by tests/integration/stepfunctions-logging Phase 4,
+  // which redeploys the whole stack from nothing after the destroy so the role
+  // is fresh again. That phase exists because the fixture's Phase 0 settles the
+  // trust policy on purpose to reach the log-destination window below, and the
+  // two windows are mutually exclusive — one deploy can only pin one of them.
   'authorized to assume the provided role',
   // Step Functions CreateStateMachine / UpdateStateMachine, SECOND rejection of
   // the same deploy — the one that surfaces once the trust policy HAS settled.
