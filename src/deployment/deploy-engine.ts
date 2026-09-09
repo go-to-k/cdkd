@@ -7207,17 +7207,11 @@ export class DeployEngine {
         } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
           // The corpus is threaded so this message tests the name itself
           // rather than trusting the refusal above -- this arm is reached
-          // exactly when that refusal did NOT fire (issue #2874). The
-          // parameter is REQUIRED, so the empty fallback is written HERE and
-          // is safe by construction: an absent bag means this pass recorded no
-          // secret, so there is no plaintext for the message to reconstitute.
-          this.logger.warn(
-            exportAliasCollisionWarning(
-              outputKey,
-              exportName,
-              context.recordedSecretValues ?? new Map()
-            )
-          );
+          // exactly when that refusal did NOT fire (issue #2874).
+          // `outputsPassSecrets` rather than a third spelling of the same
+          // fallback: this method already computed it, and the note at its
+          // declaration records that its `??` is never taken.
+          this.logger.warn(exportAliasCollisionWarning(outputKey, exportName, outputsPassSecrets));
         } else {
           outputs[exportName] = value;
           // A SET: two outputs declaring one Export.Name (which CloudFormation

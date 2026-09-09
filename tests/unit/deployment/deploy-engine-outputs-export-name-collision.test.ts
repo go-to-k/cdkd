@@ -610,9 +610,16 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     );
     const args = /exportAliasCollisionWarning\(([\s\S]*?)\)\s*\);/.exec(engineSource)?.[1] ?? '';
     expect(args).not.toBe('');
-    for (const arg of ['outputKey', 'exportName', 'context.recordedSecretValues']) {
+    // The corpus is named `outputsPassSecrets` -- the bag this method already
+    // computed. This fence caught the rename when it happened, which is the
+    // whole point of pinning the identifier rather than "some third argument".
+    for (const arg of ['outputKey', 'exportName', 'outputsPassSecrets']) {
       expect(args).toContain(arg);
     }
+    // ...and NOT a fresh empty map. That spelling type-checks, satisfies a
+    // "three arguments" test, and reinstates the leak the required parameter
+    // exists to prevent.
+    expect(args).not.toContain('new Map()');
   });
 
   // --- the property the pruned-name decision rests on ------------------------

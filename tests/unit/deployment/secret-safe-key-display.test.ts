@@ -21,6 +21,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   secretBearing,
+  secretBearingExportNameWarning,
   secretSafeKeyDisplay,
   WITHHELD_NAME_DISPLAY,
   displayTextOrWithheld,
@@ -434,29 +435,40 @@ describe('secretSafeKeyDisplay', () => {
     expect(JSON.stringify(shown)).not.toContain('abc');
   });
 
-  it('an all-invisible needle at or above the floor still matches nothing', () => {
-    // The empty-needle guard in the containment scan, reached ONLY by a
-    // recorded value long enough to clear the floor: the existing
-    // three-character case is rejected by the floor first, so it passes with
-    // the guard deleted (measured GREEN under that mutation). Without the
-    // guard `haystack.includes('')` is true for every name in the state.
+  it('an all-invisible needle never reaches the MASK, whatever its recorded length', () => {
+    // THE LIVE EMPTY-NEEDLE GUARD IS IN `canonicalNeedles`, not in the
+    // containment scan, and this test drives the FORCE-MASK path because that
+    // is the only one that reaches `maskEveryOccurrence` with the needle set.
+    // `''.split()` interleaves the mask between every character of the key.
+    //
+    // A previous version of this case asserted a mechanism that cannot occur
+    // -- `haystack.includes('')` -- which is unreachable because the embedded
+    // arm is bounded by `needle.length >= MIN_SECRET_NEEDLE`. That scan-side
+    // guard was dead and is gone; do not restore it as "defence in depth".
     const allInvisible = '\u200b\u200c\u200d\ufeff';
     expect(allInvisible.length).toBeGreaterThanOrEqual(4);
+    expect(secretSafeKeyDisplay('OrdinaryKey', new Map(), new Map([[allInvisible, EXPR]]))).toEqual(
+      { kind: 'safe', text: 'OrdinaryKey' }
+    );
+    // ...and through the containment path too, which must also not mangle it.
     expect(secretSafeKeyDisplay('OrdinaryKey', new Map([[allInvisible, EXPR]]))).toEqual({
       kind: 'safe',
       text: 'OrdinaryKey',
     });
   });
 
-  it('the WHOLE-VALUE raw arm fires on its own, for a secret with edge whitespace', () => {
-    // One case per whole-value arm: review measured each individually
-    // deletable with the suite green. This one needs the RAW comparison -- the
-    // canonical haystack is trimmed, so it can never equal a needle whose own
-    // edges carry whitespace.
-    const secret = '  padded-secret  ';
+  it('the WHOLE-VALUE raw arm fires on its own, for a SUB-FLOOR secret with edge whitespace', () => {
+    // One case per whole-value arm. The first version of this case used a
+    // 17-character secret, which the raw CONTAINMENT sub-arm already matches
+    // -- so the whole-value comparison was redundant for it and the test
+    // passed with that arm deleted (measured). The arm is live only for a
+    // sub-floor plaintext whose edge whitespace the canonical haystack trims
+    // away: `'ab '` canonicalises the KEY to `'ab'`, so the canonical
+    // comparison fails while the raw one holds.
+    const secret = 'ab ';
+    expect(secret.length).toBeLessThan(4);
     const shown = secretSafeKeyDisplay(secret, new Map([[secret, EXPR]]));
-    expect(shown.kind).not.toBe('safe');
-    expect(JSON.stringify(shown)).not.toContain('padded-secret');
+    expect(shown).toEqual({ kind: 'withheld' });
   });
 
   it('the WHOLE-VALUE canonical arm fires on its own, for a sub-floor split secret', () => {
@@ -488,5 +500,37 @@ describe('secretSafeKeyDisplay', () => {
     const secret = 'q\u200ew\u200ee';
     const shown = secretSafeKeyDisplay(`k-${secret}-k`, new Map([[secret, EXPR]]));
     expect(shown.kind).not.toBe('safe');
+  });
+
+  it('a sub-floor needle the CALLER substituted is masked in the EXPORT NAME', () => {
+    // The force-mask argument on the export name is threshold-free, because
+    // resolution KNOWS it put the value there. Deleting the argument measured
+    // GREEN across the suite while the message printed the plaintext -- and
+    // this session has already deleted it once, on a finding that turned out
+    // to be about a different line.
+    const sub = new Map([['ab', EXPR]]);
+    const message = secretBearingExportNameWarning('PlainOwner', 'x-ab-y', sub, sub);
+    expect(message).toContain(`x-${SECRET_MASK}-y`);
+    expect(message).not.toContain('x-ab-y');
+  });
+
+  it('...but a sub-floor needle does NOT shred the OUTPUT KEY', () => {
+    // The other side of that asymmetry. Resolution knows nothing about the
+    // output key, so a one-character substituted value masked threshold-free
+    // rendered `ApiGatewayEndpoint` as `ApiG***tew***yEndpoint` (measured) --
+    // destroying the identifier the operator has to edit. The residual is
+    // deliberate: a genuinely sub-floor secret embedded in an output key is
+    // not masked, the same tradeoff containment already makes.
+    const sub = new Map([['a', EXPR]]);
+    const message = secretBearingExportNameWarning('ApiGatewayEndpoint', 'x-a-y', sub, sub);
+    expect(message).toContain('Output ApiGatewayEndpoint has an Export.Name');
+  });
+
+  it('a WHOLE-KEY force-mask needle is still masked, at any length', () => {
+    // The bound on the output key is whole-vs-embedded, not a flat floor: a
+    // sub-floor value that IS the whole key is not a coincidence.
+    const sub = new Map([['ab', EXPR]]);
+    const message = secretBearingExportNameWarning('ab', 'x-ab-y', sub, sub);
+    expect(message).toContain(`Output ${SECRET_MASK} has an Export.Name`);
   });
 });

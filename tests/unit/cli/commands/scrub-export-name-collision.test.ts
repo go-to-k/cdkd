@@ -1248,6 +1248,23 @@ describe('outputs-export-alias message builders', () => {
     expect(exportAliasCollisionWarning('OtherOutput', split, new Map())).toContain(secret);
   });
 
+  it('when BOTH names withhold, the message does not read as a name colliding with itself', () => {
+    // Two identical placeholders made the sentence claim a name collides with
+    // ITSELF. The reader cannot act on either name here, but must still be
+    // able to tell there are two. Reached with sub-floor secrets whose edge
+    // whitespace the canonical form trims, so masking changes nothing and
+    // both sides withhold.
+    const secrets = new Map([
+      ['ab ', 'E1'],
+      ['cd ', 'E2'],
+    ]);
+    const message = exportAliasCollisionScrubWarning('ab ', 'cd ', secrets);
+    expect(message).toContain('<the owning output, name withheld: contains a secret>');
+    expect(message).toContain('<name withheld: contains a secret>');
+    // The clause that quoted a placeholder as if it were a key is reworded.
+    expect(message).toContain('the stored value under that name');
+  });
+
   it('the DEPLOY collision warning masks the OUTPUT KEY too, not only the export name', () => {
     // `outputKey` is template-controlled and printed three times in that
     // message. Review measured a mutant that printed it raw staying GREEN,

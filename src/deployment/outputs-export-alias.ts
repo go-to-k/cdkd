@@ -266,10 +266,21 @@ const MIN_SECRET_NEEDLE = 4;
  *   marks / embeddings / overrides / isolates, the zero-width set, `U+FEFF`,
  *   `U+00AD`, `U+061C`, and the invisible-operator block.
  * - `\p{Zl}` / `\p{Zp}`: `U+2028` / `U+2029`, the two `displaySafe` REPLACES.
- * - `\p{Default_Ignorable_Code_Point}`: Unicode's own answer to "renders as
- *   nothing", which is the property this path actually cares about. It carries
- *   the variation selectors, the Mongolian free variation selectors, the
- *   Hangul fillers and `U+034F` COMBINING GRAPHEME JOINER.
+ * - `\p{Default_Ignorable_Code_Point}`: Unicode's own INTENT-TO-BE-IGNORED
+ *   property, which carries the variation selectors, the Mongolian free
+ *   variation selectors, the Hangul fillers and `U+034F` COMBINING GRAPHEME
+ *   JOINER.
+ *
+ * NAMED RESIDUAL, because that last bullet is NOT "everything that renders as
+ * nothing" and an earlier revision of this comment said it was. Nonspacing
+ * marks (`\p{Mn}`) carry zero advance width, so a secret split by one renders
+ * contiguous while this class keeps it -- measured with `U+09BC`, which
+ * verdicts `safe` AND publishes the alias. It is not widened here: `\p{Mn}` is
+ * the diacritics of Devanagari, Arabic, Hebrew and Vietnamese, so deleting it
+ * would mangle legitimate names for every user. Tracked as issue
+ * [#2889](https://github.com/go-to-k/cdkd/issues/2889), which also carries the
+ * homoglyph question. `origin/main` behaves identically, so this is a recorded
+ * residual rather than something this change introduced.
  *
  * THE THIRD BULLET REPLACED A HAND TAIL, and the hand tail was measured
  * leaking. A first cut listed the ranges by hand -- `FE00-FE0F`,
@@ -384,31 +395,41 @@ function secretsPresentIn(
   // rewrite -- this module creating the exact state it tells the user it
   // cannot fix.
   //
-  // TWO ARMS, EACH BOUNDED BY ITS OWN LENGTH. Neither ordering of one arm and
-  // one floor works, and both single-arm forms were written and measured:
+  // TWO ARMS, EACH BOUNDED BY ITS OWN LENGTH, because a single floor fails in
+  // one direction or the other and both single-arm forms were measured:
   //
-  // - Floor on the CANONICAL needle alone drops a detection the pre-#2874 code
-  //   had. A recorded `a<U+200E>b<U+200E>c` canonicalises to `abc`, falls under
-  //   four, and the key holding it came back `safe` with the plaintext printed
-  //   in the form a human reads.
-  // - Floor on the RECORDED length alone makes the bound DEFEATABLE. A recorded
-  //   `a` followed by three zero-width spaces is four characters and clears it,
-  //   while its needle is the single letter `a` -- measured masking
+  // - Bounding by the RECORDED length alone makes the floor DEFEATABLE. A
+  //   recorded `a` followed by three zero-width spaces is four characters and
+  //   clears it, while its needle is the single letter `a` -- measured masking
   //   `ApiGatewayEndpoint` into `ApiG***tew***yEndpoint` AND making the deploy
-  //   refuse the export alias of every output whose name contains an `a`. That
-  //   is the repo-wide availability failure MIN_SECRET_NEEDLE exists to
-  //   prevent, reintroduced by the fix for the first case.
+  //   refuse the export alias of every output whose name contains an `a`, the
+  //   repo-wide availability failure MIN_SECRET_NEEDLE exists to prevent.
+  // - Bounding by the CANONICAL needle alone loses the fail-closed answer for
+  //   a key that carries the invisible characters ITSELF -- the raw forms
+  //   match there even when the canonical needle is too short.
   //
-  // So the canonical arm is bounded by the canonical needle and the raw arm by
-  // the recorded plaintext, and a hit on EITHER is an exposure. The raw arm
-  // restores the pre-#2874 fail-closed answer without inventing a threshold
-  // between the two: a needle it alone matches is absent from the canonical
-  // text, so masking cannot remove it and the caller withholds the name.
+  // THE EFFECTIVE RULE FOR AN EMBEDDED MATCH IS THE RENDERED LENGTH, and this
+  // is stated rather than implied because an earlier revision of this comment
+  // claimed the two arms COVER the shortening case and measurement refuted it:
+  // a recorded `a<U+200E>b<U+200E>c` renders as `abc`, and a key spelling the
+  // VISIBLE form (`x-abc-y`, no invisibles of its own) matches neither arm --
+  // the canonical needle is three characters and the raw plaintext is not in
+  // the raw text. That is the documented sub-floor tradeoff applied to what a
+  // reader actually sees, not a gap either arm was meant to close. What the
+  // raw arm does buy is the key that carries the invisibles too, which main
+  // caught and a canonical-only form would have dropped.
   const haystack = canonicalForSecretScan(text);
   const exposure: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of secrets) {
+    // No empty-needle guard HERE. It was written and measured dead: the
+    // embedded arm is bounded by `needle.length >= MIN_SECRET_NEEDLE`, so an
+    // empty needle never reaches `includes`, and the whole-value arms are
+    // equality comparisons an empty needle cannot win against a name. The LIVE
+    // guard is in `canonicalNeedles`, which keeps an empty needle out of
+    // `maskEveryOccurrence` -- `''.split()` would interleave the mask between
+    // every character. A guard in both places reads as defence in depth and is
+    // one dead branch plus one test asserting a mechanism that cannot occur.
     const needle = canonicalNeedle(plaintext);
-    if (needle.length === 0) continue;
     const canonicalHit =
       haystack === needle || (needle.length >= MIN_SECRET_NEEDLE && haystack.includes(needle));
     const rawHit =
@@ -535,18 +556,26 @@ export function secretBearingExportNameWarning(
   const corpus = secrets ?? exposure;
   const name = secretSafeKeyDisplay(exportName, corpus, exposure);
   const shown = name.kind === 'masked' ? `(masked: "${name.text}") ` : '';
-  // The output key takes the force-mask set TOO, and the reason it is safe to
-  // is the corrected unchanged-mask arm rather than anything about this call.
-  // Passing `exposure` here once made every refusal withhold the output key on
-  // the default deploy path -- a placeholder asserting the output's own name
-  // contains a secret, which is false, and no identifier for the operator to
-  // act on. The cause was `masked === shown` collapsing to `withheld`; with
-  // that arm answering `safe` when no exposure fired, an ordinary key comes
-  // back intact and a key that genuinely embeds the substituted secret --
-  // including a SUB-FLOOR one, which containment alone cannot see -- is
-  // masked. Review measured this argument INERT for the withheld defect and
-  // load-bearing for exactly that sub-floor case.
-  const owner = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, corpus, exposure));
+  // THE OUTPUT KEY'S FORCE-MASK SET IS BOUNDED; the export name's is not, and
+  // the asymmetry is the point. Resolution KNOWS it put `exposure` into the
+  // export name, so masking it there at any length is right. It knows nothing
+  // about the output key: a sub-floor value appearing in a template-authored
+  // name is a coincidence in almost every case, and masking it threshold-free
+  // SHREDS the identifier the operator has to act on -- measured, a
+  // one-character substituted secret rendered `ApiGatewayEndpoint` as
+  // `ApiG***tew***yEndpoint`.
+  //
+  // So the key's force-mask needles are filtered by the same whole-vs-embedded
+  // rule `secretsPresentIn` applies. The residual is stated rather than
+  // hidden: a genuinely sub-floor secret embedded in an output key is NOT
+  // masked here, which is the identical tradeoff containment already makes.
+  const ownerForceMask: RecordedSecretValues = new Map();
+  for (const [plaintext, expression] of exposure) {
+    if (plaintext === outputKey || plaintext.length >= MIN_SECRET_NEEDLE) {
+      ownerForceMask.set(plaintext, expression);
+    }
+  }
+  const owner = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, corpus, ownerForceMask));
   return (
     `Output ${owner} has an Export.Name that resolves to a value containing a secret ` +
     `${shown}— skipping the export alias. ` +
