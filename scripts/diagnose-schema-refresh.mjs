@@ -2421,13 +2421,15 @@ export const VALUELESS_FLAGS = new Set(['--umbrella-checklist']);
  * file, which is the misreport the pre-check exists to remove.
  *
  * @param {string[]} args
- * @returns {{ unknown: string[], repeated: string[] }}
+ * @returns {{ unknown: string[], repeated: string[], valued: string[] }}
  */
 export function classifyArgs(args) {
   /** @type {string[]} */
   const unknown = [];
   /** @type {string[]} */
   const repeated = [];
+  /** Valueless flags given a glued value. */
+  const valued = [];
   const seen = new Set();
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -2448,7 +2450,11 @@ export function classifyArgs(args) {
     // file on the no-install runner, the exact misread this classifier exists
     // to remove.
     if (a !== flag && VALUELESS_FLAGS.has(flag)) {
-      unknown.push(a);
+      // Its own bucket, not `unknown`: reporting it there produced a
+      // self-contradicting sentence — "unrecognized flag(s):
+      // --umbrella-checklist=true — known flags are …, --umbrella-checklist, …"
+      // — leaving the reader to spot the `=true` themselves.
+      valued.push(flag);
       continue;
     }
     // A REPEAT is not a valid invocation: `rawArg` reads exactly ONE of them and
@@ -2472,7 +2478,7 @@ export function classifyArgs(args) {
       if (next !== undefined && !next.startsWith('-')) i += 1;
     }
   }
-  return { unknown, repeated };
+  return { unknown, repeated, valued };
 }
 
 function main() {
@@ -2489,13 +2495,21 @@ function main() {
   // through to the permissive arms and rendered the clean verdict. A guard
   // covering fewer spellings than its subject accepts is the shape this whole
   // file kept producing.
-  const { unknown, repeated } = classifyArgs(args);
+  const { unknown, repeated, valued } = classifyArgs(args);
 
   if (repeated.length > 0) {
     throw new Error(
       `flag(s) given more than once: ${[...new Set(repeated)].join(', ')} — only one would ` +
         'have been read, and which one depends on the spelling. Refusing to report from an ' +
         'invocation this script did not understand.'
+    );
+  }
+  if (valued.length > 0) {
+    throw new Error(
+      `${[...new Set(valued)].join(', ')} takes no value — the \`=\` spelling is not the same ` +
+        'flag, and this script selects that mode by an exact match, so it would have run ' +
+        'something else entirely. Refusing to report from an invocation this script did not ' +
+        'understand.'
     );
   }
   if (unknown.length > 0) {
@@ -2815,8 +2829,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // the first cut tested only dash-leading tokens and left the non-dash
   // spelling, which `main()`'s own comment calls the load-bearing one.
   const argv = process.argv.slice(2);
-  const { unknown, repeated } = classifyArgs(argv);
-  const badInvocation = unknown.length > 0 || repeated.length > 0;
+  const { unknown, repeated, valued } = classifyArgs(argv);
+  const badInvocation = unknown.length > 0 || repeated.length > 0 || valued.length > 0;
   if (!argv.includes('--umbrella-checklist') && !badInvocation) {
     try {
       await loadEvidenceDeps();
@@ -2853,7 +2867,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // at all. Its unwritten count is caught one step later instead, where the
     // marking step refuses an absent file rather than reading it as zero. The
     // write itself is wrapped where it happens, above.
-    const consumedByAWorkflow = process.argv.slice(2).some((a) => a === '--umbrella-checklist');
+    // By the FLAG, not the exact token: `--umbrella-checklist=x` is refused, and
+    // routing that refusal to stdout at exit 0 would hand the workflow's
+    // redirect a file whose only content is an error sentence.
+    const consumedByAWorkflow = process.argv
+      .slice(2)
+      .some((a) => knownFlagFor(a) === '--umbrella-checklist');
     if (consumedByAWorkflow) {
       // `process.exitCode`, and no `return`: this catch sits at MODULE top
       // level, not inside a function, so a `return` here is a SyntaxError that

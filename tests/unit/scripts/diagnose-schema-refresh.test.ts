@@ -3060,6 +3060,29 @@ describe('writeAutoTolerated', () => {
     await loadEvidenceDeps();
   });
 
+  it('declares every runtime export in the .d.mts, and nothing else', () => {
+    // The declaration file is a SECOND COPY of the module's surface and nothing
+    // compared them, so an export could ship undeclared — measured: two had
+    // (`knownFlagFor`, `loadDeclaredPropertiesSource`). A TS consumer then gets
+    // "has no exported member" for a function that exists, and the file's
+    // config-less `tsc` check cannot see the gap because it only asks whether
+    // the declarations are self-consistent.
+    //
+    // Both directions: a declaration with no export is the more dangerous half,
+    // since it type-checks at every call site and fails at runtime.
+    const mjs = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+    const dmts = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
+    const names = (src: string, re: RegExp): string[] =>
+      [...src.matchAll(re)].map((m) => m[1]!).sort();
+
+    const exported = names(mjs, /^export (?:const|function|async function|class) (\w+)/gm);
+    const declared = names(dmts, /^export declare (?:const|function|async function) (\w+)/gm);
+    expect(exported).toEqual(declared);
+    // Non-vacuity: both scans must have matched something, or two empty lists
+    // compare equal and the fence asserts nothing.
+    expect(exported.length).toBeGreaterThan(20);
+  });
+
   it('loads the evidence helpers ONCE', () => {
     // Asserted in the loader's docblock and by nothing else: deleting the
     // memoization guard reds no other case, and ESM module caching does not

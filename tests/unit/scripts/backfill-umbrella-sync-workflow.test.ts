@@ -245,8 +245,14 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // printing the fallback sentence, because its reader is a workflow that
       // cannot read a sentence. Pinned here because the two files are the
       // producer and the consumer of one contract with nothing joining them.
+      //
+      // Matched by the FLAG rather than by the exact token: the test used to pin
+      // `a === '--umbrella-checklist'`, and that spelling missed
+      // `--umbrella-checklist=x`, which therefore printed its refusal to STDOUT
+      // at exit 0 — into the very redirect this contract exists to protect
+      // (issue go-to-k/cdkd#2858).
       const script = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
-      expect(script).toContain("a === '--umbrella-checklist'");
+      expect(script).toContain("knownFlagFor(a) === '--umbrella-checklist'");
       expect(script).toContain('process.exitCode = 1');
     });
   });

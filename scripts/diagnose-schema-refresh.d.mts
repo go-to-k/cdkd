@@ -212,6 +212,17 @@ export declare const KNOWN_FLAGS: string[];
  */
 export declare const VALUELESS_FLAGS: ReadonlySet<string>;
 
+/** The flag a token names, or `undefined`. Shared by `main()` and the entry point. */
+export declare function knownFlagFor(arg: string): string | undefined;
+
+/**
+ * Read the coverage map `--umbrella-checklist` renders from.
+ *
+ * Declared because the runtime exports it; the sibling test compares the two
+ * lists, so an export with no declaration fails rather than going unnoticed.
+ */
+export declare function loadDeclaredPropertiesSource(repoRoot?: string): string;
+
 /**
  * Classify an argv list the way `main()` does — one implementation, shared with
  * the entry point so the two cannot disagree about what a bad invocation is.

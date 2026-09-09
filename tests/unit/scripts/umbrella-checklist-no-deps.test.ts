@@ -287,7 +287,7 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
       { cwd: root, encoding: 'utf8' }
     );
     expect(run.stdout).toContain('unrecognized flag(s): --umbrella-checklists');
-    expect(run.stdout).not.toContain('could not load the evidence helpers');
+    expect(run.stderr).not.toContain('could not load the evidence helpers');
     expect(run.stderr).toBe('');
     // Exit 0 is the REPORT mode's contract — a broken diagnosis must not take
     // down the PR it describes — and pinning it here is what keeps this case
@@ -308,7 +308,7 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
       { cwd: root, encoding: 'utf8' }
     );
     expect(run.stdout).toContain('unrecognized flag(s): failed-checks, property-coverage');
-    expect(run.stdout).not.toContain('could not load the evidence helpers');
+    expect(run.stderr).not.toContain('could not load the evidence helpers');
     expect(run.status).toBe(0);
   }, 60_000);
 
@@ -340,26 +340,37 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
       { cwd: root, encoding: 'utf8' }
     );
     expect(run.stdout).toContain('flag(s) given more than once: --nested-key-rc');
-    expect(run.stdout).not.toContain('could not load the evidence helpers');
+    expect(run.stderr).not.toContain('could not load the evidence helpers');
     expect(run.status).toBe(0);
   }, 60_000);
 
   it('REFUSES a glued value on the flag that takes none', () => {
     // `knownFlagFor` matches the `=` prefix, so `--umbrella-checklist=x` read as
     // VALID — while `main()` selects the mode with an exact `includes`, which
-    // that spelling misses. It fell through to the full refresh-report path:
-    // on the no-install runner a dependency error naming the wrong file, and
-    // with dependencies a report at exit 0 that the sync workflow would splice
-    // into the umbrella in place of the checklist.
+    // that spelling misses, so it fell through to the full refresh-report path:
+    // on the no-install runner a dependency error naming the wrong file.
+    //
+    // NOT also a splice hazard, though an earlier version of this comment said
+    // so: the workflow guards on SHAPE (`grep -qE '^- \[ \] |^_No remaining…'`)
+    // and only `renderUmbrellaChecklist` emits those rows, so a refresh report
+    // fails that step under `set -euo pipefail` rather than reaching the
+    // umbrella. Its own comment says as much.
     const root = makeCorpus();
     const run = spawnSync(
       process.execPath,
       ['scripts/diagnose-schema-refresh.mjs', '--umbrella-checklist=x'],
       { cwd: root, encoding: 'utf8' }
     );
-    expect(run.stdout).toContain('unrecognized flag(s): --umbrella-checklist=x');
-    expect(run.stdout).not.toContain('could not load the evidence helpers');
-    expect(run.stdout).not.toMatch(WORKFLOW_SHAPE);
+    // Its OWN message, not "unrecognized": that arm listed the flag as known in
+    // the same sentence and left the reader to spot the `=x`.
+    //
+    // Channel AND exit code, because this mode is consumed by a workflow that
+    // redirects stdout: its refusals belong on stderr at exit 1, or the
+    // redirect captures an error sentence as the rendered checklist.
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('--umbrella-checklist takes no value');
+    expect(run.stderr).not.toContain('could not load the evidence helpers');
+    expect(run.stdout).toBe('');
   }, 60_000);
 
   it('partitions KNOWN_FLAGS against what the READERS actually consume', async () => {
@@ -377,7 +388,15 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     const { KNOWN_FLAGS, VALUELESS_FLAGS } = await import(
       '../../../scripts/diagnose-schema-refresh.mjs'
     );
-    const source = readFileSync(join(repoRoot, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+    // COMMENT-STRIPPED, like every sibling critic in this repo. Scanning the raw
+    // text was DEFEATED — demonstrated, not imagined: adding a boolean flag to
+    // `KNOWN_FLAGS` plus ONE comment line mentioning `rawArg('--x')` made all
+    // three assertions pass while the shipped script swallowed the next token,
+    // the exact bug this fence exists to stop. Comments in that file already
+    // quote `rawArg` and backticked flag names.
+    const source = readFileSync(join(repoRoot, 'scripts/diagnose-schema-refresh.mjs'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
     const READERS = ['rawArg', 'readArg', 'readArgValue', 'readNumArg'];
     const readsAValueFor = (flag: string): boolean =>
       READERS.some((reader) => source.includes(`${reader}('${flag}')`));
@@ -386,12 +405,13 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     const withoutAReader = KNOWN_FLAGS.filter((f) => !readsAValueFor(f)).sort();
     expect(withoutAReader).toEqual(declaredValueless);
 
-    // Non-vacuity: the reader scan must actually MATCH, or every flag lands in
-    // `withoutAReader` and the equality above would be comparing two lists
-    // built by a scan that found nothing.
-    expect(KNOWN_FLAGS.filter((f) => readsAValueFor(f)).length).toBe(
-      KNOWN_FLAGS.length - VALUELESS_FLAGS.size
-    );
+    // Non-vacuity, and the FIRST cut of it was DEAD: asserting the
+    // reader-matched count equals `KNOWN_FLAGS.length - VALUELESS_FLAGS.size` is
+    // algebraically implied by the equality above, so it could never red alone.
+    // What is independent is that the scan's SUBJECT survived the comment strip
+    // — a stripper that ate the whole file leaves every flag unmatched, and only
+    // then would the equality be comparing two lists a dead scan produced.
+    expect(source).toContain("rawArg('--fixtures-dir')");
     expect(VALUELESS_FLAGS.size).toBeGreaterThan(0);
   });
 
