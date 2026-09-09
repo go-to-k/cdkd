@@ -74,7 +74,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, sep } from 'node:path';
 
 /** Repo-relative path of the scaffold template this fences. */
 export const TEMPLATE_REL = join('.claude', 'skills', 'new-integ', 'SKILL.md');
@@ -117,7 +117,7 @@ export interface FixtureFloor {
 }
 
 export interface Refusal {
-  /** Repo-relative path, or the fixture name for a corpus refusal. */
+  /** The path, as `label()` renders it: repo-relative inside the repo, absolute outside. */
   where: string;
   reason: string;
 }
@@ -252,7 +252,10 @@ export interface CheckOptions {
  */
 function label(repoRoot: string, path: string): string {
   const rel = relative(repoRoot, path);
-  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : path;
+  // `!rel.startsWith('..')` alone cannot tell `../x` (escaping) from `..x` (a
+  // legitimate in-repo name), so the separator is part of the test.
+  const escapes = rel === '..' || rel.startsWith(`..${sep}`);
+  return rel && !escapes && !isAbsolute(rel) ? rel : path;
 }
 
 export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
@@ -278,8 +281,8 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
       distinctFloors: [],
       minFloor: null,
       templateFloor: null,
-      refusals: [{ where: integRoot, reason: `integ root unreadable: ${String(error)}` }],
-      violations: [`integ root unreadable: ${integRoot}`],
+      refusals: [{ where: at(integRoot), reason: `integ root unreadable: ${String(error)}` }],
+      violations: [`integ root unreadable: ${at(integRoot)}`],
     };
   }
 

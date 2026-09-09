@@ -36,6 +36,16 @@ import {
  * an equality fence would red-flag every one of its PRs.
  */
 
+/**
+ * Every arm that SPAWNS the checker declares this. Per `.claude/rules/testing.md`
+ * a subprocess-spawning test must not ride vitest's 5 s in-process default: the
+ * spawn pays Node startup plus type-stripping, which passes locally and times
+ * out on a loaded CI runner. Module scope, not inside a describe — arms in
+ * EARLIER blocks reference it, and a `const` in a later block is in its TDZ
+ * when their `it()` calls are evaluated.
+ */
+const TIMEOUT = 60_000;
+
 const REPO_ROOT = join(import.meta.dirname, '../../..');
 const SCRIPT = join(REPO_ROOT, 'scripts/check-integ-cdk-lib-floor.ts');
 const REAL_INTEG_ROOT = join(REPO_ROOT, INTEG_ROOT_REL);
@@ -290,7 +300,18 @@ describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
     expect(res.status).toBe(1);
     expect(res.stderr).toContain(`${INTEG_ROOT_REL}/`);
     expect(res.stderr).not.toContain(REPO_ROOT);
-  });
+  }, TIMEOUT);
+
+  // finding 1 of round 5: the unreadable-root EARLY RETURN bypassed the label
+  // helper, so it printed an absolute path where every sibling site printed a
+  // repo-relative one -- falsifying the "every printed path" invariant at the
+  // one site the conversion missed. No other arm reaches this branch.
+  it('labels the unreadable-root message like every other path', () => {
+    const res = runCli([`--integ-root=${join(REPO_ROOT, INTEG_ROOT_REL, 'DOES-NOT-EXIST')}`]);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(`${INTEG_ROOT_REL}/DOES-NOT-EXIST`);
+    expect(res.stderr).not.toContain(REPO_ROOT);
+  }, TIMEOUT);
 
   // Every path the checker prints must name the root it ACTUALLY read.
   it('never names the hardcoded corpus path when a seam root was given', () => {
@@ -339,11 +360,6 @@ describe('the real repository satisfies the fence', () => {
 });
 
 describe('real-code failure probes (the checker must prove it FAILS)', () => {
-  // Each case spawns the built script; per `.claude/rules/testing.md` a
-  // subprocess-spawning test declares its own timeout rather than riding the
-  // in-process 5 s default.
-  const TIMEOUT = 60_000;
-
   it(
     'control: the unmutated real tree exits 0',
     () => {
