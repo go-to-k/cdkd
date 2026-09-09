@@ -633,7 +633,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 51_000, 56_000],                            // measured  52,148 on 2026-09-06 (floor 48,000 -> 51,000 across the #2621 lane, exactly as this file's GUTTED-satellite case prescribes)
+  ['tests/setup.ts', 54_000, 56_000],                            // measured  54,624 on 2026-09-09 (floor 51,000 -> 54,000 by go-to-k/cdkd#2839's testing.md entry, the third time the GUTTED-satellite case below has prescribed this re-derivation: 46,000 -> 48,000 -> 51,000 -> 54,000)
   // 46_000 -> 48_000 on 2026-09-05: the go-to-k/cdkd#2595 retro added 1,126 B of
   // mutation-probe rules to `testing.md`, and the discriminate case below went
   // red exactly as its comment predicts ("testing.md growing spends it from the
