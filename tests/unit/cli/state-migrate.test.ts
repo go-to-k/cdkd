@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { ENUM_ABSENT_REGION } from '../_enum-absent-region.js';
 /**
  * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
  * prompt this file drives now REFUSES a non-interactive stdin
@@ -628,10 +629,15 @@ describe('cdkd state migrate', () => {
   // `IllegalLocationConstraintException`: the migrate fails outright. (It does
   // NOT quietly create the bucket in us-east-1 -- that default is a property of
   // the GLOBAL `s3.amazonaws.com` endpoint, which this path never uses.)
-  // `ca-west-1` is absent from the 33-member enum, so the row discriminates
-  // where a member region such as `eu-west-1` would not.
+  // The region must be one the enum OMITS, or the row does not discriminate at
+  // all. It is not spelled here: this row pinned `ca-west-1` until the SDK enum
+  // grew and took it, leaving the row silently inert (issue #2862).
+  // `ENUM_ABSENT_REGION` carries the choice, and the guard that fails when it
+  // stops being absent lives in `tests/unit/provisioning/`
+  // `s3-bucket-provider-location-constraint-case.test.ts` -- see that module's
+  // doc comment for why it cannot live here.
   it('sends the destination LocationConstraint for a region ABSENT from the SDK enum (issue #2322)', async () => {
-    const region = 'ca-west-1';
+    const region = ENUM_ABSENT_REGION;
     mockResolveBucketRegion.mockResolvedValue(region);
     planS3({
       HeadBucketCommand: [

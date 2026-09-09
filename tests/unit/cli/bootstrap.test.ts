@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { ENUM_ABSENT_REGION } from '../_enum-absent-region.js';
 
 const {
   mockS3Send,
@@ -425,23 +426,29 @@ describe('cdkd bootstrap', () => {
   // fail on a change that stops sending it -- and `src/cli/commands/
   // bootstrap.ts:274` casts with `as BucketLocationConstraint` just like the S3
   // provider. This is the POSITIVE polarity, and it deliberately uses a region
-  // the 33-member enum omits: a future "soundness fix" filtering the region to
-  // enum members would omit `CreateBucketConfiguration` here, and on a REGIONAL
+  // the enum omits: a future "soundness fix" filtering the region to enum
+  // members would omit `CreateBucketConfiguration` here, and on a REGIONAL
   // endpoint that answers `IllegalLocationConstraintException` -- a failed
   // bootstrap, not a bucket quietly placed in us-east-1 (that default belongs
-  // to the GLOBAL endpoint, which this path does not use). A member region such
-  // as `eu-west-1` would stay green through exactly that change.
+  // to the GLOBAL endpoint, which this path does not use). A MEMBER region
+  // would stay green through exactly that change, which is why the region is
+  // not spelled here: this row pinned `ca-west-1` until the SDK enum grew and
+  // took it, leaving the row silently inert (issue #2862). `ENUM_ABSENT_REGION`
+  // carries the choice, and the guard that fails when it stops being absent
+  // lives in `tests/unit/provisioning/`
+  // `s3-bucket-provider-location-constraint-case.test.ts` -- see that module's
+  // doc comment for why it cannot live here.
   it('sends the LocationConstraint for a region ABSENT from the SDK enum (issue #2322)', async () => {
     scriptStateBucket(false);
 
-    await runBootstrap(['--region', 'ca-west-1']);
+    await runBootstrap(['--region', ENUM_ABSENT_REGION]);
 
     const createBucket = mockS3Send.mock.calls
       .map((c) => c[0] as { constructor: { name: string }; input: Record<string, unknown> })
       .find((c) => c.constructor.name === 'CreateBucketCommand');
     expect(createBucket, 'no CreateBucket issued - anchor drifted?').toBeDefined();
     expect(createBucket!.input['CreateBucketConfiguration']).toEqual({
-      LocationConstraint: 'ca-west-1',
+      LocationConstraint: ENUM_ABSENT_REGION,
     });
   });
 
