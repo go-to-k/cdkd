@@ -4,6 +4,14 @@
 # worktree committed the SYMLINK and broke CI's pnpm install (2026-07-30).
 node_modules
 
+# Integ-fixture lockfiles are not committed (go-to-k/cdkd#2838): fixtures are
+# not pnpm workspace members and nothing reads one, but `verify.sh` installs
+# with a bare `pnpm install`, which WRITES one on every run. Untracked, that
+# dirties the tree mid-integ and stales the markgate markers (an untracked
+# file inside a gate's scope invalidates its digest). The ROOT lockfile is
+# committed and must stay tracked, hence the anchored fixture-only pattern.
+tests/integration/*/pnpm-lock.yaml
+
 # Build output
 dist/
 *.tsbuildinfo
