@@ -62,8 +62,11 @@
  * worth stating because they look symmetric and are not:
  *
  *  - A directory with no `package.json` (not a fixture) increments NEITHER
- *    counter, so the `fixtures === declaringFixtures` pin cannot see it. Only
- *    `FLOORS.fixtures` catches a walk that stopped finding manifests.
+ *    counter, so the `fixtures === declaringFixtures` pin cannot see it. A walk
+ *    that stopped finding manifests is caught by the `fixtures === 0` violation
+ *    below when it stops entirely, and by the test's independent
+ *    `fixtures >= 280` assertion when it merely shrinks. `FLOORS.fixtures` is
+ *    the CLI's own guard and is never consulted by the library or the suite.
  *  - A manifest declaring no `aws-cdk-lib` (not a member of this population)
  *    increments `fixtures` but not `declaringFixtures`, so it IS visible to
  *    that pin — which is what makes a reader silently losing one dependency
@@ -264,7 +267,7 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
       manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
     } catch (error) {
       refusals.push({
-        where: join(INTEG_ROOT_REL, fixture, 'package.json'),
+        where: join(integRoot, fixture, 'package.json'),
         reason: `manifest does not parse: ${String(error)}`,
       });
       continue;
@@ -278,7 +281,7 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
     const floor = parseFloor(spec);
     if (floor === null) {
       refusals.push({
-        where: join(INTEG_ROOT_REL, fixture, 'package.json'),
+        where: join(integRoot, fixture, 'package.json'),
         reason: `aws-cdk-lib spec "${spec}" has no decidable floor (accepted: ^X.Y.Z, ~X.Y.Z, X.Y.Z)`,
       });
       continue;
@@ -322,21 +325,28 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
     // hardcoded label pointed the reader at a directory that was never read.
     violations.push(`${integRoot}: no fixture manifest found — the corpus was not read`);
   } else if (minFloor === null) {
-    // `fixtures === 0` implies `minFloor === null`, so this arm is only ever
-    // reached with manifests present. Distinguish "they parsed and declared
-    // nothing" from "none of them parsed" — the refusals carry the detail, but
-    // the summary line should not assert the wrong one of the two.
-    const detail =
-      refusals.length === fixtures
-        ? `none of them readable (see the ${refusals.length} refusals above)`
-        : 'none declaring a decidable aws-cdk-lib floor';
-    violations.push(`${integRoot}: ${fixtures} fixture manifests read, ${detail}`);
+    // Deliberately states only what it KNOWS, and infers no cause.
+    //
+    // Two rounds of review were spent on a conditional here that tried to say
+    // WHY no floor was found -- "none of them parsed" versus "none declared
+    // one". Every version was wrong for some input, because the counts it
+    // branched on (`refusals.length` against `fixtures`) are different
+    // populations: `refusals` also holds the TEMPLATE refusal and
+    // undecidable-spec failures, neither of which is an unreadable manifest.
+    // The per-file truth is already in `refusals`, and every refusal is
+    // already emitted as its own violation above. So the summary reports the
+    // fact and points at them, rather than re-deriving a cause it cannot see.
+    violations.push(
+      `${integRoot}: ${fixtures} fixture manifests read, none yielded a decidable ` +
+        `aws-cdk-lib floor` +
+        (refusals.length > 0 ? ` (see the ${refusals.length} refusal(s) above for why)` : ''),
+    );
   }
   if (minFloor !== null && templateFloor !== null && compareFloors(templateFloor, minFloor) < 0) {
     const lowest = sorted[0];
     violations.push(
       `${TEMPLATE_REL} emits aws-cdk-lib "${templateFloor.raw}", below the lowest floor in the ` +
-        `fixture corpus ("${lowest.spec}", ${INTEG_ROOT_REL}/${lowest.fixture}). A new fixture ` +
+        `fixture corpus ("${lowest.spec}", ${join(integRoot, lowest.fixture)}). A new fixture ` +
         `scaffolded from this template would start behind the corpus — raise the template.`,
     );
   }

@@ -223,20 +223,56 @@ describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
     const report = checkIntegCdkLibFloor({ integRoot: dir, templatePath: REAL_TEMPLATE });
     expect(report.fixtures).toBe(1);
     expect(report.declaringFixtures).toBe(0);
-    expect(report.violations.join('\n')).toContain('none declaring a decidable aws-cdk-lib floor');
+    expect(report.violations.join('\n')).toContain('none yielded a decidable aws-cdk-lib floor');
   });
 
-  // The two ways `minFloor` can be null read identically in a summary line, and
-  // only one of them is true at a time. The refusals carry the detail; the
-  // summary must not assert the wrong one.
-  it('says NONE WERE READABLE when every manifest failed to parse', () => {
-    const dir = scratch('cdkd-floor-unparseable-');
+  // The summary INFERS NO CAUSE. Two review rounds went into a conditional
+  // trying to say why no floor was found; every version was wrong for some
+  // input because it branched on `refusals.length` against `fixtures`, which
+  // are different populations (`refusals` also holds the TEMPLATE refusal).
+  // These cases pin the replacement: one fact, plus a pointer to the refusals,
+  // which are themselves violations.
+  it.each([
+    ['unparseable manifest', '{ "name": "a", ', 1],
+    ['undecidable spec', '{ "dependencies": { "aws-cdk-lib": "*" } }', 1],
+    ['no declaration at all', '{ "name": "a", "dependencies": {} }', 0],
+  ])('reports the fact without inferring a cause: %s', (_label, body, expectedRefusals) => {
+    const dir = scratch('cdkd-floor-nofloor-');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    writeFileSync(join(dir, 'a', 'package.json'), body);
+    const report = checkIntegCdkLibFloor({ integRoot: dir, templatePath: REAL_TEMPLATE });
+    expect(report.fixtures).toBe(1);
+    expect(report.refusals.length).toBe(expectedRefusals);
+    const text = report.violations.join('\n');
+    expect(text).toContain('none yielded a decidable aws-cdk-lib floor');
+    // The retired wordings, each of which was wrong for one of these three.
+    expect(text).not.toContain('none of them readable');
+    expect(text).not.toContain('none declaring a decidable');
+  });
+
+  // The template is a refusal SOURCE that is not a fixture — the input that
+  // made every count-comparing version of this message wrong.
+  it('stays correct when the TEMPLATE also refuses', () => {
+    const dir = scratch('cdkd-floor-bothrefuse-');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    writeFileSync(join(dir, 'a', 'package.json'), '{ "name": "a", ');
+    const report = checkIntegCdkLibFloor({
+      integRoot: dir,
+      templatePath: join(dir, 'no-such-template.md'),
+    });
+    expect(report.refusals.length).toBe(2); // one manifest + one template
+    expect(report.violations.join('\n')).toContain('none yielded a decidable aws-cdk-lib floor');
+  });
+
+  // Every path the checker prints must name the root it ACTUALLY read.
+  it('never names the hardcoded corpus path when a seam root was given', () => {
+    const dir = scratch('cdkd-floor-pathlabel-');
     mkdirSync(join(dir, 'a'), { recursive: true });
     writeFileSync(join(dir, 'a', 'package.json'), '{ "name": "a", ');
     const report = checkIntegCdkLibFloor({ integRoot: dir, templatePath: REAL_TEMPLATE });
-    expect(report.fixtures).toBe(1);
-    expect(report.violations.join('\n')).toContain('none of them readable');
-    expect(report.violations.join('\n')).not.toContain('none declaring a decidable');
+    const text = [...report.violations, ...report.refusals.map((r) => r.where)].join('\n');
+    expect(text).toContain(dir);
+    expect(text).not.toContain(INTEG_ROOT_REL);
   });
 });
 
