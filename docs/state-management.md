@@ -651,6 +651,95 @@ integ test proves the round-trip against real AWS — and first reproduces the
 shadowing under the v8 binary (a consumer bound to a decoy stack's plain
 output) before the v9 binary rebinds it to the real export.
 
+### `skippedOutputs` (informational, no version bump)
+
+An Output the deploy could NOT resolve is SKIPPED — warned about when the
+resolver threw (under the default arm; `--strict-getatt` aborts the deploy
+instead), silently when the resolver returned nothing — and `cdkd deploy`
+stores nothing for it, so a bag the deploy re-resolved lacks the key (a
+no-change deploy keeps the previous bag whole when any output fails, so a key
+that resolved on an earlier deploy can keep its stored value beside a record —
+the diff then ignores the record for it). When that
+failure happens INSIDE a secret lookup — a `{{resolve:secretsmanager:...}}`
+naming a JSON key the secret does not hold, or a reference assembled from
+another secret's value — `cdkd diff` cannot reproduce it: the diff resolves
+outputs with secret references left as their tokens, so the value assembles
+cleanly, and the diff used to preview an `ADD` the deploy would never perform
+on every run of the unchanged stack, keeping `cdkd diff --fail` red.
+
+`skippedOutputs` is the deploy telling the diff what it learned: each skipped
+`Outputs` key mapped to a sha256 over the template inputs its resolution reads
+— the output's own entry (`Value`, `Export`, `Condition`) and every top-level
+section except `Resources` and the sibling `Outputs` (`Parameters`,
+`Conditions`, `Mappings`, ...), digested from the template as handed in,
+before any parameter binding or condition evaluation, on both sides. One value
+is deliberately excluded: a `NoEcho: true` parameter's `Default` is hashed as a
+constant, so this field cannot become a confirm oracle for a low-entropy one.
+It is not a claim that the value is otherwise absent from state. Everything
+else about such a parameter is still hashed, so only a change to that default
+alone fails to un-bind. The diff
+previews a recorded key as **absent** — no row, exactly what the next deploy
+will leave in state, and the sibling outputs are previewed normally, so a
+genuine change beside the broken output still renders and `--fail` still
+exits 1 for it — only while the key is still absent from `outputs` AND today's
+digest equals the recorded one. Any change to those inputs (the `Value`
+repaired, an `Export.Name` added or removed, a parameter default, a condition,
+a mapping) puts it back under the ordinary preview rules — usually an `ADD`
+row; an intrinsic `Export.Name` the diff still cannot resolve keeps omitting
+the section, as it did before this field — and the next deploy re-decides it:
+it publishes the output if the repair took, or records it again under the new
+digest.
+
+Repairing the RESOURCE an output reads is handled separately, because
+`Resources` is deliberately not digested (hashing it would discard the record
+on every unrelated resource edit). `cdkd diff` declines to use the record for
+an output whose `Value` or `Export.Name` references a logical id this run's
+resource diff reports as changing: the deploy that follows re-resolves every
+output, so the record cannot speak for it. The test is the reference, not
+whether the edit could actually repair the output — undecidable from a
+template — so an unrelated edit to a referenced resource also stops the record
+binding. Bounded on purpose: that diff already reports the resource's own
+change.
+
+Lifecycle: written by every deploy that re-resolves outputs (the changed and
+the no-change path alike; the no-change path saves on a record change alone,
+and writes THIS pass's record even when it keeps the previous bag because an
+output failed), omitted when nothing was skipped, cleared for a key that
+resolves or leaves the template, and carried forward unchanged by the saves
+that carry the `outputs` bag forward without re-resolving it (a failed
+deploy's partial saves, and the snapshot a partial `cdkd destroy` leaves —
+every resource it removed returns as a CREATE on the next diff, which un-binds
+any record that references it). Every command that rebuilds state OUTSIDE a
+deploy DROPS it instead — `cdkd import`, `cdkd drift --accept`,
+`cdkd drift --revert`, `cdkd rollback`, `cdkd scrub`, `cdkd orphan` and
+`cdkd state refresh-observed`. All but the last can change the values an
+output's resolution reads while every resource still reports `NO_CHANGE`, so
+the diff has nothing to un-bind on; `refresh-observed` writes only
+`observedProperties`, which the resolver does not read, and drops anyway on
+any run that refreshed at least one resource (a run that refreshed nothing
+keeps the record). The rule is deliberately flat rather than per-command:
+of three attempts to argue a particular command safe, two were shown wrong and
+the third could not be settled either way. Those keys return to pre-record
+behaviour until the next deploy.
+
+**Upgrade is transparent** — the field is absent on a record written before
+it existed, the diff then behaves as before, and the next no-change deploy of
+the affected stack writes it. **Limitation**: five repairs are invisible to the
+digest, so the record stays (and the diff stays silent about that output)
+until the next deploy re-resolves it and clears the entry. Two are outside the
+template and outside anything the diff looks up: the secret gained the key, or
+the SSM parameter was created. One is a nested stack's input VALUE changing on
+the parent's side, which the diff does resolve but the digest does not hash,
+since hashing supplied values would tie the record to a caller's arguments
+rather than to the template. One is cdkd itself being upgraded so that a
+provider now builds an attribute an output reads. The fifth is deliberate: a
+`NoEcho` parameter's default is masked out of the digest (above), so a change
+to that default alone does not un-bind. Where the deploy warns, that
+warn names the broken output and `cdkd diff` is not a second signal for it —
+but the quiet arm, a resolver returning nothing for an attribute it cannot
+construct, emits none, so for that one there is no signal at all until the next
+deploy re-resolves the output.
+
 ## State Schema
 
 ### StackState (`state.json`)
@@ -665,6 +754,7 @@ interface StackState {
   imports?: StateImportEntry[]             // v4+: Fn::ImportValue refs (strong reference — blocks the producer's destroy)
   outputReads?: StateOutputReadEntry[]     // v8+: Fn::GetStackOutput refs (informational — weak reference, never destroy-blocking)
   exportNames?: string[]                   // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy; [] = exports nothing)
+  skippedOutputs?: Record<string, string>  // informational, no version bump: Outputs keys the last deploy could not resolve and skipped → digest of their template inputs (issue #2740); absent = nothing skipped, or a record older than the field
   parentStack?: string                     // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)

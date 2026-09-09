@@ -2630,6 +2630,16 @@ async function refreshObservedForStack(
     });
 
     state.lastModified = Date.now();
+    // `skippedOutputs` (issue #2740) is dropped, as every writer that rebuilds
+    // state outside a deploy drops it. This one only rewrites
+    // `observedProperties`, which no attribute is built from — but that is a
+    // per-writer argument of exactly the kind that was wrong three times for
+    // this field, so the rule is applied rather than re-argued. What IS
+    // narrowed is WHEN: this command saves unconditionally, even when every
+    // resource was unsupported or failed, and `--all` is a diagnostic — so the
+    // drop is gated on having refreshed at least one resource, which keeps the
+    // rule flat while a no-op run stays free of the pre-#2740 phantom.
+    if (refreshed > 0) delete state.skippedOutputs;
     const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {
       expectedEtag: etag,
     };

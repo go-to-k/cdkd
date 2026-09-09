@@ -17,6 +17,7 @@ interface StackState {
   imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs recorded for strong-reference destroy refusal
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational; NO destroy-time refusal — weak reference by design)
   exportNames?: string[];         // v9+: the keys of `outputs` that are Export.Name aliases — the ONLY names Fn::ImportValue may bind to; undefined = pre-v9 record (every key importable until its next deploy), [] = exports nothing
+  skippedOutputs?: Record<string, string>; // #2740
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string;    // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -109,7 +110,8 @@ otherwise: code reading a `state.outputs` value back must not assume `string`
 `Record<string, string>` is wrong (issue
 [#1876](https://github.com/go-to-k/cdkd/issues/1876)). An output the resolver
 could not resolve is stored as `undefined` and therefore drops out of the
-persisted JSON entirely — absence means "not resolved", not "empty string".
+persisted JSON entirely — absence means "not resolved" (a no-change save may
+keep the old bag).
 
 **Do not verify any of this from the deploy summary.** `cdkd deploy`'s
 `Outputs:` block prints each value with `String(value)`

@@ -337,7 +337,11 @@ break a consumer — was hidden the same way.
   `DeployEngine.resolveOutputs` persists to `StackState.outputs`: a
   condition-false output is skipped (CFn never creates it), and an
   `Export.Name` is stored as a **second key** holding the same value, since
-  `Fn::ImportValue` resolves by export name.
+  `Fn::ImportValue` resolves by export name. An output the last deploy
+  skipped — its `skippedOutputs` digest still matching today's template, the
+  key still absent from state, and no resource it references changing on this
+  run — is previewed as absent too (`src/analyzer/skipped-outputs.ts`), so the
+  deploy's own skip does not read as a phantom `ADD`.
 - The unresolved detector is deliberately **wider** than the deploy side's
   `v === undefined`, because the diff's best-effort resolver fails in more ways.
   It flags `undefined` (the same signal — `resolve` returns it *without*
@@ -393,7 +397,12 @@ break a consumer — was hidden the same way.
   up — it diffs against an *empty* template, so nothing is declared and nothing
   is resolved — and it takes the parent's answer, propagated unchanged to a
   deleted grandchild.
-- One row the preview cannot decide from the template is a **literal**
+- Two rows the preview cannot decide from the template alone come from state.
+  One is an output whose resolution failed inside a secret lookup at the last
+  deploy — the diff never makes that lookup, so it trusts the deploy's
+  `skippedOutputs` record while the digested template inputs are unchanged and
+  no resource the output references is changing on this run.
+  The other is a **literal**
   `Export.Name` in a stack that resolves a secret: the deploy refuses such a
   name when it contains a resolved plaintext, and the preview never substitutes
   one. It reads the verdict the apply already recorded (issue

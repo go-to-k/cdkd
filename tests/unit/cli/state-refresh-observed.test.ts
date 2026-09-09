@@ -293,6 +293,61 @@ describe('cdkd state refresh-observed', () => {
     expect(mockSaveState).not.toHaveBeenCalled();
   });
 
+  it('DROPS the skipped-outputs record it was handed (issue #2740)', async () => {
+    // The flat rule: every writer that rebuilds state outside a deploy drops
+    // the record. This one writes only `observedProperties`, which no attribute
+    // is built from — but that is a per-writer safety argument of exactly the
+    // kind that was wrong three times for this field, so the rule is applied
+    // rather than re-argued.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const handed = makeState({
+      Bucket1: makeResource({
+        physicalId: 'b',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { BucketName: 'b' },
+      }),
+    });
+    handed.state.skippedOutputs = { Broken: 'digest-recorded-by-the-last-deploy' };
+    mockGetState.mockResolvedValueOnce(handed);
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b', Tags: [] }),
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+    expect(error).toBeUndefined();
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [, , savedState] = mockSaveState.mock.calls[0] as unknown as [string, string, StackState];
+    // The refresh itself still happened — the drop is targeted, not a rebuild.
+    expect(savedState.resources['Bucket1']!.observedProperties).toBeDefined();
+    expect('skippedOutputs' in savedState).toBe(false);
+  });
+
+  it('KEEPS the skipped-outputs record when it refreshed nothing (issue #2740, round 6 n15)', async () => {
+    // The drop is gated on `refreshed > 0`: this command saves even when every
+    // resource was unsupported, and `--all` is a diagnostic — a no-op run must
+    // not reinstate the pre-#2740 phantom on every diff until a redeploy.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const handed = makeState({
+      Bucket1: makeResource({
+        physicalId: 'b',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { BucketName: 'b' },
+      }),
+    });
+    handed.state.skippedOutputs = { Broken: 'digest-recorded-by-the-last-deploy' };
+    mockGetState.mockResolvedValueOnce(handed);
+    // No `readCurrentState` at all: the resource is UNSUPPORTED, so nothing
+    // is refreshed.
+    mockRegistryGetProvider.mockReturnValue({});
+
+    const { error } = await runRefresh(['TestStack']);
+    expect(error).toBeUndefined();
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [, , savedState] = mockSaveState.mock.calls[0] as unknown as [string, string, StackState];
+    expect(savedState.skippedOutputs).toEqual({ Broken: 'digest-recorded-by-the-last-deploy' });
+  });
+
   it('refreshes observedProperties on every resource and saves the updated state', async () => {
     // The headline use case: resource has no observedProperties (older
     // v2 state), refresh-observed populates it from

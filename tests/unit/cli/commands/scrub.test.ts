@@ -157,6 +157,29 @@ describe('cdkd scrub - scrubStack', () => {
     expect(stateBackend.saveState.mock.calls.at(-1)![3]).toEqual({ expectedEtag: 'etag-1' });
   });
 
+  it('DROPS the skipped-outputs record it was handed (issue #2740)', async () => {
+    // The flat rule: every writer that rebuilds state outside a deploy drops
+    // the record. Replacing a plaintext with its expression is not
+    // monotonically less resolvable — an ordinary resource `GetAtt` returns
+    // the stored string verbatim, so an output that splits that string can
+    // start resolving once its shape changes — which is one of three
+    // per-writer safety arguments that were each wrong in review.
+    const leaky = makeLeakyState();
+    leaky.skippedOutputs = { Broken: 'digest-recorded-by-the-last-deploy' };
+    stateBackend.getState.mockResolvedValue({ state: leaky, etag: 'etag-1' });
+
+    const res = await scrubStack(makeStackInfo() as never, 'us-east-1', stateBackend as never, lockManager as never, {
+      dryRun: false,
+      logger,
+    });
+
+    expect(res.recordsChanged).toBeGreaterThan(0);
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    // The scrub itself still happened — the drop is targeted, not a rebuild.
+    expect(saved.outputs['LeakedOut']).toBe(SECRET_EXPR);
+    expect('skippedOutputs' in saved).toBe(false);
+  });
+
   it('dry-run reports the secret but does NOT save or lock', async () => {
     const res = await scrubStack(makeStackInfo() as never, 'us-east-1', stateBackend as never, lockManager as never, {
       dryRun: true,

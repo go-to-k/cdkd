@@ -1642,6 +1642,11 @@
       "scenarios": []
     },
     {
+      "name": "output-never-resolved-diff",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "outputs-only-export",
       "annotated": true,
       "scenarios": [

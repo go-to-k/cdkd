@@ -439,8 +439,21 @@ export async function rollbackCommand(
       // every remaining op into a 412. `afterOp` therefore never throws.
       let currentEtag = stateData.etag;
       const saveState = async (): Promise<void> => {
+        // `skippedOutputs` (issue #2740) is dropped rather than spread through,
+        // as `cdkd import`, `cdkd drift --accept` and the orphan rewrite drop
+        // it. Like `import`, this writer can ADD an attribute key: the
+        // replacement / re-adopt arm rebuilds a record with
+        // `attributes: createResult.attributes ?? {}`
+        // (`rollback-executor.ts`), and a fresh create can return a fuller set
+        // than the record the old state held — the same "a provider now builds
+        // an attribute an output reads" shape the module doc lists as a blind
+        // spot. Every resource then reports NO_CHANGE against the reverted
+        // template, so the diff's change map cannot un-bind and the digest is
+        // unmoved; carried, the record would preview a key as absent while the
+        // next deploy publishes it.
+        const { skippedOutputs: _droppedByRollback, ...carriedState } = baseState;
         const next = (): StackState => ({
-          ...baseState,
+          ...carriedState,
           version: STATE_SCHEMA_VERSION_CURRENT,
           region,
           resources: { ...stateResources },

@@ -19,6 +19,7 @@ import {
   templateHasSecretDynamicReference,
   type OutputChange,
 } from '../../analyzer/outputs-diff.js';
+import { bindingSkippedOutputs } from '../../analyzer/skipped-outputs.js';
 import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import {
@@ -392,6 +393,19 @@ export async function computeStackDiff(
     cfnFallback: cfnFallback ?? true,
   });
 
+  // Issue #2740: the source the skipped-output digests are compared against,
+  // snapshotted HERE — before the parameter binding and condition evaluation
+  // below, and before any resolution — at the same point of this flow as the
+  // deploy engine's own snapshot, so the two digests agree. Taken as a deep
+  // COPY so nothing downstream can make a resolved value visible to it; the
+  // invariant and why it does not rest on any one resolver are in
+  // `skipped-outputs.ts`. `Resources` is dropped: the digest never reads it.
+  // The BINDING decision is made below, once the resource diff is in hand.
+  const outputsDigestSource: CloudFormationTemplate = structuredClone({
+    ...template,
+    Resources: {},
+  });
+
   // Mirror the deploy engine's parameter/condition preprocessing (steps
   // 2.5-2.7, issue #1027) so the diff matches what deploy will actually do.
   // Everything here is best-effort: a template whose parameters cannot be
@@ -592,11 +606,27 @@ export async function computeStackDiff(
   // evaluate deploy's predicate for but state can answer (issue #1942): the bag
   // holding that alias key proves a previous deploy published it. See the
   // resolver's own note for the different-value / absent-key rows.
+  // `bindingSkipped` (issue #2740) is what lets the preview agree with a
+  // deploy that SKIPPED an output whose failure happens inside a secret lookup
+  // this resolver never makes; see the resolver's doc. Decided HERE rather
+  // than beside the snapshot because it needs `changes`: an output referencing
+  // a resource this deploy will touch must NOT bind — the deploy would take
+  // the changed-resources path, re-resolve every output, and publish the row
+  // (and its `Export.Name`) the record would otherwise have hidden.
+  const changedLogicalIds = new Set(
+    [...changes.values()].filter((c) => c.changeType !== 'NO_CHANGE').map((c) => c.logicalId)
+  );
+  const bindingSkipped = bindingSkippedOutputs(
+    outputsDigestSource,
+    currentState.skippedOutputs,
+    changedLogicalIds
+  );
   const resolved = await resolveTemplateOutputs(
     effectiveTemplate,
     resolveFn,
     conditions,
-    currentState.outputs
+    currentState.outputs,
+    bindingSkipped
   );
   // A partially-resolved bag reports NO delta, exactly like the deploy engine's
   // NO-CHANGE branch declining to persist one (`resolutionFailed` there). That
@@ -604,9 +634,14 @@ export async function computeStackDiff(
   // branch has no such gate, correctly, because by then every resource exists.
   // Being conservative in the same direction is what keeps an unchanged stack at
   // "no changes" instead of showing a phantom the apply would never write.
-  // Nothing is lost: an output only fails to resolve because it references a
-  // resource this deploy has yet to create, and that CREATE is already on the
-  // resource side of the diff.
+  // Nothing is lost in the common case: an output usually fails to resolve
+  // because it references a resource this deploy has yet to create, and that
+  // CREATE is already on the resource side of the diff. Since issue #2740 a
+  // key the last deploy skipped is dropped before this point and never sets
+  // the flag — but only while its record still BINDS (digest unchanged, the
+  // key still absent from state, no referenced resource changing this run).
+  // Fail any of those and the key resolves here like any other, which is the
+  // fallback this arm keeps covering.
   let outputChanges: OutputChange[] = [];
   if (resolved.resolutionFailed) {
     // Surface the case where the outputs DID differ but a resolution failure

@@ -65,6 +65,7 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   shouldRetainResource,
   exportNamesCarriedFrom,
+  skippedOutputsCarriedFrom,
   importableOutputKeys,
   importableOutputs,
   type StackState,
@@ -100,6 +101,7 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { getCreateOnlyPropertyPaths } from '../provisioning/create-only-properties.js';
 import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
+import { collectSkippedOutputs, skippedOutputsEqual } from '../analyzer/skipped-outputs.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
   computeImplicitDeleteEdges,
@@ -1040,8 +1042,20 @@ export class DeployEngine {
    * secret collapse onto whichever expression was recorded last, exactly as two
    * resource properties did before #1904. Captured in `resolveOutputs` at the
    * same point `outputSecrets` is accumulated. Reset per `deploy()`.
+   *
+   * Null-prototype for the same reason as the outputs bag `resolveOutputs`
+   * builds two lines away: both are keyed by TEMPLATE-CONTROLLED output names,
+   * so an output called `__proto__` would replace this bag's prototype and a
+   * later lookup of a name it never stored would inherit from it. Only the
+   * RESET in `deploy()` is pinned — reverting this initialiser alone survives
+   * the suite, measured, because `deploy()` replaces the bag before anything
+   * writes to it, so the initialiser matches the reset rather than standing as
+   * a second guard.
    */
-  private outputsTemplateSource: Record<string, unknown> = {};
+  private outputsTemplateSource: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >;
   /**
    * The export aliases the last `resolveOutputs` pass WROTE into its bag
    * (issue #2193) — exactly the keys `outputs[exportName] = value` landed on,
@@ -1053,6 +1067,18 @@ export class DeployEngine {
    * after that call returns — read it there, not later.
    */
   private resolvedExportNames: string[] = [];
+  /**
+   * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
+   * (the resolver threw under the default arm of
+   * `handleOutputResolutionFailure`, or returned `undefined` outright — see
+   * `collectSkippedOutputs`), each mapped to the
+   * digest `cdkd diff` compares against (issue #2740, `StackState.
+   * skippedOutputs`). `undefined` when nothing was skipped, so the saves that
+   * persist the resolved bag spread it as-is and the field stays omitted. Same
+   * lifetime rule as `resolvedExportNames`: reset at the top of every
+   * `resolveOutputs`, meaningful only right after that call returns.
+   */
+  private skippedOutputs: Record<string, string> | undefined;
   /**
    * Whether {@link outputsTemplateSource} may be used to POSITION the outputs
    * redaction. False once an outputs pass threw partway: the post-loop
@@ -1168,8 +1194,23 @@ export class DeployEngine {
     // pairs — and now mark it as today's.
     this.attemptedResolvedProps = new Map();
     this.outputSecrets = new Map();
-    this.outputsTemplateSource = {};
+    // Null-prototype for the same reason as the outputs bag it positions
+    // (issue #1943's class, and #2740's `__proto__` case): both are keyed by
+    // TEMPLATE-CONTROLLED output names two lines apart, so an output literally
+    // named `__proto__` would replace this bag's prototype and a later lookup
+    // of an output named, say, `Fn::GetAtt` would inherit a value from it.
+    // The pair was inconsistent inside one function, which is the state a
+    // later reader has to re-derive.
+    this.outputsTemplateSource = Object.create(null) as Record<string, unknown>;
     this.outputsSourceUsable = true;
+    // Issue #2740, same reuse hazard as `retainedOldOnReplacement` below.
+    // The ONLY reset for this field: `resolveOutputs` recomputes it at the
+    // END of a pass, but early-returns for a template with no `Outputs`
+    // without touching it, so a reused engine would otherwise carry the
+    // PREVIOUS deploy's record into that run. A second reset inside
+    // `resolveOutputs` would mask this one — neither could then be pinned —
+    // so the clearing lives here, with the other per-run bags.
+    this.skippedOutputs = undefined;
     // Issue #2603: an engine can be reused across deploys, and a STALE `true`
     // here would tell the next run's rollback to re-adopt an id this run
     // deleted. Reset in the same block as the other per-run bags.
@@ -2171,6 +2212,21 @@ export class DeployEngine {
       // IntrinsicResolver (intrinsic function resolution) in later steps
       this.logger.debug(`Template has ${Object.keys(template.Resources || {}).length} resources`);
 
+      // Issue #2740: the source the skipped-outputs digests are taken from,
+      // snapshotted HERE — before `resolveParameters`, `evaluateConditions`
+      // and every resolution below. A deep COPY, so that no resolution can be
+      // visible to the digest however those steps are implemented: one that
+      // could see a resolved value would both diverge from `cdkd diff`'s
+      // digest (which snapshots at the same point of its own flow) and
+      // fingerprint a decrypted secret into `state.json`. The invariant, and
+      // why it does not rest on any one resolver's in-place behaviour, is in
+      // `src/analyzer/skipped-outputs.ts`. `Resources` is dropped: the digest
+      // never reads it, and it is the bulk of every template.
+      const outputsDigestSource: CloudFormationTemplate = structuredClone({
+        ...template,
+        Resources: {},
+      });
+
       // 2.5. Resolve parameters from template and user input
       // The inherited bag travels into `resolveParameters` as well as into the
       // per-resource contexts below (issue #1903 review round 2). This is the
@@ -2410,6 +2466,7 @@ export class DeployEngine {
               effectiveTemplate,
               currentState.resources,
               stackName,
+              outputsDigestSource,
               parameterValues,
               conditions
             )
@@ -2467,7 +2524,22 @@ export class DeployEngine {
             await this.drainObservedCaptures(currentState.resources);
           }
 
-          if (observedRefresh || outputsChanged || exportSetChanged) {
+          // Issue #2740: the skipped-outputs record needs its OWN trigger on
+          // this path. The shape that produces it — an output failing inside
+          // a secret lookup on a stack with no resource diff — lands here
+          // with `resolutionFailed` true, which switches `outputsChanged` and
+          // `exportSetChanged` OFF, so without this the field would exist in
+          // the type and never be written for exactly the case it exists for.
+          // A difference in either direction saves: a key newly skipped (or
+          // its digest moved), or one that resolved / left the template and
+          // must be cleared. Also the upgrade path — a record with no field
+          // yet whose broken output is skipped again today.
+          const skippedOutputsChanged = !skippedOutputsEqual(
+            currentState.skippedOutputs,
+            this.skippedOutputs
+          );
+
+          if (observedRefresh || outputsChanged || exportSetChanged || skippedOutputsChanged) {
             try {
               const refreshedState: StackState = {
                 version: STATE_SCHEMA_VERSION_CURRENT,
@@ -2485,6 +2557,16 @@ export class DeployEngine {
                 ...(resolutionFailed
                   ? exportNamesCarriedFrom(currentState)
                   : { exportNames: [...this.resolvedExportNames] }),
+                // Unlike `exportNames`, ALWAYS this pass's: the record says
+                // what THIS deploy skipped, which the resolution just decided
+                // whether or not the bag was carried forward. Omitted when
+                // nothing was skipped. COPIED, like the `exportNames` /
+                // `imports` spreads beside it. Consistency, not a fix for an
+                // observable bug: `collectSkippedOutputs` builds a FRESH
+                // object each pass, so no alias outlives one and no test can
+                // tell a copy from an alias here. Stated so the absence of a
+                // fence is not read as an oversight.
+                ...(this.skippedOutputs && { skippedOutputs: { ...this.skippedOutputs } }),
                 // Preserve existing imports[] / outputReads[] (v8+) — otherwise
                 // the refresh would silently strip the strong-reference record
                 // on every diff-clean deploy. Unioned with this session's
@@ -2531,8 +2613,12 @@ export class DeployEngine {
                     importableOutputs(refreshedState)
                   );
                 }
-              } else {
+              } else if (observedRefresh) {
                 this.logger.debug('Persisted refreshed observedProperties (no-change path)');
+              } else {
+                this.logger.debug(
+                  'Persisted skipped-outputs record (no outputs-value diff, no-change path, #2740)'
+                );
               }
             } catch (saveError) {
               this.logger.warn(
@@ -2618,6 +2704,7 @@ export class DeployEngine {
         dag,
         executionLevels,
         stackName,
+        outputsDigestSource,
         parameterValues,
         conditions,
         currentEtag,
@@ -2768,6 +2855,8 @@ export class DeployEngine {
     dag: ReturnType<DagBuilder['buildGraph']>,
     executionLevels: string[][],
     stackName: string,
+    /** The pre-resolution snapshot for the skipped-outputs digests (issue #2740); see `doDeploy`. */
+    outputsDigestSource: CloudFormationTemplate,
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>,
     currentEtag?: string,
@@ -2809,6 +2898,7 @@ export class DeployEngine {
             resources: newResources,
             outputs: currentState.outputs,
             ...exportNamesCarriedFrom(currentState),
+            ...skippedOutputsCarriedFrom(currentState),
             // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
             // session resolved. See `crossStackReadsForPartialSave` — writing the
             // snapshot alone left a failed deploy's persisted record denying a
@@ -3074,6 +3164,7 @@ export class DeployEngine {
           resources: newResources,
           outputs: currentState.outputs,
           ...exportNamesCarriedFrom(currentState),
+          ...skippedOutputsCarriedFrom(currentState),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -3184,6 +3275,7 @@ export class DeployEngine {
           resources: newResources,
           outputs: currentState.outputs,
           ...exportNamesCarriedFrom(currentState),
+          ...skippedOutputsCarriedFrom(currentState),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -3229,6 +3321,7 @@ export class DeployEngine {
             resources: newResources,
             outputs: currentState.outputs,
             ...exportNamesCarriedFrom(currentState),
+            ...skippedOutputsCarriedFrom(currentState),
             // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
             // session resolved. See `crossStackReadsForPartialSave` — writing the
             // snapshot alone left a failed deploy's persisted record denying a
@@ -3278,6 +3371,7 @@ export class DeployEngine {
         template,
         newResources,
         stackName,
+        outputsDigestSource,
         parameterValues,
         conditions
       );
@@ -3331,6 +3425,9 @@ export class DeployEngine {
         // Always written, `[]` included: on this path the bag was re-resolved,
         // so the set is KNOWN (issue #2193). Absent would read as "not known".
         exportNames: [...this.resolvedExportNames],
+        // This pass's skipped set, omitted when empty (issue #2740). Copied,
+        // like the `exportNames` / `imports` spreads beside it.
+        ...(this.skippedOutputs && { skippedOutputs: { ...this.skippedOutputs } }),
         ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
         ...(this.recordedOutputReads.length > 0 && {
           outputReads: [...this.recordedOutputReads],
@@ -3378,6 +3475,7 @@ export class DeployEngine {
       resources: newResources,
       outputs: currentState.outputs,
       ...exportNamesCarriedFrom(currentState),
+      ...skippedOutputsCarriedFrom(currentState),
       // Issue #2057: the UNION, like every other non-success save. This one
       // used to write `[...this.recordedImports]` WHOLESALE, copying the
       // SUCCESS path's shape onto a path that is not one — provisioning
@@ -6842,17 +6940,38 @@ export class DeployEngine {
     template: CloudFormationTemplate,
     resources: Record<string, ResourceState>,
     stackName: string,
+    /**
+     * The pre-resolution snapshot the skipped-outputs digests are taken from
+     * (issue #2740) — `doDeploy` deep-copies it before parameter binding,
+     * condition evaluation and every resolution, so that no resolution can be
+     * visible to the digest however those steps are implemented (the
+     * invariant, and why it does not rest on any one resolver's in-place
+     * behaviour, is in `src/analyzer/skipped-outputs.ts`). Never `template`
+     * itself: by the time this method runs that object is the one every step
+     * above was free to rewrite.
+     */
+    digestSource: CloudFormationTemplate,
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>
   ): Promise<Record<string, unknown>> {
     // Reset BEFORE the early return: a template with no Outputs exports
     // nothing, and that is a known `[]`, not a stale set from a prior pass.
+    // `skippedOutputs` is NOT reset here: `deploy()` clears it with the other
+    // per-run bags, which covers this early return and every path that never
+    // reaches this method. A second reset here would MASK that one — either
+    // could then be deleted with no test going red — so there is exactly one.
     this.resolvedExportNames = [];
     if (!template.Outputs) {
       return {};
     }
 
-    const outputs: Record<string, unknown> = {};
+    // `Object.create(null)`, not `{}` (the issue #1943 class, and the twin of
+    // `resolveTemplateOutputs`' own bag): a template may declare an Output
+    // named `__proto__`, and on a plain object the failure handler's
+    // `outputs[outputKey] = undefined` would hit the prototype SETTER — the
+    // key would be swallowed, so `collectSkippedOutputs` could never record
+    // it while `canonicalJson` goes to real trouble for exactly that name.
+    const outputs: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     const context = this.buildResolverContext(
       {
         template,
@@ -7158,6 +7277,12 @@ export class DeployEngine {
       if (!publishedOutputNames.has(outputKey)) continue;
       this.outputsTemplateSource[outputKey] = output.Value;
     }
+
+    // What this pass skipped, for the saves that persist this bag (issue
+    // #2740). Computed here rather than in the failure handler so the record
+    // is derived from the same bag the saves write: a key is skipped exactly
+    // when its value is `undefined`, on either pass.
+    this.skippedOutputs = collectSkippedOutputs(digestSource, outputs);
 
     // Issue #2516: this bag is THIS pass's own resolution of today's
     // `Outputs`, so it is marked same-generation for `redactOutputs` — a

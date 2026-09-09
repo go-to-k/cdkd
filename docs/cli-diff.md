@@ -144,6 +144,107 @@ section is **omitted rather than guessed**, and a warning says so, so an absent
 section never silently means "unchanged". That resource's `CREATE` is already
 on the resource side of the diff.
 
+An output the **last deploy could not resolve and skipped** is not previewed
+as an `ADD` either. Two things get skipped, and only the first is announced:
+
+- the resolver **threw** — a lookup failed inside it, such as a
+  `{{resolve:secretsmanager:...}}` naming a JSON key the secret does not
+  hold. The deploy warns per output (`--strict-getatt` aborts instead).
+- the resolver **returned nothing** — an `Fn::GetAtt` whose attribute could
+  not be constructed. No per-output warning; the no-change path still says
+  the outputs could not be resolved when they otherwise differ.
+
+The diff never fetches secrets, so it cannot reproduce the first failure at
+all. The second it does reproduce — an attribute it cannot build is unresolved
+for the diff too — but it cannot tell that case from an output simply waiting
+on a resource this deploy will create, and before this field either one made
+it drop the whole Outputs section. So the deploy records the skipped key
+with a digest of its template inputs (`skippedOutputs` in
+[state](state-management.md#skippedoutputs-informational-no-version-bump)), and
+the diff previews the key as absent — no row, while its sibling outputs are
+still compared as usual — as long as it is still absent from state and that
+digest is unchanged.
+
+Repair the output's `Value`, its `Export.Name`, or a parameter / condition /
+mapping it reads, and the output is back under the ordinary preview rules —
+usually an `ADD` row (an intrinsic `Export.Name` the diff still cannot resolve
+keeps omitting the section, as before); the next deploy then publishes it if
+the repair took, or records it again.
+
+**Repairing the RESOURCE an output reads is the third way**, and the digest
+cannot see it: `Resources` is deliberately not digested, or every unrelated
+resource edit would discard the record. `cdkd diff` handles it from the other
+side — an output whose `Value` or `Export.Name` references a logical id this
+run's resource diff reports as changing does **not** use the record, because
+the deploy that follows re-resolves every output and may publish that key.
+Such an output falls back to how it behaved before this field existed: the
+diff usually still cannot compute it from today's state, so the Outputs
+section is omitted, with the "could not be resolved" warning when some other
+output also differs. What you do not get is the record's silent "nothing to
+do" over a key the deploy is about to publish.
+
+How much of that you SEE depends on whether the output can be resolved at
+diff time at all. An output reading an attribute of a resource that does not
+exist yet stays unresolvable in both readings, so with no sibling output
+differing the two print the same thing — an empty Outputs section — and the
+rule moves the VERDICT, not the row; where a sibling does differ, it trades
+the record's silent "nothing to do" for the "could not be resolved" warning
+over the whole section, the sibling's row included. An output the diff CAN
+resolve is the other case, and there the row is the difference: an output
+whose `Fn::Sub` reads an SSM parameter's name, say, renders its `ADD` as soon
+as the record stops binding, with no sibling involved.
+
+That rule is deliberately coarse: it cannot tell a resource edit that repairs
+the output from one that does not, so an unrelated edit to a referenced
+resource — a tag, a description — also stops the record binding, and the
+output can show as an `ADD` again. The cost is bounded to a diff that is
+**already** reporting that resource's change, so `--fail` was going to exit `1`
+either way; the alternative is hiding a row the deploy will publish.
+
+One template value is excluded from the digest on purpose: a `NoEcho: true`
+parameter's `Default` is hashed as a constant, so the record cannot become a
+confirm oracle for a low-entropy one. That is not a claim the value is
+otherwise absent from state — a parameter a resource reads can persist its
+resolved default in that resource's properties — only that this field does not
+add an oracle where there was none. Changing only such a default therefore
+does not un-bind the record.
+
+A repair the digest does not cover leaves the record binding. Four are
+repairs outside its reach, and a fifth is the `NoEcho` default it declines
+to hash on purpose, above. Two are outside the template and outside anything
+`cdkd diff` looks up: the secret gained the JSON key, or the SSM parameter was
+created. One is a nested stack's input VALUE changing on the parent's side,
+which the diff does resolve but the digest does not hash, since hashing
+supplied values would tie the record to a caller's arguments rather than to
+the template. The last is **cdkd itself being upgraded** so that a provider
+now builds the attribute an output reads. In all four the record clears on the
+next deploy, and until then the deploy's own warning, where there is one, is
+the signal for the broken output.
+
+A repair on the RESOURCE side is deliberately not on that list: the rule above
+declines the record whenever this run's resource diff reports the resource as
+changing. That covers a repair the template carries, and only that. A state
+rebuild OUTSIDE a deploy — `cdkd import`, `cdkd drift` in either direction,
+`cdkd rollback`, `cdkd scrub`, `cdkd orphan` and `cdkd state refresh-observed`
+— DROPS the record instead of carrying it forward. All but the last can change
+the values an output's resolution reads while every resource still reports
+`NO_CHANGE`; `refresh-observed` touches only `observedProperties`, which the
+resolver does not read, and drops anyway on any run that refreshed at least
+one resource, because the rule is flat (a run that refreshed nothing keeps
+the record). The one writer that carries it is the partial snapshot a failed
+`cdkd destroy` leaves: every resource it removed returns as a CREATE on the
+next diff, which un-binds any record that references it.
+
+That is the safe direction, not a free one, and it is worth being blunt about
+what it costs. The key is resolved like any other output again, so **for the
+shape this page is about — a failure inside a secret lookup — the phantom
+`ADD` comes back**, and `cdkd diff --fail` exits `1` on the unchanged stack
+until the next deploy rewrites the record. For a key the diff cannot resolve
+either, it joins the ordinary suppression instead and the Outputs section is
+omitted. Bounded on both counts: one deploy clears it, and the alternative is
+the diff asserting that nothing is coming while the next deploy publishes the
+key.
+
 ### What resolving Outputs costs
 
 Resolving an output can issue AWS calls that the resource diff does not:

@@ -5623,6 +5623,7 @@
         "nested-stack-deep",
         "nested-stack-secret",
         "opensearch-domain-getatt",
+        "output-never-resolved-diff",
         "outputs-only-export",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",
@@ -5778,6 +5779,10 @@
         "opensearch-domain-getatt": [
           "l1"
         ],
+        "output-never-resolved-diff": [
+          "l2",
+          "literal"
+        ],
         "outputs-only-export": [
           "l2"
         ],
@@ -5893,6 +5898,7 @@
         "import-secret-observed",
         "lambda-esm-self-managed-kafka",
         "local-run-task-from-state",
+        "output-never-resolved-diff",
         "replacement-immutable-name",
         "secrets-array-nested",
         "secrets-dynamic-ref",
@@ -5925,6 +5931,10 @@
           "literal"
         ],
         "local-run-task-from-state": [
+          "l2",
+          "literal"
+        ],
+        "output-never-resolved-diff": [
           "l2",
           "literal"
         ],

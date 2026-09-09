@@ -50,6 +50,33 @@ function baseState(resources: StackState['resources'], outputs: Record<string, u
 }
 
 describe('rewriteResourceReferences', () => {
+  it('DROPS the skipped-outputs record it was handed (issue #2740)', async () => {
+    // This rewrite substitutes FETCHED values into `properties`, `attributes`
+    // and `outputs`, and a substitution alone can repair an Output — an
+    // attribute holding an intrinsic that made an enclosing `Fn::Select` fail
+    // becomes the fetched value. The output's own digest does not move and no
+    // template resource changes, so the diff's change map has nothing to
+    // un-bind on; carried, the record would preview that key as absent while
+    // the next deploy publishes it. `cdkd import`, `drift --accept` and
+    // `rollback` drop it for the same reason.
+    const state = baseState({
+      Bucket: { physicalId: 'b-phys', resourceType: 'AWS::S3::Bucket', properties: {} },
+      Other: {
+        physicalId: 'o-phys',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { BucketName: { Ref: 'Bucket' } },
+      },
+    });
+    state.skippedOutputs = { Broken: 'digest-recorded-by-the-last-deploy' };
+
+    const result = await rewriteResourceReferences(state, ['Bucket'], fakeRegistry());
+
+    // The rewrite itself still happened — this is a targeted drop, not a
+    // rebuild — so the substituted property is the control.
+    expect(result.state.resources['Other']?.properties).toEqual({ BucketName: 'b-phys' });
+    expect('skippedOutputs' in result.state).toBe(false);
+  });
+
   it('rewrites a {Ref: orphan} into the orphan physicalId', async () => {
     const state = baseState({
       Bucket: { physicalId: 'b-phys', resourceType: 'AWS::S3::Bucket', properties: {} },

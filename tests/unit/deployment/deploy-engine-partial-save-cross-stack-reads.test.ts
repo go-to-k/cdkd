@@ -121,7 +121,12 @@ const PRE_EXISTING_IMPORT = {
 };
 
 function buildEngine(
-  overrides: { imports?: StackState['imports']; exportNames?: string[]; fresh?: boolean } = {}
+  overrides: {
+    imports?: StackState['imports'];
+    exportNames?: string[];
+    skippedOutputs?: Record<string, string>;
+    fresh?: boolean;
+  } = {}
 ) {
   const provider = {
     create: vi
@@ -151,6 +156,7 @@ function buildEngine(
     },
     outputs: {},
     ...(overrides.exportNames !== undefined && { exportNames: overrides.exportNames }),
+    ...(overrides.skippedOutputs !== undefined && { skippedOutputs: overrides.skippedOutputs }),
     imports: overrides.imports ?? [PRE_EXISTING_IMPORT],
     lastModified: Date.now(),
   };
@@ -284,6 +290,55 @@ describe('a failed deploy carries the export set with the bag it keeps (issue #2
     const saves = savedStates(saveState);
     expect(saves.length).toBeGreaterThan(0);
     for (const s of saves) expect('exportNames' in s).toBe(false);
+  });
+});
+
+describe('a failed deploy carries the skipped-outputs record with the bag it keeps (issue #2740)', () => {
+  // The pre-rollback and post-rollback saves write the PREVIOUS bag, so the
+  // record describing that bag — which of its keys the deploy that wrote it
+  // could not resolve — travels with it, like `exportNames` above. This run's
+  // own resolution never happened (provisioning failed first), so there is
+  // nothing newer to write.
+  it('keeps the previous record on every failure-path save', async () => {
+    const record = { Broken: 'digest-recorded-by-the-previous-deploy' };
+    const { engine, saveState } = buildEngine({ skippedOutputs: record });
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    const saves = savedStates(saveState);
+    // Three: per-resource after A, pre-rollback, post-rollback. The retry
+    // case below indexes into this sequence.
+    expect(saves).toHaveLength(3);
+    for (const s of saves) expect(s.skippedOutputs).toEqual(record);
+  });
+
+  it('does NOT invent a record — absent stays absent', async () => {
+    const { engine, saveState } = buildEngine();
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    const saves = savedStates(saveState);
+    expect(saves.length).toBeGreaterThan(0);
+    for (const s of saves) expect('skippedOutputs' in s).toBe(false);
+  });
+
+  it('keeps the previous record on the post-rollback RETRY save (fresh-ETag path) too', async () => {
+    const record = { Broken: 'digest-recorded-by-the-previous-deploy' };
+    const { engine, saveState } = buildEngine({ skippedOutputs: record });
+    // This fixture's failed deploy saves three times: after A (per-resource),
+    // before the rollback, and after it — the cases above pin that count.
+    // Rejecting the THIRD once sends the engine down its fresh-ETag retry,
+    // which rebuilds the state object from scratch.
+    let rejected = false;
+    saveState.mockImplementation(async () => {
+      if (!rejected && saveState.mock.calls.length === 3) {
+        rejected = true;
+        throw new Error('PreconditionFailed: ETag mismatch');
+      }
+      return 'etag-1';
+    });
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    expect(rejected).toBe(true);
+    const saves = savedStates(saveState);
+    // The rejected attempt is in the calls too; the retry is the fourth.
+    expect(saves).toHaveLength(4);
+    for (const s of saves) expect(s.skippedOutputs).toEqual(record);
   });
 });
 

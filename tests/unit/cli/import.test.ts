@@ -2484,6 +2484,56 @@ describe('cdkd import', () => {
       expect('exportNames' in state).toBe(false);
     });
 
+    it('DROPS the existing skipped-outputs record while carrying the outputs bag (#2740)', async () => {
+      const record = { Broken: 'digest-recorded-by-the-last-deploy' };
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: { ...existingState(), skippedOutputs: record },
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket')
+          return { import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })) };
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=b', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { outputs: Record<string, string>; skippedOutputs?: Record<string, string> },
+      ];
+      expect(state.outputs).toEqual({ ExistingOutput: 'preserved' });
+      // The outputs bag IS carried; the record that describes it is NOT. An
+      // import refreshes `attributes` for the resources it imports, so a key
+      // the last deploy skipped for want of one may now resolve — with no template
+      // resource change for the diff's change map to un-bind on. Carried, the
+      // record would hide that row until the next deploy published it.
+      expect('skippedOutputs' in state).toBe(false);
+    });
+
+    it('does not invent a skipped-outputs record for an existing record without one (#2740)', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({ state: existingState(), etag: '"existing-etag"' });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket')
+          return { import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })) };
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=b', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { skippedOutputs?: Record<string, string> },
+      ];
+      expect('skippedOutputs' in state).toBe(false);
+    });
+
     it('logs the merge plan with the preserved-resource count', async () => {
       mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
       mockGetState.mockResolvedValueOnce({

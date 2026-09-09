@@ -3126,8 +3126,26 @@ async function runAccept(
           : { ...existing, properties: redactedBaseline };
       }
 
+      // `skippedOutputs` (issue #2740) is dropped rather than spread through,
+      // for the same reason `cdkd import` drops it: the record says what the
+      // last DEPLOY could not resolve, and on the arm above that writes
+      // `properties` — the one a resource with no `observedProperties` takes —
+      // accepting drift rewrites the very values an attribute may be
+      // constructed from, so a key the deploy skipped can become resolvable
+      // with no template resource change to un-bind the record. The
+      // `observedProperties` arm cannot do that (no attribute is built from
+      // that map), but the drop is not conditioned on which arm ran: the two
+      // are chosen per RESOURCE inside one save, so a save that took both
+      // would need the record dropped anyway. Left in place it would make
+      // `cdkd diff` preview that key as absent while the next deploy publishes
+      // it. The field is informational and the next deploy rewrites it, so
+      // dropping it is the safe direction: that key returns to pre-#2740
+      // behaviour until the next deploy recomputes the record — a row where
+      // the diff can resolve it, the ordinary whole-section suppression where
+      // it cannot, and in neither case an assertion that nothing is coming.
+      const { skippedOutputs: _droppedByAccept, ...carriedState } = report.state;
       const newState: StackState = {
-        ...report.state,
+        ...carriedState,
         resources,
         lastModified: Date.now(),
       };
@@ -4647,8 +4665,17 @@ async function runRevert(
           continue;
         }
 
+        // `skippedOutputs` (issue #2740) is dropped here for the same reason
+        // `--accept` drops it above: every writer that rebuilds state OUTSIDE
+        // a deploy drops it, without a per-writer argument about whether this
+        // one can repair an output. Three such arguments were written for this
+        // field; two were shown wrong, and whether a deletion here can make an
+        // output resolve (by exposing an attribute of the same name, or by
+        // removing a hit the lookup already falls through past) was not
+        // settled — so this arm drops on the rule, not on a verdict.
+        const { skippedOutputs: _droppedByRevert, ...carriedState } = report.state;
         const newState: StackState = {
-          ...report.state,
+          ...carriedState,
           resources,
           lastModified: Date.now(),
         };

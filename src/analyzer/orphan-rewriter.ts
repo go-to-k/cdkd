@@ -394,9 +394,19 @@ export async function rewriteResourceReferences(
     );
   }
 
+  // `skippedOutputs` (issue #2740) is DROPPED rather than carried, as
+  // `cdkd import`, `cdkd drift --accept` and `cdkd rollback` drop it. This
+  // rewrite substitutes FETCHED values into `properties`, `attributes` and
+  // `outputs`, and a substitution alone can repair an output: an attribute
+  // holding `{ "Fn::GetAtt": ["O", "NameServers"] }` makes an enclosing
+  // `Fn::Select` fail, and replacing it with the fetched array makes that
+  // output resolve — with the output's own digest unmoved and no template
+  // resource change for the diff's change map to un-bind on. Carried, the
+  // record would preview a key as absent while the next deploy publishes it.
+  const { skippedOutputs: _droppedByOrphanRewrite, ...carriedState } = state;
   return {
     state: {
-      ...state,
+      ...carriedState,
       resources: newResources,
       outputs: newOutputs,
       lastModified: Date.now(),

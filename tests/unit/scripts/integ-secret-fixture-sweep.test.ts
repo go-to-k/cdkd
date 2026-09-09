@@ -360,6 +360,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'import-secret-observed',
       'lambda-esm-self-managed-kafka',
       'local-run-task-from-state',
+      // Issue #2740: one `unsafePlainText` secret holding a `username` only; the
+      // fixture sources the helper and asserts the sweep on its success path.
+      'output-never-resolved-diff',
       'secrets-array-nested',
       'secrets-dynamic-ref',
       'secretsmanager-update-value-source',
