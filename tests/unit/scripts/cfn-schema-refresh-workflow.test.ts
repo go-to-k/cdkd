@@ -1828,17 +1828,44 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     // an unrelated edit to these steps reds too: that is intended, because the
     // prose in `divergenceProcedure` describes exactly this surfacing and has
     // to be re-read when it changes.
-    const ghCalls = (shell: string) =>
-      [
-        ...shell
-          .replace(/\\\n\s*/g, ' ')
-          .split('\n')
-          .filter((l) => !/^\s*echo\b/.test(l))
-          .join('\n')
-          .matchAll(/\bgh [^\n|;&]*/g),
-      ]
-        .map((m) => m[0].replace(/\s+/g, ' ').trim())
-        .sort();
+    // QUOTE-AWARE, not line-prefix-filtered. The first cut dropped every line
+    // starting with `echo`, because two error messages quote a `gh label
+    // create` suggestion — and that hid any call sharing a line with one:
+    // `echo "refreshing body" && gh pr edit "${PR_NUMBER}" --body-file
+    // /tmp/diagnosis.md` rewrote the body every cycle and stayed GREEN
+    // (measured). Scanning quotes instead means a `gh` inside a string is never
+    // a call and a `gh` outside one always is, whatever precedes it.
+    const ghCalls = (shell: string) => {
+      const src = shell.replace(/\\\n\s*/g, ' ');
+      const calls: string[] = [];
+      let quote: string | null = null;
+      let start = -1;
+      const flush = (end: number) => {
+        if (start === -1) return;
+        calls.push(src.slice(start, end).replace(/\s+/g, ' ').trim());
+        start = -1;
+      };
+      for (let i = 0; i < src.length; i++) {
+        const c = src[i]!;
+        if (quote) {
+          if (c === '\\' && quote === '"') i++;
+          else if (c === quote) quote = null;
+          continue;
+        }
+        if (c === '"' || c === "'") {
+          quote = c;
+          continue;
+        }
+        if (start === -1 && src.startsWith('gh ', i) && (i === 0 || /[\s;&|(]/.test(src[i - 1]!))) {
+          start = i;
+          i += 2;
+          continue;
+        }
+        if (start !== -1 && (c === '\n' || c === '|' || c === ';' || c === '&')) flush(i);
+      }
+      flush(src.length);
+      return calls.sort();
+    };
 
     expect(ghCalls(publish), 'the publish step gained, lost or altered a gh call').toEqual([
       'gh pr comment "${PR_NUMBER}" --body-file /tmp/diagnosis.md',
