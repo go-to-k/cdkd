@@ -645,13 +645,21 @@ awk '
   /^gate_require_const(_soft)?\(\) \{/ { skip = 1 }
   skip && /^\}$/                       { skip = 0; next }
   !skip                                { print }
-' .claude/hooks/lib/command-match.sh > "$LAGGING/lib/command-match.sh"
+' "$(dirname "$HOOK")/lib/command-match.sh" > "$LAGGING/lib/command-match.sh"
 
-# GUARD THE FIXTURE, in both directions. A `$LAGGING` that fails to parse would
-# make every case below pass for `$BROKEN`'s reason instead, and an awk that
-# matched nothing would make them pass for no reason at all.
-if bash -n "$LAGGING/lib/command-match.sh" 2>/dev/null; then
-  pass=$((pass + 1)); printf 'ok   (fixture) $LAGGING library still parses\n'
+# GUARD THE FIXTURE, in THREE directions. A `$LAGGING` that fails to parse would
+# make every case below pass for `$BROKEN`'s reason instead; an awk that matched
+# nothing would make them pass for no reason at all; and an EMPTY file passes
+# both of those -- `bash -n` succeeds on it and `declare -F` correctly reports
+# the helper absent. Measured: with the awk source spelled relative to the CWD
+# (as it was), running this suite from another directory produced exactly that
+# -- both guards printed `ok` over a zero-byte library, and only the downstream
+# needles noticed. A fixture that degraded silently is the same defect class as
+# a gate that fails open.
+if [ ! -s "$LAGGING/lib/command-match.sh" ] || ! grep -q '^GATE_SEP_PIPE=' "$LAGGING/lib/command-match.sh"; then
+  fail=$((fail + 1)); printf 'FAIL (fixture) $LAGGING has no library -- the awk source did not resolve\n'
+elif bash -n "$LAGGING/lib/command-match.sh" 2>/dev/null; then
+  pass=$((pass + 1)); printf 'ok   (fixture) $LAGGING is still a library and still parses\n'
 else
   fail=$((fail + 1)); printf 'FAIL (fixture) $LAGGING library does not parse -- these cases would duplicate $BROKEN\n'
 fi
@@ -683,10 +691,18 @@ run_lagging 2 "does not define" \
   "a Bash call fails CLOSED when the library defines no gate_require_const" \
   "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
 # ...and it must say what still WORKS, or an agent reads the refusal as a dead
-# end -- which is exactly what happened.
-run_lagging 2 "Repair the library with Edit or Write" \
-  "the refusal names the tools that survive it" \
-  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
+# end -- which is exactly what happened. BOTH halves get a needle: this message
+# said "repair it with Edit or Write" flatly for a round, which is false in the
+# main tree on `main` where the tracked-file arm refuses that edit too
+# (measured rc=2). One needle on the permissive half would still pass with the
+# qualifier deleted, which is how the flat version survived.
+__lag_refusal="$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
+run_lagging 2 "FROM A FEATURE WORKTREE" \
+  "the refusal names the tools that survive it, and WHERE" "$__lag_refusal"
+run_lagging 2 "In the MAIN tree on main this gate" \
+  "the refusal names where that route does NOT hold" "$__lag_refusal"
+run_lagging 2 "belongs to the operator" \
+  "the refusal names WHO repairs it there" "$__lag_refusal"
 
 # THE LOCKOUT HALF. These are the cases that were red when this was written:
 # both answered 2, with the `gate_require_const` message, on a payload that
@@ -742,7 +758,7 @@ if [ ! -s "$STRIPPED/lib/command-match.sh" ] || ! grep -q '^GATE_SEP_PIPE=' "$ST
 elif grep -q '^GATE_SEP_AMP=' "$STRIPPED/lib/command-match.sh"; then
   fail=$((fail + 1)); printf 'FAIL (fixture) could not stage a library without GATE_SEP_AMP (anchor drifted)\n'
 else
-  pass=$((pass + 1)); printf 'ok   (fixture) $STRIPPED library still loads and no longer assigns GATE_SEP_AMP\n'
+  pass=$((pass + 1)); printf 'ok   (fixture) $STRIPPED is still a library and no longer assigns GATE_SEP_AMP\n'
   __sc_payload=$(jq -nc --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')
   __sc_out=$(printf '%s' "$__sc_payload" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" 2>&1 >/dev/null)
@@ -789,10 +805,12 @@ else
   # message lets through.
   for __sc_needle in \
     "EVERY Bash call is refused" \
+    "a command-line repair is not available" \
     "FROM A FEATURE WORKTREE" \
     "In the MAIN tree on main" \
     "belongs to the operator" \
-    "bash -n .claude/hooks/lib/command-match.sh"; do
+    "grep the library for the name above" \
+    "will report nothing and read as"; do
     if [[ "$__sc_out" == *"$__sc_needle"* ]]; then
       pass=$((pass + 1)); printf 'ok   (refusal text) names: %s\n' "$__sc_needle"
     else
@@ -1258,7 +1276,7 @@ else
   printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
 fi
 
-CASE_FLOOR=150
+CASE_FLOOR=154
 # `ran` is captured BEFORE the increment. Incrementing `fail` first and then
 # printing `$((pass + fail))` re-counted the floor's own failure as a case, so
 # one deleted case reported `only 135 cases ran, expected at least 135` -- a

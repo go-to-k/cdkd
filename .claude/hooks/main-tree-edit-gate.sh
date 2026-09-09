@@ -431,8 +431,11 @@ case "$tool" in
     if ! declare -F gate_require_const >/dev/null 2>&1; then
       echo "Blocked: .claude/hooks/lib/command-match.sh loaded but does not define" >&2
       echo "gate_require_const, so this gate cannot verify the constants it reads." >&2
-      echo "Repair the library with Edit or Write -- this gate deliberately still" >&2
-      echo "allows those, so a broken matcher cannot lock out its own fix." >&2
+      echo "FROM A FEATURE WORKTREE, repair it with the Edit or Write tool --" >&2
+      echo "this gate deliberately still allows those there, so a broken matcher" >&2
+      echo "cannot lock out its own fix. In the MAIN tree on main this gate" >&2
+      echo "refuses that edit too, for its own separate reason, so there the" >&2
+      echo "repair belongs to the operator, made from their own shell." >&2
       exit 2
     fi
     gate_require_const

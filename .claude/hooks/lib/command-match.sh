@@ -4397,8 +4397,10 @@ gate_require_const() {
     echo "is the route. In the MAIN tree on main, main-tree-edit-gate refuses"
     echo "that edit too, for its own separate reason, so there the repair"
     echo "belongs to the operator, made from their own shell ('!' prefixed, in"
-    echo "Claude Code). To inspect the file first:"
-    echo "  bash -n .claude/hooks/lib/command-match.sh"
+    echo "Claude Code). To see it, grep the library for the name above -- it is"
+    echo "absent or empty there. Do NOT reach for 'bash -n': this refusal is"
+    echo "only reachable AFTER the library sourced, so it parses, and 'bash -n'"
+    echo "will report nothing and read as 'the file is fine'."
   } >&2
   exit 2
 }
@@ -4529,15 +4531,28 @@ gate_missing_const() {
     #   `GATE_A GATE_B(not-a-variable-name)` swallows a later, genuinely
     #   missing `GATE_A`: measured, the report named only the compound.
     #
-    # A name cannot contain a newline (the shape guard rejects one), so a
-    # newline-delimited membership test is exact. The stored form is converted
-    # back to spaces once, at the end.
+    # The delimiter is a newline and every label is FLATTENED before it is
+    # recorded (below), so no label can contain the delimiter and the
+    # membership test is exact. Both halves are needed: an earlier revision
+    # changed only the delimiter, on the false premise that "a name cannot
+    # contain a newline because the shape guard rejects one" -- it rejects it
+    # and keeps it, so the collision moved rather than closing. The stored form
+    # is converted back to spaces once, at the end.
     # Spelled as an `if`, never `[ -n ... ] && continue`: under a caller's
     # `set -e` a trailing false test is the last command of the branch and
     # aborts the function. `gate_segments` carries the same note for the same
     # reason -- it dropped every remaining segment that way once.
     if [ "$_gc_bad" = 1 ]; then
-      _gc_label="${_gc_name:-(empty)}(not-a-variable-name)"
+      # FLATTEN the name into the label. The shape guard REJECTS a newline; it
+      # does not remove one, so without this the label carries it and collides
+      # with the newline delimiter exactly as a space-carrying label collided
+      # with the space one. Measured on the revision that only changed the
+      # delimiter: `gate_missing_const $'GATE_A\nGATE_B' GATE_A` reported the
+      # compound alone and dropped the genuinely-missing `GATE_A`, on both
+      # shells -- the same silent drop, transposed rather than removed. The
+      # label is display text, so flattening it costs nothing.
+      _gc_label="${_gc_name//$_gc_nl/ }"
+      _gc_label="${_gc_label:-(empty)}(not-a-variable-name)"
     else
       # Indirect expansion with a default. Verified on bash 3.2.57 (macOS
       # system bash, which run-tests.sh runs every suite under) and on 5.3.9:
