@@ -241,9 +241,10 @@ const defaultSleep = (ms: number): Promise<void> =>
  * 4s/8s steps overshoot it. The dense schedule applies ONLY when the caller
  * left the schedule at its defaults — a caller that passed its own
  * `maxRetries` / `initialDelayMs` / `maxDelayMs` / `isRetryable` picked that
- * schedule deliberately (e.g. the DELETE path's 3 x 5s, or the delete-then-
- * re-create sites' ~64s budget covering SQS's 60s name cooldown) and gets it
- * verbatim.
+ * schedule deliberately (e.g. the DELETE path's 3 retries from 5s — 5s/8s/8s,
+ * since it passes `initialDelayMs` but leaves `maxDelayMs` at the 8s default —
+ * or the delete-then-re-create sites' ~64s budget covering SQS's 60s name
+ * cooldown) and gets it verbatim.
  *
  * A THIRD class rides its own grid on the default schedule since issue
  * [#2116](https://github.com/go-to-k/cdkd/issues/2116): a NAME COOLDOWN (a
