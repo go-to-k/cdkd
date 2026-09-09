@@ -347,6 +347,19 @@ gates:
       # entries and asserts each points at an existing docs/ page, so an
       # edit to the sidebar must stale a marker recorded before it.
       - "vite.docs.config.ts"
+      # plugins/** is the DISTRIBUTED plugin surface (the cdkd-skills
+      # marketplace skill). The same test asserts its pages carry no
+      # issue/PR references -- the maintainer policy already enforced for
+      # user-facing docs/ pages -- so those files are checker INPUTS and
+      # must stale this marker. Added by go-to-k/cdkd#2878, which walked
+      # straight into the gap it closes: a lane added four issue refs to
+      # plugins/cdkd-skills/skills/cdkd/SKILL.md while correcting a false
+      # claim, and nothing went red, because the docs/ fence is scoped to
+      # the sidebar nav and could not see the tree. Reading a path the
+      # include does not name is the FAIL-OPEN half of the two-sided rule
+      # in CLAUDE.md -- the marker stays fresh over an edit the checker
+      # would have rejected.
+      - "plugins/**"
       # .mise.toml pins the BINARY that runs those definitions (`vp`), so
       # it has strictly more claim to this scope than the file describing
       # them — and it was the only one missing (issue #1954, the #1592

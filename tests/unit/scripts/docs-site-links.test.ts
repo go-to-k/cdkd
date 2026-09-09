@@ -22,6 +22,10 @@ import { oxSlug, stripFences } from '../../ox-slug.js';
 const ROOT = resolve(import.meta.dirname, '../../..');
 const DOCS = join(ROOT, 'docs');
 
+// Shared by the two user-facing-surface policy tests below, so the docs/ tree
+// and the shipped plugin tree cannot drift apart on what counts as a reference.
+const ISSUE_REF_RE = /issue #\d+|github\.com\/[^\s)]*\/issues\/\d+|\(#\d{3,5}\)|PR #\d+|\bgo-to-k\/[a-z-]+#\d+/g;
+
 const walkMarkdown = (dir: string): string[] => {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
@@ -241,8 +245,32 @@ describe('site navigation config', () => {
       const body = stripFences(readFileSync(join(DOCS, `${p}.md`), 'utf8'))
         // Inline code spans may legitimately show a literal # token.
         .replace(/`[^`\n]*`/g, '');
-      for (const m of body.matchAll(/issue #\d+|github\.com\/[^\s)]*\/issues\/\d+|\(#\d{3,5}\)|PR #\d+/g)) {
+      for (const m of body.matchAll(ISSUE_REF_RE)) {
         failures.push(`docs/${p}.md: ${m[0]}`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  // Same maintainer policy, one tree over. `plugins/cdkd-skills/` ships to
+  // users as an installable plugin, so its SKILL.md pages are user-facing by
+  // the same argument as a docs/ nav page -- but the test above is scoped to
+  // the docs sidebar and cannot see them. Measured on go-to-k/cdkd#2878: those
+  // pages carried ZERO issue references, a lane added four while correcting a
+  // false claim, and nothing went red. That is the inclusion-list failure
+  // `/work-issues` references/verify.md section 8-g is about, in a fence
+  // rather than in prose -- so the scope here is the TREE, not a list of the
+  // pages that exist today.
+  it('shipped plugin skill pages carry no issue/PR references', () => {
+    const pluginRoot = join(ROOT, 'plugins');
+    const files = [...walkMarkdown(pluginRoot)];
+    // Anti-vacuity floor: a rename that empties this walk must fail, not pass.
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    const failures: string[] = [];
+    for (const file of files) {
+      const body = stripFences(readFileSync(file, 'utf8')).replace(/`[^`\n]*`/g, '');
+      for (const m of body.matchAll(ISSUE_REF_RE)) {
+        failures.push(`${relative(ROOT, file)}: ${m[0]}`);
       }
     }
     expect(failures).toEqual([]);

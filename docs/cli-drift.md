@@ -226,11 +226,20 @@ update-not-supported ones.
 
 **Secret dynamic references** — `{{resolve:secretsmanager:...}}`,
 `{{resolve:ssm-secure:...}}`, and `{{resolve:ssm:...}}` naming a
-`SecureString` parameter — are compared like-for-like. cdkd state stores the
-unresolved expression, never the plaintext, so `cdkd drift` re-resolves the
-baseline in memory before comparing it against the AWS-current snapshot. That
-is a comparison and nothing else: the resolved value is never written to
-state.
+`SecureString` parameter — are compared like-for-like. cdkd state is written to
+hold the unresolved expression rather than the plaintext, so `cdkd drift`
+re-resolves the baseline in memory before comparing it against the AWS-current
+snapshot. In its DETECTION modes the resolved value stays in memory for the
+comparison and nothing is written back. `--accept` is the exception: it writes
+the AWS-current values into state, and what it writes goes through the same
+redaction — which substitutes only where it can certify the position, so an
+accepted value it cannot certify is persisted as it came back from AWS.
+
+The stored side is a redaction pass rather than a guarantee — it substitutes
+only where it can match the value against the template position it came from,
+and a stored record can still hold a plaintext a deploy could not certify. If
+you need to know whether a given stack's state holds one, `cdkd scrub --dry-run
+--fail` is the check; `cdkd drift` does not answer that question.
 
 This means `cdkd drift` needs **read access to the referenced secrets**:
 `secretsmanager:GetSecretValue` for a `secretsmanager` reference, and

@@ -3513,9 +3513,14 @@ export interface ScrubStackResult {
 /**
  * Scrub one stack's state. Re-resolves the template's per-resource properties to
  * learn the resolved secret VALUES, then replaces those values in the state
- * record with their `{{resolve:...}}` expressions. Returns counts; performs no
- * AWS mutation. Acquires the stack lock for the read-modify-write unless
- * `dryRun`.
+ * record with their `{{resolve:...}}` expressions. Returns counts. It mutates no
+ * AWS RESOURCE, but it does write S3: the state object itself, and the stack
+ * lock it acquires for the read-modify-write unless `dryRun` (issue #2667 added
+ * a third write, the cross-stack exports index, in `repairExportIndexForStack` —
+ * a separate step outside this function). This comment is no longer the
+ * "performs no AWS mutation" it used to say (go-to-k/cdkd#2878): that was FALSE
+ * about the lock even before #2667, and it wrapped across a line break, which
+ * is why a line-oriented grep for the claim did not return it.
  *
  * The stack OUTPUTS bag is scrubbed too, in two passes: today's declared
  * outputs are redacted BY POSITION against the template, and a stored key
@@ -3624,8 +3629,17 @@ export async function scrubStack(
     // `exportIndex` is deliberately NOT supplied. It is a PERFORMANCE hint — the
     // resolver falls back to the per-stack `state.json` scan, which is the
     // pre-index behavior — and supplying it would let `resolveImportValue`'s
-    // scan arm PATCH the index, i.e. an S3 write from a command documented to
-    // perform no AWS mutation, `--dry-run` included.
+    // scan arm PATCH the index as a side effect of RESOLUTION, at a point in
+    // the run nothing chose, and under `--dry-run` too.
+    //
+    // Since issue #2667 the command is no longer "no AWS mutation":
+    // `repairExportIndexForStack` issues `patchEntry` as its own step after
+    // `scrubStack` returns (see its doc comment for the dry-run and locking
+    // properties). That is a CHOSEN write with its own condition, and the
+    // withholding here is what keeps it the only one — this comment used to say
+    // the command performs no AWS mutation at all, which that fix falsified
+    // while leaving this rationale standing, far from the doc comment in this
+    // same file that describes the new write.
     //
     // NOT quite "equally correct", which an earlier revision claimed (issue
     // #2133 review). The scan walks `listStacks()` — every stack in EVERY

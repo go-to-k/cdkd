@@ -140,11 +140,14 @@ LOCAL_DIST="${REPO_ROOT}/dist/cli.js"
 #
 # WHY THIS FIXTURE SWEEPS (issue #2212's audit). Its templates carry
 # `{{resolve:ssm:...}}` against a SecureString, so cdkd issues a real
-# GetSecretValue/GetParameter for them on the deploy path. On today's code the
-# plaintext does not reach state -- the GHSA-p5qg-v9gv-hc7w fix rewrites each
-# resolved value back to its `{{resolve:...}}` expression before persisting, and
-# the same redaction covers the rollback journal's `attemptedProperties`, which
-# this fixture leaves behind ON PURPOSE. That is a reason to sweep rather than
+# GetSecretValue/GetParameter for them on the deploy path. The
+# GHSA-p5qg-v9gv-hc7w fix rewrites each resolved value back to its
+# `{{resolve:...}}` expression before persisting, and the same redaction covers
+# the rollback journal's `attemptedProperties`, which this fixture leaves behind
+# ON PURPOSE -- but it substitutes only where it can certify the position, and
+# there are measured deploy-path shapes where it cannot. Keeping plaintext out
+# of state is what the redaction is FOR, never an assumption this fixture may
+# make. That is a reason to sweep rather than
 # to skip: the redaction is a src-side invariant one bug away from failing, and
 # object versions are FOREVER -- a single run under a broken redaction leaves
 # plaintext no later fix can remove. Its five siblings in this class sweep for

@@ -70,10 +70,9 @@ git fetch origin && git switch -c <branch> origin/main
 ```
 
 The `&&` is deliberate: unchained, a failed `fetch` still branches off a stale
-`origin/main`. `main-tree-branch-gate` covers this chained spelling since
-go-to-k/cdkd#2406 — settle which copy is DEPLOYED by content, never by a
-commit subject (`git show origin/main:.claude/hooks/main-tree-branch-gate.sh |
-grep -c gate_verb_rest_each` prints non-zero).
+`origin/main`. `main-tree-branch-gate` covers this chained spelling
+(`.claude/rules/hooks-main-tree-branch.md`) — settle which copy is DEPLOYED by
+content, never by a commit subject.
 
 **`mise trust` is not optional, and skipping it fails in the direction that
 costs most**: an untrusted `.mise.toml` makes `mise exec -- markgate set`
@@ -114,12 +113,12 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   `Estimate` are what a future session budgets from.
 - **A FIX ROUND owes the same sweep, and that is where it gets skipped**: the
   fix lands on one call site while a sibling keeps the defect, usually shipping
-  a comment claiming completeness. Measured FIVE times on two lanes
-  in one day (the 2-arg `Fn::Sub` check missing the bare-string arm one line
-  over; a redaction fixing update/delete but not create; one enumeration done
-  while a second in the same file — and a third on the same LINE — kept the
-  defect). All found by enumerating readers with grep, none by re-reading the
-  diff. **So does a SWEEP, over its OWN output** — re-run the predicate on the
+  a comment claiming completeness. Measured on two lanes in one day: the 2-arg
+  `Fn::Sub` check missing the bare-string arm one line over; a redaction fixing
+  update/delete but not create; one enumeration fixed while a second in the
+  same file — and a third on the same LINE — kept the defect. All found by
+  enumerating readers with grep, none by re-reading the diff. **So does a SWEEP, over its OWN
+  output** — re-run the predicate on the
   diff the sweep produced (go-to-k/cdkd#2662: three of a run's ten
   false-guarantee comments were added or left by a sweep meant to end that
   class). After writing a fix:
@@ -131,10 +130,14 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
 
   Cheap tell: a diff touching ONE site whose message says "every", "all",
   "never" or "only" — derive the population or drop the quantifier.
-- **Grep for the SHAPE, not a NAME** — a name finds only the copies you knew
-  about (go-to-k/cdkd#2176: `maskDeep` found four and shipped "four"; there
-  were SIX, two spelled `maskLeaf*`). Grep a structural line every copy must
-  share; confirm by name second.
+- **Grep for the SHAPE, not a NAME — then close the set from the READERS,
+  because a literal shape is defeatable too.** A name finds only the copies you
+  knew about (go-to-k/cdkd#2176: `maskDeep` found four and shipped "four";
+  there were SIX, two spelled `maskLeaf*`), and a shape misses the same with
+  an expression spliced in (go-to-k/cdkd#2874: a ternary in the argument hid a
+  THIRD call site from the grep that built the issue's own work table). Grep a
+  structural line every copy must share, confirm by name second, take the COUNT
+  from an enumeration of the readers.
 - **Count the population BEFORE you fix, assert it afterwards** — the post-fix
   tree cannot show a copy the sweep never saw. A fix REMOVING a behaviour owes
   a SECOND population: the assertions that it happens, which do not go red when
@@ -165,11 +168,10 @@ dup-check window, the `Severity` / `Effort` labels.
 
 ### 5-c. The fix itself
 
-Do the fix in the lane's tree (match the existing pattern; ESM relative
-imports need the `.js` extension even in TypeScript). Rebuild with
-`vp run build` after every source change — the CLI runs from `dist/`. **Always
-add a unit test that fails without the fix and passes with it** (under
-`tests/unit/**`, AWS SDK mocked via `vi.mock()`). **Check whether the artifact
+Do the fix in the lane's tree, matching the existing pattern. CLAUDE.md owns
+the mechanics — ESM `.js` imports, `vp run build` after every source change,
+a unit test under `tests/unit/**` with the AWS SDK `vi.mock`ed; make that test
+**fail without the fix and pass with it**. **Check whether the artifact
 already has a test harness** — `.claude/hooks/` carries per-hook `*.test.sh`
 suites run by `run-tests.sh`, not visible from `tests/unit/**`.
 
@@ -333,7 +335,13 @@ real tree:**
   RELATION also needs a floor on the COMPARAND** — walk floors count what you
   ITERATED, and a set-vs-set claim is vacuously TRUE when the other operand
   parses empty (go-to-k/cdkd#2788: 134 fixtures compared nothing under two
-  healthy walk floors; the invariant as stated was FALSE).
+  healthy walk floors; the invariant as stated was FALSE). **And a floor must
+  count at the GRAIN it protects** — one incremented at PHASE boundaries
+  survives deleting the individual assertion it was added for, so bump it per
+  ASSERTION and probe by deleting SEVERAL: one deletion can still clear an
+  aggregate, reading as a fence that discriminates (go-to-k/cdkd#2842's
+  `tests/integration/import-secret-observed/verify.sh` — `ASSERTIONS_RUN`
+  bumped at each of 14 assertions, all 14 deletion-probed).
 - **Is anything RUNNING it?** (nine shell hook harnesses were invoked by no
   CI step and no task — exercised only by hand since written).
 

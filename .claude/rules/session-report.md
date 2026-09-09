@@ -91,6 +91,28 @@ not a rule; the reader takes the cheaper one. Splitting the work across
 several PRs is normal and needs no permission from this list — decide it on
 review surface, and decide `Session-fit` on the criteria above.
 
+**The PR's REVIEW HISTORY is the spelling that survives both tells.** "PR #N
+took eight review rounds; folding this in is how the next instance gets
+written" says neither "its own PR" nor "unreviewable", and reads like the
+session-state clause below while being a claim about the PULL REQUEST — a
+round count, or a count of the changes a PR absorbed, is a property of its
+review history and not of the deferred work. One run on 2026-09-09 gave six of
+its ten `next` filings a PR-shaped reason, and the split is the lesson: TWO
+took the bundling branch this file already refuses (go-to-k/cdkd#2846 /
+go-to-k/cdkd#2847, "folding it in would widen a merge-ready security fix"),
+while FOUR took the review-history branch nothing had named — three round
+counts (go-to-k/cdkd#2850 / go-to-k/cdkd#2852 / go-to-k/cdkd#2854) and one
+in-round-change count (go-to-k/cdkd#2872). All six already carried a work-owned
+reason, so the retro that found them fixed each by DELETING the PR-shaped
+clause rather than re-classifying — this rule is what the clause fails, and
+`/work-issues` `references/retro.md` §10-0 is only the moment it gets re-read
+(that section prescribes the net-effect measurement and the promotion check,
+not the deletion). Where the clause sat relative to the work-owned reason is
+not recorded: the rule refuses it wherever it sits. The test is
+the one the paragraph below states — ask which of the two a clause is ABOUT,
+never whether it MENTIONS a PR — and then strike every clause about the PR and
+see whether a reason is left.
+
 **The neighbouring failure: a reason about the FILING SESSION's own STATE
 expires when that session does.** Not a re-opening of the rule above. That one
 refuses a claim about the PULL REQUEST — the work needs its own, or bundling

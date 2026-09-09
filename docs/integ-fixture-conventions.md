@@ -943,13 +943,16 @@ compliant.
 A fixture whose sources carry `secretValueFromJson(...)`,
 `SecretValue.secretsManager(...)`, `unsafeUnwrap()`, or a literal
 `{{resolve:...}}` must sweep as well. That shape makes cdkd issue a real
-`GetSecretValue` on the deploy path. On today's code the plaintext does not
-reach state — the GHSA-p5qg-v9gv-hc7w fix rewrites each resolved value back to
-its `{{resolve:...}}` expression before persisting, and the same redaction
-covers the rollback journal's `attemptedProperties` — and that is a reason to
-sweep rather than to skip: the redaction is a src-side invariant one bug away
-from failing, and **object versions are forever**, so a single run under a
-broken redaction leaves plaintext no later fix removes. Five of the six
+`GetSecretValue` on the deploy path. The GHSA-p5qg-v9gv-hc7w fix rewrites each
+resolved value back to its `{{resolve:...}}` expression before persisting, and
+the same redaction covers the rollback journal's `attemptedProperties` — but it
+substitutes only at positions it can certify against the source bag, and there
+are measured shapes on the deploy path where it cannot and persists what it was
+handed. Keeping plaintext out of state is what the redaction is FOR, never
+something a fixture may assume it achieved: sweep rather than skip. The redaction is a
+src-side invariant one bug away from failing, and **object versions are
+forever**, so a single run under a broken redaction leaves plaintext no later
+fix removes. Five of the six
 fixtures in this class already swept; `rollback-cross-region-secret` was the
 divergence and now sweeps both of its cross-region prefixes.
 

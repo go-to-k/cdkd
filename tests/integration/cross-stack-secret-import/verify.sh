@@ -1094,8 +1094,10 @@ echo "==> Step 9 (assertion 8 - THE REFUSAL): an UNREADABLE producer makes scrub
 #
 # The producer's state OBJECT is delete-markered so `Fn::ImportValue` cannot be
 # answered by anyone: `cdkd scrub` supplies no `exportIndex` (deliberately — the
-# index's scan arm would PATCH it, an S3 write from a command that performs no
-# AWS mutation), so the state.json scan is the only route and it is now blind.
+# index's scan arm would PATCH it as a side effect of RESOLUTION, at a point in
+# the run nothing chose and under `--dry-run` too; the command DOES write that
+# index since issue #2667, but from `repairExportIndexForStack` as its own
+# chosen step), so the state.json scan is the only route and it is now blind.
 #
 # Backed up in a shell variable rather than a file: this document carries the
 # fixture's literal `SecretString`, and a scratch copy on disk would outlive an

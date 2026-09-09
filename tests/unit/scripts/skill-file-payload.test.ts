@@ -182,9 +182,67 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // deletion here too -- a floor lapses if you fund prose with it, and it
     // was a deletion change. Same rule as above: MEASURED on the merged
     // tree, not the two deltas added up.
-    corpusBytes: 175_281,
-    largest: { file: 'implement.md', bytes: 28_939 },
-    runnerUp: { file: 'verify.md', bytes: 28_516 },
+    //
+    // The go-to-k/cdkd#2842 / go-to-k/cdkd#2873 retro added four rules --
+    // verify.md 8-g's danger-direction rule (write the survivor as what can
+    // still go wrong; a reassurance is the shape that fails), implement.md
+    // 5-b's "a literal SHAPE is defeatable too" clause, 5-f''s floor-GRAIN
+    // rule, and ship.md's commit-message-to-a-FILE rule (that step prescribed
+    // the inline `-m` spelling whose backtick the shell evaluates, measured on
+    // the retro's own commit). No corpus figure is quoted in this paragraph:
+    // `corpusBytes` below is the live one, asserted against the tree, and a
+    // second copy up here fell behind it inside this change's own review
+    // rounds -- the count-in-prose defect the retro was codifying, in the file
+    // codifying it. The size of that gap is deliberately not stated either: a
+    // figure describing the distance to a live value is itself live, and the
+    // first attempt to record it went stale in the same commit that measured
+    // it.
+    //
+    // The two leaders CONVERGED across this change's review rounds and the lead
+    // then changed hands MORE THAN ONCE inside it -- which is why no paragraph
+    // in this comment names the file holding a slot. MEASURED below is the only
+    // place that answers that, and it is the only place that cannot go stale
+    // while saying so. Read the paragraphs above as an account of how the
+    // bounds BEHAVE. The mechanism is unchanged by a swap: bytes added to either
+    // leader reduce the floor margin measured against the OTHER one-for-one,
+    // and with the gap now small the "free until it overtakes" room they
+    // describe is effectively gone.
+    //
+    // This comment deliberately quotes NO gap and NO margin. Four figures an
+    // earlier draft stated here went stale inside this change's own review
+    // rounds -- twice because a review fix moved bytes, once because the swap
+    // above inverted the reasoning -- and the assertions below already PRINT
+    // both live margins and the leader's cap headroom. Read them from the
+    // failure message. All three are in the low hundreds of bytes -- a band
+    // this record has sat in before (the go-to-k/cdkd#2750 entry above logs a
+    // binding margin of 56), so read it as tight rather than as a low-water
+    // mark; either way the next edit to a stage file opens with a compression
+    // pass and not an addition. The
+    // change paid for part of its additions by compressing -- merging
+    // duplicated rules into their successors and replacing restatements of
+    // CLAUDE.md and .claude/rules/hooks-main-tree-branch.md with pointers --
+    // and still came out net positive. Neither a total nor an item list is
+    // given, and that is the disposition rather than an omission: the
+    // accounting was stated twice with two different totals over two different
+    // lists, one list went stale when a review round RESTORED a compression it
+    // claimed, and the corrected list then under-counted the real ones. Three
+    // wrong versions of a figure that pins nothing. `git diff --numstat`
+    // derives it on demand; the floor is NOT re-derived upward to absorb the
+    // net -- retro.md section 10-c forbids it.
+    //
+    // It BREACHED first, which is the useful part of this record. A review
+    // round grew 8-g past the point where `corpus - runnerUp` cleared the
+    // floor: the runner-up-side margin went NEGATIVE while the largest-side
+    // stayed comfortable, so the ONLY signal was the binding direction the
+    // failure message names, and the fix was to compress the bullet that had
+    // just grown, not to touch either bound. Neither figure is quoted -- the
+    // largest-side one is a LIVE margin that this very commit moved, so
+    // recording it here would re-create the drift this paragraph exists to
+    // stop. Read that as calibration for the assertion below: the floor is not
+    // a formality, it goes red inside an ordinary editing round.
+    corpusBytes: 177_694,
+    largest: { file: 'verify.md', bytes: 29_844 },
+    runnerUp: { file: 'implement.md', bytes: 29_549 },
   },
 };
 

@@ -189,9 +189,12 @@ cdkd state orphan MyStack           # remove the state record only (AWS resource
 ### Keep secrets out of state
 
 `cdkd scrub` audits and cleans state so a resolved secret dynamic reference is
-stored as its `{{resolve:...}}` expression. No deploy, no AWS mutation — but it
-does need the CDK app, because only the template still carries the unresolved
-expression.
+stored as its `{{resolve:...}}` expression. It mutates no AWS resource, but it
+is not read-only: a real run writes the stack's `state.json`, takes and releases
+the stack lock, and — for an export the stack owns whose indexed value has
+diverged from the expression now in state — patches the region-wide cross-stack
+exports index. `--dry-run` writes none of them. It also needs the CDK app,
+because only the template still carries the unresolved expression.
 
 ```bash
 cdkd scrub MyStack                  # clean existing state in place

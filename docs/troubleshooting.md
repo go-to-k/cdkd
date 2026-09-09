@@ -2215,10 +2215,13 @@ of the confirmation flags.
   during the revert (mirrors `cdk rollback --orphan`).
 - **Secret dynamic references need live access at rollback time.** A resource
   whose properties use `{{resolve:secretsmanager:...}}` — or
-  `{{resolve:ssm:...}}` pointing at a `SecureString` parameter — stores the
-  unresolved expression (never the plaintext) in state and the journal, so
-  reverting it re-resolves the reference against Secrets Manager / SSM during
-  the rollback. If that secret has since been deleted or your credentials can no
+  `{{resolve:ssm:...}}` pointing at a `SecureString` parameter — is written to
+  state and the journal as the unresolved expression rather than the plaintext,
+  so reverting it re-resolves the reference against Secrets Manager / SSM during
+  the rollback. (That substitution is a redaction pass, not a guarantee: a
+  position it cannot certify against the template keeps whatever value it was
+  handed, so treat a value ever persisted in plaintext as compromised and rotate
+  it.) If that secret has since been deleted or your credentials can no
   longer read it, that resource's revert fails (exit `2`, journal kept) —
   restore access to the secret and re-run `cdkd rollback`, or `--orphan` the
   resource to skip it.

@@ -17,7 +17,12 @@
  *   each secret value is replaced by the original unresolved expression. This
  *   is CloudFormation-parity: CFn keeps the `{{resolve:...}}` reference in the
  *   template and resolves it service-side, so the concrete value never lands in
- *   a persisted artifact. Storing the expression (rather than a blind `***`
+ *   a persisted artifact. cdkd reaches that outcome only where this function is
+ *   actually called with a usable position source — it FAILS OPEN at positions
+ *   it cannot certify (go-to-k/cdkd#2852), and callers that pass
+ *   `NO_RECORDED_SECRETS` or bypass it entirely still persist plaintext
+ *   (go-to-k/cdkd#2846, go-to-k/cdkd#2847). Storing the expression (rather than
+ *   a blind `***`
  *   marker) also means the next `cdkd deploy` diffs expression-vs-expression
  *   and does not spuriously re-apply the resource on every run.
  *

@@ -316,7 +316,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // CLAUDE.md is the representative path for session-report.md (the wrap-report
   // field reference split out of CLAUDE.md by the 2026-09-04 token-diet pass);
   // the band is that one satellite's size.
-  ['CLAUDE.md', 10_000, 20_000], // 12,483 at registration; 15,550 on 2026-09-05 (session-report.md alone; re-measure on edit)
+  // Payload is session-report.md alone. Historical anchors, each fixed to its
+  // date and unmovable: 12,483 at registration; 15,550 on 2026-09-05. NO
+  // current-size figure is recorded -- the band above is the enforcement and
+  // `wc -c` derives the live value, whereas a "now" figure here drifts on every
+  // edit to that file and did so twice inside go-to-k/cdkd#2878 alone.
+  ['CLAUDE.md', 10_000, 20_000],
   // The representative path for docs-page-template.md, whose glob is `docs/**`.
   // A plain docs page matches that file and nothing else, so the band is one
   // satellite's size; `docs/_generated/**` additionally pulls layout-scripts.md

@@ -821,11 +821,16 @@ describe('a fixture that resolves a secret DYNAMIC REFERENCE must sweep too', ()
    *
    * `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` against a
    * SecureString is the shape that genuinely puts plaintext on the deploy path:
-   * `intrinsic-function-resolver.ts` issues the real `GetSecretValue`. On
-   * today's code the plaintext does NOT reach state -- the GHSA-p5qg-v9gv-hc7w
-   * fix rewrites each resolved value back to its `{{resolve:...}}` expression
-   * before persisting, and `deploy-engine.ts` applies the same
-   * `redactSecretsForState` to the rollback journal's `attemptedProperties`.
+   * `intrinsic-function-resolver.ts` issues the real `GetSecretValue`. The
+   * GHSA-p5qg-v9gv-hc7w fix rewrites each resolved value back to its
+   * `{{resolve:...}}` expression before persisting, and `deploy-engine.ts`
+   * applies the same `redactSecretsForState` to the rollback journal's
+   * `attemptedProperties` -- but that is a redaction pass, not an invariant:
+   * it substitutes only where it can certify the position, and
+   * `secret-redaction.ts`'s own table carries deploy-path shapes where it
+   * cannot and persists what it was handed (issue #2012). Keeping plaintext out
+   * of state is what the redaction is FOR, never something a fixture may assume
+   * it achieved.
    *
    * That is a reason to sweep, not a reason to skip. The redaction is a
    * src-side invariant one bug away from failing, and S3 object versions are
@@ -867,8 +872,9 @@ describe('a fixture that resolves a secret DYNAMIC REFERENCE must sweep too', ()
       if (!SOURCES_HELPER.test(code)) {
         return [
           `${f.name}/verify.sh: resolves a secret dynamic reference (${shapes}) but never sources ${HELPER}. ` +
-            `cdkd issues a real GetSecretValue for that reference, and only the GHSA redaction keeps the ` +
-            `plaintext out of state — a versioned bucket keeps whatever a broken redaction wrote, forever. ` +
+            `cdkd issues a real GetSecretValue for that reference, and only the GHSA redaction stands between ` +
+            `it and state — a redaction that certifies positions rather than guaranteeing an outcome, and a ` +
+            `versioned bucket keeps whatever a broken one wrote, forever. ` +
             `Its five siblings sweep for this reason`,
         ];
       }
