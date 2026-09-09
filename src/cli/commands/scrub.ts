@@ -320,6 +320,16 @@ function exportIndexIncompleteError(
  * Under `dryRun` no `patchEntry` is issued. The READ still happens:
  * `readPersistedEntries` is a GET that does not rebuild, so the audit half runs
  * without an S3 write.
+ *
+ * TWO PROPERTIES OF THE WRITE a reader will ask about. It runs OUTSIDE the
+ * stack lock — `scrubStack` releases that in its own `finally` — because the
+ * lock guards `state.json`, one key per stack, while `exports.json` is shared
+ * region-wide and carries its own If-Match optimistic lock plus bounded retry;
+ * that is the same concurrency control the deploy path's index write relies on.
+ * And it is ONE PutObject PER ENTRY rather than one for the batch: `patchEntry`
+ * is the operation that changes a value without touching membership, and a
+ * remediation command pays that round trip so a failure names the entry it
+ * could not write.
  */
 async function repairExportIndexForStack(
   store: ExportIndexStore,
