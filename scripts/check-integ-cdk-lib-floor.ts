@@ -51,6 +51,18 @@
  *  - A fixture manifest that does not parse, or declares a spec whose floor is
  *    not decidable (`*`, `latest`, a `||` range). Skipping it removes it from
  *    the minimum, which can only ever LOOSEN the verdict.
+ *  - A corpus that yielded NO fixture, or no floor at all. `FLOORS` catches
+ *    that in `main()`, but the exported function is what a future caller
+ *    reaches for, and it used to return a fully clean report for an
+ *    existing-but-empty root — so the emptiness is a violation in the LIBRARY,
+ *    not only in the CLI.
+ *
+ * Two skips are deliberate and are NOT refusals, because neither can loosen the
+ * verdict by hiding a floor: a directory with no `package.json` at all (not a
+ * fixture), and a manifest that declares no `aws-cdk-lib` (not a member of this
+ * population). Both are counted — `fixtures` and `declaringFixtures` — and the
+ * test pins them EQUAL, so a reader that silently stopped seeing one dependency
+ * bucket shows up as a gap rather than as a smaller minimum.
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -167,9 +179,28 @@ export function compareFloors(a: ParsedFloor, b: ParsedFloor): number {
  * happened to come first in the file.
  */
 export function extractTemplateFloor(markdown: string): ParsedFloor | null {
+  return extractTemplateFloorDetailed(markdown).floor;
+}
+
+export interface TemplateExtraction {
+  floor: ParsedFloor | null;
+  /** How many `"aws-cdk-lib": "..."` declarations the template carries. */
+  matches: number;
+  /** The single matched spec, when there was exactly one. */
+  spec: string | null;
+}
+
+/**
+ * The counting form. `extractTemplateFloor` collapses all three failures to
+ * null, which made one refusal message cover "found none", "found several" and
+ * "found one I cannot decide" — so the day someone adds a second example
+ * manifest to the skill, the error did not say it had found two.
+ */
+export function extractTemplateFloorDetailed(markdown: string): TemplateExtraction {
   const matches = [...markdown.matchAll(/"aws-cdk-lib"\s*:\s*"([^"]+)"/g)];
-  if (matches.length !== 1) return null;
-  return parseFloor(matches[0][1]);
+  if (matches.length !== 1) return { floor: null, matches: matches.length, spec: null };
+  const spec = matches[0][1];
+  return { floor: parseFloor(spec), matches: 1, spec };
 }
 
 /** Read `aws-cdk-lib` out of a manifest's dependencies or devDependencies. */
@@ -252,13 +283,19 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
 
   let templateFloor: ParsedFloor | null = null;
   try {
-    templateFloor = extractTemplateFloor(readFileSync(templatePath, 'utf8'));
+    const extraction = extractTemplateFloorDetailed(readFileSync(templatePath, 'utf8'));
+    templateFloor = extraction.floor;
     if (templateFloor === null) {
-      refusals.push({
-        where: TEMPLATE_REL,
-        reason:
-          'could not extract exactly one `"aws-cdk-lib": "<spec>"` with a decidable floor from the scaffold template',
-      });
+      // Name WHICH of the three failures happened. One string for all three
+      // left "someone added a second example manifest" reading as "the key is
+      // gone", which points the fix at the wrong edit.
+      const reason =
+        extraction.matches === 0
+          ? 'found no `"aws-cdk-lib": "<spec>"` declaration in the scaffold template'
+          : extraction.matches > 1
+            ? `found ${extraction.matches} \`"aws-cdk-lib": "<spec>"\` declarations in the scaffold template; expected exactly 1 (which one is the template?)`
+            : `scaffold template spec "${extraction.spec}" has no decidable floor (accepted: ^X.Y.Z, ~X.Y.Z, X.Y.Z)`;
+      refusals.push({ where: TEMPLATE_REL, reason });
     }
   } catch (error) {
     refusals.push({ where: TEMPLATE_REL, reason: `template unreadable: ${String(error)}` });
@@ -271,6 +308,16 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
   const violations: string[] = [];
   for (const refusal of refusals) {
     violations.push(`${refusal.where}: ${refusal.reason}`);
+  }
+  // Emptiness is a LIBRARY-level violation, not only a CLI floor: an
+  // existing-but-empty root previously produced a fully clean report, and a
+  // caller reaching for the exported function gets no `FLOORS` check.
+  if (fixtures === 0) {
+    violations.push(`${INTEG_ROOT_REL}: no fixture manifest found — the corpus was not read`);
+  } else if (minFloor === null) {
+    violations.push(
+      `${INTEG_ROOT_REL}: ${fixtures} fixture manifests read, none declaring a decidable aws-cdk-lib floor`,
+    );
   }
   if (minFloor !== null && templateFloor !== null && compareFloors(templateFloor, minFloor) < 0) {
     const lowest = sorted[0];

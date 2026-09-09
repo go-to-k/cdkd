@@ -1,6 +1,14 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, afterAll } from 'vite-plus/test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  readdirSync,
+  existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,6 +19,7 @@ import {
   checkIntegCdkLibFloor,
   compareFloors,
   extractTemplateFloor,
+  extractTemplateFloorDetailed,
   parseFloor,
   runSelfProbe,
 } from '../../../scripts/check-integ-cdk-lib-floor.js';
@@ -32,6 +41,22 @@ const SCRIPT = join(REPO_ROOT, 'scripts/check-integ-cdk-lib-floor.ts');
 const REAL_INTEG_ROOT = join(REPO_ROOT, INTEG_ROOT_REL);
 const REAL_TEMPLATE = join(REPO_ROOT, TEMPLATE_REL);
 
+/**
+ * Every temp dir this file makes, swept in `afterAll`. Each probe copies ~292
+ * manifests; without the sweep a run leaves ~21 such trees behind.
+ */
+const scratchDirs: string[] = [];
+
+afterAll(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+});
+
+function scratch(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  scratchDirs.push(dir);
+  return dir;
+}
+
 /** Run the SHIPPED binary, so `main()`, `parseArgs` and the seam are all live. */
 function runCli(args: string[], env: Record<string, string> = {}) {
   const res = spawnSync('node', [SCRIPT, ...args], {
@@ -39,6 +64,13 @@ function runCli(args: string[], env: Record<string, string> = {}) {
     encoding: 'utf8',
     env: { ...process.env, ...env },
   });
+  // A spawn that never ran reports `status: null`, which satisfies
+  // `not.toBe(0)` — a failure indistinguishable from the refusal being tested.
+  // Throwing here makes it a loud test error instead.
+  if (res.error) throw res.error;
+  if (res.status === null) {
+    throw new Error(`checker was killed by signal ${String(res.signal)}; stderr: ${res.stderr}`);
+  }
   return { status: res.status, stderr: res.stderr ?? '', stdout: res.stdout ?? '' };
 }
 
@@ -48,7 +80,7 @@ function runCli(args: string[], env: Record<string, string> = {}) {
  * real-code probes, and never writes to `tests/integration` itself.
  */
 function copyRealManifests(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'cdkd-floor-integ-'));
+  const dir = scratch('cdkd-floor-integ-');
   for (const entry of readdirSync(REAL_INTEG_ROOT, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const src = join(REAL_INTEG_ROOT, entry.name, 'package.json');
@@ -61,7 +93,7 @@ function copyRealManifests(): string {
 
 /** A COPY of the real scaffold template, optionally mutated. */
 function copyRealTemplate(mutate?: (text: string) => string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'cdkd-floor-tpl-'));
+  const dir = scratch('cdkd-floor-tpl-');
   const path = join(dir, 'SKILL.md');
   const text = readFileSync(REAL_TEMPLATE, 'utf8');
   writeFileSync(path, mutate ? mutate(text) : text);
@@ -75,7 +107,11 @@ function setFixtureSpec(integRoot: string, fixture: string, spec: string): void 
     devDependencies?: Record<string, string>;
   };
   const bucket = manifest.dependencies?.['aws-cdk-lib'] ? 'dependencies' : 'devDependencies';
-  manifest[bucket]!['aws-cdk-lib'] = spec;
+  const deps = manifest[bucket];
+  if (!deps || !deps['aws-cdk-lib']) {
+    throw new Error(`${fixture} declares no aws-cdk-lib in ${bucket}; the probe would be vacuous`);
+  }
+  deps['aws-cdk-lib'] = spec;
   writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
@@ -151,6 +187,40 @@ describe('extractTemplateFloor', () => {
   it('refuses a template whose spec has no decidable floor', () => {
     expect(extractTemplateFloor('"aws-cdk-lib": "latest"\n')).toBeNull();
   });
+
+  // One refusal string used to cover all three failures, so "someone added a
+  // second example manifest" read as "the key is gone" and pointed the fix at
+  // the wrong edit. The counting form is what lets the message discriminate.
+  it.each([
+    ['none', '```json\n{ "dependencies": {} }\n```\n', 0],
+    ['two', '"aws-cdk-lib": "^2.260.0"\n"aws-cdk-lib": "^2.169.0"\n', 2],
+    ['one, undecidable', '"aws-cdk-lib": "latest"\n', 1],
+  ])('counts the declarations it found: %s', (_label, markdown, expected) => {
+    const extraction = extractTemplateFloorDetailed(markdown);
+    expect(extraction.matches).toBe(expected);
+    expect(extraction.floor).toBeNull();
+  });
+});
+
+describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
+  it('reports a violation for an existing but empty corpus root', () => {
+    const empty = scratch('cdkd-floor-empty-');
+    const report = checkIntegCdkLibFloor({ integRoot: empty, templatePath: REAL_TEMPLATE });
+    expect(report.fixtures).toBe(0);
+    // The regression this pins: it used to return refusals:[] AND violations:[]
+    // here, i.e. a fully clean report over a corpus it never read.
+    expect(report.violations.join('\n')).toContain('the corpus was not read');
+  });
+
+  it('reports a violation when manifests exist but none declares a floor', () => {
+    const dir = scratch('cdkd-floor-nodecl-');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    writeFileSync(join(dir, 'a', 'package.json'), '{ "name": "a", "dependencies": {} }');
+    const report = checkIntegCdkLibFloor({ integRoot: dir, templatePath: REAL_TEMPLATE });
+    expect(report.fixtures).toBe(1);
+    expect(report.declaringFixtures).toBe(0);
+    expect(report.violations.join('\n')).toContain('none declaring a decidable aws-cdk-lib floor');
+  });
 });
 
 describe('the real repository satisfies the fence', () => {
@@ -225,7 +295,22 @@ describe('real-code failure probes (the checker must prove it FAILS)', () => {
       const template = copyRealTemplate((t) => t.replace('"aws-cdk-lib"', '"aws-cdk-lib-renamed"'));
       const res = runCli([`--integ-root=${integRoot}`, `--template=${template}`]);
       expect(res.status).toBe(1);
-      expect(res.stderr).toContain('could not extract exactly one');
+      expect(res.stderr).toContain('found no `"aws-cdk-lib": "<spec>"` declaration');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'REFUSES a template that grew a SECOND manifest, and says it found two',
+    () => {
+      const integRoot = copyRealManifests();
+      // The realistic future edit: the skill gains a second example block.
+      const template = copyRealTemplate((t) => `${t}\n\`\`\`json\n{ "dependencies": { "aws-cdk-lib": "^2.169.0" } }\n\`\`\`\n`);
+      const res = runCli([`--integ-root=${integRoot}`, `--template=${template}`]);
+      expect(res.status).toBe(1);
+      // Naming the COUNT is the point — the old single string sent the reader
+      // looking for a missing key instead of a duplicated one.
+      expect(res.stderr).toContain('found 2 `"aws-cdk-lib": "<spec>"` declarations');
     },
     TIMEOUT,
   );
@@ -298,7 +383,7 @@ describe('real-code failure probes (the checker must prove it FAILS)', () => {
     'the collapse floors fire on a corpus that shrank',
     () => {
       const full = copyRealManifests();
-      const small = mkdtempSync(join(tmpdir(), 'cdkd-floor-small-'));
+      const small = scratch('cdkd-floor-small-');
       for (const fixture of ['basic', 'lambda']) {
         mkdirSync(join(small, fixture), { recursive: true });
         writeFileSync(
@@ -308,7 +393,10 @@ describe('real-code failure probes (the checker must prove it FAILS)', () => {
       }
       const res = runCli([`--integ-root=${small}`, `--template=${copyRealTemplate()}`]);
       expect(res.status).toBe(1);
+      // BOTH floors, not just the first: pinning only `fixtures` left the
+      // `declaringFixtures` block deletable with every test in this file green.
       expect(res.stderr).toContain('fixtures read (floor');
+      expect(res.stderr).toContain('declared aws-cdk-lib (floor');
     },
     TIMEOUT,
   );
@@ -332,7 +420,10 @@ describe('real-code failure probes (the checker must prove it FAILS)', () => {
     'refuses the malformed argument: %s',
     (_label, arg) => {
       const res = runCli([arg]);
-      expect(res.status).not.toBe(0);
+      // `not.toBe(0)` alone is satisfied by a spawn that never ran; `runCli`
+      // now throws on that, and the exact code plus a needle pins the arm.
+      expect(res.status).toBe(1);
+      expect(res.stderr).toMatch(/unknown argument|requires a non-empty value/);
     },
     TIMEOUT,
   );
