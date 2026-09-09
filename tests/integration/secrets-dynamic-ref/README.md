@@ -18,7 +18,8 @@ resource.
 `CdkdSecretsDynamicRefExample` (cheap, no VPC):
 
 - A SecretsManager secret with a **known JSON value**
-  (`{"username":"cdkd-user","password":"cdkd-known-pw-123"}`).
+  (`{"username":"cdkd-user","password":"cdkd-known-pw-123","pin":"q7"}` — `pin` is the
+  two-character secret of issue [#2516](https://github.com/go-to-k/cdkd/issues/2516)).
 - An SSM `String` parameter with a **known value** (`cdkd-known-ssm-value`).
 - A consumer `AWS::Lambda::Function` (inline code, asset-free) whose
   **environment variables** are literal `{{resolve:...}}` dynamic-reference
@@ -83,6 +84,7 @@ so the table is indexed by what that leaf holds, not by which command ran:
 | `SSM_SECURE_VALUE` (SecureString, whole token) | the expression | expression |
 | `SSM_VALUE` (public `String`, whole token) | the resolved value | resolved |
 | `DB_URL` (SecureString inside text) | the expression | expression |
+| `DB_PORT_LITERAL` (a TWO-character secret inside literal text, issue [#2516](https://github.com/go-to-k/cdkd/issues/2516)) | the expression — written only on a bag the engine marked as this pass's own, since the value scan makes no claim below its four-character needle floor | expression, in `properties`, in the readback AND in the `PortLiteral` output |
 | `PUBLIC_URL` (public `String` inside text) | the resolved value (issue [#1901](https://github.com/go-to-k/cdkd/issues/1901)) | resolved — the mixed-leaf arm is never consulted |
 | `PUBLIC_URL`, with the expression STAMPED into `properties` (Phase 1f3) | the expression | expression (the OPEN over-redaction, issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) |
 

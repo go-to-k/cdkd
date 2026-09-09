@@ -9,7 +9,8 @@
 #
 # The fixture deploys:
 #   - a SecretsManager secret with a KNOWN JSON value
-#     ({"username":"cdkd-user","password":"cdkd-known-pw-123"})
+#     ({"username":"cdkd-user","password":"cdkd-known-pw-123","pin":"q7"} -- `pin` is the
+#     two-character secret of issue #2516)
 #   - an SSM String parameter with a KNOWN value (cdkd-known-ssm-value)
 #   - a consumer Lambda whose ENV VARS are literal {{resolve:...}} strings
 #
@@ -126,8 +127,14 @@ SECURE_PARAM_NAME="cdkd-test-dynref-secure-${ACCOUNT_ID}"
 # Known values authored in the fixture stack (NOT secret in any real sense;
 # this is test data, but we still mask the secret-derived ones in output).
 EXPECTED_PASSWORD="cdkd-known-pw-123"
-EXPECTED_FULL='{"username":"cdkd-user","password":"cdkd-known-pw-123"}'
+EXPECTED_FULL='{"username":"cdkd-user","password":"cdkd-known-pw-123","pin":"q7"}'
 EXPECTED_SSM="cdkd-known-ssm-value"
+# The TWO-character secret (issue #2516): below the redaction value scan's
+# four-character needle floor, so the scan never builds a needle from it and
+# only the span arm on an engine-marked bag can persist the literal leaves
+# embedding it as their token. Never printed, even masked -- `mask` withholds
+# the head of a value this short.
+EXPECTED_PIN="q7"
 # The version-stage reference reads the SAME json key as SECRET_PASSWORD, so
 # both resolve to EXPECTED_PASSWORD. That collision is deliberate and is what
 # makes the state-expression + `diff --fail` assertions below discriminating:
@@ -148,6 +155,14 @@ EXPECTED_DB_URL_EXPR="postgres://app-svc:{{resolve:ssm:${SECURE_PARAM_NAME}}}@db
 # the collapsed map's survivor is the staged one (see the stack's comment).
 EXPECTED_DB_DSN_LITERAL_EXPR="postgres://app-svc:{{resolve:secretsmanager:${SECRET_NAME}:SecretString:password}}@db.internal:5432/app"
 EXPECTED_DB_DSN_LITERAL="postgres://app-svc:${EXPECTED_PASSWORD}@db.internal:5432/app"
+# The literal leaves embedding the TWO-character secret (issue #2516): the env
+# var and the `PortLiteral` output share one source spelling, and the
+# persisted form must be that spelling exactly -- never the staged sibling's
+# (`SECRET_PIN_STAGED` shares the plaintext and resolves later, so it is the
+# collapsed map's survivor) and never the plaintext (the pre-fix answer).
+EXPECTED_DB_PORT_LITERAL_EXPR="port:{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin}}"
+EXPECTED_DB_PORT_LITERAL="port:${EXPECTED_PIN}"
+EXPECTED_SECRET_PIN_STAGED_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin:AWSCURRENT}}"
 # The SecureString reference as a WHOLE token, which is what SSM_SECURE_VALUE
 # and SSM_SECURE_COPY must both hold in state (issues #1901 / #2012).
 EXPECTED_SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
@@ -176,10 +191,46 @@ mask() {
     return
   fi
   local n=${#v}
+  # A value of four characters or fewer would be printed whole (or nearly) by
+  # the two-character head -- the two-character secret of issue #2516 is
+  # exactly that shape -- and so would a longer value that STARTS with it, so
+  # any value carrying the pin shows only its length.
+  case "${v}" in
+    *"${EXPECTED_PIN}"*)
+      echo "***(len=${n})"
+      return ;;
+  esac
+  if [ "${n}" -le 4 ]; then
+    echo "***(len=${n})"
+    return
+  fi
   local head
   head=$(printf '%s' "${v}" | cut -c1-2)
   echo "${head}***(len=${n})"
 }
+# The helper's two new arms -- withhold any value CARRYING the pin, and
+# withhold the head of any value of four characters or fewer -- are what keep
+# the two-character secret out of every masked line below, and nothing else
+# exercises them, so each is checked here at startup with an input only IT
+# withholds: the bare pin and the pin at either end (the containment arm,
+# which must not be a prefix match, nor an endpoint match: the INTERIOR case
+# is what separates containment from "starts with or ends with", and it is
+# longer than the length arm's four-character bound so that arm cannot answer
+# for it -- maintainer-checklist round 2), a short value that is NOT the pin (the
+# length arm, which the containment arm never reaches, pinned at its four-
+# character boundary from both sides), and a long value the helper must still
+# abbreviate rather than withhold.
+if [ "$(mask "${EXPECTED_PIN}")" != "***(len=2)" ] \
+  || [ "$(mask "${EXPECTED_PIN}-extra")" != "***(len=8)" ] \
+  || [ "$(mask "extra-${EXPECTED_PIN}")" != "***(len=8)" ] \
+  || [ "$(mask "ab${EXPECTED_PIN}cd")" != "***(len=6)" ] \
+  || [ "$(mask "zz")" != "***(len=2)" ] \
+  || [ "$(mask "abcd")" != "***(len=4)" ] \
+  || [ "$(mask "abcde")" != "ab***(len=5)" ] \
+  || [ "$(mask "cdkd-known-pw-123")" != "cd***(len=17)" ]; then
+  echo "FAIL: premise: mask() printed part of a short value or of the two-character secret instead of withholding it" >&2
+  exit 1
+fi
 
 # Echo a captured command output as FAILURE diagnostics — but never before
 # proving it carries no plaintext. These diagnostics sit on exactly the paths
@@ -187,6 +238,13 @@ mask() {
 # to the terminal and into the CI log at the precise moment redaction failed.
 # Withholds rather than masking wholesale, so an ordinary failure still shows
 # the output that explains it.
+# The ONE escaper. `diag_output` and its premise check below both call it --
+# a second copy is what let an earlier revision "measure" the check against
+# itself while the real guard was mutated away (PR 2753 review round 3).
+ere_escape() { # ere_escape <literal> -> the same string, safe inside an ERE
+  printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'
+}
+
 diag_output() { # diag_output <text>
   local text="$1"
   # Bash substring tests, never `printf '%s' "${text}" | grep -q`, for the
@@ -222,14 +280,166 @@ diag_output() { # diag_output <text>
   # the writer was done before the reader closed -- which is why a 5 MB
   # single-line probe answers `0 0` on every build tried. An external
   # `/usr/bin/printf`, a here-string and a `[[ == * ]]` test never missed.
+  #
+  # The two-character secret is withheld in its FRAMED form and, bounded by
+  # non-alphanumerics, in its BARE form too (`SECRET_PIN_STAGED=q7` in a diff
+  # line is a disclosure as much as `port:q7` is). Withholding is the safe
+  # direction, so a bounded match inside an unrelated id costs only a
+  # diagnostic. An SGR sequence counts as a boundary on either side: a
+  # colorized diagnostic puts the sequence's terminating `m` -- alphanumeric --
+  # immediately before the value, which the plain class refuses (maintainer
+  # review of PR 2753). Only the LEADING side needs it -- on the trailing side
+  # the sequence begins with ESC, which the plain class already accepts, so a
+  # trailing alternative would be an unfalsifiable clause. `=~` so `[0-9;]*`
+  # is ERE zero-or-more of the class
+  # rather than a glob's match-anything, and it needs no `shopt`. Its `^` / `$`
+  # anchor the whole capture rather than each line, which only WIDENS the
+  # match: an interior line boundary is a newline, already in the class.
+  # Any CSI sequence whose parameters are digits, `;`, `:` or `?`: a final byte
+  # other than `m` (`\033[2K`, `\033[1A`) is equally alphanumeric and equally
+  # abuts the value, and `:` is what a colon-separated indexed-colour SGR uses (`\033[38:5:1m`,
+  # round 3 of the review). Not the full CSI grammar -- intermediate bytes are
+  # out -- and the comment says so rather than claiming ANY.
+  #
+  # Why the wider class is not dead grammar, corrected in round 3 of the review
+  # after this comment claimed cdkd emits only SGR: it does not.
+  # `src/utils/live-renderer.ts` writes `\033[1A\033[2K`, `\033[?25l` and
+  # `\033[?25h` -- exactly the shapes widened for. What keeps them out of a
+  # CAPTURED log is that the renderer refuses to start unless the stream is a
+  # TTY (`live-renderer.ts`, `start()`), and this fixture captures through a
+  # pipe. So the class is reachable from cdkd's own code the moment anything
+  # writes those sequences ungated, and narrowing it back to `[0-9;]*m` would
+  # put `\033[2Kq7` past the boundary and into a CI log.
+  local csi=$'\033'"\[[0-9;:?]*[A-Za-z]"
+  # The pin is ESCAPED into the ERE rather than interpolated raw: `q7` is inert,
+  # but a future pin carrying a metacharacter would silently widen or break the
+  # match, and this arm decides whether a secret is printed. `diag_output`
+  # cannot distinguish escaped from raw while the pin stays alphanumeric --
+  # every probe there uses the declared pin -- so the escaper carries its OWN
+  # check below, against a metacharacter-carrying sample (round 3 of the
+  # review corrected the earlier claim that it was unpinnable at all).
+  local pin_esc
+  # `/` is deliberately NOT in the class: it is a sed-delimiter reflex, not an
+  # ERE metacharacter, and `\/` is undefined in POSIX ERE (round 3).
+  pin_esc="$(ere_escape "${EXPECTED_PIN}")"
+  local pin_re="(^|[^A-Za-z0-9]|${csi})${pin_esc}([^A-Za-z0-9]|$)"
   if [[ "${text}" == *"${EXPECTED_PASSWORD}"* ]] \
     || [[ "${text}" == *"${EXPECTED_SECURE}"* ]] \
-    || [[ "${text}" == *"${EXPECTED_USERNAME}"* ]]; then
+    || [[ "${text}" == *"${EXPECTED_USERNAME}"* ]] \
+    || [[ "${text}" == *"${EXPECTED_DB_PORT_LITERAL}"* ]] \
+    || [[ "${text}" =~ $pin_re ]]; then
     echo "      output: <WITHHELD — it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
   echo "      output: ${text}" >&2
 }
+# Each withholding arm of `diag_output` is checked at startup with an input
+# only IT catches, the way `mask` is above: the bare pin bounded by
+# non-alphanumerics (a diff line) and at the very start and the very end of
+# the text (each anchor alternative on its own), the framed pin followed by a letter (so
+# the bare arm, which needs a boundary, cannot answer for it), the three
+# pre-existing needles, the pin wrapped in SGR sequences (whose terminating
+# `m` is alphanumeric, so the plain boundary class alone refuses it) with a
+# multi-parameter, a ZERO-parameter, a non-`m` final-byte, a colon-parameter
+# and a private-parameter (`?`) sequence, which pin the `;`, the zero-or-more,
+# the final-byte class, the `:` and the `?` separately, and a
+# benign diagnostic that CONTAINS the pin unbounded and must still print. The
+# output is captured and never echoed.
+assert_diag_output_arms() {
+  # A function rather than a top-level loop so the probe variable is `local`
+  # like every other helper in this script (maintainer review of PR 2753); at
+  # top level `local` is a bash error, so the leak could not be fixed in place.
+  local diag_probe
+  for diag_probe in "SECRET_PIN_STAGED=${EXPECTED_PIN} in a diff line" \
+    "${EXPECTED_PIN} at the start" "value=${EXPECTED_PIN}" \
+    "${EXPECTED_DB_PORT_LITERAL}x" "${EXPECTED_PASSWORD}" "${EXPECTED_SECURE}" "${EXPECTED_USERNAME}" \
+    "$(printf 'colorized \033[32m%s\033[0m tail' "${EXPECTED_PIN}")" \
+    "$(printf 'multi-param \033[1;31;4m%s tail' "${EXPECTED_PIN}")" \
+    "$(printf 'zero-param \033[m%s tail' "${EXPECTED_PIN}")" \
+    "$(printf 'non-SGR final byte \033[2K%s tail' "${EXPECTED_PIN}")" \
+    "$(printf 'colon params \033[38:5:1m%s tail' "${EXPECTED_PIN}")" \
+    "$(printf 'private params \033[?25h%s tail' "${EXPECTED_PIN}")"; do
+    case "$(diag_output "${diag_probe}" 2>&1)" in
+      *WITHHELD*) ;;
+      *) echo "FAIL: premise: diag_output would print a diagnostic carrying a secret" >&2; exit 1 ;;
+    esac
+  done
+  case "$(diag_output "an ordinary diagnostic naming id ab${EXPECTED_PIN}x" 2>&1)" in
+    *"output: an ordinary diagnostic"*) ;;
+    *) echo "FAIL: premise: diag_output withheld a benign diagnostic (the bare-pin arm must be bounded)" >&2; exit 1 ;;
+  esac
+}
+assert_diag_output_arms
+# The ESCAPER, checked on its own because `diag_output` cannot see it: every
+# probe there carries the declared alphanumeric pin, where escaped and raw are
+# indistinguishable. A metacharacter-carrying sample separates them (round 3 of
+# the PR 2753 review). Both directions are wrong and only one is dangerous. An
+# unescaped `.` merely WIDENS the match, so an extra diagnostic is withheld --
+# noise, not disclosure. An unescaped metacharacter that makes the whole
+# pattern fail to match the pin, or match something else, PRINTS the secret.
+# Measured on the real `pin_re` with `value=<pin> tail`: `q+7`, `q(7`, `q{7`,
+# `q^7` and `q$7` all print. `q*7` does NOT -- the boundary alternation
+# consumes the `*` and `q*` matches zero occurrences -- so `*` discloses only
+# when what precedes it repeats (`qq*7`) or is itself a metacharacter. Round 4
+# of the review corrected this sentence, which had named `*` as the exemplar:
+# it is the one character in the class that does not leak on its own.
+assert_pin_escaper() {
+  # EVERY metacharacter the class names, one per sample, so a class that
+  # silently narrowed to a couple of them fails here -- the invariant is "the
+  # escaped form behaves as a literal", not "this one sample survives".
+  local ch escaped
+  for ch in '.' '*' '+' '?' '[' ']' '(' ')' '{' '}' '|' '^' '$' '\'; do
+    escaped="$(ere_escape "x${ch}y")"
+    if [ "${escaped}" = "x${ch}y" ]; then
+      echo "FAIL: premise: ere_escape left the ERE metacharacter '${ch}' unescaped" >&2
+      exit 1
+    fi
+    # The escaped form matches its own literal and nothing else at that offset.
+    if ! [[ "x${ch}y" =~ ^${escaped}$ ]]; then
+      echo "FAIL: premise: the escaped form of 'x${ch}y' does not match its own literal" >&2
+      exit 1
+    fi
+    # Three negatives, because one is not enough: SUBSTITUTION (a class that
+    # still matches any character), OMISSION and REPETITION (a replacement of
+    # `\&*` escapes the character and then makes it optional, which the `xZy`
+    # probe alone let through -- round 4 of the review).
+    if [[ "xZy" =~ ^${escaped}$ ]]; then
+      echo "FAIL: premise: the escaped form of 'x${ch}y' still matches 'xZy' -- not a literal" >&2
+      exit 1
+    fi
+    if [[ "xy" =~ ^${escaped}$ ]]; then
+      echo "FAIL: premise: the escaped form of 'x${ch}y' matches 'xy' -- the character is optional" >&2
+      exit 1
+    fi
+    if [[ "x${ch}${ch}y" =~ ^${escaped}$ ]]; then
+      echo "FAIL: premise: the escaped form of 'x${ch}y' matches a repeat -- not a literal" >&2
+      exit 1
+    fi
+  done
+  # EVERY occurrence, not just the first: a substitution missing its `g` flag
+  # escapes one metacharacter per string and leaves the rest live, which every
+  # single-metacharacter sample above would pass (round 4 of the review).
+  local mixed
+  mixed="$(ere_escape 'x.y*z.w')"
+  if [[ "xAyBzCw" =~ ^${mixed}$ ]] || ! [[ 'x.y*z.w' =~ ^${mixed}$ ]]; then
+    echo "FAIL: premise: ere_escape did not escape every occurrence (got '${mixed}')" >&2
+    exit 1
+  fi
+  # `/` is NOT escaped, deliberately: it is not an ERE metacharacter and `\/`
+  # is undefined in POSIX ERE.
+  if [ "$(ere_escape 'a/b')" != 'a/b' ]; then
+    echo "FAIL: premise: ere_escape escaped '/', which POSIX ERE leaves undefined" >&2
+    exit 1
+  fi
+}
+assert_pin_escaper
+# The probe variable stayed inside the helper: `local` is the whole reason the
+# self-check is a function rather than a top-level loop, so it is pinned here
+# instead of being asserted only by the declaration.
+if [ "${diag_probe-unset}" != "unset" ]; then
+  echo "FAIL: premise: assert_diag_output_arms leaked its probe variable into the script's scope" >&2
+  exit 1
+fi
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -472,6 +682,8 @@ ENV_SSM_VALUE=$(get_env SSM_VALUE)
 ENV_SSM_SECURE_VALUE=$(get_env SSM_SECURE_VALUE)
 ENV_DB_URL=$(get_env DB_URL)
 ENV_DB_DSN_LITERAL=$(get_env DB_DSN_LITERAL)
+ENV_DB_PORT_LITERAL=$(get_env DB_PORT_LITERAL)
+ENV_SECRET_PIN_STAGED=$(get_env SECRET_PIN_STAGED)
 ENV_SSM_SECURE_COPY=$(get_env SSM_SECURE_COPY)
 ENV_PUBLIC_URL=$(get_env PUBLIC_URL)
 
@@ -508,6 +720,8 @@ check_not_literal SSM_VALUE "${ENV_SSM_VALUE}"
 check_not_literal SSM_SECURE_VALUE "${ENV_SSM_SECURE_VALUE}"
 check_not_literal DB_URL "${ENV_DB_URL}"
 check_not_literal DB_DSN_LITERAL "${ENV_DB_DSN_LITERAL}"
+check_not_literal DB_PORT_LITERAL "${ENV_DB_PORT_LITERAL}"
+check_not_literal SECRET_PIN_STAGED "${ENV_SECRET_PIN_STAGED}"
 check_not_literal SSM_SECURE_COPY "${ENV_SSM_SECURE_COPY}"
 check_not_literal PUBLIC_URL "${ENV_PUBLIC_URL}"
 
@@ -526,6 +740,14 @@ check_equals "SSM_VALUE (ssm:<name> plaintext param)" \
 # changes what STATE holds for it, never what the provider is handed).
 check_equals "DB_DSN_LITERAL (literal string embedding :SecretString:<jsonkey>)" \
   "${ENV_DB_DSN_LITERAL}" "${EXPECTED_DB_DSN_LITERAL}"
+# The PREMISE of Guard 3c and of the Phase 1g readback arm (issue #2516): the
+# live resource genuinely holds the two-character value spliced into the
+# literal, so a readback of it carries the plaintext at that offset and the
+# state assertions are about a value that exists.
+check_equals "DB_PORT_LITERAL (literal string embedding a TWO-character :SecretString:<jsonkey>)" \
+  "${ENV_DB_PORT_LITERAL}" "${EXPECTED_DB_PORT_LITERAL}"
+check_equals "SECRET_PIN_STAGED (the two-character value, whole, :AWSCURRENT)" \
+  "${ENV_SECRET_PIN_STAGED}" "${EXPECTED_PIN}"
 # The MIXED leaf must reach AWS with the reference SUBSTITUTED INTO the
 # surrounding text (issue #1926 review). This is the PREMISE of Phase 1g: the
 # live resource holds the decrypted value, so a readback of it is a disclosure
@@ -683,11 +905,52 @@ esac
 # NOT the staged one, leaving Guard 3a-literal green either way. Matched by
 # flattening each value, because these leaves are a MIX of shapes -- the
 # account-token ones synthesize as `Fn::Join` objects while DB_DSN_LITERAL is a
-# plain string, which is the whole point of the shape guard above.
+# plain string, which is the whole point of the shape guard above. Matched on
+# each value RENDERED the way the resolver assembles it (an `Fn::Join` joined
+# with its own delimiter, nested joins included) rather than its JSON text, so
+# a join splitting the reference across parts still counts (issue #2516 review).
+# FAIL CLOSED on a value the premise checker cannot render: `rendered` knows a
+# string, an `Fn::Join` (joined with its own delimiter, nested) and a `Ref` to
+# an `AWS::*` pseudo parameter (contributes no reference text); anything else
+# -- an `Fn::Sub`, whose variables it would have to substitute, or a `Ref` to
+# a template parameter whose default could spell part of the reference --
+# marks the value UNRENDERABLE, and a template carrying one cannot have its
+# "last key resolving the reference" computed.
+# ...and the survivor is decided by EVERY property the resolver walks, not by
+# the env alone: a reference to the same key anywhere else in the Lambda's
+# properties (a `Description`, say) would resolve after the env and move the
+# survivor, so such an occurrence outside `Environment.Variables` fails the
+# premise. Rendered leniently (an intrinsic contributes its string parts, an
+# `Fn::Join` with its delimiter) because the fail-closed `rendered` below
+# would refuse the `Role`'s `Fn::GetAtt`, which cannot spell a reference --
+# and, since a lenient render can substitute neither an `Fn::Sub`'s variables
+# nor a template PARAMETER's default, any `Fn::Sub` and any `Ref` to a key of
+# the template's `Parameters` outside the env fail the premise on their own
+# (a `Ref` to a resource yields a physical id, which cannot spell one).
+OUTSIDE_ENV_PASSWORD=$(jq -r '
+  def rendered_lenient: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered_lenient) | join($d)) elif type=="object" then ([.[] | rendered_lenient] | join("")) elif type=="array" then (map(rendered_lenient) | join("")) else "" end;
+  (.Parameters // {} | keys) as $params
+  | [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties | del(.Environment.Variables)]
+  | (map(rendered_lenient) | join("") | contains(":SecretString:password"))
+    or ([.[] | .. | objects | has("Fn::Sub")] | any)
+    or ([.[] | .. | objects | select(has("Ref")) | .Ref | IN($params[])] | any)' "${SYNTH_TEMPLATE}")
+if [ "${OUTSIDE_ENV_PASSWORD}" != "false" ]; then
+  echo "FAIL: premise: a :SecretString:password reference occurs in the consumer Lambda's properties OUTSIDE Environment.Variables or an Fn::Sub / parameter Ref sits there (${OUTSIDE_ENV_PASSWORD}) -- Guard 3a-literal's survivor premise only orders the env keys" >&2
+  exit 1
+fi
+UNRENDERABLE_PASSWORD=$(jq -r '
+  def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Ref") and (.Ref | startswith("AWS::")) then "" else "UNRENDERABLE" end;
+  [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
+  | to_entries | map(select((.value | rendered) | contains("UNRENDERABLE"))) | map(.key) | join(",")' "${SYNTH_TEMPLATE}")
+if [ -n "${UNRENDERABLE_PASSWORD}" ]; then
+  echo "FAIL: premise: Guard 3a-literal's ordering check cannot render env key(s) ${UNRENDERABLE_PASSWORD} (not a string / Fn::Join / AWS::* Ref) -- extend \`rendered\` before relying on the survivor premise" >&2
+  exit 1
+fi
 MAX_PW_IDX=$(jq -r '
+  def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Ref") and (.Ref | startswith("AWS::")) then "" else "UNRENDERABLE" end;
   [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
   | to_entries | to_entries
-  | map(select((.value.value | tostring) | contains(":SecretString:password")))
+  | map(select((.value.value | rendered) | contains(":SecretString:password")))
   | map(.key) | max' "${SYNTH_TEMPLATE}")
 case "${MAX_PW_IDX}" in ''|null)
   echo "FAIL: premise: found no env key resolving :SecretString:password in the synthesized template" >&2
@@ -716,6 +979,148 @@ else
       echo "FAIL: state DB_DSN_LITERAL is not the expected embedded form: $(mask "${STATE_DB_DSN_LITERAL}")" >&2 ;;
   esac
   redaction_fail=1
+fi
+
+# Guard 3c (issue #2516): the literal leaf embedding a TWO-character secret.
+# Below the value scan's four-character needle floor the scan makes no claim,
+# so before the fix this leaf persisted `port:<pin>` in plaintext -- with or
+# without a sibling. The span arm now writes it as its token only on a bag the
+# ENGINE marked as this pass's own (the record's resolved `properties`, the
+# readback of the resource it just wrote, the outputs bag it resolved), which
+# is what the three assertions below cover one by one. Exact equality with
+# the leaf's OWN spelling: the staged sibling is the collapsed map's survivor,
+# so a fix writing the survivor rather than the token shows here.
+#
+# PREMISE GUARD first, the same two facts Guard 3a-literal needs: the leaf
+# synthesized as a plain STRING (a `Fn::Join` takes the skeleton arm, which
+# cannot fix this), and it precedes SECRET_PIN_STAGED, the LAST key resolving
+# `:SecretString:pin`, so the survivor is the staged spelling. "Resolving" is
+# matched on each value RENDERED the way the resolver assembles it (an
+# `Fn::Join` joined with its own delimiter, nested joins included), not on
+# its JSON text, so a join that splits the reference across parts is still
+# counted.
+PORT_SHAPE=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables.DB_PORT_LITERAL | if . == null then "null" else type end] | first // "absent"' "${SYNTH_TEMPLATE}")
+if [ "${PORT_SHAPE}" != "string" ]; then
+  echo "FAIL: premise: DB_PORT_LITERAL synthesized as '${PORT_SHAPE}', not a plain string -- the literal-leaf arm (#2516) is not what this deploy exercised" >&2
+  exit 1
+fi
+PORT_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("DB_PORT_LITERAL")] | first' "${SYNTH_TEMPLATE}")
+PIN_STAGED_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("SECRET_PIN_STAGED")] | first' "${SYNTH_TEMPLATE}")
+case "${PORT_IDX}${PIN_STAGED_IDX}" in *null*|"")
+  echo "FAIL: premise: could not locate DB_PORT_LITERAL / SECRET_PIN_STAGED in the synthesized env (${PORT_IDX} / ${PIN_STAGED_IDX})" >&2
+  exit 1 ;;
+esac
+# FAIL CLOSED on a value the premise checker cannot render: `rendered` knows a
+# string, an `Fn::Join` (joined with its own delimiter, nested) and a `Ref` to
+# an `AWS::*` pseudo parameter (contributes no reference text); anything else
+# -- an `Fn::Sub`, whose variables it would have to substitute, or a `Ref` to
+# a template parameter whose default could spell part of the reference --
+# marks the value UNRENDERABLE, and a template carrying one cannot have its
+# "last key resolving the reference" computed.
+# ...and the survivor is decided by EVERY property the resolver walks, not by
+# the env alone: a reference to the same key anywhere else in the Lambda's
+# properties (a `Description`, say) would resolve after the env and move the
+# survivor, so such an occurrence outside `Environment.Variables` fails the
+# premise. Rendered leniently (an intrinsic contributes its string parts, an
+# `Fn::Join` with its delimiter) because the fail-closed `rendered` below
+# would refuse the `Role`'s `Fn::GetAtt`, which cannot spell a reference --
+# and, since a lenient render can substitute neither an `Fn::Sub`'s variables
+# nor a template PARAMETER's default, any `Fn::Sub` and any `Ref` to a key of
+# the template's `Parameters` outside the env fail the premise on their own
+# (a `Ref` to a resource yields a physical id, which cannot spell one).
+OUTSIDE_ENV_PIN=$(jq -r '
+  def rendered_lenient: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered_lenient) | join($d)) elif type=="object" then ([.[] | rendered_lenient] | join("")) elif type=="array" then (map(rendered_lenient) | join("")) else "" end;
+  (.Parameters // {} | keys) as $params
+  | [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties | del(.Environment.Variables)]
+  | (map(rendered_lenient) | join("") | contains(":SecretString:pin"))
+    or ([.[] | .. | objects | has("Fn::Sub")] | any)
+    or ([.[] | .. | objects | select(has("Ref")) | .Ref | IN($params[])] | any)' "${SYNTH_TEMPLATE}")
+if [ "${OUTSIDE_ENV_PIN}" != "false" ]; then
+  echo "FAIL: premise: a :SecretString:pin reference occurs in the consumer Lambda's properties OUTSIDE Environment.Variables or an Fn::Sub / parameter Ref sits there (${OUTSIDE_ENV_PIN}) -- Guard 3c's survivor premise only orders the env keys" >&2
+  exit 1
+fi
+UNRENDERABLE_PIN=$(jq -r '
+  def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Ref") and (.Ref | startswith("AWS::")) then "" else "UNRENDERABLE" end;
+  [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
+  | to_entries | map(select((.value | rendered) | contains("UNRENDERABLE"))) | map(.key) | join(",")' "${SYNTH_TEMPLATE}")
+if [ -n "${UNRENDERABLE_PIN}" ]; then
+  echo "FAIL: premise: Guard 3c's ordering check cannot render env key(s) ${UNRENDERABLE_PIN} (not a string / Fn::Join / AWS::* Ref) -- extend \`rendered\` before relying on the survivor premise" >&2
+  exit 1
+fi
+MAX_PIN_IDX=$(jq -r '
+  def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Ref") and (.Ref | startswith("AWS::")) then "" else "UNRENDERABLE" end;
+  [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
+  | to_entries | to_entries
+  | map(select((.value.value | rendered) | contains(":SecretString:pin")))
+  | map(.key) | max' "${SYNTH_TEMPLATE}")
+case "${MAX_PIN_IDX}" in ''|null)
+  echo "FAIL: premise: found no env key resolving :SecretString:pin in the synthesized template" >&2
+  exit 1 ;;
+esac
+if [ "${PORT_IDX}" -ge "${PIN_STAGED_IDX}" ] || [ "${PIN_STAGED_IDX}" -ne "${MAX_PIN_IDX}" ]; then
+  echo "FAIL: premise: DB_PORT_LITERAL (index ${PORT_IDX}) must precede SECRET_PIN_STAGED (index ${PIN_STAGED_IDX}) AND STAGED must be the LAST key resolving to :SecretString:pin (last index ${MAX_PIN_IDX}); otherwise the survivor is not the staged spelling and Guard 3c cannot tell the token from the survivor" >&2
+  exit 1
+fi
+echo "    OK: premise: DB_PORT_LITERAL is a plain string at index ${PORT_IDX}, before SECRET_PIN_STAGED (index ${PIN_STAGED_IDX}), the last key resolving to :SecretString:pin"
+
+STATE_DB_PORT_LITERAL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.DB_PORT_LITERAL // empty')
+STATE_SECRET_PIN_STAGED=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_PIN_STAGED // empty')
+if [ "${STATE_DB_PORT_LITERAL}" = "${EXPECTED_DB_PORT_LITERAL_EXPR}" ]; then
+  echo "    OK: state DB_PORT_LITERAL kept its OWN embedded expression (two-character secret, #2516): ${STATE_DB_PORT_LITERAL}"
+else
+  case "${STATE_DB_PORT_LITERAL}" in
+    "${EXPECTED_DB_PORT_LITERAL}")
+      echo "FAIL: state DB_PORT_LITERAL holds the two-character secret in PLAINTEXT -- the sub-floor residual is open (#2516)" >&2 ;;
+    *':AWSCURRENT}}')
+      echo "FAIL: state DB_PORT_LITERAL took the STAGED sibling's expression -- the arm wrote the survivor, not the token (#2516)" >&2 ;;
+    *)
+      echo "FAIL: state DB_PORT_LITERAL is not the expected embedded form: $(mask "${STATE_DB_PORT_LITERAL}")" >&2 ;;
+  esac
+  redaction_fail=1
+fi
+# Exact equality, not a glob, and the value is printed only on equality: a
+# glob ending in `:pin:AWSCURRENT}}` also accepts a MIXED leaf carrying the
+# framed plaintext beside a token, and an echo on that match is a disclosure.
+if [ "${STATE_SECRET_PIN_STAGED}" = "${EXPECTED_SECRET_PIN_STAGED_EXPR}" ]; then
+  echo "    OK: state SECRET_PIN_STAGED kept its OWN staged expression: ${STATE_SECRET_PIN_STAGED}"
+else
+  echo "FAIL: state SECRET_PIN_STAGED is NOT its own {{resolve:...:pin:AWSCURRENT}} expression: $(mask "${STATE_SECRET_PIN_STAGED}")" >&2
+  redaction_fail=1
+fi
+# The READBACK of the same resource, installed by the deploy's own capture
+# drain and walked at the persist choke point as its own bag against the
+# template: a mark on `properties` alone would leave this copy in plaintext.
+# Lambda's GetFunctionConfiguration echoes env vars as written (asserted
+# live above), so the readback genuinely carries the value at that offset.
+OBS_DB_PORT_LITERAL=$(printf '%s' "${STATE_JSON}" \
+  | jq -r '[.state.resources[] | select(.resourceType=="AWS::Lambda::Function")
+             | .observedProperties.Environment.Variables.DB_PORT_LITERAL // empty] | first // empty')
+if [ "${OBS_DB_PORT_LITERAL}" = "${EXPECTED_DB_PORT_LITERAL_EXPR}" ]; then
+  echo "    OK: observedProperties DB_PORT_LITERAL holds the embedded expression (the readback bag is marked too, #2516)"
+else
+  echo "FAIL: observedProperties DB_PORT_LITERAL is not the embedded expression: $(mask "${OBS_DB_PORT_LITERAL}")" >&2
+  redaction_fail=1
+fi
+# The literal OUTPUT embedding the same token, walked by the outputs
+# redaction against the template's `Outputs` on the bag this pass resolved.
+STATE_PORT_OUTPUT=$(printf '%s' "${STATE_JSON}" | jq -r '.state.outputs.PortLiteral // empty')
+if [ "${STATE_PORT_OUTPUT}" = "${EXPECTED_DB_PORT_LITERAL_EXPR}" ]; then
+  echo "    OK: state.outputs.PortLiteral holds the embedded expression (the outputs bag is marked too, #2516)"
+else
+  echo "FAIL: state.outputs.PortLiteral is not the embedded expression: $(mask "${STATE_PORT_OUTPUT}")" >&2
+  redaction_fail=1
+fi
+# The framed plaintext has no legitimate home ANYWHERE in the document (the
+# DynRefSecret resource's own SecretString carries `"pin":"q7"`, never
+# `port:q7`), so unlike the password grep this one is whole-document.
+# A here-string, not `printf | grep -q`: under `pipefail` the builtin printf
+# takes SIGPIPE when grep exits on an early line of a multi-line text, and a
+# leak check would then read "absent" over a leak.
+if grep -qF "${EXPECTED_DB_PORT_LITERAL}" <<< "${STATE_JSON}"; then
+  echo "FAIL: the framed two-character secret is somewhere in the persisted state document (#2516)" >&2
+  redaction_fail=1
+else
+  echo "    OK: the framed two-character secret is absent from the WHOLE state document"
 fi
 
 # Guard 3b (issue #1901): an ssm reference to a SECURESTRING parameter is a
@@ -1558,6 +1963,21 @@ if [ "${RB_STATE_DSN}" != "${EXPECTED_DB_DSN_LITERAL_EXPR}" ]; then
   exit 1
 fi
 echo "    OK: post-rollback state kept DB_DSN_LITERAL's OWN embedded expression"
+# Issue #2516: the rollback's UPDATE arm persists the JOURNALED record itself
+# (the Lambda provider substitutes no `effectiveProperties`), so this leaf
+# comes back as the token the failed deploy's journal already held. Pinned so
+# a provider or an arm that started re-persisting a resolved replay bag here
+# cannot re-open the sub-floor plaintext silently.
+RB_STATE_PORT=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.DB_PORT_LITERAL // empty')
+if [ "${RB_STATE_PORT}" != "${EXPECTED_DB_PORT_LITERAL_EXPR}" ]; then
+  echo "FAIL: post-rollback state DB_PORT_LITERAL is not its own embedded expression (#2516): $(mask "${RB_STATE_PORT}")" >&2
+  exit 1
+fi
+echo "    OK: post-rollback state kept DB_PORT_LITERAL's OWN embedded expression (two-character secret)"
+if grep -qF "${EXPECTED_DB_PORT_LITERAL}" <<< "${RB_STATE}"; then
+  echo "FAIL: post-rollback state carries the framed two-character secret (#2516)" >&2
+  exit 1
+fi
 case "${RB_STATE_PW}" in
   '{{resolve:secretsmanager:'*) echo "    OK: post-rollback state kept the SECRET_PASSWORD expression" ;;
   *) echo "FAIL: post-rollback state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_PW}")" >&2; exit 1 ;;
@@ -2216,6 +2636,18 @@ if [ "${G_DSN_LITERAL}" = "${EXPECTED_DB_DSN_LITERAL_EXPR}" ]; then
   echo "    OK: re-captured DB_DSN_LITERAL kept its embedded expression (empty-map positional invariant)"
 else
   echo "FAIL: re-captured DB_DSN_LITERAL is not its embedded expression: $(mask "${G_DSN_LITERAL}")" >&2
+  deploy_redaction_fail=1
+fi
+# The two-character twin on the same EMPTY-map readback path (issue #2516).
+# Same invariant, not a #2516 fence: the resource is UNCHANGED this deploy, so
+# there is no pair for the mark to pair with, and the spelling comes from the
+# positional refusal substituting the source leaf whole. Its #2516 fences are
+# Guard 3c (the CREATE deploy's own readback) and Phase 1e.
+G_PORT_LITERAL=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_PORT_LITERAL // empty')
+if [ "${G_PORT_LITERAL}" = "${EXPECTED_DB_PORT_LITERAL_EXPR}" ]; then
+  echo "    OK: re-captured DB_PORT_LITERAL kept its embedded expression (empty-map positional invariant, two-character secret)"
+else
+  echo "FAIL: re-captured DB_PORT_LITERAL is not its embedded expression: $(mask "${G_PORT_LITERAL}")" >&2
   deploy_redaction_fail=1
 fi
 

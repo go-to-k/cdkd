@@ -34,6 +34,7 @@ import {
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import {
+  markSameGenerationBag,
   redactSecretsForState,
   mergeResolvedPairs,
   scrubResourceRecord,
@@ -1161,6 +1162,11 @@ export class DeployEngine {
     this.perResourceSecrets = new Map();
     this.noEchoAttributeResources = new Map();
     this.perResourceTemplateProps = new Map();
+    // Issue #2516: reset with the other per-deploy maps. A reused engine
+    // whose next deploy fails before its own attempted bag is recorded would
+    // otherwise journal the PREVIOUS run's bag against today's template and
+    // pairs — and now mark it as today's.
+    this.attemptedResolvedProps = new Map();
     this.outputSecrets = new Map();
     this.outputsTemplateSource = {};
     this.outputsSourceUsable = true;
@@ -1568,8 +1574,17 @@ export class DeployEngine {
         next.properties = redactSecretsForState(next.properties, ownSecrets, templateProps);
       }
       if (next.attemptedProperties) {
+        // Issue #2516: a FAILED op's attempted bag is the resolver's own
+        // output of today's template — the provider threw, so
+        // `propertiesToRecord` never marked it — and this journal is a
+        // persisted S3 artifact of its own. Marked as a COPY, the no-change
+        // re-check's pattern. Nothing reads the original after this journal
+        // is written (a `--revert-failed` replay re-resolves the journaled
+        // bag into a new object), so the copy guards a future reader rather
+        // than a present one — stated so the choice is not mistaken for a
+        // pinned behaviour.
         next.attemptedProperties = redactSecretsForState(
-          next.attemptedProperties,
+          markSameGenerationBag({ ...next.attemptedProperties }),
           ownSecrets,
           templateProps
         );
@@ -1705,7 +1720,41 @@ export class DeployEngine {
       const observed = resolved[i];
       const target = stateResources[logicalId];
       if (target && observed !== undefined) {
-        target.observedProperties = observed;
+        // Issue #2516: the readback is THIS pass's own, taken from the
+        // resource it just wrote, so the object is marked same-generation
+        // before it is installed — the persist choke point walks this bag
+        // separately from `properties`, against today's template, and a mark
+        // on `properties` alone would leave the readback of an embedded 1-3
+        // character secret in plaintext. The mark is one half of the
+        // evidence: the arm also needs a resolved pair for the source token
+        // AND the readback's middle to EQUAL what that pair recorded. An
+        // UNCHANGED resource's auto-refresh has an empty map and no pair. A
+        // resource the diff called UPDATE and the re-check then skipped is
+        // refreshed with today's pair in its map — and there the re-check has
+        // just proven the stored record already holds the token at that leaf,
+        // so a readback carrying today's plaintext converges on the same
+        // answer rather than fabricating one.
+        //
+        // A COPY, like the two never-installed sites -- the journal's
+        // `attemptedProperties` above and the no-change re-check below: `observed` is
+        // whatever `provider.readCurrentState` returned, and the
+        // schema-upgrade auto-refresh hands that method the PREVIOUS
+        // generation's `resource.properties` as its 4th argument -- so a
+        // provider returning that argument BY IDENTITY would put a permanent
+        // same-generation mark on a previous-generation object still
+        // installed on the record, which is the fabrication this mark's own
+        // contract forbids. No provider under `src/provisioning/` does that
+        // today (grepped at PR 2753 review), but the contract is delegated to
+        // ~100 implementations with no guard, and the copy costs one spread.
+        //
+        // Pinned from outside by walking the object the provider handed back
+        // through `redactSecretsForState` AFTER the deploy, under the DEFAULT
+        // rules: those make no generation claim of their own, so the mark on
+        // the object is what decides whether a sub-floor middle becomes the
+        // token. Under `STATE_SOURCED_READBACK_RULES` it would not decide --
+        // that constant claims the generation itself -- which is why the
+        // test does not reuse the persist path's own rules.
+        target.observedProperties = markSameGenerationBag({ ...observed });
       }
     }
   }
@@ -4579,9 +4628,25 @@ export class DeployEngine {
         // deploy short-circuits before any provider is chosen — the auto-route
         // never runs and the property still does not reach AWS. This is the
         // second gate the healing path has to clear, after the diff's own.
+        //
+        // Issue #2516: the compared bag is a marked shallow COPY of the resolved
+        // bag. The stored side holds an embedded 1-3 character secret as its
+        // token once a deploy under this fix has written it, and the desired
+        // side can only match that spelling if the walk knows the bag is this
+        // pass's own — otherwise the leaf reads `port:42` against
+        // `port:{{resolve:...}}` and the resource takes a redundant UPDATE on
+        // every deploy. A COPY rather than `resolvedProps` itself, because the
+        // mark is permanent on its object and the provider call below has not
+        // happened yet: `propertiesToRecord` decides, after it, whether the
+        // object state holds earns the mark.
         if (
-          JSON.stringify(redactSecretsForState(resolvedProps, updateSecrets, desiredProps)) ===
-          JSON.stringify(currentPropsAsWritten)
+          JSON.stringify(
+            redactSecretsForState(
+              markSameGenerationBag({ ...resolvedProps }),
+              updateSecrets,
+              desiredProps
+            )
+          ) === JSON.stringify(currentPropsAsWritten)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
           // `UpdateReplacePolicy` may have flipped without any AWS-side
@@ -6305,9 +6370,33 @@ export class DeployEngine {
     resourceType: string,
     provisionedBy: 'sdk' | 'cc-api'
   ): Record<string, unknown> {
-    const effective = result.effectiveProperties ?? desiredProperties;
-    if (provisionedBy !== 'sdk') return effective;
-    return withoutSilentDropProperties(resourceType, effective);
+    // Issue #2516: the desired bag is THIS pass's own resolution of today's
+    // template and the provider just succeeded with it, so the object state
+    // will hold is marked same-generation — the one fact the persist choke
+    // point needs to write an embedded 1-3 character secret as its token
+    // rather than leaving it in plaintext below the value scan's needle
+    // floor. An `effectiveProperties` replacement is NOT marked: a provider
+    // may carry previous-state values into it (the DynamoDB global-table
+    // provider restores the previous GSIs and billing mode), so an
+    // object-level mark on it would vouch for leaves this pass never
+    // resolved. Such a bag keeps the residual, stated on
+    // `positionByEmbeddedSpan`.
+    //
+    // The mark goes on AFTER the route's silent-drop narrowing (issue #2750),
+    // never before: that helper returns a NEW object whenever it drops a key,
+    // so a mark taken first would sit on an object the record never holds.
+    // Narrowing a bag this pass resolved leaves it this pass's own, so the
+    // mark is still the engine's to make.
+    if (result.effectiveProperties) {
+      return provisionedBy === 'sdk'
+        ? withoutSilentDropProperties(resourceType, result.effectiveProperties)
+        : result.effectiveProperties;
+    }
+    const written =
+      provisionedBy === 'sdk'
+        ? withoutSilentDropProperties(resourceType, desiredProperties)
+        : desiredProperties;
+    return markSameGenerationBag(written);
   }
 
   /**
@@ -7070,7 +7159,20 @@ export class DeployEngine {
       this.outputsTemplateSource[outputKey] = output.Value;
     }
 
-    return outputs;
+    // Issue #2516: this bag is THIS pass's own resolution of today's
+    // `Outputs`, so it is marked same-generation for `redactOutputs` — a
+    // literal `CfnOutput` embedding a token whose value is 1-3 characters is
+    // the same leaf shape as a resource property and takes the same arm.
+    // Marked here, at the one producer, rather than at the two callers. The
+    // THROWING failure path (`--strict-getatt`) never reaches this line and
+    // walks `currentState.outputs`, the previous deploy's bag, which stays
+    // unmarked. A per-output failure caught inside the loop above DOES reach
+    // it: the partial bag it marks is still this pass's own resolution, and
+    // the no-change caller then discards it for `persistedOutputs` — again the
+    // previous deploy's bag, unmarked — so nothing this pass did not produce
+    // ever carries the mark. `cdkd scrub`'s outputs walk never calls this
+    // method at all.
+    return markSameGenerationBag(outputs);
   }
 
   private buildDisplayOutputs(

@@ -1,10 +1,13 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vite-plus/test';
 import {
   clearRecordedSecretExpressions,
+  markSameGenerationBag,
   mergeResolvedPairs,
   recordResolvedPair,
   redactSecretsForState,
   SECRET_MASK,
+  TEMPLATE_DERIVED_RULES,
+  TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 
@@ -60,23 +63,253 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
     });
   }
 
-  it('leaves an embedded 1-3 character secret to the value scan, which leaves it alone', () => {
-    // The scan's substring arm ignores needles shorter than four characters,
-    // and below that floor a rewrite would be a NEW claim on a bag this pass
-    // did not necessarily produce (a previous generation's), so the arm keeps
-    // the scan's floor and the documented residual stands. Issue #2516
-    // tracks closing it with a bound that proves the bag's generation; this
-    // case pins the residual until then, so that closing it is a deliberate
-    // change and not a side effect.
-    const secrets: RecordedSecretValues = new Map([['ab', NAME_V1]]);
-    recordResolvedPair(secrets, NAME, 'ab');
-    recordResolvedPair(secrets, NAME_V1, 'ab');
-    const leaf = `${PREFIX}ab${SUFFIX}`;
+  for (const [label, rules] of [
+    ['the template-DERIVED rules (the deploy persist walk)', TEMPLATE_DERIVED_RULES],
+    ['the template-SOURCED rules (a scrub / observed walk)', TEMPLATE_SOURCED_RULES],
+  ] as const) {
+    it(`leaves an embedded 1-3 character secret to the value scan on a bag NOBODY marked, under ${label}`, () => {
+      // The scan's substring arm ignores needles shorter than four characters,
+      // and below that floor a rewrite would be a NEW claim on a bag this pass
+      // did not necessarily produce (a previous generation's record, an old
+      // readback, a scrub walk), so without the engine's same-generation mark
+      // the arm keeps the scan's floor (issue #2516). The plaintext stays —
+      // pinned as equality with the scan's own answer, so "fell through" is
+      // what is asserted rather than "did something else". The rules
+      // constant is NOT what decides: neither one claims the bag's generation.
+      const secrets: RecordedSecretValues = new Map([['ab', NAME_V1]]);
+      recordResolvedPair(secrets, NAME, 'ab');
+      recordResolvedPair(secrets, NAME_V1, 'ab');
+      const leaf = `${PREFIX}ab${SUFFIX}`;
 
-    const persisted = redactSecretsForState({ Dsn: leaf }, secrets, { Dsn: EMBEDDED_SOURCE });
+      const persisted = redactSecretsForState(
+        { Dsn: leaf },
+        secrets,
+        { Dsn: EMBEDDED_SOURCE },
+        rules
+      );
 
-    expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
-    expect(persisted).toEqual({ Dsn: leaf });
+      expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
+      expect(persisted).toEqual({ Dsn: leaf });
+    });
+  }
+
+  describe('writes an embedded 1-3 character secret as its token on a bag the engine marked same-generation (issue #2516)', () => {
+    // The mark is the second half of the evidence: the pair says THIS pass
+    // resolved the token to the middle, the mark says THIS pass produced the
+    // bag. Below the scan's needle floor the scan makes no claim, so only the
+    // two together license `prefix + token + suffix`.
+    for (const middle of ['a', 'ab', 'abc'] as const) {
+      it(`for a ${middle.length}-character middle, alone`, () => {
+        const secrets: RecordedSecretValues = new Map([[middle, NAME]]);
+        recordResolvedPair(secrets, NAME, middle);
+        const leaf = `${PREFIX}${middle}${SUFFIX}`;
+        const bag = markSameGenerationBag({ Dsn: leaf });
+
+        // Premise: the scan itself leaves the leaf alone below its floor.
+        expect(redactSecretsForState(leaf, secrets)).toBe(leaf);
+        expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({
+          Dsn: EMBEDDED_SOURCE,
+        });
+      });
+
+      for (const [label, winner] of [
+        ['the versioned sibling won the map slot', NAME_V1],
+        ['the embedded token itself won the map slot', NAME],
+      ] as const) {
+        it(`for a ${middle.length}-character middle beside a whole-value sibling sharing the plaintext, when ${label}`, () => {
+          // The sibling decides only which expression survives the value-keyed
+          // map; the embedded leaf is written from its OWN token, never the
+          // survivor — a mutant writing `prefix + survivor + suffix` fails the
+          // first order.
+          const secrets: RecordedSecretValues = new Map([[middle, winner]]);
+          recordResolvedPair(secrets, NAME, middle);
+          recordResolvedPair(secrets, NAME_V1, middle);
+          const source = { Whole: NAME_V1, Dsn: EMBEDDED_SOURCE };
+          const bag = markSameGenerationBag({ Whole: middle, Dsn: `${PREFIX}${middle}${SUFFIX}` });
+
+          expect(redactSecretsForState(bag, secrets, source)).toEqual({
+            Whole: NAME_V1,
+            Dsn: EMBEDDED_SOURCE,
+          });
+        });
+      }
+    }
+
+    it('is read for the object handed in and threaded down the walk — a sub-bag walked on its own is not marked', () => {
+      const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
+      recordResolvedPair(secrets, NAME, 'ab');
+      const leaf = `${PREFIX}ab${SUFFIX}`;
+      const bag = markSameGenerationBag({ Env: { Vars: { Dsn: leaf } } });
+      const source = { Env: { Vars: { Dsn: EMBEDDED_SOURCE } } };
+
+      // Threaded: the leaf three levels down takes the arm.
+      expect(redactSecretsForState(bag, secrets, source)).toEqual({
+        Env: { Vars: { Dsn: EMBEDDED_SOURCE } },
+      });
+      // Not inherited: the same object's sub-bag, walked as the top level, is
+      // a different object and keeps the scan's answer.
+      expect(redactSecretsForState(bag.Env, secrets, source.Env)).toEqual({
+        Vars: { Dsn: leaf },
+      });
+    });
+
+    it('is threaded through BOTH array descents — keyed by an identity field, and positional', () => {
+      // The object walk is one of four recursion sites in `redactByPath`; the
+      // two array arms are the others a resource bag reaches (ECS
+      // `Environment[]` keyed by `Name`, a plain string list positionally).
+      const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
+      recordResolvedPair(secrets, NAME, 'ab');
+      const leaf = `${PREFIX}ab${SUFFIX}`;
+      const keyed = markSameGenerationBag({ Env: [{ Name: 'DSN', Value: leaf }] });
+      const positional = markSameGenerationBag({ List: [leaf] });
+
+      expect(
+        redactSecretsForState(keyed, secrets, { Env: [{ Name: 'DSN', Value: EMBEDDED_SOURCE }] })
+      ).toEqual({ Env: [{ Name: 'DSN', Value: EMBEDDED_SOURCE }] });
+      expect(redactSecretsForState(positional, secrets, { List: [EMBEDDED_SOURCE] })).toEqual({
+        List: [EMBEDDED_SOURCE],
+      });
+      // ...and the keyed arm's UNPAIRED-element positional fallback: the bag
+      // element's identity is not in the source, the lengths agree and every
+      // pairing sits at its own index, so it takes `source[i]` — through the
+      // same threaded flag.
+      const fallback = markSameGenerationBag({
+        Env: [
+          { Name: 'HOST', Value: 'db.internal' },
+          { Name: 'RENAMED', Value: leaf },
+        ],
+      });
+      expect(
+        redactSecretsForState(fallback, secrets, {
+          Env: [
+            { Name: 'HOST', Value: 'db.internal' },
+            { Name: 'DSN', Value: EMBEDDED_SOURCE },
+          ],
+        })
+      ).toEqual({
+        Env: [
+          { Name: 'HOST', Value: 'db.internal' },
+          { Name: 'RENAMED', Value: EMBEDDED_SOURCE },
+        ],
+      });
+    });
+
+    it('does NOT survive a copy of the bag — the mark is on the object, not on its contents', () => {
+      const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
+      recordResolvedPair(secrets, NAME, 'ab');
+      const leaf = `${PREFIX}ab${SUFFIX}`;
+      const bag = markSameGenerationBag({ Dsn: leaf });
+      const copy = { ...bag };
+
+      expect(redactSecretsForState(copy, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({ Dsn: leaf });
+      // ...and a copy of the MAP still refuses too: the pair is per map
+      // instance, the mark per bag object, and both are needed.
+      expect(redactSecretsForState(bag, new Map(secrets), { Dsn: EMBEDDED_SOURCE })).toEqual({
+        Dsn: leaf,
+      });
+    });
+
+    it('still needs the pair: a marked bag whose source token this pass did not resolve keeps the scan\'s answer', () => {
+      // A mark alone says the bag is this pass's; it says nothing about what
+      // the token resolved to. Without a pair the middle is unverified.
+      const secrets: RecordedSecretValues = new Map([['ab', NAME_V1]]);
+      recordResolvedPair(secrets, NAME_V1, 'ab');
+      const leaf = `${PREFIX}ab${SUFFIX}`;
+      const bag = markSameGenerationBag({ Dsn: leaf });
+
+      expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({ Dsn: leaf });
+    });
+
+    for (const [label, first, second] of [
+      ['the matching value was recorded FIRST', 'ab', 'xy'],
+      ['the matching value was recorded LAST', 'xy', 'ab'],
+    ] as const) {
+      it(`for an expression this pass saw resolve to TWO values, even on a marked bag (${label})`, () => {
+        // Both orders, as for the unmarked twin: with the matching value LAST a
+        // last-write-wins mutant of the conflict recording would still vouch
+        // for the middle, and only this order catches it.
+        const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
+        recordResolvedPair(secrets, NAME, first);
+        recordResolvedPair(secrets, NAME, second);
+        const leaf = `${PREFIX}ab${SUFFIX}`;
+        const bag = markSameGenerationBag({ Dsn: leaf });
+
+        expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({
+          Dsn: leaf,
+        });
+      });
+    }
+
+    it('for an EMPTY middle on a marked bag — the frame refusal is load-bearing here', () => {
+      // With the scan-equivalence bound relaxed for a marked bag, `scanned
+      // === bag` holds for `prefix + suffix`. The evidence is hand-built in
+      // BOTH halves — a pair saying the token resolved to '' AND a map entry
+      // for '' (the resolver seam produces neither; without the entry the `<`
+      // mutant of the frame refusal, which runs FIRST, is still caught by the
+      // `survivor` guard downstream, so the frame refusal would be unpinned).
+      // Under that evidence `singleSpanFrame`'s `<=` is what keeps an empty
+      // middle from being written as the token; the `<` mutant admits it.
+      const secrets = collapsedOnto(NAME_V1);
+      secrets.set('', NAME);
+      recordResolvedPair(secrets, NAME, '');
+      const leaf = `${PREFIX}${SUFFIX}`;
+      const bag = markSameGenerationBag({ Dsn: leaf });
+
+      expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({ Dsn: leaf });
+    });
+
+    describe('keeps refusing the three interference cases with the mark present', () => {
+      // Each makes the scan rewrite SOMETHING, so `scanned === bag` is false
+      // and the relaxed arm does not fire; the answer is the scan's, as it is
+      // on an unmarked bag. A mutant testing the middle's LENGTH instead of
+      // the scan's silence fails all three.
+      function marked(leaf: string) {
+        return markSameGenerationBag({ Dsn: leaf });
+      }
+
+      it('a WHOLE leaf that is itself another recorded plaintext', () => {
+        const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
+        recordResolvedPair(secrets, NAME, 'ab');
+        const leaf = `${PREFIX}ab${SUFFIX}`;
+        const OTHER = '{{resolve:secretsmanager:whole/leaf:SecretString:dsn}}';
+        secrets.set(leaf, OTHER);
+        recordResolvedPair(secrets, OTHER, leaf);
+
+        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE });
+
+        expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
+        expect(persisted).toEqual({ Dsn: OTHER });
+      });
+
+      it('a literal frame that ITSELF equals a recorded plaintext', () => {
+        const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
+        recordResolvedPair(secrets, NAME, 'ab');
+        const OTHER = '{{resolve:secretsmanager:frame/leaf:SecretString:host}}';
+        secrets.set(SUFFIX, OTHER);
+        recordResolvedPair(secrets, OTHER, SUFFIX);
+        const leaf = `${PREFIX}ab${SUFFIX}`;
+
+        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE });
+
+        expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
+        expect(persisted).toEqual({ Dsn: `${PREFIX}ab${OTHER}` });
+      });
+
+      it('a needle that starts in the prefix and overlaps the middle', () => {
+        const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
+        recordResolvedPair(secrets, NAME, 'ab');
+        const overlapping = 'app-svc:a';
+        const OTHER = '{{resolve:secretsmanager:overlap/leaf:SecretString:v}}';
+        secrets.set(overlapping, OTHER);
+        recordResolvedPair(secrets, OTHER, overlapping);
+        const leaf = `${PREFIX}ab${SUFFIX}`;
+
+        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE });
+
+        expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
+        expect(persisted).toEqual({ Dsn: `postgres://${OTHER}b${SUFFIX}` });
+      });
+    });
   });
 
   it('carries the evidence into the outputs bag through mergeResolvedPairs, and nowhere else', () => {
@@ -302,13 +535,13 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
 
     it('for an EMPTY middle, even with hand-recorded evidence that the token resolved to nothing', () => {
       // The resolver seam never records an empty resolution (`resolved` is
-      // tested truthily), so under the real producer this is unreachable. Under
-      // the CURRENT bound the frame refusal (`<=`) is not even load-bearing —
+      // tested truthily), so under the real producer this is unreachable. On
+      // an UNMARKED bag the frame refusal (`<=`) is not even load-bearing —
       // an empty middle has no map entry, so `survivor` refuses it too, and
       // the `<` mutant is equivalent. This case exists so the invariant (an
-      // empty middle is never positioned) has a pin of its own: the follow-up
-      // that relaxes the scan-equivalence bound (issue #2516) would make
-      // the frame refusal the ONLY thing standing here.
+      // empty middle is never positioned) has a pin of its own; its MARKED
+      // twin above (issue #2516) is where the frame refusal became the only
+      // thing standing.
       const secrets = collapsedOnto(NAME_V1);
       recordResolvedPair(secrets, NAME, '');
       const leaf = `${PREFIX}${SUFFIX}`;
