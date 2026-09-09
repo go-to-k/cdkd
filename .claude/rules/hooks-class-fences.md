@@ -14,8 +14,8 @@ paths:
 A class fence's subject is EVERY hook at once rather than one of them. Per-hook
 cases are necessary and cannot stop the hook written next month by someone
 copying a neighbour, and this repo has shipped several fences that went inert by
-deriving their population from the very thing they were checking. Both fences
-below therefore take their population from what the repo REGISTERS in
+deriving their population from the very thing they were checking. Every fence
+below therefore takes its population from what the repo REGISTERS in
 `.claude/settings.json` -- never from the directory listing, which iterates the
 real set by coincidence, nor from the defect.
 

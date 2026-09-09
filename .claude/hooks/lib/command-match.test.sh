@@ -2450,6 +2450,232 @@ check 'a balanced substitution body is still seen' 0 \
 check 'a mis-closed span with NO verb in it does not match' 1 \
   "$COMMIT" "$(printf 'echo "$(echo %s)%s ; echo done)"' "'" "'")"
 
+# --- gate_missing_const: the shape guard's own cases -----------------------
+#
+# This helper had no cases at all until review round 18 pointed out that its
+# two bugfixes -- the name-shape rejection and the whitespace-only label --
+# were unasserted, in the PR whose thesis is that unasserted text is how a
+# defect survives revisions. It is not driven through a hook here because the
+# question is the helper's own answer, not any gate's exit code.
+# THE CALL RUNS IN A SUBSHELL WITH A COMPLETION SENTINEL, and that is not
+# defensive styling. A malformed name reaches `${!name}`, which bash treats as a
+# FATAL error in a non-interactive shell: the frame dies, `|| true` never runs
+# because there is no command left to run it, and NEITHER counter is
+# incremented -- the case does not fail, it VANISHES. Measured on the first
+# revision of this block: reverting the shape guard reported `Pass: 632 Fail: 1`
+# where the file has ten cases here, eight of them silently gone, and deleting
+# the one surviving case made the whole suite GREEN over a live regression.
+# A test that cannot fail is worse than no test: it reads as coverage.
+#
+# So the subshell isolates the death, and the sentinel proves the call returned.
+# No sentinel means the helper killed its shell, which is itself a failure --
+# `gate_missing_const` runs at every hook load and must never do that.
+__gmc() { # <expected GATE_MISSING_CONSTS> <desc> <name...>
+  local want="$1" desc="$2"; shift 2
+  local got
+  got=$(GATE_MISSING_CONSTS=""; gate_missing_const "$@" >/dev/null 2>&1; printf '%s|RAN' "$GATE_MISSING_CONSTS")
+  case "$got" in
+    *'|RAN')
+      got="${got%|RAN}"
+      if [ "$got" = "$want" ]; then
+        pass=$((pass + 1)); printf 'ok   %s\n' "$desc"
+      else
+        fail=$((fail + 1))
+        fail_log="${fail_log}FAIL $desc: wanted [$want] got [$got]\n"
+      fi
+      ;;
+    *)
+      fail=$((fail + 1))
+      fail_log="${fail_log}FAIL $desc: gate_missing_const KILLED its shell -- it runs at every hook load and must not\n"
+      ;;
+  esac
+}
+__gmc_ran=$((pass + fail))
+
+# A name bash would not accept is REPORTED, not expanded. `${!n}` on a name
+# carrying an array subscript EXECUTES it, and a quoted-together argument makes
+# bash 5.x abort the loop so every later name goes unchecked -- measured, that
+# turned a `branch-gate` refusal into rc=1, a PASS.
+__gmc 'GATE_A GATE_B(not-a-variable-name)' 'a quoted-together pair is reported, not looked up' 'GATE_A GATE_B'
+__gmc '9BAD(not-a-variable-name)' 'a name starting with a digit is reported' '9BAD'
+# The label keeps the WHOLE offending name -- a truncated one would not tell the
+# author which argument to fix.
+__gmc 'GATE_A[$(exit 7)](not-a-variable-name)' 'a name carrying a subscript is reported verbatim, and nothing runs' 'GATE_A[$(exit 7)]'
+
+# The malformed label may not swallow a name that follows it. The dedup keyed on
+# a space-delimited list, and a label containing a space matched a later name
+# inside itself; keying on newline moved the collision to newline-carrying
+# names, so the label is flattened AND the delimiter is a newline.
+__gmc 'GATE_A GATE_B(not-a-variable-name) GATE_A' 'a space-carrying label does not swallow a later name' 'GATE_A GATE_B' 'GATE_A'
+__gmc 'GATE_A GATE_B(not-a-variable-name) GATE_A' 'a newline-carrying label does not swallow one either' "$(printf 'GATE_A\nGATE_B')" 'GATE_A'
+
+# WHITESPACE-only, not space-only: flattening turns a newline into a space, so
+# the `(empty)` fallback has to test the whole class or a tab- or CR-only name
+# still reports as invisible whitespace.
+__gmc '(empty)(not-a-variable-name)' 'an empty name reports as (empty)' ''
+__gmc '(empty)(not-a-variable-name)' 'a newline-only name reports as (empty)' "$(printf '\n')"
+__gmc '(empty)(not-a-variable-name)' 'a tab-only name reports as (empty)' "$(printf '\t')"
+__gmc '(empty)(not-a-variable-name)' 'a space-only name reports as (empty)' ' '
+
+# And the control: a well-formed name the library DOES define reports nothing,
+# so the cases above are not passing because everything is reported.
+__gmc '' 'a defined constant is not reported' 'GATE_FLAGS'
+
+# THE FOUR CONTRACTS THE HELPER STATES AND NOTHING ASSERTED. Review round 22
+# broke each in turn and the whole repo stayed green -- the same
+# asserted-by-CONSTRUCTION shape this file has been closing all PR, one layer
+# in. Each case below was verified by making the mutation it names.
+
+# 1. The truncation guard. `[ -z "${GATE_LIB_BASE_CONSTS:-}" ]` -> `if false`
+#    left 650/0: with the list empty the shipped code returns 1 naming
+#    GATE_LIB_BASE_CONSTS, the mutant returns 0 reporting NOTHING -- the "base
+#    half passes vacuously" its own comment names.
+__gmc_saved_base="$GATE_LIB_BASE_CONSTS"
+GATE_LIB_BASE_CONSTS=""
+__gmc 'GATE_LIB_BASE_CONSTS' 'an empty base list is itself reported, not silently skipped' 'GATE_FLAGS'
+GATE_LIB_BASE_CONSTS="$__gmc_saved_base"
+
+# 2. NON-EMPTY rather than merely SET. `${!n:-}` -> `${!n+x}` left everything
+#    green, and this PR's own `${BASE:-}` change is what produces the state:
+#    with `GATE_FLAGS=` gone, `GATE_GH_C="${GATE_FLAGS:-}"` is set-but-EMPTY,
+#    and an empty ERE matches everything -- the gate fires on every command
+#    instead of refusing.
+__gmc_probe_empty=""
+__gmc '__gmc_probe_empty' 'a name that is SET but empty is reported, not accepted' '__gmc_probe_empty'
+
+# 3. Plain duplicate. The two cases above exercise the label COLLISION; the
+#    ordinary "same name twice" path was untested, and breaking the membership
+#    test left it green.
+__gmc 'GATE_NOPE' 'the same missing name twice is reported once' 'GATE_NOPE' 'GATE_NOPE'
+
+# 4. `local LC_ALL=C`, the helper's only shell-divergence guard: the shape test
+#    is a `case` glob and `[!A-Za-z0-9_]` is a RANGE, so what falls inside it is
+#    locale-dependent -- under a UTF-8 locale bash 3.2.57 ACCEPTS an accented
+#    name as an identifier while 5.3.9 rejects it.
+#
+#    THE CASE ESTABLISHES THE LOCALE, it does not inherit one, and that is the
+#    correction review round 22 forced. The first version simply called the
+#    helper: measured under the ambient `LANG=en_US.UTF-8` that `run-tests.sh`
+#    and CI actually pass down, deleting the guard left the suite GREEN -- the
+#    case reddened in 1 of 8 environment x shell cells and none that the runner
+#    produces. Exporting `LC_ALL` for the call is what makes the guard
+#    observable, because that is the variable it shadows.
+#
+#    The POSITIVE CONTROL is not optional: on a box with no UTF-8 locale the
+#    export is inert and this case would pass for the wrong reason forever, the
+#    `feedback_lint_must_prove_it_sees_input` shape. If none is available the
+#    case FAILS and says so, rather than going quiet.
+#
+#    The name is built with `printf` rather than written as a literal so
+#    `check-pr-non-english-text.ts` stays quiet.
+__gmc_utf8=""
+for __l in en_US.UTF-8 C.UTF-8 en_GB.UTF-8 UTF-8; do
+  if [ "$(LC_ALL="$__l" locale charmap 2>/dev/null)" = "UTF-8" ]; then __gmc_utf8="$__l"; break; fi
+done
+if [ -z "$__gmc_utf8" ]; then
+  # BOTH counters move: `fail` because the control could not discriminate, and
+  # `pass` because the accented case below did not run and the block guard
+  # counts cases, not verdicts. Without the second the guard ALSO fires
+  # ("a case vanished"), which misdirects on the one box this control exists
+  # for -- a C-only runner -- by blaming the harness for the environment.
+  fail=$((fail + 1))
+  pass=$((pass + 1))
+  fail_log="${fail_log}FAIL no UTF-8 locale available, so the LC_ALL guard case cannot discriminate -- it would pass whether or not the guard exists\n"
+else
+  pass=$((pass + 1)); printf 'ok   a UTF-8 locale (%s) is available, so the next case can discriminate\n' "$__gmc_utf8"
+  __gmc_accent="$(printf 'GATE_\303\251BAD')"
+  LC_ALL="$__gmc_utf8" __gmc "$__gmc_accent(not-a-variable-name)" \
+    'an accented name is rejected under a UTF-8 locale, on either shell' "$__gmc_accent"
+fi
+
+# A FLOOR ON THIS BLOCK ALONE, and the end marker is taken HERE, before the
+# shape cases below. `CASE_FLOOR` is evaluated in the middle of the file,
+# upstream of this block, so a block that shrinks below it is invisible -- which
+# is exactly how eight vanished cases went unnoticed. The first revision of this
+# floor took the end marker AFTER the shape loop, so it counted 12 against a
+# `-lt 10` test and carried two cases of slack: measured, deleting TWO `__gmc`
+# cases left it printing `ran all 10 cases` over a green suite. A floor that
+# spans two populations is not a floor.
+#
+# `-ne`, not `-lt`, and that is the second half. A one-sided floor re-opens the
+# same slack the moment the block GROWS: measured, adding an 11th case makes it
+# print `ran all 11` green, and deleting an original then reports `ran all 10`
+# green -- the identical failure arriving by the other direction. Equality
+# forces whoever adds a case to bump the count with it, which is the only
+# spelling that cannot drift.
+__gmc_count=$((pass + fail - __gmc_ran))
+if [ "$__gmc_count" -ne 15 ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gate_missing_const block ran $__gmc_count cases, expected exactly 15 -- a case vanished, or one was added without bumping the count\n"
+else
+  pass=$((pass + 1)); printf 'ok   gate_missing_const block ran all %s cases\n' "$__gmc_count"
+fi
+__gmc_tail_start=$((pass + fail))
+
+# THE TWO MESSAGES THIS HELPER EMITS, held to the same shape rule as the hook
+# refusals. Both fire while EVERY Bash call is refused, so an indented recipe
+# line in either would offer a command that cannot be run -- the defect that
+# took three revisions to close in the hook-side twin. `main-tree-edit-gate`'s
+# suite asserts the shape for the two refusals that hook OWNS; these two belong
+# here, where the helper lives, and review round 19 found the soft one outside
+# every scan. The assertion is TOTAL -- no line may begin with whitespace --
+# because the enumerating version was walked past by six spellings.
+# CONTENT, not only shape. Review round 20 measured that deleting the soft
+# note's three prose lines left this suite at 644/0 AND `restore-backup.test.sh`
+# at 17/0 -- its only content assertion is satisfied by the first line alone. A
+# shape fence over an empty message passes; these needles are what make the
+# shape fence be about something. The last one is the route: the soft note ended
+# "Restore or finish the library" full stop, which is the same unfollowable
+# advice the hard arm took three revisions to shed -- prose rather than an
+# indented recipe, so the shape scan could never have caught it.
+__msg_hard=$( (gate_require_const GATE_NO_SUCH_CONST_PROBE) 2>&1 >/dev/null || true )
+__msg_soft=$( gate_require_const_soft GATE_NO_SUCH_CONST_PROBE 2>&1 >/dev/null || true )
+for __m in hard soft; do
+  eval "__msg_body=\$__msg_$__m"
+  if [ -z "$__msg_body" ]; then
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL the $__m arm of gate_require_const emitted nothing -- the shape case would pass over a message it never saw\n"
+  elif printf '%s\n' "$__msg_body" | grep -qE '^[[:space:]]'; then
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL the $__m refusal indents a line; every Bash call is refused in that state, so a recipe cannot be run -- advise a TOOL in running prose\n"
+  else
+    pass=$((pass + 1)); printf 'ok   the %s refusal indents no line\n' "$__m"
+  fi
+done
+
+# ONE NEEDLE PER LINE of the note's body, verified by deleting each line and
+# watching exactly one case redden. The first attempt had four needles for five
+# lines and one of them sat on the line ABOVE the one it was meant to cover, so
+# deleting the last line left the suite green -- the needle asserted a line it
+# was not about, which is the defect this block exists to prevent one level up.
+for __n in "so this NON-BLOCKING hook is skipping rather than refusing" \
+           "recognise the command" \
+           "did not happen" \
+           "no Bash spelling" \
+           "refuse every Bash call in this state"; do
+  case "$__msg_soft" in
+    *"$__n"*) pass=$((pass + 1)); printf 'ok   the soft note says: %s\n' "$__n" ;;
+    *) fail=$((fail + 1))
+       fail_log="${fail_log}FAIL the soft note must say: $__n\n" ;;
+  esac
+done
+
+# A CARDINALITY GUARD ON THE TAIL, for the same reason the block above has one
+# and by the same measurement. `CASE_FLOOR` is evaluated far upstream and the
+# block floor ends before these run, so nothing counted the two shape cases or
+# the five needles: measured, dropping `soft` from the shape loop reports 648/0
+# in silence -- the round-19 soft-shape fence gone -- and dropping the last
+# needle does the same. Cases asserted by construction rather than by mutation
+# is the defect this whole file has been chasing; these were the last instance
+# of it in here.
+__gmc_tail=$((pass + fail - __gmc_tail_start))
+if [ "$__gmc_tail" -ne 7 ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL the helper-message block ran $__gmc_tail cases, expected exactly 7 (2 shape + 5 needles) -- a case vanished, or one was added without bumping the count\n"
+else
+  pass=$((pass + 1)); printf 'ok   the helper-message block ran all 7 cases\n'
+fi
+
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
   echo

@@ -267,6 +267,23 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   exit 0
 fi
 
+# go-to-k/cdkd#2729: the guard above covers the FUNCTIONS this hook calls and
+# CANNOT see a missing CONSTANT. This hook reads none of its OWN, so the call
+# takes no arguments and asks only about the library's -- the shared walk reads
+# several of them BARE inside function bodies, where the `${X:-}` defaults on
+# the load-time assignments do nothing.
+#
+# The SOFT form: this hook is NON-BLOCKING and only OBSERVES a command that already ran, so it
+# skips rather than refuses, exactly as its library-load guard already does. It
+# still says what is missing, because whatever it would have done did not
+# happen and nothing else would show that. The blocking / non-blocking split
+# is a convention here, not yet a checked partition: the class fence that
+# would hold it is split out into go-to-k/cdkd#2826.
+if ! declare -F gate_require_const_soft >/dev/null 2>&1; then
+  exit 0
+fi
+gate_require_const_soft || exit 0
+
 set -u
 
 input=$(cat 2>/dev/null || true)

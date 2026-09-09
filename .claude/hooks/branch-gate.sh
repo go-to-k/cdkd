@@ -51,6 +51,7 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null; then
   echo "work around the gate." >&2
   exit 2
 fi
+
 for __gate_fn in cmd_matches_verb gate_matches gate_target_dir_strict \
   gate_refuse_unresolved_target cmd_last_cd_target strip_noncommand_spans; do
   if ! declare -F "$__gate_fn" >/dev/null; then
@@ -61,6 +62,30 @@ for __gate_fn in cmd_matches_verb gate_matches gate_target_dir_strict \
   fi
 done
 unset __gate_fn
+
+# go-to-k/cdkd#2729: the loop above covers the FUNCTIONS this hook calls and
+# CANNOT see a missing CONSTANT. Reading one the library does not define aborts
+# under `set -u` with exit 1, and per .claude/rules/hooks.md any exit that is
+# not 2 propagates as a NON-BLOCKING error -- i.e. a PASS. Refuse instead,
+# unconditionally and before the first constant is read, naming every GATE_*
+# constant read below. NOT yet fenced as a class -- the fence was split
+# out of this change and is tracked by go-to-k/cdkd#2826, so nothing
+# mechanical notices a hook that reads a constant without this call.
+#
+# It sits AFTER the function-liveness loop, and the ORDER is load-bearing here
+# in a way it is not elsewhere: this hook's suite asserts the exact refusal a
+# truncated library produces, and running the constant check first answered a
+# truncated library with the CONSTANT message. (Every sibling also puts its
+# constant check in a separate block after its function chain -- an earlier
+# version of this note claimed they fold the two into one `if`, which is not
+# true of any of them.)
+if ! declare -F gate_require_const >/dev/null 2>&1; then
+  # The helper itself is missing, so nothing below can be trusted either.
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but does not define" >&2
+  echo "gate_require_const, so this gate cannot verify the constants it reads." >&2
+  exit 2
+fi
+gate_require_const GATE_RE_GIT_COMMIT_OR_PUSH
 
 set -u
 

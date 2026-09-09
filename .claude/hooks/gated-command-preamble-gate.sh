@@ -109,12 +109,18 @@ if [ ! -r "$_gate_lib" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_gate_lib"
-# BOTH helpers AND the three constants below. `strip_noncommand_spans` became a
-# hard dependency when the matching moved off raw text, and a truncated library
-# defining one but not the other would strip every segment to EMPTY and the gate
-# would exit 0 in silence -- a gate that stops gating with no sign it stopped.
+# BOTH helpers. `strip_noncommand_spans` became a hard dependency when the
+# matching moved off raw text, and a truncated library defining one but not the
+# other would strip every segment to EMPTY and the gate would exit 0 in silence
+# -- a gate that stops gating with no sign it stopped.
 #
-# The CONSTANTS are the half a first cut of this guard missed, and they are the
+# The CONSTANTS this chain also used to check moved to `gate_require_const`
+# below (go-to-k/cdkd#2729), which names the one that is actually missing where
+# this chain could only emit the message it shares with a missing function. The
+# reasoning for WHY they need checking is unchanged and is kept here because it
+# is what makes the move make sense:
+#
+# they are the half a first cut of this guard missed, and they are the
 # half that matters, because the library declares them AFTER both functions
 # (`strip_noncommand_spans` and `gate_segments` sit hundreds of lines earlier).
 # So the truncation this guard originally fenced -- one function without the
@@ -127,22 +133,43 @@ fi
 # is retired to CI by go-to-k/cdkd#2717, so the shape is documented HERE
 # rather than by reference to a file a reader cannot open.
 #
-# The INVARIANT this rests on, stated because it is not self-evident and a
-# library reorder would break it silently: a truncation is a PREFIX cut, so
-# guarding the highest-line symbol the hook needs covers every symbol below it.
-# `GATE_RE_GH_PR_MERGE` is currently that symbol. Several others the hook
-# reaches only INDIRECTLY sit between the two functions and the constants --
-# `GATE_QUOTED_VALUE`, which `gate_strip_prefix` reads, is one -- and they are
-# covered by that ordering rather than by any clause here. Move the constant
-# block earlier in the library and this guard silently under-covers again.
+# The INVARIANT this used to rest on is RETIRED, and saying so matters because a
+# maintainer reading the retired version would believe a library reorder is
+# still a silent hazard. It said: a truncation is a prefix cut, so guarding the
+# highest-line symbol covers every symbol below it, and the symbols this hook
+# reaches only INDIRECTLY -- `GATE_QUOTED_VALUE`, which `gate_strip_prefix`
+# reads -- were covered by that ORDERING rather than by any clause. That was
+# true and fragile. `GATE_QUOTED_VALUE` is now in the library's own
+# `GATE_LIB_BASE_CONSTS`, which `gate_require_const` checks on every call, so
+# the indirect symbols are covered by NAME and a library reorder changes
+# nothing.
 if ! declare -F gate_segments >/dev/null 2>&1 ||
-  ! declare -F strip_noncommand_spans >/dev/null 2>&1 ||
-  [ -z "${GATE_RE_GIT_COMMIT:-}" ] ||
-  [ -z "${GATE_RE_GH_PR_CREATE:-}" ] ||
-  [ -z "${GATE_RE_GH_PR_MERGE:-}" ]; then
-  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_segments / strip_noncommand_spans / GATE_RE_GIT_COMMIT / GATE_RE_GH_PR_CREATE / GATE_RE_GH_PR_MERGE is undefined or empty (truncated file?)." >&2
+  ! declare -F strip_noncommand_spans >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_segments / strip_noncommand_spans is undefined (truncated file?)." >&2
   exit 2
 fi
+
+# go-to-k/cdkd#2729: the load guard above covers the FUNCTIONS this hook calls
+# and CANNOT see a missing CONSTANT. Reading one the library does not define
+# aborts under `set -u` with exit 1, and per .claude/rules/hooks.md any exit
+# that is not 2 propagates as a NON-BLOCKING error -- i.e. a PASS. Refuse
+# instead, unconditionally and before the first constant is read, naming every
+# GATE_* constant read below. NOT yet fenced as a class -- the fence was split
+# out of this change and is tracked by go-to-k/cdkd#2826, so nothing
+# mechanical notices a hook that reads a constant without this call.
+#
+# It replaced three `[ -z "${NAME:-}" ]` arms in the chain above, whose refusal
+# listed all five symbols it checked -- "gate_segments / strip_noncommand_spans
+# / GATE_RE_GIT_COMMIT / GATE_RE_GH_PR_CREATE / GATE_RE_GH_PR_MERGE is undefined
+# or empty" -- for every one of them. That message is true whichever is missing
+# and says which is missing in no case.
+if ! declare -F gate_require_const >/dev/null 2>&1; then
+  # The helper itself is missing, so nothing below can be trusted either.
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but does not define" >&2
+  echo "gate_require_const, so this gate cannot verify the constants it reads." >&2
+  exit 2
+fi
+gate_require_const GATE_RE_GH_PR_CREATE GATE_RE_GH_PR_MERGE GATE_RE_GIT_COMMIT
 
 GATED_RE="${GATE_RE_GIT_COMMIT}|${GATE_RE_GH_PR_CREATE}|${GATE_RE_GH_PR_MERGE}"
 

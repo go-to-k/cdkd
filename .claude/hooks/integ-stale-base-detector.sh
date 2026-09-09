@@ -83,6 +83,19 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 . "$__hook_dir/lib/command-match.sh" 2>/dev/null || exit 0
 declare -F gate_segments >/dev/null || exit 0
 
+# go-to-k/cdkd#2729: `declare -F` covers the FUNCTION and CANNOT see a missing
+# CONSTANT. This hook reads none of its OWN, so the call takes no arguments and
+# asks only about the library's -- `gate_segments` reads several of them BARE
+# inside function bodies, where the `${X:-}` defaults on the load-time
+# assignments do nothing. The SOFT form for the reason stated four lines up:
+# this hook refuses nothing, so it skips rather than blocking a run it only
+# observes. It still names what is missing, because a nudge that silently did
+# not happen is indistinguishable from one that was not warranted. Declared as
+# non-blocking by convention rather than by a checked partition: the class
+# fence that would hold it is split out into go-to-k/cdkd#2826.
+declare -F gate_require_const_soft >/dev/null 2>&1 || exit 0
+gate_require_const_soft || exit 0
+
 input=$(cat 2>/dev/null || true)
 
 tool=$(printf '%s' "$input" | jq -r '.tool_name // ""' 2>/dev/null || echo "")

@@ -502,7 +502,7 @@ run_case 0 "Bash PAST the byte bound: a write OUTSIDE the repo still passes" \
 # satisfiable by the bug it replaces: refusing everything passes the first, and
 # passing everything passes the second.
 BROKEN="$TMPDIR/broken"
-cp -R .claude/hooks "$BROKEN"
+cp -R "$(dirname "$HOOK")" "$BROKEN"
 echo 'this is not shell(' > "$BROKEN/lib/command-match.sh"
 
 # run_broken <expected_exit> <needle|-> <desc> <json>
@@ -557,9 +557,20 @@ run_broken 2 "the repair belongs to the operator" \
   "the refusal names WHO repairs it in the main tree" "$__refusal_payload"
 run_broken 2 "'!' prefixed" \
   "the refusal keeps the how-to on the OPERATOR's line, where the repair is" "$__refusal_payload"
-run_broken 2 "To inspect it first" \
-  "the refusal labels bash -n as an INSPECTION, not as the repair" "$__refusal_payload"
-run_broken 2 "bash -n" "the refusal names the inspection command" "$__refusal_payload"
+# These two pinned `To inspect it first:` / `bash -n ...` until review measured
+# that the advised command is itself a refused Bash call -- in this state 27
+# gates refuse it, this one included, and the message four lines up says "Only
+# Bash is refused". The inspection is still worth naming; what changed is that
+# it must name a TOOL, because that is the only route that answers here. The
+# cases move WITH the wording rather than being deleted: dropping them would
+# leave the inspection half of the message unasserted, which is how the
+# unfollowable advice survived three revisions in the sibling refusal.
+run_broken 2 "To inspect the file" \
+  "the refusal labels the inspection as an INSPECTION, not as the repair" "$__refusal_payload"
+run_broken 2 "use the Read or Grep TOOL" \
+  "the refusal names a route that answers in this state" "$__refusal_payload"
+run_broken 2 "would be refused here like every other Bash call" \
+  "the refusal says why a shell recipe is not offered" "$__refusal_payload"
 run_broken 2 "no longer refused is the proof" "the refusal says how to tell the repair worked" "$__refusal_payload"
 
 # The refusal has to be the FIRST thing the arm does. Moving it below the
@@ -619,6 +630,266 @@ run_broken 2 "Blocked by main-tree-edit-gate" \
   "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
 
+# THE SECOND BROKEN STATE, and it is a DIFFERENT one: a library that LOADS and
+# is missing a CONSTANT guard. `$BROKEN` above is not shell at all, so
+# `__lib_loaded` is 0 and the `Bash` arm refuses before any constant is read --
+# which means every case above says nothing about the `gate_require_const`
+# check go-to-k/cdkd#2729 added. `$LAGGING` is the state that issue is actually
+# about: a hook running against a library that has moved on without it.
+#
+# THE LOCKOUT REPEATED ITSELF HERE. That check was first written at the top of
+# the hook, ahead of the `case "$tool"` split, so it refused `Edit` and `Write`
+# for a constant those arms never read. Measured live during this change's own
+# rebase: a merge conflict in `lib/command-match.sh` left Bash, Edit and Write
+# all refused -- three separate attempts, one message -- and the repair took the
+# maintainer's own shell. The go-to-k/cdkd#2717 carve-out was already in the
+# file, in prose and in the cases above, and the new check simply sat outside
+# it. So the cases below are the same PAIR shape, against the state that
+# actually reaches the new check.
+LAGGING="$TMPDIR/lagging"
+cp -R "$(dirname "$HOOK")" "$LAGGING"
+# Delete the two helper definitions, leaving the rest of the library intact and
+# syntactically valid -- `sed` between the function header and its closing brace
+# at column 0. Asserted below rather than assumed: the fixture must LOAD (or
+# these cases collapse into the `$BROKEN` ones) and must NOT define the helper.
+awk '
+  /^gate_require_const(_soft)?\(\) \{/ { skip = 1 }
+  skip && /^\}$/                       { skip = 0; next }
+  !skip                                { print }
+' "$(dirname "$HOOK")/lib/command-match.sh" > "$LAGGING/lib/command-match.sh"
+
+# GUARD THE FIXTURE, in THREE directions. A `$LAGGING` that fails to parse would
+# make every case below pass for `$BROKEN`'s reason instead; an awk that matched
+# nothing would make them pass for no reason at all; and an EMPTY file passes
+# both of those -- `bash -n` succeeds on it and `declare -F` correctly reports
+# the helper absent. Measured: with the awk source spelled relative to the CWD
+# (as it was), running this suite from another directory produced exactly that
+# -- both guards printed `ok` over a zero-byte library, and only the downstream
+# needles noticed. A fixture that degraded silently is the same defect class as
+# a gate that fails open.
+if [ ! -s "$LAGGING/lib/command-match.sh" ] || ! grep -q '^GATE_SEP_PIPE=' "$LAGGING/lib/command-match.sh"; then
+  fail=$((fail + 1)); printf 'FAIL (fixture) $LAGGING has no library -- the awk source did not resolve\n'
+elif bash -n "$LAGGING/lib/command-match.sh" 2>/dev/null; then
+  pass=$((pass + 1)); printf 'ok   (fixture) $LAGGING is still a library and still parses\n'
+else
+  fail=$((fail + 1)); printf 'FAIL (fixture) $LAGGING library does not parse -- these cases would duplicate $BROKEN\n'
+fi
+if bash -c '. "$1" >/dev/null 2>&1; declare -F gate_require_const >/dev/null 2>&1' _ "$LAGGING/lib/command-match.sh"; then
+  fail=$((fail + 1)); printf 'FAIL (fixture) $LAGGING still defines gate_require_const -- the cases below assert nothing\n'
+else
+  pass=$((pass + 1)); printf 'ok   (fixture) $LAGGING loads and does NOT define gate_require_const\n'
+fi
+
+run_lagging() { # <expected_exit> <needle|-> <desc> <json>
+  local expected="$1" needle="$2" desc="$3" json="$4" rc out ok_text
+  out=$(printf '%s' "$json" | "$HOOK_RUNNER" "$LAGGING/main-tree-edit-gate.sh" 2>&1 >/dev/null); rc=$?
+  if [[ "$needle" == "-" ]]; then ok_text=1
+  elif [[ "$out" == *"$needle"* ]]; then ok_text=1
+  else ok_text=0; fi
+  if [[ "$rc" == "$expected" && "$ok_text" == 1 ]]; then
+    pass=$((pass + 1)); printf 'ok   (exit %s, lagging lib) %s\n' "$rc" "$desc"
+  else
+    fail=$((fail + 1))
+    printf 'FAIL (exit %s want %s; text %s) %s\n' "$rc" "$expected" \
+      "$([[ "$ok_text" == 1 ]] && echo ok || echo MISSING)" "$desc"
+    printf '     wanted text: %s\n     got: %s\n' "$needle" "$(printf '%s' "$out" | head -2)"
+  fi
+}
+
+# The ENFORCEMENT half: the arm that reads the constants refuses, and NAMES the
+# helper, so the refusal is this check's and not the load guard's.
+run_lagging 2 "does not define" \
+  "a Bash call fails CLOSED when the library defines no gate_require_const" \
+  "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
+# ...and it must say what still WORKS, or an agent reads the refusal as a dead
+# end -- which is exactly what happened. BOTH halves get a needle: this message
+# said "repair it with Edit or Write" flatly for a round, which is false in the
+# main tree on `main` where the tracked-file arm refuses that edit too
+# (measured rc=2). One needle on the permissive half would still pass with the
+# qualifier deleted, which is how the flat version survived.
+__lag_refusal="$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')"
+run_lagging 2 "FROM A FEATURE WORKTREE" \
+  "the refusal names the tools that survive it, and WHERE" "$__lag_refusal"
+run_lagging 2 "In the MAIN tree on main this gate" \
+  "the refusal names where that route does NOT hold" "$__lag_refusal"
+run_lagging 2 "belongs to the operator" \
+  "the refusal names WHO repairs it there" "$__lag_refusal"
+
+# THE LOCKOUT HALF. These are the cases that were red when this was written:
+# both answered 2, with the `gate_require_const` message, on a payload that
+# touches no library constant at all.
+run_lagging 0 - "Edit outside the repo is ALLOWED when gate_require_const is missing" \
+  "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_lagging 0 - "Write outside the repo is ALLOWED when gate_require_const is missing" \
+  "$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
+# THE REPAIR ITSELF: writing the library, in the tree where the copy an agent
+# edits lives. This is the payload that was refused during the rebase.
+run_lagging 0 - "Write to the library in a FEATURE worktree survives a missing gate_require_const" \
+  "$(jq -nc --arg fp "$WT/.claude/hooks/lib/command-match.sh" --arg cwd "$WT" \
+    '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
+
+# ...and the controls, per the rule the `$BROKEN` block states above: an
+# expect-0 case cannot say WHICH arm answered, so each needs a same-tool,
+# same-library-state ENFORCEMENT twin. Without these, deleting the whole
+# tracked-file arm would pass every lockout case.
+run_lagging 2 "Blocked by main-tree-edit-gate" \
+  "Edit of a tracked main-tree file is still BLOCKED when gate_require_const is missing" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')"
+run_lagging 2 "Blocked by main-tree-edit-gate" \
+  "Write to a tracked main-tree file is still BLOCKED when gate_require_const is missing" \
+  "$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Write", cwd:$cwd, tool_input:{file_path:$fp}}')"
+
+# THE CALL ITSELF, which nothing above tests. Every case so far strips the
+# HELPER; this one strips a CONSTANT, which is the state this hook's own header
+# measured -- seven bases each taking `cd <main tree> && echo hi > <tracked>`
+# from rc 2 to rc 0. Review measured the gap the obvious way: DELETE the
+# `gate_require_const` line from this hook and the suite stayed at
+# `passed=144 failed=0`. Two of the thirty-one hooks that call it catch that
+# deletion in their own suite (`main-tree-branch-gate`, `restore-backup`); this
+# makes three, and the general answer is the class fence in go-to-k/cdkd#2826.
+#
+# The single-LINE delete is sound for THIS constant and not in general --
+# `GATE_SEP_AMP=` is one line, so the span ends where the line does -- and the
+# `grep -q` below is the guard that it landed. The class fence needs a real
+# quote SCAN because it strips every constant, multi-line ones included. The two
+# sibling suites carry the same note; they disagree with the fence on purpose.
+STRIPPED="$TMPDIR/stripped-const"
+cp -R "$(dirname "$HOOK")" "$STRIPPED"
+grep -v '^GATE_SEP_AMP=' "$(dirname "$HOOK")/lib/command-match.sh" > "$STRIPPED/lib/command-match.sh"
+# BOTH halves, because `grep -q` on a MISSING file returns 2, and a bare
+# `if grep -q ...; then FAIL; else ok; fi` reads that as "successfully
+# stripped" -- a fixture that does not exist would print `ok`. So the file must
+# be there and still be a library, and only then must the anchor be gone.
+if [ ! -s "$STRIPPED/lib/command-match.sh" ] || ! grep -q '^GATE_SEP_PIPE=' "$STRIPPED/lib/command-match.sh"; then
+  fail=$((fail + 1)); printf 'FAIL (fixture) $STRIPPED has no library to strip from\n'
+elif grep -q '^GATE_SEP_AMP=' "$STRIPPED/lib/command-match.sh"; then
+  fail=$((fail + 1)); printf 'FAIL (fixture) could not stage a library without GATE_SEP_AMP (anchor drifted)\n'
+else
+  pass=$((pass + 1)); printf 'ok   (fixture) $STRIPPED is still a library and no longer assigns GATE_SEP_AMP\n'
+  __sc_payload=$(jq -nc --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')
+  __sc_out=$(printf '%s' "$__sc_payload" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" 2>&1 >/dev/null)
+  printf '%s' "$__sc_payload" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" >/dev/null 2>&1
+  __sc_rc=$?
+  if [[ "$__sc_rc" == 2 && "$__sc_out" == *"does not define: GATE_SEP_AMP"* ]]; then
+    pass=$((pass + 1)); printf 'ok   (exit 2, stripped const) a library without GATE_SEP_AMP refuses and NAMES it\n'
+  else
+    fail=$((fail + 1))
+    printf 'FAIL a library missing GATE_SEP_AMP must refuse naming it: got exit %s, output [%s]\n' \
+      "$__sc_rc" "$(printf '%s' "$__sc_out" | head -2)"
+  fi
+  # The same carve-out, on the same state: stripping a constant must not take
+  # away Edit and Write either. Without this the case above is satisfiable by
+  # putting the call back at the top of the file.
+  __sc_edit=$(jq -nc --arg fp "$TMPDIR/scratch.txt" --arg cwd "$MAIN" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')
+  printf '%s' "$__sc_edit" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" >/dev/null 2>&1
+  if [[ $? == 0 ]]; then
+    pass=$((pass + 1)); printf 'ok   (exit 0, stripped const) Edit outside the repo survives a missing constant\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL Edit outside the repo must survive a missing constant\n'
+  fi
+  # ...and its ENFORCEMENT twin, on the same state and the same tool, per the
+  # rule the `$BROKEN` block above states: an expect-0 case cannot say WHICH
+  # arm answered, so without this one deleting the tracked-file arm outright
+  # would pass the case above.
+  __sc_edit_main=$(jq -nc --arg fp "$MAIN/docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Edit", cwd:$cwd, tool_input:{file_path:$fp}}')
+  __sc_em_out=$(printf '%s' "$__sc_edit_main" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" 2>&1 >/dev/null)
+  printf '%s' "$__sc_edit_main" | "$HOOK_RUNNER" "$STRIPPED/main-tree-edit-gate.sh" >/dev/null 2>&1
+  if [[ $? == 2 && "$__sc_em_out" == *"Blocked by main-tree-edit-gate"* ]]; then
+    pass=$((pass + 1)); printf 'ok   (exit 2, stripped const) Edit of a tracked main-tree file is still BLOCKED\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL Edit of a tracked main-tree file must still be BLOCKED with a constant missing\n'
+  fi
+
+  # THE REFUSAL TEXT. Seven needles over the refusal's fourteen TEXT lines (it
+  # emits fifteen; one is a blank separator), and the coverage is stated
+  # exactly because an earlier wording claimed "one per SENTENCE". Measured by
+  # deleting each line in turn, counting across this suite AND
+  # `main-tree-branch-gate`: six -- lines 2, 3, 4, 8, 10 and 13 -- leave both
+  # green; line 1 reddens three cases, two here and one there; every other line
+  # reddens one. What IS fully pinned is the half an agent ACTS on: which tools
+  # survive, where that route holds and does not, and who repairs it in the
+  # main tree. Whole-message deletion is caught by the population guard below.
+  # Review measured that deleting the whole "how do I repair this" paragraph
+  # from `gate_require_const` left every suite in the repo green -- this file,
+  # `main-tree-branch-gate`, `restore-backup`, `branch-gate` -- while the
+  # sibling refusal in the same file carries needles of its own. Text an agent
+  # ACTS ON is load-bearing, and its first revision was wrong in one tree,
+  # which is exactly what an unasserted message lets through.
+  for __sc_needle in \
+    "EVERY Bash call is refused" \
+    "a command-line repair is not available" \
+    "FROM A FEATURE WORKTREE" \
+    "In the MAIN tree on main" \
+    "belongs to the operator" \
+    "use the Read or Grep" \
+    "every Bash spelling of the same search is refused"; do
+    if [[ "$__sc_out" == *"$__sc_needle"* ]]; then
+      pass=$((pass + 1)); printf 'ok   (refusal text) names: %s\n' "$__sc_needle"
+    else
+      fail=$((fail + 1)); printf 'FAIL the constant refusal must say: %s\n' "$__sc_needle"
+    fi
+  done
+
+  # THE STRUCTURAL GUARD, and the reason it exists rather than a seventh needle.
+  # Three successive revisions of this refusal advised a SHELL COMMAND --
+  # `git restore`, then `bash -n`, then `grep` -- and each was measured refused
+  # by the very gates the message is explaining, 27 of them, from every tree.
+  # Each fix was written while agreeing with the finding and reached for the
+  # next command in line, so a needle on the CURRENT wording would not have
+  # stopped the next one. What all three shared is a SHAPE: an INDENTED line,
+  # which is how a message sets a command apart to be run.
+  #
+  # THE ASSERTION IS TOTAL, NOT ENUMERATIVE, and that is the correction review
+  # round 18 forced. The first version matched `^  [a-z][a-z0-9_.-]* ` -- one
+  # indent width, one alphabet -- and six plausible next spellings walked past
+  # it green: a four-space indent, `  $EDITOR`, `  /usr/bin/grep`, a leading
+  # `VAR=value`, `  ./scripts/repair.sh`, and a bare `  vim`. Enumerating recipe
+  # shapes is the same losing game as enumerating command names, which is the
+  # defect this fence exists to end. So: **no line of these refusals may begin
+  # with whitespace at all.** None does today, the property is trivial to hold,
+  # and it cannot be satisfied by a spelling nobody thought of.
+  #
+  # SCOPED to the refusals that fire while EVERY Bash call is refused -- these
+  # three. Other refusals in the library DO indent a recipe (see
+  # `gate_refuse_unresolved_target`), correctly: they fire in states where Bash
+  # still works, so a command is followable there. The distinction is the state,
+  # not the file.
+  #
+  # THREE, not two. The first version scanned `$STRIPPED` and `$BROKEN` and
+  # missed the `declare -F gate_require_const` refusal entirely -- planting a
+  # recipe in it left the suite green -- while the comment said "both".
+  __recipe_payload=$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')
+  __recipe_out=$(printf '%s\n%s\n%s' \
+    "$__sc_out" \
+    "$(printf '%s' "$__recipe_payload" | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" 2>&1 >/dev/null)" \
+    "$(printf '%s' "$__recipe_payload" | "$HOOK_RUNNER" "$LAGGING/main-tree-edit-gate.sh" 2>&1 >/dev/null)")
+  # GUARD THE POPULATION: all three refusals must actually be in the scanned
+  # text, or the case passes over messages it never saw -- which is exactly how
+  # the third one was missed.
+  __recipe_seen=0
+  for __rn in "does not define: GATE_SEP_AMP" "is missing or unloadable" "loaded but does not define"; do
+    case "$__recipe_out" in *"$__rn"*) __recipe_seen=$((__recipe_seen + 1)) ;; esac
+  done
+  if [ "$__recipe_seen" -lt 3 ]; then
+    fail=$((fail + 1))
+    printf 'FAIL (refusal shape) only %s of the 3 refusals reached the scan -- the case would pass over messages it never saw\n' "$__recipe_seen"
+  elif printf '%s\n' "$__recipe_out" | grep -qE '^[[:space:]]'; then
+    fail=$((fail + 1))
+    printf 'FAIL a refusal in this layer indents a line. Every Bash call is refused in that state, so an indented recipe cannot be run; advise a TOOL (Read, Grep, Edit, Write) in running prose instead. Offending line(s):\n'
+    printf '%s\n' "$__recipe_out" | grep -nE '^[[:space:]]' | sed 's/^/       /'
+  else
+    pass=$((pass + 1))
+    printf 'ok   (refusal shape) none of the 3 refusals in this layer indents a line\n'
+  fi
+fi
+
 # THE OTHER TWO LABELS IN THE `case` PATTERN, under a broken library. The
 # HEALTHY-state cases are further down and are the load-bearing ones; these only
 # say the load split treats all four labels alike.
@@ -665,7 +936,7 @@ run_broken 0 - "an ABSENT tool_name does the same" \
 # not this one does; a stub is used rather than a git object so the case does
 # not depend on the repo's history being fetched.
 STUBLIB="$TMPDIR/stublib"
-cp -R .claude/hooks "$STUBLIB"
+cp -R "$(dirname "$HOOK")" "$STUBLIB"
 {
   printf 'gate_unquote_span() { printf %%s "$1"; }\n'
   printf 'gate_unquote() { printf %%s "$1"; }\n'
@@ -720,7 +991,7 @@ run_stublib 2 "Blocked by main-tree-edit-gate" \
 # a case does not fail, it just stops measuring anything. `$BROKEN` now stays
 # broken for the whole file, and the assertion after the control says so.
 BROKEN_CTL="$TMPDIR/broken-ctl"
-cp -R .claude/hooks "$BROKEN_CTL"
+cp -R "$(dirname "$HOOK")" "$BROKEN_CTL"
 printf '%s' \
   "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > /tmp/elsewhere.txt"}}')" \
   | "$HOOK_RUNNER" "$BROKEN_CTL/main-tree-edit-gate.sh" >/dev/null 2>&1
@@ -1076,7 +1347,7 @@ else
   printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
 fi
 
-CASE_FLOOR=135
+CASE_FLOOR=159
 # `ran` is captured BEFORE the increment. Incrementing `fail` first and then
 # printing `$((pass + fail))` re-counted the floor's own failure as a case, so
 # one deleted case reported `only 135 cases ran, expected at least 135` -- a

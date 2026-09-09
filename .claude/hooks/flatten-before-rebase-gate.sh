@@ -73,11 +73,26 @@ if ! . "$LIB_DIR/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null 2>&1 \
   || ! declare -F gate_argv >/dev/null 2>&1 \
   || ! declare -F gate_unquote >/dev/null 2>&1 \
-  || ! declare -F strip_noncommand_spans >/dev/null 2>&1 \
-  || [ -z "${GATE_RE_GIT_REBASE:-}" ]; then
+  || ! declare -F strip_noncommand_spans >/dev/null 2>&1; then
   echo "Blocked by flatten-before-rebase-gate: cannot load lib/command-match.sh" >&2
   exit 2
 fi
+
+# go-to-k/cdkd#2729: the load guard above covers the FUNCTIONS this hook calls
+# and CANNOT see a missing CONSTANT. Reading one the library does not define
+# aborts under `set -u` with exit 1, and per .claude/rules/hooks.md any exit
+# that is not 2 propagates as a NON-BLOCKING error -- i.e. a PASS. Refuse
+# instead, unconditionally and before the first constant is read, naming every
+# GATE_* constant read below. NOT yet fenced as a class -- the fence was split
+# out of this change and is tracked by go-to-k/cdkd#2826, so nothing
+# mechanical notices a hook that reads a constant without this call.
+if ! declare -F gate_require_const >/dev/null 2>&1; then
+  # The helper itself is missing, so nothing below can be trusted either.
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but does not define" >&2
+  echo "gate_require_const, so this gate cannot verify the constants it reads." >&2
+  exit 2
+fi
+gate_require_const GATE_RE_GIT_REBASE
 
 input=$(cat 2>/dev/null || echo "")
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")

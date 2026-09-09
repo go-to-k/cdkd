@@ -56,6 +56,29 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   exit 0
 fi
 
+# go-to-k/cdkd#2729: the load guard above covers the FUNCTIONS this hook calls
+# and CANNOT see a missing CONSTANT. Reading `GATE_FLAGS` when the library does
+# not define it aborts under `set -u` with exit 1, so the snapshot silently does
+# not happen AND the exit code is one the harness reports as an error.
+#
+# The SOFT form, not `gate_require_const`, and it is the one place in this
+# directory where that is right. Every sibling refuses with exit 2; this hook's
+# header sets the opposite policy -- "fail OPEN and SILENT on anything
+# unexpected. A backup helper that blocks the user's command when the snapshot
+# fails would be worse than no helper at all" -- and the guard above already
+# `exit 0`s on an unloadable library for that reason. Refusing here would make a
+# lagging library BLOCK `git reset --hard` / `git clean -f` / `git stash`, none
+# of which any other gate covers, which is a far wider blast radius than the
+# missed snapshot it trades against. It is not SILENT, though: a snapshot not
+# taken is invisible, so the soft form puts one line on stderr naming the
+# constant. The blocking / non-blocking split is a convention here, not yet
+# a checked partition: the class fence that would hold it is split out into
+# go-to-k/cdkd#2826.
+if ! declare -F gate_require_const_soft >/dev/null 2>&1; then
+  exit 0
+fi
+gate_require_const_soft GATE_FLAGS || exit 0
+
 set -u
 
 input=$(cat 2>/dev/null || true)
