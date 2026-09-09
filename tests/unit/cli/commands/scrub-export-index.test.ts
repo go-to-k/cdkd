@@ -92,6 +92,13 @@ interface IndexRegionSlot {
    * coverage pass would skip the region entirely.
    */
   readErrorFrom?: number | undefined;
+  /**
+   * Returned by `readPersistedEntries` VERBATIM instead of the usual defensive
+   * copy. Only the invariant case needs it: a copy would discard the `get`
+   * override that drives the branch, and the copy is otherwise the right
+   * model of the real store.
+   */
+  rawEntries?: ReadonlyMap<string, ExportIndexEntry> | undefined;
   patchOk: boolean;
   patches: Array<{
     exportName: string;
@@ -122,6 +129,7 @@ vi.mock('../../../../src/state/export-index-store.js', () => ({
           if (slot.readErrorFrom !== undefined && slot.reads >= slot.readErrorFrom) {
             return Promise.reject(new Error('transient S3 failure on the coverage read'));
           }
+          if (slot.rawEntries) return Promise.resolve(slot.rawEntries);
           return Promise.resolve(slot.entries ? new Map(slot.entries) : undefined);
         }),
         patchEntry: vi
@@ -202,6 +210,7 @@ import {
   scrubCommand,
   planExportIndexRepair,
   ScrubNeededError,
+  ScrubIndexInvariantError,
   type ScrubOptions,
 } from '../../../../src/cli/commands/scrub.js';
 
@@ -919,6 +928,39 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     // The state write still happened and is still reported, which is what the
     // failure message has to be honest about.
     expect(commandStateBackend.saveState).toHaveBeenCalled();
+  });
+
+  it('an INTERNAL invariant is not misreported as an index READ failure', async () => {
+    // The repair runs inside the per-stack `try` whose catch attributes
+    // everything to "the exports index could not be READ" — which would send
+    // an operator to their bucket policy over a bug in cdkd.
+    //
+    // The branch is unreachable through ordinary data (every finding is
+    // produced by walking the very map that is then indexed), so it is driven
+    // with a Map whose `get` disagrees with its own iterator. That is the
+    // precondition the invariant exists to catch, reproduced exactly.
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    const lying = new Map([
+      ['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')],
+    ]) as Map<string, ExportIndexEntry>;
+    lying.get = () => undefined;
+    // `rawEntries`, not `entries`: the fake's usual defensive copy would drop
+    // the override and the branch would never be reached.
+    indexFake.regions.set('us-east-1', slot({ entries: new Map(), rawEntries: lying }));
+
+    const err = await scrubCommand([], commandOptions()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    // Identity, not wording: the classification is what is under test.
+    expect(err).toBeInstanceOf(ScrubIndexInvariantError);
+    // ...and specifically NOT the read-failure path.
+    expect(err).not.toMatchObject({ code: 'SCRUB_EXPORT_INDEX_INCOMPLETE' });
+    expect(logLines()).not.toContain('could not be read');
   });
 
   it('a region with no exports.json contributes no finding and no failure', async () => {

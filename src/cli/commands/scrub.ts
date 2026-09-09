@@ -119,7 +119,11 @@ export class ScrubNeededError extends CdkdError {
  * their bucket policy over a bug in cdkd. That catch rethrows this class
  * instead, so it surfaces as the per-stack failure it actually is.
  */
-class ScrubIndexInvariantError extends CdkdError {
+// Exported for tests, for the same reason `ScrubNeededError` is: the
+// classification is the behaviour under test — an invariant must NOT surface
+// as "the index could not be read" — and asserting it on the error's identity
+// rather than on its message text keeps the fence from drifting with wording.
+export class ScrubIndexInvariantError extends CdkdError {
   readonly exitCode: number = 2;
 
   constructor(message: string) {
@@ -379,7 +383,7 @@ async function repairExportIndexForStack(
       // the two ever came apart, which is the fail-quiet shape this whole
       // change exists to remove. The name is not interpolated: it may hold
       // secret plaintext (see `secretSafeKeyDisplay`).
-      throw new Error(
+      throw new ScrubIndexInvariantError(
         'exports index repair: a planned entry is absent from the snapshot it was planned from'
       );
     }
