@@ -252,10 +252,29 @@ export declare function classifyRemovedProperty(input: {
  * Apply the classifier across every removed entry, writing the settled ones into
  * `_todo-backfill.json`'s `bogusTolerated` and reporting both outcomes.
  */
+/**
+ * Load the evidence helpers the non-checklist modes need.
+ *
+ * They are NOT imported at the top of the script: ESM resolves a module's whole
+ * graph before any of its code runs, so a static import made
+ * `--umbrella-checklist` die on `typescript-v6` in the sync workflow, which
+ * deliberately installs nothing (issue
+ * https://github.com/go-to-k/cdkd/issues/2858). Idempotent. The CLI calls it
+ * before `main()` for every mode but the checklist; a caller reaching
+ * `writeAutoTolerated` or `partitionPendingSdkBump` without it, and without
+ * injecting doubles, gets a REFUSAL rather than a silent empty verdict.
+ *
+ * Returns `unknown` rather than the helper types: this file is type-checked by
+ * a CONFIG-LESS `tsc` (see the sibling test), so it cannot import from a `.ts`
+ * module — the same constraint the `partitionPendingSdkBump` note above records.
+ */
+export declare function loadEvidenceDeps(): Promise<unknown>;
+
 export declare function writeAutoTolerated(
   removed: RemovedEntry[],
   providerFiles: Map<string, string>,
-  repoRoot?: string
+  repoRoot?: string,
+  deps?: unknown
 ): {
   written: Array<{ resourceType: string; property: string; rationale: string }>;
   escalated: Array<{ resourceType: string; property: string; reason: string }>;

@@ -23,7 +23,7 @@
  * synthetic fixture for either would encode the same assumption the parser
  * makes.
  */
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, beforeAll } from 'vite-plus/test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   cpSync,
@@ -56,6 +56,7 @@ import {
   partitionPendingSdkBump,
   pendingBumpGroups,
   writeAutoTolerated,
+  loadEvidenceDeps,
   UMBRELLA_EMPTY_SENTINEL,
   renderUmbrellaChecklist,
   renderUmbrellaDocument,
@@ -3014,6 +3015,14 @@ describe('classifyRemovedProperty', () => {
 });
 
 describe('writeAutoTolerated', () => {
+  // The evidence helpers are loaded ON DEMAND now (issue go-to-k/cdkd#2858), so the
+  // cases below that exercise the REAL `typedSdkMember` / `providerWiresProperty`
+  // have to ask for them; the CLI does the same before `main()`. Cases that
+  // inject doubles never reach the loader.
+  beforeAll(async () => {
+    await loadEvidenceDeps();
+  });
+
   /**
    * A scratch repo root the call may WRITE into.
    *

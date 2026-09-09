@@ -102,12 +102,67 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 
-import { typedSdkMember, providerWiresProperty } from './offline-property-evidence.ts';
-import { publishedSdkInterfaces } from './published-sdk-typings.ts';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
+
+/**
+ * The two evidence helpers, loaded ON DEMAND rather than imported at the top.
+ *
+ * `--umbrella-checklist` renders from one committed file and calls neither, but
+ * ESM resolves a module's WHOLE graph before any of its code runs — so a static
+ * import made the mode die at load time on `Cannot find package 'typescript-v6'`
+ * (reached through `offline-property-evidence.ts`, and again through
+ * `published-sdk-typings.ts` -> `gen-nested-key-coverage.ts`). That is why
+ * `.github/workflows/backfill-umbrella-sync.yml` — which deliberately runs
+ * WITHOUT `vp install`, so its token-less render step cannot fail on dependency
+ * resolution — failed on both of the only two runs it has ever had, from the
+ * day it landed (issue [#2858](https://github.com/go-to-k/cdkd/issues/2858)).
+ * The workflow's comment asserting the mode needs no dependencies was a true
+ * statement about what the mode CALLS and a false one about what it LOADS.
+ *
+ * Kept as an explicit loader rather than an `await import()` at each use site
+ * because both consumers are synchronous exported functions with their own
+ * injection seams, and making them async would ripple through `main()` and
+ * every caller for no gain.
+ *
+ * @type {{ typedSdkMember: typeof import('./offline-property-evidence.ts').typedSdkMember,
+ *          providerWiresProperty: typeof import('./offline-property-evidence.ts').providerWiresProperty,
+ *          publishedSdkInterfaces: typeof import('./published-sdk-typings.ts').publishedSdkInterfaces } | undefined}
+ */
+let evidenceDeps;
+
+/** Load the evidence helpers. Idempotent; call before any mode that needs them. */
+export async function loadEvidenceDeps() {
+  if (evidenceDeps !== undefined) return evidenceDeps;
+  const [evidence, published] = await Promise.all([
+    import('./offline-property-evidence.ts'),
+    import('./published-sdk-typings.ts'),
+  ]);
+  evidenceDeps = {
+    typedSdkMember: evidence.typedSdkMember,
+    providerWiresProperty: evidence.providerWiresProperty,
+    publishedSdkInterfaces: published.publishedSdkInterfaces,
+  };
+  return evidenceDeps;
+}
+
+/**
+ * REFUSES rather than defaulting. A caller reaching this without having loaded
+ * is running a mode whose evidence is missing, and the one outcome that must
+ * not be reached on a guess is an allow-list entry — so it must not silently
+ * behave as though the evidence answered nothing.
+ */
+function requireEvidenceDeps() {
+  if (evidenceDeps === undefined) {
+    throw new Error(
+      'the evidence helpers are not loaded — call `await loadEvidenceDeps()` before a mode ' +
+        'that reads the SDK typings or the provider sources, or pass the helpers explicitly.'
+    );
+  }
+  return evidenceDeps;
+}
 
 /**
  * Distinguishes "this fixture is not in HEAD" (nothing to compare — a brand-new
@@ -778,7 +833,14 @@ export function countDecisions({
  * @returns {{ written: Array<{ resourceType: string, property: string, rationale: string }>,
  *   escalated: Array<{ resourceType: string, property: string, reason: string }> }}
  */
-export function writeAutoTolerated(removed, providerFiles, repoRoot = REPO_ROOT) {
+export function writeAutoTolerated(
+  removed,
+  providerFiles,
+  repoRoot = REPO_ROOT,
+  // Resolved at CALL time, not at module load: see `loadEvidenceDeps`. Tests
+  // that inject doubles never reach the loader; the CLI loads before `main()`.
+  deps = requireEvidenceDeps()
+) {
   const written = [];
   const escalated = [];
   /** The type's properties as the refreshed fixture now lists them. */
@@ -829,8 +891,8 @@ export function writeAutoTolerated(removed, providerFiles, repoRoot = REPO_ROOT)
             property,
             currentSchemaProperties(entry.resourceType)
           ),
-          typedMember: typedSdkMember,
-          wires: providerWiresProperty,
+          typedMember: deps.typedSdkMember,
+          wires: deps.providerWiresProperty,
           repoRoot,
         });
       } catch (err) {
@@ -1911,7 +1973,7 @@ export function pendingBumpGroups(pending) {
 export function partitionPendingSdkBump({
   divergences,
   sdkLag = [],
-  publishedInterfaces = publishedSdkInterfaces,
+  publishedInterfaces = requireEvidenceDeps().publishedSdkInterfaces,
 }) {
   /** @type {import('./diagnose-schema-refresh.d.mts').PendingSdkBump[]} */
   const pendingSdkBump = [];
@@ -2650,6 +2712,15 @@ function main() {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
+    // The one mode that must run with NO dependencies installed keeps its graph
+    // to `node:` builtins; every other mode loads the evidence helpers first.
+    // Written as a positive test of THIS mode rather than a list of the others,
+    // so a mode added later loads them by default — the safe direction, since
+    // the cost is an install the workflow already performs and the alternative
+    // is a mode that silently reaches `requireEvidenceDeps`'s refusal.
+    if (!process.argv.slice(2).includes('--umbrella-checklist')) {
+      await loadEvidenceDeps();
+    }
     main();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
