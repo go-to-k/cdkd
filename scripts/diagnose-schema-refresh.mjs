@@ -2437,6 +2437,12 @@ export function classifyArgs(args) {
     // SAME path — an earlier revision `continue`d on the glued form before the
     // repeat check and `--nested-key-rc=0 --nested-key-rc=3` still rendered
     // clean.
+    //
+    // The `valued` arm below DOES return early before `seen`, and that is not
+    // the same hazard: it refuses the invocation outright, so a repeat it
+    // leaves unreported changes nothing about the outcome. Traced:
+    // `--umbrella-checklist --umbrella-checklist=x` reports the glued value,
+    // not the repeat, and still exits 1 on stderr.
     const flag = knownFlagFor(a);
     if (flag === undefined) {
       unknown.push(a);

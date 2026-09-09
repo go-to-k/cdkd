@@ -57,6 +57,7 @@ import {
   pendingBumpGroups,
   writeAutoTolerated,
   loadEvidenceDeps,
+  classifyArgs,
   UMBRELLA_EMPTY_SENTINEL,
   renderUmbrellaChecklist,
   renderUmbrellaDocument,
@@ -3070,17 +3071,47 @@ describe('writeAutoTolerated', () => {
     //
     // Both directions: a declaration with no export is the more dangerous half,
     // since it type-checks at every call site and fails at runtime.
+    //
+    // BOUND, stated because the first cut of this comment read as if drift were
+    // closed and it is NOT: this compares NAMES. A declaration whose SIGNATURE
+    // drifted passes — measured in the same commit that added this fence, where
+    // `classifyArgs` had grown a third return bucket the declaration did not
+    // name. `export let` / `export var` / `export { x }` are invisible to the
+    // runtime-side pattern, so an export in those spellings ships undeclared.
     const mjs = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
     const dmts = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
     const names = (src: string, re: RegExp): string[] =>
       [...src.matchAll(re)].map((m) => m[1]!).sort();
 
     const exported = names(mjs, /^export (?:const|function|async function|class) (\w+)/gm);
-    const declared = names(dmts, /^export declare (?:const|function|async function) (\w+)/gm);
+    // `class` on BOTH sides: the runtime pattern matched it and the declared one
+    // did not, so the first `export class` added here would have been a
+    // permanent false red. `async function` is deliberately absent from the
+    // declared alternation — TS forbids `declare async function`.
+    const declared = names(dmts, /^export declare (?:const|function|class) (\w+)/gm);
     expect(exported).toEqual(declared);
     // Non-vacuity: both scans must have matched something, or two empty lists
     // compare equal and the fence asserts nothing.
     expect(exported.length).toBeGreaterThan(20);
+  });
+
+  it('declares every bucket classifyArgs actually returns', () => {
+    // The name-only fence above cannot see a SIGNATURE drift, and one shipped:
+    // `classifyArgs` grew a third return bucket while its declaration still
+    // named two, so a TS consumer destructuring `valued` got "Property does not
+    // exist" for a property that is there. Reverting the declaration produces
+    // ZERO type errors — measured — because nothing compares the two.
+    //
+    // Scoped to this one function rather than to the whole surface: it is the
+    // drift that actually happened, and a runtime key set is a fact the
+    // declaration cannot restate. `typeof import(...)` is no use here — it
+    // resolves to the DECLARATION, so it would compare the file with itself.
+    const dmts = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
+    const block = /export declare function classifyArgs\([^)]*\): \{([\s\S]*?)\n\};/.exec(dmts);
+    expect(block, 'classifyArgs is no longer declared as an inline object return').not.toBeNull();
+    const declared = [...block![1]!.matchAll(/^\s{2}(\w+):/gm)].map((m) => m[1]!).sort();
+    expect(declared.length, 'the member scan found nothing to compare').toBeGreaterThan(0);
+    expect(Object.keys(classifyArgs([])).sort()).toEqual(declared);
   });
 
   it('loads the evidence helpers ONCE', () => {

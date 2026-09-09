@@ -230,6 +230,8 @@ export declare function loadDeclaredPropertiesSource(repoRoot?: string): string;
 export declare function classifyArgs(args: string[]): {
   unknown: string[];
   repeated: string[];
+  /** Valueless flags given a glued value (`--umbrella-checklist=x`). */
+  valued: string[];
 };
 export declare function assertFixtureFloor(fixtureCount: number, declaredCount: number): void;
 /** What `--umbrella-checklist` emits when the campaign is finished. */

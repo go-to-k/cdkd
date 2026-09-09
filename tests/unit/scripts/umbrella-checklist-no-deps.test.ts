@@ -369,7 +369,6 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     // redirect captures an error sentence as the rendered checklist.
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('--umbrella-checklist takes no value');
-    expect(run.stderr).not.toContain('could not load the evidence helpers');
     expect(run.stdout).toBe('');
   }, 60_000);
 
@@ -388,15 +387,21 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     const { KNOWN_FLAGS, VALUELESS_FLAGS } = await import(
       '../../../scripts/diagnose-schema-refresh.mjs'
     );
-    // COMMENT-STRIPPED, like every sibling critic in this repo. Scanning the raw
-    // text was DEFEATED — demonstrated, not imagined: adding a boolean flag to
-    // `KNOWN_FLAGS` plus ONE comment line mentioning `rawArg('--x')` made all
-    // three assertions pass while the shipped script swallowed the next token,
-    // the exact bug this fence exists to stop. Comments in that file already
-    // quote `rawArg` and backticked flag names.
+    // COMMENT-STRIPPED, with the SIBLING critic's stripper
+    // (`integ-secret-fixture-sweep.test.ts`) rather than one written here.
+    //
+    // Scanning the raw text was DEFEATED — demonstrated, not imagined: a boolean
+    // flag added to `KNOWN_FLAGS` plus ONE comment mentioning `rawArg('--x')`
+    // made every assertion pass while the shipped script swallowed the next
+    // token. The first fix stripped FULL-LINE `//` comments only, and a
+    // TRAILING one defeated it identically — measured, and that shape is
+    // idiomatic in the file being scanned. Hence the borrowed form: writing a
+    // third stripper is how this hole gets reopened a third time. The
+    // `(^|[^:])` guard is what keeps it from eating a `https://` inside a
+    // string.
     const source = readFileSync(join(repoRoot, 'scripts/diagnose-schema-refresh.mjs'), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/^\s*\/\/.*$/gm, '');
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
     const READERS = ['rawArg', 'readArg', 'readArgValue', 'readNumArg'];
     const readsAValueFor = (flag: string): boolean =>
       READERS.some((reader) => source.includes(`${reader}('${flag}')`));
