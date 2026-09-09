@@ -211,17 +211,42 @@ export function extractTemplateFloorDetailed(markdown: string): TemplateExtracti
   return { floor: parseFloor(spec), matches: 1, spec };
 }
 
-/** Read `aws-cdk-lib` out of a manifest's dependencies or devDependencies. */
-function declaredSpec(manifest: unknown): string | null {
-  if (typeof manifest !== 'object' || manifest === null) return null;
+export type DeclaredSpec =
+  /** Declares `aws-cdk-lib` with a string spec. */
+  | { kind: 'found'; spec: string }
+  /** Declares no `aws-cdk-lib` — not a member of this population. */
+  | { kind: 'absent' }
+  /** Shaped in a way this cannot read. A REFUSAL, never a skip. */
+  | { kind: 'malformed'; why: string };
+
+/**
+ * Read `aws-cdk-lib` out of a manifest's dependencies or devDependencies.
+ *
+ * The three outcomes are distinguished because two of them used to collapse
+ * into one silent `continue`: a manifest parsing to a non-object, a non-object
+ * dependency bucket, and a non-string spec all read as "declares nothing" and
+ * dropped the fixture out of the minimum. Dropping a fixture can only ever
+ * LOOSEN the verdict, which the header calls a refusal — so they are refusals.
+ */
+export function declaredSpec(manifest: unknown): DeclaredSpec {
+  if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
+    return { kind: 'malformed', why: `manifest is not a JSON object (got ${typeof manifest})` };
+  }
   const m = manifest as Record<string, unknown>;
   for (const bucket of ['dependencies', 'devDependencies']) {
+    if (!(bucket in m)) continue;
     const deps = m[bucket];
-    if (typeof deps !== 'object' || deps === null) continue;
+    if (typeof deps !== 'object' || deps === null || Array.isArray(deps)) {
+      return { kind: 'malformed', why: `"${bucket}" is not a JSON object` };
+    }
+    if (!('aws-cdk-lib' in (deps as Record<string, unknown>))) continue;
     const spec = (deps as Record<string, unknown>)['aws-cdk-lib'];
-    if (typeof spec === 'string') return spec;
+    if (typeof spec !== 'string') {
+      return { kind: 'malformed', why: `"${bucket}"."aws-cdk-lib" is not a string` };
+    }
+    return { kind: 'found', spec };
   }
-  return null;
+  return { kind: 'absent' };
 }
 
 export interface CheckOptions {
@@ -309,10 +334,18 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
       continue;
     }
 
-    const spec = declaredSpec(manifest);
+    const declared = declaredSpec(manifest);
+    if (declared.kind === 'malformed') {
+      refusals.push({
+        where: at(join(integRoot, fixture, 'package.json')),
+        reason: declared.why,
+      });
+      continue;
+    }
     // A fixture that declares no aws-cdk-lib at all is not a refusal — it is
     // simply not a member of this population.
-    if (spec === null) continue;
+    if (declared.kind === 'absent') continue;
+    const spec = declared.spec;
 
     const floor = parseFloor(spec);
     if (floor === null) {

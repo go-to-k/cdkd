@@ -18,6 +18,7 @@ import {
   TEMPLATE_REL,
   checkIntegCdkLibFloor,
   compareFloors,
+  declaredSpec,
   extractTemplateFloor,
   extractTemplateFloorDetailed,
   parseFloor,
@@ -137,6 +138,10 @@ describe('parseFloor / compareFloors', () => {
       expect(got).not.toBeNull();
       const [major, minor, patch] = testCase.floor!;
       expect([got!.major, got!.minor, got!.patch]).toEqual([major, minor, patch]);
+      // `.operator` and `.raw` were unasserted for every case but one, so a
+      // mutated operator default and a dropped `.trim()` both stayed green.
+      expect(got!.operator).toBe(testCase.spec.trim()[0]?.match(/[\^~]/) ? testCase.spec.trim()[0] : '=');
+      expect(got!.raw).toBe(testCase.spec.trim());
     },
   );
 
@@ -210,6 +215,129 @@ describe('extractTemplateFloor', () => {
     expect(extraction.matches).toBe(expected);
     expect(extraction.floor).toBeNull();
   });
+});
+
+/**
+ * The corpus is UNIFORM today (292 x `^2.260.0`), which makes min-SELECTION,
+ * dedup and ordering unobservable: swapping `sorted[0]` for the last element
+ * still names a `^2.260.0` fixture. Every case here deliberately builds a
+ * NON-UNIFORM corpus, so the value under test is not pinned by the fixture.
+ */
+describe('a non-uniform corpus (the uniform real one cannot see these)', () => {
+  function corpus(specs: Record<string, string>): string {
+    const dir = scratch('cdkd-floor-mixed-');
+    for (const [name, spec] of Object.entries(specs)) {
+      mkdirSync(join(dir, name), { recursive: true });
+      writeFileSync(
+        join(dir, name, 'package.json'),
+        JSON.stringify({ name, dependencies: { 'aws-cdk-lib': spec } }, null, 2),
+      );
+    }
+    return dir;
+  }
+
+  // Pins `sorted[0]`. With a uniform corpus, taking the LAST element instead
+  // still printed a `^2.260.0` fixture and every test stayed green.
+  it('names the LOWEST fixture and its spec in the below-the-floor message', () => {
+    const integRoot = corpus({
+      aaa: '^2.300.0',
+      mmm: '^2.100.0', // the lowest, and neither first nor last alphabetically
+      zzz: '^2.200.0',
+    });
+    const template = copyRealTemplate((t) =>
+      t.replace(/"aws-cdk-lib": "\^2\.\d+\.\d+"/, '"aws-cdk-lib": "^2.050.0"'),
+    );
+    const report = checkIntegCdkLibFloor({ integRoot, templatePath: template });
+    expect(report.minFloor?.raw).toBe('^2.100.0');
+    const text = report.violations.join('\n');
+    expect(text).toContain('below the lowest floor');
+    expect(text).toContain('^2.100.0');
+    expect(text).toContain(join(integRoot, 'mmm'));
+    // The discriminating half: a max-selection mutant names one of these.
+    expect(text).not.toContain(join(integRoot, 'aaa'));
+    expect(text).not.toContain(join(integRoot, 'zzz'));
+  });
+
+  // Pins `distinctFloors`, which had ZERO references: replacing it with `[]`
+  // exited 0 printing "0 distinct".
+  it('reports distinct floors, deduped and ascending', () => {
+    const integRoot = corpus({
+      a: '^2.300.0',
+      b: '^2.100.0',
+      c: '^2.300.0', // duplicate of a
+      d: '^2.200.0',
+    });
+    const report = checkIntegCdkLibFloor({ integRoot, templatePath: REAL_TEMPLATE });
+    expect(report.distinctFloors).toEqual(['^2.100.0', '^2.200.0', '^2.300.0']);
+  });
+
+  // The template sitting between two corpus floors must still PASS: the rule
+  // is "not below the MINIMUM", not "at or above every fixture".
+  it('passes when the template is above the minimum but below other fixtures', () => {
+    const integRoot = corpus({ low: '^2.100.0', high: '^2.900.0' });
+    const template = copyRealTemplate((t) =>
+      t.replace(/"aws-cdk-lib": "\^2\.\d+\.\d+"/, '"aws-cdk-lib": "^2.150.0"'),
+    );
+    const report = checkIntegCdkLibFloor({ integRoot, templatePath: template });
+    expect(report.violations).toEqual([]);
+  });
+});
+
+describe('declaredSpec refuses what it cannot read', () => {
+  it.each([
+    ['found', { dependencies: { 'aws-cdk-lib': '^2.1.0' } }, 'found'],
+    ['found in devDependencies', { devDependencies: { 'aws-cdk-lib': '^2.1.0' } }, 'found'],
+    ['absent', { name: 'x', dependencies: {} }, 'absent'],
+    ['no buckets at all', { name: 'x' }, 'absent'],
+    // Each of these used to `continue` silently, dropping the fixture out of
+    // the minimum -- a loosening, which the header classifies as a refusal.
+    ['manifest is an array', [], 'malformed'],
+    ['manifest is a string', 'nope', 'malformed'],
+    ['dependencies is a string', { dependencies: 'nope' }, 'malformed'],
+    ['dependencies is an array', { dependencies: [] }, 'malformed'],
+    ['spec is a number', { dependencies: { 'aws-cdk-lib': 2 } }, 'malformed'],
+    ['spec is null', { dependencies: { 'aws-cdk-lib': null } }, 'malformed'],
+  ])('classifies %s', (_label, manifest, kind) => {
+    expect(declaredSpec(manifest).kind).toBe(kind);
+  });
+
+  it('surfaces a malformed manifest as a REFUSAL, not a smaller minimum', () => {
+    const dir = scratch('cdkd-floor-malformed-');
+    mkdirSync(join(dir, 'good'), { recursive: true });
+    writeFileSync(
+      join(dir, 'good', 'package.json'),
+      JSON.stringify({ dependencies: { 'aws-cdk-lib': '^2.300.0' } }),
+    );
+    mkdirSync(join(dir, 'bad'), { recursive: true });
+    writeFileSync(join(dir, 'bad', 'package.json'), JSON.stringify({ dependencies: 'nope' }));
+    const report = checkIntegCdkLibFloor({ integRoot: dir, templatePath: REAL_TEMPLATE });
+    // The point: `bad` does not silently vanish leaving `good` as the minimum.
+    expect(report.refusals.map((r) => r.reason)).toContain('"dependencies" is not a JSON object');
+    expect(report.violations.join('\n')).toContain('not a JSON object');
+  });
+});
+
+describe('the repoRoot seam', () => {
+  it('renders labels relative to a CALLER-supplied repoRoot', () => {
+    const dir = scratch('cdkd-floor-reporoot-');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    writeFileSync(join(dir, 'a', 'package.json'), '{ "name": "a", ');
+    // With repoRoot = dir, the manifest is INSIDE it, so the label is relative.
+    const report = checkIntegCdkLibFloor({
+      integRoot: dir,
+      templatePath: REAL_TEMPLATE,
+      repoRoot: dir,
+    });
+    expect(report.refusals.map((r) => r.where)).toContain(join('a', 'package.json'));
+  });
+
+  it('accepts --repo-root= and refuses an empty one', () => {
+    const ok = runCli([`--repo-root=${REPO_ROOT}`]);
+    expect(ok.status).toBe(0);
+    const empty = runCli(['--repo-root=']);
+    expect(empty.status).toBe(1);
+    expect(empty.stderr).toContain('--repo-root= requires a non-empty value');
+  }, TIMEOUT);
 });
 
 describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
