@@ -807,20 +807,21 @@ else
     fail=$((fail + 1)); printf 'FAIL Edit of a tracked main-tree file must still be BLOCKED with a constant missing\n'
   fi
 
-  # THE REFUSAL TEXT. Seven needles over the refusal's fourteen LINES, and the
-  # coverage is stated exactly because an earlier wording claimed "one per
-  # SENTENCE". Measured by deleting each line in turn: six of the fourteen --
-  # lines 2, 3, 4, 8, 10 and 13 -- leave this suite AND main-tree-branch-gate
-  # green; line 1 reddens two cases and every other line reddens one. What IS fully pinned is the half an
-  # agent ACTS on: which tools survive, where that route holds and does not,
-  # and who repairs it in the main tree. Whole-message deletion is caught by
-  # the population guard below. Review measured that deleting the
-  # whole "how do I repair this" paragraph from `gate_require_const` left every
-  # suite in the repo green -- this file, `main-tree-branch-gate`,
-  # `restore-backup`, `branch-gate` -- while the sibling refusal fifteen lines
-  # away carries ten such cases. Text an agent ACTS ON is load-bearing, and its
-  # first revision was wrong in one tree, which is exactly what an unasserted
-  # message lets through.
+  # THE REFUSAL TEXT. Seven needles over the refusal's fourteen TEXT lines (it
+  # emits fifteen; one is a blank separator), and the coverage is stated
+  # exactly because an earlier wording claimed "one per SENTENCE". Measured by
+  # deleting each line in turn, counting across this suite AND
+  # `main-tree-branch-gate`: six -- lines 2, 3, 4, 8, 10 and 13 -- leave both
+  # green; line 1 reddens three cases, two here and one there; every other line
+  # reddens one. What IS fully pinned is the half an agent ACTS on: which tools
+  # survive, where that route holds and does not, and who repairs it in the
+  # main tree. Whole-message deletion is caught by the population guard below.
+  # Review measured that deleting the whole "how do I repair this" paragraph
+  # from `gate_require_const` left every suite in the repo green -- this file,
+  # `main-tree-branch-gate`, `restore-backup`, `branch-gate` -- while the
+  # sibling refusal in the same file carries needles of its own. Text an agent
+  # ACTS ON is load-bearing, and its first revision was wrong in one tree,
+  # which is exactly what an unasserted message lets through.
   for __sc_needle in \
     "EVERY Bash call is refused" \
     "a command-line repair is not available" \

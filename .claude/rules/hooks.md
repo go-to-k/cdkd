@@ -936,8 +936,8 @@ calls in place meanwhile is THREE suites and review, not thirty-one.**
 Measured by deleting the `gate_require_const` line from each hook and re-running
 that hook's own suite: `main-tree-branch-gate`, `restore-backup` and
 `main-tree-edit-gate` redden; the other 27 report an identical tally before and
-after, and `post-merge-sync-reminder` has no suite at all -- because a suite
-that never stages a library missing the constant cannot see the call go away. So
+after — because a suite that never stages a library missing the constant cannot
+see the call go away — and `post-merge-sync-reminder` has no suite at all. So
 a hook added before go-to-k/cdkd#2826 lands can read a library constant with no
 `gate_require_const` and nothing will say so — and so can an existing one whose
 call is deleted. The three that catch it stage a stripped library and assert the
