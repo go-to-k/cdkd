@@ -78,7 +78,7 @@ jobs:
       # claim nothing from the head is executed; that was factually wrong, and
       # the security review of go-to-k/cdkd#2717 caught it. This job needs no
       # head content at all: the file list comes from the API below.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           # SAME-REPO PR -> the head; FORK PR -> the base.
           #
@@ -109,7 +109,7 @@ jobs:
       # (CLAUDE.md -> Node.js Version). The check imports node builtins only, so
       # `run-install: false` and no cache: there is nothing to install and no
       # lockfile to key a cache on.
-      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+      - uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1
         with:
           node-version: "24"
           cache: false

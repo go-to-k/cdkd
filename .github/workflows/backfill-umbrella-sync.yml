@@ -48,7 +48,7 @@ jobs:
       # for this same splice; moving it here is what lets that job drop it.
       issues: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           # Nothing here pushes, so the token has no reason to persist into
           # `.git/config` where the render step's subprocesses could reach it.
@@ -58,7 +58,7 @@ jobs:
       # refresh-report setup and uses only `node:` builtins to read one
       # committed file, so a dependency install would add a failure surface to
       # a step that cannot use it.
-      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+      - uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1
         with:
           node-version: "24"
           cache: true
