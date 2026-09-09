@@ -74,7 +74,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, isAbsolute } from 'node:path';
 
 /** Repo-relative path of the scaffold template this fences. */
 export const TEMPLATE_REL = join('.claude', 'skills', 'new-integ', 'SKILL.md');
@@ -229,10 +229,36 @@ export interface CheckOptions {
   integRoot: string;
   /** Absolute path to the scaffold template markdown. */
   templatePath: string;
+  /**
+   * Root the printed paths are rendered relative to. Defaults to this repo, so
+   * the ordinary invocation prints `tests/integration/basic/package.json`
+   * rather than an absolute path.
+   */
+  repoRoot?: string;
+}
+
+/**
+ * Render a path for a message.
+ *
+ * EVERY printed path goes through this. Three rounds of review found the same
+ * defect at six different sites: a hardcoded `INTEG_ROOT_REL` / `TEMPLATE_REL`
+ * label, which under the `--integ-root=` / `--template=` seams names a file the
+ * run never read. Hardcoding was the bug, so nothing here may hardcode; the
+ * label is always DERIVED from the path actually used.
+ *
+ * Relative when the path is inside `repoRoot` (the house convention — see
+ * `scripts/check-local-reachability.ts`), absolute otherwise, so a seam path in
+ * a temp dir cannot be mistaken for a repo file.
+ */
+function label(repoRoot: string, path: string): string {
+  const rel = relative(repoRoot, path);
+  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : path;
 }
 
 export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
   const { integRoot, templatePath } = options;
+  const repoRoot = options.repoRoot ?? join(import.meta.dirname, '..');
+  const at = (p: string) => label(repoRoot, p);
   const refusals: Refusal[] = [];
   const floors: FixtureFloor[] = [];
   let fixtures = 0;
@@ -267,7 +293,7 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
       manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
     } catch (error) {
       refusals.push({
-        where: join(integRoot, fixture, 'package.json'),
+        where: at(join(integRoot, fixture, 'package.json')),
         reason: `manifest does not parse: ${String(error)}`,
       });
       continue;
@@ -281,7 +307,7 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
     const floor = parseFloor(spec);
     if (floor === null) {
       refusals.push({
-        where: join(integRoot, fixture, 'package.json'),
+        where: at(join(integRoot, fixture, 'package.json')),
         reason: `aws-cdk-lib spec "${spec}" has no decidable floor (accepted: ^X.Y.Z, ~X.Y.Z, X.Y.Z)`,
       });
       continue;
@@ -303,10 +329,10 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
           : extraction.matches > 1
             ? `found ${extraction.matches} \`"aws-cdk-lib": "<spec>"\` declarations in the scaffold template; expected exactly 1 (which one is the template?)`
             : `scaffold template spec "${extraction.spec}" has no decidable floor (accepted: ^X.Y.Z, ~X.Y.Z, X.Y.Z)`;
-      refusals.push({ where: TEMPLATE_REL, reason });
+      refusals.push({ where: at(templatePath), reason });
     }
   } catch (error) {
-    refusals.push({ where: TEMPLATE_REL, reason: `template unreadable: ${String(error)}` });
+    refusals.push({ where: at(templatePath), reason: `template unreadable: ${String(error)}` });
   }
 
   const sorted = [...floors].sort((a, b) => compareFloors(a.floor, b.floor));
@@ -321,9 +347,7 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
   // existing-but-empty root previously produced a fully clean report, and a
   // caller reaching for the exported function gets no `FLOORS` check.
   if (fixtures === 0) {
-    // `integRoot`, not INTEG_ROOT_REL: under the `--integ-root=` seam the
-    // hardcoded label pointed the reader at a directory that was never read.
-    violations.push(`${integRoot}: no fixture manifest found — the corpus was not read`);
+    violations.push(`${at(integRoot)}: no fixture manifest found — the corpus was not read`);
   } else if (minFloor === null) {
     // Deliberately states only what it KNOWS, and infers no cause.
     //
@@ -337,16 +361,14 @@ export function checkIntegCdkLibFloor(options: CheckOptions): FloorReport {
     // already emitted as its own violation above. So the summary reports the
     // fact and points at them, rather than re-deriving a cause it cannot see.
     violations.push(
-      `${integRoot}: ${fixtures} fixture manifests read, none yielded a decidable ` +
-        `aws-cdk-lib floor` +
-        (refusals.length > 0 ? ` (see the ${refusals.length} refusal(s) above for why)` : ''),
+      `${at(integRoot)}: ${fixtures} fixture manifests read, none yielded a decidable aws-cdk-lib floor`,
     );
   }
   if (minFloor !== null && templateFloor !== null && compareFloors(templateFloor, minFloor) < 0) {
     const lowest = sorted[0];
     violations.push(
-      `${TEMPLATE_REL} emits aws-cdk-lib "${templateFloor.raw}", below the lowest floor in the ` +
-        `fixture corpus ("${lowest.spec}", ${join(integRoot, lowest.fixture)}). A new fixture ` +
+      `${at(templatePath)} emits aws-cdk-lib "${templateFloor.raw}", below the lowest floor in the ` +
+        `fixture corpus ("${lowest.spec}", ${at(join(integRoot, lowest.fixture))}). A new fixture ` +
         `scaffolded from this template would start behind the corpus — raise the template.`,
     );
   }
@@ -468,6 +490,7 @@ function main(): void {
   }
 
   const report = checkIntegCdkLibFloor({
+    repoRoot,
     integRoot: integRoot ?? join(repoRoot, INTEG_ROOT_REL),
     templatePath: template ?? join(repoRoot, TEMPLATE_REL),
   });

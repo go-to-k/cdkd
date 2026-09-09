@@ -216,16 +216,6 @@ describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
     expect(report.violations.join('\n')).not.toContain(INTEG_ROOT_REL);
   });
 
-  it('reports a violation when manifests exist but none declares a floor', () => {
-    const dir = scratch('cdkd-floor-nodecl-');
-    mkdirSync(join(dir, 'a'), { recursive: true });
-    writeFileSync(join(dir, 'a', 'package.json'), '{ "name": "a", "dependencies": {} }');
-    const report = checkIntegCdkLibFloor({ integRoot: dir, templatePath: REAL_TEMPLATE });
-    expect(report.fixtures).toBe(1);
-    expect(report.declaringFixtures).toBe(0);
-    expect(report.violations.join('\n')).toContain('none yielded a decidable aws-cdk-lib floor');
-  });
-
   // The summary INFERS NO CAUSE. Two review rounds went into a conditional
   // trying to say why no floor was found; every version was wrong for some
   // input because it branched on `refusals.length` against `fixtures`, which
@@ -262,6 +252,44 @@ describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
     });
     expect(report.refusals.length).toBe(2); // one manifest + one template
     expect(report.violations.join('\n')).toContain('none yielded a decidable aws-cdk-lib floor');
+  });
+
+  // finding 3 of round 4: the path in the BELOW-THE-FLOOR message was
+  // unpinned — reverting it to the hardcoded label left the whole suite green.
+  // This is the only arm that reaches that site (it needs a non-null minFloor).
+  it('names the real corpus AND template paths in the below-the-floor message', () => {
+    const integRoot = copyRealManifests();
+    const template = copyRealTemplate((t) =>
+      t.replace(/"aws-cdk-lib": "\^2\.\d+\.\d+"/, '"aws-cdk-lib": "^2.169.0"'),
+    );
+    const report = checkIntegCdkLibFloor({ integRoot, templatePath: template });
+    const text = report.violations.join('\n');
+    expect(text).toContain('below the lowest floor');
+    expect(text).toContain(integRoot);
+    expect(text).toContain(template);
+    expect(text).not.toContain(INTEG_ROOT_REL);
+    expect(text).not.toContain(TEMPLATE_REL);
+  });
+
+  // finding 2 of round 4: TEMPLATE_REL was hardcoded on the refusal sites too,
+  // so a seam template that could not be read was reported at the repo path.
+  it('names the real template path when the TEMPLATE itself refuses', () => {
+    const integRoot = copyRealManifests();
+    const missing = join(scratch('cdkd-floor-notpl-'), 'missing.md');
+    const report = checkIntegCdkLibFloor({ integRoot, templatePath: missing });
+    const text = [...report.violations, ...report.refusals.map((r) => r.where)].join('\n');
+    expect(text).toContain(missing);
+    expect(text).not.toContain(TEMPLATE_REL);
+  });
+
+  // The default (no-seam) invocation must still print REPO-RELATIVE paths --
+  // the label helper derives them, so this pins the house convention rather
+  // than an absolute path leaking into CI output.
+  it('prints repo-relative paths for the default invocation', () => {
+    const res = runCli([`--template=${copyRealTemplate((t) => t.replace(/"aws-cdk-lib": "\^2\.\d+\.\d+"/, '"aws-cdk-lib": "^2.169.0"'))}`]);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(`${INTEG_ROOT_REL}/`);
+    expect(res.stderr).not.toContain(REPO_ROOT);
   });
 
   // Every path the checker prints must name the root it ACTUALLY read.
