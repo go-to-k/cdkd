@@ -4,6 +4,12 @@
 /**
  * Refresh CFn schema property-name fixtures for the SDK Provider coverage test.
  *
+ * The OPERATOR's side of the daily job that runs this — what arrives, what to do
+ * with each class, and what to do when nothing arrives because the job failed or
+ * never fired — is `docs/schema-refresh-runbook.md`. Linked here because that
+ * page is `unlisted` and its other inbound links are written by a pull request
+ * which, in exactly the failure case, does not exist.
+ *
  * For each resource type registered via `registerAllProviders` in
  * `src/provisioning/register-providers.ts`, this script:
  *   1. Calls `cloudformation:DescribeType` (RESOURCE) to fetch the canonical

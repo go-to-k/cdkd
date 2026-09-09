@@ -32,7 +32,7 @@ tell you anything the title has not already said.
 
 | What you see | What to do |
 | --- | --- |
-| No pull request | Nothing. Most days are this. |
+| No pull request | Usually nothing — most days are this. But it also looks like this when the job FAILED or never fired: see [When there is nothing to read](#when-there-is-nothing-to-read). |
 | A pull request with a plain title, no label | Nothing needs a decision. Read the diff, squash merge. |
 | `— N decisions needed` in the title, `needs-decision` label, assigned to you | N things need your call. They are labelled **D1**–**DN** in the body. |
 | A pull request saying the nested-key check failed unreadably | Read that job's log; the other sections still hold. |
@@ -325,6 +325,77 @@ The open-pull-request guard matches on the branch prefix
 branch under that prefix reads as the open refresh PR, and the job will push its
 drift onto your branch. Fork PRs are excluded, so this only applies to branches
 here.
+
+## When there is nothing to read
+
+Every other section of this page starts from a pull request. These are the two
+states where none exists, and from the outside they look identical to a quiet
+day.
+
+**Tell them apart from the run list, not from the absence.**
+
+```bash
+gh run list --workflow cfn-schema-refresh.yml --limit 5
+gh run list --workflow backfill-umbrella-sync.yml --limit 5
+```
+
+- a `schedule` run, `success`, no pull request → **no drift**. Nothing to do.
+  The run log says `0 drifted, N unchanged` and `No fixture drift — nothing to do.`
+- a run with `failure` → the job broke. Read its log; the failing step names the
+  cause.
+- **no run at all for today** → see the cadence below before concluding anything.
+
+### The schedule runs late, and that is normal
+
+The cron is `04:37 UTC`, deliberately off the hour because the top of the hour
+is contended on GitHub's shared pool. Both scheduled fires measured so far
+landed hours after it:
+
+| Scheduled for | Actually ran | Late by |
+| --- | --- | --- |
+| 2026-09-08 04:37 UTC | 09:00:10 UTC | 4h 23m |
+| 2026-09-09 04:37 UTC | 09:06:43 UTC | 4h 30m |
+
+Two points, so read them as "the delay is real and has been about four and a
+half hours", not as a bound. An absence at the nominal time means nothing; an
+absence late in the day is worth a look.
+
+### Running either job by hand
+
+Both carry `workflow_dispatch` for this, and it is the documented recovery path
+rather than a convenience.
+
+```bash
+gh workflow run cfn-schema-refresh.yml      # capture, compare, open or update the PR
+gh workflow run backfill-umbrella-sync.yml  # re-render the umbrella issue's checklist from main
+```
+
+`cfn-schema-refresh` behaves exactly as a scheduled run: no drift means no pull
+request. It is also the only way to exercise the job before its first scheduled
+fire, and the reactive path when someone reports a dropped property mid-cycle
+rather than waiting for tomorrow.
+
+`backfill-umbrella-sync` normally fires only on a push to `main` that touches
+`src/provisioning/property-coverage.generated.ts`, so on a quiet week it may not
+run for days — and if it failed on the last such push, the umbrella issue keeps
+its previous checklist until the next one. A dispatch closes that gap. It
+rewrites only the block between its markers; the human-written provenance
+outside them is never touched. Measured on 2026-09-09: a dispatch took the
+issue from 285 rows to 288 in under a minute, leaving 7,655 characters of
+provenance intact.
+
+### What a dispatch will not fix
+
+- **A schedule GitHub has suspended.** GitHub stops running scheduled workflows
+  on a repository that has gone inactive, and a manual run does not re-enable
+  them — a push to the default branch does. (The inactivity threshold is
+  GitHub's and is not restated here; check their docs rather than a number
+  copied into this page, which would go stale silently.)
+- **A wrong answer.** A dispatch re-runs the job; it does not re-decide
+  anything. If a pull request already carries a decision you disagree with,
+  the sections above are the path, not another run.
+- **A closed refresh pull request.** Re-running reuses the branch name and
+  replaces it, which is the same-day-replacement case described above.
 
 ## Related
 
