@@ -304,8 +304,18 @@ describe('emptiness is a LIBRARY violation, not only a CLI floor', () => {
 
   // finding 1 of round 5: the unreadable-root EARLY RETURN bypassed the label
   // helper, so it printed an absolute path where every sibling site printed a
-  // repo-relative one -- falsifying the "every printed path" invariant at the
-  // one site the conversion missed. No other arm reaches this branch.
+  // repo-relative one -- falsifying the "every path this file formats"
+  // invariant at the one site the conversion missed. No other arm reaches this
+  // branch.
+  //
+  // COUPLING, so a future cleanup does not read this arm as a labelling
+  // regression: it passes partly because the early return hand-writes its own
+  // `violations` and never runs the refusals-to-violations loop every other
+  // site goes through. Routing it through that loop -- the natural tidy-up --
+  // puts the refusal's `reason` on stderr, and a `reason` carries Node's
+  // errno text with a RAW absolute path by design (see `label()`'s exemption).
+  // If this arm reds after such a refactor, narrow the assertion to the
+  // violation line; do not start stripping the errno.
   it('labels the unreadable-root message like every other path', () => {
     const res = runCli([`--integ-root=${join(REPO_ROOT, INTEG_ROOT_REL, 'DOES-NOT-EXIST')}`]);
     expect(res.status).toBe(1);

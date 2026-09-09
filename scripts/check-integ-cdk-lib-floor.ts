@@ -240,11 +240,18 @@ export interface CheckOptions {
 /**
  * Render a path for a message.
  *
- * EVERY printed path goes through this. Three rounds of review found the same
- * defect at six different sites: a hardcoded `INTEG_ROOT_REL` / `TEMPLATE_REL`
- * label, which under the `--integ-root=` / `--template=` seams names a file the
- * run never read. Hardcoding was the bug, so nothing here may hardcode; the
- * label is always DERIVED from the path actually used.
+ * Every path this file FORMATS goes through this. Four rounds of review found
+ * the same defect at seven different sites: a hardcoded `INTEG_ROOT_REL` /
+ * `TEMPLATE_REL` label, which under the `--integ-root=` / `--template=` seams
+ * names a file the run never read. Hardcoding was the bug, so nothing here may
+ * hardcode; the label is always DERIVED from the path actually used.
+ *
+ * EXEMPT, deliberately: the absolute path Node embeds in an errno message,
+ * which reaches a `reason` through `String(error)`. It is not a label this file
+ * composes, and the errno text is the diagnostic — stripping it to keep one
+ * line internally consistent would trade real information for tidiness. So a
+ * refusal line can legitimately carry a labelled path AND a raw absolute one.
+ * Do not "fix" that by reformatting the error.
  *
  * Relative when the path is inside `repoRoot` (the house convention — see
  * `scripts/check-local-reachability.ts`), absolute otherwise, so a seam path in
