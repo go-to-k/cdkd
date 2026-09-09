@@ -249,9 +249,32 @@ export declare function classifyRemovedProperty(input: {
   repoRoot?: string;
 }): { auto: false; reason: string } | { auto: true; rationale: string };
 /**
- * Apply the classifier across every removed entry, writing the settled ones into
- * `_todo-backfill.json`'s `bogusTolerated` and reporting both outcomes.
+ * The evidence helpers `loadEvidenceDeps` resolves.
+ *
+ * Structural, for the config-less-`tsc` reason recorded on the loader below;
+ * `typedSdkMember` / `providerWiresProperty` repeat the shapes
+ * `classifyRemovedProperty` already declares for its own `typedMember` /
+ * `wires` inputs, which is what those two are passed as.
  */
+export interface EvidenceDeps {
+  typedSdkMember: (
+    property: string,
+    clientPackage: string,
+    repoRoot?: string
+  ) =>
+    | { client: string; spelling: 'exact' | 'lowerFirst'; interfaces: readonly string[] }
+    | undefined;
+  providerWiresProperty: (
+    property: string,
+    providerRelPath: string | undefined,
+    repoRoot?: string
+  ) => { sites: readonly string[] } | undefined;
+  publishedSdkInterfaces: (
+    client: string,
+    version: string
+  ) => ReadonlyMap<string, ReadonlyMap<string, unknown>> | undefined;
+}
+
 /**
  * Load the evidence helpers the non-checklist modes need.
  *
@@ -264,17 +287,26 @@ export declare function classifyRemovedProperty(input: {
  * `writeAutoTolerated` or `partitionPendingSdkBump` without it, and without
  * injecting doubles, gets a REFUSAL rather than a silent empty verdict.
  *
- * Returns `unknown` rather than the helper types: this file is type-checked by
- * a CONFIG-LESS `tsc` (see the sibling test), so it cannot import from a `.ts`
- * module — the same constraint the `partitionPendingSdkBump` note above records.
+ * The members are declared STRUCTURALLY rather than imported: this file is
+ * type-checked by a CONFIG-LESS `tsc` (see the sibling test), so it cannot
+ * import from a `.ts` module — the same constraint the `partitionPendingSdkBump`
+ * note above records. `unknown` was the first cut and is too weak to be worth
+ * declaring: a caller passing `{}` compiles, the helpers read as `undefined`
+ * callables, and the classifier's own `catch` turns that into "the evidence
+ * could not be read" for every property — silence exactly where this contract
+ * promises a refusal.
  */
-export declare function loadEvidenceDeps(): Promise<unknown>;
+export declare function loadEvidenceDeps(): Promise<EvidenceDeps>;
 
+/**
+ * Apply the classifier across every removed entry, writing the settled ones into
+ * `_todo-backfill.json`'s `bogusTolerated` and reporting both outcomes.
+ */
 export declare function writeAutoTolerated(
   removed: RemovedEntry[],
   providerFiles: Map<string, string>,
   repoRoot?: string,
-  deps?: unknown
+  deps?: EvidenceDeps
 ): {
   written: Array<{ resourceType: string; property: string; rationale: string }>;
   escalated: Array<{ resourceType: string; property: string; reason: string }>;

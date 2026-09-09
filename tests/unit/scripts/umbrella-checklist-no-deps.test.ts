@@ -49,6 +49,24 @@ function makeCorpus(): string {
   return root;
 }
 
+/**
+ * Replace BOTH helper modules with stubs, so a loader case reaches exactly the
+ * condition it injects.
+ *
+ * Stubbing only one leaves the other's real transitive graph in play, and in a
+ * corpus this small that graph fails first for a reason the case is not about
+ * (measured: `published-sdk-typings.ts` reaches `src/utils/aws-clients.ts`,
+ * which the corpus does not carry, and its message replaced the injected one).
+ * With both stubbed the case needs no `node_modules` either.
+ */
+function stubHelpers(root: string, evidenceSource: string): void {
+  writeFileSync(join(root, 'scripts/offline-property-evidence.ts'), evidenceSource);
+  writeFileSync(
+    join(root, 'scripts/published-sdk-typings.ts'),
+    'export const publishedSdkInterfaces = () => undefined;\n'
+  );
+}
+
 function runChecklist(root: string) {
   return spawnSync(process.execPath, ['scripts/diagnose-schema-refresh.mjs', '--umbrella-checklist'], {
     cwd: root,
@@ -112,6 +130,50 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
       /evidence helpers are not loaded/
     );
   });
+
+  it('a FAILED load exits non-zero instead of rendering a diagnosis', () => {
+    // The load sits OUTSIDE the catch that renders `_The automated diagnosis
+    // failed to run …_` at exit 0. That swallow exists so a broken diagnosis
+    // cannot take down the PR it describes, and the reasoning does not carry
+    // here: a run whose inputs never loaded read NOTHING, and reporting that as
+    // a diagnosis cdkd chose to write is the same misread the lazy import
+    // removes one layer down.
+    const root = makeCorpus();
+    stubHelpers(root, "throw new Error('module blew up on import');\n");
+
+    // Any non-checklist invocation: the load runs before `main()`, so argv
+    // beyond the mode test is irrelevant to what is being fenced.
+    const run = spawnSync(process.execPath, ['scripts/diagnose-schema-refresh.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('could not load the evidence helpers');
+    expect(run.stderr).toContain('module blew up on import');
+    expect(run.stdout).not.toContain('The automated diagnosis failed to run');
+  }, 60_000);
+
+  it('REFUSES a load that resolved but exported the wrong shape', () => {
+    // `requireEvidenceDeps` tests for the HOLDER, not its members, so a renamed
+    // upstream export would leave it defined-but-hollow — and the failure would
+    // then surface as `undefined` callables inside the classifier, whose own
+    // catch reports "the evidence could not be read" for EVERY property. That
+    // reads as a legitimate could-not-determine verdict, which is silence
+    // exactly where this module promises a refusal.
+    const root = makeCorpus();
+    stubHelpers(
+      root,
+      'export const typedSdkMember = 42;\nexport const providerWiresProperty = () => undefined;\n'
+    );
+
+    const run = spawnSync(process.execPath, ['scripts/diagnose-schema-refresh.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('did not export typedSdkMember');
+    expect(run.stdout).not.toContain('The automated diagnosis failed to run');
+  }, 60_000);
 
   it('is a fence for the workflow as it is actually written', () => {
     // The premise this file rests on lives in the workflow: if a later change

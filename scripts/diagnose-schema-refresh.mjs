@@ -140,11 +140,27 @@ export async function loadEvidenceDeps() {
     import('./offline-property-evidence.ts'),
     import('./published-sdk-typings.ts'),
   ]);
-  evidenceDeps = {
+  const loaded = {
     typedSdkMember: evidence.typedSdkMember,
     providerWiresProperty: evidence.providerWiresProperty,
     publishedSdkInterfaces: published.publishedSdkInterfaces,
   };
+  // VALIDATED before it is stored. A renamed upstream export leaves the object
+  // defined but hollow, which `requireEvidenceDeps` cannot see — and the
+  // failure would then surface as `undefined` callables inside the classifier,
+  // whose own catch reports "the evidence could not be read" for EVERY
+  // property. That is silence where this module promises a refusal, and it
+  // reads as a legitimate could-not-determine verdict.
+  const missing = Object.entries(loaded)
+    .filter(([, fn]) => typeof fn !== 'function')
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(
+      `the evidence helpers did not export ${missing.join(', ')} — the module moved or was ` +
+        'renamed, and continuing would report every property as unreadable rather than saying so.'
+    );
+  }
+  evidenceDeps = loaded;
   return evidenceDeps;
 }
 
@@ -2711,17 +2727,35 @@ function main() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  try {
-    // The one mode that must run with NO dependencies installed keeps its graph
-    // to `node:` builtins; every other mode loads the evidence helpers first.
-    // Written as a positive test of THIS mode rather than a list of the others,
-    // so a mode added later loads them by default — the safe direction, since
-    // the cost is an install the workflow already performs and the alternative
-    // is a mode that silently reaches `requireEvidenceDeps`'s refusal.
-    if (!process.argv.slice(2).includes('--umbrella-checklist')) {
+  // The one mode that must run with NO dependencies installed keeps its graph to
+  // `node:` builtins; every other mode loads the evidence helpers first. Written
+  // as a positive test of THIS mode rather than a list of the others, so a mode
+  // added later loads them by default — the safe direction, since the cost is an
+  // install the workflow already performs and the alternative is a mode that
+  // silently reaches `requireEvidenceDeps`'s refusal.
+  //
+  // OUTSIDE the swallow below, deliberately. A failure HERE is not a failed
+  // diagnosis — it is the run never having had its inputs — and the swallow's
+  // justification ("a broken diagnosis must not take down the PR it describes")
+  // does not carry: rendering the could-not-run sentence at exit 0 would report
+  // a missing dependency as a report cdkd chose to write, which is the same
+  // misread the lazy import removes one layer down.
+  let inputsReady = true;
+  if (!process.argv.slice(2).includes('--umbrella-checklist')) {
+    try {
       await loadEvidenceDeps();
+    } catch (err) {
+      process.stderr.write(
+        `diagnose-schema-refresh: could not load the evidence helpers ` +
+          `(${err instanceof Error ? err.message : String(err)}). This run read nothing; ` +
+          'do not treat its output as a diagnosis.\n'
+      );
+      process.exitCode = 1;
+      inputsReady = false;
     }
-    main();
+  }
+  try {
+    if (inputsReady) main();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // A broken diagnosis must never take down the PR it describes — but that
