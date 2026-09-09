@@ -1839,6 +1839,198 @@ PRE_REFUSE_CHAIN_RAW=""
 POST_REFUSE_CHAIN_RAW=""
 pass "the chain consumer's state.json is byte-identical across the refusal and still carries no plaintext"
 
+echo ""
+echo "==> Step 11c (assertion 10c - THE EXPORTS INDEX, issue #2667): scrub converges an entry it owns"
+# Issue [#2667](https://github.com/go-to-k/cdkd/issues/2667). `cdkd scrub`
+# rewrote each targeted stack's `state.json` and left the shared exports index
+# alone, so a value published there by a legacy binary stayed as the CURRENT
+# body of a region-wide object readable with `s3:GetObject` and no version id.
+# The repair converges an entry the index ALREADY holds, for a stack this run
+# scrubbed, to that stack's `state.outputs` value under the same name.
+#
+# WHY THE SEED IS A SENTINEL AND NOT `${EXPECTED_PLAINTEXT}`. The repair reads
+# neither the entry's content nor scrub's plaintext map -- it compares the
+# entry against `state.outputs` -- so a sentinel takes the identical branch. It
+# also makes the arm SAFE TO ABANDON: this key is SHARED with every other stack
+# in the region and nothing in `cleanup` restores its CURRENT body, so a seed
+# carrying the run's secret would survive a mid-arm failure as a live
+# disclosure in an object this fixture deliberately never purges wholesale. The
+# sentinel is additionally the ROTATED-AWAY shape the convergence rule exists
+# for: a value that is neither the current plaintext nor the expression.
+INDEX_SEED_OWNED="cdkd-2667-legacy-${RUN_ID}"
+INDEX_SEED_FOREIGN="cdkd-2667-foreign-${RUN_ID}"
+
+# PREMISE 1: the producer's own state carries the expression under the export
+# name, which is the value the repair must write. Read from state rather than
+# assumed, because step 10b seeded OTHER keys of this same record.
+PRODUCER_STATE_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" -)
+PRODUCER_EXPORT_STATE_VALUE=$(printf '%s' "${PRODUCER_STATE_RAW}" \
+  | jq -r --arg k "${EXPORT_NAME}" '.outputs[$k] // empty')
+case "${PRODUCER_EXPORT_STATE_VALUE}" in
+  '{{resolve:secretsmanager:'*) : ;;
+  *)
+    fail "the producer's state.outputs[${EXPORT_NAME}] is not a {{resolve:secretsmanager:...}} expression - the convergence rule requires a state value carrying {{resolve:, so with anything else here the arm would exercise the SKIP branch and pass vacuously"
+    ;;
+esac
+# Blanked immediately: step 10b's seed is still in this document, so keeping it
+# in scope would leave the run's plaintext one accidental `echo` away.
+PRODUCER_STATE_RAW=""
+pass "premise: the producer's state.outputs[${EXPORT_NAME}] holds the expression the repair converges to"
+
+# PREMISE 2: both entries are present and OWNED by the stacks this arm expects,
+# read from the entry rather than inferred from the name -- which is exactly
+# what the repair does.
+INDEX_PRE_SEED_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${INDEX_KEY}" -)
+OWNED_PRODUCER=$(printf '%s' "${INDEX_PRE_SEED_RAW}" \
+  | jq -r --arg k "${EXPORT_NAME}" '.exports[$k].producerStack // empty')
+FOREIGN_PRODUCER=$(printf '%s' "${INDEX_PRE_SEED_RAW}" \
+  | jq -r --arg k "${REEXPORT_NAME}" '.exports[$k].producerStack // empty')
+if [ "${OWNED_PRODUCER}" != "${PRODUCER}" ]; then
+  fail "the exports index entry ${EXPORT_NAME} names producerStack '${OWNED_PRODUCER}', not '${PRODUCER}' - the arm would seed a key this scrub does not own and its convergence assertion could never pass"
+fi
+if [ "${FOREIGN_PRODUCER}" != "${CONSUMER}" ]; then
+  fail "the exports index entry ${REEXPORT_NAME} names producerStack '${FOREIGN_PRODUCER}', not '${CONSUMER}' - the NEGATIVE CONTROL below needs an entry this scrub does NOT own, and without one 'left untouched' would be satisfied by a repair that touches nothing at all"
+fi
+REEXPORT_PRE_SEED_VALUE=$(printf '%s' "${INDEX_PRE_SEED_RAW}" \
+  | jq -r --arg k "${REEXPORT_NAME}" '.exports[$k].value // empty')
+INDEX_PRE_SEED_KEYS=$(printf '%s' "${INDEX_PRE_SEED_RAW}" \
+  | jq -r '(.exports // {}) | keys | sort | join(",")')
+pass "premise: ${EXPORT_NAME} is owned by ${PRODUCER} and ${REEXPORT_NAME} by ${CONSUMER}"
+
+# SEED both entries. The read-modify-write mirrors step 7's state seed; the
+# re-read afterwards is what proves the patch LANDED, since a jq path that
+# stopped matching would leave every assertion below passing over an unseeded
+# object.
+INDEX_SEEDED_RAW=$(printf '%s' "${INDEX_PRE_SEED_RAW}" \
+  | jq --arg o "${EXPORT_NAME}" --arg f "${REEXPORT_NAME}" \
+       --arg ov "${INDEX_SEED_OWNED}" --arg fv "${INDEX_SEED_FOREIGN}" \
+       '.exports[$o].value = $ov | .exports[$f].value = $fv')
+printf '%s' "${INDEX_SEEDED_RAW}" | aws s3 cp - "s3://${STATE_BUCKET}/${INDEX_KEY}"
+INDEX_AFTER_SEED_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${INDEX_KEY}" -)
+SEEDED_OWNED=$(printf '%s' "${INDEX_AFTER_SEED_RAW}" \
+  | jq -r --arg k "${EXPORT_NAME}" '.exports[$k].value // empty')
+SEEDED_FOREIGN=$(printf '%s' "${INDEX_AFTER_SEED_RAW}" \
+  | jq -r --arg k "${REEXPORT_NAME}" '.exports[$k].value // empty')
+if [ "${SEEDED_OWNED}" != "${INDEX_SEED_OWNED}" ] || [ "${SEEDED_FOREIGN}" != "${INDEX_SEED_FOREIGN}" ]; then
+  fail "the exports index seed did not land (owned='${SEEDED_OWNED}', foreign='${SEEDED_FOREIGN}') - every assertion below would run against an already-converged object"
+fi
+pass "seeded ${EXPORT_NAME} and ${REEXPORT_NAME} to distinct sentinels"
+
+# --- 11c-i: --dry-run READS the index and writes nothing -------------------
+# THE rc IS A DISCRIMINATOR HERE, and that is worth stating because it reads
+# like it should not be. Step 10b RESTORES `PRODUCER_STATE_KEY` from its backup
+# before any of its assertions run, and asserts the restore landed; step 6
+# separately pins that `cdkd scrub` on the PRODUCER finds nothing. So by this
+# point the producer's `state.json` holds the expression and carries no
+# plaintext for `--fail` to exit 1 over — the ONLY finding left is the index
+# divergence this step seeded. A non-zero rc here therefore means the audit
+# half examined the index, which is the false-GREEN issue #2667 leads with.
+# (Measured on the first live run of this step, 2026-09-09.)
+#
+# The `Would converge` line is asserted as well, and remains the more specific
+# signal: it names WHICH entry, so it survives a future step being inserted
+# above that reintroduces a state finding and makes the rc confluent again.
+set +e
+INDEX_DRYRUN_OUT=$(node "${LOCAL_DIST}" scrub "${PRODUCER}" --dry-run --fail \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+INDEX_DRYRUN_RC=$?
+set -e
+assert_no_plaintext "the index dry-run scrub's output" "${INDEX_DRYRUN_OUT}"
+if ! printf '%s' "${INDEX_DRYRUN_OUT}" | grep -qF "Would converge exports index entry '${EXPORT_NAME}'"; then
+  # Sentinel: the stack NAME is printed by the summary independently of the
+  # convergence wording, so its presence separates "the audit did not fire"
+  # from "the output was never captured" (.claude/rules/testing.md).
+  if printf '%s' "${INDEX_DRYRUN_OUT}" | grep -qF "${PRODUCER}"; then
+    diag "${INDEX_DRYRUN_OUT}"
+    fail "'cdkd scrub ${PRODUCER} --dry-run' did not report 'Would converge exports index entry ${EXPORT_NAME}' - the audit half never examined the index, or its wording drifted and this grep is now blind"
+  fi
+  fail "'cdkd scrub ${PRODUCER} --dry-run' printed neither the convergence line nor the stack name - the output was not captured at all"
+fi
+if [ "${INDEX_DRYRUN_RC}" -eq 0 ]; then
+  diag "${INDEX_DRYRUN_OUT}"
+  fail "'cdkd scrub ${PRODUCER} --dry-run --fail' exited 0 while reporting an index divergence - the documented CI gate is green over it"
+fi
+INDEX_AFTER_DRYRUN_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${INDEX_KEY}" -)
+if [ "${INDEX_AFTER_DRYRUN_RAW}" != "${INDEX_AFTER_SEED_RAW}" ]; then
+  fail "the exports index object changed across a --dry-run scrub - the command is documented to write nothing under that flag"
+fi
+pass "11c-i: --dry-run reported the divergence, exited ${INDEX_DRYRUN_RC}, and left the object byte-identical"
+
+# --- 11c-ii: a REAL run converges the owned entry and no other -------------
+set +e
+INDEX_SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${PRODUCER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+INDEX_SCRUB_RC=$?
+set -e
+assert_no_plaintext "the index repair scrub's output" "${INDEX_SCRUB_OUT}"
+if [ "${INDEX_SCRUB_RC}" -ne 0 ]; then
+  diag "${INDEX_SCRUB_OUT}"
+  fail "'cdkd scrub ${PRODUCER}' exited ${INDEX_SCRUB_RC} (expected 0) while repairing the exports index"
+fi
+if ! printf '%s' "${INDEX_SCRUB_OUT}" | grep -qF "Converged exports index entry '${EXPORT_NAME}'"; then
+  diag "${INDEX_SCRUB_OUT}"
+  fail "'cdkd scrub ${PRODUCER}' did not report converging ${EXPORT_NAME}"
+fi
+INDEX_AFTER_SCRUB_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${INDEX_KEY}" -)
+REPAIRED_OWNED=$(printf '%s' "${INDEX_AFTER_SCRUB_RAW}" \
+  | jq -r --arg k "${EXPORT_NAME}" '.exports[$k].value // empty')
+if [ "${REPAIRED_OWNED}" != "${PRODUCER_EXPORT_STATE_VALUE}" ]; then
+  fail "the exports index entry ${EXPORT_NAME} is not the producer's state.outputs value after the repair (length ${#REPAIRED_OWNED}) - the value written is not the one a redeploy would write"
+fi
+# THE OWNERSHIP CONTROL. This entry is published by ${CONSUMER}, which this
+# invocation did not target, so it must still hold the sentinel. Without it
+# "the owned entry was repaired" is equally satisfied by a pass that rewrites
+# every entry it can reach.
+UNTOUCHED_FOREIGN=$(printf '%s' "${INDEX_AFTER_SCRUB_RAW}" \
+  | jq -r --arg k "${REEXPORT_NAME}" '.exports[$k].value // empty')
+if [ "${UNTOUCHED_FOREIGN}" != "${INDEX_SEED_FOREIGN}" ]; then
+  fail "the exports index entry ${REEXPORT_NAME} changed - it is published by ${CONSUMER}, which this scrub did not target, so ownership was decided by something other than the entry's producerStack"
+fi
+INDEX_AFTER_SCRUB_KEYS=$(printf '%s' "${INDEX_AFTER_SCRUB_RAW}" \
+  | jq -r '(.exports // {}) | keys | sort | join(",")')
+if [ "${INDEX_AFTER_SCRUB_KEYS}" != "${INDEX_PRE_SEED_KEYS}" ]; then
+  fail "the exports index MEMBERSHIP changed across the repair (was '${INDEX_PRE_SEED_KEYS}', now '${INDEX_AFTER_SCRUB_KEYS}') - the repair rewrites values only"
+fi
+assert_no_plaintext "the exports index after the repair" "${INDEX_AFTER_SCRUB_RAW}"
+pass "11c-ii: the owned entry converged, the foreign entry is untouched, and membership is unchanged"
+
+# --- 11c-iii: the repair is IDEMPOTENT -------------------------------------
+# What makes a partial apply recoverable: the rule reads `state.outputs`, which
+# the write above already matches, so a second invocation finds no remainder.
+set +e
+INDEX_RERUN_OUT=$(node "${LOCAL_DIST}" scrub "${PRODUCER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+INDEX_RERUN_RC=$?
+set -e
+assert_no_plaintext "the index re-run scrub's output" "${INDEX_RERUN_OUT}"
+if [ "${INDEX_RERUN_RC}" -ne 0 ]; then
+  diag "${INDEX_RERUN_OUT}"
+  fail "the second 'cdkd scrub ${PRODUCER}' exited ${INDEX_RERUN_RC} (expected 0)"
+fi
+if printf '%s' "${INDEX_RERUN_OUT}" | grep -qF "Converged exports index entry '${EXPORT_NAME}'"; then
+  diag "${INDEX_RERUN_OUT}"
+  fail "the second 'cdkd scrub ${PRODUCER}' converged ${EXPORT_NAME} again - the repair is not idempotent, so a re-run after a partial apply cannot be scoped to the remainder"
+fi
+if ! printf '%s' "${INDEX_RERUN_OUT}" | grep -qF "${PRODUCER}"; then
+  fail "the second 'cdkd scrub ${PRODUCER}' printed no output naming the stack - the absence assertion above was satisfied by an uncaptured run"
+fi
+pass "11c-iii: the second run converged nothing and exited 0"
+
+# Put the foreign entry back to the value the deploy wrote, so the shared index
+# leaves this arm as it found it for a key this fixture does not own the
+# lifecycle of.
+INDEX_RESTORED_RAW=$(printf '%s' "${INDEX_AFTER_SCRUB_RAW}" \
+  | jq --arg f "${REEXPORT_NAME}" --arg fv "${REEXPORT_PRE_SEED_VALUE}" \
+       '.exports[$f].value = $fv')
+printf '%s' "${INDEX_RESTORED_RAW}" | aws s3 cp - "s3://${STATE_BUCKET}/${INDEX_KEY}"
+INDEX_PRE_SEED_RAW=""
+INDEX_SEEDED_RAW=""
+INDEX_AFTER_SEED_RAW=""
+INDEX_AFTER_DRYRUN_RAW=""
+INDEX_AFTER_SCRUB_RAW=""
+INDEX_RESTORED_RAW=""
+pass "11c: ${REEXPORT_NAME} restored to the value its own deploy wrote"
+
 # --- Assertion 11: TEARDOWN ------------------------------------------------
 echo ""
 echo "==> Step 12 (assertion 11): destroy ChainConsumer, then Consumer, then Producer"

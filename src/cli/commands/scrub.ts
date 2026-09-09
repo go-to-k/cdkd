@@ -23,6 +23,7 @@ import {
 } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import { ExportIndexStore, type ExportIndexEntry } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
@@ -53,6 +54,11 @@ import {
   producerRegionsFromState,
 } from '../../deployment/rollback-executor.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+// An export NAME is a template-controlled RESOLVED value and an index read's
+// error message interpolates a bucket / key, so both reach the terminal only
+// through the same control-byte strip `export-index-store.ts` uses for the
+// name it logs.
+import { displaySafe } from '../../utils/display-safe.js';
 import type { StackState } from '../../types/state.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -66,7 +72,9 @@ import {
   exportAliasCollisionScrubWarning,
   isExportAliasCollision,
   secretBearingStateKeyWarning,
+  secretSafeKeyDisplay,
   stateKeySecretExposure,
+  type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
 
 /**
@@ -101,6 +109,30 @@ export class ScrubNeededError extends CdkdError {
  * leak" from "scrub refused to look" — the two call for opposite responses
  * (rotate the secret vs. re-spell the reference and re-run).
  */
+/**
+ * An internal invariant of the exports-index repair, thrown where this code
+ * believes a case is unreachable (issue #2667 review).
+ *
+ * A distinct CLASS because the repair runs inside the per-stack `try` whose
+ * `catch` attributes everything to "the exports index could not be READ": a
+ * plain `Error` there is reported as an S3 read failure, sending an operator to
+ * their bucket policy over a bug in cdkd. That catch rethrows this class
+ * instead, so it surfaces as the per-stack failure it actually is.
+ */
+// Exported for tests, for the same reason `ScrubNeededError` is: the
+// classification is the behaviour under test — an invariant must NOT surface
+// as "the index could not be read" — and asserting it on the error's identity
+// rather than on its message text keeps the fence from drifting with wording.
+export class ScrubIndexInvariantError extends CdkdError {
+  readonly exitCode: number = 2;
+
+  constructor(message: string) {
+    super(message, 'SCRUB_EXPORT_INDEX_INVARIANT');
+    this.name = 'ScrubIndexInvariantError';
+    Object.setPrototypeOf(this, ScrubIndexInvariantError.prototype);
+  }
+}
+
 class ScrubRefusalError extends CdkdError {
   readonly exitCode: number = 2;
 
@@ -174,6 +206,211 @@ function scrubStacksFailedError(failures: ReadonlyArray<{ stackName: string }>):
 }
 
 /**
+ * One exports-index entry owned by a stack this run scrubbed, and what the
+ * convergence rule made of it (issue
+ * [#2667](https://github.com/go-to-k/cdkd/issues/2667)).
+ *
+ * `converge` carries the value the stack's post-scrub `state.outputs` holds
+ * under that export name; a real run writes it. `absent` is an owned entry
+ * whose name is not a key of that bag at all — there is no value to write, so
+ * the entry is reported and left holding whatever it holds.
+ */
+export type ExportIndexFinding =
+  | { kind: 'converge'; exportName: string; stateValue: unknown }
+  | { kind: 'absent'; exportName: string };
+
+/** What one stack's pass over one region's exports index examined and found. */
+export interface ExportIndexRepairPlan {
+  /**
+   * Every entry name this pass decided about, INCLUDING the ones it left
+   * alone. What is not in here was not examined — the run's coverage report
+   * subtracts this set rather than re-deriving ownership.
+   */
+  examined: string[];
+  findings: ExportIndexFinding[];
+}
+
+/**
+ * Which of `entries` this stack's post-scrub `outputs` bag disagrees with.
+ *
+ * OWNERSHIP is read off the entry (`producerStack` / `producerRegion`), never
+ * inferred from the name: a pre-v9 state record makes `importableOutputKeys`
+ * return every output key (`src/types/state.ts`), so a rebuild can key an entry
+ * by a plain output name, and on a name collision the index keeps the latest
+ * writer — so a name alone says nothing about whose entry it is.
+ *
+ * The rule is CONVERGENCE, not a match against scrub's plaintext map. The map
+ * is built by LIVE RESOLUTION against Secrets Manager / SSM, so it holds the
+ * secret's value AS IT IS NOW; an index entry written before a rotation holds
+ * the value as it was THEN, and the two are different strings. Keying on
+ * `state.outputs` instead means the rule reads the record a redeploy and
+ * `ExportIndexStore.rebuild()` both write, and the plaintext map is not
+ * consulted here at all.
+ *
+ * The lookup runs in ONE direction, and the inverse is not available: an
+ * `Export.Name` alias is written into the outputs bag itself
+ * (`deploy-engine.ts`, beside `resolvedExportNames.push(exportName)`), so an
+ * index entry NAME is a key of that bag — while `ExportIndexEntry` carries no
+ * output-key field, so nothing maps an entry back to the output it came from.
+ *
+ * WHAT CAN STILL GO WRONG. A name absent from `outputs` is reported and
+ * nothing is written for it, so an entry in that position keeps its value —
+ * `outputs` is `undefined` here whenever the stack has no state record at all,
+ * which puts every one of its entries in that arm. An entry whose state value
+ * carries no `{{resolve:` is left alone, so a plaintext an index entry holds
+ * whose state counterpart is also plaintext is not reported by this pass and
+ * not written by it. And `entries` is one region's index: an entry in another
+ * region's `exports.json` is outside this call.
+ */
+export function planExportIndexRepair(
+  entries: ReadonlyMap<string, ExportIndexEntry>,
+  stackName: string,
+  producerRegion: string,
+  outputs: Record<string, unknown> | undefined
+): ExportIndexRepairPlan {
+  const examined: string[] = [];
+  const findings: ExportIndexFinding[] = [];
+  for (const [exportName, entry] of entries) {
+    if (entry.producerStack !== stackName || entry.producerRegion !== producerRegion) continue;
+    examined.push(exportName);
+    if (outputs === undefined || !Object.hasOwn(outputs, exportName)) {
+      findings.push({ kind: 'absent', exportName });
+      continue;
+    }
+    const stateValue = outputs[exportName];
+    // The state record is the canonical side only where it holds an
+    // expression: a bag still holding the resolved value is what `scrubStack`
+    // has just rewritten, or one this run recorded no needle for, and
+    // converging an entry onto a plaintext would move a plaintext INTO the
+    // shared object rather than out of it.
+    if (!carriesDynamicReference(stateValue)) continue;
+    // `JSON.stringify` for the same reason `mapsEqual` uses it in the store:
+    // an Output value is `unknown` and a list-valued `Fn::GetAtt` persists an
+    // array, so `!==` alone reports every array as divergent.
+    if (JSON.stringify(entry.value) === JSON.stringify(stateValue)) continue;
+    findings.push({ kind: 'converge', exportName, stateValue });
+  }
+  return { examined, findings };
+}
+
+/**
+ * The error a run ends with when `state.json` was rewritten and the exports
+ * index was not (issue #2667).
+ *
+ * EXPLICIT rather than a warn: an entry this run went to converge and did not
+ * keeps the value it held, in a region-wide object every principal with
+ * `s3:GetObject` on the state bucket can read. `ExportIndexStore.patchEntry`
+ * does not throw on a non-retryable S3 failure or an exhausted If-Match budget
+ * — it logs and returns `false` — so without this the command would exit 0
+ * over exactly that.
+ *
+ * Naming the remainder is what makes the re-run instruction actionable: the
+ * convergence rule reads `state.outputs`, which a completed half already
+ * matches, so a second invocation of the same command decides `converge` only
+ * for the entries still differing.
+ */
+function exportIndexIncompleteError(
+  unwritten: ReadonlyArray<{ region: string; shown: string }>,
+  unreadable: ReadonlyArray<{ region: string; reason: string }>,
+  dryRun: boolean
+): CdkdError {
+  // `state.json complete` is a claim about a WRITE, so it is false under
+  // `--dry-run`, where nothing was written and the only way to reach this
+  // error is an index that could not be READ.
+  const parts: string[] = [dryRun ? 'no state written (--dry-run)' : 'state.json complete'];
+  if (unwritten.length > 0) {
+    parts.push(
+      `${unwritten.length} exports index entr${unwritten.length === 1 ? 'y' : 'ies'} unwritten ` +
+        `(${unwritten.map((u) => `${u.shown} in ${u.region}`).join(', ')})`
+    );
+  }
+  if (unreadable.length > 0) {
+    parts.push(
+      `${unreadable.length} region(s) whose exports index could not be read ` +
+        `(${unreadable.map((u) => `${u.region}: ${u.reason}`).join('; ')})`
+    );
+  }
+  return new ScrubRefusalError(
+    `${parts.join('; ')}. Re-run the same command once the cause is cleared: each entry is ` +
+      `written only while its value differs from the producer's state.outputs, so a re-run ` +
+      `writes the remainder and leaves the rest alone.`,
+    'SCRUB_EXPORT_INDEX_INCOMPLETE'
+  );
+}
+
+/**
+ * Converge one scrubbed stack's entries in one region's exports index.
+ *
+ * Run as its OWN step by `scrubCommand`, after `scrubStack` returned — never
+ * from inside the resolver. `scrubStack`'s resolve contexts deliberately
+ * withhold `exportIndex` so `resolveImportValue`'s scan arm cannot `patchEntry`
+ * as a side effect of resolution, at a point in the run nothing chose; that
+ * withholding is unchanged, and this is a separate call with its own condition.
+ *
+ * Under `dryRun` no `patchEntry` is issued. The READ still happens:
+ * `readPersistedEntries` is a GET that does not rebuild, so the audit half runs
+ * without an S3 write.
+ *
+ * TWO PROPERTIES OF THE WRITE a reader will ask about. It runs OUTSIDE the
+ * stack lock — `scrubStack` releases that in its own `finally` — because the
+ * lock guards `state.json`, one key per stack, while `exports.json` is shared
+ * region-wide and carries its own If-Match optimistic lock plus bounded retry;
+ * that is the same concurrency control the deploy path's index write relies on.
+ * And it is ONE PutObject PER ENTRY rather than one for the batch: `patchEntry`
+ * is the operation that changes a value without touching membership, and a
+ * remediation command pays that round trip so a failure names the entry it
+ * could not write.
+ */
+async function repairExportIndexForStack(
+  store: ExportIndexStore,
+  stackName: string,
+  producerRegion: string,
+  outputs: Record<string, unknown> | undefined,
+  opts: { dryRun: boolean }
+): Promise<ExportIndexRepairPlan & { unwritten: string[] }> {
+  const entries = await store.readPersistedEntries();
+  if (!entries) return { examined: [], findings: [], unwritten: [] };
+  const plan = planExportIndexRepair(entries, stackName, producerRegion, outputs);
+  const unwritten: string[] = [];
+  if (opts.dryRun) return { ...plan, unwritten };
+  for (const finding of plan.findings) {
+    if (finding.kind !== 'converge') continue;
+    const entry = entries.get(finding.exportName);
+    if (!entry) {
+      // UNREACHABLE by construction — every finding was produced by walking
+      // `entries` — and thrown rather than skipped precisely because of that:
+      // a `continue` here would silently DROP a repair the plan decided on if
+      // the two ever came apart, which is the fail-quiet shape this whole
+      // change exists to remove. The name is not interpolated: it may hold
+      // secret plaintext (see `secretSafeKeyDisplay`).
+      throw new ScrubIndexInvariantError(
+        'exports index repair: a planned entry is absent from the snapshot it was planned from'
+      );
+    }
+    // Value only. `producerStack` / `producerRegion` are carried over from the
+    // entry that is already there, and no name is added or removed — scrub
+    // takes no `--parameters` and reads a state record whose template may not
+    // be the one that produced it, so any export SET it derived would be a
+    // guess, and a guessed change to index MEMBERSHIP is the wrong-rewrite
+    // hazard one level up from the value it went to fix.
+    //
+    // `requireOwner` re-asserts, inside the write and on every retry attempt,
+    // the ownership the PLAN read off a snapshot: an If-Match conflict reloads
+    // the index under the retry, and a concurrent deploy that claimed this
+    // export name in that window is kept by the store with only a warning
+    // (issue #2193). Without it the retry would resurrect this stack's value
+    // over the new producer's.
+    const written = await store.patchEntry(
+      finding.exportName,
+      { ...entry, value: finding.stateValue },
+      { requireOwner: { producerStack: stackName, producerRegion } }
+    );
+    if (!written) unwritten.push(finding.exportName);
+  }
+  return { ...plan, unwritten };
+}
+
+/**
  * `cdkd scrub` — rewrite persisted state so any resolved secret dynamic
  * reference is stored as its UNRESOLVED expression rather than the plaintext
  * value (GHSA fix). "Secret" here is whatever the RESOLVER classifies as one,
@@ -193,10 +430,14 @@ function scrubStacksFailedError(failures: ReadonlyArray<{ stackName: string }>):
  * re-resolves each resource's properties to learn the resolved secret VALUES
  * (recorded, never printed or re-persisted), and replaces those values in the
  * state record's `properties` / `attributes` / `observedProperties` with the
- * expression. No AWS resource is created, updated, or deleted; only state.json
- * is rewritten. This is why it is a top-level command and not `cdkd state
- * scrub` — the `cdkd state ...` family operates on the state bucket alone and
- * deliberately needs no CDK code.
+ * expression. No AWS resource is created, updated, or deleted. What it WRITES
+ * is the state bucket: each targeted stack's state.json, and — since issue
+ * [#2667](https://github.com/go-to-k/cdkd/issues/2667) — the entries a scrubbed
+ * stack publishes in the shared exports index at
+ * `{prefix}/_index/{region}/exports.json`, as a separate step after that
+ * stack's state.json write. This is why it is a top-level command and not
+ * `cdkd state scrub` — the `cdkd state ...` family operates on the state bucket
+ * alone and deliberately needs no CDK code.
  *
  * IMPORTANT: scrubbing does not un-expose an already-leaked secret. A value
  * that was stored in plaintext should be treated as compromised and ROTATED at
@@ -360,6 +601,39 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // it is only the BLAST RADIUS of one refusal that narrows.
   const failures: Array<{ stackName: string }> = [];
 
+  // EXPORTS INDEX (issue #2667). One store and one `exports.json` per REGION:
+  // the key is `{prefix}/_index/{region}/exports.json`
+  // (`src/state/export-index-store.ts`) while scrub is per-stack-region, so a
+  // `--all` run spanning regions has one object per region to read and write.
+  // Constructed lazily so a run that touches one region issues one GET.
+  const exportIndexStores = new Map<string, ExportIndexStore>();
+  const exportIndexFor = (indexRegion: string): ExportIndexStore => {
+    const existing = exportIndexStores.get(indexRegion);
+    if (existing) return existing;
+    const store = new ExportIndexStore(
+      stateS3.s3,
+      stateBucket,
+      options.statePrefix,
+      indexRegion,
+      stateBackend
+    );
+    exportIndexStores.set(indexRegion, store);
+    return store;
+  };
+  // Per region, the entry names some stack's pass decided about. The coverage
+  // report subtracts this from the region's index rather than re-deriving
+  // ownership, so an entry is counted UNEXAMINED unless a pass really reached
+  // it — a stack whose scrub threw contributes none.
+  const examinedIndexNames = new Map<string, Set<string>>();
+  let totalIndexEntriesConverged = 0;
+  let totalIndexEntriesAbsent = 0;
+  let totalIndexEntriesUnexamined = 0;
+  // The name is stored ALREADY RENDERED by the owning stack's masker: the
+  // failure message is built after the per-stack loop, where the secrets bag
+  // that decided the rendering is out of scope.
+  const indexUnwritten: Array<{ region: string; shown: string }> = [];
+  const indexUnreadable: Array<{ region: string; reason: string }> = [];
+
   for (const stack of targetStacks) {
     const stackRegion = stack.region || region;
     let scrubbed: Awaited<ReturnType<typeof scrubStack>>;
@@ -395,6 +669,132 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       if (err instanceof Error && err.stack) logger.debug('Stack trace:', err.stack);
       continue;
     }
+    // THE INDEX STEP (issue #2667), and its position is the decision: it runs
+    // only on the arm where `scrubStack` RETURNED, which is the arm on which
+    // its `saveState` either succeeded or was not needed. A stack that threw
+    // took the `continue` above and reaches no `patchEntry`.
+    //
+    // It runs whatever `recordsChanged` says. A record already holding the
+    // expression with an entry that does not is the shape a re-run after a
+    // failed index write leaves behind, and gating on `recordsChanged > 0`
+    // would make that re-run a no-op.
+    let indexConverged = 0;
+    try {
+      const store = exportIndexFor(stackRegion);
+      const repair = await repairExportIndexForStack(
+        store,
+        stack.stackName,
+        stackRegion,
+        scrubbed.outputs,
+        { dryRun: options.dryRun ?? false }
+      );
+      const seen = examinedIndexNames.get(stackRegion) ?? new Set<string>();
+      for (const name of repair.examined) seen.add(name);
+      examinedIndexNames.set(stackRegion, seen);
+      // EVERY name below goes through the stack's own masker before it
+      // reaches a message. `displaySafe` sanitises for a terminal; it does not
+      // mask a secret, and an export name is an outputs-bag KEY — the one
+      // position this command already knows can hold plaintext it cannot
+      // rewrite (issue #1919). `--dry-run --fail` prints these lines on every
+      // run of the documented CI gate, into CI logs, so a raw name here would
+      // disclose on a schedule.
+      const named = (exportName: string): string => {
+        const shown = scrubbed.exportNameDisplay(exportName);
+        switch (shown.kind) {
+          case 'safe':
+            return `'${shown.text}'`;
+          case 'masked':
+            return `(masked: "${shown.text}")`;
+          // Masking left the name unchanged, so printing it would publish the
+          // secret under a label claiming it had been masked. The name is
+          // WITHHELD and the message still identifies the stack and region.
+          case 'withheld':
+            return '(name withheld: it holds a secret this run recorded)';
+        }
+      };
+      const unwrittenNames = new Set(repair.unwritten);
+      for (const exportName of repair.unwritten) {
+        indexUnwritten.push({ region: stackRegion, shown: named(exportName) });
+      }
+      for (const finding of repair.findings) {
+        if (finding.kind === 'converge') {
+          // COUNTED FOR THE CLEAN-LINE GATE regardless of whether the write
+          // landed: either way this stack has a reported divergence, and the
+          // per-stack "No plaintext secrets found" line must not print beside
+          // one. This is the count of FINDINGS, not of writes.
+          indexConverged++;
+          // The past-tense line is for entries the write LANDED on. An entry
+          // whose `patchEntry` returned `false` is in `repair.unwritten` and
+          // is about to be named by `SCRUB_EXPORT_INDEX_INCOMPLETE`, so
+          // logging `Converged X` for it would have the command assert a
+          // repair it did not perform and then error that it did not perform
+          // it — in the run whose whole subject is a false success report
+          // (issue #2667 review). `--dry-run` never writes, so its line stays
+          // conditional-tense for every finding.
+          if (!options.dryRun && unwrittenNames.has(finding.exportName)) {
+            logger.warn(
+              `Exports index entry ${named(finding.exportName)} (${stackRegion}) differs from ` +
+                `${stack.stackName}'s state.outputs and could NOT be written — it keeps the ` +
+                `value it holds.`
+            );
+          } else {
+            // THE SUMMARY COUNT, incremented HERE and not beside
+            // `indexConverged` above (issue #2667 review). The summary line it
+            // feeds asserts a PutObject happened -- "converged to the
+            // producer's state.outputs value ... the pre-repair body survives
+            // as a noncurrent version" -- so counting an entry the write
+            // refused made the run claim a write it did not perform, at higher
+            // prominence than the warn beside it and directly before the error
+            // saying the entry is unwritten. That is the same defect the
+            // line-level fix above removes, surviving one level up.
+            //
+            // Under `--dry-run` nothing is written and `unwrittenNames` is
+            // empty, so this counts every converge finding and the summary
+            // stays in the conditional tense. It is the only counter in this
+            // command with this shape: `totalStacksScrubbed` is gated on
+            // `recordsChanged`, which is computed after `saveState` returned;
+            // the other four count FINDINGS, where nothing is written by
+            // design and the messages say so.
+            totalIndexEntriesConverged++;
+            logger.info(
+              `${options.dryRun ? 'Would converge' : 'Converged'} exports index entry ` +
+                `${named(finding.exportName)} (${stackRegion}) to ${stack.stackName}'s ` +
+                `state.outputs value.`
+            );
+          }
+        } else {
+          totalIndexEntriesAbsent++;
+          logger.warn(
+            `Exports index entry ${named(finding.exportName)} (${stackRegion}) is ` +
+              `published by ${stack.stackName}, whose state.outputs has no key of that name — ` +
+              `nothing was written for it and it keeps the value it holds. Redeploy ` +
+              `${stack.stackName} to rewrite the index from its own outputs.`
+          );
+        }
+      }
+    } catch (err) {
+      // A cdkd INVARIANT is not an S3 read failure. This catch attributes
+      // everything to "the index could not be read", which would send an
+      // operator to their bucket policy over a bug in this code, so the
+      // invariant class is rethrown as the per-stack failure it is.
+      if (err instanceof ScrubIndexInvariantError) throw err;
+      // A read that failed is an audit this run did not perform. Recorded and
+      // raised after the summary rather than swallowed: reporting the state
+      // records clean while the index was never opened is the shape this issue
+      // is about.
+      // ONCE PER REGION. `loadPersisted` memoizes no failure, so every stack in
+      // a region re-reads and fails identically; without this, five stacks in
+      // one region print five identical errors and the failure message reads
+      // `5 region(s) ... (us-east-1: X; us-east-1: X; ...)`, which misstates
+      // how many regions are affected.
+      if (!indexUnreadable.some((u) => u.region === stackRegion)) {
+        const reason = displaySafe(err instanceof Error ? err.message : String(err));
+        indexUnreadable.push({ region: stackRegion, reason });
+        logger.error(
+          `Exports index for ${stackRegion} could not be read (first seen while scrubbing ${stack.stackName}): ${reason}`
+        );
+      }
+    }
     // The verdict keys on records-that-CHANGED (state actually held plaintext),
     // NOT on secrets-found: a resource whose reference is already stored as its
     // `{{resolve:...}}` expression resolves the same secret again but needs no
@@ -405,7 +805,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
           `in ${stack.stackName}`
       );
-    } else if (scrubbed.secretBearingKeys === 0 && scrubbed.unverifiableReads === 0) {
+    } else if (
+      scrubbed.secretBearingKeys === 0 &&
+      scrubbed.unverifiableReads === 0 &&
+      indexConverged === 0
+    ) {
+      // A CONVERGE finding gates this line for the same reason the two below
+      // it do (issue #2667): the pass above just reported an entry whose value
+      // differs from this stack's scrubbed `state.outputs`, and the sentence
+      // printed beside it reads as covering that. An ABSENT finding does NOT
+      // gate it — that one is a coverage report about a name, and its own warn
+      // says what was written for it, which is nothing.
+      //
       // BOTH findings gate this line (issue #2133 review). An unverifiable read
       // is a cross-stack reference cdkd declined to perform, so scrub does not
       // know what that leaf carries — printing "No plaintext secrets found"
@@ -438,11 +849,64 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     }
   }
 
+  // COVERAGE, not detection (issue #2667). `--all` targets every stack in the
+  // SYNTHESIZED APP (`docs/cli-scrub.md`), not every stack with a state
+  // record, and one bucket and region are legitimately shared by several CDK
+  // apps — so an entry whose producer is outside this app is one no run from
+  // here decided about. It is REPORTED and never turns `--fail` red: a gate
+  // that reddens on another app's entries is one nobody running this app can
+  // clear, which is the same defect as a gate that stays green over a
+  // divergence. Each app clears its own entries by running its own scrub.
+  //
+  // The count comes from the names a pass actually EXAMINED, so a stack whose
+  // scrub threw leaves its entries in this bucket rather than in a set derived
+  // from ownership it never checked.
+  for (const [indexRegion, store] of exportIndexStores) {
+    if (indexUnreadable.some((u) => u.region === indexRegion)) continue;
+    // Usually served from the snapshot the per-stack pass already loaded on
+    // this instance — but NOT always: a region whose per-stack read returned
+    // `undefined` (no index object) left `loadState` unloaded, so this issues
+    // a second GET, and a transient S3 failure there would otherwise throw
+    // past the summary and out of the command with `state.json` already
+    // rewritten. Recorded like any other unreadable index instead.
+    let entries: ReadonlyMap<string, ExportIndexEntry> | undefined;
+    try {
+      entries = await store.readPersistedEntries();
+    } catch (err) {
+      const reason = displaySafe(err instanceof Error ? err.message : String(err));
+      indexUnreadable.push({ region: indexRegion, reason });
+      logger.error(
+        `Exports index for ${indexRegion} could not be read for the coverage report: ${reason}`
+      );
+      continue;
+    }
+    if (!entries) continue;
+    const examined = examinedIndexNames.get(indexRegion) ?? new Set<string>();
+    const unexamined = [...entries.keys()].filter((name) => !examined.has(name));
+    if (unexamined.length === 0) continue;
+    totalIndexEntriesUnexamined += unexamined.length;
+    logger.info(
+      `Exports index (${indexRegion}): ${unexamined.length} entr${unexamined.length === 1 ? 'y is' : 'ies are'} ` +
+        `published by a producer this run did not scrub, so nothing here read ${unexamined.length === 1 ? 'its' : 'their'} ` +
+        `value. Coverage composes across the apps sharing this bucket and region — run each app's ` +
+        `own cdkd scrub to reach its entries.`
+    );
+  }
+
   if (
     totalStacksScrubbed === 0 &&
     totalStacksWithUnscrubbableKeys === 0 &&
-    totalStacksWithUnverifiableReads === 0
+    totalStacksWithUnverifiableReads === 0 &&
+    totalIndexEntriesConverged === 0 &&
+    indexUnwritten.length === 0 &&
+    indexUnreadable.length === 0
   ) {
+    // `totalIndexEntriesAbsent` and `totalIndexEntriesUnexamined` are
+    // deliberately NOT in this condition (issue #2667). Past it, the `--dry-run
+    // --fail` arm below throws on `options.fail` alone, so adding either would
+    // redden the documented CI gate on a coverage report no run can clear —
+    // the outcome the locked direction refuses. Both were already logged per
+    // entry above.
     // "in any target stack state" would be a claim about stacks this run never
     // got through, which is the same false-success the refusal exists to
     // prevent — so the sentence narrows to the stacks it actually reached.
@@ -480,6 +944,40 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `perform, so their imported values could NOT be checked — export a non-secret value ` +
         `(e.g. the secret's ARN) from the producer, or reference it from within its own account.`
       : '';
+  // The exports index half (issue #2667). Three separate statements, because
+  // they carry different obligations: an entry this run wrote, an entry it
+  // read a name for and wrote nothing, and an entry it never read. Kept out of
+  // every "scrubbed N stack(s)" count — that count is about state records, and
+  // an index entry is a different object.
+  const indexNote = ((): string => {
+    const parts: string[] = [];
+    if (totalIndexEntriesConverged > 0) {
+      parts.push(
+        options.dryRun
+          ? ` ${totalIndexEntriesConverged} exports index entr${totalIndexEntriesConverged === 1 ? 'y' : 'ies'} ` +
+              `differ from the producer's scrubbed state.outputs and would be converged to it ` +
+              `(--dry-run, nothing written).`
+          : ` ${totalIndexEntriesConverged} exports index entr${totalIndexEntriesConverged === 1 ? 'y' : 'ies'} ` +
+              `converged to the producer's state.outputs value. exports.json is written with the ` +
+              `same PutObject state.json is, so on a VERSIONED bucket the pre-repair body survives ` +
+              `as a noncurrent version and stays readable with GetObject and a VersionId.`
+      );
+    }
+    if (totalIndexEntriesAbsent > 0) {
+      parts.push(
+        ` ${totalIndexEntriesAbsent} exports index entr${totalIndexEntriesAbsent === 1 ? 'y is' : 'ies are'} ` +
+          `published by a scrubbed stack under a name its state.outputs does not carry; nothing ` +
+          `was written for ${totalIndexEntriesAbsent === 1 ? 'it' : 'them'} — redeploy that producer.`
+      );
+    }
+    if (totalIndexEntriesUnexamined > 0) {
+      parts.push(
+        ` ${totalIndexEntriesUnexamined} exports index entr${totalIndexEntriesUnexamined === 1 ? 'y' : 'ies'} ` +
+          `belong to producers outside this run and were NOT examined.`
+      );
+    }
+    return parts.join('');
+  })();
 
   if (options.dryRun) {
     // Gated like its non-dry-run twin: with only key findings this would plan
@@ -488,17 +986,24 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: nothing can be scrubbed.${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: no state record can be rewritten.${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
     // state this run could not examine, while `ScrubNeededError` (exit 1) is a
     // finding about state it did.
     if (failures.length > 0) throw scrubStacksFailedError(failures);
+    // Same rank as the refusal above, and reachable under `--dry-run` through
+    // the READ alone: no `patchEntry` is issued here, so `indexUnwritten` is
+    // empty, while an index this run could not open leaves `indexUnreadable`
+    // set and the audit unperformed.
+    if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
+      throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, true);
+    }
     if (options.fail) throw new ScrubNeededError();
     return;
   }
@@ -526,17 +1031,26 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `not purge it. So a value that was ever persisted must be treated as compromised — ` +
         `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
         `rotating); rotation is what makes any surviving version ` +
-        `harmless.${keyNote}${unverifiableNote}${failureNote}`
+        `harmless.${keyNote}${unverifiableNote}${indexNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNothing could be rewritten.${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret.`
+      `\nNo state record was rewritten.${keyNote}${unverifiableNote}${indexNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
   // key-only leak would otherwise exit 0 — and that is the one finding class a
   // real run cannot fix, so exiting clean is exactly backwards.
   if (failures.length > 0) throw scrubStacksFailedError(failures);
+  // An index entry this run went to converge and did not is raised here rather
+  // than warned, whatever `--fail` says: the entry keeps the value it holds, in
+  // a region-wide object readable with `s3:GetObject` and no version id, and a
+  // swallowed failure there is the shape issue #2667 is about. Above `--fail`
+  // for the same rank reason the stack refusal is — exit 2 is "cdkd did not
+  // finish", exit 1 is "cdkd looked and found something".
+  if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
+    throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, false);
+  }
   // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
   // reason stated on that counter: a real run cannot fix either one, so exiting
   // 0 over them is exactly backwards (issue #2133 review).
@@ -2962,6 +3476,38 @@ export interface ScrubStackResult {
    * non-zero exactly as a `secretBearingKeys` finding does.
    */
   unverifiableReads: number;
+  /**
+   * `state.outputs` as this run leaves it — the bag written on a real run, and
+   * the bag a real run WOULD write under `--dry-run` (issue #2667).
+   *
+   * The exports-index step converges an entry to the value stored under its
+   * own name in HERE, so under `--dry-run` it has to be the post-scrub bag:
+   * the PERSISTED bag still holds the plaintext, an index entry holding that
+   * same plaintext compares equal to it, and the audit would then report
+   * nothing over exactly the records the same run is reporting as needing a
+   * scrub.
+   *
+   * `undefined` when the stack has no state record, which puts every entry the
+   * index publishes for that stack in the `absent` arm.
+   */
+  outputs?: Record<string, unknown> | undefined;
+  /**
+   * How to SHOW an export name this stack publishes (issue #2667 review).
+   *
+   * An export name is a key of `state.outputs`, and a key holding secret
+   * plaintext is the residue this command reports and cannot rewrite (issue
+   * #1919). The exports-index step names entries in `info` / `warn` lines and
+   * in its failure message — `--dry-run --fail` prints them on every run of
+   * the documented CI gate, into CI logs — so those names go through the same
+   * test `secretBearingStateKeyWarning` applies, never through a bare
+   * control-character strip.
+   *
+   * REQUIRED, not optional: the secrets bag lives in `scrubStack`, so a caller
+   * that forgot this field would have no way to mask and would print the raw
+   * name. Returning a closure keeps the plaintexts captured here rather than
+   * handing the bag out as data.
+   */
+  exportNameDisplay: (exportName: string) => SecretSafeKeyDisplay;
 }
 
 /**
@@ -3022,7 +3568,16 @@ export async function scrubStack(
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
       logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
-      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0, unverifiableReads: 0 };
+      return {
+        recordsChanged: 0,
+        secretsFound: 0,
+        secretBearingKeys: 0,
+        unverifiableReads: 0,
+        // No record, so nothing was resolved and the bag is empty — every name
+        // tests as 'safe'. Bound to the same map the other two sites use so
+        // the shape cannot drift.
+        exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+      };
     }
     const state = loaded.state;
 
@@ -3596,6 +4151,11 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
+        // No needle was recorded, so no redaction pass ran and the stored bag
+        // is what this run leaves — including on a RE-RUN over already-scrubbed
+        // state, which is the case the index step exists to finish.
+        outputs: state.outputs,
+        exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
       };
     }
 
@@ -3757,6 +4317,8 @@ export async function scrubStack(
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
       unverifiableReads: prePassFindings.unverifiable.length,
+      outputs: newOutputs,
+      exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
     };
   } catch (err) {
     // THE MASKING BOUNDARY for everything that ESCAPES this function (issue

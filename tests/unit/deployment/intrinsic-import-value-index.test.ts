@@ -28,8 +28,11 @@ function mockIndex(
       if (opts.lookupThrows) throw opts.lookupThrows;
       return hits[name];
     }),
+    // `true` = "the index now holds it", the store's own contract since issue
+    // #2667. The resolver ignores the return; `cdkd scrub` reads it.
     patchEntry: vi.fn(async (name: string, entry: unknown) => {
       patches.push({ name, entry });
+      return true;
     }),
   };
   return { store: store as ExportIndexStore, patches };

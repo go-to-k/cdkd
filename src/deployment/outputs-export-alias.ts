@@ -127,6 +127,7 @@
 
 import type { TemplateOutput } from '../types/resource.js';
 import { stripControlChars } from '../utils/regexp.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { SECRET_MASK, type RecordedSecretValues } from './secret-redaction.js';
 
 /**
@@ -384,6 +385,102 @@ export function secretBearingExportNameWarning(
     `VALUES only, so publishing it would persist the secret in plaintext. ` +
     `Use a non-secret Export.Name.`
   );
+}
+
+/**
+ * How a state-bag KEY may be SHOWN, once it has been tested for secret content
+ * (issue [#2667](https://github.com/go-to-k/cdkd/issues/2667)).
+ *
+ * An export name IS a key of `state.outputs` and of the exports index, and a
+ * key holding secret plaintext is the residue `cdkd scrub` exists to report —
+ * so any message naming one has to go through the same test the warnings below
+ * apply, not through a control-character strip. `displaySafe` /
+ * {@link stripControlChars} sanitise for a TERMINAL; neither masks a secret.
+ *
+ * Three outcomes, and the third is the one a caller must not collapse into the
+ * first: masking can leave the text UNCHANGED (a needle below
+ * {@link MIN_SECRET_NEEDLE} that matched only as the whole key, or a mask that
+ * happens to equal the input), and printing it then would publish the secret
+ * under a label asserting it had been masked —
+ * {@link secretBearingExportNameWarning}'s invariant, applied here.
+ */
+export type SecretSafeKeyDisplay =
+  | { kind: 'safe'; text: string }
+  | { kind: 'masked'; text: string }
+  | { kind: 'withheld' };
+
+/**
+ * Test `key` for recorded secret plaintext and return how it may be shown.
+ *
+ * Reuses {@link stateKeySecretExposure} and the same `maskEveryOccurrence` the
+ * warnings below use, rather than restating either: two spellings of "is this
+ * key safe to print" would disagree on the boundary cases those two encode
+ * (the whole-key match for a sub-floor needle, longest-needle-first masking).
+ *
+ * SANITISED WITH BOTH helpers, because neither is a superset of the other —
+ * measured, after a first cut swapped one for the other and silently traded
+ * one class of character for another (issue #2667 review):
+ *
+ * | input    | `stripControlChars` | `displaySafe` |
+ * | -------- | ------------------- | ------------- |
+ * | `U+200E` | removed             | KEPT          |
+ * | `U+200F` | removed             | KEPT          |
+ * | `U+2028` | KEPT                | replaced      |
+ * | `U+2029` | KEPT                | replaced      |
+ *
+ * `U+2028` / `U+2029` matter because this text is PERSISTED and re-rendered by
+ * JSON and web log viewers that treat both as line terminators — the CI-log
+ * surface this masking exists to protect, where an `Fn::Sub`-built export name
+ * carrying one could forge a log line (`display-safe.ts` states that
+ * rationale). `U+200E` / `U+200F` are the bidi MARKS, named as residuals in
+ * that same file; they reorder rendered text without terminating a line. On a
+ * path whose subject is a possibly-secret-bearing name in an operator's log,
+ * neither loss is worth taking, and composing costs nothing.
+ *
+ * ORDER IS LOAD-BEARING, and for the OVERLAP set — not for the marks, which
+ * an earlier revision of this comment named and measurement contradicted.
+ * `displaySafe` never touches `U+200E` / `U+200F`, so those give identical
+ * output either way. Where the two classes OVERLAP — `U+0000`-`U+001F`,
+ * `U+007F`-`U+009F`, `U+202A`-`U+202E`, `U+2066`-`U+2069` — `stripControlChars`
+ * DELETES while `displaySafe` replaces with a space, so strip-then-display
+ * yields `"ab"` and display-then-strip yields `"a b"`. Stripping first keeps a
+ * name carrying them from being padded out.
+ *
+ * `displaySafe` also `.trim()`s, which `stripControlChars` alone did not: a
+ * display-shape change for a key with leading or trailing whitespace. Stated
+ * because it is a real difference, not hidden.
+ *
+ * The sibling warnings in this file still use `stripControlChars` ALONE and
+ * carry the `U+2028` half of the gap; widening that helper, or converting
+ * them, changes call sites this issue does not touch, so it is filed as issue
+ * [#2874](https://github.com/go-to-k/cdkd/issues/2874) rather than done here.
+ */
+export function secretSafeKeyDisplay(
+  key: string,
+  secrets: RecordedSecretValues
+): SecretSafeKeyDisplay {
+  const sanitise = (text: string): string => displaySafe(stripControlChars(text));
+  const shown = sanitise(key);
+  // THE EXPOSURE CHECK RUNS ON THE SANITISED TEXT FIRST, because that is what
+  // gets PRINTED and sanitising can CREATE a secret that the raw key does not
+  // contain (issue #2667 review). `stripControlChars` DELETES, so a plaintext
+  // split by any character in its class — `alias-super<U+200E>-secret-...` —
+  // is not found in the raw key, returns `safe`, and is then reconstituted
+  // contiguous in `shown`. Measured across the whole deleted set: the C0
+  // controls, DEL / C1, the bidi MARKS, the embedding / override set and the
+  // isolates all reconstituted it; only `U+2028` / `U+2029` did not, because
+  // `displaySafe` REPLACES those with a space rather than deleting them.
+  //
+  // The raw check is kept as a FALLBACK rather than replaced: a secret the raw
+  // form exposes and sanitising happens to break up must still trip. Whichever
+  // arm fires, the masking below runs over `shown` — the string that is
+  // returned — so the verdict and the printed text can never come from
+  // different strings, which is what this bug was.
+  const exposure = stateKeySecretExposure(shown, secrets) ?? stateKeySecretExposure(key, secrets);
+  if (!exposure) return { kind: 'safe', text: shown };
+  const masked = sanitise(maskEveryOccurrence(shown, exposure));
+  if (masked === shown) return { kind: 'withheld' };
+  return { kind: 'masked', text: masked };
 }
 
 /**

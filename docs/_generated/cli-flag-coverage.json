@@ -73,6 +73,7 @@
     {
       "flag": "--dry-run",
       "integs": [
+        "cross-stack-secret-import",
         "ec2-instance",
         "export",
         "gc-custom-asset-names",

@@ -84,6 +84,75 @@ function mapsEqual(a: Map<string, ExportIndexEntry>, b: Map<string, ExportIndexE
 }
 
 /**
+ * Describe a `JSON.parse` failure WITHOUT echoing the body (issue
+ * [#2667](https://github.com/go-to-k/cdkd/issues/2667) review).
+ *
+ * V8 embeds a window of the INPUT in its parse error, so interpolating
+ * `err.message` republishes whatever bytes sat near the syntax error. Measured
+ * on node v24.19.0:
+ *
+ * ```
+ * JSON.parse('{"exports":{"K":{"value":hunter2SECRET}}}')
+ * -> Unexpected token 'h', ..."K":{"value":hunter2SEC"... is not valid JSON
+ * ```
+ *
+ * This index holds resolved Output VALUES, and for the unscrubbed state
+ * `cdkd scrub` targets those are exactly the plaintext — which then reaches a
+ * `logger.error` and the command's failure message, i.e. `--dry-run --fail` CI
+ * logs. Same class as the `import.ts` parse-snippet leak issue
+ * [#2829](https://github.com/go-to-k/cdkd/issues/2829) closed.
+ *
+ * What survives is the SIZE, plus the OFFSET WHEN V8 STATES ONE — neither is a
+ * function of the body's content, and both help an operator holding the object
+ * locate the damage. The offset is extracted by pattern rather than passed
+ * through, so a message worded differently yields no offset instead of leaking
+ * the rest of the sentence. The two numbers are in DIFFERENT UNITS and the
+ * message says so: V8 counts `at position` in UTF-16 code units while the size
+ * is UTF-8 bytes, so `'{ n\u00f6t json'` reports position 2 and 11 bytes. Measured on node v24.19.0: the `Expected ...`
+ * family carries `at position N` and the `Unexpected token 'X', ...snippet...`
+ * family — the one that embeds the body, i.e. the case this exists for — does
+ * NOT, so the size is what is always present and the offset is a bonus. Both
+ * arms are driven by tests.
+ */
+function describeParseFailure(err: unknown, bytes: number): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const at = /at position (\d+)/.exec(raw);
+  // `at position` is V8's UTF-16 CODE-UNIT index, not a byte offset -- named
+  // in the rendered text because the size beside it is UTF-8 bytes, and two
+  // numbers in different units with no label is how an operator seeks to the
+  // wrong place in the object.
+  const where = at ? ` at code-unit position ${at[1]}` : '';
+  return `invalid JSON${where}; ${bytes} byte(s) read`;
+}
+
+/**
+ * UTF-8 byte length of a decoded body, for {@link describeParseFailure}.
+ *
+ * `body.length` counts UTF-16 CODE UNITS, so reporting it as "byte(s)" is
+ * wrong for any non-ASCII index — an export name outside the BMP counts 2
+ * where the object holds 4 (issue #2667 review). The number is meant to help
+ * an operator match the message against the object S3 holds, so it has to be
+ * the same unit S3 reports.
+ */
+function utf8ByteLength(body: string): number {
+  return Buffer.byteLength(body, 'utf8');
+}
+
+/**
+ * Describe an `indexVersion` that is not a usable number, WITHOUT rendering it.
+ *
+ * `String(x)` renders a body-controlled value verbatim for two of the three
+ * non-number shapes — measured on node v24.19.0: a JSON string yields itself
+ * and a one-element array yields its element, while only an object degrades to
+ * `[object Object]`. The field is attacker-controlled in the same sense the
+ * rest of the body is, so the message reports its TYPE and, for a number, its
+ * value — the only shape whose value is safe because it is a number.
+ */
+function describeIndexVersion(value: unknown): string {
+  return typeof value === 'number' ? String(value) : `a non-numeric value (${typeof value})`;
+}
+
+/**
  * On-disk shape of `_index/{region}/exports.json`.
  *
  * Note: the index intentionally does NOT carry a `consumers[]` list
@@ -297,12 +366,80 @@ export class ExportIndexStore {
   }
 
   /**
+   * A snapshot of the persisted index, read WITHOUT the rebuild that
+   * {@link lookup} triggers on a missing or corrupt object.
+   *
+   * Every S3 call THIS METHOD makes is a GET, so a caller that must perform no
+   * S3 write (`cdkd scrub --dry-run`) can read the entries here — with ONE
+   * documented exception, which such a caller has to know about: when another
+   * caller on the same instance already has a `doLoad` in flight, the first
+   * line below awaits IT, and `doLoad` rebuilds (a PUT) on a missing or
+   * corrupt object. Unreachable from `cdkd scrub`, which never calls `lookup`
+   * and drives one store per region serially — but the guarantee is the thing
+   * a future no-write caller would rely on, so it is stated with its bound
+   * rather than unconditionally.
+   *
+   * THREE OUTCOMES, and only ONE of them is `undefined`. A MISSING object
+   * returns `undefined`: there is nothing to audit and nothing to repair. A
+   * body that does not PARSE, and an `indexVersion` this binary cannot
+   * interpret, both THROW — because the caller's question is "what does this
+   * index hold", and for those two the honest answer is "this call could not
+   * find out". Collapsing the corrupt case into `undefined` reads as an empty
+   * index, so a caller reports nothing over bytes it never interpreted, which
+   * for `cdkd scrub` is a green gate over a file that may still hold the
+   * plaintext (issue [#2667](https://github.com/go-to-k/cdkd/issues/2667)) —
+   * the exact shape that issue exists to close, one level down. `doLoad`'s own
+   * corrupt arm is unaffected: it REBUILDS, which is a write, and is why this
+   * read cannot share it.
+   *
+   * The returned map is a COPY, and a `patchEntry` on this same instance
+   * afterwards writes under the etag this read cached rather than re-reading.
+   */
+  async readPersistedEntries(): Promise<ReadonlyMap<string, ExportIndexEntry> | undefined> {
+    if (this.loadState.kind === 'loading') await this.loadState.promise;
+    if (this.loadState.kind === 'loaded') return new Map(this.loadState.entries);
+    const outcome = await this.loadPersisted();
+    if (outcome.kind === 'missing') return undefined;
+    if (outcome.kind === 'corrupt') {
+      throw new Error(
+        `Exports index at ${this.indexKey()} could not be parsed ` +
+          `(${describeParseFailure(outcome.error, outcome.bytes)}). ` +
+          `Its contents were NOT examined.`
+      );
+    }
+    return new Map(outcome.entries);
+  }
+
+  /**
    * Patch a single entry into the index after a `lookup` miss fell back
    * to a state.json scan and found the value. Lightweight write that
    * does NOT require a full rebuild.
+   *
+   * Returns whether the index now holds `entry` — `false` when the write
+   * was abandoned (a non-retryable S3 failure, or an exhausted If-Match
+   * retry budget), which `runWithRetry` logs and does not throw. A caller
+   * for which an unwritten entry is the outcome it must report — `cdkd
+   * scrub`, where the entry keeps whatever value it held — reads this
+   * return; the deploy path treats the index as a perf hint and ignores it.
    */
-  async patchEntry(exportName: string, entry: ExportIndexEntry): Promise<void> {
-    await this.enqueueWrite('patch', () => this.applyPatch(exportName, entry));
+  async patchEntry(
+    exportName: string,
+    entry: ExportIndexEntry,
+    opts: {
+      /**
+       * Refuse the write unless the entry CURRENTLY in the index is still
+       * published by this producer (issue #2667 review). A caller that decided
+       * to rewrite one owner's value read a SNAPSHOT; an If-Match conflict
+       * reloads the index underneath the retry, so by the time the PUT lands a
+       * concurrent deploy may have taken the name over — `applyStackUpdate`
+       * keeps the latest writer and only WARNS on a foreign overwrite (issue
+       * #2193). Without this the retry re-asserts the snapshot's owner and
+       * resurrects a value the new producer replaced.
+       */
+      requireOwner?: { producerStack: string; producerRegion: string };
+    } = {}
+  ): Promise<boolean> {
+    return this.enqueueWrite('patch', () => this.applyPatch(exportName, entry, opts.requireOwner));
   }
 
   /**
@@ -323,12 +460,15 @@ export class ExportIndexStore {
    * race on the same etag inside the same cdkd. The S3 If-Match retry
    * remains as cross-process protection.
    */
-  private async enqueueWrite(label: string, op: () => Promise<void>): Promise<void> {
+  private async enqueueWrite(label: string, op: () => Promise<boolean>): Promise<boolean> {
     const next = this.writeChain.then(() => this.runWithRetry(label, op));
     // Swallow errors on the shared tail so a single write's failure
     // doesn't poison the chain for the next write (runWithRetry
     // already logs warns on bail-out; we don't want a rejected tail).
-    this.writeChain = next.catch(() => {});
+    this.writeChain = next.then(
+      () => {},
+      () => {}
+    );
     return next;
   }
 
@@ -361,38 +501,59 @@ export class ExportIndexStore {
     await promise;
   }
 
+  /**
+   * GET the index object and, when it parses, install it as `loadState`.
+   * Performs no PUT: the missing / corrupt REBUILD lives one level up in
+   * {@link doLoad}, so {@link readPersistedEntries} can share this parse
+   * without writing. A `indexVersion` above this binary's still throws
+   * here rather than reporting `corrupt` — a rebuild would overwrite an
+   * index a newer binary wrote with this binary's view of it.
+   */
+  private async loadPersisted(): Promise<
+    | { kind: 'loaded'; entries: Map<string, ExportIndexEntry> }
+    | { kind: 'missing' }
+    | { kind: 'corrupt'; error: unknown; bytes: number }
+  > {
+    const raw = await this.readIndexRaw();
+    if (raw === null) return { kind: 'missing' };
+    const { body, etag } = raw;
+    let parsed: ExportIndexFile;
+    try {
+      parsed = JSON.parse(body) as ExportIndexFile;
+    } catch (err) {
+      return { kind: 'corrupt', error: err, bytes: utf8ByteLength(body) };
+    }
+    if (typeof parsed.indexVersion !== 'number' || parsed.indexVersion > EXPORT_INDEX_VERSION) {
+      // Newer index version written by a future cdkd binary. We can't
+      // safely interpret unknown fields; surface a clear error so the
+      // user upgrades rather than silently mishandling.
+      throw new Error(
+        `Exports index uses indexVersion ${describeIndexVersion(parsed.indexVersion)} which is newer than this cdkd binary supports (max ${EXPORT_INDEX_VERSION}). Upgrade cdkd.`
+      );
+    }
+    const entries = new Map<string, ExportIndexEntry>();
+    for (const [name, entry] of Object.entries(parsed.exports ?? {})) {
+      entries.set(name, entry);
+    }
+    this.loadState = { kind: 'loaded', etag, entries };
+    return { kind: 'loaded', entries };
+  }
+
   private async doLoad(): Promise<void> {
     try {
-      const raw = await this.readIndexRaw();
-      if (raw === null) {
+      const outcome = await this.loadPersisted();
+      if (outcome.kind === 'missing') {
         this.logger.info('Exports index missing; rebuilding from state.json files');
         await this.rebuild();
         return;
       }
-      const { body, etag } = raw;
-      let parsed: ExportIndexFile;
-      try {
-        parsed = JSON.parse(body) as ExportIndexFile;
-      } catch (err) {
+      if (outcome.kind === 'corrupt') {
         this.logger.warn(
-          `Exports index corrupt (${err instanceof Error ? err.message : String(err)}); rebuilding from state.json files`
+          `Exports index corrupt (${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}); rebuilding from state.json files`
         );
         await this.rebuild();
         return;
       }
-      if (typeof parsed.indexVersion !== 'number' || parsed.indexVersion > EXPORT_INDEX_VERSION) {
-        // Newer index version written by a future cdkd binary. We can't
-        // safely interpret unknown fields; surface a clear error so the
-        // user upgrades rather than silently mishandling.
-        throw new Error(
-          `Exports index uses indexVersion ${String(parsed.indexVersion)} which is newer than this cdkd binary supports (max ${EXPORT_INDEX_VERSION}). Upgrade cdkd.`
-        );
-      }
-      const entries = new Map<string, ExportIndexEntry>();
-      for (const [name, entry] of Object.entries(parsed.exports ?? {})) {
-        entries.set(name, entry);
-      }
-      this.loadState = { kind: 'loaded', etag, entries };
     } catch (err) {
       // Don't strand the loadState in `loading` — that would deadlock the
       // next caller. Reset to `unloaded` and rethrow so the caller decides
@@ -502,9 +663,9 @@ export class ExportIndexStore {
     stackName: string,
     producerRegion: string,
     outputs: Record<string, unknown>
-  ): Promise<void> {
+  ): Promise<boolean> {
     await this.ensureLoaded();
-    if (this.loadState.kind !== 'loaded') return;
+    if (this.loadState.kind !== 'loaded') return false;
     const next = new Map(this.loadState.entries);
     // Drop existing entries owned by this stack.
     for (const [name, entry] of next) {
@@ -525,9 +686,9 @@ export class ExportIndexStore {
     // change ends up reflected in `next` and the equality check is
     // strictly more precise than a per-step `changed` flag.
     if (mapsEqual(this.loadState.entries, next)) {
-      return;
+      return true;
     }
-    await this.persist(next);
+    return this.persist(next);
   }
 
   /**
@@ -562,17 +723,41 @@ export class ExportIndexStore {
     );
   }
 
-  private async applyPatch(exportName: string, entry: ExportIndexEntry): Promise<void> {
+  private async applyPatch(
+    exportName: string,
+    entry: ExportIndexEntry,
+    requireOwner?: { producerStack: string; producerRegion: string }
+  ): Promise<boolean> {
     await this.ensureLoaded();
-    if (this.loadState.kind !== 'loaded') return;
+    if (this.loadState.kind !== 'loaded') return false;
+    // Checked HERE rather than at the call site, and re-checked on every retry
+    // attempt, because `runWithRetry` resets `loadState` on an If-Match
+    // conflict and `ensureLoaded` above re-reads: this is the only point that
+    // sees what the index holds for the attempt about to be made.
+    if (requireOwner) {
+      const current = this.loadState.entries.get(exportName);
+      if (
+        !current ||
+        current.producerStack !== requireOwner.producerStack ||
+        current.producerRegion !== requireOwner.producerRegion
+      ) {
+        this.logger.warn(
+          `Exports index entry ownership changed under a patch; refusing to write it. ` +
+            `Expected producer '${displaySafe(requireOwner.producerStack)}' ` +
+            `(${displaySafe(requireOwner.producerRegion)}), found ` +
+            `${current ? `'${displaySafe(current.producerStack)}' (${displaySafe(current.producerRegion)})` : 'no entry'}.`
+        );
+        return false;
+      }
+    }
     const next = new Map(this.loadState.entries);
     next.set(exportName, entry);
-    await this.persist(next);
+    return this.persist(next);
   }
 
-  private async applyRemoveStack(stackName: string, producerRegion: string): Promise<void> {
+  private async applyRemoveStack(stackName: string, producerRegion: string): Promise<boolean> {
     await this.ensureLoaded();
-    if (this.loadState.kind !== 'loaded') return;
+    if (this.loadState.kind !== 'loaded') return false;
     const next = new Map(this.loadState.entries);
     let changed = false;
     for (const [name, entry] of next) {
@@ -584,12 +769,12 @@ export class ExportIndexStore {
         changed = true;
       }
     }
-    if (!changed) return;
-    await this.persist(next);
+    if (!changed) return true;
+    return this.persist(next);
   }
 
-  private async persist(entries: Map<string, ExportIndexEntry>): Promise<void> {
-    if (this.loadState.kind !== 'loaded') return;
+  private async persist(entries: Map<string, ExportIndexEntry>): Promise<boolean> {
+    if (this.loadState.kind !== 'loaded') return false;
     const file: ExportIndexFile = {
       indexVersion: EXPORT_INDEX_VERSION,
       region: this.region,
@@ -598,14 +783,22 @@ export class ExportIndexStore {
     };
     const etag = await this.writeIndex(file, this.loadState.etag);
     this.loadState = { kind: 'loaded', etag, entries };
+    return true;
   }
 
-  private async runWithRetry(label: string, op: () => Promise<void>): Promise<void> {
+  /**
+   * Run `op` under the If-Match retry budget. `true` means `op` reported the
+   * index now holds what it was asked to write (a PUT, or a no-op skip whose
+   * result was already there); `false` means this store abandoned the write
+   * and logged the warn below. It does NOT throw on either arm — `state.json`
+   * is the canonical record for the deploy path, and a caller that needs the
+   * failure surfaced reads the return value (see {@link patchEntry}).
+   */
+  private async runWithRetry(label: string, op: () => Promise<boolean>): Promise<boolean> {
     let lastErr: unknown;
     for (let attempt = 0; attempt < this.opts.maxWriteRetries; attempt++) {
       try {
-        await op();
-        return;
+        return await op();
       } catch (err) {
         lastErr = err;
         if (this.isPreconditionFailed(err)) {
@@ -618,17 +811,21 @@ export class ExportIndexStore {
           await new Promise((resolve) => setTimeout(resolve, backoff));
           continue;
         }
-        // Non-retryable error class for an index write — log and bail
-        // (state.json is canonical, so this is a perf-only loss).
+        // Non-retryable error class for an index write — log and bail. The
+        // deploy path treats the index as a derived view and continues on
+        // `state.json`; `cdkd scrub` reads the `false` and reports the entry
+        // as unwritten, since there the entry's value IS what it went to
+        // change.
         this.logger.warn(
           `Exports index ${label} failed (non-retryable): ${err instanceof Error ? err.message : String(err)}; continuing without index update`
         );
-        return;
+        return false;
       }
     }
     this.logger.warn(
       `Exports index ${label} exhausted ${this.opts.maxWriteRetries} retries due to concurrent writers; continuing without index update. Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
     );
+    return false;
   }
 
   private isNoSuchKey(err: unknown): boolean {

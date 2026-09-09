@@ -322,6 +322,12 @@ describe('cdkd scrub - scrubStack', () => {
       secretsFound: 0,
       secretBearingKeys: 0,
       unverifiableReads: 0,
+      // Issue #2667 review: an export name is an outputs-bag KEY, so every
+      // message naming one is masked through the stack's own secrets bag
+      // rather than merely control-stripped. The field is REQUIRED so no
+      // caller can print a raw name by forgetting it — which is why it is
+      // present even on the no-state arm, bound to an empty bag.
+      exportNameDisplay: expect.any(Function),
     });
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
