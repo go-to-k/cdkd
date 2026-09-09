@@ -103,6 +103,7 @@ import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from '
 import { join, dirname, relative } from 'node:path';
 
 import { typedSdkMember, providerWiresProperty } from './offline-property-evidence.ts';
+import { publishedSdkInterfaces } from './published-sdk-typings.ts';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -739,10 +740,18 @@ export function countDecisions({
   nestedKeyUnparsed = false,
   failedChecks = [],
   unreadable = [],
+  pendingSdkBump = [],
 }) {
   return (
     removed.length +
     divergences.length +
+    // Counted per BUMP, not per divergence: `partitionPendingSdkBump` moves a
+    // finding here only once the published client is known to declare the
+    // member, so what is left to do is merge one dependency bump however many
+    // findings ride on it. Several findings CAN share one client — go-to-k/cdkd#2784
+    // carried four on `@aws-sdk/client-glue` — and how often that happens is
+    // not measured here, so do not write a frequency word into this comment.
+    pendingBumpGroups(pendingSdkBump).length +
     (nestedKeyUnparsed ? 1 : 0) +
     failedChecks.length +
     unreadable.length
@@ -1015,6 +1024,8 @@ export function renderDiagnosis(input) {
     unreadable = [],
     autoTolerated = [],
     autoEscalated = [],
+    pendingSdkBump = [],
+    unresolvedSdkLag = [],
     skipped,
     sdkLag,
   } = input;
@@ -1026,6 +1037,7 @@ export function renderDiagnosis(input) {
     nestedKeyUnparsed,
     failedChecks,
     unreadable,
+    pendingSdkBump,
   });
   if (decisionTotal === 0) {
     lines.push('Nothing in this refresh needs a decision — additions only.', '');
@@ -1148,14 +1160,14 @@ export function renderDiagnosis(input) {
         } else if (sdk.modelled) {
           lines.push(
             `    - SDK evidence: \`${sdk.client}\`${
-              sdk.version ? ` (${sdk.version})` : ''
+              sdk.version ? ` (${renderKey(sdk.version)})` : ''
             } **still models this name** (case-insensitively), so the API likely ` +
               'still accepts it — leans toward keeping it (`bogusTolerated`)'
           );
         } else {
           lines.push(
             `    - SDK evidence: \`${sdk.client}\`${
-              sdk.version ? ` (${sdk.version})` : ''
+              sdk.version ? ` (${renderKey(sdk.version)})` : ''
             } **no longer models this name**, searched case-insensitively across ` +
               `${(sdk.consulted ?? [sdk.client]).length} client(s) — both of AWS's ` +
               'descriptions have dropped it, which leans toward retiring the ' +
@@ -1165,6 +1177,85 @@ export function renderDiagnosis(input) {
       }
     }
     lines.push('', ...removedProcedure(removed), '');
+  }
+
+  if (pendingSdkBump.length > 0) {
+    const groups = pendingBumpGroups(pendingSdkBump);
+    lines.push(
+      `### SDK bumps that resolve nested-key divergences (${groups.length}) — a decision is needed`,
+      '',
+      'The nested-key check asks whether a specific SDK INTERFACE declares a',
+      'member. For each divergence below the answer is NO in the client installed',
+      'here and YES in the one npm publishes today, so the finding is a lockfile',
+      'lag rather than a field the service dropped.',
+      '',
+      '**An action rather than a judgement — but still counted, and still worth',
+      'doing promptly.** Until the bump lands the installed client has no member',
+      'to carry the value, so the template key does not reach AWS: the live',
+      'silent-drop class this job watches. What the job removes is the',
+      'INVESTIGATION, not the action, so each bump below is counted once however',
+      'many divergences ride on it.',
+      ''
+    );
+    for (const group of groups) {
+      const rows = pendingSdkBump.filter(
+        (p) => p.client === group.client && p.latest === group.latest
+      );
+      // Same split as `divergenceProcedure`'s lag lines, and for the same
+      // reason: `client` and `latest` are shape-fenced upstream, a version read
+      // out of a dependency's own `package.json` is not — `installed` is taken
+      // on nothing but `typeof === 'string'` and `sdkModelsMember`'s
+      // `sdk.version` on nothing at all — so every one of them goes through
+      // `renderKey`. There are FIVE such emission sites, not two: this heading,
+      // `divergenceProcedure`'s two lag lines, and the removed-property
+      // evidence's two arms. Guarding a subset is a guard that looks present
+      // and is not, which is how the first cut of this shipped.
+      //
+      // `renderKey` is the guard for BUNDLE-derived names and it rejects a
+      // scoped package outright (`@` and `/`), which is why the client name is
+      // not routed through it while the interface and member names below are.
+      // It also rejects `+`, which matters only for the values it is applied to
+      // — `installed` here and `sdk.version` in the removed-property evidence.
+      // Those never reach `published-sdk-typings.ts`'s version guard, so a `+`
+      // arrives here unfiltered and renders as rejected. `group.latest` is the
+      // opposite case and is emitted bare for that reason: a group exists only
+      // because `publishedModelsDir` accepted that exact string, so it has
+      // already passed a shape test — including the `+` this one would refuse.
+      // Inert either way today; no AWS SDK release carries build metadata.
+      lines.push(
+        `#### ${D()}Bump \`${group.client}\` from ${renderKey(group.installed)} to \`${group.latest}\``,
+        '',
+        `Resolves ${rows.length} ${rows.length === 1 ? 'divergence' : 'divergences'}:`,
+        ''
+      );
+      for (const r of rows) {
+        lines.push(
+          `- ${renderName(r.resourceType)}: ${renderKey(r.nestedKey)} — ` +
+            `${renderKey(r.definition)} declares ${renderKey(r.member)} at \`${group.latest}\``
+        );
+      }
+      lines.push('');
+    }
+    lines.push(
+      '<details><summary>How this was determined</summary>',
+      '',
+      "The job downloads the published tarball's `dist-types/models` and rebuilds",
+      'the same `interface -> members` index the checker itself uses, then re-asks',
+      "the checker's own question at the published version.",
+      '',
+      '**It is not a name search, and that distinction is the mechanism.** The',
+      'four `AWS::Glue::Connection` names that motivated this are present in BOTH',
+      'the installed and the published client — the finding is about one',
+      "INTERFACE's members — so a grep-level \"the newer SDK has it\" would have",
+      'contradicted the checker and been wrong.',
+      '',
+      'Nothing is installed, `--ignore-scripts` is passed, and no fetched file is',
+      'executed or imported. A fetch that fails leaves the divergence in the',
+      'section below, unsettled.',
+      '',
+      '</details>',
+      ''
+    );
   }
 
   if (divergences.length > 0) {
@@ -1181,7 +1272,7 @@ export function renderDiagnosis(input) {
         `- ${D()}${renderName(d.resourceType)}: ${renderKey(d.nestedKey)} [${d.bucket}]${detail}`
       );
     }
-    lines.push('', ...divergenceProcedure(divergences, sdkLag), '');
+    lines.push('', ...divergenceProcedure(divergences, sdkLag, unresolvedSdkLag), '');
   }
 
   if (nestedKeyUnparsed) {
@@ -1475,9 +1566,12 @@ function removedProcedure(removed) {
  *
  * @param {NestedKeyDivergence[]} divergences
  * @param {SdkLagRow[]} [sdkLag]
+ * @param {NestedKeyDivergence[]} [unresolved] the ones whose SDK-lag reading the
+ *   published client did not settle, named so the step does not claim a check
+ *   it did not make
  * @returns {string[]}
  */
-function divergenceProcedure(divergences, sdkLag) {
+function divergenceProcedure(divergences, sdkLag, unresolved = []) {
   const hasMissing = divergences.some((d) => d.bucket !== 'case-divergence');
   /** @type {string[]} */
   const lagLines = [];
@@ -1491,7 +1585,10 @@ function divergenceProcedure(divergences, sdkLag) {
     // ordinary way that happens). Gating the whole block on having rows meant
     // the report went silent about SDK lag exactly when it knew least, and a
     // report that says nothing reads as ruled out.
-    lagLines.push('', '**Installed vs published, for the divergent types above:**', '');
+    // "for the divergent types" rather than "the types above": `sdkLag` is built
+    // from every divergence the checker reported, and a type whose findings all
+    // moved to the pending-bump section is no longer listed above this block.
+    lagLines.push('', '**Installed vs published, for the divergent types:**', '');
     for (const l of lags) {
       // Read, never re-derived. `clientsForType` falls back to every imported
       // client when none matches the type's service, so a row CAN name a client
@@ -1502,12 +1599,20 @@ function divergenceProcedure(divergences, sdkLag) {
       // A false flag means the narrowing found nothing to go on, so the
       // qualifier hedges rather than denies.
       const scope = l.matched === false ? 'for that client, which may not be the type’s own' : 'here';
+      // `installed` through `renderKey`, `client` and `latest` interpolated.
+      // The first is whatever a dependency's own `package.json` `version` says,
+      // taken on nothing but `typeof === 'string'`, and it lands here as BARE
+      // markdown rather than inside a code span — so a crafted value could
+      // render a fabricated section into the bot's PR body. The other two are
+      // shape-fenced upstream (`sdkClientVersions`' capture and
+      // `sdkVersionLag`'s version test), and `renderKey` would reject the
+      // scoped package name outright.
       lagLines.push(
         l.behind
-          ? `- ${renderName(l.resourceType)} — \`${l.client}\` is ${l.installed}, npm ` +
+          ? `- ${renderName(l.resourceType)} — \`${l.client}\` is ${renderKey(l.installed)}, npm ` +
             `publishes ${l.latest}. The SDK-lag reading is LIVE ${scope}: bump and re-check ` +
             'before allow-listing anything.'
-          : `- ${renderName(l.resourceType)} — \`${l.client}\` is ${l.installed}, which is ` +
+          : `- ${renderName(l.resourceType)} — \`${l.client}\` is ${renderKey(l.installed)}, which is ` +
             `current, so the SDK-lag reading is ruled out ${scope}.`
       );
     }
@@ -1527,8 +1632,59 @@ function divergenceProcedure(divergences, sdkLag) {
     ...lagLines,
     ...(hasMissing
       ? [
-          '2. For `no-sdk-member` / `definition-member-missing`, first rule out the',
-          '   installed SDK simply lagging the service:',
+          '2. For `no-sdk-member` / `definition-member-missing`, rule out the',
+          '   installed SDK simply lagging the service.',
+          '',
+          '   For a `definition-member-missing` the job re-asks that finding’s own',
+          '   interface-scoped question in the PUBLISHED client, so one reaching',
+          '   this section is one the published client does not resolve either —',
+          '   EXCEPT where the published client did not settle it, which is named',
+          '   below whenever it happens. A finding the bump DOES resolve is listed',
+          '   in its own section above instead.',
+          ...(unresolved.length > 0
+            ? [
+                '',
+                '   **The published client could not settle these, so their SDK-lag',
+                '   reading is UNKNOWN, not ruled out.** The version list above splits',
+                '   them two ways and no further:',
+                '',
+                '   - The type is ABSENT from it. The PUBLISHED version could not be',
+                '     established — npm was unreachable, npm answered with something',
+                '     that is not a version, the type resolved to no client, or the',
+                '     client’s own manifest could not be read — and this report cannot',
+                '     tell which. Do NOT read that as “there is nothing to bump”: under',
+                '     an unreachable npm the bump is precisely what went unchecked.',
+                '   - The type IS in it, marked LIVE. A lagging client was named, and',
+                '     either its published tarball could not be downloaded or read, or',
+                '     it was read and declared no such interface. Those two are also',
+                '     indistinguishable from here.',
+                '',
+                '   **No rendering of this report is ever rewritten in place.** The',
+                '   reading is recomputed every cycle, but the day-one one sits in the',
+                '   pull-request body and each later publishing cycle posts its own as',
+                '   a new comment. So the newest comment holds the newest reading POSTED',
+                '   — not necessarily the newest one taken, since a cycle that publishes',
+                '   nothing still recomputes and discards it. If there is no comment, the',
+                '   body is all there is. Either way, settle it where you are rather than',
+                '   waiting, before allow-listing anything:',
+                '',
+                '   ```bash',
+                '   node -p "require(\'@aws-sdk/client-<service>/package.json\').version"',
+                '   npm view @aws-sdk/client-<service> version',
+                '   # then, if it is behind, bump and re-run:',
+                '   vp run audit:nested-key-coverage:check',
+                '   ```',
+                '',
+                '   The findings:',
+                '',
+                ...unresolved.map(
+                  (d) => `   - ${renderName(d.resourceType)}: ${renderKey(d.nestedKey)}`
+                ),
+              ]
+            : []),
+          '',
+          '   A `no-sdk-member` carries no interface to re-ask — it is a',
+          '   member-index question over the whole client — so check it by hand:',
           '',
           '   ```bash',
           '   # Compare what is installed against what npm publishes today.',
@@ -1645,6 +1801,215 @@ export function buildSdkLag(divergences, clientsFor, versionLag = sdkVersionLag)
     }
   }
   return out;
+}
+
+/**
+ * The interface and member a `definition-member-missing` finding is ABOUT.
+ *
+ * The producer writes exactly one shape
+ * (`gen-nested-key-coverage.ts`'s definition sub-pass):
+ *
+ *     SDK interface `AuthenticationConfiguration` has no `BasicAuthenticationCredentials` member
+ *
+ * Anchored end to end and matched against the WHOLE detail, so a producer that
+ * reworded or extended the sentence yields `undefined` — the divergence then
+ * stays a decision, which is the direction a parse failure has to take. A loose
+ * match would let a reworded detail bind the wrong two identifiers and settle a
+ * finding from a question nobody asked.
+ *
+ * @param {string} detail the divergence's parenthesised detail, backticks and all
+ * @returns {{definition: string, member: string} | undefined}
+ */
+export function parseDefinitionMemberMissing(detail) {
+  const m = /^SDK interface `([A-Za-z0-9_$]+)` has no `([A-Za-z0-9_$]+)` member$/.exec(detail);
+  return m ? { definition: m[1], member: m[2] } : undefined;
+}
+
+/**
+ * Group the pending bumps by the dependency that resolves them.
+ *
+ * The unit of ACTION is a client bump, not a divergence: four
+ * `AWS::Glue::Connection` findings against one lagging `@aws-sdk/client-glue`
+ * are one thing to do. `countDecisions` and the rendered section both count
+ * through here so the title's number and the body's labels cannot disagree.
+ *
+ * Returns the bumps THEMSELVES rather than encoded keys the caller splits back
+ * apart. An encoded key is a round-trip that can silently fail — the first cut
+ * joined on a separator the renderer then split on, and every group resolved to
+ * an empty row set — while an object cannot be mis-parsed because it is never
+ * parsed.
+ *
+ * @param {import('./diagnose-schema-refresh.d.mts').PendingSdkBump[]} pending
+ * @returns {Array<{client: string, installed: string, latest: string}>} sorted
+ */
+export function pendingBumpGroups(pending) {
+  /** @type {Map<string, {client: string, installed: string, latest: string}>} */
+  const groups = new Map();
+  for (const p of pending) {
+    // Keyed on the PAIR: one client at two published versions is two bumps, and
+    // keying on the client alone would silently merge them into one action.
+    const key = `${p.client}@${p.latest}`;
+    if (!groups.has(key)) {
+      groups.set(key, { client: p.client, installed: p.installed, latest: p.latest });
+    }
+  }
+  return [...groups.values()].sort((a, b) =>
+    a.client === b.client ? a.latest.localeCompare(b.latest) : a.client.localeCompare(b.client)
+  );
+}
+
+/**
+ * Split the divergences a pending SDK bump already resolves out of the ones that
+ * need a judgement, by re-asking each finding's OWN question at the version npm
+ * publishes today (issue [#2819](https://github.com/go-to-k/cdkd/issues/2819)).
+ *
+ * **This is not a name lookup, and the distinction is the whole mechanism.**
+ * `sdkVersionLag`'s comment records the measurement: the four live
+ * `AWS::Glue::Connection` divergences carry names present in BOTH the installed
+ * and the published client, because the finding is about a specific INTERFACE's
+ * members. So the re-ask goes through the checker's own
+ * `collectSdkInterfaces` index and asks the interface-scoped question verbatim —
+ * `interfaces.get(definition).has(member)`.
+ *
+ * **What lands here is still a DECISION, deliberately.** Until the bump lands,
+ * the installed SDK genuinely has no member to carry the value, so the template
+ * key does not reach AWS — the live silent-drop class this whole job watches.
+ * Moving these out of the count entirely would hide that for as long as the bump
+ * stayed unmerged, and go-to-k/cdkd#2541 sat open for weeks. What the split
+ * removes is the INVESTIGATION (four `npm view` / bump / re-check loops), not
+ * the action: they collapse into one decision per lagging client.
+ *
+ * Scoped to `definition-member-missing` on purpose. A `no-sdk-member` finding
+ * carries no detail — it is a member-index question over the whole client, not
+ * an interface-scoped one — so there is no question to re-ask and it escalates
+ * unchanged.
+ *
+ * Rows are tried MATCHED-first, and a client whose published index does not
+ * declare the interface at all is skipped rather than read as "the member is
+ * gone": `clientsForType` falls back to every imported client, so the row need
+ * not name the type's own service. Every fetch failure degrades to escalation.
+ *
+ * @param {{
+ *   divergences: NestedKeyDivergence[],
+ *   sdkLag?: SdkLagRow[],
+ *   publishedInterfaces?: (client: string, version: string) =>
+ *     ReadonlyMap<string, ReadonlyMap<string, unknown>> | undefined,
+ * }} input
+ * @returns {{divergences: NestedKeyDivergence[],
+ *   pendingSdkBump: import('./diagnose-schema-refresh.d.mts').PendingSdkBump[],
+ *   unresolved: NestedKeyDivergence[]}} `unresolved` is the subset of
+ *   `divergences` the published client did not SETTLE either way, so their
+ *   SDK-lag reading is UNKNOWN rather than ruled out. Three routes reach it —
+ *   no version row for the type, a lagging row whose published index could not
+ *   be read, and lagging rows read fine that declare no such interface — and
+ *   the report can separate only the FIRST from the other two, because that is
+ *   all the version list distinguishes. It says so rather than enumerating
+ *   causes it cannot attribute. Reporting any of them as ruled out would say
+ *   the bump had been checked when nothing was, and the step it feeds ends in
+ *   an allow-list entry, the one outcome that must not be reached on a guess.
+ */
+export function partitionPendingSdkBump({
+  divergences,
+  sdkLag = [],
+  publishedInterfaces = publishedSdkInterfaces,
+}) {
+  /** @type {import('./diagnose-schema-refresh.d.mts').PendingSdkBump[]} */
+  const pendingSdkBump = [];
+  /** @type {NestedKeyDivergence[]} */
+  const remaining = [];
+  /** @type {NestedKeyDivergence[]} */
+  const unresolved = [];
+  /** One download per client@version, however many divergences ride on it. */
+  const fetched = new Map();
+  const interfacesFor = (client, latest) => {
+    const key = `${client} ${latest}`;
+    if (!fetched.has(key)) fetched.set(key, publishedInterfaces(client, latest));
+    return fetched.get(key);
+  };
+
+  for (const d of divergences) {
+    const asked = d.bucket === 'definition-member-missing' ? parseDefinitionMemberMissing(d.detail) : undefined;
+    if (asked === undefined) {
+      remaining.push(d);
+      continue;
+    }
+    // Kept SEPARATE from `rows` on purpose. An absent row means one of two
+    // opposite things — `sdkVersionLag` could not reach npm, or it did and the
+    // client is CURRENT — and only the second is an answer. Deciding off the
+    // `behind`-filtered list alone conflated them, so with npm unreachable
+    // (which the rendered text calls the ordinary case) EVERY type lost its
+    // row, nothing was reported unknown, and the procedure went on asserting a
+    // check that never ran. That is the exact failure this whole return value
+    // was added for, and it survived the first cut of it.
+    const typeRows = sdkLag.filter((l) => l.resourceType === d.resourceType);
+    const rows = typeRows
+      .filter((l) => l.behind)
+      .sort((a, b) => Number(b.matched) - Number(a.matched));
+    /** @type {import('./diagnose-schema-refresh.d.mts').PendingSdkBump | undefined} */
+    let settled;
+    /** Whether any client's published index actually declared the interface. */
+    let answered = false;
+    for (const row of rows) {
+      const index = interfacesFor(row.client, row.latest);
+      // COULD NOT READ is not the same as "this client does not declare it",
+      // and collapsing the two delegates the question to a fallback client
+      // `clientsForType` itself calls "may not be the type's own" — which, if
+      // that one happens to declare a same-spelled interface carrying the name,
+      // settles a real divergence from a client the checker never asked. Stop
+      // instead, and let the finding be reported as UNKNOWN.
+      if (index === undefined) break;
+      const members = index.get(asked.definition);
+      // Not this client's interface — keep looking rather than concluding the
+      // member is absent from a client that never declared the shape.
+      if (members === undefined) continue;
+      answered = true;
+      if (members.has(asked.member)) {
+        settled = {
+          ...d,
+          client: row.client,
+          installed: row.installed,
+          latest: row.latest,
+          definition: asked.definition,
+          member: asked.member,
+        };
+      }
+      // The declaring client has been found either way: a missing member here
+      // IS the finding, and a further client could only confirm it.
+      break;
+    }
+    if (settled) {
+      pendingSdkBump.push(settled);
+      continue;
+    }
+    remaining.push(d);
+    // The ONE state that is a real answer without a published lookup: a row
+    // exists for this type and none of them is behind, so the installed client
+    // IS the latest and the checker's own verdict already stands. Reporting
+    // that as unknown would send the maintainer to bump a current client.
+    //
+    // TWO states are real answers and neither is unknown: this one, and the
+    // `answered` case above — a published index that declared the interface and
+    // did not carry the member, which is the finding CONFIRMED and is this
+    // module's own motivating measurement (the four Glue divergences in the
+    // header).
+    //
+    // Everything else is unknown, by THREE routes: no row for the type at all;
+    // a lagging row whose published index could not be downloaded or read,
+    // which breaks out of the loop above; and lagging rows read fine that
+    // declare no such interface, which exhausts it. (The first route has
+    // several upstream causes — npm unreachable, npm answering with a string
+    // that is not a version, no client resolved, an unreadable manifest — and
+    // this function cannot tell them apart, which is why the rendered line does
+    // not claim to either.)
+    //
+    // Nor are the second and third cleanly disjoint: a run that reads one row
+    // without the interface and then fails to read the next satisfies neither
+    // description alone. That is the reason the rendered line groups them and
+    // says they are indistinguishable, rather than enumerating.
+    const clientIsCurrent = typeRows.length > 0 && rows.length === 0;
+    if (!answered && !clientIsCurrent) unresolved.push(d);
+  }
+  return { divergences: remaining, pendingSdkBump, unresolved };
 }
 
 /**
@@ -2194,7 +2559,7 @@ function main() {
     .split(',')
     .map((c) => c.trim())
     .filter((c) => c !== '');
-  const divergences = nestedKey.divergences;
+  const allDivergences = nestedKey.divergences;
   const skipped = readArg('--skipped-log')
     .split('\n')
     .map((l) => l.trim())
@@ -2205,7 +2570,21 @@ function main() {
   // first import. Each distinct client is asked once; the failure of any single
   // lookup is silent by construction and shows up as an absent row, which the
   // rendered section names as UNKNOWN rather than ruled out.
-  const sdkLag = buildSdkLag(divergences, (t) => sdkClientVersions(providerFiles.get(t)));
+  const sdkLag = buildSdkLag(allDivergences, (t) => sdkClientVersions(providerFiles.get(t)));
+
+  // Runs AFTER `buildSdkLag` because it consumes its rows, and BEFORE anything
+  // reads `divergences`: the report and the count must both see the narrowed
+  // list, or the body would label a finding the title does not count. Only a
+  // client already known to be BEHIND is ever downloaded, so a refresh with no
+  // lagging client makes no request at all.
+  const {
+    divergences,
+    pendingSdkBump,
+    unresolved: unresolvedSdkLag,
+  } = partitionPendingSdkBump({
+    divergences: allDivergences,
+    sdkLag,
+  });
 
   // Written as a SIDE EFFECT of the same invocation that renders the report,
   // rather than exposed as a second mode the workflow runs again. A second run
@@ -2243,6 +2622,8 @@ function main() {
       writableAdded,
       readOnlyAddedCount,
       divergences,
+      pendingSdkBump,
+      unresolvedSdkLag,
       nestedKeyUnparsed: nestedKey.unparsedFailure,
       failedChecks,
       unreadable,
@@ -2255,7 +2636,7 @@ function main() {
     try {
       writeFileSync(
         countOut,
-        `${countDecisions({ removed: removedForReport, divergences, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable })}\n`
+        `${countDecisions({ removed: removedForReport, divergences, pendingSdkBump, nestedKeyUnparsed: nestedKey.unparsedFailure, failedChecks, unreadable })}\n`
       );
     } catch (err) {
       process.stderr.write(

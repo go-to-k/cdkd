@@ -1737,4 +1737,151 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).not.toContain('AWS_SECRET_ACCESS_KEY');
     expect(workflow).not.toContain('role-to-assume');
   });
+
+  it('writes the diagnosis into the BODY only at creation, and as a COMMENT thereafter', () => {
+    // `divergenceProcedure`'s unresolved block tells the reader this section is
+    // never updated in place and to read the newest COMMENT for a current
+    // answer. That is a claim about THIS file, made from another one, and it
+    // was wrong twice in a row: first "re-run the job" (the fresh reading is
+    // computed and discarded on an idle cycle), then "the body is rewritten
+    // only on a cycle that publishes" (no cycle rewrites it at all). Six
+    // consecutive review rounds found a defect of exactly this shape — a
+    // sentence asserting a mechanism that lives somewhere else — so the claim
+    // gets a fence rather than a third careful rewrite.
+    //
+    // Change the workflow's surfacing and this reds, naming the prose to fix.
+    // (i) The day-one reading goes into the BODY, composed from the diagnosis.
+    // Dropping the `cat` would leave the body without it while every call shape
+    // below stayed identical.
+    const body = workflow.match(/gh pr create[\s\S]{0,400}?--body-file (\S+)/);
+    expect(body, 'the PR is no longer created with a --body-file').not.toBeNull();
+    expect(body![1]).toBe('/tmp/pr-body.md');
+    expect(workflow, 'the created body no longer carries the diagnosis').toContain(
+      'cat /tmp/diagnosis.md'
+    );
+
+    // (ii) A later publishing cycle posts a COMMENT — exactly one poster,
+    // UNCONDITIONALLY, on the push-SUCCESS half. All three matter: a second
+    // poster, an `&&` in front of the one, or moving it into the failure arm
+    // each makes "each later publishing cycle posts its own as a new comment"
+    // false while every call shape stays identical (all three measured green
+    // against the earlier form of this case).
+    expect([...workflow.matchAll(/gh pr comment/g)].length, 'not exactly one poster').toBe(1);
+    const publish = shellOf('Publish the refresh');
+    const pushAt = publish.indexOf('if git push');
+    expect(pushAt, 'the push guard is gone').toBeGreaterThan(-1);
+    const thenAt = publish.indexOf('then', pushAt);
+    expect(thenAt, 'the push guard opens no arm').toBeGreaterThan(-1);
+    // Bounded by the arm's own `else`, NOT by `guardArm`: that helper ends at
+    // the first line-leading `fi`, which here is the INNER lost-race one inside
+    // the failure arm — so its slice spanned BOTH halves and a poster moved to
+    // the failure arm still satisfied `toContain` (measured).
+    const elseOffset = publish.slice(thenAt).search(/\n\s*else\b/);
+    expect(elseOffset, 'the push guard has no else arm to bound the success half').toBeGreaterThan(
+      -1
+    );
+    const successArm = publish.slice(thenAt, thenAt + elseOffset);
+    expect(successArm, 'the diagnosis comment left the push-SUCCESS arm').toContain('gh pr comment');
+    expect(
+      successArm.slice(0, successArm.indexOf('gh pr comment')),
+      'the diagnosis comment picked up a condition of its own'
+    ).not.toMatch(/&&|\|\||\bif\b/);
+    const comment = workflow.match(/gh pr comment[\s\S]{0,200}?--body-file (\S+)/);
+    expect(comment, 'the later-cycle diagnosis is no longer posted as a comment').not.toBeNull();
+    expect(comment![1]).toBe('/tmp/diagnosis.md');
+
+    // (iii) Nothing rewrites a rendering in place. The only later body write is
+    // the marking step's `${NB}`, and what matters is what `${NB}` is built
+    // FROM: the body just fetched into `${B}` plus the verdict block. Asserting
+    // that the marker NAMES appear somewhere constrains nothing — they are
+    // `env:` entries — so splicing the current diagnosis into `${verdict}`, or
+    // regenerating the whole body from the preamble plus the diagnosis, both
+    // stayed green (measured).
+    const mark = shellOf('Mark whether the PR needs a decision');
+    expect(mark, 'the marking step now reads the diagnosis — it would rewrite it in place').not.toContain(
+      '/tmp/diagnosis.md'
+    );
+    expect(mark, 'the splice no longer takes the head of the FETCHED body').toContain(
+      'head -n "${vb}" "${B}"'
+    );
+    expect(mark, 'the splice no longer takes the tail of the FETCHED body').toContain(
+      'tail -n "+${ve}" "${B}"'
+    );
+    expect(mark, 'the marking step no longer fetches the body it edits').toContain(
+      'gh pr view "${pr}" --json body'
+    );
+
+    // ALLOW-LIST, not a deny-list, and the polarity is the whole point.
+    //
+    // Four consecutive review rounds defeated the deny-list forms of this
+    // check, each fix moving the hole one spelling over: `--field "body=@…"`
+    // only; then `--field`/`-f` while `gh api` spells the same two flags FOUR
+    // ways and `-F` is the short form of the one already in use; then a payload
+    // matcher, which `gh pr comment --edit-last` walks past (same call shape, no
+    // payload — it changes the VERB) and `gh api --input file.json` walks past
+    // (the payload is JSON `body:`, never argv `body=`). The set of ways to
+    // rewrite a rendering in place is not enumerable, so stop enumerating it.
+    //
+    // Every `gh` invocation in the two steps is pinned instead. A new call, a
+    // new flag on an existing one, or a changed target all red — including
+    // every falsification above, without naming any of them. The cost is that
+    // an unrelated edit to these steps reds too: that is intended, because the
+    // prose in `divergenceProcedure` describes exactly this surfacing and has
+    // to be re-read when it changes.
+    // QUOTE-AWARE, not line-prefix-filtered. The first cut dropped every line
+    // starting with `echo`, because two error messages quote a `gh label
+    // create` suggestion — and that hid any call sharing a line with one:
+    // `echo "refreshing body" && gh pr edit "${PR_NUMBER}" --body-file
+    // /tmp/diagnosis.md` rewrote the body every cycle and stayed GREEN
+    // (measured). Scanning quotes instead means a `gh` inside a string is never
+    // a call and a `gh` outside one always is, whatever precedes it.
+    const ghCalls = (shell: string) => {
+      const src = shell.replace(/\\\n\s*/g, ' ');
+      const calls: string[] = [];
+      let quote: string | null = null;
+      let start = -1;
+      const flush = (end: number) => {
+        if (start === -1) return;
+        calls.push(src.slice(start, end).replace(/\s+/g, ' ').trim());
+        start = -1;
+      };
+      for (let i = 0; i < src.length; i++) {
+        const c = src[i]!;
+        if (quote) {
+          if (c === '\\' && quote === '"') i++;
+          else if (c === quote) quote = null;
+          continue;
+        }
+        if (c === '"' || c === "'") {
+          quote = c;
+          continue;
+        }
+        if (start === -1 && src.startsWith('gh ', i) && (i === 0 || /[\s;&|(]/.test(src[i - 1]!))) {
+          start = i;
+          i += 2;
+          continue;
+        }
+        if (start !== -1 && (c === '\n' || c === '|' || c === ';' || c === '&')) flush(i);
+      }
+      flush(src.length);
+      return calls.sort();
+    };
+
+    expect(ghCalls(publish), 'the publish step gained, lost or altered a gh call').toEqual([
+      'gh pr comment "${PR_NUMBER}" --body-file /tmp/diagnosis.md',
+      'gh pr create --title "chore(schemas): refresh CFn schema fixtures (${cycle})" --body-file /tmp/pr-body.md --head "${branch}" --base main',
+      'gh pr list --head "${branch}" --state open --json number --jq \'.[0].number // empty\')',
+      'gh pr view "${PR_NUMBER}" --json state --jq .state)',
+    ]);
+    expect(ghCalls(mark), 'the marking step gained, lost or altered a gh call').toEqual([
+      'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --field "body=@${NB}" > /dev/null',
+      'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" -f title="${title}" > /dev/null',
+      'gh pr edit "${pr}" --add-assignee "${GITHUB_REPOSITORY_OWNER}"',
+      'gh pr edit "${pr}" --add-label "${DECISION_LABEL}"',
+      'gh pr edit "${pr}" --remove-label "${DECISION_LABEL}"',
+      'gh pr view "${pr}" --json body --jq .body',
+      'gh pr view "${pr}" --json state --jq .state)',
+      'gh pr view "${pr}" --json title --jq .title)',
+    ]);
+  });
 });

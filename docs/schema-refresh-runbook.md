@@ -236,7 +236,24 @@ different capitalisation, so rename it in the provider.
 
 For `no-sdk-member` / `definition-member-missing`, rule out the installed SDK
 simply lagging the service before allow-listing anything — an entry added over
-a stale SDK hides a real dropped value:
+a stale SDK hides a real dropped value.
+
+For a **`definition-member-missing` the job usually rules this out for you.** It
+downloads the published client and re-asks that finding's own question there —
+does interface `I` declare member `M`? — so one reaching this section is one the
+published client does not resolve either. A finding the bump *does* resolve
+appears in its own pull-request section instead, under "SDK bumps that resolve
+nested-key divergences", naming the client and the version. Merge that bump; no
+allow-list entry is called for.
+
+The exception is named in the pull request whenever it happens: if the published
+client could not be downloaded, that finding's SDK-lag reading is **unknown, not
+ruled out**, and the procedure lists it as such. Bump and re-check those by hand
+before allow-listing them.
+
+A **`no-sdk-member` carries no interface**, so there is nothing to re-ask
+automatically — it is a member-index question over the whole client. Check it by
+hand:
 
 ```bash
 # What is installed, versus what npm publishes today.
@@ -261,16 +278,20 @@ settles the question.
 
 For a nested-key divergence it also reports whether the installed client is
 behind npm. If it is current, the "the SDK just lags" reading is eliminated
-outright. If it is behind, that reading is live — but whether a bump actually
-fixes the divergence is an interface-level question a name lookup cannot answer,
-so re-run the check after bumping rather than assuming.
+outright. If it is behind, that reading is live, and for a
+`definition-member-missing` the job settles it: whether a bump fixes the
+divergence is an interface-level question, so it downloads the published client
+and asks the interface — a name lookup would answer a different question and
+could contradict the check. Those findings are grouped into one bump per client
+rather than left as one decision each.
 
 What is left is genuinely undecidable from the repository:
 
 - A **rename looks exactly like a removal** at the name level, which is why
   this repository carries hand-maintained rename maps at all.
 - `no-sdk-member` means the **installed** SDK version lacks the member. That
-  can be the SDK lagging the service rather than the service lacking it.
+  can be the SDK lagging the service rather than the service lacking it, and
+  the finding carries no interface for the job to re-ask.
 - Adding an allow-list entry is a promise that cdkd will never send the value.
   That is a policy choice, not a lookup.
 
