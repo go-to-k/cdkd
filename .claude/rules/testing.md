@@ -515,8 +515,9 @@ Enforced by `tests/unit/scripts/integ-fixture-removal-policy.test.ts`
 The scaffold template in `.claude/skills/new-integ/SKILL.md` emits an
 `aws-cdk-lib` floor into every fixture `package.json` it creates. It was pinned
 at `^2.169.0` while dependabot moved individual fixtures forward around it, and
-the result was FOUR floors across 292 fixtures (`^2.169.0` ×172, `^2.172.0` ×91,
-`^2.176.0` ×15, `^2.257.0` ×6) — cleaned up in issue
+the result was FIVE floors across 292 fixtures (`^2.169.0` ×178, `^2.172.0` ×91,
+`^2.176.0` ×15, `^2.257.0` ×6, `^2.260.0` ×2 — measured at `81a305d8`, the
+parent of the cleanup) — cleaned up in PR
 [#2838](https://github.com/go-to-k/cdkd/pull/2838), fenced by issue
 [#2839](https://github.com/go-to-k/cdkd/issues/2839).
 
@@ -542,7 +543,10 @@ not a library, so `peerDependencies` is deliberately not consulted.
 Enforced by `tests/unit/scripts/integ-cdk-lib-floor.test.ts` (classifier:
 `scripts/check-integ-cdk-lib-floor.ts`), which IS the CI enforcement: no
 `vp run` task and no `ci.yml` step, the shape
-`check-verification-depth-rule.ts` and `check-source-control-bytes.ts` use. Its
+`check-verification-depth-rule.ts` and `check-source-control-bytes.ts` use.
+(Those two are indexed in [layout-scripts.md](layout-scripts.md), not here —
+the SHAPE is shared, the home is decided by the subject, and this one's subject
+is `tests/integration/**`.) Its
 probes build a **non-uniform** corpus on purpose — the real one is uniform
 today, so min-selection, dedup and ordering are unobservable through it, and a
 `sorted[0]` → last-element mutant stayed green until they existed (the

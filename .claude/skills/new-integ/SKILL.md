@@ -67,6 +67,15 @@ The user provides a kebab-case test name (e.g., `ses-email-identity`,
    }
    ```
 
+   The `aws-cdk-lib` floor above is FENCED: it may not sit below the lowest
+   floor in `tests/integration/*/package.json`, or
+   `tests/unit/scripts/integ-cdk-lib-floor.test.ts` reds CI (issue
+   [#2839](https://github.com/go-to-k/cdkd/issues/2839)). Raising it is always
+   safe; lowering it, or letting it stay put while the corpus moves past it, is
+   what re-creates the drift this template caused. The rule and why it is not
+   an equality fence are in
+   [.claude/rules/testing.md](../../rules/testing.md).
+
    **`tsconfig.json`** (ESNext / NodeNext, with `rewriteRelativeImportExtensions`
    so the `.ts`-suffixed relative imports type-check):
    ```json

@@ -10,8 +10,10 @@
  *
  * WHY THAT RULE AND NOT "ALL FLOORS ARE EQUAL"
  *
- * Before go-to-k/cdkd#2838 the 292 fixtures carried FOUR different floors
- * (`^2.169.0` x172, `^2.172.0` x91, `^2.176.0` x15, `^2.257.0` x6). The
+ * Before go-to-k/cdkd#2838 the 292 fixtures carried FIVE different floors
+ * (`^2.169.0` x178, `^2.172.0` x91, `^2.176.0` x15, `^2.257.0` x6,
+ * `^2.260.0` x2 -- measured at 81a305d8, the parent of the cleanup; the
+ * original note said "four ... x172", whose parts summed to 284 not 292). The
  * systematic source was this template: it emitted a hardcoded `^2.169.0` for
  * every fixture ever scaffolded, while dependabot moved individual fixtures
  * forward around it.
