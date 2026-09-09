@@ -135,8 +135,10 @@ function assertEveryHeadingOpensItsBlock(d: string): void {
  * time with the tree restored between: dropping one body line per section
  * (`s.body.slice(1)`) failed at archived line 1, collapsing runs of spaces in
  * every body line failed at line 28, and swapping two body lines failed at
- * line 3. The substring form rejects those three too -- it is not weaker
- * against a real reformat, only wrong about a splice.
+ * line 3. The substring form rejects those three too. It ALSO rejected an
+ * arbitrary insertion, which presence and order do not -- the budget below is
+ * what covers that class, and the sentence here used to claim the whole
+ * comparison rather than these three.
  *
  * Blank lines are compared like any other, so the seam blank the assembler may
  * INSERT before a heading is absorbed (an insertion is what a subsequence
@@ -629,16 +631,18 @@ describe('assemble-changelog', () => {
     // one the review asked for and it closes the class that was measured open.
     const headerLines = readFileSync(join(root, FRAGMENT_DIR, HEADER_FILE), 'utf-8').replace(/\s+$/, '').split('\n')
       .length;
-    const archiveDates = new Set(
-      archive
-        .split('\n')
-        .map((l) => /^\*\*Recently Implemented\*\* \((\d{4}-\d{2}-\d{2})/.exec(l)?.[1])
-        .filter((d): d is string => d !== undefined)
-    );
+    const archiveHeadingLines = archive
+      .split('\n')
+      .map((l) => /^\*\*Recently Implemented\*\* \((\d{4}-\d{2}-\d{2})/.exec(l)?.[1])
+      .filter((d): d is string => d !== undefined);
+    const archiveDates = new Set(archiveHeadingLines);
     const fragments = readEntries(root);
     const fragmentLines = fragments.reduce((n, e) => n + e.text.split('\n').length, 0);
     const newHeadings = new Set(fragments.map((e) => e.date).filter((d) => !archiveDates.has(d))).size;
-    const emittedHeadings = archiveDates.size + newHeadings;
+    // Heading LINES, not distinct dates: the seam is emitted per heading, and
+    // 2026-07-02 has two of them (the variant `(2026-07-02, second batch):`),
+    // so the two counts differ by one on this archive -- 51 against 50.
+    const emittedHeadings = archiveHeadingLines.length + newHeadings;
     assertArchiveConserved(
       doc,
       archive,
