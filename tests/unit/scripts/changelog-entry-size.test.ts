@@ -1,6 +1,13 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assembleChangelog } from '../../../scripts/assemble-changelog.js';
+import type { Entry as AssemblerEntry } from '../../../scripts/assemble-changelog.js';
+import {
+  ENTRIES_DIR,
+  FRAGMENT_DIR,
+  assembleChangelog,
+  readEntries,
+} from '../../../scripts/assemble-changelog.js';
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
@@ -91,14 +98,49 @@ import { describe, expect, it } from 'vite-plus/test';
  *
  * ## Known limits, recorded rather than papered over
  *
- * An entry MISDATED under a pre-cutoff heading escapes the cap. Nothing here
- * can see that: a checker cannot distinguish an entry filed under an old date
- * from a genuinely old one, and the file's headings are not globally ordered
- * anyway -- 2026-08-24 is followed by 2026-08-25, and three dates repeat -- so a
- * monotonicity assertion would fail on the real file rather than catch the
- * evasion. What IS asserted is the one direction with a structural answer: the
- * FIRST heading carries the maximum date, so an older heading cannot be
- * inserted above the newest one to shelter a new entry beneath it.
+ * An entry MISDATED under a pre-cutoff heading used to escape the cap, and this
+ * paragraph used to say no checker could ever see it -- "a checker cannot
+ * distinguish an entry filed under an old date from a genuinely old one". That
+ * was true of the flat committed file, where a heading was the only evidence an
+ * entry carried. It stopped being true at go-to-k/cdkd#2811: `readEntries`
+ * returns the FRAGMENT set, and a fragment is new by construction whatever date
+ * its filename spells. So the cap now binds per fragment, with no date filter at
+ * all (`fragmentsOverLimit`), and the misdating channel is closed for everything
+ * a lane can still write.
+ *
+ * The date cutoff below is therefore no longer the cap's main instrument. It
+ * survives to keep the ARCHIVED text -- settled before the fragment layout
+ * existed, and edited by no lane again -- exempt in exactly the way it always
+ * was. Nothing can be filed into the archive any more, so nothing new can reach
+ * the exemption. (No count is quoted here on purpose: the one in
+ * `assemble-changelog.ts`'s header has already drifted, reading 574 against 575
+ * column-0 bullets measured 2026-09-09, and a second copy would drift the same
+ * way with nothing watching either.)
+ *
+ * What made the residual urgent rather than theoretical: go-to-k/cdkd#2813
+ * refused any fragment dated at or inside the archive's span, so the dates that
+ * were BOTH shippable and uncapped were only those older than the whole archive.
+ * Fixing that (go-to-k/cdkd#2857) widens the uncapped window by ~97 days unless
+ * the cap stops keying on the heading date -- which is this. Filed as
+ * go-to-k/cdkd#2859.
+ *
+ * One half of the old hazard is still worth asserting on the assembled document,
+ * because the archive is real text that a bad merge could reorder: the FIRST
+ * heading carries the maximum date, so an older heading cannot be inserted above
+ * the newest one to shelter an entry beneath it. A global monotonicity assertion
+ * is NOT available -- 2026-08-24 is followed by 2026-08-25, and three dates
+ * repeat -- so it would fail on the real file rather than catch anything.
+ *
+ * ## Two measurements, and why the fragment's own is the strict one
+ *
+ * A fragment is measured as the FILE reads, trailing whitespace stripped. The
+ * assembled-entry parser instead SKIPS blank lines, so a fragment carrying
+ * internal blank lines measures longer here than the entry it becomes. That is
+ * deliberate and it is the conservative direction: the fragment file is what the
+ * author edits and what the failure message names, and neither a blank line nor
+ * a `---` can shrink the number. Measured 2026-09-09 across all five fragments
+ * on the tree: zero internal blank lines, so the two measures agree exactly
+ * today and the divergence is latent rather than live.
  *
  * Aggregate prose parked in heading QUALIFIERS is another. Each heading may
  * carry 30 characters after its date, and `gives every section at least one
@@ -129,8 +171,14 @@ const assembled = () => assembleChangelog(REPO_ROOT);
 const LIMIT = 2000;
 
 /**
- * Entries under a heading dated on or after this are capped. See the header for
- * why it is the day after this landed and not the landing day itself.
+ * Entries under a heading dated on or after this are capped ON THE ASSEMBLED
+ * DOCUMENT. See the header for why it is the day after the cap landed and not
+ * the landing day itself.
+ *
+ * Since go-to-k/cdkd#2859 this governs only the ARCHIVED text: every fragment is
+ * capped by `fragmentsOverLimit` with no date filter, so the cutoff can no
+ * longer exempt anything a lane writes. Kept because `changelog.d/_archive.md`
+ * was written under no cap, and re-capping it retroactively buys nothing.
  */
 const CUTOFF = '2026-09-05';
 
@@ -297,6 +345,31 @@ function parseEntries(text: string): Parsed {
 function overLimit(parsed: Parsed): Entry[] {
   return parsed.entries.filter((e) => e.date !== null && e.date >= CUTOFF).filter((e) => e.text.length > LIMIT);
 }
+
+/**
+ * THE fragment predicate, and the reason it takes no date.
+ *
+ * A fragment under `changelog.d/entries/` is new by construction: the archive is
+ * a separate file, nothing can be filed into it, and `readEntries` returns only
+ * the former. So the date in a fragment's filename is a SORT KEY for the
+ * assembler, never evidence about when the entry was written -- which is exactly
+ * what the heading-date filter was forced to treat it as, back when the heading
+ * was the only evidence there was.
+ *
+ * Extracted, like `overLimit`, so the real-tree verdict and the synthetic one
+ * run the same code rather than two copies that can drift apart.
+ */
+function fragmentsOverLimit(fragments: readonly AssemblerEntry[]): AssemblerEntry[] {
+  return fragments.filter((f) => f.text.length > LIMIT);
+}
+
+const FRAGMENT_CAP_ADVICE =
+  `A changelog.d/entries/ fragment exceeds ${LIMIT} characters. The cap does NOT depend on the date in ` +
+  'the filename -- a fragment is new whatever date it carries, which is what stops an over-long entry ' +
+  'shipping under a pre-cutoff name (go-to-k/cdkd#2859). Same remedy as the assembled-document cap: keep ' +
+  'the user-visible behavior delta, the changed files, the issue / PR numbers and the residual\'s issue ' +
+  'number, and move a design decision to docs/design/<issue>-<slug>.md or a mechanism to the doc comment ' +
+  'on the module or test that implements it, linked from the entry.';
 
 const CAP_ADVICE =
   `A docs/changelog-cdkd.md entry exceeds ${LIMIT} characters (line numbers are in that file). ` +
@@ -553,6 +626,94 @@ describe('changelog entry size', () => {
       (e) => `L${e.line}: ${e.text.length} chars (limit ${LIMIT}): ${e.text.slice(2, 90)}...`
     );
     expect(offenders, CAP_ADVICE).toEqual([]);
+  });
+
+  it('caps every fragment, whatever date its filename carries', () => {
+    // The verdict go-to-k/cdkd#2859 exists for. The one above reads the
+    // ASSEMBLED document and exempts anything under a pre-cutoff heading; this
+    // one reads the fragments and exempts nothing.
+    const fragments = readEntries(REPO_ROOT);
+
+    // A checker must prove it sees its input: with zero fragments read, the
+    // verdict below is green for the wrong reason, and that is the state the
+    // repo was in for the whole day the layout landed. Recounted from the
+    // DIRECTORY rather than from `readEntries`, so a parser that silently
+    // dropped a file cannot satisfy its own floor.
+    const onDisk = readdirSync(join(REPO_ROOT, FRAGMENT_DIR, ENTRIES_DIR)).filter((n) => n !== '.gitkeep');
+    expect(fragments.length, 'readEntries lost a fragment the directory still holds').toBe(onDisk.length);
+
+    const offenders = fragmentsOverLimit(fragments).map(
+      (f) => `${f.file}: ${f.text.length} chars (limit ${LIMIT})`
+    );
+    expect(offenders, FRAGMENT_CAP_ADVICE).toEqual([]);
+  });
+
+  it('selects over-limit fragments and only those, ignoring the filename date', () => {
+    // The liveness proof for the fragment cap, and it is NOT optional: every
+    // fragment on the tree today is dated after the cutoff, so the real-tree
+    // verdict above would stay green with the date filter put back. Only a
+    // PRE-cutoff over-limit fragment can tell the two predicates apart, and none
+    // exists on the tree by construction -- so one is built here.
+    //
+    // Runs the real `readEntries`, not hand-built objects: the load-bearing
+    // claim is that a fragment's whole FILE is what gets measured, and only the
+    // reader that the assembler actually uses can prove that.
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-fragment-cap-'));
+    try {
+      mkdirSync(join(root, FRAGMENT_DIR, ENTRIES_DIR), { recursive: true });
+      const write = (name: string, body: string) =>
+        writeFileSync(join(root, FRAGMENT_DIR, ENTRIES_DIR, name), body);
+
+      const long = 'x'.repeat(LIMIT + 1);
+      // Dated a year before the archive even opens -- the deepest the old
+      // exemption reached, and green under `overLimit` at any length.
+      write('2025-01-01-2859-ancient-and-over.md', `- **Ancient** ${long}`);
+      // Inside the archive's span: the band go-to-k/cdkd#2857 unlocks, which is
+      // what turns this from a latent hole into a reachable one.
+      write('2026-08-01-2859-in-span-and-over.md', `- **In span** ${long}`);
+      // One day under the cutoff: the boundary the date filter would still
+      // exempt, so this case dies if `fragmentsOverLimit` regrows a date test.
+      write('2026-09-04-2859-just-under-cutoff-and-over.md', `- **Just under cutoff** ${long}`);
+      // After the cutoff and over: flagged by BOTH predicates. Present so the
+      // fragment cap cannot be narrowed to "pre-cutoff only" -- the mirror of
+      // the mutation the case above kills.
+      write('2026-09-09-2859-after-cutoff-and-over.md', `- **After cutoff** ${long}`);
+      // Exactly at the limit, so `> LIMIT` cannot be loosened to `>=`. The
+      // prefix is counted in, which is the point: the FILE is the unit.
+      write('2026-09-09-2859-exactly-at-limit.md', `- **Exact** ${'e'.repeat(LIMIT - '- **Exact** '.length)}`);
+      // Comfortably short: the negative control. Without one, a predicate that
+      // returned every fragment would satisfy every other expectation here.
+      write('2026-09-09-2859-short.md', '- **Short** short enough.');
+      // Blank lines BETWEEN prose lines count here and are skipped by the
+      // assembled-entry parser -- the divergence the header records, pinned
+      // rather than asserted in prose alone. Sized to clear the limit ONLY
+      // because of the blanks: the two measures are computed below and the case
+      // is worthless unless they straddle it.
+      const paddedProse = `- **Blank padded** ${'b'.repeat(LIMIT - 60)}`;
+      const padded = [paddedProse, ...Array.from({ length: 40 }, () => ''), '  tail'].join('\n');
+      const asAssembledEntry = padded
+        .split('\n')
+        .filter((l, i) => i === 0 || l.trim() !== '')
+        .join('\n');
+      expect(padded.length, 'the blank-padded case must exceed the limit').toBeGreaterThan(LIMIT);
+      expect(
+        asAssembledEntry.length,
+        'and must fall UNDER it once blank lines are skipped, or it does not discriminate the two measures'
+      ).toBeLessThanOrEqual(LIMIT);
+      write('2026-09-09-2859-blank-padded.md', padded);
+
+      const flagged = fragmentsOverLimit(readEntries(root))
+        .map((f) => /\*\*(.+?)\*\*/.exec(f.text)?.[1] ?? f.file)
+        .sort();
+
+      // Selected: every over-limit fragment on BOTH sides of the cutoff --
+      // including the three the heading-date filter would have exempted -- plus
+      // the one that is over only because internal blank lines are counted. NOT
+      // selected: the short one, nor the one sitting exactly ON the limit.
+      expect(flagged).toEqual(['Ancient', 'After cutoff', 'Blank padded', 'In span', 'Just under cutoff'].sort());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('holds the entry this change added to its own rule', () => {

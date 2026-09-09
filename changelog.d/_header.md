@@ -46,11 +46,24 @@ shrinks is the number of implementation facts one entry asserts with nothing
 verifying them. Narrowing `.markgate.yml`'s scope is a separate question.
 There is deliberately no per-entry opt-out.
 
-The cap is **forward-only**: it binds entries under a heading dated
-**2026-09-05 or later**. Everything written before that was written under no
-cap, is already correct, and rewriting it buys nothing. There is no allowlist
-of exempted entries — the date does the whole partition, so nothing has to be
-maintained as the file grows.
+**Every fragment you write is capped, whatever date its filename carries.** A
+fragment under `changelog.d/entries/` is new by construction, so the date in
+its name is a sort key for the assembler and never evidence about when the
+entry was written. There is no allowlist of exempted entries and no date that
+buys an exemption.
+
+The cap is still **forward-only**, but the forward-only part now applies only
+to the ARCHIVE: everything in `changelog.d/_archive.md` was written under no
+cap, is already correct, and rewriting it buys nothing, so entries under a
+heading dated before **2026-09-05** stay exempt *there*. Nothing can be filed
+into the archive any more, so nothing new can reach that exemption.
+
+Until issue [#2859](https://github.com/go-to-k/cdkd/issues/2859) the cap keyed
+on the heading date alone, which meant a fragment named with a pre-cutoff date
+shipped uncapped. That was survivable only because issue
+[#2813](https://github.com/go-to-k/cdkd/issues/2813) happened to refuse any
+fragment dated inside the archive's span; fixing #2813 would have widened the
+uncapped window by about three months, so the cap moved to the fragment itself.
 
 The cutoff is the day *after* the cap landed, not the day of. A same-day cutoff
 races every other lane merging that day: while this was in review, two
