@@ -83,6 +83,15 @@ vi.mock('../../../../src/state/lock-manager.js', () => ({
 interface IndexRegionSlot {
   entries: Map<string, ExportIndexEntry> | undefined;
   readError?: Error | undefined;
+  /**
+   * Throw only from the Nth read onward (1-based). The real store's
+   * `loadPersisted` memoizes no failure and caches no MISSING result, so a
+   * region whose per-stack read found no index is read a SECOND time by the
+   * coverage pass — and only that second GET can fail transiently. A sticky
+   * `readError` cannot model it: the per-stack read would fail first and the
+   * coverage pass would skip the region entirely.
+   */
+  readErrorFrom?: number | undefined;
   patchOk: boolean;
   patches: Array<{
     exportName: string;
@@ -110,6 +119,9 @@ vi.mock('../../../../src/state/export-index-store.js', () => ({
           if (!slot) return Promise.resolve(undefined);
           slot.reads++;
           if (slot.readError) return Promise.reject(slot.readError);
+          if (slot.readErrorFrom !== undefined && slot.reads >= slot.readErrorFrom) {
+            return Promise.reject(new Error('transient S3 failure on the coverage read'));
+          }
           return Promise.resolve(slot.entries ? new Map(slot.entries) : undefined);
         }),
         patchEntry: vi
@@ -830,6 +842,33 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     // close, which is why the name is masked BEFORE it is stored.
     expect(err!.message).not.toContain(SECRET_PLAINTEXT);
     expect(err!.message).toContain('masked:');
+  });
+
+  it('a TRANSIENT failure on the coverage read is recorded, not thrown out of the command', async () => {
+    // Reachable exactly when the per-stack read found NO index: `loadState`
+    // stays unloaded, so the coverage pass issues a second GET. Unwrapped,
+    // that throw escapes the summary and leaves the command with `state.json`
+    // already rewritten and no explanation.
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', false),
+      etag: 'etag-1',
+    });
+    // `entries: undefined` = no index object, so the per-stack read returns
+    // undefined and the coverage pass reads again; the 2nd read throws.
+    indexFake.regions.set('us-east-1', slot({ entries: undefined, readErrorFrom: 2 }));
+
+    const err = await scrubCommand([], commandOptions()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    // An explicit cdkd failure, not a raw escape: the code is what says the
+    // command ended on its own terms.
+    expect(err).toMatchObject({ code: 'SCRUB_EXPORT_INDEX_INCOMPLETE' });
+    expect(logLines()).toContain('could not be read for the coverage report');
+    // The state write still happened and is still reported, which is what the
+    // failure message has to be honest about.
+    expect(commandStateBackend.saveState).toHaveBeenCalled();
   });
 
   it('a region with no exports.json contributes no finding and no failure', async () => {
