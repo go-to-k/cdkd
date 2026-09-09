@@ -27,8 +27,29 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { EvidenceDeps } from '../../../scripts/diagnose-schema-refresh.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+
+/**
+ * Compile-time fence for `EvidenceDeps`.
+ *
+ * The declaration file is checked by a CONFIG-LESS `tsc` and cannot import from
+ * a `.ts` module, so its three members are a STRUCTURAL COPY of what
+ * `offline-property-evidence.ts` and `published-sdk-typings.ts` export — and a
+ * copy with nothing comparing it drifts silently. Assigning the real signatures
+ * to the declared shape makes `vp run typecheck:test` the comparison.
+ *
+ * TYPE-ONLY on purpose: a value import would pull `typescript-v6` and the whole
+ * SDK-model graph into a file whose entire subject is running WITHOUT them.
+ */
+type RealEvidenceDeps = {
+  typedSdkMember: typeof import('../../../scripts/offline-property-evidence.ts').typedSdkMember;
+  providerWiresProperty: typeof import('../../../scripts/offline-property-evidence.ts').providerWiresProperty;
+  publishedSdkInterfaces: typeof import('../../../scripts/published-sdk-typings.ts').publishedSdkInterfaces;
+};
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _evidenceDepsMatchesTheHelpers: EvidenceDeps = null as unknown as RealEvidenceDeps;
 
 /** The shape guard the workflow itself applies to the rendered file. */
 const WORKFLOW_SHAPE = /^- \[ \] |^_No remaining silent-drop properties/m;
@@ -54,10 +75,12 @@ function makeCorpus(): string {
  * condition it injects.
  *
  * Stubbing only one leaves the other's real transitive graph in play, and in a
- * corpus this small that graph fails first for a reason the case is not about
- * (measured: `published-sdk-typings.ts` reaches `src/utils/aws-clients.ts`,
- * which the corpus does not carry, and its message replaced the injected one).
- * With both stubbed the case needs no `node_modules` either.
+ * corpus this small that graph fails first for a reason the case is not about.
+ * Measured with only `offline-property-evidence.ts` stubbed: the run reports
+ * `Cannot find package 'typescript-v6' imported from
+ * scripts/gen-nested-key-coverage.ts`, reached through
+ * `published-sdk-typings.ts` — so the case would have asserted on a failure it
+ * did not inject. With both stubbed it needs no `node_modules` either.
  */
 function stubHelpers(root: string, evidenceSource: string): void {
   writeFileSync(join(root, 'scripts/offline-property-evidence.ts'), evidenceSource);

@@ -2123,7 +2123,12 @@ describe('the module’s own doc comments', () => {
       const attaches = seenBlocks > 1 && !/@typedef/.test(body);
       const nextLine = (lines[i + 1] ?? '').trim();
       const declares =
-        /^(export\s+)?(export\s+default\s+)?(async\s+)?(function|class|const|let|var)\s/.test(
+        // `declare` / `interface` / `type` are the DECLARATION-FILE spellings.
+        // Without them this predicate could not be pointed at the `.d.mts` at
+        // all, and that is where the orphan it exists to catch actually landed
+        // (issue go-to-k/cdkd#2858): a new `export declare function` inserted
+        // between `writeAutoTolerated`'s block and its own signature.
+        /^(export\s+)?(export\s+default\s+)?(declare\s+)?(async\s+)?(function|class|const|let|var|interface|type)\s/.test(
           nextLine
         ) || /^\/\*\*.*\*\/$/.test(nextLine);
       if (attaches && !declares) found.push(`line ${i + 2}: ${JSON.stringify(nextLine)}`);
@@ -2169,6 +2174,24 @@ describe('the module’s own doc comments', () => {
     const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
     expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
     expect(src.split('\n').filter((l) => l === ' */').length).toBeGreaterThan(20);
+  });
+
+  it('holds for the DECLARATION file too', () => {
+    // The `.mjs` arm above is where this predicate has always pointed, and the
+    // orphan it exists to catch landed in the `.d.mts` instead — a new
+    // `export declare function` inserted between `writeAutoTolerated`'s
+    // docblock and its signature, so TS attached the block to the wrong symbol
+    // and left the function undocumented (issue go-to-k/cdkd#2858). Caught by
+    // review, by nothing mechanical.
+    const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
+    expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
+    // Non-vacuity: the widened `declares` regex must actually MATCH this
+    // file's spellings, or every block would read as unattached and the
+    // assertion above would be reporting on a parse that found nothing.
+    expect(src).toMatch(/^export declare function /m);
+    expect(src).toMatch(/^export interface /m);
+    // Measured 7 at the tip; a floor of 5 fails on a collapse, not on an edit.
+    expect(src.split('\n').filter((l) => l === ' */').length).toBeGreaterThan(5);
   });
 });
 

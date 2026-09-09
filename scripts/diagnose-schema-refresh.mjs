@@ -156,8 +156,9 @@ export async function loadEvidenceDeps() {
     .map(([name]) => name);
   if (missing.length > 0) {
     throw new Error(
-      `the evidence helpers did not export ${missing.join(', ')} — the module moved or was ` +
-        'renamed, and continuing would report every property as unreadable rather than saying so.'
+      `the evidence helpers did not export ${missing.join(', ')} AS A FUNCTION — the module ` +
+        'moved, was renamed, or now exports something else under that name, and continuing ' +
+        'would report every property as unreadable rather than saying so.'
     );
   }
   evidenceDeps = loaded;
@@ -2754,6 +2755,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       inputsReady = false;
     }
   }
+  // The `try` wraps nothing when the load failed, which is deliberate rather
+  // than dead: hoisting `main()` into an `else` on the arm above would need a
+  // second copy of this catch, and the two copies are exactly what drifts.
   try {
     if (inputsReady) main();
   } catch (err) {
