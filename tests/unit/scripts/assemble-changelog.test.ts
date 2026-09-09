@@ -112,7 +112,8 @@ function assertEveryHeadingOpensItsBlock(d: string): void {
  * whole point (issue go-to-k/cdkd#2813). The assembler SPLICES: a fragment
  * whose date the archive already heads lands under that heading, and one dated
  * between two archived sections opens a new section in descending position --
- * both documented in `changelog.d/_header.md` and both the reason the
+ * the first documented in `changelog.d/_header.md` under "WHERE an entry goes",
+ * the second in `assemble-changelog.ts` itself, and both the reason the
  * go-to-k/cdkd#1837 duplicate-heading class is structurally impossible. Either
  * one puts new text INSIDE the archive's span, so the archive stops being a
  * contiguous substring while nothing about settled history has changed.
@@ -139,9 +140,26 @@ function assertEveryHeadingOpensItsBlock(d: string): void {
  *
  * Blank lines are compared like any other, so the seam blank the assembler may
  * INSERT before a heading is absorbed (an insertion is what a subsequence
- * tolerates) while one it DELETED would still be caught.
+ * tolerates). A DELETED one is caught for THIS archive, whose body bullets are
+ * unique, but not in general: a deleted line re-syncs against a later duplicate
+ * of itself, and `assertArchiveConserved(['a','b','','b'], ['a','','b'])`
+ * passes. The corpus is what makes the stronger reading true here, not the
+ * check.
+ *
+ * ## The insertion budget is part of the assertion, not a separate nicety
+ *
+ * Presence and order alone place NO bound on how much text lands BETWEEN
+ * archived lines, and accepting insertions is inherent to any subsequence form
+ * -- the splice IS an insertion. What the splice needs is a BOUNDED,
+ * ATTRIBUTABLE insertion. Measured on the real tree while reviewing this
+ * change: a blank line after every archived bullet (575 inserted lines) and
+ * arbitrary foreign text spliced into the middle of the archive were both
+ * ACCEPTED by presence-and-order, and both had been rejected by
+ * `doc.includes(archive)`. That is a real gap in the insertion class, and the
+ * `budget` closes it: the caller states how many lines it expects the assembler
+ * to add, so a splice passes and a reformat that pads settled history does not.
  */
-function assertArchiveConserved(doc: string, archive: string): void {
+function assertArchiveConserved(doc: string, archive: string, budget?: number): void {
   const want = archive.split('\n');
   const have = doc.split('\n');
   let i = 0;
@@ -149,8 +167,15 @@ function assertArchiveConserved(doc: string, archive: string): void {
   expect(
     i,
     `the archive is no longer reproduced in full -- the assembler is reformatting settled history. ` +
-      `First archived line not found in order (${i} of ${want.length}): ${JSON.stringify(want[i] ?? '')}`
+      `First archived line not found in order (${i + 1} of ${want.length}): ${JSON.stringify(want[i] ?? '')}`
   ).toBe(want.length);
+  if (budget !== undefined) {
+    expect(
+      have.length - want.length,
+      `the assembler inserted more than the ${budget} line(s) this assembly can account for -- ` +
+        `presence and order alone do not bound how much text lands between archived lines`
+    ).toBeLessThanOrEqual(budget);
+  }
 }
 
 
@@ -413,6 +438,16 @@ describe('assemble-changelog', () => {
       '- archived entry B',
     ].join('\n');
 
+    /**
+     * What ONE probe fragment may add to this fixture: the `# header` line and
+     * the blank after it, the probe's own bullet, at most one generated heading
+     * when the date opens a new section, and at most two seam blanks around it,
+     * plus the trailing newline. Stated as a number the caller can defend
+     * rather than a measured constant, so it fails if the assembler starts
+     * padding settled history.
+     */
+    const WIDE_BUDGET = 7;
+
     for (const [date, where] of [
       ['2026-09-09', 'newer than the newest archived section'],
       ['2026-09-08', 'the newest archived section itself'],
@@ -424,10 +459,23 @@ describe('assemble-changelog', () => {
         const doc = withTree(WIDE, { [`${date}-2813-probe.md`]: '- probe entry' }, (root) =>
           assembleChangelog(root)
         );
-        assertArchiveConserved(doc, WIDE);
+        // header line + the blank after it + the probe + at most a new heading
+        // and the seam blanks around it + the trailing newline.
+        assertArchiveConserved(doc, WIDE, WIDE_BUDGET);
         // Not vacuous: the fragment really did land, exactly once. Conservation
         // alone is satisfied by an assembler that dropped the fragment.
         expect(doc.split('- probe entry').length - 1, 'the fragment did not land exactly once').toBe(1);
+        // WHERE it landed, not merely that it did. Every other assertion in
+        // this arm passes if the assembler merges the 2026-09-05 probe into the
+        // 2026-09-08 body instead of opening its own section -- which is the
+        // defect `assemble-changelog.ts` records review catching once, where a
+        // fragment at the archive's SECOND heading yielded 09-07 / 09-08 /
+        // 09-07. This line is what would catch it coming back.
+        const lines = doc.split('\n');
+        expect(
+          lines[lines.indexOf(headingFor(date)) + 1],
+          'the fragment did not land directly under its own dated heading'
+        ).toBe('- probe entry');
         const h = headings(doc);
         expect(new Set(h).size, 'a date heading is duplicated').toBe(h.length);
         const dates = h.map((x) => /\((\d{4}-\d{2}-\d{2})/.exec(x)![1]!);
@@ -437,6 +485,56 @@ describe('assemble-changelog', () => {
         assertEveryHeadingOpensItsBlock(doc);
       });
     }
+
+    /**
+     * The one legitimate VARIANT heading in the real archive --
+     * `**Recently Implemented** (2026-07-02, second batch):`, a day
+     * deliberately split in two, which `headingFor` cannot reproduce and which
+     * `splitSections` keeps verbatim. This PR is what first makes a fragment
+     * dated 2026-07-02 legal at all, so nothing had exercised the pairing.
+     */
+    it('merges into a VARIANT heading and keeps it verbatim', () => {
+      const VARIANT = '**Recently Implemented** (2026-07-02, second batch):';
+      const archive = [VARIANT, '- archived entry V', '', headingFor('2026-07-01'), '- archived entry W'].join('\n');
+      const doc = withTree(archive, { '2026-07-02-2813-probe.md': '- probe entry' }, (root) =>
+        assembleChangelog(root)
+      );
+      assertArchiveConserved(doc, archive, WIDE_BUDGET);
+      const lines = doc.split('\n');
+      expect(lines.indexOf(VARIANT), 'the variant heading was rewritten rather than kept').toBeGreaterThan(-1);
+      expect(
+        lines[lines.indexOf(VARIANT) + 1],
+        'the fragment did not merge under the variant heading it shares a date with'
+      ).toBe('- probe entry');
+      expect(
+        headings(doc).filter((x) => x.includes('2026-07-02')),
+        'the variant heading was duplicated by a generated one'
+      ).toEqual([VARIANT]);
+    });
+
+    it('places TWO fragments in one run, one merging and one opening a section', () => {
+      const doc = withTree(
+        WIDE,
+        { '2026-09-08-2813-merge.md': '- merged entry', '2026-09-05-2813-fresh.md': '- fresh entry' },
+        (root) => assembleChangelog(root)
+      );
+      // Two probes, so two bullets plus the one new heading and its seams.
+      assertArchiveConserved(doc, WIDE, WIDE_BUDGET + 1);
+      const lines = doc.split('\n');
+      expect(lines[lines.indexOf(headingFor('2026-09-08')) + 1], 'the same-date fragment did not merge').toBe(
+        '- merged entry'
+      );
+      expect(lines[lines.indexOf(headingFor('2026-09-05')) + 1], 'the in-span fragment did not open a section').toBe(
+        '- fresh entry'
+      );
+      const dates = headings(doc).map((x) => /\((\d{4}-\d{2}-\d{2})/.exec(x)![1]!);
+      expect(dates, 'the two fragments did not leave the document newest-first').toEqual([
+        '2026-09-08',
+        '2026-09-05',
+        '2026-09-01',
+      ]);
+      assertEveryHeadingOpensItsBlock(doc);
+    });
   });
 
   /**
@@ -478,6 +576,25 @@ describe('assemble-changelog', () => {
         /no longer reproduced in full/
       );
     });
+
+    /**
+     * The budget arm. Presence and order accept ANY amount of inserted text --
+     * measured in review as 575 blank lines and as arbitrary foreign text
+     * spliced mid-archive, both of which `doc.includes(archive)` had rejected.
+     * These two pin that the count now refuses them while still passing the
+     * splice it exists to allow.
+     */
+    it('accepts a splice INSIDE its budget', () => {
+      expect(() => assertArchiveConserved(spliced, A, 1)).not.toThrow();
+    });
+
+    it('rejects padding that conserves every archived line but reformats around them', () => {
+      const padded = ['x', '', '- one', '', '- two', '', '', 'y'].join('\n');
+      // Every archived line is present and in order -- the subsequence arm
+      // passes on its own, which is the gap the budget closes.
+      expect(() => assertArchiveConserved(padded, A)).not.toThrow();
+      expect(() => assertArchiveConserved(padded, A, 1)).toThrow(/inserted more than the 1 line/);
+    });
   });
 
   it('assembles the REPO tree, and that tree is the shape the fences read', () => {
@@ -499,7 +616,34 @@ describe('assemble-changelog', () => {
     // and both live seam defects on this branch were found against the real
     // archive, not a fixture.
     const archive = readFileSync(join(root, FRAGMENT_DIR, ARCHIVE_FILE), 'utf-8').replace(/\s+$/, '');
-    assertArchiveConserved(doc, archive);
+    // The insertion budget, derived rather than measured-and-pinned: the header
+    // and the blank after it, every fragment's own lines, one generated heading
+    // per fragment date the archive does not already head, at most one seam
+    // blank per emitted heading, and the trailing newline.
+    //
+    // Residual, stated because the count alone does not establish it: an
+    // insertion SMALLER than the seam allowance is inside the budget, so the
+    // delta bounds a bulk reformat (the 575-blank padding measured in review is
+    // far outside it) without bounding a few foreign lines. Attributing every
+    // unconsumed line rather than counting it is the stronger form; this is the
+    // one the review asked for and it closes the class that was measured open.
+    const headerLines = readFileSync(join(root, FRAGMENT_DIR, HEADER_FILE), 'utf-8').replace(/\s+$/, '').split('\n')
+      .length;
+    const archiveDates = new Set(
+      archive
+        .split('\n')
+        .map((l) => /^\*\*Recently Implemented\*\* \((\d{4}-\d{2}-\d{2})/.exec(l)?.[1])
+        .filter((d): d is string => d !== undefined)
+    );
+    const fragments = readEntries(root);
+    const fragmentLines = fragments.reduce((n, e) => n + e.text.split('\n').length, 0);
+    const newHeadings = new Set(fragments.map((e) => e.date).filter((d) => !archiveDates.has(d))).size;
+    const emittedHeadings = archiveDates.size + newHeadings;
+    assertArchiveConserved(
+      doc,
+      archive,
+      headerLines + 1 + fragmentLines + newHeadings + emittedHeadings + 1
+    );
     assertEveryHeadingOpensItsBlock(doc);
     const onDisk = readdirSync(join(root, FRAGMENT_DIR, ENTRIES_DIR)).filter((n) => n !== '.gitkeep');
     expect(readEntries(root).length, 'a fragment on disk was not read into the assembly').toBe(onDisk.length);
