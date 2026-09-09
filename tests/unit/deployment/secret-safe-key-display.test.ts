@@ -74,12 +74,13 @@ describe('secretSafeKeyDisplay', () => {
   });
 
   it('SAFE: strips the bidi MARKS too, which displaySafe alone does NOT', () => {
-    // The other half of the trade. Measured: `displaySafe` keeps `U+200E` /
-    // `U+200F` (named residuals in display-safe.ts) while `stripControlChars`
-    // removes them, and `stripControlChars` keeps `U+2028` / `U+2029` while
-    // `displaySafe` replaces them. Neither is a superset, so this site
-    // composes both — and this case is what stops a future edit from
-    // collapsing it back to one.
+    // Kept from when this site COMPOSED the two sanitisers, and still the
+    // right case: `displaySafe` keeps `U+200E` / `U+200F` (named residuals in
+    // display-safe.ts) while `stripControlChars` keeps `U+2028` / `U+2029`, so
+    // neither alone produces this result. The site no longer composes them --
+    // it deletes one derived class (issue #2874) -- so what this pins now is
+    // that the class still covers what BOTH used to, from the other side of
+    // `secret-scan-class-superset.test.ts`'s code-point scan.
     const lrm = secretSafeKeyDisplay('alias\u200einjected', secrets());
     expect(lrm.kind).toBe('safe');
     expect(lrm.kind === 'safe' && lrm.text).toBe('aliasinjected');
@@ -402,5 +403,90 @@ describe('secretSafeKeyDisplay', () => {
     expect(WITHHELD_NAME_DISPLAY).toBe('<name withheld: contains a secret>');
     expect(displayTextOrWithheld({ kind: 'safe', text: 'Plain' })).toBe('Plain');
     expect(displayTextOrWithheld({ kind: 'masked', text: 'a-***-b' })).toBe('a-***-b');
+  });
+
+  it('a DEGENERATE needle cannot be smuggled past the floor by padding it', () => {
+    // THE BOUND IS DEFEATABLE IF THE FLOOR IS KEYED TO THE RECORDED LENGTH
+    // ALONE (issue #2874 round 2, found by two reviewers independently). A
+    // recorded `a` plus three zero-width spaces is four characters, so it
+    // clears MIN_SECRET_NEEDLE, while its canonical needle is the single
+    // letter `a`. Measured under that form: `ApiGatewayEndpoint` came back
+    // `masked` as `ApiG***tew***yEndpoint`, and the deploy REFUSED the export
+    // alias of every output whose name contains an `a` -- the repo-wide
+    // availability failure the floor exists to prevent.
+    const padded = `a\u200b\u200b\u200b`;
+    expect(padded.length).toBeGreaterThanOrEqual(4);
+    expect(secretSafeKeyDisplay('ApiGatewayEndpoint', new Map([[padded, EXPR]]))).toEqual({
+      kind: 'safe',
+      text: 'ApiGatewayEndpoint',
+    });
+  });
+
+  it('the RAW arm still fires for a needle canonicalisation shortens below the floor', () => {
+    // The other side of the same boundary, and the reason the fix is two arms
+    // rather than one moved floor. A recorded `a<LRM>b<LRM>c` is five
+    // characters raw and three canonical: the canonical arm cannot match it,
+    // and the raw arm must, or the key prints `x-abc-y` -- the secret in the
+    // form a human reads (measured).
+    const secret = 'a\u200eb\u200ec';
+    const shown = secretSafeKeyDisplay(`x-${secret}-y`, new Map([[secret, EXPR]]));
+    expect(shown.kind).not.toBe('safe');
+    expect(JSON.stringify(shown)).not.toContain('abc');
+  });
+
+  it('an all-invisible needle at or above the floor still matches nothing', () => {
+    // The empty-needle guard in the containment scan, reached ONLY by a
+    // recorded value long enough to clear the floor: the existing
+    // three-character case is rejected by the floor first, so it passes with
+    // the guard deleted (measured GREEN under that mutation). Without the
+    // guard `haystack.includes('')` is true for every name in the state.
+    const allInvisible = '\u200b\u200c\u200d\ufeff';
+    expect(allInvisible.length).toBeGreaterThanOrEqual(4);
+    expect(secretSafeKeyDisplay('OrdinaryKey', new Map([[allInvisible, EXPR]]))).toEqual({
+      kind: 'safe',
+      text: 'OrdinaryKey',
+    });
+  });
+
+  it('the WHOLE-VALUE raw arm fires on its own, for a secret with edge whitespace', () => {
+    // One case per whole-value arm: review measured each individually
+    // deletable with the suite green. This one needs the RAW comparison -- the
+    // canonical haystack is trimmed, so it can never equal a needle whose own
+    // edges carry whitespace.
+    const secret = '  padded-secret  ';
+    const shown = secretSafeKeyDisplay(secret, new Map([[secret, EXPR]]));
+    expect(shown.kind).not.toBe('safe');
+    expect(JSON.stringify(shown)).not.toContain('padded-secret');
+  });
+
+  it('the WHOLE-VALUE canonical arm fires on its own, for a sub-floor split secret', () => {
+    // The partner of the case above, needing the CANONICAL comparison: the key
+    // IS the secret with an invisible in it, so the raw forms differ while the
+    // canonical ones are equal, and the needle is too short for either
+    // embedded arm.
+    const secret = 'ab';
+    const shown = secretSafeKeyDisplay(`a\u200eb`, new Map([[secret, EXPR]]));
+    expect(shown.kind).not.toBe('safe');
+  });
+
+  it('the FORCE-MASK needles are canonicalised, or a sub-floor one leaks', () => {
+    // Measured GREEN under the mutation that seeds the mask from the RAW map
+    // (issue #2874 round 2), and the mutant LEAKS: an authoritative sub-floor
+    // needle carrying an invisible does not match the canonical text, masking
+    // changes nothing, no containment exposure fired, and the corrected
+    // unchanged-mask arm then answers `safe` -- printing the plaintext.
+    const substituted = 'a\u200eb';
+    const shown = secretSafeKeyDisplay('x-ab-y', new Map(), new Map([[substituted, EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `x-${SECRET_MASK}-y` });
+  });
+
+  it('the verdict is taken from the RAW key, not from the sanitised text', () => {
+    // `secretsPresentIn` is handed `key`, never `shown`. Handing it `shown`
+    // measured GREEN, because both arms usually agree -- they part exactly
+    // where the RAW arm is the only one that can fire, which is the case
+    // above. Pinned separately so the two cannot be collapsed.
+    const secret = 'q\u200ew\u200ee';
+    const shown = secretSafeKeyDisplay(`k-${secret}-k`, new Map([[secret, EXPR]]));
+    expect(shown.kind).not.toBe('safe');
   });
 });

@@ -1243,9 +1243,21 @@ describe('outputs-export-alias message builders', () => {
     const message = exportAliasCollisionWarning('OtherOutput', split, secrets);
     expect(message).not.toContain(secret);
     expect(message).toContain('***');
-    // The CONTROL: with no corpus it still sanitises, but it cannot mask --
-    // which is why the caller threads one.
-    expect(exportAliasCollisionWarning('OtherOutput', split)).toContain(secret);
+    // The CONTROL: an EMPTY corpus cannot mask, which is why the parameter is
+    // required rather than optional -- an omitted one printed this.
+    expect(exportAliasCollisionWarning('OtherOutput', split, new Map())).toContain(secret);
+  });
+
+  it('the DEPLOY collision warning masks the OUTPUT KEY too, not only the export name', () => {
+    // `outputKey` is template-controlled and printed three times in that
+    // message. Review measured a mutant that printed it raw staying GREEN,
+    // because the round-2 test covered `exportName` only -- the
+    // mask-one-argument-leave-its-neighbour shape this repo has hit before.
+    const secret = 'super-secret-plaintext-value';
+    const split = `owner-${secret.slice(0, 5)}\u200e${secret.slice(5)}-key`;
+    const message = exportAliasCollisionWarning(split, 'PlainExportName', new Map([[secret, 'E']]));
+    expect(message).not.toContain(secret);
+    expect(message).toContain('***');
   });
 
   it('strips control characters from a printed state KEY', () => {

@@ -237,7 +237,7 @@ const MIN_SECRET_NEEDLE = 4;
  * the printed text have to live in the same string space (issue
  * [#2874](https://github.com/go-to-k/cdkd/issues/2874)).
  *
- * WHY A THIRD CLASS RATHER THAN EITHER SANITISER'S. {@link stripControlChars}
+ * WHY A THIRD CLASS RATHER THAN EITHER SANITISER'S. `stripControlChars`
  * DELETES its class; `displaySafe` REPLACES its own with a space. Composing
  * them — which is what every site here used to do — leaves three different
  * strings in play: the raw key the verdict was taken from, the sanitised key
@@ -266,10 +266,19 @@ const MIN_SECRET_NEEDLE = 4;
  *   marks / embeddings / overrides / isolates, the zero-width set, `U+FEFF`,
  *   `U+00AD`, `U+061C`, and the invisible-operator block.
  * - `\p{Zl}` / `\p{Zp}`: `U+2028` / `U+2029`, the two `displaySafe` REPLACES.
- * - Variation selectors and the Mongolian free variation selectors, which are
- *   `Mn` rather than `Cf`.
- * - The Hangul FILLERS, which are `Lo` -- ordinary letters by category, and
- *   invisible in every renderer.
+ * - `\p{Default_Ignorable_Code_Point}`: Unicode's own answer to "renders as
+ *   nothing", which is the property this path actually cares about. It carries
+ *   the variation selectors, the Mongolian free variation selectors, the
+ *   Hangul fillers and `U+034F` COMBINING GRAPHEME JOINER.
+ *
+ * THE THIRD BULLET REPLACED A HAND TAIL, and the hand tail was measured
+ * leaking. A first cut listed the ranges by hand -- `FE00-FE0F`,
+ * `E0100-E01EF`, `180B-180D`, `115F`, `1160`, `3164`, `FFA0`, `17B4`, `17B5`
+ * -- and review found `U+034F` outside it, printing `hunter2hunter2` in a
+ * `warn` line under a `safe` verdict. It also spelled `180B-180D` while
+ * calling itself "the Mongolian FVS", missing `U+180F`, which Unicode 14
+ * added. Naming the PROPERTY is what makes the next such addition arrive
+ * covered instead of arriving as another finding.
  *
  * WIDENED HERE AND NOT IN `display-safe.ts` because the two files answer
  * different questions. `displaySafe` is about a terminal rendering a value,
@@ -284,8 +293,7 @@ const MIN_SECRET_NEEDLE = 4;
  * does not cover reds -- the failure mode a hand list has and a derivation
  * does not.
  */
-const SECRET_SCAN_INVISIBLES =
-  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}\u{180B}-\u{180D}\u{115F}\u{1160}\u{3164}\u{FFA0}\u{17B4}\u{17B5}]/gu;
+const SECRET_SCAN_INVISIBLES = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
  * The one string space in which this module tests for, masks, and prints a
@@ -376,26 +384,36 @@ function secretsPresentIn(
   // rewrite -- this module creating the exact state it tells the user it
   // cannot fix.
   //
-  // The floor stays on `plaintext.length`, the RECORDED length, NOT on the
-  // canonical needle's. Canonicalising can shorten a needle below four
-  // characters, and keying the floor to the short form dropped detections the
-  // pre-#2874 code had: measured, a recorded `a<U+200E>b<U+200E>c` embedded in
-  // a key went from masked to `safe` with the plaintext printed in its visible
-  // form. The floor exists because a DEGENERATE SHORT secret matches
-  // everywhere; a five-character secret with an invisible in it is not
-  // degenerate, it is adversarial.
+  // TWO ARMS, EACH BOUNDED BY ITS OWN LENGTH. Neither ordering of one arm and
+  // one floor works, and both single-arm forms were written and measured:
+  //
+  // - Floor on the CANONICAL needle alone drops a detection the pre-#2874 code
+  //   had. A recorded `a<U+200E>b<U+200E>c` canonicalises to `abc`, falls under
+  //   four, and the key holding it came back `safe` with the plaintext printed
+  //   in the form a human reads.
+  // - Floor on the RECORDED length alone makes the bound DEFEATABLE. A recorded
+  //   `a` followed by three zero-width spaces is four characters and clears it,
+  //   while its needle is the single letter `a` -- measured masking
+  //   `ApiGatewayEndpoint` into `ApiG***tew***yEndpoint` AND making the deploy
+  //   refuse the export alias of every output whose name contains an `a`. That
+  //   is the repo-wide availability failure MIN_SECRET_NEEDLE exists to
+  //   prevent, reintroduced by the fix for the first case.
+  //
+  // So the canonical arm is bounded by the canonical needle and the raw arm by
+  // the recorded plaintext, and a hit on EITHER is an exposure. The raw arm
+  // restores the pre-#2874 fail-closed answer without inventing a threshold
+  // between the two: a needle it alone matches is absent from the canonical
+  // text, so masking cannot remove it and the caller withholds the name.
   const haystack = canonicalForSecretScan(text);
   const exposure: RecordedSecretValues = new Map();
   for (const [plaintext, expression] of secrets) {
     const needle = canonicalNeedle(plaintext);
     if (needle.length === 0) continue;
-    if (
-      text === plaintext ||
-      haystack === needle ||
-      (plaintext.length >= MIN_SECRET_NEEDLE && haystack.includes(needle))
-    ) {
-      exposure.set(plaintext, expression);
-    }
+    const canonicalHit =
+      haystack === needle || (needle.length >= MIN_SECRET_NEEDLE && haystack.includes(needle));
+    const rawHit =
+      text === plaintext || (plaintext.length >= MIN_SECRET_NEEDLE && text.includes(plaintext));
+    if (canonicalHit || rawHit) exposure.set(plaintext, expression);
   }
   return exposure.size > 0 ? exposure : undefined;
 }
@@ -517,14 +535,18 @@ export function secretBearingExportNameWarning(
   const corpus = secrets ?? exposure;
   const name = secretSafeKeyDisplay(exportName, corpus, exposure);
   const shown = name.kind === 'masked' ? `(masked: "${name.text}") ` : '';
-  // NO `exposure` ON THE OUTPUT KEY. It describes the EXPORT NAME, and passing
-  // it here made every refusal withhold the output key on the default deploy
-  // path -- printing a placeholder that asserts the output's own name contains
-  // a secret, which is false, and taking away the one identifier telling the
-  // operator which output to fix. Measured against `main`, which printed the
-  // name. The key is still tested by CONTAINMENT against the same corpus, so a
-  // key that really does hold a secret is still masked or withheld.
-  const owner = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, corpus));
+  // The output key takes the force-mask set TOO, and the reason it is safe to
+  // is the corrected unchanged-mask arm rather than anything about this call.
+  // Passing `exposure` here once made every refusal withhold the output key on
+  // the default deploy path -- a placeholder asserting the output's own name
+  // contains a secret, which is false, and no identifier for the operator to
+  // act on. The cause was `masked === shown` collapsing to `withheld`; with
+  // that arm answering `safe` when no exposure fired, an ordinary key comes
+  // back intact and a key that genuinely embeds the substituted secret --
+  // including a SUB-FLOOR one, which containment alone cannot see -- is
+  // masked. Review measured this argument INERT for the withheld defect and
+  // load-bearing for exactly that sub-floor case.
+  const owner = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, corpus, exposure));
   return (
     `Output ${owner} has an Export.Name that resolves to a value containing a secret ` +
     `${shown}— skipping the export alias. ` +
@@ -542,7 +564,7 @@ export function secretBearingExportNameWarning(
  * key holding secret plaintext is the residue `cdkd scrub` exists to report —
  * so any message naming one has to go through the same test the warnings below
  * apply, not through a control-character strip. `displaySafe` /
- * {@link stripControlChars} sanitise for a TERMINAL; neither masks a secret.
+ * `stripControlChars` sanitise for a TERMINAL; neither masks a secret.
  *
  * Three outcomes, and the third is the one a caller must not collapse into the
  * first: masking can leave the text UNCHANGED (a needle below
@@ -619,6 +641,12 @@ export function secretSafeKeyDisplay(
     // export name: collapsing that into `withheld` withheld an innocent name
     // on the DEFAULT deploy path and printed a placeholder asserting the name
     // "contains a secret", which was false (measured against `main`).
+    //
+    // `safe` HERE DOES NOT MEAN "containment cleared it". A recorded secret
+    // below MIN_SECRET_NEEDLE that is genuinely embedded in this text is not
+    // an exposure and is not masked -- the same documented tradeoff that lets
+    // it through when the mask set is empty. Named so the next reader does not
+    // take this arm for a stronger claim than it makes.
     return exposure ? { kind: 'withheld' } : { kind: 'safe', text: shown };
   }
   // FAIL CLOSED. Masking is a substring replacement, so a name holding the
@@ -708,14 +736,19 @@ export function secretBearingStateKeyWarning(
  * says which value survives — the export is skipped, so the key keeps the
  * output's own value.
  *
- * No masking here, and none is needed: the name printed is one that MATCHED a
- * declared output name, i.e. template text, and a name carrying a secret is
- * refused by {@link secretBearingExportNameWarning} before this is reached.
+ * MASKED HERE, and the bound that used to excuse it is named rather than
+ * relied on. This message prints a name that MATCHED a declared output name --
+ * template text -- and a secret-bearing `Export.Name` is refused by
+ * {@link secretBearingExportNameWarning} upstream. But that is SOMEBODY ELSE'S
+ * VERDICT, and this site is reached from exactly the arm taken when it MISSED:
+ * before issue [#2874](https://github.com/go-to-k/cdkd/issues/2874)
+ * canonicalised the containment scan, it missed for eight of ten invisible
+ * characters, and this message printed the plaintext verbatim.
  */
 export function exportAliasCollisionWarning(
   outputKey: string,
   exportName: string,
-  secrets?: RecordedSecretValues
+  secrets: RecordedSecretValues
 ): string {
   // THE FOURTH SITE, and the one issue #2874's own grep could not see: it
   // composes `stripControlChars` with NOTHING, so a search for the composed
@@ -730,12 +763,13 @@ export function exportAliasCollisionWarning(
   // which, before #2874 canonicalised the containment scan, it did for eight
   // of ten invisible characters. Measured leaking the plaintext verbatim.
   //
-  // So the name is tested HERE too, and the `secrets` argument is optional
-  // only so a caller with no corpus still gets sanitising: absent, this
-  // degrades to canonical-space stripping, which is strictly more than the
-  // `stripControlChars` it replaces.
-  const shown = displayTextOrWithheld(secretSafeKeyDisplay(exportName, secrets ?? new Map()));
-  const from = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, secrets ?? new Map()));
+  // So the name is tested HERE too, and `secrets` is REQUIRED rather than
+  // optional. An optional corpus was written first and measured printing the
+  // plaintext when omitted -- the same foot-gun `exportAliasCollisionScrubWarning`
+  // avoids by requiring its own. BOTH names go through the test: `outputKey`
+  // is template-controlled and printed three times in this message.
+  const shown = displayTextOrWithheld(secretSafeKeyDisplay(exportName, secrets));
+  const from = displayTextOrWithheld(secretSafeKeyDisplay(outputKey, secrets));
   return (
     `Output ${from} exports as "${shown}", which is also the name of another output in this stack — ` +
     `skipping the export alias, so output ${shown} keeps its own value and the export is not published. ` +
@@ -810,8 +844,17 @@ export function exportAliasCollisionScrubWarning(
     exportDisplay.kind === 'withheld'
       ? 'the stored value under that name'
       : `the stored value under "${shown}"`;
+  // WHEN BOTH NAMES WITHHOLD the two placeholders are identical, and the
+  // sentence then reads as a name colliding with ITSELF. Distinguish them:
+  // the reader cannot act on either name, but must still be able to tell that
+  // there are two.
+  const ownerDisplay = nameDisplay(outputKey);
+  const owner =
+    ownerDisplay.kind === 'withheld' && exportDisplay.kind === 'withheld'
+      ? '<the owning output, name withheld: contains a secret>'
+      : displayTextOrWithheld(ownerDisplay);
   return (
-    `Output ${displayTextOrWithheld(nameDisplay(outputKey))} exports as ${
+    `Output ${owner} exports as ${
       exportDisplay.kind === 'withheld' ? shown : `"${shown}"`
     }, which is also the name of another output in this stack — ` +
     `state cannot say which of the two ${storedUnder} came from, so that key is ` +

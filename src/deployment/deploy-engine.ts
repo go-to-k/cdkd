@@ -7207,9 +7207,16 @@ export class DeployEngine {
         } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
           // The corpus is threaded so this message tests the name itself
           // rather than trusting the refusal above -- this arm is reached
-          // exactly when that refusal did NOT fire (issue #2874).
+          // exactly when that refusal did NOT fire (issue #2874). The
+          // parameter is REQUIRED, so the empty fallback is written HERE and
+          // is safe by construction: an absent bag means this pass recorded no
+          // secret, so there is no plaintext for the message to reconstitute.
           this.logger.warn(
-            exportAliasCollisionWarning(outputKey, exportName, context.recordedSecretValues)
+            exportAliasCollisionWarning(
+              outputKey,
+              exportName,
+              context.recordedSecretValues ?? new Map()
+            )
           );
         } else {
           outputs[exportName] = value;

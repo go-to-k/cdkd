@@ -48,8 +48,9 @@ describe('the canonical secret-scan class', () => {
       covered++;
       if (!canonicalDeletes(ch)) missed.push(`U+${cp.toString(16).toUpperCase().padStart(4, '0')}`);
     }
-    // FLOOR, so a stripControlChars that stopped matching anything cannot make
-    // this pass vacuously.
+    // ANTI-VACUITY FLOOR, not a derived count: 76 measured today. It catches a
+    // class that stopped matching anything, NOT a halving -- stated because a
+    // floor read as a derived total is a claim this file cannot back.
     expect(covered).toBeGreaterThanOrEqual(40);
     expect(missed).toEqual([]);
   });
@@ -69,6 +70,7 @@ describe('the canonical secret-scan class', () => {
       covered++;
       if (!canonicalDeletes(ch)) missed.push(`U+${cp.toString(16).toUpperCase().padStart(4, '0')}`);
     }
+    // Same anti-vacuity floor; 76 measured today.
     expect(covered).toBeGreaterThanOrEqual(40);
     expect(missed).toEqual([]);
   });
@@ -96,6 +98,40 @@ describe('the canonical secret-scan class', () => {
     // drift cannot red this while a collapsed class still does.
     expect(probed).toBeGreaterThanOrEqual(120);
     expect(leaked).toEqual([]);
+  });
+
+  it('deletes every Default_Ignorable_Code_Point, which is the property it claims', () => {
+    // THE ASSERTION THE FIRST VERSION OF THIS FILE COULD NOT MAKE. It proved
+    // superset of the two sanitisers only, and neither touches `U+034F`
+    // COMBINING GRAPHEME JOINER -- so a hand-listed class that missed it was
+    // GREEN here while `secretSafeKeyDisplay` verdicted a split secret `safe`
+    // and printed `hunter2hunter2` into a warn line (measured, issue #2874
+    // round 2). Naming the PROPERTY is what makes the next Unicode addition
+    // arrive covered rather than arrive as a finding: the same version bump
+    // that adds a default-ignorable character adds it to `\p{...}` here.
+    const missed: string[] = [];
+    let covered = 0;
+    for (let cp = 0; cp <= 0xffff; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue;
+      const ch = String.fromCodePoint(cp);
+      if (!/\p{Default_Ignorable_Code_Point}/u.test(ch)) continue;
+      covered++;
+      if (!canonicalDeletes(ch)) missed.push(`U+${cp.toString(16).toUpperCase().padStart(4, '0')}`);
+    }
+    expect(covered).toBeGreaterThanOrEqual(20);
+    expect(missed).toEqual([]);
+  });
+
+  it('U+034F is deleted -- the character the hand-listed class missed', () => {
+    // Pinned BY NAME beside the property scan above. The scan is the general
+    // guarantee; this is the regression, and a regression that is only
+    // implied by a loop is one a future narrowing can argue its way past.
+    const secrets = new Map([[SECRET, EXPR]]);
+    const key = `alias-${SECRET.slice(0, 5)}\u034f${SECRET.slice(5)}-suffix`;
+    expect(secretSafeKeyDisplay(key, secrets)).toEqual({
+      kind: 'masked',
+      text: 'alias-***-suffix',
+    });
   });
 
   it('does NOT delete an ordinary visible character', () => {
