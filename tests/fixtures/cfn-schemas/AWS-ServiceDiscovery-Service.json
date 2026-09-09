@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ServiceDiscovery::Service",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-09",
   "properties": [
     "Arn",
     "Description",
@@ -73,9 +73,9 @@
     "#top": {
       "Type": "scalar",
       "Description": "scalar",
-      "ServiceAttributes": "object",
       "HealthCheckCustomConfig": "object",
       "DnsConfig": "object",
+      "ServiceAttributes": "object",
       "Id": "scalar",
       "NamespaceId": "scalar",
       "HealthCheckConfig": "object",
@@ -101,8 +101,8 @@
       "Key": "scalar"
     },
     "DnsRecord": {
-      "TTL": "scalar",
-      "Type": "scalar"
+      "Type": "scalar",
+      "TTL": "scalar"
     }
   },
   "definitionRequired": {

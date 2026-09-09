@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DLM::LifecyclePolicy",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-09",
   "properties": [
     "Arn",
     "CopyTags",
@@ -11,19 +11,19 @@
     "Exclusions",
     "ExecutionRoleArn",
     "ExtendDeletion",
-    "Id",
     "PolicyDetails",
+    "PolicyId",
     "RetainInterval",
     "State",
     "Tags"
   ],
   "readOnlyProperties": [
     "Arn",
-    "Id"
+    "PolicyId"
   ],
   "createOnlyProperties": [],
   "primaryIdentifier": [
-    "Id"
+    "PolicyId"
   ],
   "nestedProperties": {
     "Exclusions": [
@@ -236,9 +236,56 @@
       "State": "scalar",
       "CrossRegionCopyTargets": "array",
       "PolicyDetails": "object",
-      "Id": "scalar",
+      "PolicyId": "scalar",
       "Arn": "scalar",
       "Tags": "array",
+      "CopyTags": "scalar"
+    },
+    "Action": {
+      "CrossRegionCopy": "array",
+      "Name": "scalar"
+    },
+    "Exclusions": {
+      "ExcludeTags": "array",
+      "ExcludeVolumeTypes": "array",
+      "ExcludeBootVolumes": "scalar"
+    },
+    "ArchiveRule": {
+      "RetainRule": "object"
+    },
+    "DeprecateRule": {
+      "IntervalUnit": "scalar",
+      "Count": "scalar",
+      "Interval": "scalar"
+    },
+    "CrossRegionCopyDeprecateRule": {
+      "IntervalUnit": "scalar",
+      "Interval": "scalar"
+    },
+    "CreateRule": {
+      "IntervalUnit": "scalar",
+      "Scripts": "array",
+      "Times": "array",
+      "CronExpression": "scalar",
+      "Interval": "scalar",
+      "Location": "scalar"
+    },
+    "PolicyDetails": {
+      "PolicyLanguage": "scalar",
+      "ResourceTypes": "array",
+      "Schedules": "array",
+      "PolicyType": "scalar",
+      "CreateInterval": "scalar",
+      "Parameters": "object",
+      "ExtendDeletion": "scalar",
+      "Exclusions": "object",
+      "Actions": "array",
+      "ResourceType": "scalar",
+      "RetainInterval": "scalar",
+      "EventSource": "object",
+      "CrossRegionCopyTargets": "array",
+      "TargetTags": "array",
+      "ResourceLocations": "array",
       "CopyTags": "scalar"
     },
     "Script": {
@@ -249,22 +296,10 @@
       "MaximumRetryCount": "scalar",
       "ExecuteOperationOnScriptFailure": "scalar"
     },
-    "Action": {
-      "CrossRegionCopy": "array",
-      "Name": "scalar"
-    },
     "Parameters": {
       "ExcludeBootVolume": "scalar",
       "NoReboot": "scalar",
       "ExcludeDataVolumeTags": "array"
-    },
-    "CrossRegionCopyTarget": {
-      "TargetRegion": "scalar"
-    },
-    "Exclusions": {
-      "ExcludeTags": "array",
-      "ExcludeVolumeTypes": "array",
-      "ExcludeBootVolumes": "scalar"
     },
     "CrossRegionCopyRule": {
       "TargetRegion": "scalar",
@@ -282,9 +317,6 @@
     "CrossRegionCopyRetainRule": {
       "IntervalUnit": "scalar",
       "Interval": "scalar"
-    },
-    "ArchiveRule": {
-      "RetainRule": "object"
     },
     "EventParameters": {
       "DescriptionRegex": "scalar",
@@ -305,25 +337,11 @@
       "Type": "scalar",
       "Parameters": "object"
     },
-    "DeprecateRule": {
-      "IntervalUnit": "scalar",
-      "Count": "scalar",
-      "Interval": "scalar"
-    },
-    "CrossRegionCopyDeprecateRule": {
-      "IntervalUnit": "scalar",
-      "Interval": "scalar"
-    },
     "ArchiveRetainRule": {
       "RetentionArchiveTier": "object"
     },
-    "CreateRule": {
-      "IntervalUnit": "scalar",
-      "Scripts": "array",
-      "Times": "array",
-      "CronExpression": "scalar",
-      "Interval": "scalar",
-      "Location": "scalar"
+    "CrossRegionCopyTarget": {
+      "TargetRegion": "scalar"
     },
     "Schedule": {
       "ShareRules": "array",
@@ -341,27 +359,9 @@
     "FastRestoreRule": {
       "IntervalUnit": "scalar",
       "Count": "scalar",
-      "AvailabilityZoneIds": "array",
       "AvailabilityZones": "array",
+      "AvailabilityZoneIds": "array",
       "Interval": "scalar"
-    },
-    "PolicyDetails": {
-      "PolicyLanguage": "scalar",
-      "ResourceTypes": "array",
-      "Schedules": "array",
-      "PolicyType": "scalar",
-      "CreateInterval": "scalar",
-      "Parameters": "object",
-      "ExtendDeletion": "scalar",
-      "Exclusions": "object",
-      "Actions": "array",
-      "ResourceType": "scalar",
-      "RetainInterval": "scalar",
-      "EventSource": "object",
-      "CrossRegionCopyTargets": "array",
-      "TargetTags": "array",
-      "ResourceLocations": "array",
-      "CopyTags": "scalar"
     },
     "RetentionArchiveTier": {
       "IntervalUnit": "scalar",
@@ -383,6 +383,13 @@
       "CrossRegionCopy",
       "Name"
     ],
+    "ArchiveRule": [
+      "RetainRule"
+    ],
+    "CrossRegionCopyDeprecateRule": [
+      "Interval",
+      "IntervalUnit"
+    ],
     "CrossRegionCopyRule": [
       "Encrypted"
     ],
@@ -392,9 +399,6 @@
     "CrossRegionCopyRetainRule": [
       "Interval",
       "IntervalUnit"
-    ],
-    "ArchiveRule": [
-      "RetainRule"
     ],
     "EventParameters": [
       "EventType",
@@ -406,10 +410,6 @@
     ],
     "EventSource": [
       "Type"
-    ],
-    "CrossRegionCopyDeprecateRule": [
-      "Interval",
-      "IntervalUnit"
     ],
     "ArchiveRetainRule": [
       "RetentionArchiveTier"

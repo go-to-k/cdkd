@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DynamoDB::Table",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-09",
   "properties": [
     "Arn",
     "AttributeDefinitions",
@@ -51,9 +51,12 @@
       "StreamArn"
     ],
     "StreamSpecification": [
+      "Key",
       "PolicyDocument",
       "ResourcePolicy",
-      "StreamViewType"
+      "StreamViewType",
+      "Tags",
+      "Value"
     ],
     "ContributorInsightsSpecification": [
       "Enabled",
@@ -150,7 +153,10 @@
     "StreamSpecification": [
       "ResourcePolicy",
       "ResourcePolicy.PolicyDocument",
-      "StreamViewType"
+      "StreamViewType",
+      "Tags",
+      "Tags.Key",
+      "Tags.Value"
     ],
     "ContributorInsightsSpecification": [
       "Enabled",
@@ -278,7 +284,8 @@
     },
     "StreamSpecification": {
       "StreamViewType": "scalar",
-      "ResourcePolicy": "object"
+      "ResourcePolicy": "object",
+      "Tags": "array"
     },
     "ContributorInsightsSpecification": {
       "Mode": "scalar",

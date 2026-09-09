@@ -37,6 +37,8 @@ import {
   lookupAllowEntry,
   nestedKeyPathsForTarget,
   reachableSdkMemberNames,
+  inputReachableInterfaces,
+  resolveDefinitionInterface,
   wrapperInterfaceNames,
   type AllowListEntry,
   type NestedKeyClassification,
@@ -3643,6 +3645,29 @@ describe('collectSdkInterfaces (real repo)', () => {
     expect(cacheBehavior?.get('TargetOriginId')?.kind).toBe('scalar');
   });
 
+  it('carries a map member’s VALUE type, keeping `refName` the member’s own', () => {
+    // Real anchor rather than a synthetic one: apigatewayv2 declares
+    // `RequestParameters?: Record<string, ParameterConstraints>`, and
+    // `ParameterConstraints` hangs off a request through NOTHING else — so
+    // `inputReachableInterfaces` reaches it only across this edge.
+    // Pins live `@aws-sdk/client-apigatewayv2` typings: a rename of
+    // `ParameterConstraints`, or a codegen switch to an index signature
+    // (a `TypeLiteralNode`, which classifies `scalar`), reds this case on an
+    // SDK bump rather than on a generator defect.
+    const apigw = collectSdkInterfaces(
+      resolve(repoRoot, 'node_modules/@aws-sdk/client-apigatewayv2/dist-types/models')
+    );
+    expect(apigw.get('CreateRouteRequest')?.get('RequestParameters')).toEqual({
+      kind: 'ref',
+      refName: 'Record',
+      valueRefName: 'ParameterConstraints',
+    });
+    // `refName` stays the member's OWN type name: the shape pass reads it to
+    // decide wrapper-ness, and overwriting it with the value type would make it
+    // read a wrapper's name for a member that is not one.
+    expect(inputReachableInterfaces(apigw).has('ParameterConstraints')).toBe(true);
+  });
+
   it('detects the { Quantity, Items } wrapper interfaces', () => {
     const wrappers = wrapperInterfaceNames(interfaces);
     for (const name of ['Aliases', 'Origins', 'AllowedMethods', 'CachedMethods']) {
@@ -6685,5 +6710,338 @@ describe('target-table hygiene', { timeout: 30_000 }, () => {
       const [type] = key.split('#');
       expect(targetTypes.has(type!), key).toBe(true);
     }
+  });
+});
+
+/**
+ * Definition -> SDK interface resolution (issue go-to-k/cdkd#2821).
+ *
+ * CFn definition names and SDK interface names are INDEPENDENT namespaces, and
+ * several services name the request shape `<X>Input` while `<X>` is the
+ * response. An exact-name match then lands on a shape no request can carry, and
+ * every member that exists only on the request twin reports
+ * `definition-member-missing` about a key the provider delivers.
+ *
+ * It is not a stable mismatch either: AWS RENAMED the `AWS::Glue::Connection`
+ * definitions from `AuthenticationConfigurationInput` to
+ * `AuthenticationConfiguration`, which turned four clean keys into blocking
+ * divergences whose documented remedy is a `NESTED_KEY_ALLOW_LIST` entry — a
+ * standing promise cdkd never sends the value, recorded about one it does.
+ */
+describe('input-reachable interface resolution', () => {
+  const iface = (members: Record<string, SdkMemberType>): Map<string, SdkMemberType> =>
+    new Map(Object.entries(members));
+
+  // Two shapes spelled the same way apart from the suffix: the response
+  // `AuthenticationConfiguration` reachable from nothing, and the request
+  // `AuthenticationConfigurationInput` reachable through the operation input.
+  const sdk = new Map<string, Map<string, SdkMemberType>>([
+    [
+      'CreateConnectionRequest',
+      iface({ ConnectionInput: { kind: 'ref', refName: 'ConnectionInput' } }),
+    ],
+    [
+      'ConnectionInput',
+      iface({
+        AuthenticationConfiguration: {
+          kind: 'ref',
+          refName: 'AuthenticationConfigurationInput',
+        },
+      }),
+    ],
+    [
+      'AuthenticationConfigurationInput',
+      iface({ AuthenticationType: { kind: 'scalar' }, BasicAuthenticationCredentials: { kind: 'scalar' } }),
+    ],
+    ['AuthenticationConfiguration', iface({ AuthenticationType: { kind: 'scalar' } })],
+    // A list-valued edge, because that is how most nested shapes hang off a
+    // request. `ChangeDetail` carries NO input-root suffix, so it is reachable
+    // only by following the array edge — with a ref-only walk it drops out, and
+    // a fixture whose array target happened to end in `Input` would be a root
+    // already and could not tell the two apart (measured: it did not).
+    ['BatchRequest', iface({ Changes: { kind: 'array', refName: 'ChangeDetail' } })],
+    ['ChangeDetail', iface({ Action: { kind: 'scalar' } })],
+    // BOTH spellings input-reachable. The exact one must win, or a service that
+    // legitimately declares `<X>` on a request gets judged against `<X>Input`.
+    ['Retry', iface({ MaxAttempts: { kind: 'scalar' }, OnlyOnExact: { kind: 'scalar' } })],
+    ['RetryInput', iface({ MaxAttempts: { kind: 'scalar' } })],
+    ['StartRequest', iface({ Retry: { kind: 'ref', refName: 'Retry' }, R2: { kind: 'ref', refName: 'RetryInput' } })],
+    // Reachable from nothing at all, and no twin either.
+    ['OrphanShape', iface({ Whatever: { kind: 'scalar' } })],
+  ]);
+
+  it('walks ref AND array edges out of the input roots', () => {
+    const reachable = inputReachableInterfaces(sdk);
+    expect([...reachable].sort()).toEqual([
+      'AuthenticationConfigurationInput',
+      'BatchRequest',
+      'ChangeDetail',
+      'ConnectionInput',
+      'CreateConnectionRequest',
+      'Retry',
+      'RetryInput',
+      'StartRequest',
+    ]);
+    // Reached ONLY across an array edge, and carrying no root suffix of its own.
+    expect(reachable.has('ChangeDetail')).toBe(true);
+    // The shapes a request cannot carry.
+    expect(reachable.has('AuthenticationConfiguration')).toBe(false);
+    expect(reachable.has('OrphanShape')).toBe(false);
+  });
+
+  it('prefers the exact name when BOTH spellings are input-reachable', () => {
+    // A service that legitimately puts `<X>` on a request must be judged
+    // against `<X>`, not against a same-service `<X>Input` that means something
+    // else. Every currently-green verdict takes this path, so a rule that
+    // always preferred the twin would move buckets on untouched targets.
+    const reachable = inputReachableInterfaces(sdk);
+    const resolved = resolveDefinitionInterface('Retry', sdk, reachable);
+    expect(resolved?.name).toBe('Retry');
+    expect(resolved?.via).toBe('exact');
+    expect(resolved?.members.has('OnlyOnExact')).toBe(true);
+  });
+
+  it('prefers the input-reachable twin when the exact name is response-only', () => {
+    const reachable = inputReachableInterfaces(sdk);
+    const resolved = resolveDefinitionInterface('AuthenticationConfiguration', sdk, reachable);
+    expect(resolved?.name).toBe('AuthenticationConfigurationInput');
+    expect(resolved?.via).toBe('Input');
+    // The member that only exists on the request twin — the whole point.
+    expect(resolved?.members.has('BasicAuthenticationCredentials')).toBe(true);
+  });
+
+  it('keeps the exact match when it IS input-reachable', () => {
+    // Every currently-green verdict resolves this way, so a rule that always
+    // preferred the twin would move buckets on targets nobody touched.
+    const reachable = inputReachableInterfaces(sdk);
+    const resolved = resolveDefinitionInterface('ConnectionInput', sdk, reachable);
+    expect(resolved?.name).toBe('ConnectionInput');
+    expect(resolved?.via).toBe('exact');
+  });
+
+  it('falls back to the exact match when NEITHER candidate is input-reachable', () => {
+    // One real definition is this shape (`Glue::Crawler`'s `Schedule`). An
+    // unreachable interface is still the closest answer; returning undefined
+    // would report it as UNMATCHED, which says something different and louder.
+    //
+    // `via` DISCRIMINATES the two exact arms. Same name, same members, but not
+    // the same claim — `exact` says a request can carry this shape, this says
+    // nothing provably can — and one shared value would leave a consumer
+    // branching on `via` unable to tell them apart.
+    const reachable = inputReachableInterfaces(sdk);
+    const resolved = resolveDefinitionInterface('OrphanShape', sdk, reachable);
+    expect(resolved?.name).toBe('OrphanShape');
+    expect(resolved?.via).toBe('exact-unreachable');
+    // The reachable arm keeps the plain value, so the two are distinguishable.
+    expect(resolveDefinitionInterface('ConnectionInput', sdk, reachable)?.via).toBe('exact');
+  });
+
+  it('REFUSES a twin that shares too few members with the exact shape', () => {
+    // `Type` and `Message` are in the suffix list for the query protocol, so a
+    // definition named `Filter` can meet an unrelated `FilterType` and bind to
+    // it on the strength of the NAME alone. A false clean there is silent — a
+    // request shape carries many members, so the audited key is likely present
+    // in it by accident — which is why the twin has to look like the same
+    // shape. Falling back to the exact match is the LOUD direction: its
+    // divergences block CI.
+    const unrelated = new Map<string, Map<string, SdkMemberType>>([
+      ['ListRequest', iface({ F: { kind: 'ref', refName: 'FilterType' } })],
+      ['Filter', iface({ Key: { kind: 'scalar' }, Values: { kind: 'array' } })],
+      // Nothing in common with `Filter` beyond the name prefix.
+      ['FilterType', iface({ Unit: { kind: 'scalar' }, Precision: { kind: 'scalar' } })],
+    ]);
+    const reachable = inputReachableInterfaces(unrelated);
+    const resolved = resolveDefinitionInterface('Filter', unrelated, reachable);
+    expect(resolved?.name).toBe('Filter');
+    expect(resolved?.via).toBe('exact-unreachable');
+    // And the gate is not a blanket refusal: HALF the exact shape's members is
+    // enough, which every real pair clears (measured at 100 / 100 / 83 / 100 /
+    // 100 percent across the five in the tree).
+    const related = new Map(unrelated);
+    related.set('FilterType', iface({ Key: { kind: 'scalar' }, Unit: { kind: 'scalar' } }));
+    expect(resolveDefinitionInterface('Filter', related, inputReachableInterfaces(related))?.name).toBe(
+      'FilterType'
+    );
+
+    // An EMPTY exact shape is refused rather than twinned. Without `shared > 0`
+    // the arithmetic alone (`shared * 2 >= 0`) accepts it, so this is the only
+    // case that can fail when that clause is dropped — and it fixes the answer
+    // as a DECISION (no relatedness evidence exists, so the name alone must not
+    // bind) rather than leaving it to an accident of the comparison.
+    const empty = new Map(unrelated);
+    empty.set('Filter', iface({}));
+    expect(resolveDefinitionInterface('Filter', empty, inputReachableInterfaces(empty))?.via).toBe(
+      'exact-unreachable'
+    );
+  });
+
+  it('follows a MAP-VALUE edge, so a shape carried only as a map value is reachable', () => {
+    // `Record<string, Y>` puts `Y` on the wire exactly as a list-valued member
+    // carries its element. Before this the walk stopped at the map, `Y` looked
+    // unreachable, and a definition of that name fell to the twin branch — the
+    // one place an unrelated interface can be bound. Real instance:
+    // `AWS::ApiGatewayV2::Route`'s `ParameterConstraints`, reachable ONLY
+    // through `RequestParameters?: Record<string, ParameterConstraints>`.
+    const mapped = new Map<string, Map<string, SdkMemberType>>([
+      [
+        'CreateRouteRequest',
+        iface({ Params: { kind: 'ref', refName: 'Record', valueRefName: 'Constraint' } }),
+      ],
+      ['Constraint', iface({ Required: { kind: 'scalar' } })],
+    ]);
+    expect(inputReachableInterfaces(mapped).has('Constraint')).toBe(true);
+  });
+
+  it('resolves nothing when the definition names no interface at all', () => {
+    const reachable = inputReachableInterfaces(sdk);
+    expect(resolveDefinitionInterface('NoSuchThing', sdk, reachable)).toBeUndefined();
+  });
+
+  it('reports the interface it CONSULTED, not the definition name', () => {
+    // A reader sent to `AuthenticationConfiguration` when the check read
+    // `AuthenticationConfigurationInput` looks at the wrong shape and reaches
+    // the opposite conclusion — which is how the allow-list entry gets written.
+    const result = classifyTargetShapes(
+      exactTarget,
+      { AuthenticationConfiguration: { NotAMember: 'scalar' } },
+      // `NotAMember` must exist SOMEWHERE for the definition sub-pass to run.
+      new Map([...sdk, ['SomeOtherShape', iface({ NotAMember: { kind: 'scalar' } })]]),
+      new Set(),
+      new Map()
+    );
+    const missing = result.entries.filter((e) => e.bucket === 'definition-member-missing');
+    expect(missing).toHaveLength(1);
+    expect(missing[0]!.sdkDetail).toContain('`AuthenticationConfigurationInput`');
+    expect(missing[0]!.sdkDetail).not.toContain('`AuthenticationConfiguration` has');
+  });
+
+  it('clears a member that exists only on the request twin', () => {
+    // The go-to-k/cdkd#2784 shape, end to end: under the exact-name rule this
+    // is a blocking `definition-member-missing`.
+    const result = classifyTargetShapes(
+      exactTarget,
+      { AuthenticationConfiguration: { BasicAuthenticationCredentials: 'scalar' } },
+      sdk,
+      new Set(),
+      new Map()
+    );
+    expect(result.entries.filter((e) => e.bucket === 'definition-member-missing')).toEqual([]);
+  });
+});
+
+describe('input-root suffixes beyond `Input`', () => {
+  const iface = (members: Record<string, SdkMemberType>): Map<string, SdkMemberType> =>
+    new Map(Object.entries(members));
+
+  // The QUERY-protocol spellings. Leaving `Type` / `Message` out of the list
+  // made whole services — rds, neptune, auto-scaling, docdb, elasticache —
+  // unreachable from any input root, which is why the sibling list in
+  // `scripts/offline-property-evidence.ts` carries them. Nothing exercised them
+  // here: deleting both survived every other case (measured).
+  const sdk = new Map<string, Map<string, SdkMemberType>>([
+    // `Type` root (auto-scaling's shape), reaching a nested shape by array edge.
+    ['UpdateGroupType', iface({ Members: { kind: 'array', refName: 'GroupMember' } })],
+    ['GroupMember', iface({ Weight: { kind: 'scalar' } })],
+    // `Message` root (query protocol), reaching a nested shape by ref.
+    ['SendMessage', iface({ Body: { kind: 'ref', refName: 'BodyPart' } })],
+    ['BodyPart', iface({ Text: { kind: 'scalar' } })],
+    // `CommandInput` root.
+    ['DoThingCommandInput', iface({ Opt: { kind: 'scalar' } })],
+    // A definition whose ONLY twin uses the `CommandInput` suffix. Its ROOT
+    // pinning below is vacuous by construction — every `<X>CommandInput` name
+    // also ends in `Input` — so the twin lookup is the only thing that can
+    // discriminate that entry, and renaming it in both files survived until
+    // this case existed.
+    ['Widget', iface({ Shared: { kind: 'scalar' } })],
+    ['WidgetCommandInput', iface({ Shared: { kind: 'scalar' }, OnlyOnCommandInput: { kind: 'scalar' } })],
+    // A definition whose exact name is response-only and whose twin uses the
+    // `Request` suffix rather than `Input`.
+    ['Policy', iface({ Version: { kind: 'scalar' } })],
+    ['PolicyRequest', iface({ Version: { kind: 'scalar' }, Statements: { kind: 'array' } })],
+    ['PolicyInput', iface({ SomethingElse: { kind: 'scalar' } })],
+    ['AttachRequest', iface({ Policy: { kind: 'ref', refName: 'PolicyRequest' } })],
+  ]);
+
+  it('seeds every suffix in the list as a root', () => {
+    const reachable = inputReachableInterfaces(sdk);
+    for (const root of ['UpdateGroupType', 'SendMessage', 'DoThingCommandInput', 'AttachRequest']) {
+      expect(reachable.has(root), `${root} is not seeded as an input root`).toBe(true);
+    }
+    // And reaches through them, so a suffix that seeds nothing is not enough.
+    expect(reachable.has('GroupMember')).toBe(true);
+    expect(reachable.has('BodyPart')).toBe(true);
+  });
+
+  it('resolves a twin through a NON-`Input` suffix', () => {
+    const reachable = inputReachableInterfaces(sdk);
+    const resolved = resolveDefinitionInterface('Policy', sdk, reachable);
+    expect(resolved?.name).toBe('PolicyRequest');
+    expect(resolved?.via).toBe('Request');
+  });
+
+  it('resolves a twin through the `CommandInput` suffix', () => {
+    // `CommandInput` cannot be discriminated as a ROOT — `<X>CommandInput` ends
+    // in `Input` — so this is the only case that can fail when the entry is
+    // removed from the list.
+    const reachable = inputReachableInterfaces(sdk);
+    const resolved = resolveDefinitionInterface('Widget', sdk, reachable);
+    expect(resolved?.name).toBe('WidgetCommandInput');
+    expect(resolved?.via).toBe('CommandInput');
+    expect(resolved?.members.has('OnlyOnCommandInput')).toBe(true);
+  });
+
+  it('takes the suffixes in list order, so `Request` beats `Input`', () => {
+    // Both twins exist here. The order is the shared list's, not a preference
+    // of `resolveDefinitionInterface` — reordering the list changes the answer,
+    // and nothing else in this suite would notice.
+    const reachable = inputReachableInterfaces(sdk);
+    expect(resolveDefinitionInterface('Policy', sdk, reachable)?.members.has('Statements')).toBe(
+      true
+    );
+    expect(resolveDefinitionInterface('Policy', sdk, reachable)?.members.has('SomethingElse')).toBe(
+      false
+    );
+  });
+
+  it('does NOT rebind a definition that matches no interface at all', () => {
+    // 53 of the 357 definitions across the current targets match nothing and
+    // report as `unmatchedDefinitions`. Without the exact-exists gate, a
+    // `<X>Type` or `<X>Message` shape — in the list for the query protocol —
+    // could silently become the audited interface for one of them. Measured
+    // over the refreshed fixtures the case is empty, so the gate is
+    // behaviour-identical today and exists to keep it that way.
+    const reachable = inputReachableInterfaces(sdk);
+    // Both halves must have a twin that WOULD be taken without the gate;
+    // a name with no twin either returns `undefined` under the old code too.
+    expect(resolveDefinitionInterface('UpdateGroup', sdk, reachable)).toBeUndefined();
+    expect(resolveDefinitionInterface('Attach', sdk, reachable)).toBeUndefined();
+  });
+});
+
+describe('the two INPUT_ROOT_SUFFIXES lists stay in step', () => {
+  it('declares the same suffixes as scripts/offline-property-evidence.ts', async () => {
+    // Two files carry the list and the walk that consumes it, and the only
+    // thing keeping them equal was a comment in each. The repo's own answer to
+    // that shape is a sync fence (`cross-cutting-list-sync.test.ts`); this is
+    // the two-file version. Neither list is exported, so both are read out of
+    // the SOURCE — which is also what makes the fence honest: an export would
+    // let one file silently consume the other's list while claiming to have
+    // its own.
+    const read = async (rel: string) => {
+      const src = readFileSync(resolve(repoRoot, rel), 'utf8');
+      const m = /const INPUT_ROOT_SUFFIXES = \[([^\]]+)\]/.exec(src);
+      expect(m, `${rel} no longer declares INPUT_ROOT_SUFFIXES as a literal array`).not.toBeNull();
+      return m![1]
+        .split(',')
+        .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+        .filter((s) => s.length > 0);
+    };
+    const critic = await read('scripts/gen-nested-key-coverage.ts');
+    const evidence = await read('scripts/offline-property-evidence.ts');
+    // Pinned LITERALLY, not merely to a length. A magic `>= 5` cannot see both
+    // lists collapsing to the same WRONG value — renaming one entry in both
+    // files kept the arrays equal and the length unchanged (measured).
+    expect(critic).toEqual(['Request', 'Input', 'CommandInput', 'Type', 'Message']);
+    expect(critic).toEqual(evidence);
   });
 });

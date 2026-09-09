@@ -44,6 +44,8 @@ import {
   type UpdateAuthorizerCommandInput,
 } from '@aws-sdk/client-apigatewayv2';
 import { getLogger } from '../../utils/logger.js';
+import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -427,11 +429,22 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       const apiEndpoint = response.ApiEndpoint!;
       this.logger.debug(`Successfully created API Gateway V2 Api ${logicalId}: ${apiId}`);
 
+      // `ExecuteApiArn` is a read-only attribute AWS publishes on this type and
+      // `CreateApi` does not return, so it is CONSTRUCTED — the shape
+      // `SSMParameterProvider` established for the same problem (issue
+      // [#1824](https://github.com/go-to-k/cdkd/issues/1824)). Recorded here
+      // rather than resolved live because a cross-resource `Fn::GetAtt` reads
+      // the CACHED `resource.attributes[<CFnName>]` and never calls
+      // `getAttribute`; an absent `*Arn` reaches `guardedPhysicalIdFallback`,
+      // which HARD-THROWS because the physical id is a bare api id (the issue
+      // [#1179](https://github.com/go-to-k/cdkd/issues/1179) class).
+      const executeApiArn = await this.buildExecuteApiArn(apiId);
       return {
         physicalId: apiId,
         attributes: {
           ApiId: apiId,
           ApiEndpoint: apiEndpoint,
+          ...(executeApiArn !== undefined ? { ExecuteApiArn: executeApiArn } : {}),
         },
       };
     } catch (error) {
@@ -482,9 +495,74 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * `arn:{partition}:execute-api:{region}:{account}:{apiId}` — the ARN AWS
+   * documents for an API Gateway v2 API, which no API call returns.
+   *
+   * Refuses to record a FABRICATED account, exactly as
+   * `SSMParameterProvider.buildParameterArn` does: an ARN naming a placeholder
+   * account is worse than an absent one, because it is persisted into
+   * `state.json` and outlives the deploy that produced it. The partition is
+   * DERIVED through the same closed region mapping `${AWS::Partition}` uses,
+   * and the region segment is canonicalized — defence in depth rather than the
+   * only fold, since `getAccountInfo` already canonicalizes what it returns
+   * (the issue #1795 / #1814 class: an unfolded `US-EAST-1` matches no IAM
+   * policy and is persisted).
+   *
+   * **NEVER THROWS, and callers depend on it.** Every call site is INSIDE the
+   * `try` of an operation that has already created or found the API, so an
+   * escape here would report a failed create over a resource that exists —
+   * an orphan. A failure means the attribute is absent, which is the state
+   * every deploy before this change was in.
+   *
+   * Takes NO `SecretMaskingContext`, where its SSM twin takes one, and the
+   * difference is not an oversight: every interpolated value here is
+   * non-secret BY CONSTRUCTION — an AWS-minted api id (or, on import, the
+   * CLI's own `--resource` argument), a derived partition, a region, an
+   * account id — and the catch names the error CLASS rather than its message.
+   * `SSMParameterProvider.buildParameterArn` needs a masker because it
+   * interpolates `error.message`, which quotes a resolved parameter value
+   * back. **Widening this catch to `error.message` therefore requires
+   * threading the masker in the same change**; the invariant is what makes
+   * the omission safe, not the current absence of a caller.
+   */
+  private async buildExecuteApiArn(apiId: string): Promise<string | undefined> {
+    try {
+      // The region comes from the CLIENT that just issued the call, not from a
+      // default: `getAccountInfo()` with no argument falls back to the ambient
+      // `AWS_REGION`, which records an ARN for the wrong region whenever the
+      // deploy targets another one.
+      const region = await this.getClient().config.region();
+      const accountInfo = await getAccountInfo(region);
+      if (accountInfo.fabricated) {
+        this.logger.warn(
+          `Cannot determine the AWS account (STS is unreachable, and the resolved account id ` +
+            `is a placeholder), so the ExecuteApiArn attribute for API ${apiId} would be ` +
+            `fabricated and is NOT recorded. An Fn::GetAtt on it will fail until a later ` +
+            `deploy resolves the account.`
+        );
+        return undefined;
+      }
+      const { partition } = derivePartitionAndUrlSuffix(accountInfo.region);
+      return `arn:${partition}:execute-api:${canonicalizeRegion(accountInfo.region)}:${accountInfo.accountId}:${apiId}`;
+    } catch (error) {
+      // WARNED, not swallowed. Silent, the only symptom is a later
+      // `Fn::GetAtt ExecuteApiArn` hard-throwing from `guardedPhysicalIdFallback`
+      // with a message naming the RESOLVER, and nothing in the deploy log
+      // pointing at the create-time cause. The reachable throw is
+      // `config.region()` rejecting.
+      this.logger.warn(
+        `Could not build the ExecuteApiArn attribute for API ${apiId} ` +
+          `(${error instanceof Error ? error.name : typeof error}), so it is NOT recorded. ` +
+          `An Fn::GetAtt on it will fail until a later deploy records it.`
+      );
+      return undefined;
+    }
+  }
+
   private getApiAttribute(physicalId: string, attributeName: string): unknown {
     if (attributeName === 'ApiId') return physicalId;
-    // ApiEndpoint is stored in attributes at creation time
+    // ApiEndpoint and ExecuteApiArn are stored in attributes at creation time.
     return undefined;
   }
 
@@ -1360,8 +1438,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, null);
     if (explicit) {
       try {
-        await this.getClient().send(new GetApiCommand({ ApiId: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const got = await this.getClient().send(new GetApiCommand({ ApiId: explicit }));
+        // The SAME attributes `create` records. An adopted API that carried
+        // none would hard-throw on `Fn::GetAtt ExecuteApiArn` while a created
+        // one resolved — the split `AppSyncProvider.childImportAttributes`
+        // closed for its siblings in issue #1728, and this change is what makes
+        // users reach for the attribute in the first place.
+        const executeApiArn = await this.buildExecuteApiArn(explicit);
+        return {
+          physicalId: explicit,
+          attributes: {
+            ApiId: explicit,
+            ...(got.ApiEndpoint !== undefined ? { ApiEndpoint: got.ApiEndpoint } : {}),
+            ...(executeApiArn !== undefined ? { ExecuteApiArn: executeApiArn } : {}),
+          },
+        };
       } catch (err) {
         if (err instanceof NotFoundException) return null;
         throw err;
@@ -1512,12 +1603,65 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     this.logger.debug(`Updating API Gateway V2 Api ${logicalId}: ${physicalId}`);
 
     try {
+      let apiEndpoint: string | undefined;
       if (changed) {
-        await this.getClient().send(new UpdateApiCommand(input));
+        const updated = await this.getClient().send(new UpdateApiCommand(input));
+        apiEndpoint = updated.ApiEndpoint;
       }
       if (corsRemoved) {
         this.logger.debug(`Clearing CORS configuration for Api ${logicalId}: ${physicalId}`);
         await this.getClient().send(new DeleteCorsConfigurationCommand({ ApiId: physicalId }));
+      }
+      // HEAL. `ExecuteApiArn` is a NEW attribute, so no state record written by
+      // an earlier binary carries it — every existing API is in that state, and
+      // without re-recording here the fix would only ever help APIs created
+      // after it. `UpdateApi` returns the endpoint, so this costs no extra call.
+      //
+      // The map is COMPLETE on purpose, and it is written ONLY when every member
+      // is in hand. The engine REPLACES attributes when an update returns any
+      // (`deploy-engine.ts`'s `result.attributes ?? …`), so a partial map does
+      // not merge — it overwrites.
+      //
+      // Gating on the ARN as well as the endpoint is what stops this HEAL from
+      // being destructive. `buildExecuteApiArn` yields `undefined` on a
+      // REACHABLE, TRANSIENT condition: `getAccountInfo` does not reject when
+      // STS is unreachable, it returns `fabricated: true`, and the refusal arm
+      // declines. Writing `{ ApiId, ApiEndpoint }` there would erase an
+      // `ExecuteApiArn` an earlier deploy recorded correctly — and a consumer's
+      // `Fn::GetAtt` reading the freshly written attributes IN THE SAME DEPLOY
+      // would then hard-throw from `guardedPhysicalIdFallback`, with the loss
+      // persisted. Carrying the old map forward loses nothing: `ApiEndpoint` is
+      // derived from the api id and does not change on update.
+      // NESTED rather than one `apiEndpoint !== undefined && executeApiArn !==
+      // undefined` test: written flat, the endpoint half is TAUTOLOGICAL —
+      // nothing can build an ARN without first passing the endpoint test — so
+      // deleting it reds no case, and an unfalsifiable guard is the shape this
+      // change removed from `resolveDefinitionInterface` in the same PR. Nested,
+      // each `if` is the ONLY thing deciding its arm: the outer one gates the
+      // STS call (`mockGetAccountInfo` is asserted uncalled on the CORS-only
+      // arm) and the inner one gates the write.
+      if (apiEndpoint !== undefined) {
+        const executeApiArn = await this.buildExecuteApiArn(physicalId);
+        if (executeApiArn !== undefined) {
+          return {
+            physicalId,
+            wasReplaced: false,
+            attributes: {
+              ApiId: physicalId,
+              ApiEndpoint: apiEndpoint,
+              ExecuteApiArn: executeApiArn,
+            },
+          };
+        }
+        // NOT because the decline would otherwise be silent — `buildExecuteApiArn`
+        // already WARNS on both of its decline arms, at default verbosity, where
+        // this prints only under `--verbose`. What that warning does not say is
+        // what happened HERE: that the update returned no attributes and the
+        // previously recorded map was kept. This line is that half.
+        this.logger.debug(
+          `Skipping the ExecuteApiArn heal for API ${physicalId}: the ARN could not be built. ` +
+            `The previously recorded attributes are kept.`
+        );
       }
       return { physicalId, wasReplaced: false };
     } catch (error) {

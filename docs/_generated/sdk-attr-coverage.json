@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "covered": 42,
-    "noArnAttr": 92,
+    "covered": 43,
+    "noArnAttr": 91,
     "gap": 0,
     "knownGap": 0
   },
@@ -46,8 +46,13 @@
     },
     {
       "resourceType": "AWS::ApiGatewayV2::Api",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "ExecuteApiArn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {

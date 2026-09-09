@@ -1635,6 +1635,17 @@ describe('IntrinsicFunctionResolver - per-type Arn handler sweep', () => {
       expected: 'arn:aws:appsync:us-east-1:123456789012:apis/abcdefg12345',
     },
     {
+      // The record written by an EARLIER binary carries no `ExecuteApiArn`
+      // (issue go-to-k/cdkd#2833 added it), and an API whose own properties are
+      // unchanged diffs NO_CHANGE — so its provider never runs and the heal
+      // never fires. Constructing it here is what makes the attribute readable
+      // on those stacks instead of hard-failing in `guardedPhysicalIdFallback`.
+      type: 'AWS::ApiGatewayV2::Api',
+      physicalId: 'abc123xyz',
+      attribute: 'ExecuteApiArn',
+      expected: 'arn:aws:execute-api:us-east-1:123456789012:abc123xyz',
+    },
+    {
       type: 'AWS::ServiceDiscovery::PrivateDnsNamespace',
       physicalId: 'ns-abc123',
       attribute: 'Arn',
@@ -1721,6 +1732,23 @@ describe('IntrinsicFunctionResolver - per-type Arn handler sweep', () => {
       expect(result).toBe(c.expected);
     });
   }
+
+  it('resolves ApiGatewayV2 ApiId through the handler, not the physicalId fallback', async () => {
+    // The arm returns the same STRING the fallback would, so a plain table row
+    // passes with it DELETED (measured). What differs is the ROUTE:
+    // `guardedPhysicalIdFallback` warns, counts into the deploy summary, and
+    // HARD-THROWS under `--strict-getatt` — and its own doc says a
+    // known-correct physicalId must not route through it. So the assertion is
+    // on the counter, not on the value.
+    resolver.resetPhysicalIdFallbackCount();
+    const ctx = makeContext('AWS::ApiGatewayV2::Api', 'abc123xyz');
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Target', 'ApiId'] }, ctx)).toBe('abc123xyz');
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(0);
+    // Control: an attribute with no arm DOES take the fallback, so a zero above
+    // means the handler answered rather than the counter never moving at all.
+    await resolver.resolve({ 'Fn::GetAtt': ['Target', 'NotAnAttribute'] }, ctx);
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(1);
+  });
 
   it('falls back to physicalId for unknown attributes on the new handlers', async () => {
     const ctx = makeContext('AWS::KMS::Key', 'abc-123');

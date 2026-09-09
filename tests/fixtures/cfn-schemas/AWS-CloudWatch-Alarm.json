@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudWatch::Alarm",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-09",
   "properties": [
     "ActionsEnabled",
     "AlarmActions",
@@ -27,7 +27,8 @@
     "Threshold",
     "ThresholdMetricId",
     "TreatMissingData",
-    "Unit"
+    "Unit",
+    "WarmUpConfiguration"
   ],
   "readOnlyProperties": [
     "Arn"
@@ -55,6 +56,10 @@
       "Stat",
       "Unit",
       "Value"
+    ],
+    "WarmUpConfiguration": [
+      "OnlyStartEvaluatingAfterWarmUpPeriodEnds",
+      "WarmUpPeriodDurationInMinutes"
     ],
     "EvaluationWindow": [
       "SlidingWindow",
@@ -95,6 +100,10 @@
       "Period",
       "ReturnData"
     ],
+    "WarmUpConfiguration": [
+      "OnlyStartEvaluatingAfterWarmUpPeriodEnds",
+      "WarmUpPeriodDurationInMinutes"
+    ],
     "EvaluationWindow": [
       "SlidingWindow",
       "WallClockWindow",
@@ -127,6 +136,7 @@
       "Metrics": "array",
       "AlarmName": "scalar",
       "Statistic": "scalar",
+      "WarmUpConfiguration": "object",
       "EvaluationWindow": "object",
       "InsufficientDataActions": "array",
       "EvaluationInterval": "scalar",
@@ -146,6 +156,10 @@
     },
     "WallClockWindow": {
       "Timezone": "scalar"
+    },
+    "WarmUpConfiguration": {
+      "WarmUpPeriodDurationInMinutes": "scalar",
+      "OnlyStartEvaluatingAfterWarmUpPeriodEnds": "scalar"
     },
     "AlarmPromQLCriteria": {
       "PendingPeriod": "scalar",

@@ -13,6 +13,21 @@ vi.mock('@aws-sdk/client-apigatewayv2', async (importOriginal) => {
   };
 });
 
+// `create()` and `import()` both build `ExecuteApiArn` from the account (issue
+// go-to-k/cdkd#2833), and `getAccountInfo` reaches STS. Unmocked, the network
+// fence in `tests/setup.ts` fails the file — which is how this mock came to be
+// added rather than the call going unnoticed.
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    // Shape-conformant: `AwsAccountInfo` declares `partition`, and the real
+    // `accountInfoFor` OMITS `fabricated` on success rather than setting false.
+    getAccountInfo: () =>
+      Promise.resolve({ accountId: '111122223333', region: 'us-east-1', partition: 'aws' }),
+  };
+});
+
 vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
@@ -72,7 +87,18 @@ describe('ApiGatewayV2Provider import', () => {
 
     const result = await provider.import(makeInput({ knownPhysicalId: 'abc123' }));
 
-    expect(result).toEqual({ physicalId: 'abc123', attributes: {} });
+    // Records the same attributes `create` does (issue go-to-k/cdkd#2833), so an
+    // ADOPTED api resolves `Fn::GetAtt` the way a created one does. No
+    // `ApiEndpoint`: this stub's `GetApi` response omits it, and the key is
+    // conditional rather than written as `undefined`. The per-branch shapes are
+    // asserted in `tests/unit/provisioning/apigatewayv2-execute-api-arn.test.ts`.
+    expect(result).toEqual({
+      physicalId: 'abc123',
+      attributes: {
+        ApiId: 'abc123',
+        ExecuteApiArn: 'arn:aws:execute-api:us-east-1:111122223333:abc123',
+      },
+    });
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetApiCommand);
     expect(mockSend.mock.calls[0][0].input).toEqual({ ApiId: 'abc123' });
