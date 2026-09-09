@@ -990,8 +990,31 @@ Each layer has clear responsibilities
 ### 5. Zero External CDK Dependencies
 
 - Synthesis, assembly reading, and asset publishing are all implemented internally
-- No dependency on `@aws-cdk/toolkit-lib`, `@aws-cdk/cloud-assembly-api`, or `@aws-cdk/cdk-assets-lib`
-- Only `aws-cdk-lib` is required as the user's CDK app dependency
+- cdkd's own source imports no `@aws-cdk/*` package — not `@aws-cdk/toolkit-lib`, `@aws-cdk/cloud-assembly-api`, nor `@aws-cdk/cdk-assets-lib`
+- Only `aws-cdk-lib` is required as the user's CDK app dependency, and cdkd does not declare it either — it is a `devDependency` used by the test suite, never imported by the shipped code
+
+Read those bullets as statements about cdkd's CODE, not about your
+`node_modules`. Installing cdkd does bring `@aws-cdk/*` packages in, all of
+them through [`cdk-local`](https://www.npmjs.com/package/cdk-local) — the
+local-emulation engine cdkd depends on at runtime. It depends on
+`@aws-cdk/toolkit-lib` and `@aws-cdk/cloud-assembly-api` directly, reaches
+`@aws-cdk/cdk-assets-lib` through the former, and declares `aws-cdk-lib` /
+`constructs` as non-optional peers, which npm and pnpm install automatically.
+So a tree inspected after `npm install @go-to-k/cdkd` contains all four, and
+`npm explain <package>` names `cdk-local` at the root of every chain.
+
+Re-derive the set rather than trusting this paragraph — it moves with
+cdk-local's own dependencies, and the hop count is what goes stale first:
+
+```bash
+ls node_modules/@aws-cdk/
+npm explain @aws-cdk/cdk-assets-lib   # prints the whole chain, not just the parent
+```
+
+Note that a strict-layout `pnpm` checkout of THIS repo shows none of them,
+because they are cdk-local's dependencies rather than cdkd's; `ls
+node_modules/@aws-cdk/` here is not the user's view and cannot settle this
+question.
 
 ## Performance Characteristics
 
