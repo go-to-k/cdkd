@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { ENUM_ABSENT_REGION } from '../_enum-absent-region.js';
 
 const { mockS3Send, mockEcrSend, mockLoggerInfo, mockLoggerDebug, mockLoggerWarn } = vi.hoisted(
   () => ({
@@ -523,8 +524,15 @@ describe('ensureAssetStorage', () => {
   // constraint answers `IllegalLocationConstraintException` -- the deploy
   // fails. (Not, as an earlier revision of the sibling suite claimed, a quiet
   // bucket in us-east-1: that default belongs to the GLOBAL endpoint, which
-  // this path does not use.) `ca-west-1` is absent from the 33-member enum,
-  // so this row reds where `ap-northeast-1` cannot.
+  // this path does not use.) The region must be one the enum OMITS, or this
+  // row is no better than the `ap-northeast-1` one above. It is not spelled
+  // here: this row pinned `ca-west-1` until the SDK enum grew and took it,
+  // leaving the row silently inert (issue #2862). `ENUM_ABSENT_REGION` carries
+  // the choice, and the guard that fails when it stops being absent lives in
+  // `tests/unit/provisioning/`
+  // `s3-bucket-provider-location-constraint-case.test.ts` -- it cannot live
+  // here, because this file mocks `@aws-sdk/client-s3` with a factory that
+  // carries no enum, so a guard written here would assert against the mock.
   it('passes LocationConstraint for a region ABSENT from the SDK enum (issue #2322)', async () => {
     mockS3Send.mockImplementation((cmd: { _type: string }) =>
       cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
@@ -534,11 +542,11 @@ describe('ensureAssetStorage', () => {
         ? Promise.reject(awsError('RepositoryNotFoundException'))
         : Promise.resolve({})
     );
-    const { options } = makeOptions({ region: 'ca-west-1' });
+    const { options } = makeOptions({ region: ENUM_ABSENT_REGION });
     await ensureAssetStorage(options);
     const createCall = mockS3Send.mock.calls.find((c) => c[0]._type === 'CreateBucket')![0];
     expect(createCall.CreateBucketConfiguration).toEqual({
-      LocationConstraint: 'ca-west-1',
+      LocationConstraint: ENUM_ABSENT_REGION,
     });
   });
 

@@ -6135,11 +6135,13 @@ export class S3BucketProvider implements ResourceProvider {
       // checks membership -- and nothing should: a membership FILTER is exactly
       // the regression this note ends by naming.
       //
-      // THE GAP IS BIGGER THAN AN EARLIER REVISION OF THIS COMMENT SAID. That
-      // revision named FOUR absent regions, which was a spot-check presented as
-      // an enumeration. Cross-checking the WHOLE region list against the enum
-      // gives THIRTEEN, plus `us-east-1` which is absent by design. Re-derive
-      // it rather than trusting this list -- both tables move:
+      // THE SIZE OF THE GAP IS NOT STABLE, AND THIS NOTE HAS BEEN WRONG ABOUT
+      // IT TWICE, in two different ways. One revision named FOUR absent
+      // regions, which was never right -- a spot-check written as an
+      // enumeration. The cross-check that replaced it said THIRTEEN, five of
+      // them commercial, which WAS right when written and is not now: the SDK
+      // enum GREW under it. Treat any count below as a dated measurement and
+      // re-derive, because both tables move:
       //
       //   node --input-type=module -e "
       //   import { BucketLocationConstraint } from '@aws-sdk/client-s3';
@@ -6147,28 +6149,33 @@ export class S3BucketProvider implements ResourceProvider {
       //   const m = new Set(Object.values(BucketLocationConstraint));
       //   console.log(RegionInfo.regions.map(r => r.name).filter(r => !m.has(r)).sort().join('\n'));"
       //
-      // Measured 2026-08-27 against this repo's `@aws-sdk/client-s3` 3.1018.0
-      // (33 enum members) and `aws-cdk-lib` 2.244.0 (46 regions). Five are
-      // COMMERCIAL (`RegionInfo.get(r).partition === 'aws'`): `ap-east-2`,
-      // `ap-southeast-6`, `ap-southeast-7`, `ca-west-1`, `mx-central-1`. The
-      // other eight are NON-commercial -- `eusc-de-east-1` is `aws-eusc`, and
-      // the seven `aws-iso*` regions (which share four partitions between
-      // them, not one each) are
-      // `eu-isoe-west-1`, `us-iso-east-1`, `us-iso-west-1`, `us-isob-east-1`,
-      // `us-isob-west-1`, `us-isof-east-1`, `us-isof-south-1`.
+      // Measured 2026-09-09 against this repo's `@aws-sdk/client-s3` 3.1126.0
+      // (38 enum members) and `aws-cdk-lib` 2.268.0 (46 regions): EIGHT absent
+      // regions, plus `us-east-1` which is absent by design. NONE of the eight
+      // is commercial -- `eusc-de-east-1` is `aws-eusc`, its own partition, and
+      // the seven `aws-iso*` ones (which share four partitions between them,
+      // not one each) are `eu-isoe-west-1`, `us-iso-east-1`, `us-iso-west-1`,
+      // `us-isob-east-1`, `us-isob-west-1`, `us-isof-east-1`,
+      // `us-isof-south-1`. The five the previous revision called COMMERCIAL --
+      // `ap-east-2`, `ap-southeast-6`, `ap-southeast-7`, `ca-west-1`,
+      // `mx-central-1` -- all became enum members between 3.1018.0 and 3.1126.0.
       //
-      // What is MEASURED is the type claim, and the scope is worth stating
-      // because an earlier revision of this note overstated it: all thirteen
-      // are absent from the enum, and this cast sends whichever of them
-      // `getRegion()` reports. Whether S3 ACCEPTS each one was not probed
-      // region by region -- no deploy was made to any of them -- so nothing
-      // here asserts that. The code cannot tell them apart in any case: the
-      // gate below is a single `!== 'us-east-1'` with NO partition branch, so
-      // all thirteen traverse byte-identical lines.
+      // NOTHING BELOW DEPENDS ON THAT COUNT, which is why the drift was a
+      // documentation defect here and not a bug. (It WAS a live defect in the
+      // three sibling fences, which each pinned `ca-west-1` for its absence and
+      // went inert when it became a member -- see
+      // `tests/unit/_enum-absent-region.ts`.) What is MEASURED is the type
+      // claim: this cast sends whichever region `getRegion()` reports, member
+      // or not, and no membership test exists on the path. Whether S3
+      // ACCEPTS each one was not probed region by region -- no deploy was made
+      // to any of them -- so nothing here asserts that. The code cannot tell
+      // them apart in any case: the gate below is a single `!== 'us-east-1'`
+      // with NO partition branch, so every region traverses byte-identical
+      // lines.
       //
       // WHY THE CAST IS NOT DROPPED -- both alternatives measured, not assumed:
       //  - the SDK has NOT widened the field. `CreateBucketConfiguration`
-      //    (`@aws-sdk/client-s3` `dist-types/models/models_0.d.ts:1581`) still
+      //    (`@aws-sdk/client-s3` `dist-types/models/models_0.d.ts:1764`) still
       //    declares `LocationConstraint?: BucketLocationConstraint | undefined`.
       //  - declaring this bag's `LocationConstraint` as `string` and deleting
       //    the `as` does NOT compile. `tsc` then fails at the
@@ -6183,8 +6190,8 @@ export class S3BucketProvider implements ResourceProvider {
       // not deletion of the cast -- that fails to compile, as above. It is a
       // future "soundness fix" that filters the region to enum members: that
       // COMPILES, leaves every `us-east-1` / `eu-west-1` case green, and
-      // silently omits `CreateBucketConfiguration` for the thirteen -- which
-      // BREAKS THE DEPLOY in each of them, loudly.
+      // silently omits `CreateBucketConfiguration` for every region the enum
+      // does not list -- which BREAKS THE DEPLOY in each of them, loudly.
       //
       // `this.s3Client` is REGION-BOUND (`constructor`: `awsClients.s3`; and
       // `getRegion()` reads `this.s3Client.config.region()`), so a `ca-west-1`
@@ -6210,7 +6217,7 @@ export class S3BucketProvider implements ResourceProvider {
       // wrong-region bucket is not the outcome; a failed deploy is.
       //
       // `tests/unit/provisioning/s3-bucket-provider-location-constraint-case.test.ts`
-      // pins enum-ABSENT regions on the wire verbatim for exactly that reason,
+      // pins every swept region on the wire verbatim for exactly that reason,
       // and the three SIBLING cast sites are pinned the same way in their own
       // suites (`tests/unit/assets/asset-storage.test.ts`,
       // `tests/unit/cli/bootstrap.test.ts`, `tests/unit/cli/state-migrate.test.ts`)
