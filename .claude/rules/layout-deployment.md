@@ -50,25 +50,35 @@ Index of every area: [code-layout.md](code-layout.md).
   **Every name a message prints goes through `secretSafeKeyDisplay`, and the
   verdict, the mask and the printed text all happen in ONE string space**
   (issue [#2874](https://github.com/go-to-k/cdkd/issues/2874)). `canonicalForSecretScan` DELETES a
-  single class — both sanitisers' classes plus the zero-width formatters
-  `display-safe.ts` keeps — from the name AND from every recorded needle, so
-  a secret split by one of them cannot be absent from the string that was
-  TESTED and present in the string that is PRINTED. That divergence was the
-  bug: three sites composed `stripControlChars(maskEveryOccurrence(...))` and
-  decided on the raw name, and `stripControlChars` DELETES, so sanitising
-  reconstituted a split plaintext into the printed text — measured leaking at
-  eight of ten characters, and at `exportAliasCollisionScrubWarning`'s `mask`
-  closure it needed only ONE recorded secret, because that site prints even
-  when the verdict misses. Do NOT "simplify" this back to sanitising after
-  masking, and do not add a second detection arm beside the canonical one: a
-  UNION-of-arms design was written, reviewed and MEASURED still printing the
-  plaintext minus one character under a `masked` label, because `displaySafe`
-  REPLACES `U+2028` / `U+2029` with a space rather than deleting them. The
-  caller's own exposure, where it has one, is threaded as FORCE-MASK needles
-  rather than folded into the verdict — `secretsPresentIn` bounds an embedded
-  match at four characters while `maskEveryOccurrence` does not, so
-  recomputing the mask set by containment alone would un-mask a sub-floor
-  secret the resolver knows it substituted. Fenced by
+  single class from the name AND from every recorded needle, so a secret split
+  by one of them cannot be absent from the string that was TESTED and present
+  in the string that is PRINTED. That divergence was the bug: FOUR sites
+  sanitised a name whose verdict was taken raw, and `stripControlChars`
+  DELETES, so sanitising reconstituted a split plaintext into the printed text
+  — measured leaking at eight of ten characters. Three composed
+  `stripControlChars(maskEveryOccurrence(...))`; the fourth,
+  `exportAliasCollisionWarning`, composes with NOTHING, which is why the
+  issue's grep for the composed shape never found it and why the population
+  here is defined by "prints a name" rather than by a syntactic shape.
+  `exportAliasCollisionScrubWarning` needed only ONE recorded secret, because
+  it prints even when the verdict misses.
+  **The class is DERIVED from `\p{Cc}` / `\p{Cf}` / `\p{Zl}` / `\p{Zp}` plus the
+  variation selectors and Hangul fillers, never enumerated** — a hand list was
+  written first and measured arbitrary (`U+2060` fell outside it while
+  `U+FEFF`, which Unicode names it the replacement for, fell inside).
+  `tests/unit/deployment/secret-scan-class-superset.test.ts` scans the BMP to
+  prove it covers both sanitisers' classes.
+  Do NOT "simplify" this back to sanitising after masking, and do not add a
+  second detection arm beside the canonical one: a UNION-of-arms design was
+  written, reviewed and MEASURED still printing the plaintext minus one
+  character under a `masked` label, because `displaySafe` REPLACES `U+2028` /
+  `U+2029` with a space rather than deleting them. The caller's own exposure,
+  where it has one, is threaded as FORCE-MASK needles and is NOT a verdict
+  input — `secretsPresentIn` bounds an embedded match at four characters while
+  `maskEveryOccurrence` does not, so recomputing the mask set by containment
+  alone would un-mask a sub-floor secret the resolver knows it substituted.
+  That floor is keyed to the RECORDED length, not the canonical one: keying it
+  to the shortened form dropped detections the pre-#2874 code had. Fenced by
   `tests/unit/deployment/secret-safe-key-display.test.ts`, one case per class
   plus the negative controls. NOT import-free (takes
   `secret-redaction.ts`). An ssm reference whose `Type` came back

@@ -4150,7 +4150,7 @@ export async function scrubStack(
       const display = secretSafeKeyDisplay(key, outputSecrets);
       if (!secretBearing(display)) continue;
       secretBearingKeys.push(key);
-      logger.warn(secretBearingStateKeyWarning(stack.stackName, key, outputSecrets));
+      logger.warn(secretBearingStateKeyWarning(stack.stackName, display));
     }
 
     const totalSecrets =

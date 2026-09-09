@@ -347,7 +347,11 @@ import {
 } from '../../../../src/cli/commands/scrub.js';
 import {
   exportAliasCollisionScrubWarning,
+  exportAliasCollisionWarning,
+  secretBearing,
+  secretBearingExportNameWarning,
   secretBearingStateKeyWarning,
+  secretSafeKeyDisplay,
 } from '../../../../src/deployment/outputs-export-alias.js';
 import { recordResolvedPair } from '../../../../src/deployment/secret-redaction.js';
 
@@ -1182,20 +1186,95 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
 });
 
 describe('outputs-export-alias message builders', () => {
+  it('the export-name warning masks a secret only the CORPUS knows about', () => {
+    // The 4th argument exists for exactly this: `exposure` is what resolution
+    // substituted into the name, the corpus is every recorded secret, and a
+    // name can hold one the resolver did not put there. The deploy-engine
+    // test builds its expected value from the builder itself, so it pins the
+    // 3- and 4-argument forms as EQUAL -- the opposite of what the parameter
+    // is for (issue #2874 review).
+    const substituted = 'substituted-secret-value';
+    const coincidental = 'coincidental-secret-value';
+    const exposure = new Map([[substituted, 'EXPR_S']]);
+    const corpus = new Map([
+      [substituted, 'EXPR_S'],
+      [coincidental, 'EXPR_C'],
+    ]);
+    const name = `alias-${substituted}-${coincidental}-suffix`;
+
+    const withCorpus = secretBearingExportNameWarning('Owner', name, exposure, corpus);
+    expect(withCorpus).not.toContain(coincidental);
+    expect(withCorpus).not.toContain(substituted);
+    // The CONTROL: without the corpus the second secret is printed, which is
+    // what makes the assertion above about the parameter rather than about
+    // masking in general.
+    expect(secretBearingExportNameWarning('Owner', name, exposure)).toContain(coincidental);
+  });
+
+  it('the export-name warning still NAMES the output whose export was refused', () => {
+    // Passing the export name's exposure as force-mask needles for the OUTPUT
+    // KEY withheld every ordinary key on the default deploy path, printing a
+    // placeholder that asserts the output's own name contains a secret
+    // (measured against main, issue #2874 review). The operator needs that
+    // name -- it is the thing they have to edit.
+    const secret = 'super-secret-plaintext-value';
+    const exposure = new Map([[secret, 'EXPR']]);
+    const message = secretBearingExportNameWarning(
+      'ApiEndpointOutput',
+      `alias-${secret}-suffix`,
+      exposure,
+      exposure
+    );
+    expect(message).toContain('Output ApiEndpointOutput has an Export.Name');
+    expect(message).not.toContain('withheld');
+    expect(message).not.toContain(secret);
+  });
+
+  it('the DEPLOY collision warning masks a name whose secret is split', () => {
+    // THE FOURTH SITE (issue #2874 review). It composes `stripControlChars`
+    // with no mask at all, so the issue's own grep for the composed shape
+    // never saw it -- and it is reached from exactly the `else if` arm taken
+    // when the secret-bearing refusal MISSED, which before this change it did
+    // for eight of ten invisible characters. Measured leaking verbatim.
+    const secret = 'super-secret-plaintext-value';
+    const split = `alias-${secret.slice(0, 5)}\u200e${secret.slice(5)}-suffix`;
+    const secrets = new Map([[secret, 'EXPR']]);
+
+    const message = exportAliasCollisionWarning('OtherOutput', split, secrets);
+    expect(message).not.toContain(secret);
+    expect(message).toContain('***');
+    // The CONTROL: with no corpus it still sanitises, but it cannot mask --
+    // which is why the caller threads one.
+    expect(exportAliasCollisionWarning('OtherOutput', split)).toContain(secret);
+  });
+
   it('strips control characters from a printed state KEY', () => {
     // An export NAME — and so a state key derived from one — is a RESOLVED value
     // that never passed a CloudFormation validator, so it can carry ANSI escapes
     // or bidi overrides into a terminal or a CI log. `diff-recursive.ts`
     // documents that hazard for this same key space; these warnings print the
     // same strings and must not be the way in.
-    const key = 'pre-\u001b[31mred\u202e-endpoint';
-    const message = secretBearingStateKeyWarning('MyStack', key, new Map([['red', 'EXPR']]));
+    // A REAL recorded secret, at or above MIN_SECRET_NEEDLE. The previous
+    // version used a 3-character one, which containment correctly does not
+    // match, so the builder was being driven with a `safe` display -- a shape
+    // its own caller guards against, and the reason a three-arm version of
+    // this message once rendered `holds an output KEY that renders a secret`
+    // over a key with no secret in it (issue #2874 review).
+    const key = 'pre-\u001b[31mredacted\u202e-endpoint';
+    const secrets = new Map([['redacted', 'EXPR']]);
+    const display = secretSafeKeyDisplay(key, secrets);
+    // Asserted AND narrowed in one step: `secretBearing` is a type predicate,
+    // so this is what lets the display reach a builder whose parameter
+    // excludes `safe` -- the compile-time half of "one call decides both".
+    if (!secretBearing(display)) throw new Error(`expected secret-bearing, got ${display.kind}`);
+    const message = secretBearingStateKeyWarning('MyStack', display);
 
     expect(message).not.toContain('\u001b');
     expect(message).not.toContain('\u202e');
     // ...while still naming enough of the key to act on.
     expect(message).toContain('pre-');
     expect(message).toContain('-endpoint');
+    expect(message).not.toContain('redacted');
   });
 
   it('the scrub collision warning masks the OWNING output key too, not only the exported name', () => {

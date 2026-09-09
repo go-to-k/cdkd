@@ -19,7 +19,12 @@
  */
 
 import { describe, it, expect } from 'vite-plus/test';
-import { secretSafeKeyDisplay } from '../../../src/deployment/outputs-export-alias.js';
+import {
+  secretBearing,
+  secretSafeKeyDisplay,
+  WITHHELD_NAME_DISPLAY,
+  displayTextOrWithheld,
+} from '../../../src/deployment/outputs-export-alias.js';
 import { SECRET_MASK, type RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 
 const SECRET = 'super-secret-plaintext-value';
@@ -148,10 +153,15 @@ describe('secretSafeKeyDisplay', () => {
   // a zero-width character discloses a secret to anyone reading the log, with
   // no paste involved.
   //
-  // THE NEGATIVE CONTROLS ARE ELSEWHERE, and this table is one-sided without
-  // them: every row here expects a non-`safe` verdict, so a change that made
-  // everything `withheld` would pass it. The `SAFE:` cases above — a key
-  // carrying these characters and NO recorded secret — are the floor.
+  // THE NEGATIVE CONTROLS ARE ELSEWHERE: the `SAFE:` cases above -- a key
+  // carrying these characters and NO recorded secret -- are this table's
+  // floor, and they red under a change that withholds everything.
+  //
+  // An earlier revision of this comment said the table itself would pass such
+  // a change. That was WRONG and review measured it: every row pins the
+  // literal string `'masked'`, not merely "not safe", so forcing `withheld`
+  // reds all sixteen. The claim is corrected rather than deleted because the
+  // floor cases are still the reason this table may pin one verdict per row.
   describe.each([
     ['U+0007 (C0 control)', '\u0007', 'masked'],
     ['U+001f (C0 upper bound)', '\u001f', 'masked'],
@@ -174,9 +184,13 @@ describe('secretSafeKeyDisplay', () => {
       const key = `alias-${SECRET.slice(0, 5)}${splitChar}${SECRET.slice(5)}-suffix`;
       const shown = secretSafeKeyDisplay(key, secrets());
       expect(shown.kind).toBe(expectedKind);
-      // THE ASSERTION, and it is the same for both kinds: whatever this
-      // returns, the plaintext is not in it.
-      expect(JSON.stringify(shown)).not.toContain(SECRET);
+      // THE EXACT TEXT, not `not.toContain(SECRET)`. A mask that emitted the
+      // needle minus its last character would satisfy a containment assertion
+      // while returning `super-secret-plaintext-valu` contiguous under a
+      // `masked` label -- the plaintext-minus-one-character class this whole
+      // fence exists for, reproduced inside it (measured, issue #2874
+      // review). Pinning the whole string is the only form that cannot.
+      expect(shown).toEqual({ kind: 'masked', text: `alias-${SECRET_MASK}-suffix` });
     });
   });
 
@@ -302,5 +316,91 @@ describe('secretSafeKeyDisplay', () => {
     expect(shown.kind).toBe('masked');
     // Not `***-secret`: the longer needle wins, so no fragment survives.
     expect(shown.kind === 'masked' && shown.text).toBe(SECRET_MASK);
+  });
+
+  it('the fail-closed re-test fires ON ITS OWN, with the omit-if-unchanged rule removed', () => {
+    // Review measured BOTH late arms deletable with the suite green, because
+    // the only input reaching them satisfied either one. This case reaches the
+    // POST-MASK re-test alone: masking DOES change the text (so the
+    // omit-if-unchanged rule does not fire), and the result still exposes a
+    // second recorded secret that the masking itself created.
+    const corpus = new Map([
+      ['secret', EXPR],
+      [`1${SECRET_MASK}b`, EXPR],
+    ]);
+    const shown = secretSafeKeyDisplay('a1secretb', corpus);
+    expect(shown).toEqual({ kind: 'withheld' });
+  });
+
+  it('the omit-if-unchanged rule fires ON ITS OWN, with nothing left to re-detect', () => {
+    // The other arm alone: the recorded plaintext IS the mask, so masking is a
+    // no-op and the `masked` label would be a lie, while the post-mask re-test
+    // has nothing to add.
+    const shown = secretSafeKeyDisplay(SECRET_MASK, secrets([SECRET_MASK, EXPR]));
+    expect(shown).toEqual({ kind: 'withheld' });
+  });
+
+  it('a force-mask needle ABSENT from the text leaves the name SAFE, not withheld', () => {
+    // THE DEFAULT DEPLOY PATH (issue #2874 review). The output key beside a
+    // secret-bearing export name is handed the export name's authoritative
+    // exposure as force-mask needles; those are not in the key, so masking
+    // changes nothing. Collapsing that into `withheld` took away the one
+    // identifier telling an operator which output to fix, and printed a
+    // placeholder asserting the key "contains a secret" -- false.
+    const shown = secretSafeKeyDisplay('ApiEndpointOutput', new Map(), secrets());
+    expect(shown).toEqual({ kind: 'safe', text: 'ApiEndpointOutput' });
+  });
+
+  it('an EMPTY canonical needle reaching the FORCE-MASK path cannot shred the name', () => {
+    // The containment path rejects an empty needle through MIN_SECRET_NEEDLE,
+    // so a test driving it there passes with the guard removed. Only the
+    // force-mask path can hand `maskEveryOccurrence` an empty needle, and
+    // `''.split()` interleaves the mask between every character: measured
+    // without the guard, `OrdinaryKey` came back as
+    // `O***r***d***i***n***a***r***y***K***e***y`.
+    const allInvisible = new Map([['\u200b\u200e\u202e', EXPR]]);
+    const shown = secretSafeKeyDisplay('OrdinaryKey', new Map(), allInvisible);
+    expect(shown).toEqual({ kind: 'safe', text: 'OrdinaryKey' });
+  });
+
+  it('a needle whose EDGE whitespace is part of the secret still matches mid-key', () => {
+    // The needle is stripped of invisibles but NOT trimmed. Trimming it made a
+    // recorded `"ab  "` stop matching inside `x-ab  -y` -- the secret's own
+    // trailing spaces sit in the MIDDLE of the key, where nothing trims them
+    // (measured, issue #2874 review).
+    const shown = secretSafeKeyDisplay('x-ab  -y', new Map([['ab  ', EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `x-${SECRET_MASK}-y` });
+  });
+
+  it('a needle canonicalised BELOW the floor keeps its embedded-match arm', () => {
+    // The floor is keyed to the RECORDED length, not the canonical one. A
+    // five-character secret carrying two invisibles canonicalises to three and
+    // would drop out of containment if the floor were applied afterwards --
+    // measured returning `safe` with `x-abc-y` printed, which is the secret in
+    // the form a human reads.
+    const secret = 'a\u200eb\u200ec';
+    const shown = secretSafeKeyDisplay(`x-${secret}-y`, new Map([[secret, EXPR]]));
+    expect(shown).toEqual({ kind: 'masked', text: `x-${SECRET_MASK}-y` });
+  });
+
+  it('secretBearing answers for BOTH non-safe kinds, not just masked', () => {
+    // It guards `cdkd scrub`'s `--dry-run --fail` accounting. Narrowed to
+    // `=== 'masked'` the suite stayed green while a WITHHELD key -- the most
+    // dangerous kind -- was skipped and the gate passed over it (measured).
+    expect(secretBearing(secretSafeKeyDisplay(`alias-${SECRET}-suffix`, secrets()))).toBe(true);
+    expect(secretBearing(secretSafeKeyDisplay(SECRET_MASK, secrets([SECRET_MASK, EXPR])))).toBe(
+      true
+    );
+    expect(secretBearing(secretSafeKeyDisplay('OrdinaryKey', secrets()))).toBe(false);
+  });
+
+  it('displayTextOrWithheld renders the placeholder, and it is not name-shaped', () => {
+    // The placeholder is a user-visible string in a security warning and
+    // nothing rendered it. It must not read as an odd export name, so it is
+    // pinned including its angle brackets.
+    expect(displayTextOrWithheld({ kind: 'withheld' })).toBe(WITHHELD_NAME_DISPLAY);
+    expect(WITHHELD_NAME_DISPLAY).toBe('<name withheld: contains a secret>');
+    expect(displayTextOrWithheld({ kind: 'safe', text: 'Plain' })).toBe('Plain');
+    expect(displayTextOrWithheld({ kind: 'masked', text: 'a-***-b' })).toBe('a-***-b');
   });
 });

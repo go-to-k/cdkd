@@ -27,6 +27,18 @@
  * A caller whose value has a KNOWN ASCII charset (a stack name, an AWS region)
  * should pass `asciiOnly`, which is a positive allowlist and therefore has no
  * such residual at all.
+ *
+ * ONE CALLER DELIBERATELY GOES WIDER, and it is recorded here so an editor of
+ * the residual note above knows a second module now disagrees with it.
+ * `src/deployment/outputs-export-alias.ts` deletes a class derived from
+ * `\\p{Cc}` / `\\p{Cf}` / `\\p{Zl}` / `\\p{Zp}` plus the variation selectors
+ * and Hangul fillers, because on THAT path the subject is a possibly
+ * secret-bearing name in an operator's log: a plaintext split by a zero-width
+ * character is READ as if it were contiguous, so it is disclosed without any
+ * paste, and the command-forgery reasoning above does not transfer (issue
+ * [#2874](https://github.com/go-to-k/cdkd/issues/2874)). Nothing here changes
+ * -- widening this helper would alter every caller that merely wants a
+ * terminal-safe string.
  */
 export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): string {
   // ABSENT means nothing to display, not the WORD. `String(undefined)` is

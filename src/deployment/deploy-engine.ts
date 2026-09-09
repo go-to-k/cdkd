@@ -7205,7 +7205,12 @@ export class DeployEngine {
             )
           );
         } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
-          this.logger.warn(exportAliasCollisionWarning(outputKey, exportName));
+          // The corpus is threaded so this message tests the name itself
+          // rather than trusting the refusal above -- this arm is reached
+          // exactly when that refusal did NOT fire (issue #2874).
+          this.logger.warn(
+            exportAliasCollisionWarning(outputKey, exportName, context.recordedSecretValues)
+          );
         } else {
           outputs[exportName] = value;
           // A SET: two outputs declaring one Export.Name (which CloudFormation
