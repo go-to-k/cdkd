@@ -145,7 +145,11 @@ export async function loadEvidenceDeps() {
     providerWiresProperty: evidence.providerWiresProperty,
     publishedSdkInterfaces: published.publishedSdkInterfaces,
   };
-  // VALIDATED before it is stored. A renamed upstream export leaves the object
+  // VALIDATED before it is stored. The message names only EXPORT-level causes on
+  // purpose: the `Promise.all` above has already resolved, so a module that
+  // moved or was renamed failed there with `Cannot find module` and never
+  // reaches this line — naming it here would point a maintainer at the wrong
+  // file. A renamed upstream export leaves the object
   // defined but hollow, which `requireEvidenceDeps` cannot see — and the
   // failure would then surface as `undefined` callables inside the classifier,
   // whose own catch reports "the evidence could not be read" for EVERY
@@ -156,9 +160,9 @@ export async function loadEvidenceDeps() {
     .map(([name]) => name);
   if (missing.length > 0) {
     throw new Error(
-      `the evidence helpers did not export ${missing.join(', ')} AS A FUNCTION — the module ` +
-        'moved, was renamed, or now exports something else under that name, and continuing ' +
-        'would report every property as unreadable rather than saying so.'
+      `the evidence helpers did not export ${missing.join(', ')} AS A FUNCTION — the export ` +
+        'was removed, renamed, or is no longer a function, and continuing would report every ' +
+        'property as unreadable rather than saying so.'
     );
   }
   evidenceDeps = loaded;

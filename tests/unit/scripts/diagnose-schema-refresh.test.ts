@@ -2185,12 +2185,22 @@ describe('the module’s own doc comments', () => {
     // review, by nothing mechanical.
     const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
     expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
+    // BOUND, stated rather than implied: `orphansIn` matches ` */` EXACTLY, so
+    // it examines only the 7 top-level docblocks here and not the 5 INDENTED
+    // interface-member ones (`SdkLagRow.matched`, `DiagnosisInput`'s members),
+    // where the same class — a member inserted between a docblock and its
+    // symbol — is equally reachable. Widening the predicate to indented blocks
+    // is a change to the shared `.mjs` arm too, so it is not made here.
+    //
     // Non-vacuity: the widened `declares` regex must actually MATCH this
     // file's spellings, or every block would read as unattached and the
     // assertion above would be reporting on a parse that found nothing.
     expect(src).toMatch(/^export declare function /m);
     expect(src).toMatch(/^export interface /m);
     // Measured 7 at the tip; a floor of 5 fails on a collapse, not on an edit.
+    // It counts ` */` in the SOURCE, independent of `orphansIn` — so it bounds
+    // the file, not the predicate's reach; the two assertions above are what
+    // say the predicate parsed this file's spellings.
     expect(src.split('\n').filter((l) => l === ' */').length).toBeGreaterThan(5);
   });
 });

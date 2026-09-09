@@ -37,8 +37,21 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
  * The declaration file is checked by a CONFIG-LESS `tsc` and cannot import from
  * a `.ts` module, so its three members are a STRUCTURAL COPY of what
  * `offline-property-evidence.ts` and `published-sdk-typings.ts` export — and a
- * copy with nothing comparing it drifts silently. Assigning the real signatures
- * to the declared shape makes `vp run typecheck:test` the comparison.
+ * copy with nothing comparing it drifts silently.
+ *
+ * THREE assignments, because one is not a comparison. `Real -> Declared` proves
+ * only that the real helpers SATISFY the declaration, so every drift making the
+ * declaration LOOSER passes it — measured: a deleted member, a return widened to
+ * `unknown` (the exact weakening the declaration's own docblock argues against),
+ * a member dropped from a return shape, a narrowed parameter and an extra
+ * trailing optional parameter all survived it, while a changed parameter type, a
+ * narrowed return and an extra member were caught. The inverse assignment closes
+ * the looser direction and `keyof` closes the deleted member.
+ *
+ * The inverse is `Pick`ed to the two helpers declared verbatim: a full inverse
+ * reds at baseline, because `publishedSdkInterfaces` is deliberately declared
+ * `ReadonlyMap<…, unknown>` against the real `Map<…, SdkMemberType>` — the
+ * declaration file cannot name `SdkMemberType` without importing a `.ts` module.
  *
  * TYPE-ONLY on purpose: a value import would pull `typescript-v6` and the whole
  * SDK-model graph into a file whose entire subject is running WITHOUT them.
@@ -48,8 +61,13 @@ type RealEvidenceDeps = {
   providerWiresProperty: typeof import('../../../scripts/offline-property-evidence.ts').providerWiresProperty;
   publishedSdkInterfaces: typeof import('../../../scripts/published-sdk-typings.ts').publishedSdkInterfaces;
 };
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _evidenceDepsMatchesTheHelpers: EvidenceDeps = null as unknown as RealEvidenceDeps;
+const _evidenceDepsAcceptsTheHelpers: EvidenceDeps = null as unknown as RealEvidenceDeps;
+const _evidenceDepsIsNotLooser: Pick<
+  RealEvidenceDeps,
+  'typedSdkMember' | 'providerWiresProperty'
+> = null as unknown as Pick<EvidenceDeps, 'typedSdkMember' | 'providerWiresProperty'>;
+const _evidenceDepsDeclaresEveryMember: keyof EvidenceDeps =
+  null as unknown as keyof RealEvidenceDeps;
 
 /** The shape guard the workflow itself applies to the rendered file. */
 const WORKFLOW_SHAPE = /^- \[ \] |^_No remaining silent-drop properties/m;
@@ -77,10 +95,11 @@ function makeCorpus(): string {
  * Stubbing only one leaves the other's real transitive graph in play, and in a
  * corpus this small that graph fails first for a reason the case is not about.
  * Measured with only `offline-property-evidence.ts` stubbed: the run reports
- * `Cannot find package 'typescript-v6' imported from
- * scripts/gen-nested-key-coverage.ts`, reached through
- * `published-sdk-typings.ts` — so the case would have asserted on a failure it
- * did not inject. With both stubbed it needs no `node_modules` either.
+ * `Cannot find package 'typescript-v6' imported from <root>/scripts/
+ * gen-nested-key-coverage.ts` (an absolute path at runtime), reached through
+ * `published-sdk-typings.ts`'s import of `collectSdkInterfaces` — so the case
+ * would have asserted on a failure it did not inject. With both stubbed it needs
+ * no `node_modules` either.
  */
 function stubHelpers(root: string, evidenceSource: string): void {
   writeFileSync(join(root, 'scripts/offline-property-evidence.ts'), evidenceSource);
