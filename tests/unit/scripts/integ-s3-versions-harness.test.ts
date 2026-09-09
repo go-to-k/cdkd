@@ -2465,8 +2465,10 @@ describe('claims this lane corrected stay corrected TREE-WIDE', () => {
   // line of deliberate slack, because a paragraph reflow that pushes a citation
   // one line further should not red a legitimate quotation. The 5 is the
   // measurement and the 6 is the choice -- widen it only when a real quotation
-  // needs it, never to silence a fresh hit, and re-measure with the offsets
-  // probe rather than by argument.
+  // needs it, never to silence a fresh hit. To re-derive the 5 rather than
+  // argue it: lower this constant until the suite reds and take the last green
+  // value. Measured that way, 5 is green and 4 reds BOTH signals -- two live
+  // residuals, and the silenced count below at 1 instead of 3.
   const CITATION_WINDOW = 6;
   const isRetiredQuotation = (lines: readonly string[], i: number): boolean => {
     if (!RETIREMENT_MARKER.test(lines[i]!)) return false;
