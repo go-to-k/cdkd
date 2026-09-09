@@ -587,11 +587,24 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     });
 
     const out = logLines();
+    // GREP THE CLAIM, NOT ONE SITE'S PHRASING. The first revision of this test
+    // asserted only the log line's wording (`Converged exports index entry`)
+    // and so could only ever cover the site it was written against — the
+    // SUMMARY spells the same claim `exports index entry converged to`, and it
+    // was still counting refused writes and asserting a PutObject that never
+    // happened. A "must not claim X" fence has to enumerate the spellings of
+    // X (issue #2667 review).
     expect(out).not.toContain('Converged exports index entry');
-    // POSITIVE marker, so the assertion above cannot be satisfied by a run
+    expect(out).not.toContain('converged to the producer');
+    // ...and the versioning sentence that rides on that claim, which is the
+    // part that actually misleads: it describes a noncurrent version created
+    // by a PUT that never happened.
+    expect(out).not.toContain('the pre-repair body survives');
+    // POSITIVE markers, so the assertions above cannot be satisfied by a run
     // that logged nothing at all: the entry is still REPORTED, as the thing
     // that was not written.
     expect(out).toContain('could NOT be written');
+    expect(out).toContain('Exports index entry');
   });
 
   it('a SUCCESSFUL write is still logged as Converged', async () => {
@@ -610,6 +623,10 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     await scrubCommand([], commandOptions());
 
     expect(logLines()).toContain('Converged exports index entry');
+    // The summary's spelling of the same claim, which is what the counter
+    // feeds — asserted here so the fix cannot be reverted by silencing the
+    // summary instead of the counter.
+    expect(logLines()).toContain('converged to the producer');
     expect(logLines()).not.toContain('could NOT be written');
   });
 

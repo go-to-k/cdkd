@@ -257,6 +257,45 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
     expect(err!.message).toMatch(/byte\(s\) read/);
   });
 
+  it('reports the OFFSET when V8 states one, and the size in real UTF-8 bytes', async () => {
+    // The other V8 family. `Expected property name or '}' in JSON at position
+    // 2` carries an offset; the `Unexpected token 'X', ...snippet...` family
+    // above does NOT, which is why the size is the part always present. Both
+    // arms are driven so neither is a claim.
+    //
+    // The body is deliberately non-ASCII: `body.length` counts UTF-16 code
+    // units, so a multi-byte character makes the two units disagree and the
+    // assertion below distinguishes them.
+    const body = '{ nöt json';
+    const expectedBytes = Buffer.byteLength(body, 'utf8');
+    expect(expectedBytes).not.toBe(body.length);
+    const { client } = mockS3((cmd) => {
+      if (cmd.name === 'GetObjectCommand') {
+        return Promise.resolve({
+          Body: { transformToString: () => Promise.resolve(body) },
+          ETag: '"etag-1"',
+        });
+      }
+      throw new Error(`unexpected ${cmd.name}`);
+    });
+    const store = new ExportIndexStore(
+      client,
+      'cdkd-state-bucket',
+      'cdkd',
+      'us-east-1',
+      noRebuildBackend()
+    );
+
+    const err = await store.readPersistedEntries().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err!.message).toMatch(/at position \d+/);
+    expect(err!.message).toContain(`${expectedBytes} byte(s) read`);
+    // The body itself still never appears.
+    expect(err!.message).not.toContain('nöt json');
+  });
+
   it('the indexVersion refusal renders the TYPE, never a body-controlled value', async () => {
     // `String(x)` renders a JSON string as itself and a one-element array as
     // its element — measured on node v24.19.0 — so only an object degrades to

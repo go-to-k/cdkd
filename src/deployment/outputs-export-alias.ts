@@ -417,30 +417,47 @@ export type SecretSafeKeyDisplay =
  * key safe to print" would disagree on the boundary cases those two encode
  * (the whole-key match for a sub-floor needle, longest-needle-first masking).
  *
- * SANITISED WITH `displaySafe`, not with `stripControlChars` (issue #2667
- * review). The two are not interchangeable here: `stripControlChars`'s class
- * omits `U+2028` / `U+2029`, which `display-safe.ts` strips precisely because
- * this text is PERSISTED and re-rendered by JSON and web log viewers that
- * treat both as line terminators — the CI-log surface this whole masking
- * change exists to protect, where an `Fn::Sub`-built export name carrying one
- * could forge a log line. It also covers the ANSI / bidi set, and it is
- * idempotent, so applying it to the already-masked string is safe. The callers
- * render `reason` through `displaySafe` too, so one message no longer mixes
- * two sanitizers.
+ * SANITISED WITH BOTH helpers, because neither is a superset of the other —
+ * measured, after a first cut swapped one for the other and silently traded
+ * one class of character for another (issue #2667 review):
  *
- * The sibling warnings in this file still use `stripControlChars` and carry
- * the same gap; widening that helper would change call sites this issue did
- * not touch, so it is filed as issue
+ * | input    | `stripControlChars` | `displaySafe` |
+ * | -------- | ------------------- | ------------- |
+ * | `U+200E` | removed             | KEPT          |
+ * | `U+200F` | removed             | KEPT          |
+ * | `U+2028` | KEPT                | replaced      |
+ * | `U+2029` | KEPT                | replaced      |
+ *
+ * `U+2028` / `U+2029` matter because this text is PERSISTED and re-rendered by
+ * JSON and web log viewers that treat both as line terminators — the CI-log
+ * surface this masking exists to protect, where an `Fn::Sub`-built export name
+ * carrying one could forge a log line (`display-safe.ts` states that
+ * rationale). `U+200E` / `U+200F` are the bidi MARKS, named as residuals in
+ * that same file; they reorder rendered text without terminating a line. On a
+ * path whose subject is a possibly-secret-bearing name in an operator's log,
+ * neither loss is worth taking, and composing costs nothing.
+ *
+ * ORDER IS LOAD-BEARING: `stripControlChars` DELETES, `displaySafe` replaces
+ * with a space and trims. Stripping first removes the marks outright rather
+ * than turning each into a space, so a name carrying them is not padded out;
+ * the trailing `.trim()` then still applies. That trim is a display-shape
+ * change for a key with leading or trailing whitespace, which `stripControlChars`
+ * alone preserved — stated because it is a real difference, not hidden.
+ *
+ * The sibling warnings in this file still use `stripControlChars` ALONE and
+ * carry the `U+2028` half of the gap; widening that helper, or converting
+ * them, changes call sites this issue does not touch, so it is filed as issue
  * [#2874](https://github.com/go-to-k/cdkd/issues/2874) rather than done here.
  */
 export function secretSafeKeyDisplay(
   key: string,
   secrets: RecordedSecretValues
 ): SecretSafeKeyDisplay {
-  const shown = displaySafe(key);
+  const sanitise = (text: string): string => displaySafe(stripControlChars(text));
+  const shown = sanitise(key);
   const exposure = stateKeySecretExposure(key, secrets);
   if (!exposure) return { kind: 'safe', text: shown };
-  const masked = displaySafe(maskEveryOccurrence(key, exposure));
+  const masked = sanitise(maskEveryOccurrence(key, exposure));
   if (masked === shown) return { kind: 'withheld' };
   return { kind: 'masked', text: masked };
 }

@@ -68,6 +68,30 @@ describe('secretSafeKeyDisplay', () => {
     expect(JSON.stringify(shown)).not.toContain(SECRET);
   });
 
+  it('SAFE: strips the bidi MARKS too, which displaySafe alone does NOT', () => {
+    // The other half of the trade. Measured: `displaySafe` keeps `U+200E` /
+    // `U+200F` (named residuals in display-safe.ts) while `stripControlChars`
+    // removes them, and `stripControlChars` keeps `U+2028` / `U+2029` while
+    // `displaySafe` replaces them. Neither is a superset, so this site
+    // composes both — and this case is what stops a future edit from
+    // collapsing it back to one.
+    const lrm = secretSafeKeyDisplay('alias\u200einjected', secrets());
+    expect(lrm.kind).toBe('safe');
+    expect(lrm.kind === 'safe' && lrm.text).toBe('aliasinjected');
+    const rlm = secretSafeKeyDisplay('alias\u200finjected', secrets());
+    expect(rlm.kind === 'safe' && rlm.text).toBe('aliasinjected');
+  });
+
+  it('SAFE: a key carrying BOTH classes at once loses both', () => {
+    // The composition, not either half: one input that only passes when both
+    // helpers ran.
+    const shown = secretSafeKeyDisplay('a\u200eb\u2028c', secrets());
+    expect(shown.kind).toBe('safe');
+    const text = shown.kind === 'safe' ? shown.text : '';
+    expect(text).not.toContain('\u200e');
+    expect(text).not.toContain('\u2028');
+  });
+
   it('MASKED: a key EMBEDDING a secret is masked, and the plaintext is gone', () => {
     const shown = secretSafeKeyDisplay(`alias-${SECRET}-suffix`, secrets());
     expect(shown.kind).toBe('masked');

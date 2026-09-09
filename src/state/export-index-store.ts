@@ -102,17 +102,34 @@ function mapsEqual(a: Map<string, ExportIndexEntry>, b: Map<string, ExportIndexE
  * logs. Same class as the `import.ts` parse-snippet leak issue
  * [#2829](https://github.com/go-to-k/cdkd/issues/2829) closed.
  *
- * What survives is the OFFSET and the SIZE: both locate the damage for an
- * operator holding the object, and neither is a function of its content. The
- * offset is extracted by pattern rather than passed through, so a future V8
- * message that words it differently yields no offset instead of leaking the
- * rest of the sentence.
+ * What survives is the SIZE, plus the OFFSET WHEN V8 STATES ONE — neither is a
+ * function of the body's content, and both help an operator holding the object
+ * locate the damage. The offset is extracted by pattern rather than passed
+ * through, so a message worded differently yields no offset instead of leaking
+ * the rest of the sentence. Measured on node v24.19.0: the `Expected ...`
+ * family carries `at position N` and the `Unexpected token 'X', ...snippet...`
+ * family — the one that embeds the body, i.e. the case this exists for — does
+ * NOT, so the size is what is always present and the offset is a bonus. Both
+ * arms are driven by tests.
  */
 function describeParseFailure(err: unknown, bytes: number): string {
   const raw = err instanceof Error ? err.message : String(err);
   const at = /at position (\d+)/.exec(raw);
   const where = at ? ` at position ${at[1]}` : '';
   return `invalid JSON${where}; ${bytes} byte(s) read`;
+}
+
+/**
+ * UTF-8 byte length of a decoded body, for {@link describeParseFailure}.
+ *
+ * `body.length` counts UTF-16 CODE UNITS, so reporting it as "byte(s)" is
+ * wrong for any non-ASCII index — an export name outside the BMP counts 2
+ * where the object holds 4 (issue #2667 review). The number is meant to help
+ * an operator match the message against the object S3 holds, so it has to be
+ * the same unit S3 reports.
+ */
+function utf8ByteLength(body: string): number {
+  return Buffer.byteLength(body, 'utf8');
 }
 
 /**
@@ -498,7 +515,7 @@ export class ExportIndexStore {
     try {
       parsed = JSON.parse(body) as ExportIndexFile;
     } catch (err) {
-      return { kind: 'corrupt', error: err, bytes: body.length };
+      return { kind: 'corrupt', error: err, bytes: utf8ByteLength(body) };
     }
     if (typeof parsed.indexVersion !== 'number' || parsed.indexVersion > EXPORT_INDEX_VERSION) {
       // Newer index version written by a future cdkd binary. We can't

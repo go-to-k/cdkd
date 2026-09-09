@@ -718,7 +718,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       }
       for (const finding of repair.findings) {
         if (finding.kind === 'converge') {
-          totalIndexEntriesConverged++;
+          // COUNTED FOR THE CLEAN-LINE GATE regardless of whether the write
+          // landed: either way this stack has a reported divergence, and the
+          // per-stack "No plaintext secrets found" line must not print beside
+          // one. This is the count of FINDINGS, not of writes.
           indexConverged++;
           // The past-tense line is for entries the write LANDED on. An entry
           // whose `patchEntry` returned `false` is in `repair.unwritten` and
@@ -735,6 +738,24 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
                 `value it holds.`
             );
           } else {
+            // THE SUMMARY COUNT, incremented HERE and not beside
+            // `indexConverged` above (issue #2667 review). The summary line it
+            // feeds asserts a PutObject happened -- "converged to the
+            // producer's state.outputs value ... the pre-repair body survives
+            // as a noncurrent version" -- so counting an entry the write
+            // refused made the run claim a write it did not perform, at higher
+            // prominence than the warn beside it and directly before the error
+            // saying the entry is unwritten. That is the same defect the
+            // line-level fix above removes, surviving one level up.
+            //
+            // Under `--dry-run` nothing is written and `unwrittenNames` is
+            // empty, so this counts every converge finding and the summary
+            // stays in the conditional tense. It is the only counter in this
+            // command with this shape: `totalStacksScrubbed` is gated on
+            // `recordsChanged`, which is computed after `saveState` returned;
+            // the other four count FINDINGS, where nothing is written by
+            // design and the messages say so.
+            totalIndexEntriesConverged++;
             logger.info(
               `${options.dryRun ? 'Would converge' : 'Converged'} exports index entry ` +
                 `${named(finding.exportName)} (${stackRegion}) to ${stack.stackName}'s ` +
