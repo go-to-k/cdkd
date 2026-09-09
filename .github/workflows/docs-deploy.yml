@@ -53,6 +53,45 @@ jobs:
       # og:image/twitter:image meta tags ("Chromium not available" warning).
       # The guard step below turns that silent degradation into a hard failure.
       # Direct .bin path: setup-vp does not put pnpm on PATH.
+      #
+      # The Google Chrome apt repository is dropped first because
+      # `--with-deps` runs `apt-get update`, which fails WHOLESALE when any
+      # single configured repository is unhealthy -- and the runner image
+      # ships that one by default. This job reads no package from it:
+      # Playwright manages its own Chromium build, and `--with-deps` is here
+      # only for the shared OS libraries that build needs.
+      #
+      # Measured 2026-09-09 (issue #2879): Google served a `Packages.gz` whose
+      # hash did not match the `Release` file beside it, so the step died with
+      # `Hash Sum mismatch` for ~90 minutes. `main` went red at 17:26:41Z and
+      # every docs-touching PR became unmergeable behind `ci-green-gate`;
+      # seven retries over that window reproduced it before the mirror
+      # recovered on its own.
+      #
+      # This removes the COUPLING, not the class: another configured
+      # repository going unhealthy would still red this step, because
+      # `apt-get update` has no per-repository tolerance.
+      #
+      # Matched by CONTENT rather than by filename: the runner image's name
+      # for this list is not something this workflow can verify, and a
+      # filename that stops matching would make the step a silent no-op --
+      # green until the next outage. The receipt is printed for the same
+      # reason, so a future run shows whether it removed anything.
+      - name: Drop the Google Chrome apt repository (issue #2879)
+        run: |
+          set -euo pipefail
+          before=$(grep -rl 'dl\.google\.com' /etc/apt/sources.list.d/ 2>/dev/null || true)
+          if [ -n "${before}" ]; then
+            echo "removing: ${before}"
+            printf '%s\n' "${before}" | xargs -r sudo rm -f
+          else
+            echo "no dl.google.com repository configured -- nothing to remove"
+          fi
+          if grep -rq 'dl\.google\.com' /etc/apt/sources.list.d/ 2>/dev/null; then
+            echo "still configured after removal:" >&2
+            grep -rn 'dl\.google\.com' /etc/apt/sources.list.d/ >&2
+            exit 1
+          fi
       - run: ./node_modules/.bin/playwright install --with-deps chromium
       - run: vp run docs:build
       - name: Assert OG images were generated
