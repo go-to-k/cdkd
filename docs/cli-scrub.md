@@ -9,8 +9,10 @@ description: "State secret hygiene — clean secrets out of persisted state and 
 its `{{resolve:...}}` expression instead of its plaintext value, and audits
 that state stays that way. Reach for it after upgrading cdkd on a stack you do
 not want to re-provision, whenever you suspect a state file predates a
-redaction fix, and as a standing CI gate. It touches no AWS resources — only
-`state.json` is rewritten.
+redaction fix, and as a standing CI gate. It creates, updates and deletes no
+AWS resource; what it writes is the state bucket — each targeted stack's
+`state.json`, and the entries a scrubbed stack publishes in the shared
+[exports index](#the-exports-index).
 
 ```bash
 cdkd scrub MyStack                        # rewrite plaintext secrets to {{resolve:...}}
@@ -146,6 +148,15 @@ and that version stays readable — plaintext and all — to anyone who can
 `GetObject` the key with a `VersionId`. A normal `cdkd deploy` persists state
 the same way, so the implicit scrub above has exactly the same property.
 
+The same holds for the shared exports index at
+`{state-prefix}/_index/{region}/exports.json`. `cdkd scrub` rewrites an entry
+there with a `PutObject` too, so on a versioned bucket the pre-repair body
+becomes a noncurrent version of that key and stays readable with `GetObject`
+and a `VersionId`. The listing and delete commands below apply to it with its
+own key substituted — with the caveat that this key is SHARED by every
+cdkd-managed stack in the region, so its history is not one stack's to reason
+about.
+
 `cdkd scrub` does **not** purge those versions, and its summary line says so
 rather than claiming the plaintext is gone. This is why the rotation advice
 above is the load-bearing remedy and not a belt-and-braces extra: rotation is
@@ -217,7 +228,7 @@ No plaintext secrets found in any target stack state. Nothing to scrub.
 | --- | --- |
 | `0` | State was scrubbed, or there was nothing to scrub. |
 | `1` | `--fail` found plaintext: under `--dry-run`, any plaintext at all; on a real run, a leak scrub cannot rewrite. |
-| `2` | scrub refused to examine something, or a stack failed outright. |
+| `2` | scrub refused to examine something, a stack failed outright, or the exports index was left incomplete. |
 
 The full cross-command table is in the
 [CLI Reference](cli-reference.md#exit-codes).
@@ -237,7 +248,7 @@ cannot rewrite. Two shapes qualify, and both are also reported in words:
 
 ## Refusals
 
-Four error codes stop a stack rather than reporting it clean. All exit `2`.
+Five error codes stop the run rather than reporting it clean. All exit `2`.
 
 | Code | What triggers it | What to do |
 | --- | --- | --- |
@@ -245,6 +256,7 @@ Four error codes stop a stack rather than reporting it clean. All exit `2`.
 | `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` | The read succeeded, but the producer's own state still stores the plaintext instead of the expression. | `cdkd scrub <producer>` first, then re-run. For a chain, every stack in it, head first. |
 | `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` | A secret reference whose ARN names another region could not be read in that region. | Grant the read there, or restore the secret. scrub will not fall back to the stack's own region. |
 | `SCRUB_STACKS_FAILED` | Under `--all`, one or more stacks ended in one of the above. | Fix each named stack; the others were still scrubbed. Each stack's own reason was logged as it happened. |
+| `SCRUB_EXPORT_INDEX_INCOMPLETE` | `state.json` was rewritten and an entry of the [exports index](#the-exports-index) was not — a refused write, or a region whose index could not be read. | Clear the cause (usually an S3 permission on `{state-prefix}/_index/...`) and re-run. The re-run writes only the entries still differing. |
 
 Everything else the per-item best-effort handler swallows is unchanged: a
 `Ref` to a resource absent from state still degrades to a partial scrub rather
@@ -596,6 +608,77 @@ into a CONSUMER stack's AWS call. Hence three rules:
   resolves a secret, but whose STORED value is still the stale plaintext of
   one, is not repaired by `scrub` either — a redeploy rewrites it.
 
+## The exports index
+
+Beside the per-stack `state.json` records, cdkd keeps one object per region at
+`{state-prefix}/_index/{region}/exports.json`. It maps each export name to the
+producing stack's RESOLVED Output value, so an `Fn::ImportValue` does not have
+to scan every state file in the bucket. It is a single object shared by every
+cdkd-managed stack in that region, and reading it needs `s3:GetObject` and
+nothing else — no version id.
+
+`cdkd scrub` runs one pass over that object per region it touched, as a step
+after the `state.json` write for each stack. For every entry the index already
+holds whose `producerStack` / `producerRegion` name a stack this run scrubbed:
+
+- when `state.outputs` holds a value under the same name, that value contains
+  `{{resolve:`, and the entry's value differs from it, the entry is rewritten
+  to the state value;
+- when it does not differ, nothing is written.
+
+The rule is a comparison against the state record, not against the plaintext
+`scrub` resolved. `scrub` builds its plaintext map by resolving the template's
+references against Secrets Manager / SSM, so the map holds the secret's value
+AS IT IS NOW; an entry written before a rotation holds the value as it was
+THEN, and the two are different strings. Comparing against `state.outputs`
+instead reads the value a redeploy writes, which is the same value whether or
+not the secret has rotated since.
+
+`--dry-run` performs the read and issues no write. The audit is a real read
+because scrub's map comes from live resolution rather than from the state
+record, so `cdkd scrub --all --dry-run --fail` exits `1` on a divergence here
+even when every `state.json` already holds the expression.
+
+### What the index pass reports rather than writing
+
+Three cases produce a message and no write. The first exits `2`; the other two
+do not affect the exit code.
+
+- **An entry it could not write.** S3 refused the `PutObject`, or a concurrent
+  writer exhausted the If-Match retry budget. The run fails with
+  `SCRUB_EXPORT_INDEX_INCOMPLETE`, naming each entry and its region, because
+  such an entry keeps the value it holds. Re-run the same command once the
+  cause is cleared: an entry already matching `state.outputs` is left alone, so
+  the re-run writes the remainder.
+- **An owned entry whose name is not a key of `state.outputs`.** There is no
+  value to converge it to, so it keeps what it holds. Redeploy that producer,
+  which rewrites the index from its own outputs.
+- **An entry published by a producer this run did not scrub.** `--all` targets
+  every stack in the SYNTHESIZED APP, not every stack with a state record, and
+  one bucket and region are legitimately shared by several CDK apps. Those
+  entries are reported as coverage and never fail the gate — a gate that
+  reddened on another app's entries could not be cleared from here. Coverage
+  composes: each app clears its own entries by running its own `cdkd scrub`.
+
+### What the index pass does not do
+
+- **It changes no membership.** Only the value of an entry the index already
+  holds is rewritten; no name is added and none is removed. `scrub` takes no
+  `--parameters` and reads a state record whose template may not be the one
+  that produced it, so any export SET it derived would be a guess.
+- **It needs no additional IAM permission.** The index key sits under the same
+  prefix as the state records, and `cdkd deploy` already writes that exact
+  object, so any principal that can deploy the stack can write it. A policy
+  hand-narrowed to `{state-prefix}/{stackName}/*` breaks here — and already
+  breaks cross-stack deploys for the same reason.
+- **It does not widen `--all`.** A stack outside the synthesized app has no
+  template in reach, so scrub could not learn which of its values are secrets
+  even if the entry were targeted.
+
+An entry rewritten here is superseded, not erased — see
+[Scrubbing supersedes the plaintext, it does not erase it](#scrubbing-supersedes-the-plaintext-it-does-not-erase-it),
+which covers `exports.json` as well as `state.json`.
+
 ## Limitations
 
 Two paths do not inherit this redaction, both because they resolve a reference
@@ -612,15 +695,9 @@ through a context that does not record secrets:
 Both apply to `{{resolve:secretsmanager:...}}` as well as to a `SecureString`
 parameter.
 
-A third path is out of `scrub`'s reach for a different reason — it is a
-SEPARATE object, not a redaction gap. The exports index at
-`{state-prefix}/_index/{region}/exports.json` holds each exported Output's
-resolved value, and `cdkd scrub` rewrites `state.json` only. So a
-secret-bearing Output published by an older binary keeps its plaintext there as
-the CURRENT object — not merely as a superseded version — until the producer
-stack is redeployed, and `--dry-run --fail` reports GREEN over it because the
-gate reads state records. **Redeploy the producer** to repair it, and rotate
-the secret.
+A third object is repaired by a separate step of the same run — see
+[The exports index](#the-exports-index) for what that step reads, what it
+writes, and the three cases it reports rather than writing.
 
 ## Related
 

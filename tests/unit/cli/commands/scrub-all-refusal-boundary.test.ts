@@ -67,6 +67,17 @@ vi.mock('../../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn()
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => commandStateBackend),
 }));
+vi.mock('../../../../src/state/export-index-store.js', () => ({
+  // These suites' subject is the `--all` LOOP and the outputs key space; their
+  // fixtures publish no exports, so the region's `exports.json` does not
+  // exist. `readPersistedEntries` returning `undefined` IS that state (issue
+  // #2667) — the store reports a missing object without rebuilding it — so the
+  // index step contributes no finding and no failure here.
+  ExportIndexStore: vi.fn().mockImplementation(() => ({
+    readPersistedEntries: vi.fn().mockResolvedValue(undefined),
+    patchEntry: vi.fn().mockResolvedValue(true),
+  })),
+}));
 vi.mock('../../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -469,10 +480,10 @@ describe('cdkd scrub: the summary states the versioning bound instead of claimin
     // case above.
     //
     // This lands on the CLEAN early return ("No plaintext secrets found in any
-    // target stack state"), NOT on the `Nothing could be rewritten` sibling of
+    // target stack state"), NOT on the `No state record was rewritten` sibling of
     // the arm above — measured by mutation, not assumed: relaxing that arm's
     // `totalStacksScrubbed > 0` gate leaves this case green because it returns
-    // before reaching it. The `Nothing could be rewritten` arm is pinned by
+    // before reaching it. The `No state record was rewritten` arm is pinned by
     // `scrub-export-name-collision.test.ts`'s CI-GATE case, which DOES red
     // under that mutation.
     commandStateBackend.getState.mockImplementation((stackName: string) => {

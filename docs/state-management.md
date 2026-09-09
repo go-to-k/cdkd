@@ -1935,8 +1935,11 @@ previous versions accumulate and stay readable:
   content as sensitive, so this matters: see
   [Deleting a run stream does not remove its earlier versions](deployment-events.md#deleting-a-run-stream-does-not-remove-its-earlier-versions).
 - `_index/{region}/exports.json` — the exports index, which holds resolved
-  Output values and is never rewritten by `cdkd scrub`; see
-  [`cdkd scrub`](cli-scrub.md#limitations).
+  Output values. `cdkd deploy` rewrites it, and so does `cdkd scrub`, one entry
+  at a time, for the stacks that run scrubbed; each such write leaves the
+  previous body as a noncurrent version of a key SHARED by every
+  cdkd-managed stack in the region. See
+  [`cdkd scrub`](cli-scrub.md#the-exports-index).
 
 **Without the two grants, nothing fails — and that is the point to
 understand.** The purge runs on a cleanup path and must never abort the

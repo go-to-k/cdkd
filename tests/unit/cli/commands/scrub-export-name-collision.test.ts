@@ -65,6 +65,17 @@ vi.mock('../../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn()
 vi.mock('../../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => commandStateBackend),
 }));
+vi.mock('../../../../src/state/export-index-store.js', () => ({
+  // These suites' subject is the `--all` LOOP and the outputs key space; their
+  // fixtures publish no exports, so the region's `exports.json` does not
+  // exist. `readPersistedEntries` returning `undefined` IS that state (issue
+  // #2667) — the store reports a missing object without rebuilding it — so the
+  // index step contributes no finding and no failure here.
+  ExportIndexStore: vi.fn().mockImplementation(() => ({
+    readPersistedEntries: vi.fn().mockResolvedValue(undefined),
+    patchEntry: vi.fn().mockResolvedValue(true),
+  })),
+}));
 vi.mock('../../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -954,7 +965,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     // summary's actual wording (issue #2624 replaced "The plaintext is no
     // longer stored there" with a versioning-bounded sentence) — a needle no
     // code path can emit makes this assertion pass for free.
-    expect(summary).toContain('Nothing could be rewritten');
+    expect(summary).toContain('No state record was rewritten');
     expect(summary).not.toContain('The CURRENT state.json no longer holds the plaintext');
   });
 

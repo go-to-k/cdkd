@@ -173,10 +173,13 @@ Index of every area: [code-layout.md](code-layout.md).
     best-effort `catch`, and the leaf's plaintext never became a needle. All
     four contexts now come from ONE factory inside `scrubStack` (a fifth
     cannot be written without the wiring — how the first four came to lack
-    it). `exportIndex` stays deliberately absent: the `state.json` scan
-    fallback is equally correct, and supplying it would let the scan arm call
-    `exportIndex.patchEntry` — an S3 WRITE from a command that performs no
-    AWS mutation, `--dry-run` included.
+    it). `exportIndex` stays deliberately absent, and issue
+    [#2667](https://github.com/go-to-k/cdkd/issues/2667) — which made scrub
+    WRITE that object — kept the withholding rather than reversing it: handing
+    it to the resolver would let the scan arm call `exportIndex.patchEntry` as
+    a SIDE EFFECT of resolution, at a point in the run nothing chose, from a
+    partially failed pass, and under `--dry-run`. The repair is a separate step
+    in `scrubCommand`, after the stack's `saveState` returned.
   - An unresolvable cross-stack read is lifted OUT of the best-effort catch
     by a pre-pass (`resolveCrossStackReads`, over all three bags) refusing
     with `SCRUB_CROSS_STACK_READ_UNRESOLVED` — the catch keeps swallowing

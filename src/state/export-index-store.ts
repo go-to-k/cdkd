@@ -297,12 +297,41 @@ export class ExportIndexStore {
   }
 
   /**
+   * A snapshot of the persisted index, read WITHOUT the rebuild that
+   * {@link lookup} triggers on a missing or corrupt object.
+   *
+   * Every S3 call on this path is a GET. `undefined` means the object is
+   * absent or did not parse; neither arm writes, so a caller that must
+   * perform no S3 write (`cdkd scrub --dry-run`) can read the entries here.
+   * A `indexVersion` this binary cannot interpret still THROWS, as it does
+   * on the `lookup` path — rebuilding over a newer binary's index would
+   * replace it with this one's view of the same names.
+   *
+   * The returned map is a COPY, and a `patchEntry` on this same instance
+   * afterwards writes under the etag this read cached rather than re-reading.
+   */
+  async readPersistedEntries(): Promise<ReadonlyMap<string, ExportIndexEntry> | undefined> {
+    if (this.loadState.kind === 'loading') await this.loadState.promise;
+    if (this.loadState.kind === 'loaded') return new Map(this.loadState.entries);
+    const outcome = await this.loadPersisted();
+    if (outcome.kind !== 'loaded') return undefined;
+    return new Map(outcome.entries);
+  }
+
+  /**
    * Patch a single entry into the index after a `lookup` miss fell back
    * to a state.json scan and found the value. Lightweight write that
    * does NOT require a full rebuild.
+   *
+   * Returns whether the index now holds `entry` — `false` when the write
+   * was abandoned (a non-retryable S3 failure, or an exhausted If-Match
+   * retry budget), which `runWithRetry` logs and does not throw. A caller
+   * for which an unwritten entry is the outcome it must report — `cdkd
+   * scrub`, where the entry keeps whatever value it held — reads this
+   * return; the deploy path treats the index as a perf hint and ignores it.
    */
-  async patchEntry(exportName: string, entry: ExportIndexEntry): Promise<void> {
-    await this.enqueueWrite('patch', () => this.applyPatch(exportName, entry));
+  async patchEntry(exportName: string, entry: ExportIndexEntry): Promise<boolean> {
+    return this.enqueueWrite('patch', () => this.applyPatch(exportName, entry));
   }
 
   /**
@@ -323,12 +352,15 @@ export class ExportIndexStore {
    * race on the same etag inside the same cdkd. The S3 If-Match retry
    * remains as cross-process protection.
    */
-  private async enqueueWrite(label: string, op: () => Promise<void>): Promise<void> {
+  private async enqueueWrite(label: string, op: () => Promise<boolean>): Promise<boolean> {
     const next = this.writeChain.then(() => this.runWithRetry(label, op));
     // Swallow errors on the shared tail so a single write's failure
     // doesn't poison the chain for the next write (runWithRetry
     // already logs warns on bail-out; we don't want a rejected tail).
-    this.writeChain = next.catch(() => {});
+    this.writeChain = next.then(
+      () => {},
+      () => {}
+    );
     return next;
   }
 
@@ -361,38 +393,59 @@ export class ExportIndexStore {
     await promise;
   }
 
+  /**
+   * GET the index object and, when it parses, install it as `loadState`.
+   * Performs no PUT: the missing / corrupt REBUILD lives one level up in
+   * {@link doLoad}, so {@link readPersistedEntries} can share this parse
+   * without writing. A `indexVersion` above this binary's still throws
+   * here rather than reporting `corrupt` — a rebuild would overwrite an
+   * index a newer binary wrote with this binary's view of it.
+   */
+  private async loadPersisted(): Promise<
+    | { kind: 'loaded'; entries: Map<string, ExportIndexEntry> }
+    | { kind: 'missing' }
+    | { kind: 'corrupt'; error: unknown }
+  > {
+    const raw = await this.readIndexRaw();
+    if (raw === null) return { kind: 'missing' };
+    const { body, etag } = raw;
+    let parsed: ExportIndexFile;
+    try {
+      parsed = JSON.parse(body) as ExportIndexFile;
+    } catch (err) {
+      return { kind: 'corrupt', error: err };
+    }
+    if (typeof parsed.indexVersion !== 'number' || parsed.indexVersion > EXPORT_INDEX_VERSION) {
+      // Newer index version written by a future cdkd binary. We can't
+      // safely interpret unknown fields; surface a clear error so the
+      // user upgrades rather than silently mishandling.
+      throw new Error(
+        `Exports index uses indexVersion ${String(parsed.indexVersion)} which is newer than this cdkd binary supports (max ${EXPORT_INDEX_VERSION}). Upgrade cdkd.`
+      );
+    }
+    const entries = new Map<string, ExportIndexEntry>();
+    for (const [name, entry] of Object.entries(parsed.exports ?? {})) {
+      entries.set(name, entry);
+    }
+    this.loadState = { kind: 'loaded', etag, entries };
+    return { kind: 'loaded', entries };
+  }
+
   private async doLoad(): Promise<void> {
     try {
-      const raw = await this.readIndexRaw();
-      if (raw === null) {
+      const outcome = await this.loadPersisted();
+      if (outcome.kind === 'missing') {
         this.logger.info('Exports index missing; rebuilding from state.json files');
         await this.rebuild();
         return;
       }
-      const { body, etag } = raw;
-      let parsed: ExportIndexFile;
-      try {
-        parsed = JSON.parse(body) as ExportIndexFile;
-      } catch (err) {
+      if (outcome.kind === 'corrupt') {
         this.logger.warn(
-          `Exports index corrupt (${err instanceof Error ? err.message : String(err)}); rebuilding from state.json files`
+          `Exports index corrupt (${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}); rebuilding from state.json files`
         );
         await this.rebuild();
         return;
       }
-      if (typeof parsed.indexVersion !== 'number' || parsed.indexVersion > EXPORT_INDEX_VERSION) {
-        // Newer index version written by a future cdkd binary. We can't
-        // safely interpret unknown fields; surface a clear error so the
-        // user upgrades rather than silently mishandling.
-        throw new Error(
-          `Exports index uses indexVersion ${String(parsed.indexVersion)} which is newer than this cdkd binary supports (max ${EXPORT_INDEX_VERSION}). Upgrade cdkd.`
-        );
-      }
-      const entries = new Map<string, ExportIndexEntry>();
-      for (const [name, entry] of Object.entries(parsed.exports ?? {})) {
-        entries.set(name, entry);
-      }
-      this.loadState = { kind: 'loaded', etag, entries };
     } catch (err) {
       // Don't strand the loadState in `loading` — that would deadlock the
       // next caller. Reset to `unloaded` and rethrow so the caller decides
@@ -502,9 +555,9 @@ export class ExportIndexStore {
     stackName: string,
     producerRegion: string,
     outputs: Record<string, unknown>
-  ): Promise<void> {
+  ): Promise<boolean> {
     await this.ensureLoaded();
-    if (this.loadState.kind !== 'loaded') return;
+    if (this.loadState.kind !== 'loaded') return false;
     const next = new Map(this.loadState.entries);
     // Drop existing entries owned by this stack.
     for (const [name, entry] of next) {
@@ -525,9 +578,9 @@ export class ExportIndexStore {
     // change ends up reflected in `next` and the equality check is
     // strictly more precise than a per-step `changed` flag.
     if (mapsEqual(this.loadState.entries, next)) {
-      return;
+      return true;
     }
-    await this.persist(next);
+    return this.persist(next);
   }
 
   /**
@@ -562,17 +615,17 @@ export class ExportIndexStore {
     );
   }
 
-  private async applyPatch(exportName: string, entry: ExportIndexEntry): Promise<void> {
+  private async applyPatch(exportName: string, entry: ExportIndexEntry): Promise<boolean> {
     await this.ensureLoaded();
-    if (this.loadState.kind !== 'loaded') return;
+    if (this.loadState.kind !== 'loaded') return false;
     const next = new Map(this.loadState.entries);
     next.set(exportName, entry);
-    await this.persist(next);
+    return this.persist(next);
   }
 
-  private async applyRemoveStack(stackName: string, producerRegion: string): Promise<void> {
+  private async applyRemoveStack(stackName: string, producerRegion: string): Promise<boolean> {
     await this.ensureLoaded();
-    if (this.loadState.kind !== 'loaded') return;
+    if (this.loadState.kind !== 'loaded') return false;
     const next = new Map(this.loadState.entries);
     let changed = false;
     for (const [name, entry] of next) {
@@ -584,12 +637,12 @@ export class ExportIndexStore {
         changed = true;
       }
     }
-    if (!changed) return;
-    await this.persist(next);
+    if (!changed) return true;
+    return this.persist(next);
   }
 
-  private async persist(entries: Map<string, ExportIndexEntry>): Promise<void> {
-    if (this.loadState.kind !== 'loaded') return;
+  private async persist(entries: Map<string, ExportIndexEntry>): Promise<boolean> {
+    if (this.loadState.kind !== 'loaded') return false;
     const file: ExportIndexFile = {
       indexVersion: EXPORT_INDEX_VERSION,
       region: this.region,
@@ -598,14 +651,22 @@ export class ExportIndexStore {
     };
     const etag = await this.writeIndex(file, this.loadState.etag);
     this.loadState = { kind: 'loaded', etag, entries };
+    return true;
   }
 
-  private async runWithRetry(label: string, op: () => Promise<void>): Promise<void> {
+  /**
+   * Run `op` under the If-Match retry budget. `true` means `op` reported the
+   * index now holds what it was asked to write (a PUT, or a no-op skip whose
+   * result was already there); `false` means this store abandoned the write
+   * and logged the warn below. It does NOT throw on either arm — `state.json`
+   * is the canonical record for the deploy path, and a caller that needs the
+   * failure surfaced reads the return value (see {@link patchEntry}).
+   */
+  private async runWithRetry(label: string, op: () => Promise<boolean>): Promise<boolean> {
     let lastErr: unknown;
     for (let attempt = 0; attempt < this.opts.maxWriteRetries; attempt++) {
       try {
-        await op();
-        return;
+        return await op();
       } catch (err) {
         lastErr = err;
         if (this.isPreconditionFailed(err)) {
@@ -618,17 +679,21 @@ export class ExportIndexStore {
           await new Promise((resolve) => setTimeout(resolve, backoff));
           continue;
         }
-        // Non-retryable error class for an index write — log and bail
-        // (state.json is canonical, so this is a perf-only loss).
+        // Non-retryable error class for an index write — log and bail. The
+        // deploy path treats the index as a derived view and continues on
+        // `state.json`; `cdkd scrub` reads the `false` and reports the entry
+        // as unwritten, since there the entry's value IS what it went to
+        // change.
         this.logger.warn(
           `Exports index ${label} failed (non-retryable): ${err instanceof Error ? err.message : String(err)}; continuing without index update`
         );
-        return;
+        return false;
       }
     }
     this.logger.warn(
       `Exports index ${label} exhausted ${this.opts.maxWriteRetries} retries due to concurrent writers; continuing without index update. Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
     );
+    return false;
   }
 
   private isNoSuchKey(err: unknown): boolean {
