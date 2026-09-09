@@ -122,22 +122,12 @@
     "@types/node": "^26.4.1",
     "@types/proxy-from-env": "^1.0.4",
     "@types/ws": "^8.18.1",
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.5.0",
     "marked": "18.0.11",
     "playwright": "1.63.0",
     "typescript": "^7.0.2",
     "typescript-v6": "npm:typescript@^6.0.3",
     "vite-plus": "^0.3.0"
-  },
-  "peerDependencies": {
-    "aws-cdk-lib": "^2.0.0",
-    "constructs": "^10.0.0"
-  },
-  "peerDependenciesMeta": {
-    "aws-cdk-lib": {
-      "optional": false
-    },
-    "constructs": {
-      "optional": false
-    }
   }
 }
