@@ -81,7 +81,13 @@ export function headingFor(date: string): string {
   return `**Recently Implemented** (${date}):`;
 }
 
-const HEADING = /^\*\*Recently Implemented\*\* \((\d{4}-\d{2}-\d{2})[^)]*\):$/;
+/**
+ * EXPORTED so a consumer cannot carry a looser copy: a pattern that matches a
+ * line this one rejects sees a section the assembler does not, and any count
+ * derived from it disagrees with the document. Both forms return 51 on today's
+ * archive, so the drift would be silent (go-to-k/cdkd#2813 review).
+ */
+export const HEADING = /^\*\*Recently Implemented\*\* \((\d{4}-\d{2}-\d{2})[^)]*\):$/;
 
 /**
  * "This line was MEANT to be a heading", looser than {@link HEADING} on the
