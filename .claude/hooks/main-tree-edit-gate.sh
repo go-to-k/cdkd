@@ -129,8 +129,9 @@ __refuse_unloadable_library() {
   echo "can repair the library with the Edit or Write tool -- that route is open." >&2
   echo "In the main tree on main this gate refuses that edit too, for its own" >&2
   echo "separate reason, so there the repair belongs to the operator, made from" >&2
-  echo "their own shell ('!' prefixed, in Claude Code). To inspect it first:" >&2
-  echo "  bash -n .claude/hooks/lib/command-match.sh" >&2
+  echo "their own shell ('!' prefixed, in Claude Code). To inspect the file," >&2
+  echo "use the Read or Grep TOOL -- no matcher covers those. A shell recipe" >&2
+  echo "would be refused here like every other Bash call, this one included." >&2
   echo "A Bash call that is no longer refused is the proof the library loaded." >&2
   exit 2
 }

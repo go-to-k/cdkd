@@ -4390,6 +4390,20 @@ gate_require_const() {
     # unfollowable instruction with one that is wrong in one tree is the same
     # defect. The wording below mirrors that gate's own refusal, which had the
     # distinction right and has cases pinning both halves.
+    #
+    # THE RULE THIS TOOK THREE ROUNDS TO REACH, and it is mechanical: **this
+    # message may advise a TOOL, never a shell command.** The first revision
+    # advised `git restore`; the second, after that was measured refused,
+    # advised `bash -n`; the third, after THAT was measured useless here,
+    # advised `grep` -- also a Bash call, also refused by 27 gates, measured
+    # rc=2 from every tree. Each fix was written while agreeing with the finding
+    # and reached for the next shell command in line. Nothing about this state
+    # admits a shell command: every Bash call is refused, including the one that
+    # would diagnose it. Read and Grep are TOOLS and no matcher covers them, so
+    # they are the only followable advice. `main-tree-edit-gate.test.sh` asserts
+    # that neither refusal in this layer contains an indented command recipe --
+    # the shape all three took -- so the next revision cannot re-add one
+    # quietly.
     echo "EVERY Bash call is refused while the library is in this state, this"
     echo "one included, so a command-line repair is not available."
     echo "FROM A FEATURE WORKTREE the Edit and Write tools stay allowed --"
@@ -4397,10 +4411,9 @@ gate_require_const() {
     echo "is the route. In the MAIN tree on main, main-tree-edit-gate refuses"
     echo "that edit too, for its own separate reason, so there the repair"
     echo "belongs to the operator, made from their own shell ('!' prefixed, in"
-    echo "Claude Code). To see it, grep the library for the name above -- it is"
-    echo "absent or empty there. Do NOT reach for 'bash -n': this refusal is"
-    echo "only reachable AFTER the library sourced, so it parses, and 'bash -n'"
-    echo "will report nothing and read as 'the file is fine'."
+    echo "Claude Code). To see which constant is missing, use the Read or Grep"
+    echo "TOOL on the library -- no matcher covers those, so they answer while"
+    echo "every Bash spelling of the same search is refused."
   } >&2
   exit 2
 }
@@ -4552,7 +4565,15 @@ gate_missing_const() {
       # shells -- the same silent drop, transposed rather than removed. The
       # label is display text, so flattening it costs nothing.
       _gc_label="${_gc_name//$_gc_nl/ }"
-      _gc_label="${_gc_label:-(empty)}(not-a-variable-name)"
+      # WHITESPACE-ONLY, not merely empty: flattening turns a newline-only name
+      # into a SPACE, which is non-empty, so `${x:-(empty)}` stopped firing and
+      # the report read `does not define:  (not-a-variable-name)` with nothing
+      # naming the input. Measured on both shells before this arm.
+      case "$_gc_label" in
+        *[!\ ]*) ;;
+        *) _gc_label="(empty)" ;;
+      esac
+      _gc_label="$_gc_label(not-a-variable-name)"
     else
       # Indirect expansion with a default. Verified on bash 3.2.57 (macOS
       # system bash, which run-tests.sh runs every suite under) and on 5.3.9:

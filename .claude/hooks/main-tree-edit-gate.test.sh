@@ -557,9 +557,20 @@ run_broken 2 "the repair belongs to the operator" \
   "the refusal names WHO repairs it in the main tree" "$__refusal_payload"
 run_broken 2 "'!' prefixed" \
   "the refusal keeps the how-to on the OPERATOR's line, where the repair is" "$__refusal_payload"
-run_broken 2 "To inspect it first" \
-  "the refusal labels bash -n as an INSPECTION, not as the repair" "$__refusal_payload"
-run_broken 2 "bash -n" "the refusal names the inspection command" "$__refusal_payload"
+# These two pinned `To inspect it first:` / `bash -n ...` until review measured
+# that the advised command is itself a refused Bash call -- in this state 27
+# gates refuse it, this one included, and the message four lines up says "Only
+# Bash is refused". The inspection is still worth naming; what changed is that
+# it must name a TOOL, because that is the only route that answers here. The
+# cases move WITH the wording rather than being deleted: dropping them would
+# leave the inspection half of the message unasserted, which is how the
+# unfollowable advice survived three revisions in the sibling refusal.
+run_broken 2 "To inspect the file" \
+  "the refusal labels the inspection as an INSPECTION, not as the repair" "$__refusal_payload"
+run_broken 2 "use the Read or Grep TOOL" \
+  "the refusal names a route that answers in this state" "$__refusal_payload"
+run_broken 2 "would be refused here like every other Bash call" \
+  "the refusal says why a shell recipe is not offered" "$__refusal_payload"
 run_broken 2 "no longer refused is the proof" "the refusal says how to tell the repair worked" "$__refusal_payload"
 
 # The refusal has to be the FIRST thing the arm does. Moving it below the
@@ -809,14 +820,38 @@ else
     "FROM A FEATURE WORKTREE" \
     "In the MAIN tree on main" \
     "belongs to the operator" \
-    "grep the library for the name above" \
-    "will report nothing and read as"; do
+    "use the Read or Grep" \
+    "every Bash spelling of the same search is refused"; do
     if [[ "$__sc_out" == *"$__sc_needle"* ]]; then
       pass=$((pass + 1)); printf 'ok   (refusal text) names: %s\n' "$__sc_needle"
     else
       fail=$((fail + 1)); printf 'FAIL the constant refusal must say: %s\n' "$__sc_needle"
     fi
   done
+
+  # THE STRUCTURAL GUARD, and the reason it exists rather than a seventh needle.
+  # Three successive revisions of this refusal advised a SHELL COMMAND --
+  # `git restore`, then `bash -n`, then `grep` -- and each was measured refused
+  # by the very gates the message is explaining, 27 of them, from every tree.
+  # Each fix was written while agreeing with the finding and reached for the
+  # next command in line, so a needle on the CURRENT wording would not have
+  # stopped the next one. What all three shared is a SHAPE: an indented recipe
+  # line, `  <cmd> ...`, which is how a message offers a command to run. This
+  # asserts the shape is absent from both refusals in this layer, so the class
+  # cannot come back quietly. The advice a refusal may give here is a TOOL --
+  # Read, Grep, Edit, Write -- because no PreToolUse matcher covers Read or
+  # Grep, and Edit / Write have the carve-out.
+  __recipe_out=$(printf '%s\n%s' "$__sc_out" \
+    "$(printf '%s' "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')" \
+       | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" 2>&1 >/dev/null)")
+  if printf '%s\n' "$__recipe_out" | grep -qE '^  [a-z][a-z0-9_.-]* '; then
+    fail=$((fail + 1))
+    printf 'FAIL a refusal in this layer offers an indented shell recipe; every Bash call is refused in that state, so it cannot be run. Advise a TOOL instead. Offending line(s):\n'
+    printf '%s\n' "$__recipe_out" | grep -E '^  [a-z][a-z0-9_.-]* ' | sed 's/^/       /'
+  else
+    pass=$((pass + 1))
+    printf 'ok   (refusal shape) neither refusal offers an indented shell recipe\n'
+  fi
 fi
 
 # THE OTHER TWO LABELS IN THE `case` PATTERN, under a broken library. The
@@ -1276,7 +1311,7 @@ else
   printf 'FAIL latency: a 300 KB command took %ss to refuse, budget 4s\n' "$__os_secs"
 fi
 
-CASE_FLOOR=154
+CASE_FLOOR=159
 # `ran` is captured BEFORE the increment. Incrementing `fail` first and then
 # printing `$((pass + fail))` re-counted the floor's own failure as a case, so
 # one deleted case reported `only 135 cases ran, expected at least 135` -- a
