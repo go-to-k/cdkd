@@ -2450,6 +2450,54 @@ check 'a balanced substitution body is still seen' 0 \
 check 'a mis-closed span with NO verb in it does not match' 1 \
   "$COMMIT" "$(printf 'echo "$(echo %s)%s ; echo done)"' "'" "'")"
 
+# --- gate_missing_const: the shape guard's own cases -----------------------
+#
+# This helper had no cases at all until review round 18 pointed out that its
+# two bugfixes -- the name-shape rejection and the whitespace-only label --
+# were unasserted, in the PR whose thesis is that unasserted text is how a
+# defect survives revisions. It is not driven through a hook here because the
+# question is the helper's own answer, not any gate's exit code.
+__gmc() { # <expected GATE_MISSING_CONSTS> <desc> <name...>
+  local want="$1" desc="$2"; shift 2
+  GATE_MISSING_CONSTS=""
+  gate_missing_const "$@" >/dev/null 2>&1 || true
+  if [ "$GATE_MISSING_CONSTS" = "$want" ]; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$desc"
+  else
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL $desc: wanted [$want] got [$GATE_MISSING_CONSTS]\n"
+  fi
+}
+
+# A name bash would not accept is REPORTED, not expanded. `${!n}` on a name
+# carrying an array subscript EXECUTES it, and a quoted-together argument makes
+# bash 5.x abort the loop so every later name goes unchecked -- measured, that
+# turned a `branch-gate` refusal into rc=1, a PASS.
+__gmc 'GATE_A GATE_B(not-a-variable-name)' 'a quoted-together pair is reported, not looked up' 'GATE_A GATE_B'
+__gmc '9BAD(not-a-variable-name)' 'a name starting with a digit is reported' '9BAD'
+# The label keeps the WHOLE offending name -- a truncated one would not tell the
+# author which argument to fix.
+__gmc 'GATE_A[$(exit 7)](not-a-variable-name)' 'a name carrying a subscript is reported verbatim, and nothing runs' 'GATE_A[$(exit 7)]'
+
+# The malformed label may not swallow a name that follows it. The dedup keyed on
+# a space-delimited list, and a label containing a space matched a later name
+# inside itself; keying on newline moved the collision to newline-carrying
+# names, so the label is flattened AND the delimiter is a newline.
+__gmc 'GATE_A GATE_B(not-a-variable-name) GATE_A' 'a space-carrying label does not swallow a later name' 'GATE_A GATE_B' 'GATE_A'
+__gmc 'GATE_A GATE_B(not-a-variable-name) GATE_A' 'a newline-carrying label does not swallow one either' "$(printf 'GATE_A\nGATE_B')" 'GATE_A'
+
+# WHITESPACE-only, not space-only: flattening turns a newline into a space, so
+# the `(empty)` fallback has to test the whole class or a tab- or CR-only name
+# still reports as invisible whitespace.
+__gmc '(empty)(not-a-variable-name)' 'an empty name reports as (empty)' ''
+__gmc '(empty)(not-a-variable-name)' 'a newline-only name reports as (empty)' "$(printf '\n')"
+__gmc '(empty)(not-a-variable-name)' 'a tab-only name reports as (empty)' "$(printf '\t')"
+__gmc '(empty)(not-a-variable-name)' 'a space-only name reports as (empty)' ' '
+
+# And the control: a well-formed name the library DOES define reports nothing,
+# so the cases above are not passing because everything is reported.
+__gmc '' 'a defined constant is not reported' 'GATE_FLAGS'
+
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
   echo

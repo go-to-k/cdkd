@@ -835,22 +835,50 @@ else
   # by the very gates the message is explaining, 27 of them, from every tree.
   # Each fix was written while agreeing with the finding and reached for the
   # next command in line, so a needle on the CURRENT wording would not have
-  # stopped the next one. What all three shared is a SHAPE: an indented recipe
-  # line, `  <cmd> ...`, which is how a message offers a command to run. This
-  # asserts the shape is absent from both refusals in this layer, so the class
-  # cannot come back quietly. The advice a refusal may give here is a TOOL --
-  # Read, Grep, Edit, Write -- because no PreToolUse matcher covers Read or
-  # Grep, and Edit / Write have the carve-out.
-  __recipe_out=$(printf '%s\n%s' "$__sc_out" \
-    "$(printf '%s' "$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')" \
-       | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" 2>&1 >/dev/null)")
-  if printf '%s\n' "$__recipe_out" | grep -qE '^  [a-z][a-z0-9_.-]* '; then
+  # stopped the next one. What all three shared is a SHAPE: an INDENTED line,
+  # which is how a message sets a command apart to be run.
+  #
+  # THE ASSERTION IS TOTAL, NOT ENUMERATIVE, and that is the correction review
+  # round 18 forced. The first version matched `^  [a-z][a-z0-9_.-]* ` -- one
+  # indent width, one alphabet -- and six plausible next spellings walked past
+  # it green: a four-space indent, `  $EDITOR`, `  /usr/bin/grep`, a leading
+  # `VAR=value`, `  ./scripts/repair.sh`, and a bare `  vim`. Enumerating recipe
+  # shapes is the same losing game as enumerating command names, which is the
+  # defect this fence exists to end. So: **no line of these refusals may begin
+  # with whitespace at all.** None does today, the property is trivial to hold,
+  # and it cannot be satisfied by a spelling nobody thought of.
+  #
+  # SCOPED to the refusals that fire while EVERY Bash call is refused -- these
+  # three. Other refusals in the library DO indent a recipe (see
+  # `gate_refuse_unresolved_target`), correctly: they fire in states where Bash
+  # still works, so a command is followable there. The distinction is the state,
+  # not the file.
+  #
+  # THREE, not two. The first version scanned `$STRIPPED` and `$BROKEN` and
+  # missed the `declare -F gate_require_const` refusal entirely -- planting a
+  # recipe in it left the suite green -- while the comment said "both".
+  __recipe_payload=$(jq -nc --arg cwd "$MAIN" '{tool_name:"Bash", cwd:$cwd, tool_input:{command:"echo hi > docs/_generated/ledger.tsv"}}')
+  __recipe_out=$(printf '%s\n%s\n%s' \
+    "$__sc_out" \
+    "$(printf '%s' "$__recipe_payload" | "$HOOK_RUNNER" "$BROKEN/main-tree-edit-gate.sh" 2>&1 >/dev/null)" \
+    "$(printf '%s' "$__recipe_payload" | "$HOOK_RUNNER" "$LAGGING/main-tree-edit-gate.sh" 2>&1 >/dev/null)")
+  # GUARD THE POPULATION: all three refusals must actually be in the scanned
+  # text, or the case passes over messages it never saw -- which is exactly how
+  # the third one was missed.
+  __recipe_seen=0
+  for __rn in "does not define: GATE_SEP_AMP" "is missing or unloadable" "does not define"; do
+    case "$__recipe_out" in *"$__rn"*) __recipe_seen=$((__recipe_seen + 1)) ;; esac
+  done
+  if [ "$__recipe_seen" -lt 3 ]; then
     fail=$((fail + 1))
-    printf 'FAIL a refusal in this layer offers an indented shell recipe; every Bash call is refused in that state, so it cannot be run. Advise a TOOL instead. Offending line(s):\n'
-    printf '%s\n' "$__recipe_out" | grep -E '^  [a-z][a-z0-9_.-]* ' | sed 's/^/       /'
+    printf 'FAIL (refusal shape) only %s of the 3 refusals reached the scan -- the case would pass over messages it never saw\n' "$__recipe_seen"
+  elif printf '%s\n' "$__recipe_out" | grep -qE '^[[:space:]]'; then
+    fail=$((fail + 1))
+    printf 'FAIL a refusal in this layer indents a line. Every Bash call is refused in that state, so an indented recipe cannot be run; advise a TOOL (Read, Grep, Edit, Write) in running prose instead. Offending line(s):\n'
+    printf '%s\n' "$__recipe_out" | grep -nE '^[[:space:]]' | sed 's/^/       /'
   else
     pass=$((pass + 1))
-    printf 'ok   (refusal shape) neither refusal offers an indented shell recipe\n'
+    printf 'ok   (refusal shape) none of the 3 refusals in this layer indents a line\n'
   fi
 fi
 

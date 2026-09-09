@@ -4569,8 +4569,13 @@ gate_missing_const() {
       # into a SPACE, which is non-empty, so `${x:-(empty)}` stopped firing and
       # the report read `does not define:  (not-a-variable-name)` with nothing
       # naming the input. Measured on both shells before this arm.
+      #
+      # `[![:space:]]`, not `[!\ ]`: the first revision tested for a SPACE while
+      # its own comment said whitespace, so a tab-only or CR-only name still
+      # produced the illegible report the arm was added to remove -- measured,
+      # `<TAB>(not-a-variable-name)`. The class is whitespace; spell the class.
       case "$_gc_label" in
-        *[!\ ]*) ;;
+        *[![:space:]]*) ;;
         *) _gc_label="(empty)" ;;
       esac
       _gc_label="$_gc_label(not-a-variable-name)"
