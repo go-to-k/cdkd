@@ -853,6 +853,8 @@ export function countDecisions({
  * @param {string} [repoRoot]
  * @returns {{ written: Array<{ resourceType: string, property: string, rationale: string }>,
  *   escalated: Array<{ resourceType: string, property: string, reason: string }> }}
+ * @param {unknown} [deps] The evidence helpers. Defaults to the loaded ones and
+ *   REFUSES when nothing loaded them; tests inject doubles here instead.
  */
 export function writeAutoTolerated(
   removed,
@@ -2269,6 +2271,21 @@ export const KNOWN_FLAGS = [
 ];
 
 /**
+ * The flag a token names, or `undefined`.
+ *
+ * Shared with the entry point so it can tell a MISTYPED flag from a real mode
+ * before loading anything: the load runs ahead of `main()`'s own guard, so on
+ * the no-install runner `--umbrella-checklists` used to report "could not load
+ * the evidence helpers" — pointing at the wrong file, which is exactly what the
+ * loader's own comment argues against.
+ *
+ * @param {string} arg
+ */
+export function knownFlagFor(arg) {
+  return KNOWN_FLAGS.find((f) => arg === f || arg.startsWith(`${f}=`));
+}
+
+/**
  * Refuse a fixture listing too small to have been produced by a real refresh.
  *
  * The LAST input in this file without a floor, and the same class as every
@@ -2407,7 +2424,7 @@ function main() {
     // SAME path — an earlier revision `continue`d on the glued form before the
     // repeat check and `--nested-key-rc=0 --nested-key-rc=3` still rendered
     // clean.
-    const flag = KNOWN_FLAGS.find((f) => a === f || a.startsWith(`${f}=`));
+    const flag = knownFlagFor(a);
     if (flag === undefined) {
       unknown.push(a);
       continue;
@@ -2746,7 +2763,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // a missing dependency as a report cdkd chose to write, which is the same
   // misread the lazy import removes one layer down.
   let inputsReady = true;
-  if (!process.argv.slice(2).includes('--umbrella-checklist')) {
+  // A MISTYPED flag must reach `main()`'s own guard rather than the loader: the
+  // load runs first, so without this a typo on the no-install runner reports a
+  // missing dependency and names the wrong file.
+  const argv = process.argv.slice(2);
+  const mistyped = argv.some((a) => a.startsWith('-') && knownFlagFor(a) === undefined);
+  if (!argv.includes('--umbrella-checklist') && !mistyped) {
     try {
       await loadEvidenceDeps();
     } catch (err) {

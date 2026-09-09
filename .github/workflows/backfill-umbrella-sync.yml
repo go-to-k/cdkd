@@ -68,8 +68,9 @@ jobs:
       # https://github.com/go-to-k/cdkd/issues/2858). The helpers are loaded on
       # demand now, and `tests/unit/scripts/umbrella-checklist-no-deps.test.ts`
       # SPAWNS the mode against a corpus with no `node_modules` — so the claim
-      # above is checked rather than asserted. Adding an install here would
-      # make that fence true but no longer load-bearing; fix the graph instead.
+      # above is checked rather than asserted. That test also asserts THIS job
+      # still declares `run-install: false`, so adding an install here does not
+      # quietly de-fang the fence: it fails it. Fix the graph instead.
       - uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1
         with:
           node-version: "24"

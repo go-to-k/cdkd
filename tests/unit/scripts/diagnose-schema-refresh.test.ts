@@ -2178,11 +2178,15 @@ describe('the module’s own doc comments', () => {
 
   it('holds for the DECLARATION file too', () => {
     // The `.mjs` arm above is where this predicate has always pointed, and the
-    // orphan it exists to catch landed in the `.d.mts` instead — a new
-    // `export declare function` inserted between `writeAutoTolerated`'s
-    // docblock and its signature, so TS attached the block to the wrong symbol
-    // and left the function undocumented (issue go-to-k/cdkd#2858). Caught by
-    // review, by nothing mechanical.
+    // orphan it exists to catch landed in the `.d.mts` instead (issue
+    // go-to-k/cdkd#2858). The SHAPE matters, because it is what makes the
+    // incident catchable at all: a new declaration was inserted WITH ITS OWN
+    // DOCBLOCK between `writeAutoTolerated`'s docblock and its signature, so
+    // the file read `block, block, declaration` — and `block followed by
+    // another block` is the one orphan spelling this predicate detects. A
+    // declaration inserted WITHOUT a docblock would read as
+    // `block, declaration` and pass, which is the bound the `.mjs` arm above
+    // states. Caught by review, by nothing mechanical.
     const src = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.d.mts'), 'utf8');
     expect(orphansIn(src), 'a docblock is not attached to a declaration').toEqual([]);
     // BOUND, stated rather than implied: `orphansIn` matches ` */` EXACTLY, so

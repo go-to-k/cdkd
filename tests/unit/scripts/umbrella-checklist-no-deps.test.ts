@@ -21,9 +21,17 @@
  * corpus and requires it to fail, which is what proves the corpus can observe a
  * missing dependency rather than passing because nothing was ever resolved.
  */
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, afterEach } from 'vite-plus/test';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,30 +47,37 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
  * `offline-property-evidence.ts` and `published-sdk-typings.ts` export — and a
  * copy with nothing comparing it drifts silently.
  *
- * THREE assignments, because one is not a comparison. `Real -> Declared` proves
+ * FOUR assignments, because one is not a comparison. `Real -> Declared` proves
  * only that the real helpers SATISFY the declaration, so every drift making the
- * declaration LOOSER passes it — measured: a deleted member, a return widened to
- * `unknown` (the exact weakening the declaration's own docblock argues against),
- * a member dropped from a return shape, a narrowed parameter and an extra
- * trailing optional parameter all survived it, while a changed parameter type, a
- * narrowed return and an extra member were caught. The inverse assignment closes
- * the looser direction and `keyof` closes the deleted member.
+ * declaration LOOSER passes it. The inverse closes that direction, `keyof`
+ * closes a deleted member, and `Required` closes a member turned OPTIONAL —
+ * which neither of the other two can see.
  *
  * The inverse is `Pick`ed to the two helpers declared verbatim: a full inverse
  * reds at baseline, because `publishedSdkInterfaces` is deliberately declared
  * `ReadonlyMap<…, unknown>` against the real `Map<…, SdkMemberType>` — the
  * declaration file cannot name `SdkMemberType` without importing a `.ts` module.
+ * That exclusion is why the member gets its OWN two-directional comparison
+ * against a locally written expectation below: without it, the one member the
+ * inverse cannot cover was the one member nothing covered.
  *
- * BOUND, measured against the three assignments as they stand: seven of the
- * eight drifts red — changed parameter type, narrowed return, widened return,
- * extra member, deleted member, a member dropped from a return shape, and a
- * narrowed parameter. The eighth does NOT: declaring an EXTRA TRAILING OPTIONAL
- * parameter on a helper. TS compares function parameters by arity-tolerant
- * assignability in both directions, so no assignment-shaped fence can see it,
- * and a `Parameters<…>` tuple comparison would be the tool if it ever matters.
- * It is the least damaging of the eight — the extra parameter is optional, so
- * every real call still typechecks and the declaration merely permits an
- * argument the helper ignores.
+ * BOUND, measured against these four assignments over eleven drifts of the
+ * declaration. RED: a changed parameter type, a narrowed return, a widened
+ * return, an extra member, a deleted member, a member dropped from a return
+ * shape, a narrowed parameter, and — on `publishedSdkInterfaces` specifically —
+ * a widened return and an optional member. The two that PASS:
+ *
+ *   1. an EXTRA TRAILING OPTIONAL parameter on any helper. TS compares function
+ *      parameters by arity-tolerant assignability in BOTH directions, so no
+ *      assignment-shaped fence can see it; `Parameters<…>` tuple comparison is
+ *      the tool if it ever matters. Least damaging of the eleven — the
+ *      parameter is optional, so every real call still typechecks.
+ *   2. `(...args: any[]) => any`. `any` is assignable in both directions by
+ *      definition, so it defeats every type-level fence, not just this one.
+ *
+ * State the bound rather than the fence's strength: an earlier revision of this
+ * comment generalized a measurement taken over TWO of the three members and read
+ * as exhaustive. It was not.
  *
  * TYPE-ONLY on purpose: a value import would pull `typescript-v6` and the whole
  * SDK-model graph into a file whose entire subject is running WITHOUT them.
@@ -72,6 +87,12 @@ type RealEvidenceDeps = {
   providerWiresProperty: typeof import('../../../scripts/offline-property-evidence.ts').providerWiresProperty;
   publishedSdkInterfaces: typeof import('../../../scripts/published-sdk-typings.ts').publishedSdkInterfaces;
 };
+/** What the declaration is ALLOWED to say about the one excluded member. */
+type ExpectedPublishedSdkInterfaces = (
+  client: string,
+  version: string
+) => ReadonlyMap<string, ReadonlyMap<string, unknown>> | undefined;
+
 const _evidenceDepsAcceptsTheHelpers: EvidenceDeps = null as unknown as RealEvidenceDeps;
 const _evidenceDepsIsNotLooser: Pick<
   RealEvidenceDeps,
@@ -79,6 +100,12 @@ const _evidenceDepsIsNotLooser: Pick<
 > = null as unknown as Pick<EvidenceDeps, 'typedSdkMember' | 'providerWiresProperty'>;
 const _evidenceDepsDeclaresEveryMember: keyof EvidenceDeps =
   null as unknown as keyof RealEvidenceDeps;
+const _evidenceDepsDeclaresNothingOptional: Required<EvidenceDeps> =
+  null as unknown as EvidenceDeps;
+const _publishedSdkInterfacesIsExact: ExpectedPublishedSdkInterfaces =
+  null as unknown as EvidenceDeps['publishedSdkInterfaces'];
+const _publishedSdkInterfacesIsNotLooser: EvidenceDeps['publishedSdkInterfaces'] =
+  null as unknown as ExpectedPublishedSdkInterfaces;
 
 /** The shape guard the workflow itself applies to the rendered file. */
 const WORKFLOW_SHAPE = /^- \[ \] |^_No remaining silent-drop properties/m;
@@ -87,8 +114,23 @@ const WORKFLOW_SHAPE = /^- \[ \] |^_No remaining silent-drop properties/m;
  * A corpus carrying what the mode READS and nothing else — no `node_modules`,
  * no `package.json`, so a resolution of any bare specifier must fail.
  */
+/**
+ * Every corpus this file creates, removed in `afterEach`.
+ *
+ * `makeCorpus` copies the whole ~2 MB `scripts/` tree and is called once per
+ * case, so without this the file leaks ~8 MB of tmpdirs per run — the sibling
+ * `diagnose-schema-refresh.test.ts` removes each of its ~12 scratch roots and
+ * this one did not.
+ */
+const corpora: string[] = [];
+
+afterEach(() => {
+  while (corpora.length > 0) rmSync(corpora.pop()!, { recursive: true, force: true });
+});
+
 function makeCorpus(): string {
   const root = mkdtempSync(join(tmpdir(), 'cdkd-umbrella-nodeps-'));
+  corpora.push(root);
   mkdirSync(join(root, 'scripts'), { recursive: true });
   mkdirSync(join(root, 'src/provisioning'), { recursive: true });
   cpSync(join(repoRoot, 'scripts'), join(root, 'scripts'), { recursive: true });
@@ -228,6 +270,43 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     expect(run.stdout).not.toContain('The automated diagnosis failed to run');
   }, 60_000);
 
+  it('reports a MISTYPED flag as a flag error, not as a failed load', () => {
+    // The load runs before `main()`'s own guard, so without the argv pre-check
+    // a typo on the no-install runner reported "could not load the evidence
+    // helpers" — naming the wrong file, which is what the loader's own comment
+    // argues against.
+    const root = makeCorpus();
+    const run = spawnSync(
+      process.execPath,
+      ['scripts/diagnose-schema-refresh.mjs', '--umbrella-checklists'],
+      { cwd: root, encoding: 'utf8' }
+    );
+    expect(run.stdout).toContain('unrecognized flag(s): --umbrella-checklists');
+    expect(run.stdout).not.toContain('could not load the evidence helpers');
+    expect(run.stderr).toBe('');
+  }, 60_000);
+
+  it('names EVERY hollow member, not just the first', () => {
+    // `missing.join(', ')` is only exercised at length 1 by the case above, and
+    // only for `typedSdkMember`. A one-name report would read as "the rest are
+    // fine" while nothing checked them.
+    const root = makeCorpus();
+    stubHelpers(root, 'export const typedSdkMember = 42;\nexport const providerWiresProperty = 7;\n');
+    writeFileSync(
+      join(root, 'scripts/published-sdk-typings.ts'),
+      'export const publishedSdkInterfaces = null;\n'
+    );
+
+    const run = spawnSync(process.execPath, ['scripts/diagnose-schema-refresh.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain(
+      'did not export typedSdkMember, providerWiresProperty, publishedSdkInterfaces AS A FUNCTION'
+    );
+  }, 60_000);
+
   it('is a fence for the workflow as it is actually written', () => {
     // The premise this file rests on lives in the workflow: if a later change
     // installs dependencies there, this fence is still true but no longer
@@ -236,7 +315,56 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
       join(repoRoot, '.github/workflows/backfill-umbrella-sync.yml'),
       'utf8'
     );
-    expect(workflow).toContain('run-install: false');
-    expect(workflow).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-checklist');
+    // Bound to the SAME job, not merely to the file: `toContain` on the whole
+    // document would still pass if a second job appeared that installs and a
+    // third that renders. One job (`sync`) exists today, so this is a fence
+    // against the file GROWING, which is when a whole-file match stops meaning
+    // anything.
+    const jobs = workflow.slice(workflow.indexOf('\njobs:'));
+    expect(jobs.match(/^ {2}[\w-]+:$/gm)).toEqual(['  sync:']);
+    const syncJob = jobs.slice(jobs.indexOf('\n  sync:'));
+    expect(syncJob).toContain('run-install: false');
+    expect(syncJob).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-checklist');
+  });
+});
+
+describe('the evidence-helper seam', () => {
+  it('accepts INJECTED helpers, so a caller need not load anything', async () => {
+    // The 4th parameter is the seam the three type assignments above fence, and
+    // until now nothing passed it — the source comment "tests that inject
+    // doubles never reach the loader" described a test that did not exist.
+    const { writeAutoTolerated } = await import('../../../scripts/diagnose-schema-refresh.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'cdkd-deps-seam-'));
+    corpora.push(root);
+    mkdirSync(join(root, 'tests/fixtures/cfn-schemas'), { recursive: true });
+    writeFileSync(join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json'), '{}\n');
+
+    const result = writeAutoTolerated(
+      [{ resourceType: 'AWS::Fake::Thing', properties: ['Gone'] }] as never,
+      new Map<string, string>(),
+      root,
+      // Doubles: no load has happened in this module instance, so reaching the
+      // loader at all would throw the refusal instead.
+      {
+        typedSdkMember: () => undefined,
+        providerWiresProperty: () => undefined,
+        publishedSdkInterfaces: () => undefined,
+      } as never
+    );
+    // The verdict itself belongs to `classifyRemovedProperty`'s own suite; what
+    // this pins is that the injected helpers were USED — with no load, any
+    // other path throws.
+    expect(result.escalated.map((e) => e.property)).toEqual(['Gone']);
+    expect(result.written).toEqual([]);
+  });
+
+  it('loads once — a second call returns the same helpers', async () => {
+    // Asserted in the loader's docblock and by nothing else: deleting the
+    // memoization guard reds no case, and a second import of a module that
+    // THREW would re-throw rather than re-run.
+    const mod = await import('../../../scripts/diagnose-schema-refresh.mjs');
+    const first = await mod.loadEvidenceDeps();
+    const second = await mod.loadEvidenceDeps();
+    expect(second).toBe(first);
   });
 });
