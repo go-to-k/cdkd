@@ -300,12 +300,21 @@ export class ExportIndexStore {
    * A snapshot of the persisted index, read WITHOUT the rebuild that
    * {@link lookup} triggers on a missing or corrupt object.
    *
-   * Every S3 call on this path is a GET. `undefined` means the object is
-   * absent or did not parse; neither arm writes, so a caller that must
-   * perform no S3 write (`cdkd scrub --dry-run`) can read the entries here.
-   * A `indexVersion` this binary cannot interpret still THROWS, as it does
-   * on the `lookup` path — rebuilding over a newer binary's index would
-   * replace it with this one's view of the same names.
+   * Every S3 call on this path is a GET, so a caller that must perform no S3
+   * write (`cdkd scrub --dry-run`) can read the entries here.
+   *
+   * THREE OUTCOMES, and only ONE of them is `undefined`. A MISSING object
+   * returns `undefined`: there is nothing to audit and nothing to repair. A
+   * body that does not PARSE, and an `indexVersion` this binary cannot
+   * interpret, both THROW — because the caller's question is "what does this
+   * index hold", and for those two the honest answer is "this call could not
+   * find out". Collapsing the corrupt case into `undefined` reads as an empty
+   * index, so a caller reports nothing over bytes it never interpreted, which
+   * for `cdkd scrub` is a green gate over a file that may still hold the
+   * plaintext (issue [#2667](https://github.com/go-to-k/cdkd/issues/2667)) —
+   * the exact shape that issue exists to close, one level down. `doLoad`'s own
+   * corrupt arm is unaffected: it REBUILDS, which is a write, and is why this
+   * read cannot share it.
    *
    * The returned map is a COPY, and a `patchEntry` on this same instance
    * afterwards writes under the etag this read cached rather than re-reading.
@@ -314,7 +323,14 @@ export class ExportIndexStore {
     if (this.loadState.kind === 'loading') await this.loadState.promise;
     if (this.loadState.kind === 'loaded') return new Map(this.loadState.entries);
     const outcome = await this.loadPersisted();
-    if (outcome.kind !== 'loaded') return undefined;
+    if (outcome.kind === 'missing') return undefined;
+    if (outcome.kind === 'corrupt') {
+      throw new Error(
+        `Exports index at ${this.indexKey()} could not be parsed ` +
+          `(${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}). ` +
+          `Its contents were NOT examined.`
+      );
+    }
     return new Map(outcome.entries);
   }
 
@@ -330,8 +346,24 @@ export class ExportIndexStore {
    * scrub`, where the entry keeps whatever value it held — reads this
    * return; the deploy path treats the index as a perf hint and ignores it.
    */
-  async patchEntry(exportName: string, entry: ExportIndexEntry): Promise<boolean> {
-    return this.enqueueWrite('patch', () => this.applyPatch(exportName, entry));
+  async patchEntry(
+    exportName: string,
+    entry: ExportIndexEntry,
+    opts: {
+      /**
+       * Refuse the write unless the entry CURRENTLY in the index is still
+       * published by this producer (issue #2667 review). A caller that decided
+       * to rewrite one owner's value read a SNAPSHOT; an If-Match conflict
+       * reloads the index underneath the retry, so by the time the PUT lands a
+       * concurrent deploy may have taken the name over — `applyStackUpdate`
+       * keeps the latest writer and only WARNS on a foreign overwrite (issue
+       * #2193). Without this the retry re-asserts the snapshot's owner and
+       * resurrects a value the new producer replaced.
+       */
+      requireOwner?: { producerStack: string; producerRegion: string };
+    } = {}
+  ): Promise<boolean> {
+    return this.enqueueWrite('patch', () => this.applyPatch(exportName, entry, opts.requireOwner));
   }
 
   /**
@@ -615,9 +647,33 @@ export class ExportIndexStore {
     );
   }
 
-  private async applyPatch(exportName: string, entry: ExportIndexEntry): Promise<boolean> {
+  private async applyPatch(
+    exportName: string,
+    entry: ExportIndexEntry,
+    requireOwner?: { producerStack: string; producerRegion: string }
+  ): Promise<boolean> {
     await this.ensureLoaded();
     if (this.loadState.kind !== 'loaded') return false;
+    // Checked HERE rather than at the call site, and re-checked on every retry
+    // attempt, because `runWithRetry` resets `loadState` on an If-Match
+    // conflict and `ensureLoaded` above re-reads: this is the only point that
+    // sees what the index holds for the attempt about to be made.
+    if (requireOwner) {
+      const current = this.loadState.entries.get(exportName);
+      if (
+        !current ||
+        current.producerStack !== requireOwner.producerStack ||
+        current.producerRegion !== requireOwner.producerRegion
+      ) {
+        this.logger.warn(
+          `Exports index entry ownership changed under a patch; refusing to write it. ` +
+            `Expected producer '${displaySafe(requireOwner.producerStack)}' ` +
+            `(${displaySafe(requireOwner.producerRegion)}), found ` +
+            `${current ? `'${displaySafe(current.producerStack)}' (${displaySafe(current.producerRegion)})` : 'no entry'}.`
+        );
+        return false;
+      }
+    }
     const next = new Map(this.loadState.entries);
     next.set(exportName, entry);
     return this.persist(next);

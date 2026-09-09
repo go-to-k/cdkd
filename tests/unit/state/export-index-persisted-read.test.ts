@@ -175,7 +175,13 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
     expect(sent.map((s) => s.name)).toEqual(['GetObjectCommand']);
   });
 
-  it('returns undefined for a CORRUPT body and never rebuilds it', async () => {
+  it('THROWS on a CORRUPT body — never `undefined`, and never a rebuild', async () => {
+    // The DISCRIMINATOR against the missing case above, and the reason the two
+    // may not share a return value: `undefined` reads as "no index", so a
+    // caller reports nothing over bytes it could not interpret — bytes that
+    // may still hold the plaintext. That is issue #2667's own failure shape
+    // reproduced one level down, and it is what `cdkd scrub` routes into its
+    // explicit `SCRUB_EXPORT_INDEX_INCOMPLETE` failure.
     const { client, sent } = mockS3((cmd) => {
       if (cmd.name === 'GetObjectCommand') {
         return Promise.resolve({
@@ -193,7 +199,8 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
       noRebuildBackend()
     );
 
-    await expect(store.readPersistedEntries()).resolves.toBeUndefined();
+    await expect(store.readPersistedEntries()).rejects.toThrow(/could not be parsed/);
+    // Still no PUT: `doLoad`'s corrupt arm REBUILDS, and this read must not.
     expect(sent.map((s) => s.name)).toEqual(['GetObjectCommand']);
   });
 
@@ -331,6 +338,95 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
     expect(loggerSpies.warn).toHaveBeenCalledWith(
       expect.stringContaining('Exports index patch failed (non-retryable)')
     );
+  });
+
+  it('patchEntry REFUSES when the entry it was asked to patch changed owner', async () => {
+    // The plan reads a SNAPSHOT; an If-Match conflict reloads the index under
+    // the retry, so a concurrent deploy can take the export name over in that
+    // window and the store keeps the latest writer with only a warning (issue
+    // #2193). Re-asserting the snapshot's owner would resurrect the old value.
+    const { client, sent } = mockS3((cmd) => {
+      if (cmd.name === 'GetObjectCommand') {
+        return Promise.resolve({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                indexBody({
+                  MyExport: {
+                    value: 'theirs',
+                    producerStack: 'AnotherProducer',
+                    producerRegion: 'us-east-1',
+                  },
+                })
+              ),
+          },
+          ETag: '"etag-1"',
+        });
+      }
+      if (cmd.name === 'PutObjectCommand') return Promise.resolve({ ETag: '"etag-2"' });
+      throw new Error(`unexpected ${cmd.name}`);
+    });
+    const store = new ExportIndexStore(
+      client,
+      'cdkd-state-bucket',
+      'cdkd',
+      'us-east-1',
+      noRebuildBackend()
+    );
+
+    await expect(
+      store.patchEntry(
+        'MyExport',
+        { value: 'mine', producerStack: 'Producer', producerRegion: 'us-east-1' },
+        { requireOwner: { producerStack: 'Producer', producerRegion: 'us-east-1' } }
+      )
+    ).resolves.toBe(false);
+    // The discriminator is the absence of the PUT, not just the `false`.
+    expect(sent.filter((s) => s.name === 'PutObjectCommand')).toHaveLength(0);
+    expect(loggerSpies.warn).toHaveBeenCalledWith(
+      expect.stringContaining('ownership changed under a patch')
+    );
+  });
+
+  it('patchEntry PROCEEDS when requireOwner still matches the current entry', async () => {
+    // The other direction: the guard must not refuse the ordinary case.
+    const { client, sent } = mockS3((cmd) => {
+      if (cmd.name === 'GetObjectCommand') {
+        return Promise.resolve({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                indexBody({
+                  MyExport: {
+                    value: 'legacy',
+                    producerStack: 'Producer',
+                    producerRegion: 'us-east-1',
+                  },
+                })
+              ),
+          },
+          ETag: '"etag-1"',
+        });
+      }
+      if (cmd.name === 'PutObjectCommand') return Promise.resolve({ ETag: '"etag-2"' });
+      throw new Error(`unexpected ${cmd.name}`);
+    });
+    const store = new ExportIndexStore(
+      client,
+      'cdkd-state-bucket',
+      'cdkd',
+      'us-east-1',
+      noRebuildBackend()
+    );
+
+    await expect(
+      store.patchEntry(
+        'MyExport',
+        { value: 'converged', producerStack: 'Producer', producerRegion: 'us-east-1' },
+        { requireOwner: { producerStack: 'Producer', producerRegion: 'us-east-1' } }
+      )
+    ).resolves.toBe(true);
+    expect(sent.filter((s) => s.name === 'PutObjectCommand')).toHaveLength(1);
   });
 
   it('patchEntry returns FALSE when the If-Match budget is exhausted', async () => {

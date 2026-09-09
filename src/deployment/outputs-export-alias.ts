@@ -387,6 +387,48 @@ export function secretBearingExportNameWarning(
 }
 
 /**
+ * How a state-bag KEY may be SHOWN, once it has been tested for secret content
+ * (issue [#2667](https://github.com/go-to-k/cdkd/issues/2667)).
+ *
+ * An export name IS a key of `state.outputs` and of the exports index, and a
+ * key holding secret plaintext is the residue `cdkd scrub` exists to report —
+ * so any message naming one has to go through the same test the warnings below
+ * apply, not through a control-character strip. `displaySafe` /
+ * {@link stripControlChars} sanitise for a TERMINAL; neither masks a secret.
+ *
+ * Three outcomes, and the third is the one a caller must not collapse into the
+ * first: masking can leave the text UNCHANGED (a needle below
+ * {@link MIN_SECRET_NEEDLE} that matched only as the whole key, or a mask that
+ * happens to equal the input), and printing it then would publish the secret
+ * under a label asserting it had been masked —
+ * {@link secretBearingExportNameWarning}'s invariant, applied here.
+ */
+export type SecretSafeKeyDisplay =
+  | { kind: 'safe'; text: string }
+  | { kind: 'masked'; text: string }
+  | { kind: 'withheld' };
+
+/**
+ * Test `key` for recorded secret plaintext and return how it may be shown.
+ *
+ * Reuses {@link stateKeySecretExposure} and the same `maskEveryOccurrence` the
+ * warnings below use, rather than restating either: two spellings of "is this
+ * key safe to print" would disagree on the boundary cases those two encode
+ * (the whole-key match for a sub-floor needle, longest-needle-first masking).
+ */
+export function secretSafeKeyDisplay(
+  key: string,
+  secrets: RecordedSecretValues
+): SecretSafeKeyDisplay {
+  const stripped = stripControlChars(key);
+  const exposure = stateKeySecretExposure(key, secrets);
+  if (!exposure) return { kind: 'safe', text: stripped };
+  const masked = stripControlChars(maskEveryOccurrence(key, exposure));
+  if (masked === stripped) return { kind: 'withheld' };
+  return { kind: 'masked', text: masked };
+}
+
+/**
  * Warning for a state KEY that already holds secret plaintext — the residue an
  * EARLIER binary left when it published an export name that resolved to one.
  *

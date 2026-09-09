@@ -72,7 +72,9 @@ import {
   exportAliasCollisionScrubWarning,
   isExportAliasCollision,
   secretBearingStateKeyWarning,
+  secretSafeKeyDisplay,
   stateKeySecretExposure,
+  type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
 
 /**
@@ -284,14 +286,18 @@ export function planExportIndexRepair(
  * for the entries still differing.
  */
 function exportIndexIncompleteError(
-  unwritten: ReadonlyArray<{ region: string; exportName: string }>,
-  unreadable: ReadonlyArray<{ region: string; reason: string }>
+  unwritten: ReadonlyArray<{ region: string; shown: string }>,
+  unreadable: ReadonlyArray<{ region: string; reason: string }>,
+  dryRun: boolean
 ): CdkdError {
-  const parts: string[] = ['state.json complete'];
+  // `state.json complete` is a claim about a WRITE, so it is false under
+  // `--dry-run`, where nothing was written and the only way to reach this
+  // error is an index that could not be READ.
+  const parts: string[] = [dryRun ? 'no state written (--dry-run)' : 'state.json complete'];
   if (unwritten.length > 0) {
     parts.push(
       `${unwritten.length} exports index entr${unwritten.length === 1 ? 'y' : 'ies'} unwritten ` +
-        `(${unwritten.map((u) => `${u.exportName} in ${u.region}`).join(', ')})`
+        `(${unwritten.map((u) => `${u.shown} in ${u.region}`).join(', ')})`
     );
   }
   if (unreadable.length > 0) {
@@ -346,17 +352,35 @@ async function repairExportIndexForStack(
   for (const finding of plan.findings) {
     if (finding.kind !== 'converge') continue;
     const entry = entries.get(finding.exportName);
-    if (!entry) continue;
+    if (!entry) {
+      // UNREACHABLE by construction — every finding was produced by walking
+      // `entries` — and thrown rather than skipped precisely because of that:
+      // a `continue` here would silently DROP a repair the plan decided on if
+      // the two ever came apart, which is the fail-quiet shape this whole
+      // change exists to remove. The name is not interpolated: it may hold
+      // secret plaintext (see `secretSafeKeyDisplay`).
+      throw new Error(
+        'exports index repair: a planned entry is absent from the snapshot it was planned from'
+      );
+    }
     // Value only. `producerStack` / `producerRegion` are carried over from the
     // entry that is already there, and no name is added or removed — scrub
     // takes no `--parameters` and reads a state record whose template may not
     // be the one that produced it, so any export SET it derived would be a
     // guess, and a guessed change to index MEMBERSHIP is the wrong-rewrite
     // hazard one level up from the value it went to fix.
-    const written = await store.patchEntry(finding.exportName, {
-      ...entry,
-      value: finding.stateValue,
-    });
+    //
+    // `requireOwner` re-asserts, inside the write and on every retry attempt,
+    // the ownership the PLAN read off a snapshot: an If-Match conflict reloads
+    // the index under the retry, and a concurrent deploy that claimed this
+    // export name in that window is kept by the store with only a warning
+    // (issue #2193). Without it the retry would resurrect this stack's value
+    // over the new producer's.
+    const written = await store.patchEntry(
+      finding.exportName,
+      { ...entry, value: finding.stateValue },
+      { requireOwner: { producerStack: stackName, producerRegion } }
+    );
     if (!written) unwritten.push(finding.exportName);
   }
   return { ...plan, unwritten };
@@ -580,7 +604,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   let totalIndexEntriesConverged = 0;
   let totalIndexEntriesAbsent = 0;
   let totalIndexEntriesUnexamined = 0;
-  const indexUnwritten: Array<{ region: string; exportName: string }> = [];
+  // The name is stored ALREADY RENDERED by the owning stack's masker: the
+  // failure message is built after the per-stack loop, where the secrets bag
+  // that decided the rendering is out of scope.
+  const indexUnwritten: Array<{ region: string; shown: string }> = [];
   const indexUnreadable: Array<{ region: string; reason: string }> = [];
 
   for (const stack of targetStacks) {
@@ -640,8 +667,29 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       const seen = examinedIndexNames.get(stackRegion) ?? new Set<string>();
       for (const name of repair.examined) seen.add(name);
       examinedIndexNames.set(stackRegion, seen);
+      // EVERY name below goes through the stack's own masker before it
+      // reaches a message. `displaySafe` sanitises for a terminal; it does not
+      // mask a secret, and an export name is an outputs-bag KEY — the one
+      // position this command already knows can hold plaintext it cannot
+      // rewrite (issue #1919). `--dry-run --fail` prints these lines on every
+      // run of the documented CI gate, into CI logs, so a raw name here would
+      // disclose on a schedule.
+      const named = (exportName: string): string => {
+        const shown = scrubbed.exportNameDisplay(exportName);
+        switch (shown.kind) {
+          case 'safe':
+            return `'${shown.text}'`;
+          case 'masked':
+            return `(masked: "${shown.text}")`;
+          // Masking left the name unchanged, so printing it would publish the
+          // secret under a label claiming it had been masked. The name is
+          // WITHHELD and the message still identifies the stack and region.
+          case 'withheld':
+            return '(name withheld: it holds a secret this run recorded)';
+        }
+      };
       for (const exportName of repair.unwritten) {
-        indexUnwritten.push({ region: stackRegion, exportName });
+        indexUnwritten.push({ region: stackRegion, shown: named(exportName) });
       }
       for (const finding of repair.findings) {
         if (finding.kind === 'converge') {
@@ -649,13 +697,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
           indexConverged++;
           logger.info(
             `${options.dryRun ? 'Would converge' : 'Converged'} exports index entry ` +
-              `'${displaySafe(finding.exportName)}' (${stackRegion}) to ${stack.stackName}'s ` +
+              `${named(finding.exportName)} (${stackRegion}) to ${stack.stackName}'s ` +
               `state.outputs value.`
           );
         } else {
           totalIndexEntriesAbsent++;
           logger.warn(
-            `Exports index entry '${displaySafe(finding.exportName)}' (${stackRegion}) is ` +
+            `Exports index entry ${named(finding.exportName)} (${stackRegion}) is ` +
               `published by ${stack.stackName}, whose state.outputs has no key of that name — ` +
               `nothing was written for it and it keeps the value it holds. Redeploy ` +
               `${stack.stackName} to rewrite the index from its own outputs.`
@@ -667,11 +715,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // raised after the summary rather than swallowed: reporting the state
       // records clean while the index was never opened is the shape this issue
       // is about.
-      const reason = displaySafe(err instanceof Error ? err.message : String(err));
-      indexUnreadable.push({ region: stackRegion, reason });
-      logger.error(
-        `Exports index for ${stackRegion} could not be read while scrubbing ${stack.stackName}: ${reason}`
-      );
+      // ONCE PER REGION. `loadPersisted` memoizes no failure, so every stack in
+      // a region re-reads and fails identically; without this, five stacks in
+      // one region print five identical errors and the failure message reads
+      // `5 region(s) ... (us-east-1: X; us-east-1: X; ...)`, which misstates
+      // how many regions are affected.
+      if (!indexUnreadable.some((u) => u.region === stackRegion)) {
+        const reason = displaySafe(err instanceof Error ? err.message : String(err));
+        indexUnreadable.push({ region: stackRegion, reason });
+        logger.error(
+          `Exports index for ${stackRegion} could not be read (first seen while scrubbing ${stack.stackName}): ${reason}`
+        );
+      }
     }
     // The verdict keys on records-that-CHANGED (state actually held plaintext),
     // NOT on secrets-found: a resource whose reference is already stored as its
@@ -741,9 +796,23 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // from ownership it never checked.
   for (const [indexRegion, store] of exportIndexStores) {
     if (indexUnreadable.some((u) => u.region === indexRegion)) continue;
-    // Served from the snapshot the per-stack pass already loaded on this
-    // instance; a region whose read failed took the `continue` above.
-    const entries = await store.readPersistedEntries();
+    // Usually served from the snapshot the per-stack pass already loaded on
+    // this instance — but NOT always: a region whose per-stack read returned
+    // `undefined` (no index object) left `loadState` unloaded, so this issues
+    // a second GET, and a transient S3 failure there would otherwise throw
+    // past the summary and out of the command with `state.json` already
+    // rewritten. Recorded like any other unreadable index instead.
+    let entries: ReadonlyMap<string, ExportIndexEntry> | undefined;
+    try {
+      entries = await store.readPersistedEntries();
+    } catch (err) {
+      const reason = displaySafe(err instanceof Error ? err.message : String(err));
+      indexUnreadable.push({ region: indexRegion, reason });
+      logger.error(
+        `Exports index for ${indexRegion} could not be read for the coverage report: ${reason}`
+      );
+      continue;
+    }
     if (!entries) continue;
     const examined = examinedIndexNames.get(indexRegion) ?? new Set<string>();
     const unexamined = [...entries.keys()].filter((name) => !examined.has(name));
@@ -866,7 +935,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // empty, while an index this run could not open leaves `indexUnreadable`
     // set and the audit unperformed.
     if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
-      throw exportIndexIncompleteError(indexUnwritten, indexUnreadable);
+      throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, true);
     }
     if (options.fail) throw new ScrubNeededError();
     return;
@@ -913,7 +982,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // for the same rank reason the stack refusal is — exit 2 is "cdkd did not
   // finish", exit 1 is "cdkd looked and found something".
   if (indexUnwritten.length > 0 || indexUnreadable.length > 0) {
-    throw exportIndexIncompleteError(indexUnwritten, indexUnreadable);
+    throw exportIndexIncompleteError(indexUnwritten, indexUnreadable, false);
   }
   // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
   // reason stated on that counter: a real run cannot fix either one, so exiting
@@ -3355,6 +3424,23 @@ export interface ScrubStackResult {
    * index publishes for that stack in the `absent` arm.
    */
   outputs?: Record<string, unknown> | undefined;
+  /**
+   * How to SHOW an export name this stack publishes (issue #2667 review).
+   *
+   * An export name is a key of `state.outputs`, and a key holding secret
+   * plaintext is the residue this command reports and cannot rewrite (issue
+   * #1919). The exports-index step names entries in `info` / `warn` lines and
+   * in its failure message — `--dry-run --fail` prints them on every run of
+   * the documented CI gate, into CI logs — so those names go through the same
+   * test `secretBearingStateKeyWarning` applies, never through a bare
+   * control-character strip.
+   *
+   * REQUIRED, not optional: the secrets bag lives in `scrubStack`, so a caller
+   * that forgot this field would have no way to mask and would print the raw
+   * name. Returning a closure keeps the plaintexts captured here rather than
+   * handing the bag out as data.
+   */
+  exportNameDisplay: (exportName: string) => SecretSafeKeyDisplay;
 }
 
 /**
@@ -3415,7 +3501,16 @@ export async function scrubStack(
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
       logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
-      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0, unverifiableReads: 0 };
+      return {
+        recordsChanged: 0,
+        secretsFound: 0,
+        secretBearingKeys: 0,
+        unverifiableReads: 0,
+        // No record, so nothing was resolved and the bag is empty — every name
+        // tests as 'safe'. Bound to the same map the other two sites use so
+        // the shape cannot drift.
+        exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
+      };
     }
     const state = loaded.state;
 
@@ -3993,6 +4088,7 @@ export async function scrubStack(
         // is what this run leaves — including on a RE-RUN over already-scrubbed
         // state, which is the case the index step exists to finish.
         outputs: state.outputs,
+        exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
       };
     }
 
@@ -4147,6 +4243,7 @@ export async function scrubStack(
       secretBearingKeys: secretBearingKeys.length,
       unverifiableReads: prePassFindings.unverifiable.length,
       outputs: newOutputs,
+      exportNameDisplay: (name) => secretSafeKeyDisplay(name, outputSecrets),
     };
   } catch (err) {
     // THE MASKING BOUNDARY for everything that ESCAPES this function (issue

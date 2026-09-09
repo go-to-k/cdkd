@@ -3843,6 +3843,9 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
       // answers (`undefined` means "no state record", which puts every owned
       // entry in the reported-absent arm).
       outputs: {},
+      // Issue #2667 review: the required masker for any message naming an
+      // export name (an outputs-bag KEY, which can hold plaintext).
+      exportNameDisplay: expect.any(Function),
     });
     expect(stateBackend.saveState).not.toHaveBeenCalled();
     expect(logLines.join('\n')).toContain('recorded no cdkd cross-stack read for it');

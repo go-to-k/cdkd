@@ -84,7 +84,11 @@ interface IndexRegionSlot {
   entries: Map<string, ExportIndexEntry> | undefined;
   readError?: Error | undefined;
   patchOk: boolean;
-  patches: Array<{ exportName: string; entry: ExportIndexEntry }>;
+  patches: Array<{
+    exportName: string;
+    entry: ExportIndexEntry;
+    requireOwner?: { producerStack: string; producerRegion: string } | undefined;
+  }>;
   reads: number;
 }
 const indexFake = vi.hoisted(() => ({
@@ -110,12 +114,31 @@ vi.mock('../../../../src/state/export-index-store.js', () => ({
         }),
         patchEntry: vi
           .fn()
-          .mockImplementation((exportName: string, entry: ExportIndexEntry) => {
-            if (!slot) return Promise.resolve(true);
-            slot.patches.push({ exportName, entry });
-            if (slot.patchOk) slot.entries?.set(exportName, entry);
-            return Promise.resolve(slot.patchOk);
-          }),
+          .mockImplementation(
+            (
+              exportName: string,
+              entry: ExportIndexEntry,
+              opts?: { requireOwner?: { producerStack: string; producerRegion: string } }
+            ) => {
+              if (!slot) return Promise.resolve(true);
+              slot.patches.push({ exportName, entry, requireOwner: opts?.requireOwner });
+              // Mirrors the real store's guard so a scrub that stopped passing
+              // `requireOwner` is visible here rather than only in the store's
+              // own suite.
+              const current = slot.entries?.get(exportName);
+              const owner = opts?.requireOwner;
+              if (
+                owner &&
+                (!current ||
+                  current.producerStack !== owner.producerStack ||
+                  current.producerRegion !== owner.producerRegion)
+              ) {
+                return Promise.resolve(false);
+              }
+              if (slot.patchOk) slot.entries?.set(exportName, entry);
+              return Promise.resolve(slot.patchOk);
+            }
+          ),
       };
     }),
 }));
@@ -410,6 +433,11 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
       {
         exportName: 'MyStack:Db',
         entry: { value: SECRET_EXPR, producerStack: 'MyStack', producerRegion: 'us-east-1' },
+        // PINNED: the write re-asserts the ownership the PLAN read off a
+        // snapshot, so an If-Match retry that reloaded a concurrent deploy's
+        // claim on this name refuses instead of resurrecting this stack's
+        // value.
+        requireOwner: { producerStack: 'MyStack', producerRegion: 'us-east-1' },
       },
     ]);
     // Membership unchanged: nothing added, nothing removed, and the foreign
@@ -459,6 +487,15 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     await expect(
       scrubCommand([], commandOptions({ dryRun: true, fail: true }))
     ).rejects.toBeInstanceOf(ScrubNeededError);
+
+    // MEDIUM from the #2667 review: the `indexConverged === 0` guard on the
+    // per-stack clean line had no coverage, so deleting it reddened nothing
+    // while the mutant printed "No plaintext secrets found in MyStack"
+    // directly beside "Would converge exports index entry". The line's own
+    // claim stays true — it is about state RECORDS — but printed next to a
+    // reported divergence it reads as covering it.
+    expect(logLines()).toContain('Would converge exports index entry');
+    expect(logLines()).not.toContain('No plaintext secrets found in MyStack');
   });
 
   it('NEGATIVE CONTROL: a converged index over clean state exits 0 under --dry-run --fail', async () => {
@@ -502,7 +539,7 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(err).toBeInstanceOf(Error);
     expect(err!.message).toContain('state.json complete');
     expect(err!.message).toContain('1 exports index entry unwritten');
-    expect(err!.message).toContain('MyStack:Db in us-east-1');
+    expect(err!.message).toContain("'MyStack:Db' in us-east-1");
   });
 
   it('an UNREADABLE index is an explicit failure too, under --dry-run as well', async () => {
@@ -519,6 +556,86 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     await expect(scrubCommand([], commandOptions({ dryRun: true }))).rejects.toMatchObject({
       code: 'SCRUB_EXPORT_INDEX_INCOMPLETE',
     });
+  });
+
+  it('a CORRUPT index is an explicit failure, not a silent green gate', async () => {
+    // BLOCKER from the #2667 review. `readPersistedEntries` used to collapse
+    // "missing" and "corrupt" into one `undefined`, so an index whose bytes
+    // cdkd cannot parse — bytes that may still hold the plaintext — produced
+    // no finding, no warn, and `--dry-run --fail` exited 0 over it. That is
+    // this issue's own failure shape reproduced inside its fix.
+    //
+    // The MISSING case is covered separately below and must stay exit 0; that
+    // pair is what makes this assertion about corruption rather than about
+    // "any unusual index".
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', true),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({
+        entries: new Map(),
+        readError: new Error('Exports index at cdkd/_index/us-east-1/exports.json could not be parsed'),
+      })
+    );
+
+    await expect(
+      scrubCommand([], commandOptions({ dryRun: true, fail: true }))
+    ).rejects.toMatchObject({ code: 'SCRUB_EXPORT_INDEX_INCOMPLETE', exitCode: 2 });
+    expect(logLines()).toContain('could not be parsed');
+  });
+
+  it('the failure message does not claim a write under --dry-run', async () => {
+    // `state.json complete` is a claim about a WRITE. Under `--dry-run`
+    // nothing was written, and the only way to reach this error is a read that
+    // failed.
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', true),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map(), readError: new Error('Access Denied on _index') })
+    );
+
+    const err = await scrubCommand([], commandOptions({ dryRun: true })).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain('no state written (--dry-run)');
+    expect(err!.message).not.toContain('state.json complete');
+  });
+
+  it('reports an unreadable region ONCE, however many stacks it holds', async () => {
+    // `loadPersisted` memoizes no failure, so every stack in a region re-reads
+    // and fails identically. Without the dedupe the failure message reads
+    // `3 region(s) ... (us-east-1: X; us-east-1: X; us-east-1: X)`, which
+    // misstates how many regions are affected.
+    synthStacks.push(
+      makeStackInfo('StackA'),
+      makeStackInfo('StackB'),
+      makeStackInfo('StackC')
+    );
+    commandStateBackend.getState.mockImplementation((stackName: string, region: string) =>
+      Promise.resolve({ state: makeState(stackName, region, true), etag: 'etag-1' })
+    );
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map(), readError: new Error('Access Denied on _index') })
+    );
+
+    const err = await scrubCommand([], commandOptions()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err!.message).toContain('1 region(s)');
+    expect(err!.message).not.toContain('3 region(s)');
+    // One error line, not one per stack.
+    expect(commandLogger.error.mock.calls.filter((c) => String(c[0]).includes('us-east-1'))).toHaveLength(1);
   });
 
   it('RE-RUN: the second invocation writes nothing and exits 0', async () => {
@@ -592,6 +709,10 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(region.patches).toEqual([]);
     expect(logLines()).toContain('1 entry is');
     expect(logLines()).toContain('published by a producer this run did not scrub');
+    // The coverage pass reads the region ONCE MORE at most — it is served from
+    // the snapshot the per-stack pass loaded. Pinned because an unbounded
+    // re-read per stack would be a GET per stack per region on every run.
+    expect(region.reads).toBeLessThanOrEqual(2);
   });
 
   it('MULTI-REGION: one store and one exports.json per region, each converged', async () => {
@@ -621,6 +742,94 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     // The store is constructed with the STACK's region, which is what selects
     // the `_index/{region}/exports.json` key.
     expect(indexFake.ctorArgs.map((a) => a[3])).toContain('eu-west-1');
+  });
+
+  it('a SECRET-BEARING export name is MASKED in every index message', async () => {
+    // BLOCKER from the #2667 review. An export name is a key of
+    // `state.outputs`, and a pre-#1919 binary could publish an `Export.Name`
+    // built by `Fn::Sub` that embeds a secret — the residue this command
+    // reports and cannot rewrite. `displaySafe` strips control characters; it
+    // does not mask. These lines print at `info` / `warn` on the DOCUMENTED CI
+    // gate path, into CI logs, on every run.
+    const leakyName = `alias-${SECRET_PLAINTEXT}-suffix`;
+    const info = makeStackInfo('MyStack');
+    info.template.Outputs = { Db: { Value: SECRET_EXPR, Export: { Name: leakyName } } };
+    synthStacks.push(info);
+    commandStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 9,
+        region: 'us-east-1',
+        stackName: 'MyStack',
+        resources: {
+          Db: {
+            physicalId: 'db-1',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+          },
+        },
+        outputs: { Db: SECRET_EXPR, [leakyName]: SECRET_EXPR },
+        exportNames: [leakyName],
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-1',
+    });
+    const region = slot({
+      entries: new Map([[leakyName, entry('legacy-index-value', 'MyStack', 'us-east-1')]]),
+    });
+    indexFake.regions.set('us-east-1', region);
+
+    await scrubCommand([], commandOptions());
+
+    // The repair still happened — masking must not cost the fix.
+    expect(region.patches.map((p) => p.exportName)).toEqual([leakyName]);
+    // THE ASSERTION: the plaintext never reaches a message, and the line that
+    // names the entry says it masked it.
+    const out = logLines();
+    expect(out).not.toContain(SECRET_PLAINTEXT);
+    expect(out).toContain('Converged exports index entry (masked:');
+  });
+
+  it('a masked name reaches the FAILURE message too, not just the log', async () => {
+    const leakyName = `alias-${SECRET_PLAINTEXT}-suffix`;
+    const info = makeStackInfo('MyStack');
+    info.template.Outputs = { Db: { Value: SECRET_EXPR, Export: { Name: leakyName } } };
+    synthStacks.push(info);
+    commandStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 9,
+        region: 'us-east-1',
+        stackName: 'MyStack',
+        resources: {
+          Db: {
+            physicalId: 'db-1',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { MasterUserPassword: SECRET_EXPR, MasterUsername: 'admin' },
+          },
+        },
+        outputs: { Db: SECRET_EXPR, [leakyName]: SECRET_EXPR },
+        exportNames: [leakyName],
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({
+        entries: new Map([[leakyName, entry('legacy-index-value', 'MyStack', 'us-east-1')]]),
+        patchOk: false,
+      })
+    );
+
+    const err = await scrubCommand([], commandOptions()).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(Error);
+    // The error is rendered by `handleError` and the top-level console.error,
+    // which walk the whole cause chain — the reader a per-site mask cannot
+    // close, which is why the name is masked BEFORE it is stored.
+    expect(err!.message).not.toContain(SECRET_PLAINTEXT);
+    expect(err!.message).toContain('masked:');
   });
 
   it('a region with no exports.json contributes no finding and no failure', async () => {

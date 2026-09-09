@@ -1917,10 +1917,19 @@ fi
 pass "seeded ${EXPORT_NAME} and ${REEXPORT_NAME} to distinct sentinels"
 
 # --- 11c-i: --dry-run READS the index and writes nothing -------------------
-# The rc is NOT the discriminator here: step 10b left plaintext in this same
-# record's OTHER output keys, so `--fail` exits 1 for a state reason as well.
-# The `Would converge` line is what says the index was examined, and the
-# byte-comparison is what says nothing was written.
+# THE rc IS A DISCRIMINATOR HERE, and that is worth stating because it reads
+# like it should not be. Step 10b RESTORES `PRODUCER_STATE_KEY` from its backup
+# before any of its assertions run, and asserts the restore landed; step 6
+# separately pins that `cdkd scrub` on the PRODUCER finds nothing. So by this
+# point the producer's `state.json` holds the expression and carries no
+# plaintext for `--fail` to exit 1 over — the ONLY finding left is the index
+# divergence this step seeded. A non-zero rc here therefore means the audit
+# half examined the index, which is the false-GREEN issue #2667 leads with.
+# (Measured on the first live run of this step, 2026-09-09.)
+#
+# The `Would converge` line is asserted as well, and remains the more specific
+# signal: it names WHICH entry, so it survives a future step being inserted
+# above that reintroduces a state finding and makes the rc confluent again.
 set +e
 INDEX_DRYRUN_OUT=$(node "${LOCAL_DIST}" scrub "${PRODUCER}" --dry-run --fail \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)

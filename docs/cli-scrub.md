@@ -105,8 +105,12 @@ learn the resolved secret VALUES — recorded in memory, never printed and never
 re-persisted — and replaces those values in the state record's `properties`,
 `attributes` and `observedProperties` with the expression.
 
-It performs no AWS create, update or delete. Only `state.json` is rewritten,
-under the stack lock.
+It performs no AWS create, update or delete. What it WRITES is the state
+bucket: each targeted stack's `state.json`, under that stack's lock, and then
+the entries that stack publishes in the shared
+[exports index](#the-exports-index) — as a separate step, after the lock is
+released, because the lock guards one stack's `state.json` while `exports.json`
+is a region-wide object with its own optimistic lock.
 
 ## Multi-stack runs (`--all`)
 
