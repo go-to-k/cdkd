@@ -866,7 +866,7 @@ else
   # text, or the case passes over messages it never saw -- which is exactly how
   # the third one was missed.
   __recipe_seen=0
-  for __rn in "does not define: GATE_SEP_AMP" "is missing or unloadable" "does not define"; do
+  for __rn in "does not define: GATE_SEP_AMP" "is missing or unloadable" "loaded but does not define"; do
     case "$__recipe_out" in *"$__rn"*) __recipe_seen=$((__recipe_seen + 1)) ;; esac
   done
   if [ "$__recipe_seen" -lt 3 ]; then

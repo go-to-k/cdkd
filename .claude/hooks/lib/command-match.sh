@@ -4401,9 +4401,12 @@ gate_require_const() {
     # admits a shell command: every Bash call is refused, including the one that
     # would diagnose it. Read and Grep are TOOLS and no matcher covers them, so
     # they are the only followable advice. `main-tree-edit-gate.test.sh` asserts
-    # that neither refusal in this layer contains an indented command recipe --
-    # the shape all three took -- so the next revision cannot re-add one
-    # quietly.
+    # that NO LINE of the FOUR refusals reachable in this state -- this one,
+    # `gate_require_const_soft`'s note, and main-tree-edit-gate's two -- begins
+    # with whitespace. The assertion is total rather than a list of recipe
+    # shapes: an enumerating version shipped for one round and six plausible
+    # spellings walked past it, which is the same losing game as enumerating
+    # command names.
     echo "EVERY Bash call is refused while the library is in this state, this"
     echo "one included, so a command-line repair is not available."
     echo "FROM A FEATURE WORKTREE the Edit and Write tools stay allowed --"

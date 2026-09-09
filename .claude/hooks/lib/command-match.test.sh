@@ -2457,17 +2457,40 @@ check 'a mis-closed span with NO verb in it does not match' 1 \
 # were unasserted, in the PR whose thesis is that unasserted text is how a
 # defect survives revisions. It is not driven through a hook here because the
 # question is the helper's own answer, not any gate's exit code.
+# THE CALL RUNS IN A SUBSHELL WITH A COMPLETION SENTINEL, and that is not
+# defensive styling. A malformed name reaches `${!name}`, which bash treats as a
+# FATAL error in a non-interactive shell: the frame dies, `|| true` never runs
+# because there is no command left to run it, and NEITHER counter is
+# incremented -- the case does not fail, it VANISHES. Measured on the first
+# revision of this block: reverting the shape guard reported `Pass: 632 Fail: 1`
+# where the file has ten cases here, eight of them silently gone, and deleting
+# the one surviving case made the whole suite GREEN over a live regression.
+# A test that cannot fail is worse than no test: it reads as coverage.
+#
+# So the subshell isolates the death, and the sentinel proves the call returned.
+# No sentinel means the helper killed its shell, which is itself a failure --
+# `gate_missing_const` runs at every hook load and must never do that.
 __gmc() { # <expected GATE_MISSING_CONSTS> <desc> <name...>
   local want="$1" desc="$2"; shift 2
-  GATE_MISSING_CONSTS=""
-  gate_missing_const "$@" >/dev/null 2>&1 || true
-  if [ "$GATE_MISSING_CONSTS" = "$want" ]; then
-    pass=$((pass + 1)); printf 'ok   %s\n' "$desc"
-  else
-    fail=$((fail + 1))
-    fail_log="${fail_log}FAIL $desc: wanted [$want] got [$GATE_MISSING_CONSTS]\n"
-  fi
+  local got
+  got=$(GATE_MISSING_CONSTS=""; gate_missing_const "$@" >/dev/null 2>&1; printf '%s|RAN' "$GATE_MISSING_CONSTS")
+  case "$got" in
+    *'|RAN')
+      got="${got%|RAN}"
+      if [ "$got" = "$want" ]; then
+        pass=$((pass + 1)); printf 'ok   %s\n' "$desc"
+      else
+        fail=$((fail + 1))
+        fail_log="${fail_log}FAIL $desc: wanted [$want] got [$got]\n"
+      fi
+      ;;
+    *)
+      fail=$((fail + 1))
+      fail_log="${fail_log}FAIL $desc: gate_missing_const KILLED its shell -- it runs at every hook load and must not\n"
+      ;;
+  esac
 }
+__gmc_ran=$((pass + fail))
 
 # A name bash would not accept is REPORTED, not expanded. `${!n}` on a name
 # carrying an array subscript EXECUTES it, and a quoted-together argument makes
@@ -2497,6 +2520,40 @@ __gmc '(empty)(not-a-variable-name)' 'a space-only name reports as (empty)' ' '
 # And the control: a well-formed name the library DOES define reports nothing,
 # so the cases above are not passing because everything is reported.
 __gmc '' 'a defined constant is not reported' 'GATE_FLAGS'
+
+# A FLOOR on this block alone. `CASE_FLOOR` is checked in the middle of the
+# file, upstream of here, so a block that shrinks below it is invisible -- which
+# is exactly how eight vanished cases went unnoticed above.
+# THE TWO MESSAGES THIS HELPER EMITS, held to the same shape rule as the hook
+# refusals. Both fire while EVERY Bash call is refused, so an indented recipe
+# line in either would offer a command that cannot be run -- the defect that
+# took three revisions to close in the hook-side twin. `main-tree-edit-gate`'s
+# suite asserts the shape for the two refusals that hook OWNS; these two belong
+# here, where the helper lives, and review round 19 found the soft one outside
+# every scan. The assertion is TOTAL -- no line may begin with whitespace --
+# because the enumerating version was walked past by six spellings.
+__msg_hard=$( (gate_require_const GATE_NO_SUCH_CONST_PROBE) 2>&1 >/dev/null || true )
+__msg_soft=$( gate_require_const_soft GATE_NO_SUCH_CONST_PROBE 2>&1 >/dev/null || true )
+for __m in hard soft; do
+  eval "__msg_body=\$__msg_$__m"
+  if [ -z "$__msg_body" ]; then
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL gate_require_const${__m#hard} emitted nothing -- the shape case would pass over a message it never saw\n"
+  elif printf '%s\n' "$__msg_body" | grep -qE '^[[:space:]]'; then
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL the $__m refusal indents a line; every Bash call is refused in that state, so a recipe cannot be run -- advise a TOOL in running prose\n"
+  else
+    pass=$((pass + 1)); printf 'ok   the %s refusal indents no line\n' "$__m"
+  fi
+done
+
+__gmc_count=$((pass + fail - __gmc_ran))
+if [ "$__gmc_count" -lt 10 ]; then
+  fail=$((fail + 1))
+  fail_log="${fail_log}FAIL gate_missing_const block: only $__gmc_count of 10 cases ran -- cases are vanishing, not failing\n"
+else
+  pass=$((pass + 1)); printf 'ok   gate_missing_const block ran all %s cases\n' "$__gmc_count"
+fi
 
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
