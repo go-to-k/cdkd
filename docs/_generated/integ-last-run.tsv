@@ -170,7 +170,7 @@ launchtemplate-asg-inplace	2026-09-05T22:39:29Z	PASS	79	verify.sh	PR2662 gate ru
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-07-26T20:40:20Z	PASS	23	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-invoke	2026-09-05T09:25:01Z	PASS	29	verify.sh	rc 0, 6/6 arms, docker sweep clean
+local-invoke	2026-09-09T04:07:20Z	PASS	37	verify.sh	rc 0, 6/6 arms, docker sweep clean, no lockfile after delete
 local-invoke-agentcore	2026-09-05T09:25:01Z	FAIL	5	verify.sh	blocked before arm 1: fixture synth fails, aws-cdk-lib dropped AgentCoreRuntime (go-to-k/cdkd#2191); not a cdkd regression, no AWS/docker leftovers
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean

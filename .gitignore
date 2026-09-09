@@ -5,11 +5,23 @@
 node_modules
 
 # Integ-fixture lockfiles are not committed (go-to-k/cdkd#2838): fixtures are
-# not pnpm workspace members and nothing reads one, but `verify.sh` installs
-# with a bare `pnpm install`, which WRITES one on every run. Untracked, that
-# dirties the tree mid-integ and stales the markgate markers (an untracked
-# file inside a gate's scope invalidates its digest). The ROOT lockfile is
-# committed and must stay tracked, hence the anchored fixture-only pattern.
+# not pnpm workspace members and no script or CI job reads one, but their
+# `verify.sh` installs with `pnpm install --ignore-workspace`, which WRITES
+# one on every run. Untracked, that dirties the tree mid-integ and stales the
+# markgate markers (an untracked file inside a gate's scope invalidates its
+# digest).
+#
+# pnpm itself DOES read the file when present. A few fixtures install under
+# `CI=true` (frozen mode), where a lockfile whose specifier trails the
+# manifest hard-fails `ERR_PNPM_OUTDATED_LOCKFILE` -- on a file `git status`
+# no longer surfaces. If a fixture's install starts failing that way, delete
+# its ignored lockfile.
+#
+# The ROOT lockfile and `assets/demo-gif`'s are committed and must stay
+# tracked, hence the anchored fixture-only pattern. The npm twin
+# `package-lock.json` is ignored by the sibling `tests/integration/.gitignore`;
+# this rule lives HERE because `check-scope-checker-inputs.test.ts` counts
+# only the top-level `.gitignore` as a rule source.
 tests/integration/*/pnpm-lock.yaml
 
 # Build output
