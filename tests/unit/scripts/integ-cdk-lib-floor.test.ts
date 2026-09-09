@@ -1,0 +1,350 @@
+import { describe, it, expect } from 'vite-plus/test';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  FLOORS,
+  INTEG_ROOT_REL,
+  SELF_PROBE_CASES,
+  TEMPLATE_REL,
+  checkIntegCdkLibFloor,
+  compareFloors,
+  extractTemplateFloor,
+  parseFloor,
+  runSelfProbe,
+} from '../../../scripts/check-integ-cdk-lib-floor.js';
+
+/**
+ * Enforcement for issue #2839: the `/new-integ` scaffold template's
+ * `aws-cdk-lib` floor must not fall behind the integ-fixture corpus. As with
+ * `check-verification-depth-rule.ts` and `check-source-control-bytes.ts`, this
+ * unit test IS the CI enforcement — there is no `vp run` task and no `ci.yml`
+ * step. The script's CLI exists so a human can read the current numbers.
+ *
+ * See the script header for WHY the rule is "template >= corpus minimum"
+ * rather than "all floors equal": dependabot bumps one directory at a time, so
+ * an equality fence would red-flag every one of its PRs.
+ */
+
+const REPO_ROOT = join(import.meta.dirname, '../../..');
+const SCRIPT = join(REPO_ROOT, 'scripts/check-integ-cdk-lib-floor.ts');
+const REAL_INTEG_ROOT = join(REPO_ROOT, INTEG_ROOT_REL);
+const REAL_TEMPLATE = join(REPO_ROOT, TEMPLATE_REL);
+
+/** Run the SHIPPED binary, so `main()`, `parseArgs` and the seam are all live. */
+function runCli(args: string[], env: Record<string, string> = {}) {
+  const res = spawnSync('node', [SCRIPT, ...args], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+  return { status: res.status, stderr: res.stderr ?? '', stdout: res.stdout ?? '' };
+}
+
+/**
+ * A COPY of the real corpus's manifests — the only files this checker reads.
+ * Copying the manifests rather than a synthetic tree keeps the mutation probes
+ * real-code probes, and never writes to `tests/integration` itself.
+ */
+function copyRealManifests(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'cdkd-floor-integ-'));
+  for (const entry of readdirSync(REAL_INTEG_ROOT, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const src = join(REAL_INTEG_ROOT, entry.name, 'package.json');
+    if (!existsSync(src)) continue;
+    mkdirSync(join(dir, entry.name), { recursive: true });
+    writeFileSync(join(dir, entry.name, 'package.json'), readFileSync(src, 'utf8'));
+  }
+  return dir;
+}
+
+/** A COPY of the real scaffold template, optionally mutated. */
+function copyRealTemplate(mutate?: (text: string) => string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'cdkd-floor-tpl-'));
+  const path = join(dir, 'SKILL.md');
+  const text = readFileSync(REAL_TEMPLATE, 'utf8');
+  writeFileSync(path, mutate ? mutate(text) : text);
+  return path;
+}
+
+function setFixtureSpec(integRoot: string, fixture: string, spec: string): void {
+  const path = join(integRoot, fixture, 'package.json');
+  const manifest = JSON.parse(readFileSync(path, 'utf8')) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const bucket = manifest.dependencies?.['aws-cdk-lib'] ? 'dependencies' : 'devDependencies';
+  manifest[bucket]!['aws-cdk-lib'] = spec;
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+describe('parseFloor / compareFloors', () => {
+  it.each(SELF_PROBE_CASES.map((c) => [c.label, c] as const))(
+    'self-probe case %s behaves as declared',
+    (_label, testCase) => {
+      const got = parseFloor(testCase.spec);
+      if (testCase.expected === 'refused') {
+        expect(got).toBeNull();
+        return;
+      }
+      expect(got).not.toBeNull();
+      const [major, minor, patch] = testCase.floor!;
+      expect([got!.major, got!.minor, got!.patch]).toEqual([major, minor, patch]);
+    },
+  );
+
+  // The probe set is the primary defence against a predicate that stopped
+  // discriminating, so its SIZE and its negative majority are pinned. A set
+  // silently trimmed to its passing cases would leave every other assertion
+  // in this file green.
+  it('keeps a probe set that is majority-negative', () => {
+    expect(SELF_PROBE_CASES.length).toBe(12);
+    expect(SELF_PROBE_CASES.filter((c) => c.expected === 'refused').length).toBe(8);
+  });
+
+  it('runSelfProbe passes against the shipped classifier', () => {
+    expect(runSelfProbe()).toEqual([]);
+  });
+
+  it('runSelfProbe honors the force-fail seam', () => {
+    const prev = process.env['CDKD_SELF_PROBE_FORCE_FAIL'];
+    process.env['CDKD_SELF_PROBE_FORCE_FAIL'] = '1';
+    try {
+      expect(runSelfProbe()).toEqual([{ label: 'forced', detail: 'CDKD_SELF_PROBE_FORCE_FAIL=1' }]);
+    } finally {
+      if (prev === undefined) delete process.env['CDKD_SELF_PROBE_FORCE_FAIL'];
+      else process.env['CDKD_SELF_PROBE_FORCE_FAIL'] = prev;
+    }
+  });
+
+  it('orders by the floor, across every segment', () => {
+    const f = (s: string) => parseFloor(s)!;
+    expect(compareFloors(f('^2.169.0'), f('^2.260.0'))).toBeLessThan(0);
+    expect(compareFloors(f('^2.260.0'), f('^2.260.0'))).toBe(0);
+    expect(compareFloors(f('^3.0.0'), f('^2.999.999'))).toBeGreaterThan(0);
+    expect(compareFloors(f('^2.260.1'), f('^2.260.0'))).toBeGreaterThan(0);
+    // The OPERATOR does not change the floor — `~2.260.0` and `^2.260.0` admit
+    // the same lowest version, which is the only thing being compared.
+    expect(compareFloors(f('~2.260.0'), f('^2.260.0'))).toBe(0);
+  });
+});
+
+describe('extractTemplateFloor', () => {
+  it('reads the floor out of the real scaffold template', () => {
+    const floor = extractTemplateFloor(readFileSync(REAL_TEMPLATE, 'utf8'));
+    expect(floor).not.toBeNull();
+    expect(floor!.operator).toBe('^');
+  });
+
+  it('refuses a template with no aws-cdk-lib key', () => {
+    expect(extractTemplateFloor('```json\n{ "dependencies": {} }\n```\n')).toBeNull();
+  });
+
+  // Two occurrences mean the template grew a second manifest; picking the
+  // first would fence whichever happened to come first in the file.
+  it('refuses a template declaring the key twice', () => {
+    const twice = '"aws-cdk-lib": "^2.260.0"\n...\n"aws-cdk-lib": "^2.169.0"\n';
+    expect(extractTemplateFloor(twice)).toBeNull();
+  });
+
+  it('refuses a template whose spec has no decidable floor', () => {
+    expect(extractTemplateFloor('"aws-cdk-lib": "latest"\n')).toBeNull();
+  });
+});
+
+describe('the real repository satisfies the fence', () => {
+  const report = checkIntegCdkLibFloor({
+    integRoot: REAL_INTEG_ROOT,
+    templatePath: REAL_TEMPLATE,
+  });
+
+  it('reports no refusals and no violations', () => {
+    expect(report.refusals).toEqual([]);
+    expect(report.violations).toEqual([]);
+  });
+
+  // FLOORS pinned to LITERALS. Asserting `report.fixtures > FLOORS.fixtures`
+  // instead would be circular — it stays green with every floor zeroed — so
+  // the magnitudes below are INDEPENDENT literals, not derived from FLOORS.
+  it('pins the declared collapse floors', () => {
+    expect(FLOORS.fixtures).toBe(250);
+    expect(FLOORS.declaringFixtures).toBe(250);
+  });
+
+  it('reads a corpus far larger than the floors (measured 292/292 on 2026-09-09)', () => {
+    expect(report.fixtures).toBeGreaterThanOrEqual(280);
+    expect(report.declaringFixtures).toBeGreaterThanOrEqual(280);
+    // Every fixture carrying a manifest declares aws-cdk-lib; a gap would mean
+    // the reader silently stopped seeing one of the two dependency buckets.
+    expect(report.declaringFixtures).toBe(report.fixtures);
+  });
+
+  it('resolves both sides of the comparison', () => {
+    expect(report.minFloor).not.toBeNull();
+    expect(report.templateFloor).not.toBeNull();
+    expect(compareFloors(report.templateFloor!, report.minFloor!)).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('real-code failure probes (the checker must prove it FAILS)', () => {
+  // Each case spawns the built script; per `.claude/rules/testing.md` a
+  // subprocess-spawning test declares its own timeout rather than riding the
+  // in-process 5 s default.
+  const TIMEOUT = 60_000;
+
+  it(
+    'control: the unmutated real tree exits 0',
+    () => {
+      const integRoot = copyRealManifests();
+      const template = copyRealTemplate();
+      const res = runCli([`--integ-root=${integRoot}`, `--template=${template}`]);
+      expect(res.status).toBe(0);
+      expect(res.stderr).toContain('OK');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'fails when the real template is reverted to the pre-#2838 floor',
+    () => {
+      const integRoot = copyRealManifests();
+      const template = copyRealTemplate((t) => t.replace(/"aws-cdk-lib": "\^2\.\d+\.\d+"/, '"aws-cdk-lib": "^2.169.0"'));
+      const res = runCli([`--integ-root=${integRoot}`, `--template=${template}`]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('below the lowest floor');
+      expect(res.stderr).toContain('^2.169.0');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'REFUSES rather than passes when the template key cannot be found',
+    () => {
+      const integRoot = copyRealManifests();
+      const template = copyRealTemplate((t) => t.replace('"aws-cdk-lib"', '"aws-cdk-lib-renamed"'));
+      const res = runCli([`--integ-root=${integRoot}`, `--template=${template}`]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('could not extract exactly one');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'REFUSES rather than skips a fixture manifest that does not parse',
+    () => {
+      const integRoot = copyRealManifests();
+      writeFileSync(join(integRoot, 'basic', 'package.json'), '{ "name": "broken", ');
+      const res = runCli([`--integ-root=${integRoot}`, `--template=${copyRealTemplate()}`]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('manifest does not parse');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'REFUSES rather than skips a spec with no decidable floor',
+    () => {
+      const integRoot = copyRealManifests();
+      setFixtureSpec(integRoot, 'basic', '*');
+      const res = runCli([`--integ-root=${integRoot}`, `--template=${copyRealTemplate()}`]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('no decidable floor');
+    },
+    TIMEOUT,
+  );
+
+  // The dependabot-safety property, and the reason this is not an equality
+  // fence. Both directions of corpus spread must pass.
+  it(
+    'PASSES when one fixture is bumped ahead of the rest (the dependabot case)',
+    () => {
+      const integRoot = copyRealManifests();
+      setFixtureSpec(integRoot, 'basic', '^2.999.0');
+      const res = runCli([`--integ-root=${integRoot}`, `--template=${copyRealTemplate()}`]);
+      expect(res.status).toBe(0);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'PASSES when one fixture lags the template (the deliberate looseness)',
+    () => {
+      const integRoot = copyRealManifests();
+      setFixtureSpec(integRoot, 'basic', '^2.169.0');
+      const res = runCli([`--integ-root=${integRoot}`, `--template=${copyRealTemplate()}`]);
+      expect(res.status).toBe(0);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'fails loudly when the corpus root is unreadable',
+    () => {
+      const res = runCli([
+        `--integ-root=${join(tmpdir(), 'cdkd-floor-does-not-exist')}`,
+        `--template=${copyRealTemplate()}`,
+      ]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('integ root unreadable');
+    },
+    TIMEOUT,
+  );
+
+  // The floors are only consulted by `main()`, so nothing above would notice
+  // them going inert. A corpus of two fixtures is internally consistent and
+  // violates no rule — only the floor can reject it.
+  it(
+    'the collapse floors fire on a corpus that shrank',
+    () => {
+      const full = copyRealManifests();
+      const small = mkdtempSync(join(tmpdir(), 'cdkd-floor-small-'));
+      for (const fixture of ['basic', 'lambda']) {
+        mkdirSync(join(small, fixture), { recursive: true });
+        writeFileSync(
+          join(small, fixture, 'package.json'),
+          readFileSync(join(full, fixture, 'package.json'), 'utf8'),
+        );
+      }
+      const res = runCli([`--integ-root=${small}`, `--template=${copyRealTemplate()}`]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('fixtures read (floor');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'the SPAWNED binary still consults the self-probe',
+    () => {
+      const res = runCli([], { CDKD_SELF_PROBE_FORCE_FAIL: '1' });
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('SELF-PROBE FAILED');
+    },
+    TIMEOUT,
+  );
+
+  it.each([
+    ['unknown flag', '--chekc'],
+    ['empty integ-root', '--integ-root='],
+    ['empty template', '--template='],
+    ['positional', 'tests/integration'],
+  ])(
+    'refuses the malformed argument: %s',
+    (_label, arg) => {
+      const res = runCli([arg]);
+      expect(res.status).not.toBe(0);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'under --json, stdout carries only the report',
+    () => {
+      const res = runCli(['--json', `--integ-root=${copyRealManifests()}`, `--template=${copyRealTemplate()}`]);
+      expect(res.status).toBe(0);
+      expect(() => JSON.parse(res.stdout)).not.toThrow();
+      expect(res.stdout).not.toContain('OK —');
+    },
+    TIMEOUT,
+  );
+});
