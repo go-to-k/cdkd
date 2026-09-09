@@ -106,7 +106,9 @@ function mapsEqual(a: Map<string, ExportIndexEntry>, b: Map<string, ExportIndexE
  * function of the body's content, and both help an operator holding the object
  * locate the damage. The offset is extracted by pattern rather than passed
  * through, so a message worded differently yields no offset instead of leaking
- * the rest of the sentence. Measured on node v24.19.0: the `Expected ...`
+ * the rest of the sentence. The two numbers are in DIFFERENT UNITS and the
+ * message says so: V8 counts `at position` in UTF-16 code units while the size
+ * is UTF-8 bytes, so `'{ n\u00f6t json'` reports position 2 and 11 bytes. Measured on node v24.19.0: the `Expected ...`
  * family carries `at position N` and the `Unexpected token 'X', ...snippet...`
  * family — the one that embeds the body, i.e. the case this exists for — does
  * NOT, so the size is what is always present and the offset is a bonus. Both
@@ -115,7 +117,11 @@ function mapsEqual(a: Map<string, ExportIndexEntry>, b: Map<string, ExportIndexE
 function describeParseFailure(err: unknown, bytes: number): string {
   const raw = err instanceof Error ? err.message : String(err);
   const at = /at position (\d+)/.exec(raw);
-  const where = at ? ` at position ${at[1]}` : '';
+  // `at position` is V8's UTF-16 CODE-UNIT index, not a byte offset -- named
+  // in the rendered text because the size beside it is UTF-8 bytes, and two
+  // numbers in different units with no label is how an operator seeks to the
+  // wrong place in the object.
+  const where = at ? ` at code-unit position ${at[1]}` : '';
   return `invalid JSON${where}; ${bytes} byte(s) read`;
 }
 

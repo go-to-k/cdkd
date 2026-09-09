@@ -120,6 +120,62 @@ describe('secretSafeKeyDisplay', () => {
     expect(secretSafeKeyDisplay('abc-endpoint', secrets(['abc', EXPR])).kind).toBe('safe');
   });
 
+  // SANITISATION CAN CREATE A SECRET THE RAW KEY DOES NOT CONTAIN.
+  //
+  // `stripControlChars` DELETES, so a plaintext split by any character in its
+  // class is absent from the raw key and contiguous in the sanitised one. A
+  // verdict taken from the raw key therefore returned `safe` while the text
+  // that got PRINTED held the plaintext — into `logger.info` / `warn` and the
+  // failure message, i.e. the `--dry-run --fail` CI-log surface this whole
+  // change exists to protect (issue #2667 review; introduced by the
+  // composition, not present before it).
+  //
+  // ONE CASE PER DELETED CLASS, not one representative: these are different
+  // branches of the regex, and a fence covering one is the spelling-mismatch
+  // failure this session already paid for once. `U+2028` / `U+2029` are in the
+  // table as the CONTROL: `displaySafe` REPLACES those with a space rather
+  // than deleting them, so they cannot rejoin a split secret and must stay
+  // `safe`.
+  describe.each([
+    ['U+0007 (C0 control)', '\u0007', 'masked'],
+    ['U+001f (C0 upper bound)', '\u001f', 'masked'],
+    ['U+007f (DEL)', '\u007f', 'masked'],
+    ['U+0085 (C1)', '\u0085', 'masked'],
+    ['U+200e (bidi mark LRM)', '\u200e', 'masked'],
+    ['U+200f (bidi mark RLM)', '\u200f', 'masked'],
+    ['U+202a (bidi embedding)', '\u202a', 'masked'],
+    ['U+202e (bidi override)', '\u202e', 'masked'],
+    ['U+2066 (bidi isolate)', '\u2066', 'masked'],
+    ['U+2069 (isolate terminator)', '\u2069', 'masked'],
+    ['U+2028 (line separator, REPLACED not deleted)', '\u2028', 'safe'],
+    ['U+2029 (para separator, REPLACED not deleted)', '\u2029', 'safe'],
+  ])('a secret split by %s', (_name, splitChar, expectedKind) => {
+    it(`is reported ${expectedKind} and never printed`, () => {
+      const key = `alias-${SECRET.slice(0, 5)}${splitChar}${SECRET.slice(5)}-suffix`;
+      const shown = secretSafeKeyDisplay(key, secrets());
+      expect(shown.kind).toBe(expectedKind);
+      // THE ASSERTION, and it is the same for both kinds: whatever this
+      // returns, the plaintext is not in it.
+      expect(JSON.stringify(shown)).not.toContain(SECRET);
+    });
+  });
+
+  it('the raw-key check is kept as a FALLBACK, not replaced', () => {
+    // The other direction: a secret the RAW key exposes must still trip even
+    // when sanitising breaks it up. Here the secret is contiguous in the raw
+    // key and `U+2028` sits INSIDE it, so `displaySafe` replaces that with a
+    // space and the sanitised text no longer contains it — only the raw check
+    // can see it. Without the fallback this would report `safe`.
+    const raw = `alias-${SECRET}-suffix`;
+    const secretWithSep = `${SECRET.slice(0, 5)}\u2028${SECRET.slice(5)}`;
+    const shown = secretSafeKeyDisplay(raw, new Map([[SECRET, EXPR]]));
+    expect(shown.kind).toBe('masked');
+    expect(JSON.stringify(shown)).not.toContain(SECRET);
+    // And the contrived inverse still resolves to a non-leaking answer.
+    const inverse = secretSafeKeyDisplay(`alias-${secretWithSep}-suffix`, new Map([[SECRET, EXPR]]));
+    expect(JSON.stringify(inverse)).not.toContain(SECRET);
+  });
+
   it('WITHHELD: a secret whose masking leaves the text unchanged yields no text', () => {
     // The degenerate case the third arm exists for: the recorded plaintext IS
     // the mask, so masking is a no-op and the "masked" label would be a lie.

@@ -607,6 +607,41 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(out).toContain('Exports index entry');
   });
 
+  it('a stack whose only finding is an UNWRITTEN converge is not called clean', async () => {
+    // COLLAPSE DIRECTION B (issue #2667 review). The counter split has two
+    // arms and only one had a test: moving `indexConverged++` into the else
+    // arm — so it counts WRITES rather than FINDINGS — passed the whole suite
+    // while the run printed "No plaintext secrets found in MyStack" beside
+    // "could NOT be written".
+    //
+    // The state record is already clean, so `recordsChanged` is 0 and the
+    // per-stack clean line is reachable; the index divergence is the only
+    // finding, and its write is refused. That is the one input shape where the
+    // two counters disagree.
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState('MyStack', 'us-east-1', true),
+      etag: 'etag-1',
+    });
+    indexFake.regions.set(
+      'us-east-1',
+      slot({
+        entries: new Map([['MyStack:Db', entry(SECRET_PLAINTEXT, 'MyStack', 'us-east-1')]]),
+        patchOk: false,
+      })
+    );
+
+    await expect(scrubCommand([], commandOptions())).rejects.toMatchObject({
+      code: 'SCRUB_EXPORT_INDEX_INCOMPLETE',
+    });
+
+    const out = logLines();
+    expect(out).not.toContain('No plaintext secrets found in MyStack');
+    // POSITIVE marker: the divergence really was reported, so the assertion
+    // above is not satisfied by a run that found nothing.
+    expect(out).toContain('could NOT be written');
+  });
+
   it('a SUCCESSFUL write is still logged as Converged', async () => {
     // The other direction of the same guard — it must not silence the line it
     // was narrowed for.

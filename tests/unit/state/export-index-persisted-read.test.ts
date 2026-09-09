@@ -290,7 +290,11 @@ describe('ExportIndexStore.readPersistedEntries issues no PutObject', () => {
       () => undefined,
       (e: unknown) => e as Error
     );
-    expect(err!.message).toMatch(/at position \d+/);
+    // The units are NAMED, because the size beside it is UTF-8 bytes while
+    // V8's offset is a UTF-16 code-unit index: measured, `'{ nöt json'` gives
+    // position 2 and 11 bytes. Two numbers in different units with no label is
+    // how an operator seeks to the wrong place in the object.
+    expect(err!.message).toMatch(/at code-unit position \d+/);
     expect(err!.message).toContain(`${expectedBytes} byte(s) read`);
     // The body itself still never appears.
     expect(err!.message).not.toContain('nöt json');

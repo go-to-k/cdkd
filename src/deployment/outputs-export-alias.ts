@@ -437,12 +437,18 @@ export type SecretSafeKeyDisplay =
  * path whose subject is a possibly-secret-bearing name in an operator's log,
  * neither loss is worth taking, and composing costs nothing.
  *
- * ORDER IS LOAD-BEARING: `stripControlChars` DELETES, `displaySafe` replaces
- * with a space and trims. Stripping first removes the marks outright rather
- * than turning each into a space, so a name carrying them is not padded out;
- * the trailing `.trim()` then still applies. That trim is a display-shape
- * change for a key with leading or trailing whitespace, which `stripControlChars`
- * alone preserved — stated because it is a real difference, not hidden.
+ * ORDER IS LOAD-BEARING, and for the OVERLAP set — not for the marks, which
+ * an earlier revision of this comment named and measurement contradicted.
+ * `displaySafe` never touches `U+200E` / `U+200F`, so those give identical
+ * output either way. Where the two classes OVERLAP — `U+0000`-`U+001F`,
+ * `U+007F`-`U+009F`, `U+202A`-`U+202E`, `U+2066`-`U+2069` — `stripControlChars`
+ * DELETES while `displaySafe` replaces with a space, so strip-then-display
+ * yields `"ab"` and display-then-strip yields `"a b"`. Stripping first keeps a
+ * name carrying them from being padded out.
+ *
+ * `displaySafe` also `.trim()`s, which `stripControlChars` alone did not: a
+ * display-shape change for a key with leading or trailing whitespace. Stated
+ * because it is a real difference, not hidden.
  *
  * The sibling warnings in this file still use `stripControlChars` ALONE and
  * carry the `U+2028` half of the gap; widening that helper, or converting
@@ -455,9 +461,24 @@ export function secretSafeKeyDisplay(
 ): SecretSafeKeyDisplay {
   const sanitise = (text: string): string => displaySafe(stripControlChars(text));
   const shown = sanitise(key);
-  const exposure = stateKeySecretExposure(key, secrets);
+  // THE EXPOSURE CHECK RUNS ON THE SANITISED TEXT FIRST, because that is what
+  // gets PRINTED and sanitising can CREATE a secret that the raw key does not
+  // contain (issue #2667 review). `stripControlChars` DELETES, so a plaintext
+  // split by any character in its class — `alias-super<U+200E>-secret-...` —
+  // is not found in the raw key, returns `safe`, and is then reconstituted
+  // contiguous in `shown`. Measured across the whole deleted set: the C0
+  // controls, DEL / C1, the bidi MARKS, the embedding / override set and the
+  // isolates all reconstituted it; only `U+2028` / `U+2029` did not, because
+  // `displaySafe` REPLACES those with a space rather than deleting them.
+  //
+  // The raw check is kept as a FALLBACK rather than replaced: a secret the raw
+  // form exposes and sanitising happens to break up must still trip. Whichever
+  // arm fires, the masking below runs over `shown` — the string that is
+  // returned — so the verdict and the printed text can never come from
+  // different strings, which is what this bug was.
+  const exposure = stateKeySecretExposure(shown, secrets) ?? stateKeySecretExposure(key, secrets);
   if (!exposure) return { kind: 'safe', text: shown };
-  const masked = sanitise(maskEveryOccurrence(key, exposure));
+  const masked = sanitise(maskEveryOccurrence(shown, exposure));
   if (masked === shown) return { kind: 'withheld' };
   return { kind: 'masked', text: masked };
 }
