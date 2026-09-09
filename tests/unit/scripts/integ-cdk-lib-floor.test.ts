@@ -284,21 +284,57 @@ describe('a non-uniform corpus (the uniform real one cannot see these)', () => {
 });
 
 describe('declaredSpec refuses what it cannot read', () => {
+  // The REASON is asserted per arm, not just `.kind`: `typeof null` and
+  // `typeof []` are both 'object', so one shared message named neither shape
+  // and contradicted itself while the table stayed green.
   it.each([
-    ['found', { dependencies: { 'aws-cdk-lib': '^2.1.0' } }, 'found'],
-    ['found in devDependencies', { devDependencies: { 'aws-cdk-lib': '^2.1.0' } }, 'found'],
-    ['absent', { name: 'x', dependencies: {} }, 'absent'],
-    ['no buckets at all', { name: 'x' }, 'absent'],
+    ['found', { dependencies: { 'aws-cdk-lib': '^2.1.0' } }, 'found', undefined],
+    ['found in devDependencies', { devDependencies: { 'aws-cdk-lib': '^2.1.0' } }, 'found', undefined],
+    ['absent', { name: 'x', dependencies: {} }, 'absent', undefined],
+    ['no buckets at all', { name: 'x' }, 'absent', undefined],
+    // peerDependencies / optionalDependencies are deliberately NOT the
+    // population -- a fixture is an app, not a library. Pinned so the choice
+    // is visible rather than an accident of the bucket list.
+    ['peerDependencies is not a bucket', { peerDependencies: { 'aws-cdk-lib': '^2.1.0' } }, 'absent', undefined],
+    ['optionalDependencies is not a bucket', { optionalDependencies: { 'aws-cdk-lib': '^2.1.0' } }, 'absent', undefined],
     // Each of these used to `continue` silently, dropping the fixture out of
     // the minimum -- a loosening, which the header classifies as a refusal.
-    ['manifest is an array', [], 'malformed'],
-    ['manifest is a string', 'nope', 'malformed'],
-    ['dependencies is a string', { dependencies: 'nope' }, 'malformed'],
-    ['dependencies is an array', { dependencies: [] }, 'malformed'],
-    ['spec is a number', { dependencies: { 'aws-cdk-lib': 2 } }, 'malformed'],
-    ['spec is null', { dependencies: { 'aws-cdk-lib': null } }, 'malformed'],
-  ])('classifies %s', (_label, manifest, kind) => {
-    expect(declaredSpec(manifest).kind).toBe(kind);
+    ['manifest is null', null, 'malformed', 'manifest is null'],
+    ['manifest is an array', [], 'malformed', 'manifest is a JSON array'],
+    ['manifest is a string', 'nope', 'malformed', 'not a JSON object (got string)'],
+    ['manifest is a number', 7, 'malformed', 'not a JSON object (got number)'],
+    ['dependencies is a string', { dependencies: 'nope' }, 'malformed', '"dependencies" is not a JSON object'],
+    ['dependencies is an array', { dependencies: [] }, 'malformed', '"dependencies" is not a JSON object'],
+    ['dependencies is null', { dependencies: null }, 'malformed', '"dependencies" is not a JSON object'],
+    ['spec is a number', { dependencies: { 'aws-cdk-lib': 2 } }, 'malformed', '"dependencies"."aws-cdk-lib" is not a string'],
+    ['spec is null', { dependencies: { 'aws-cdk-lib': null } }, 'malformed', '"dependencies"."aws-cdk-lib" is not a string'],
+  ])('classifies %s', (_label, manifest, kind, why) => {
+    const got = declaredSpec(manifest);
+    expect(got.kind).toBe(kind);
+    if (why !== undefined) {
+      expect(got.kind === 'malformed' ? got.why : '').toContain(why);
+    }
+  });
+
+  // A malformed FIRST bucket must not short-circuit a valid SECOND one. All
+  // three shapes are legal JSON and were `found` before the refusal landed;
+  // refusing them would be a decidable manifest rejected -- the exact mirror
+  // of the loosening this function exists to stop.
+  it.each([
+    ['null first bucket', null],
+    ['string first bucket', 'nope'],
+    ['first bucket with a non-string spec', { 'aws-cdk-lib': 2 }],
+  ])('still finds the spec in devDependencies when dependencies is %s', (_label, deps) => {
+    const got = declaredSpec({ dependencies: deps, devDependencies: { 'aws-cdk-lib': '^2.260.0' } });
+    expect(got).toEqual({ kind: 'found', spec: '^2.260.0' });
+  });
+
+  // ...and when NO bucket answers, every problem is reported, not just the first.
+  it('reports every malformed bucket when none answered', () => {
+    const got = declaredSpec({ dependencies: null, devDependencies: 'nope' });
+    expect(got.kind).toBe('malformed');
+    expect(got.kind === 'malformed' ? got.why : '').toContain('"dependencies" is not a JSON object');
+    expect(got.kind === 'malformed' ? got.why : '').toContain('"devDependencies" is not a JSON object');
   });
 
   it('surfaces a malformed manifest as a REFUSAL, not a smaller minimum', () => {
@@ -331,9 +367,20 @@ describe('the repoRoot seam', () => {
     expect(report.refusals.map((r) => r.where)).toContain(join('a', 'package.json'));
   });
 
-  it('accepts --repo-root= and refuses an empty one', () => {
-    const ok = runCli([`--repo-root=${REPO_ROOT}`]);
-    expect(ok.status).toBe(0);
+  // Passing REPO_ROOT here would be VACUOUS -- it is exactly parseArgs's
+  // default, so the arm could not tell "honoured" from "parsed and discarded"
+  // (measured: deleting the assignment left it green). `repoRoot` also seeds
+  // the default integRoot/templatePath, so an inert flag silently reads a
+  // corpus the caller never named. A scratch root with no tests/integration
+  // discriminates.
+  it('HONOURS --repo-root= rather than merely parsing it', () => {
+    const elsewhere = scratch('cdkd-floor-otherroot-');
+    const res = runCli([`--repo-root=${elsewhere}`]);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(`integ root unreadable: ${INTEG_ROOT_REL}`);
+  }, TIMEOUT);
+
+  it('refuses an empty --repo-root=', () => {
     const empty = runCli(['--repo-root=']);
     expect(empty.status).toBe(1);
     expect(empty.stderr).toContain('--repo-root= requires a non-empty value');

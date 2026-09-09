@@ -229,23 +229,43 @@ export type DeclaredSpec =
  * LOOSEN the verdict, which the header calls a refusal — so they are refusals.
  */
 export function declaredSpec(manifest: unknown): DeclaredSpec {
-  if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
+  // `typeof null` and `typeof []` are both 'object', so a single
+  // "not a JSON object (got ${typeof manifest})" message named neither shape
+  // and contradicted itself. Each arm names its own.
+  if (manifest === null) return { kind: 'malformed', why: 'manifest is null' };
+  if (Array.isArray(manifest)) return { kind: 'malformed', why: 'manifest is a JSON array' };
+  if (typeof manifest !== 'object') {
     return { kind: 'malformed', why: `manifest is not a JSON object (got ${typeof manifest})` };
   }
+
   const m = manifest as Record<string, unknown>;
+  // A malformed bucket must NOT short-circuit a later valid one. Returning on
+  // the first bad bucket made `{dependencies: null, devDependencies: {...}}` --
+  // legal JSON, and previously `found` -- refuse: a decidable manifest
+  // rejected, the exact mirror of the loosening this function exists to stop.
+  // So the reasons are collected and only reported when NO bucket answered.
+  const problems: string[] = [];
   for (const bucket of ['dependencies', 'devDependencies']) {
     if (!(bucket in m)) continue;
     const deps = m[bucket];
     if (typeof deps !== 'object' || deps === null || Array.isArray(deps)) {
-      return { kind: 'malformed', why: `"${bucket}" is not a JSON object` };
+      problems.push(`"${bucket}" is not a JSON object`);
+      continue;
     }
     if (!('aws-cdk-lib' in (deps as Record<string, unknown>))) continue;
     const spec = (deps as Record<string, unknown>)['aws-cdk-lib'];
     if (typeof spec !== 'string') {
-      return { kind: 'malformed', why: `"${bucket}"."aws-cdk-lib" is not a string` };
+      problems.push(`"${bucket}"."aws-cdk-lib" is not a string`);
+      continue;
     }
     return { kind: 'found', spec };
   }
+  if (problems.length > 0) return { kind: 'malformed', why: problems.join('; ') };
+  // NOTE: only `dependencies` and `devDependencies` are the population.
+  // `peerDependencies` / `optionalDependencies` are NOT consulted -- an integ
+  // fixture is an app, not a library, so declaring aws-cdk-lib there would be
+  // the mistake rather than a floor to honour. Pinned by a test so the choice
+  // is visible rather than an accident of this loop's bucket list.
   return { kind: 'absent' };
 }
 
