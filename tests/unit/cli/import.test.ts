@@ -1042,6 +1042,545 @@ describe('cdkd import', () => {
     expect(state.resources['MyFn']?.observedProperties).toBeUndefined();
   });
 
+  describe('observedProperties redaction (issue #2828)', () => {
+    // `captureObservedForImportedResources` wrote the provider's live readback
+    // onto the record VERBATIM. For a resource whose template property is a
+    // `{{resolve:secretsmanager:...}}` reference the readback is the DECRYPTED
+    // value, so `cdkd import` persisted the plaintext into `state.json` — the
+    // GHSA-p5qg-v9gv-hc7w class the sibling `properties` walk (and, since issue
+    // #1926, `cdkd state refresh-observed`) already closes.
+    //
+    // Every case here asserts the bag handed to `saveState` — what is actually
+    // persisted — rather than an in-memory object the writer might redact later.
+    const SECRET_PLAINTEXT = 'imported-observed-plaintext';
+    const SECRET_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:client_secret::}}';
+
+    /** The `saveState` call for one stack name, or `undefined`. */
+    function savedStateFor(stackName: string):
+      | {
+          resources: Record<
+            string,
+            {
+              properties: Record<string, unknown>;
+              observedProperties?: Record<string, unknown>;
+            }
+          >;
+        }
+      | undefined {
+      const call = mockSaveState.mock.calls.find((c) => (c as unknown[])[0] === stackName) as
+        | unknown[]
+        | undefined;
+      return call?.[2] as ReturnType<typeof savedStateFor>;
+    }
+
+    it('persists the expression, not the decrypted readback, for the ROOT import walk', async () => {
+      smSend.mockResolvedValueOnce({
+        SecretString: JSON.stringify({ client_secret: SECRET_PLAINTEXT }),
+      });
+
+      const tmpl = template({
+        Idp: {
+          Type: 'AWS::Cognito::UserPoolIdentityProvider',
+          Properties: {
+            ProviderName: 'oidc',
+            ProviderDetails: { client_id: 'public-id', client_secret: SECRET_EXPR },
+          },
+          Metadata: { 'aws:cdk:path': 'S/Idp' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      // The readback is what AWS HOLDS: the decrypted secret at the reference's
+      // position, the public sibling unchanged, one AWS-authored key the
+      // template never declared, and — load-bearing — a non-secret leaf that
+      // DIFFERS from the template (`ProviderName`). Every control here used to
+      // hold the SAME value on both sides, which made them confluence points:
+      // a writer that discarded the readback and persisted `properties`
+      // wholesale satisfied all of them (measured by a reviewer). The drifted
+      // leaf is what discriminates it, and it is the field's whole purpose —
+      // `observedProperties` exists to record what AWS has, not what the
+      // template says.
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'idp-phys', attributes: {} })),
+        readCurrentState: vi.fn(async () => ({
+          ProviderName: 'oidc-DRIFTED-IN-AWS',
+          ProviderDetails: { client_id: 'public-id', client_secret: SECRET_PLAINTEXT },
+          AttributeMapping: { email: 'email' },
+        })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      // Non-vacuity: the reference must have RESOLVED. A refusal after the
+      // fetch leaves `properties` on the raw expression, which is ALSO what a
+      // working redaction produces there — so the fetch alone proves nothing.
+      expect(smSend).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain(
+        'Failed to resolve intrinsics in Properties'
+      );
+
+      const state = savedStateFor('S');
+      expect(state).toBeDefined();
+      const observed = state!.resources['Idp']!.observedProperties as Record<string, unknown>;
+      // The capture ran at all — without this a deleted capture call satisfies
+      // every "no plaintext" assertion below vacuously.
+      expect(observed, 'the observed baseline was captured').toBeDefined();
+
+      const observedDetails = observed['ProviderDetails'] as Record<string, unknown>;
+      // THE DISCRIMINATOR. `readCurrentState` returned the plaintext at this
+      // position; only the redaction can turn it back into the expression.
+      expect(observedDetails['client_secret']).toBe(SECRET_EXPR);
+      // Over-redaction controls, one per arm the walk takes.
+      expect(observedDetails['client_id'], 'a non-secret sibling is untouched').toBe('public-id');
+      expect(
+        observed['ProviderName'],
+        'a non-secret leaf that DIFFERS from the template keeps the AWS value — ' +
+          'the control that a writer discarding the readback cannot satisfy'
+      ).toBe('oidc-DRIFTED-IN-AWS');
+      expect(
+        observed['AttributeMapping'],
+        'an AWS-authored subtree the source does not carry survives'
+      ).toEqual({ email: 'email' });
+
+      // The position source itself, so the mechanism is visible rather than
+      // inferred: `properties` holds the expression by the time the capture runs.
+      const properties = state!.resources['Idp']!.properties['ProviderDetails'] as Record<
+        string,
+        unknown
+      >;
+      expect(properties['client_secret']).toBe(SECRET_EXPR);
+
+      // Hard invariant over the WHOLE persisted record.
+      expect(JSON.stringify(state)).not.toContain(SECRET_PLAINTEXT);
+    });
+
+    it('persists the expression for the NESTED --migrate-from-cloudformation child walk', async () => {
+      // The second call site. It re-uses the same helper, so this case is not a
+      // duplicate of the mechanism but of the WIRING: the child walk builds its
+      // own `StackState` and saves it under `<parent>~<child>`, and a fix
+      // applied at the root call site only would leave this record leaking.
+      smSend.mockResolvedValueOnce({
+        SecretString: JSON.stringify({ client_secret: SECRET_PLAINTEXT }),
+      });
+
+      const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-observed-redaction-'));
+      try {
+        const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+        writeFileSync(
+          childTemplatePath,
+          JSON.stringify({
+            Resources: {
+              ChildIdp: {
+                Type: 'AWS::Cognito::UserPoolIdentityProvider',
+                Properties: {
+                  ProviderName: 'oidc',
+                  ProviderDetails: { client_id: 'public-id', client_secret: SECRET_EXPR },
+                },
+              },
+            },
+          })
+        );
+        const tmpl = template({
+          Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+        });
+        mockSynthesize.mockResolvedValue({
+          stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+        });
+        mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'idp-phys', attributes: {} })),
+          // `ProviderName` DRIFTED, for the reason case 1 states: without a
+          // leaf whose AWS value differs from the template, a writer that
+          // discarded the readback and persisted `properties` would pass.
+          readCurrentState: vi.fn(async () => ({
+            ProviderName: 'oidc-DRIFTED-IN-AWS',
+            ProviderDetails: { client_id: 'public-id', client_secret: SECRET_PLAINTEXT },
+          })),
+        });
+        const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'P',
+          physicalId: 'P',
+          resources: new Map([['Child', childArn]]),
+          nested: new Map([
+            [
+              'Child',
+              {
+                stackName: childArn,
+                physicalId: childArn,
+                resources: new Map([['ChildIdp', 'idp-phys']]),
+                nested: new Map(),
+              },
+            ],
+          ]),
+        });
+
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+        expect(smSend).toHaveBeenCalled();
+        expect(warnSpy.mock.calls.flat().join('\n')).not.toContain(
+          'Failed to resolve intrinsics in Properties'
+        );
+
+        const childState = savedStateFor('P~Child');
+        expect(childState, 'the child state record was written').toBeDefined();
+        const observed = childState!.resources['ChildIdp']!.observedProperties as Record<
+          string,
+          unknown
+        >;
+        expect(observed, 'the child observed baseline was captured').toBeDefined();
+        const observedDetails = observed['ProviderDetails'] as Record<string, unknown>;
+        expect(observedDetails['client_secret']).toBe(SECRET_EXPR);
+        expect(observedDetails['client_id'], 'a non-secret sibling is untouched').toBe('public-id');
+        expect(
+          observed['ProviderName'],
+          "the CHILD record carries AWS's value, so this case pins the readback " +
+            'reaching the child save rather than the template being copied into it'
+        ).toBe('oidc-DRIFTED-IN-AWS');
+        expect(JSON.stringify(childState)).not.toContain(SECRET_PLAINTEXT);
+      } finally {
+        rmSync(tmpdirPath, { recursive: true, force: true });
+      }
+    });
+
+    it('closes the MIXED-leaf row too, which is what makes the rules constant load-bearing', async () => {
+      // A leaf that EMBEDS the reference in surrounding text
+      // (`postgres://u:{{resolve:...}}@host`) rather than being the whole
+      // token. This is the dominant CDK shape and the one
+      // `refuseUncertifiedReadbackPositions` exists for — the path pass
+      // certifies only a WHOLE-TOKEN source leaf, so on an empty-map readback
+      // a mixed leaf otherwise falls to a value scan with no needles and keeps
+      // its plaintext. That refusal is selected by
+      // `isReadbackProjectedFromState`, i.e. by the rules constant, so this
+      // case is what a swap to any other constant reds.
+      smSend.mockResolvedValueOnce({
+        SecretString: JSON.stringify({ client_secret: SECRET_PLAINTEXT }),
+      });
+
+      const mixedExpr = `postgres://appuser:${SECRET_EXPR}@db.example.com:5432/app`;
+      const tmpl = template({
+        Idp: {
+          Type: 'AWS::Cognito::UserPoolIdentityProvider',
+          Properties: {
+            ProviderName: 'oidc',
+            ProviderDetails: { connection: mixedExpr },
+          },
+          Metadata: { 'aws:cdk:path': 'S/Idp' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'idp-phys', attributes: {} })),
+        // What AWS holds: the ASSEMBLED string, secret and all. `ProviderName`
+        // DRIFTED for the reason case 1 states — without it a writer that
+        // discarded the readback would pass this case too.
+        readCurrentState: vi.fn(async () => ({
+          ProviderName: 'oidc-DRIFTED-IN-AWS',
+          ProviderDetails: {
+            connection: `postgres://appuser:${SECRET_PLAINTEXT}@db.example.com:5432/app`,
+          },
+        })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(smSend).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain(
+        'Failed to resolve intrinsics in Properties'
+      );
+
+      const state = savedStateFor('S');
+      const observed = state!.resources['Idp']!.observedProperties as Record<string, unknown>;
+      expect(observed, 'the observed baseline was captured').toBeDefined();
+      const observedDetails = observed['ProviderDetails'] as Record<string, unknown>;
+      expect(observedDetails['connection']).toBe(mixedExpr);
+      expect(observed['ProviderName'], "the AWS-current value reached the record").toBe(
+        'oidc-DRIFTED-IN-AWS'
+      );
+      expect(JSON.stringify(state)).not.toContain(SECRET_PLAINTEXT);
+    });
+
+    it('captures NO baseline when resolution threw, because the raw bag cannot position a redaction', async () => {
+      // The review blocker, found independently by two reviewers and measured
+      // against the real redaction module before it was fixed.
+      //
+      // `resolveImportedProperties`' catch arm deliberately leaves the RAW
+      // TEMPLATE bag in `properties` — an `Fn::Join` OBJECT for the dominant
+      // CDK shape (`secret.secretValueFromJson(...)` renders as one). The
+      // observed redaction is POSITION-based, so it walks a STRING readback
+      // leaf against an OBJECT source leaf, takes `redactSecretsForState`'s
+      // shape-divergence arm, returns the bag UNCHANGED, and the decrypted
+      // value lands in `state.json`. Reachable whenever a sibling `Ref` is out
+      // of scope — routine in selective mode, and in auto mode for any
+      // resource no provider can import.
+      //
+      // The fix refuses to capture at all there. This case pins the refusal,
+      // not just the absence of plaintext: `observedProperties` must be
+      // UNDEFINED, which is the documented fallback (drift compares against
+      // `properties` until the next successful deploy).
+      const joinedSecret = {
+        'Fn::Join': [
+          '',
+          ['{{resolve:secretsmanager:', { Ref: 'MissingSecretSibling' }, ':SecretString:pw::}}'],
+        ],
+      };
+      const tmpl = template({
+        Idp: {
+          Type: 'AWS::Cognito::UserPoolIdentityProvider',
+          Properties: {
+            ProviderName: 'oidc',
+            ProviderDetails: { client_secret: joinedSecret },
+          },
+          Metadata: { 'aws:cdk:path': 'S/Idp' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'idp-phys', attributes: {} })),
+        // AWS holds the DECRYPTED value — the whole hazard.
+        readCurrentState: vi.fn(async () => ({
+          ProviderName: 'oidc',
+          ProviderDetails: { client_secret: SECRET_PLAINTEXT },
+        })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      // PREMISE, asserted before the outcome. Measured, so the claim matches
+      // what it buys: with this deleted and the resolution made to succeed the
+      // case still reds, so it is not what keeps the case honest. What it does
+      // is name the CAUSE in the failure message, and catch the drift where
+      // the resolver stops throwing on this shape while something ELSE happens
+      // to skip the capture — under which the outcome assertions would pass
+      // while the arm under test had gone unreachable.
+      expect(
+        warnSpy.mock.calls.flat().join('\n'),
+        'the resolution must actually have thrown, or this case tests nothing'
+      ).toContain('Failed to resolve intrinsics in Properties');
+
+      const state = savedStateFor('S');
+      expect(state).toBeDefined();
+      // The DISCLOSURE assertion first, deliberately: with the skip disabled
+      // both of the next two red, and this ordering makes the failure message
+      // name the leak rather than the shape.
+      expect(
+        JSON.stringify(state),
+        'the decrypted readback must not reach the persisted record'
+      ).not.toContain(SECRET_PLAINTEXT);
+      expect(
+        state!.resources['Idp']!.observedProperties,
+        'no baseline is written when the position source is the raw template shape'
+      ).toBeUndefined();
+      // And the record really is on the raw shape — the premise the refusal
+      // rests on, asserted rather than assumed.
+      expect(
+        (state!.resources['Idp']!.properties['ProviderDetails'] as Record<string, unknown>)[
+          'client_secret'
+        ],
+        'the catch arm left the raw intrinsic in place'
+      ).toEqual(joinedSecret);
+    });
+
+    it('captures NO baseline when a DOWNGRADED condition drops the reference from a resolved Fn::If', async () => {
+      // The second review blocker, and the one that turned an arm-by-arm patch
+      // into a rule. Here resolution SUCCEEDS — nothing throws — and the
+      // persisted bag still has no reference to position against.
+      //
+      // `cdkd import` accepts no parameter VALUES from the user, and this
+      // parameter carries no `Default` either — a `Default`-carrying one WOULD
+      // bind (issue #2321's retry), so an unbindable parameter is what the
+      // downgrade needs. `evaluateConditions` then catches per condition and
+      // records `false`. `Fn::If` then selects the branch AWS did
+      // NOT take, `properties` hold the false-branch literal, and
+      // `redactSecretsForState` takes its "no dynamic reference in the source
+      // subtree" arm and returns the readback untouched — plaintext.
+      //
+      // Dominant under `--migrate-from-cloudformation`: the CloudFormation
+      // stack was deployed WITH parameter values, and the re-import supplies
+      // none, so every parameter-driven condition flips.
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: { Stage: { Type: 'String' } }, // no Default -> unbindable
+        Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+        Resources: {
+          Idp: {
+            Type: 'AWS::Cognito::UserPoolIdentityProvider',
+            Properties: {
+              ProviderName: 'oidc',
+              ProviderDetails: {
+                'Fn::If': [
+                  'IsProd',
+                  { client_secret: SECRET_EXPR },
+                  { client_secret: 'dev-placeholder' },
+                ],
+              },
+            },
+            Metadata: { 'aws:cdk:path': 'S/Idp' },
+          },
+        },
+      };
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'idp-phys', attributes: {} })),
+        // AWS holds the value from the branch that was really deployed.
+        readCurrentState: vi.fn(async () => ({
+          ProviderName: 'oidc',
+          ProviderDetails: { client_secret: SECRET_PLAINTEXT },
+        })),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const state = savedStateFor('S');
+      expect(state).toBeDefined();
+      expect(
+        JSON.stringify(state),
+        'the decrypted readback must not reach the persisted record'
+      ).not.toContain(SECRET_PLAINTEXT);
+      expect(
+        state!.resources['Idp']!.observedProperties,
+        'no baseline is written when the resolve dropped the reference'
+      ).toBeUndefined();
+
+      // PREMISE, asserted rather than assumed, and it is the OPPOSITE of the
+      // throw case's: resolution must have SUCCEEDED here, or this case would
+      // be a second copy of that one rather than the arm it exists for.
+      expect(
+        warnSpy.mock.calls.flat().join('\n'),
+        'resolution must NOT have thrown — this case is the succeeded-but-lost arm'
+      ).not.toContain('Failed to resolve intrinsics in Properties');
+      // ...and the persisted bag really is the branch AWS did not take, which
+      // is what leaves the redaction with nothing to position against.
+      expect(
+        (state!.resources['Idp']!.properties['ProviderDetails'] as Record<string, unknown>)[
+          'client_secret'
+        ],
+        'the downgraded condition selected the false branch'
+      ).toBe('dev-placeholder');
+    });
+
+    it('captures NO baseline for a NESTED child whose resolution threw', async () => {
+      // The nested twin of the two refusal cases above. It is not a duplicate
+      // of the mechanism but of the WIRING: a reviewer measured that replacing
+      // the child call site's set with an empty one left all 99 cases in this
+      // file green, so the refusal shipped fenced at ONE of its two call sites
+      // — the same gap the success-path child case exists to close for the
+      // capture itself.
+      const joinedSecret = {
+        'Fn::Join': [
+          '',
+          ['{{resolve:secretsmanager:', { Ref: 'MissingSecretSibling' }, ':SecretString:pw::}}'],
+        ],
+      };
+      const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-refusal-'));
+      try {
+        const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+        writeFileSync(
+          childTemplatePath,
+          JSON.stringify({
+            Resources: {
+              ChildIdp: {
+                Type: 'AWS::Cognito::UserPoolIdentityProvider',
+                Properties: {
+                  ProviderName: 'oidc',
+                  ProviderDetails: { client_secret: joinedSecret },
+                },
+              },
+            },
+          })
+        );
+        const tmpl = template({
+          Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+        });
+        mockSynthesize.mockResolvedValue({
+          stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+        });
+        mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'idp-phys', attributes: {} })),
+          readCurrentState: vi.fn(async () => ({
+            ProviderName: 'oidc',
+            ProviderDetails: { client_secret: SECRET_PLAINTEXT },
+          })),
+        });
+        const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'P',
+          physicalId: 'P',
+          resources: new Map([['Child', childArn]]),
+          nested: new Map([
+            [
+              'Child',
+              {
+                stackName: childArn,
+                physicalId: childArn,
+                resources: new Map([['ChildIdp', 'idp-phys']]),
+                nested: new Map(),
+              },
+            ],
+          ]),
+        });
+
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+        const childState = savedStateFor('P~Child');
+        expect(childState, 'the child state record was written').toBeDefined();
+        expect(
+          JSON.stringify(childState),
+          'the decrypted readback must not reach the CHILD record either'
+        ).not.toContain(SECRET_PLAINTEXT);
+        expect(
+          childState!.resources['ChildIdp']!.observedProperties,
+          'the child walk threads its OWN refusal set'
+        ).toBeUndefined();
+        expect(
+          warnSpy.mock.calls.flat().join('\n'),
+          "the child's resolution must actually have thrown"
+        ).toContain('Failed to resolve intrinsics in Properties');
+      } finally {
+        rmSync(tmpdirPath, { recursive: true, force: true });
+      }
+    });
+
+    it('leaves a record with NO secret reference byte-identical to the readback', async () => {
+      // The other polarity: with no expression in the source, every leaf must
+      // arrive exactly as the provider reported it.
+      //
+      // `structuredClone` on the way OUT of the mock is load-bearing, not
+      // hygiene. Returning `readback` by reference made this case compare the
+      // persisted bag against the same live object production holds, so a
+      // writer that MUTATED the bag in place passed — measured by a reviewer,
+      // who deleted a key and clobbered another and saw all four cases stay
+      // green. The clone is what makes `toEqual` a claim about a COPY.
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: { BucketName: 'my-bucket-name' },
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      const readback = {
+        BucketName: 'my-bucket-name',
+        Tags: [{ Key: 'owner', Value: 'platform' }],
+        VersioningConfiguration: { Status: 'Enabled' },
+      };
+      mockGetProvider.mockImplementation(() => ({
+        import: vi.fn(async () => ({ physicalId: 'my-bucket-name', attributes: {} })),
+        readCurrentState: vi.fn(async () => structuredClone(readback)),
+      }));
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const state = savedStateFor('S');
+      expect(state!.resources['MyBucket']!.observedProperties).toEqual(readback);
+    });
+  });
+
   it('passes --resource overrides through as knownPhysicalId', async () => {
     const tmpl = template({
       MyBucket: {

@@ -357,6 +357,7 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'docdb-neptune',
       'eventbridge-api-destination',
       'iam-access-key',
+      'import-secret-observed',
       'lambda-esm-self-managed-kafka',
       'local-run-task-from-state',
       'secrets-array-nested',

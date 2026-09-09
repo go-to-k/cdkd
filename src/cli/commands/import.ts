@@ -29,7 +29,12 @@ import {
   IntrinsicFunctionResolver,
   isUnboundTemplateParameter,
 } from '../../deployment/intrinsic-function-resolver.js';
-import { maskSecretsInText, redactSecretsForState } from '../../deployment/secret-redaction.js';
+import {
+  maskSecretsInText,
+  redactSecretsForState,
+  STATE_SOURCED_READBACK_RULES,
+  type RecordedSecretValues,
+} from '../../deployment/secret-redaction.js';
 import {
   resolveApp,
   resolveStateBucketWithDefault,
@@ -769,7 +774,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // and left as-is rather than aborting the whole import. The
       // eventual destroy failure on the un-resolved props is narrower
       // than blowing up the entire adoption flow.
-      await resolveImportedProperties(
+      const unsafeObservedBaselineLogicalIds = await resolveImportedProperties(
         stackState,
         stateTemplate,
         targetRegion,
@@ -784,7 +789,12 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // and the few extra seconds are amortized into the user's adoption
       // workflow. Errors are swallowed per-resource so a single
       // readCurrentState failure does not abort the whole import.
-      await captureObservedForImportedResources(stackState, providerRegistry, logger);
+      await captureObservedForImportedResources(
+        stackState,
+        providerRegistry,
+        logger,
+        unsafeObservedBaselineLogicalIds
+      );
 
       // Forward the etag for optimistic locking when state already exists,
       // and trigger legacy-key migration when the existing state was loaded
@@ -1447,6 +1457,81 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  * already-stored, which on the v3 baseline is already resolved-shape
  * from a prior import / deploy, so re-resolving is a no-op.
  *
+ * RETURNS the logical ids for which an `observedProperties` baseline must NOT
+ * be captured, because this walk cannot vouch that the persisted `properties`
+ * still SPELL the dynamic reference the template had.
+ * `captureObservedForImportedResources` refuses to write a baseline for those
+ * (issue [#2828](https://github.com/go-to-k/cdkd/issues/2828) review); the
+ * redaction it performs is POSITION-based, so a bag that no longer spells the
+ * reference gives it no evidence and the DECRYPTED readback is persisted in
+ * the clear.
+ *
+ * The predicate is deliberately CONSERVATIVE — it over-refuses — and that is a
+ * decision a review round paid for. Two arms:
+ *
+ *  - **Resolution THREW** — refuse, unconditionally. A throw means the
+ *    resolver could not finish, so nothing about the persisted bag is
+ *    trustworthy evidence. This is BEHAVIOURALLY IDENTICAL to the arm this PR
+ *    first shipped: two attempts to sharpen it in between each shipped a leak
+ *    (the wrapped-complete-token shape, then the
+ *    reference-sourced-from-outside-the-bag shape), and saying so is the
+ *    strongest available form of "every sharpening leaked". The arm's own
+ *    comment carries both measurements.
+ *  - **Resolution SUCCEEDED but LOST an opener.** An `Fn::If` whose condition
+ *    was DOWNGRADED resolves without throwing and selects the branch AWS did
+ *    not take, so `properties` hold the false-branch literal and no reference
+ *    at all. The downgrade needs a parameter with NO `Default` — `cdkd import`
+ *    accepts no parameter VALUES from the user, but a `Default`-carrying
+ *    parameter IS bound (issue #2321's retry), so only an unbindable one leaves
+ *    `evaluateConditions` catching per condition and recording `false`.
+ *
+ *    ARM 2 IS KNOWN OVER-BROAD for a PUBLIC `{{resolve:ssm:...}}` reference: a
+ *    `String` / `StringList` parameter is stored RESOLVED (issue #1901), so its
+ *    opener disappears across the resolve and the resource is refused although
+ *    nothing was ever secret, costing it a drift baseline on a common config
+ *    pattern. Threading the resolve's own `recordedSecretValues` into the
+ *    capture corrects it -- measured on issue
+ *    [#2852](https://github.com/go-to-k/cdkd/issues/2852), which carries that
+ *    remedy -- because a populated map makes absence from it real evidence of
+ *    a public parameter, exactly as the deploy path already relies on.
+ *
+ * The cost of a false refusal is one resource's drift baseline until its next
+ * deploy; the cost of a false pass is a plaintext secret in `state.json`. So an
+ * unmeasurable bag refuses too.
+ *
+ * WHAT CAN STILL GO WRONG. No claim is made here about what this closes, and
+ * that is deliberate: successive review rounds falsified a closure claim, then
+ * a closed-set list, then a "reduces" claim -- the mechanism survived every
+ * round of measurement and the SENTENCES about it did not. What follows states only
+ * the DANGER direction, which can become false only once the residue is gone.
+ *
+ * PLAINTEXT CAN STILL BE PERSISTED by this capture. Known ways, each with its
+ * issue and none of them proven to be all of them:
+ *
+ *  - the resolve drops a reference, or trades one away, in a manner the opener
+ *    comparison below cannot see --
+ *    [#2850](https://github.com/go-to-k/cdkd/issues/2850);
+ *  - a parameter binds to a placeholder `Default` while the DEPLOYED value was
+ *    the reference, so no opener exists in any template this walk is handed --
+ *    [#2854](https://github.com/go-to-k/cdkd/issues/2854);
+ *  - `redactSecretsForState` cannot PAIR the readback against the source and
+ *    returns the bag unchanged: a reshaped container, an identity key AWS
+ *    normalised, a readback key the source lacks, an array whose anchors do not
+ *    corroborate -- [#2852](https://github.com/go-to-k/cdkd/issues/2852), which
+ *    carries the measured probe table;
+ *  - the readback holds a secret with NO counterpart in the source at all, set
+ *    out of band -- [#2868](https://github.com/go-to-k/cdkd/issues/2868), filed
+ *    as a remit question rather than a defect in this mechanism.
+ *
+ * WHY NO EXHAUSTIVE LIST IS OFFERED, as mechanism rather than framing: this
+ * redaction's only evidence is a POST-HOC comparison between the persisted bag
+ * and the readback, so anything that comparison cannot see is trusted.
+ * Establishing more needs PROVENANCE carried out of the resolver or the
+ * deployer, which is where the structural remedy for all of the above lives.
+ *
+ * The set is returned rather than recorded on the state, because it describes
+ * THIS run's resolution and nothing downstream of the save has any use for it.
+ *
  * Exported for unit testing — internal to the command flow otherwise. The
  * masking this walk applies (issue #2803) is only provable against the REAL
  * resolver, since the plaintext reaches the message through the resolver's
@@ -1458,9 +1543,10 @@ export async function resolveImportedProperties(
   region: string,
   stateBackend: S3StateBackend,
   logger: ReturnType<typeof getLogger>
-): Promise<void> {
+): Promise<Set<string>> {
+  const unsafeObservedBaselineLogicalIds = new Set<string>();
   const entries = Object.entries(stackState.resources);
-  if (entries.length === 0) return;
+  if (entries.length === 0) return unsafeObservedBaselineLogicalIds;
 
   const resolver = new IntrinsicFunctionResolver(region);
 
@@ -1589,11 +1675,15 @@ export async function resolveImportedProperties(
     // set. `rollback-executor.ts` and `drift.ts` hoist for the same reason and
     // say so at their own declarations.
     const recordedSecretValues = new Map<string, string>();
+    // Captured BEFORE the resolve + reassignment below: this unresolved bag is
+    // the POSITION source (#1910), and `resource.properties` is overwritten
+    // with the resolved one inside the `try`.
+    //
+    // HOISTED above the `try` for the same reason the map above is, and for one
+    // more: the refusal decision AFTER the try/catch reads it on BOTH arms.
+    const unresolvedProperties = resource.properties ?? {};
+    let threw = false;
     try {
-      // Captured BEFORE the resolve + reassignment below: this unresolved bag is
-      // the POSITION source (#1910), and `resource.properties` is overwritten
-      // with the resolved one two statements later.
-      const unresolvedProperties = resource.properties ?? {};
       const resolved = (await resolver.resolve(unresolvedProperties, {
         ...baseContext,
         recordedSecretValues,
@@ -1649,7 +1739,69 @@ export async function resolveImportedProperties(
             ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
             : '')
       );
+      threw = true;
     }
+
+    // THE REFUSAL (see this function's doc block for the two arms and why the
+    // predicate is deliberately CONSERVATIVE rather than precise).
+    // ARM 1 -- the resolve THREW. Refuse, FULL STOP: no inspection of the bag at
+    // all, and tested FIRST so the two `JSON.stringify` passes below are not
+    // computed on the arm that ignores them. Two review rounds tried to be
+    // cleverer here and both leaked -- refusing only when an opener is not
+    // already a COMPLETE token admitted a complete token wrapped in a
+    // single-element `Fn::Join` / `Fn::Sub` / `Fn::If`; refusing only when the
+    // raw bag CARRIES an opener admitted a reference sourced from OUTSIDE the
+    // bag. A throw means the resolver could not finish, so nothing about the
+    // bag is trustworthy evidence.
+    if (threw) {
+      unsafeObservedBaselineLogicalIds.add(logicalId);
+      continue;
+    }
+    const rawOpeners = countDynamicReferenceOpeners(unresolvedProperties);
+    const persistedOpeners = countDynamicReferenceOpeners(resource.properties);
+    if (
+      rawOpeners === undefined ||
+      persistedOpeners === undefined ||
+      // ARM 2 — the resolve SUCCEEDED but LOST an opener, which a downgraded
+      // `Fn::If` does routinely.
+      persistedOpeners < rawOpeners
+    ) {
+      unsafeObservedBaselineLogicalIds.add(logicalId);
+    }
+  }
+
+  return unsafeObservedBaselineLogicalIds;
+}
+
+/** The opener every dynamic reference starts with, secret-bearing or not. */
+const DYNAMIC_REFERENCE_OPENER = '{{resolve:';
+
+/**
+ * How many dynamic-reference OPENERS a property bag carries, counted over its
+ * JSON serialization rather than by walking string leaves — which is the whole
+ * point on the RAW side: a token assembled by `Fn::Join` is SPLIT across array
+ * elements, so `{{resolve:secretsmanager:` survives as a fragment that no scan
+ * for a COMPLETE token would see. `secretValueFromJson` renders exactly that
+ * shape, so the split form is the common one, not the exotic one.
+ *
+ * `undefined` when the bag cannot be serialized. Callers treat that as "cannot
+ * vouch for this bag" rather than as zero — the only safe direction, since the
+ * cost of a false refusal is a drift baseline and the cost of a false pass is a
+ * plaintext secret in `state.json`.
+ */
+function countDynamicReferenceOpeners(bag: unknown): number | undefined {
+  let text: string;
+  try {
+    text = JSON.stringify(bag ?? {}) ?? '';
+  } catch {
+    return undefined;
+  }
+  let count = 0;
+  for (let from = 0; ;) {
+    const at = text.indexOf(DYNAMIC_REFERENCE_OPENER, from);
+    if (at === -1) return count;
+    count++;
+    from = at + DYNAMIC_REFERENCE_OPENER.length;
   }
 }
 
@@ -1837,6 +1989,15 @@ function collectMultiple(value: string, previous: string[] | undefined): string[
 }
 
 /**
+ * The empty secrets map the observed-capture redaction below passes. Shared
+ * and module-level because `redactSecretsForState` only ever READS its map,
+ * and because an empty one is not an oversight here but the POSITION-only
+ * configuration the call site's note argues for — the same constant
+ * `cdkd state refresh-observed` passes for the same reason.
+ */
+const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
+
+/**
  * Populate `observedProperties` for every resource in a freshly-built
  * import StackState by calling the matching provider's
  * `readCurrentState`. Mirrors what `cdkd deploy` does after each
@@ -1855,17 +2016,91 @@ function collectMultiple(value: string, previous: string[] | undefined): string[
  * (incremental rollout — see `ResourceProvider.readCurrentState`'s
  * doc-comment) keep `observedProperties: undefined`; the drift comparator
  * falls back to `properties` for those, matching pre-v3 behavior.
+ *
+ * Exported for unit testing -- internal to the command flow otherwise. The
+ * input-space matrix drives THIS function rather than replaying its
+ * `redactSecretsForState` call by hand, so a change to the arguments it passes
+ * cannot leave that fence green.
+ *
+ * Every captured bag is REDACTED before it lands on the record, and a resource
+ * whose redaction POSITION SOURCE is unusable is skipped entirely — see the
+ * call site's own note (issue
+ * [#2828](https://github.com/go-to-k/cdkd/issues/2828)).
  */
-async function captureObservedForImportedResources(
+export async function captureObservedForImportedResources(
   stackState: StackState,
   providerRegistry: ProviderRegistry,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  unsafeObservedBaselineLogicalIds: ReadonlySet<string>
 ): Promise<void> {
   const entries = Object.entries(stackState.resources);
   if (entries.length === 0) return;
 
   await Promise.all(
     entries.map(async ([logicalId, resource]) => {
+      // NO BASELINE where the position source cannot vouch for the readback
+      // (issue #2828 review). The redaction below is POSITION-based — its only
+      // evidence is that `resource.properties` SPELL the dynamic reference —
+      // and `resolveImportedProperties` decides, per resource, whether they
+      // still do; its doc block carries the rule and the two measured arms it
+      // is drawn from. Where they do not, `redactSecretsForState` finds no
+      // reference to substitute, returns the readback UNCHANGED, and the
+      // DECRYPTED value is persisted in the clear.
+      //
+      // The COST is not nothing, and saying so matters because the cheaper
+      // reading invites someone to widen the skip. A resource skipped here
+      // falls back to comparing `properties` — which on the throw arm are the
+      // RAW intrinsics, so `cdkd drift` reports phantom drift on it where a
+      // captured baseline would have been clean. That is a real (small)
+      // regression, taken deliberately against a plaintext disclosure. The
+      // throw arm now pays it for EVERY throwing resource, including ones with
+      // no dynamic reference at all: narrowing it to "carries a reference" was
+      // tried and leaked, because a reference can be sourced from a parameter
+      // `Default` or a `Mappings` entry the raw bag never mentions.
+      //
+      // TWO MORE consumers, named rather than left to be discovered. This list
+      // is the ones MEASURED, not a proof there are no others.
+      //
+      //  - `countProtectedResources` in `destroy-runner.ts` reads
+      //    `observedProperties` as its fallback for `DeletionProtection` /
+      //    `LoadBalancerAttributes`, so a refused resource whose protection was
+      //    set OUT OF BAND is missing from the destroy prompt's protected
+      //    count. Not data loss -- AWS still refuses the delete -- but the
+      //    prompt under-reports.
+      //  - `logGroupHasPositiveRetention` in `stateful-types.ts` reads it for
+      //    `AWS::Logs::LogGroup`'s `RetentionInDays`, and that file's own doc
+      //    names the import case as the reason it does. A refused LogGroup
+      //    loses the `has-retention` fast path and its recreate prompt degrades.
+      //
+      // A THIRD cost, and the only one that can reach LIVE AWS: a refused
+      // resource has raw `properties` and no baseline, so `cdkd drift --revert`
+      // takes the RAW bag as its revert baseline and
+      // `resolveStateSecretExpressions` re-resolves only `{{resolve:` STRINGS
+      // -- an `Fn::Join` OBJECT walks through into `provider.update`. Issue
+      // [#2855](https://github.com/go-to-k/cdkd/issues/2855); whether that
+      // update fails loudly or corrupts silently is deliberately recorded there
+      // as UNMEASURED rather than guessed at here.
+      //
+      // EVERY earned refusal in the input-space matrix is proved to have really
+      // leaked -- that file asserts it row by row, and its count is the one that
+      // holds. No count is repeated here: a previous revision stated one, it was
+      // wrong, and this repo's rule is that a drifted count is DELETED rather
+      // than recounted.
+      //
+      // "Lands with `observedProperties: undefined`" holds for a FRESHLY
+      // imported record. It does NOT hold for one PRESERVED by a selective
+      // merge: `buildStackState` copies `existingState.resources` wholesale, so
+      // such a record keeps whatever baseline it already had — including a
+      // pre-GHSA plaintext one — and the skip below then leaves that baseline
+      // in place. `cdkd scrub` is the remedy, and issue
+      // [#2872](https://github.com/go-to-k/cdkd/issues/2872) records the
+      // narrow case where that is WORSE than not refusing.
+      if (unsafeObservedBaselineLogicalIds.has(logicalId)) {
+        logger.debug(
+          `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties no longer spell the template's dynamic reference, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until the next successful deploy.`
+        );
+        return;
+      }
       try {
         const provider = providerRegistry.getProviderFor({
           resourceType: resource.resourceType,
@@ -1885,11 +2120,59 @@ async function captureObservedForImportedResources(
           buildReadCurrentStateContext(stackState, logicalId)
         );
         if (observed !== undefined) {
-          resource.observedProperties = observed;
+          // GHSA-p5qg-v9gv-hc7w (issue #2828), the `cdkd import` twin of the
+          // `cdkd state refresh-observed` writer issue #1926 closed. The
+          // readback is what AWS actually holds, so for a resource whose
+          // template property is a `{{resolve:secretsmanager:...}}` reference —
+          // or a `{{resolve:ssm:...}}` naming a `SecureString` — it is the
+          // DECRYPTED value, and persisting it verbatim writes the plaintext
+          // into `state.json`. This writer reached the redaction module along
+          // NO path before this line, even though the sibling `properties`
+          // walk in `resolveImportedProperties` (which runs BEFORE this one at
+          // both call sites) has redacted since the original GHSA fix.
+          //
+          // The map is EMPTY by construction (`NO_RECORDED_SECRETS`): the
+          // per-resource maps the resolve walk records into are scoped to that
+          // walk, so POSITION is the whole mechanism here — exactly the
+          // configuration `cdkd state refresh-observed` and the deploy's own
+          // `drainObservedCaptures` persist under. `resource.properties` is
+          // this record's own redacted bag, so where it holds the unresolved
+          // expression, walking the observed bag against it rewrites the
+          // plaintext AWS echoes back onto that expression with no secret fetch
+          // and no value matching.
+          //
+          // "Where it holds" is deliberate. An earlier revision said the skip
+          // above GUARANTEES it; it does not, and the WHAT CAN STILL GO WRONG
+          // block on `resolveImportedProperties` lists the ways -- the
+          // properties may hold a literal, or the walk may be unable to pair
+          // the readback against them, with the skip never firing.
+          //
+          // `STATE_SOURCED_READBACK_RULES` is the row this write site occupies
+          // in `secret-redaction.ts`'s generation table ("observed walk,
+          // own-record source"). What that module does at positions it cannot
+          // certify is documented there and measured on issue
+          // [#2852](https://github.com/go-to-k/cdkd/issues/2852); nothing is
+          // claimed about it here.
+          resource.observedProperties = redactSecretsForState(
+            observed,
+            NO_RECORDED_SECRETS,
+            resource.properties ?? {},
+            STATE_SOURCED_READBACK_RULES
+          );
         }
       } catch (err) {
+        // NAME AND SHAPE, never the message. The sibling warn in
+        // `resolveImportedProperties` masks with `maskSecretsInText`; that is
+        // not available here, because the secrets map on this path is EMPTY by
+        // construction, so there is no needle set to mask against. And the
+        // message can carry a plaintext: `CloudControlProvider.readCurrentState`
+        // does a bare `JSON.parse` on the resource model and rethrows, and V8
+        // embeds an input snippet in a `SyntaxError` -- measured on node
+        // v24.19.0, `JSON.parse('{"Password": SUPER-SECRET-abc}')` reports
+        // `..."assword": SUPER-SECR"...`. So log what identifies the failure
+        // without quoting the input, the way `parseResourceModel` already does.
         logger.debug(
-          `observedProperties capture for imported ${logicalId} (${resource.resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
+          `observedProperties capture for imported ${logicalId} (${resource.resourceType}) failed: ${err instanceof Error ? err.name : typeof err} — drift will fall back to template properties for this resource until the next successful deploy.`
         );
       }
     })
@@ -2220,14 +2503,19 @@ async function importNestedStackChildrenRecursive(args: {
       // sub-resource provider deletes read resolved props), populate
       // observedProperties baseline, then save. Re-uses the same
       // helpers as the root so behavior stays in sync.
-      await resolveImportedProperties(
+      const childUnsafeObservedBaselineLogicalIds = await resolveImportedProperties(
         childStackState,
         childStateTemplate,
         childRegion,
         stateBackend,
         logger
       );
-      await captureObservedForImportedResources(childStackState, providerRegistry, logger);
+      await captureObservedForImportedResources(
+        childStackState,
+        providerRegistry,
+        logger,
+        childUnsafeObservedBaselineLogicalIds
+      );
 
       await stateBackend.saveState(childStackName, childRegion, childStackState);
       logger.info(
