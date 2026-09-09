@@ -267,6 +267,15 @@ Carrying the values matters beyond capacity: the #1160 absent-field RESET is
 derived from the PREVIOUS side, so an identity-only baseline silently disables
 every removal for as long as the record stays junk.
 
+**`attributes` REPLACES the record rather than merging into it** —
+`deploy-engine.ts` reads `result.attributes ?? (wasReplaced ? undefined : current)`
+— so a partial map ERASES every key it omits. That makes a HEAL the dangerous
+shape: `ApiGatewayV2Provider` gated its `ExecuteApiArn` re-record on the endpoint
+alone, so a transient `fabricated: true` from `getAccountInfo` wrote
+`{ApiId, ApiEndpoint}` over a correct ARN and a same-deploy `Fn::GetAtt`
+hard-threw with the loss persisted — worse than not healing at all. Gate the
+write on EVERY member being in hand; return nothing otherwise.
+
 **`effectiveProperties` is the OTHER half of that remedy, and the two answer
 different questions** (issue #1591). Seeding the comparison baseline from the
 live read fixes the case where STATE is already junk; `effectiveProperties`
