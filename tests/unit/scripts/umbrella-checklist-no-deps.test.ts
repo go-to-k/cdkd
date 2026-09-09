@@ -53,6 +53,17 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
  * `ReadonlyMap<…, unknown>` against the real `Map<…, SdkMemberType>` — the
  * declaration file cannot name `SdkMemberType` without importing a `.ts` module.
  *
+ * BOUND, measured against the three assignments as they stand: seven of the
+ * eight drifts red — changed parameter type, narrowed return, widened return,
+ * extra member, deleted member, a member dropped from a return shape, and a
+ * narrowed parameter. The eighth does NOT: declaring an EXTRA TRAILING OPTIONAL
+ * parameter on a helper. TS compares function parameters by arity-tolerant
+ * assignability in both directions, so no assignment-shaped fence can see it,
+ * and a `Parameters<…>` tuple comparison would be the tool if it ever matters.
+ * It is the least damaging of the eight — the extra parameter is optional, so
+ * every real call still typechecks and the declaration merely permits an
+ * argument the helper ignores.
+ *
  * TYPE-ONLY on purpose: a value import would pull `typescript-v6` and the whole
  * SDK-model graph into a file whose entire subject is running WITHOUT them.
  */
