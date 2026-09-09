@@ -1116,7 +1116,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(res.secretBearingKeys).toBe(1);
     const keyWarnings = logger.warn.mock.calls
       .map((c) => String(c[0]))
-      .filter((m) => m.includes('holds an output KEY containing a secret'));
+      .filter((m) => m.includes('holds an output KEY that renders a secret'));
     expect(keyWarnings).toHaveLength(1);
     // The warning is about a plaintext leak; printing the key verbatim would BE
     // the leak, on a different reader.

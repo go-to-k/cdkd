@@ -234,6 +234,76 @@ export function isExportAliasCollision(
 const MIN_SECRET_NEEDLE = 4;
 
 /**
+ * Characters deleted before any secret containment test on this path, and
+ * deleted from the text that gets PRINTED — ONE class, because the verdict and
+ * the printed text have to live in the same string space (issue
+ * [#2874](https://github.com/go-to-k/cdkd/issues/2874)).
+ *
+ * WHY A THIRD CLASS RATHER THAN EITHER SANITISER'S. {@link stripControlChars}
+ * DELETES its class; `displaySafe` REPLACES its own with a space. Composing
+ * them — which is what every site here used to do — leaves three different
+ * strings in play: the raw key the verdict was taken from, the sanitised key
+ * that was printed, and the masked one in between. A recorded secret split by
+ * a DELETED character is absent from the raw key and contiguous in the printed
+ * one, so the verdict said `safe` over text that held the plaintext; a secret
+ * split by a REPLACED one is absent from both and prints one character short
+ * of the plaintext, which a `not.toContain(SECRET)` assertion cannot see.
+ * Measured across both classes: eight of ten characters reconstituted the
+ * secret verbatim, and the remaining two printed it minus one character.
+ *
+ * So the fix is not another arm on the check — it is removing the second and
+ * third string. Everything below happens in `canonicalForSecretScan` space.
+ *
+ * The class is the union of both sanitisers' classes PLUS the zero-width and
+ * invisible formatters `display-safe.ts` names as residuals it deliberately
+ * keeps (`U+061C`, `U+200B`-`U+200D`, `U+FEFF`). Those are widened HERE and not
+ * there because the two files answer different questions: `displaySafe` is
+ * about a terminal rendering a value, and its recorded reason for keeping them
+ * is command forgery, where a character that renders as nothing changes
+ * nothing. That reason does not transfer to a secret — a plaintext split by a
+ * zero-width character is READ by a human exactly as if it were contiguous, so
+ * disclosure needs no paste. Measured: all five verdicted `safe` and printed
+ * visibly-contiguous plaintext under the narrower class, and `masked` under
+ * this one.
+ */
+const SECRET_SCAN_INVISIBLES =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
+/**
+ * The one string space in which this module tests for, masks, and prints a
+ * possibly-secret-bearing name.
+ *
+ * `.trim()` mirrors `displaySafe`, whose trim this replaces on these paths.
+ */
+function canonicalForSecretScan(text: string): string {
+  return text.replace(SECRET_SCAN_INVISIBLES, '').trim();
+}
+
+/**
+ * The recorded secrets as NEEDLES in canonical space.
+ *
+ * Canonicalising the needles is what lets the raw-key fallback go away: a
+ * secret whose own plaintext carries a stripped character used to survive in
+ * the raw key and be destroyed in the sanitised one, so it could be DETECTED
+ * only from the raw form and MASKED in neither — a permanent `withheld`. In
+ * canonical space it is both found and masked.
+ *
+ * A needle whose canonical form is EMPTY is dropped: canonicalisation can turn
+ * a non-empty recorded value into `''`, and an empty needle whole-string
+ * matches `''` and is a substring of everything. The resolver never records an
+ * empty secret, so nothing upstream guards this.
+ */
+function canonicalNeedles(secrets: RecordedSecretValues | undefined): RecordedSecretValues {
+  const out: RecordedSecretValues = new Map();
+  for (const [plaintext, expression] of secrets ?? []) {
+    const canonical = canonicalForSecretScan(plaintext);
+    if (canonical.length > 0) out.set(canonical, expression);
+  }
+  return out;
+}
+
+/**
  * Which recorded secrets are visible in `text`, or `undefined` when none is.
  *
  * ONE rule for both callers below, because they were inconsistent and the
@@ -374,12 +444,19 @@ function maskEveryOccurrence(text: string, exposure: RecordedSecretValues): stri
 export function secretBearingExportNameWarning(
   outputKey: string,
   exportName: string,
-  exposure: RecordedSecretValues
+  exposure: RecordedSecretValues,
+  secrets?: RecordedSecretValues
 ): string {
-  const masked = stripControlChars(maskEveryOccurrence(exportName, exposure));
-  const shown = masked === stripControlChars(exportName) ? '' : `(masked: "${masked}") `;
+  // `exposure` is the caller's AUTHORITATIVE set — what resolution put into
+  // this name — and stays the force-mask input; `secrets` is the containment
+  // corpus. Both are needed and neither substitutes for the other (issue
+  // #2874): the authoritative set sees a sub-floor or fragment substitution
+  // containment cannot, and containment sees a second recorded secret the
+  // resolver did not put here but which this name happens to hold.
+  const name = secretSafeKeyDisplay(exportName, secrets ?? exposure, exposure);
+  const shown = name.kind === 'masked' ? `(masked: "${name.text}") ` : '';
   return (
-    `Output ${stripControlChars(outputKey)} has an Export.Name that resolves to a value containing a secret ` +
+    `Output ${displayTextOrWithheld(secretSafeKeyDisplay(outputKey, secrets ?? exposure, exposure))} has an Export.Name that resolves to a value containing a secret ` +
     `${shown}— skipping the export alias. ` +
     `An export name becomes a key in state.json and in the exports index, and redaction rewrites ` +
     `VALUES only, so publishing it would persist the secret in plaintext. ` +
@@ -457,30 +534,65 @@ export type SecretSafeKeyDisplay =
  */
 export function secretSafeKeyDisplay(
   key: string,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  forceMask?: RecordedSecretValues
 ): SecretSafeKeyDisplay {
-  const sanitise = (text: string): string => displaySafe(stripControlChars(text));
-  const shown = sanitise(key);
-  // THE EXPOSURE CHECK RUNS ON THE SANITISED TEXT FIRST, because that is what
-  // gets PRINTED and sanitising can CREATE a secret that the raw key does not
-  // contain (issue #2667 review). `stripControlChars` DELETES, so a plaintext
-  // split by any character in its class — `alias-super<U+200E>-secret-...` —
-  // is not found in the raw key, returns `safe`, and is then reconstituted
-  // contiguous in `shown`. Measured across the whole deleted set: the C0
-  // controls, DEL / C1, the bidi MARKS, the embedding / override set and the
-  // isolates all reconstituted it; only `U+2028` / `U+2029` did not, because
-  // `displaySafe` REPLACES those with a space rather than deleting them.
-  //
-  // The raw check is kept as a FALLBACK rather than replaced: a secret the raw
-  // form exposes and sanitising happens to break up must still trip. Whichever
-  // arm fires, the masking below runs over `shown` — the string that is
-  // returned — so the verdict and the printed text can never come from
-  // different strings, which is what this bug was.
-  const exposure = stateKeySecretExposure(shown, secrets) ?? stateKeySecretExposure(key, secrets);
-  if (!exposure) return { kind: 'safe', text: shown };
-  const masked = sanitise(maskEveryOccurrence(shown, exposure));
+  // ONE STRING SPACE for the verdict, the masking and the returned text
+  // (issue #2874). Everything below is canonical; nothing here re-reads `key`.
+  // The bug this replaces was not a missing arm on the check — it was the
+  // check, the mask and the print each running over a DIFFERENT string.
+  const shown = canonicalForSecretScan(key);
+  const needles = canonicalNeedles(secrets);
+
+  // The caller's own exposure, when it has one, is FORCE-MASKED rather than
+  // folded into the verdict. `secretsPresentIn` bounds an embedded match at
+  // MIN_SECRET_NEEDLE while `maskEveryOccurrence` is deliberately
+  // threshold-free, so a sub-floor secret the RESOLVER knows it substituted
+  // into this name is masked today and would stop being masked if this
+  // function recomputed the mask set by containment alone. Measured: a
+  // three-character recorded secret is MISSED by containment and masked by
+  // `maskEveryOccurrence`. It is not folded into the safe/unsafe VERDICT
+  // because that signal is about what resolution DID, not about what is
+  // textually here, and a value that is not in the text cannot be masked out
+  // of it.
+  const mask: RecordedSecretValues = new Map(canonicalNeedles(forceMask));
+  const exposure = stateKeySecretExposure(shown, needles);
+  for (const [plaintext, expression] of exposure ?? []) mask.set(plaintext, expression);
+  if (mask.size === 0) return { kind: 'safe', text: shown };
+
+  const masked = maskEveryOccurrence(shown, mask);
   if (masked === shown) return { kind: 'withheld' };
+  // FAIL CLOSED. Masking is a substring replacement, so a name holding the
+  // same secret twice — once contiguous, once split — used to mask the first
+  // occurrence and print the second. In canonical space that cannot happen,
+  // and this re-test is what proves it rather than asserting it: any needle
+  // still present after masking withholds the whole name.
+  if (stateKeySecretExposure(masked, needles)) return { kind: 'withheld' };
   return { kind: 'masked', text: masked };
+}
+
+/**
+ * The display for a name plus the verdict its CALLER needs, as one value.
+ *
+ * Exists so a caller cannot take the verdict from one call and the text from
+ * another — the shape of the bug in {@link secretSafeKeyDisplay}'s own callers
+ * (issue #2874), one level up.
+ */
+export function secretBearing(display: SecretSafeKeyDisplay): boolean {
+  return display.kind !== 'safe';
+}
+
+/**
+ * What a message prints in place of a name it may not show.
+ *
+ * Deliberately not name-shaped and never quoted as if it were a key: a reader
+ * has to be able to tell this is the tool declining, not an odd export name.
+ */
+export const WITHHELD_NAME_DISPLAY = '<name withheld: contains a secret>';
+
+/** The text of a display, or {@link WITHHELD_NAME_DISPLAY} when there is none. */
+export function displayTextOrWithheld(display: SecretSafeKeyDisplay): string {
+  return display.kind === 'withheld' ? WITHHELD_NAME_DISPLAY : display.text;
 }
 
 /**
@@ -497,11 +609,32 @@ export function secretSafeKeyDisplay(
 export function secretBearingStateKeyWarning(
   stackName: string,
   key: string,
-  exposure: RecordedSecretValues
+  secrets: RecordedSecretValues
 ): string {
+  // Takes the SECRETS MAP, not a pre-computed exposure: the caller used to
+  // decide `secret or not` from the raw key and this function printed a
+  // sanitised one, which is the two-string bug (issue #2874). One call now
+  // produces both, and the caller's guard reads THIS verdict.
+  const name = secretSafeKeyDisplay(key, secrets);
+  // "RENDERS a secret", not "containing a secret": for a key split by an
+  // invisible character the key does not literally contain the plaintext —
+  // its rendering reconstitutes it, which is the whole reason this class was
+  // invisible to the previous check. A message that overstates what it found
+  // is how the previous wording survived being wrong.
+  // THREE arms, because collapsing `safe` into `withheld` loses the key
+  // entirely on the one shape where it is safe to print: a key carrying
+  // control characters but no recorded secret. That is what this builder does
+  // for a caller that reached it for another reason, and it is also the only
+  // way the message stays actionable.
+  const clause =
+    name.kind === 'masked'
+      ? `(masked: "${name.text}") `
+      : name.kind === 'safe'
+        ? `(key: "${name.text}") `
+        : `(the name is withheld: masking it would leave the secret readable) `;
   return (
-    `State for ${stripControlChars(stackName)} holds an output KEY containing a secret ` +
-    `(masked: "${stripControlChars(maskEveryOccurrence(key, exposure))}") — cdkd scrub cannot rewrite a key, ` +
+    `State for ${displaySafe(stripControlChars(stackName))} holds an output KEY that renders a secret ` +
+    `${clause}— cdkd scrub cannot rewrite a key, ` +
     `only a value, because the key IS the export name consumers resolve by. ` +
     `Give that output a non-secret Export.Name and redeploy: the next deploy replaces ` +
     `state.outputs and the exports index entirely. ROTATE the exposed secret.`
@@ -577,14 +710,30 @@ export function exportAliasCollisionScrubWarning(
   // printing its neighbour raw is the mask-one-argument-leave-its-neighbour
   // shape issue #2176 found in the providers, one line apart instead of two
   // files.
-  const mask = (name: string): string => {
-    const exposure = secretsPresentIn(name, secrets);
-    return stripControlChars(exposure ? maskEveryOccurrence(name, exposure) : name);
-  };
-  const shown = mask(exportName);
+  // THIS SITE PRINTS EVEN WHEN THE VERDICT MISSES, which is what made it the
+  // worst of the three (issue #2874): the other two sit behind a caller that
+  // skips the message entirely, so a missed verdict there is a detection gap;
+  // here it was a disclosure, and it needed only ONE recorded secret split by
+  // an invisible character rather than two. Routing through
+  // `secretSafeKeyDisplay` keeps the print-always behaviour — the collision
+  // and its remedy are actionable whether or not a name can be shown — while
+  // making the printed text and the verdict the same string.
+  const nameDisplay = (name: string): SecretSafeKeyDisplay => secretSafeKeyDisplay(name, secrets);
+  const exportDisplay = nameDisplay(exportName);
+  const shown = displayTextOrWithheld(exportDisplay);
+  // The `stored value under "..."` clause loses its referent when the name is
+  // withheld, so it is REWORDED rather than left quoting a placeholder as if
+  // it were a key. The pair is still identified: the sibling name and the
+  // stack name reach the operator through the rest of the message.
+  const storedUnder =
+    exportDisplay.kind === 'withheld'
+      ? 'the stored value under that name'
+      : `the stored value under "${shown}"`;
   return (
-    `Output ${mask(outputKey)} exports as "${shown}", which is also the name of another output in this stack — ` +
-    `state cannot say which of the two the stored value under "${shown}" came from, so that key is ` +
+    `Output ${displayTextOrWithheld(nameDisplay(outputKey))} exports as ${
+      exportDisplay.kind === 'withheld' ? shown : `"${shown}"`
+    }, which is also the name of another output in this stack — ` +
+    `state cannot say which of the two ${storedUnder} came from, so that key is ` +
     `redacted by value match instead of by template position, and two references resolving to the same ` +
     `value could still collapse there. Rename the export, or the colliding output, and redeploy.`
   );

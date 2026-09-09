@@ -72,8 +72,8 @@ import {
   exportAliasCollisionScrubWarning,
   isExportAliasCollision,
   secretBearingStateKeyWarning,
+  secretBearing,
   secretSafeKeyDisplay,
-  stateKeySecretExposure,
   type SecretSafeKeyDisplay,
 } from '../../deployment/outputs-export-alias.js';
 
@@ -4140,10 +4140,17 @@ export async function scrubStack(
     // one is not this issue's.
     const secretBearingKeys: string[] = [];
     for (const key of Object.keys(state.outputs ?? {})) {
-      const exposure = stateKeySecretExposure(key, outputSecrets);
-      if (!exposure) continue;
+      // ONE call decides both the guard and the message (issue #2874). The
+      // previous shape took the verdict from the RAW key here and printed a
+      // SANITISED one in the warning, so a key whose secret is split by an
+      // invisible character was skipped by this `continue` — the
+      // `--dry-run --fail` gate passed over a secret-bearing key — while a
+      // key holding a SECOND such secret had it reconstituted into the
+      // printed text.
+      const display = secretSafeKeyDisplay(key, outputSecrets);
+      if (!secretBearing(display)) continue;
       secretBearingKeys.push(key);
-      logger.warn(secretBearingStateKeyWarning(stack.stackName, key, exposure));
+      logger.warn(secretBearingStateKeyWarning(stack.stackName, key, outputSecrets));
     }
 
     const totalSecrets =

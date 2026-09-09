@@ -130,12 +130,28 @@ describe('secretSafeKeyDisplay', () => {
   // change exists to protect (issue #2667 review; introduced by the
   // composition, not present before it).
   //
-  // ONE CASE PER DELETED CLASS, not one representative: these are different
-  // branches of the regex, and a fence covering one is the spelling-mismatch
-  // failure this session already paid for once. `U+2028` / `U+2029` are in the
-  // table as the CONTROL: `displaySafe` REPLACES those with a space rather
-  // than deleting them, so they cannot rejoin a split secret and must stay
-  // `safe`.
+  // ONE CASE PER CLASS, not one representative: these are different branches
+  // of the regex, and a fence covering one is the spelling-mismatch failure
+  // this session already paid for once.
+  //
+  // `U+2028` / `U+2029` MOVED from `safe` to `masked` under issue #2874, and
+  // the move is the fix rather than a loosened expectation — do not restore
+  // them as "the control". They were `safe` because `displaySafe` REPLACES
+  // them with a space, so the secret was not contiguous in the printed text —
+  // but the text still read `super-secr et-plaintext-value`, one character
+  // short of the plaintext, which `not.toContain(SECRET)` structurally cannot
+  // see. Canonicalising DELETES them, so the secret is now both detected and
+  // maskable.
+  //
+  // The last four rows were in NEITHER sanitiser's class before #2874 and
+  // verdicted `safe` while printing plaintext that is VISUALLY contiguous —
+  // a zero-width character discloses a secret to anyone reading the log, with
+  // no paste involved.
+  //
+  // THE NEGATIVE CONTROLS ARE ELSEWHERE, and this table is one-sided without
+  // them: every row here expects a non-`safe` verdict, so a change that made
+  // everything `withheld` would pass it. The `SAFE:` cases above — a key
+  // carrying these characters and NO recorded secret — are the floor.
   describe.each([
     ['U+0007 (C0 control)', '\u0007', 'masked'],
     ['U+001f (C0 upper bound)', '\u001f', 'masked'],
@@ -147,8 +163,12 @@ describe('secretSafeKeyDisplay', () => {
     ['U+202e (bidi override)', '\u202e', 'masked'],
     ['U+2066 (bidi isolate)', '\u2066', 'masked'],
     ['U+2069 (isolate terminator)', '\u2069', 'masked'],
-    ['U+2028 (line separator, REPLACED not deleted)', '\u2028', 'safe'],
-    ['U+2029 (para separator, REPLACED not deleted)', '\u2029', 'safe'],
+    ['U+2028 (line separator)', '\u2028', 'masked'],
+    ['U+2029 (para separator)', '\u2029', 'masked'],
+    ['U+200b (ZWSP, in NEITHER sanitiser class)', '\u200b', 'masked'],
+    ['U+200d (ZWJ, in NEITHER sanitiser class)', '\u200d', 'masked'],
+    ['U+feff (BOM, in NEITHER sanitiser class)', '\ufeff', 'masked'],
+    ['U+061c (ALM, in NEITHER sanitiser class)', '\u061c', 'masked'],
   ])('a secret split by %s', (_name, splitChar, expectedKind) => {
     it(`is reported ${expectedKind} and never printed`, () => {
       const key = `alias-${SECRET.slice(0, 5)}${splitChar}${SECRET.slice(5)}-suffix`;
@@ -160,25 +180,100 @@ describe('secretSafeKeyDisplay', () => {
     });
   });
 
-  it('the raw-key check is kept as a FALLBACK, not replaced', () => {
-    // THE ONLY SHAPE THAT REACHES THE RAW ARM, and the first cut of this test
-    // reached it in neither of its two cases (issue #2667 review): a
-    // contiguous secret fires the SANITISED arm too, so `masked` was the right
-    // answer for the wrong reason, and a `U+2028` inside the secret made BOTH
-    // arms miss, so `safe` passed on a needle that never matched anything.
+  it('SAFE: a key carrying the WIDENED class but no secret is printed, not withheld', () => {
+    // THE FLOOR for the table above (issue #2874). Widening the canonical
+    // class buys nothing if it also withholds ordinary names: these four
+    // characters were added to catch a secret split by one, so a key holding
+    // them and no recorded secret must still come back `safe` — and with the
+    // characters gone from the text, since that text reaches a CI log.
+    for (const invisible of ['\u200b', '\u200c', '\u200d', '\ufeff', '\u061c']) {
+      const shown = secretSafeKeyDisplay(`alias${invisible}injected`, secrets());
+      expect(shown.kind).toBe('safe');
+      expect(shown.kind === 'safe' && shown.text).toBe('aliasinjected');
+    }
+  });
+
+  it('a secret split by a character in NEITHER sanitiser class is masked, not merely stripped', () => {
+    // The measured shape behind the widening: before #2874 this verdicted
+    // `safe` and returned the plaintext with one zero-width character in it —
+    // which a reader sees as the secret, and which `not.toContain(SECRET)`
+    // does catch only because the character is still present. Assert the
+    // VISIBLE reading, not the byte string.
+    const key = `alias-${SECRET.slice(0, 5)}\u200b${SECRET.slice(5)}-suffix`;
+    const shown = secretSafeKeyDisplay(key, secrets());
+    expect(shown.kind).toBe('masked');
+    const text = shown.kind === 'masked' ? shown.text : '';
+    // eslint-disable-next-line no-misleading-character-class
+    expect(text.replace(/[\u061c\u200b-\u200f\ufeff]/g, '')).not.toContain(SECRET);
+  });
+
+  it('WITHHELD: the same secret twice, one occurrence split, is never partly printed', () => {
+    // The counterexample that killed the first design (issue #2874). Masking
+    // is a substring replacement, so a name holding the secret contiguously
+    // AND split used to mask the first occurrence and print the second minus
+    // one character, under a label asserting it had been masked. In canonical
+    // space both occurrences are the same string, so both are masked.
+    const key = `a-${SECRET}-b-${SECRET.slice(0, 10)}\u2028${SECRET.slice(10)}-c`;
+    const shown = secretSafeKeyDisplay(key, secrets());
+    expect(shown.kind).toBe('masked');
+    const text = shown.kind === 'masked' ? shown.text : '';
+    expect(text).not.toContain(SECRET);
+    // The specific leak that was measured: the plaintext with one character
+    // replaced by a space. Pinned literally, because the generic assertion
+    // above is exactly the one that could not see it.
+    expect(text).not.toContain('super-secr et');
+    expect(text).toBe(`a-${SECRET_MASK}-b-${SECRET_MASK}-c`);
+  });
+
+  it('a sub-floor secret the CALLER knows was substituted is still masked', () => {
+    // `secretsPresentIn` bounds an embedded match at four characters, while
+    // `maskEveryOccurrence` is deliberately threshold-free. So a caller
+    // holding an AUTHORITATIVE exposure — the deploy engine, which knows what
+    // resolution put into a name — passes it as force-mask needles, or this
+    // function's containment recompute would silently UN-mask what the
+    // shipped code masks today (issue #2874).
+    const sub = new Map([['abc', EXPR]]);
+    const shown = secretSafeKeyDisplay('x-abc-y', new Map(), sub);
+    expect(shown.kind).toBe('masked');
+    expect(shown.kind === 'masked' && shown.text).toBe(`x-${SECRET_MASK}-y`);
+    // The control: with no force-mask set, the same sub-floor value is NOT
+    // found — the documented availability bound, unchanged.
+    expect(secretSafeKeyDisplay('x-abc-y', sub).kind).toBe('safe');
+  });
+
+  it('a RECORDED PLAINTEXT that itself carries a stripped character is masked, not withheld', () => {
+    // THE SHAPE THAT USED TO NEED A RAW-KEY FALLBACK ARM, and the reason
+    // issue #2874 could DELETE that arm rather than add a third one beside it.
     //
-    // The raw arm fires only when the RECORDED PLAINTEXT itself carries a
-    // stripped character: it then survives in the raw key and is destroyed in
-    // the sanitised one. Measured — `shown-arm=false raw-arm=true`.
-    const secretWithCtl = `secret-value\u0007with-ctl`;
+    // Before: the verdict came from the raw key OR the sanitised one while the
+    // mask ran over the sanitised one. This secret survives in the raw key and
+    // is destroyed in the sanitised one, so the raw arm was the only thing
+    // stopping a `safe` verdict -- and masking then changed nothing, so the
+    // answer was `withheld`: fail-closed, but the operator got no name at all.
+    //
+    // Now the NEEDLES are canonicalised too, so the secret and the key are
+    // reduced to the same space and the value is both found AND maskable. The
+    // fallback arm has no remaining shape to serve, which is why deleting it
+    // is not a loosening.
+    const secretWithCtl = 'secret-value\u0007with-ctl';
     const secrets = new Map([[secretWithCtl, EXPR]]);
     const shown = secretSafeKeyDisplay(`alias-${secretWithCtl}-suffix`, secrets);
-    // WITHHELD, not `masked`: masking runs over `shown`, which no longer
-    // contains the secret, so it changes nothing and the omit-if-unchanged rule
-    // fires. That is fail-closed and is the point — the fallback's job is to
-    // stop this returning `safe`, not to produce a printable name.
-    expect(shown).toEqual({ kind: 'withheld' });
+    expect(shown).toEqual({ kind: 'masked', text: `alias-${SECRET_MASK}-suffix` });
     expect(JSON.stringify(shown)).not.toContain(secretWithCtl);
+    // ...nor the CANONICAL form of it. The assertion above pins the byte
+    // string, which the stripped character makes a weaker test than it looks:
+    // it would pass over text holding the secret with that character gone.
+    expect(JSON.stringify(shown)).not.toContain('secret-valuewith-ctl');
+  });
+
+  it('a needle whose canonical form is EMPTY matches nothing', () => {
+    // Canonicalisation can turn a non-empty recorded value into `\'\'`, and an
+    // empty needle is a substring of every string -- so it would withhold
+    // every key in the state. The resolver never records an empty secret, so
+    // nothing upstream guards this; the drop happens here (issue #2874).
+    const allInvisible = '\u200b\u200e\u202e';
+    const shown = secretSafeKeyDisplay('OrdinaryKey', new Map([[allInvisible, EXPR]]));
+    expect(shown).toEqual({ kind: 'safe', text: 'OrdinaryKey' });
   });
 
   it('a contiguous secret fires the SANITISED arm, not the fallback', () => {

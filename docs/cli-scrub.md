@@ -262,6 +262,17 @@ cannot rewrite. Two shapes qualify, and both are also reported in words:
 
 - a **state KEY** holding a secret, which needs an `Export.Name` change plus a
   redeploy: `N output KEY(s) in <stack> hold plaintext and CANNOT be scrubbed`;
+
+  A key counts when it **renders** a secret, not only when it contains one
+  literally. An `Export.Name` is a resolved, template-controlled string, so it
+  can carry invisible characters — control bytes, bidi marks, zero-width
+  joiners — and one placed inside a secret splits the plaintext so a literal
+  scan misses it while a reader of the log sees the secret unbroken. Such a
+  key is now reported and the run exits `1`; an earlier cdkd passed over it
+  silently. **If this starts firing on a state that used to pass, the key was
+  already leaking** — the change is what cdkd can see, not what the state
+  holds. Rotate the secret and change the `Export.Name`.
+
 - a **cross-stack read cdkd declines by design**:
   `N cross-stack read(s) in <stack> could NOT be verified`.
 

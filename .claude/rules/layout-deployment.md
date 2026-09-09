@@ -46,7 +46,31 @@ Index of every area: [code-layout.md](code-layout.md).
   `maskEveryOccurrence` is local and threshold-free precisely because
   `maskSecretsInText` is not (feeding a detected-but-unmaskable name to that
   helper printed the secret under a `masked:` label); the refusal message
-  omits the name entirely if masking left it unchanged. NOT import-free (takes
+  omits the name entirely if masking left it unchanged.
+  **Every name a message prints goes through `secretSafeKeyDisplay`, and the
+  verdict, the mask and the printed text all happen in ONE string space**
+  (issue [#2874](https://github.com/go-to-k/cdkd/issues/2874)). `canonicalForSecretScan` DELETES a
+  single class — both sanitisers' classes plus the zero-width formatters
+  `display-safe.ts` keeps — from the name AND from every recorded needle, so
+  a secret split by one of them cannot be absent from the string that was
+  TESTED and present in the string that is PRINTED. That divergence was the
+  bug: three sites composed `stripControlChars(maskEveryOccurrence(...))` and
+  decided on the raw name, and `stripControlChars` DELETES, so sanitising
+  reconstituted a split plaintext into the printed text — measured leaking at
+  eight of ten characters, and at `exportAliasCollisionScrubWarning`'s `mask`
+  closure it needed only ONE recorded secret, because that site prints even
+  when the verdict misses. Do NOT "simplify" this back to sanitising after
+  masking, and do not add a second detection arm beside the canonical one: a
+  UNION-of-arms design was written, reviewed and MEASURED still printing the
+  plaintext minus one character under a `masked` label, because `displaySafe`
+  REPLACES `U+2028` / `U+2029` with a space rather than deleting them. The
+  caller's own exposure, where it has one, is threaded as FORCE-MASK needles
+  rather than folded into the verdict — `secretsPresentIn` bounds an embedded
+  match at four characters while `maskEveryOccurrence` does not, so
+  recomputing the mask set by containment alone would un-mask a sub-floor
+  secret the resolver knows it substituted. Fenced by
+  `tests/unit/deployment/secret-safe-key-display.test.ts`, one case per class
+  plus the negative controls. NOT import-free (takes
   `secret-redaction.ts`). An ssm reference whose `Type` came back
   unclassifiable is never pinned (#1901) but is also never CACHED
   (`cacheable = false`), so each resolution re-asks AWS and records again;

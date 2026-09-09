@@ -7192,7 +7192,18 @@ export class DeployEngine {
           context.recordedSecretValues
         );
         if (exposure) {
-          this.logger.warn(secretBearingExportNameWarning(outputKey, exportName, exposure));
+          // `exposure` stays the authoritative force-mask set; the recorded
+          // map is the containment corpus the printed text is tested against
+          // (issue #2874) — the warning used to decide from `exportName` and
+          // print a sanitised form of it.
+          this.logger.warn(
+            secretBearingExportNameWarning(
+              outputKey,
+              exportName,
+              exposure,
+              context.recordedSecretValues
+            )
+          );
         } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
           this.logger.warn(exportAliasCollisionWarning(outputKey, exportName));
         } else {
