@@ -48,7 +48,13 @@
  * [#2852](https://github.com/go-to-k/cdkd/issues/2852)'s shapes -- a reshaped
  * container, an identity key AWS normalised, a readback key the source lacks,
  * an unkeyed array anchors cannot corroborate -- all persist the plaintext
- * today, so a row for any of them would red the SAFETY invariant below. That
+ * today, so a row for any of them would red the SAFETY invariant below.
+ * #2852's fix made the position walk FAIL CLOSED at those shapes, but only for
+ * a caller that declares its bag is a drift baseline
+ * (`STATE_SOURCED_BASELINE_RULES`). THIS capture still passes
+ * `STATE_SOURCED_READBACK_RULES`, one constant away, so the rows stay absent
+ * and the residue is `src/cli/commands/import.ts`'s to close -- issue
+ * [#2885](https://github.com/go-to-k/cdkd/issues/2885). That
  * issue carries the probe table measured against this module; this table
  * covers the shapes that hold plus the refusals. Same handling issue
  * [#2850](https://github.com/go-to-k/cdkd/issues/2850) already gets. When #2852
@@ -116,7 +122,7 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
 const { resolveImportedProperties, captureObservedForImportedResources } = await import(
   '../../../src/cli/commands/import.js'
 );
-const { redactSecretsForState, STATE_SOURCED_READBACK_RULES } = await import(
+const { redactSecretsForState, STATE_SOURCED_BASELINE_RULES, SECRET_MASK } = await import(
   '../../../src/deployment/secret-redaction.js'
 );
 const { getLogger } = await import('../../../src/utils/logger.js');
@@ -496,6 +502,57 @@ describe('cdkd import: which resources may take an observedProperties baseline (
       expect(refused, `${row.name}: ${row.why}`).toBe(row.refused);
     });
   }
+
+  it('RESIDUE (issue #2885): the capture still leaks at an uncertifiable position', async () => {
+    // The absence recorded in this file's header, stated as a RUNNING
+    // assertion instead of prose. Issue #2852 made the position walk fail
+    // CLOSED, but only for a caller that declares its bag is a drift baseline
+    // (`STATE_SOURCED_BASELINE_RULES`); this capture still passes
+    // `STATE_SOURCED_READBACK_RULES`, one constant away.
+    //
+    // Asserted in BOTH directions on purpose. The first half is the residue —
+    // the plaintext survives today, so a row for this shape in the table above
+    // would red its SAFETY invariant. The second half is the fix waiting: the
+    // same input under the baseline constant already masks, so #2885 is a
+    // constant swap and this case goes RED the moment it lands, which is what
+    // makes it a test rather than a comment.
+    //
+    // THE FIRST HALF GOES THROUGH `captureVia`, i.e. through the real
+    // `captureObservedForImportedResources`, and that is the whole point of the
+    // case. An earlier revision called `redactSecretsForState` with
+    // `STATE_SOURCED_READBACK_RULES` spelled HERE — which pins this file's own
+    // argument, not production's: swapping the constant at the call site
+    // (`src/cli/commands/import.ts`, the one edit #2885 asks for) left this case
+    // GREEN, measured, so its failure message could never fire for the reason it
+    // names. The second half stays a direct call because it describes an
+    // argument production does not pass YET.
+    const properties = { Detail: { pw: TOKEN } };
+    const readback = { Detail: [PLAINTEXT] };
+    const row: Row = {
+      name: 'RESIDUE #2885: readback container where the source spells a record',
+      properties,
+      readback,
+      refused: false,
+      why: 'the shape #2852 closed for a baseline caller, still open for this one',
+    };
+
+    const { refused, persisted } = await classify(row);
+    expect(refused, 'the residue is only reachable on a row the classifier ADMITS').toBe(false);
+    const { observed: leaks } = await captureVia(row, persisted, new Set());
+    expect(
+      JSON.stringify(leaks),
+      'issue #2885 has landed — move this shape into ROWS and delete this case'
+    ).toContain(PLAINTEXT);
+
+    const closed = redactSecretsForState(
+      readback,
+      new Map<string, string>(),
+      properties,
+      STATE_SOURCED_BASELINE_RULES
+    );
+    expect(JSON.stringify(closed)).not.toContain(PLAINTEXT);
+    expect(JSON.stringify(closed)).toContain(SECRET_MASK);
+  });
 
   it('the premise holds: every refused row would REALLY have leaked', async () => {
     // Without this the refusing half of the table is unfalsifiable — a row

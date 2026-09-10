@@ -4248,9 +4248,11 @@ export async function scrubStack(
           }
         : record;
       // STATE_SOURCED_CROSS_GENERATION rules for the observed walk (issue #1917
-      // review). `scrubResourceRecord` would otherwise DERIVE
-      // `STATE_SOURCED_READBACK_RULES` from the absent source argument — right
-      // for every other caller, wrong here, because `positioned.properties`
+      // review). `scrubResourceRecord` would otherwise DERIVE the rules from
+      // the absent source argument (since issue #2852: the fail-closed
+      // `STATE_SOURCED_BASELINE_RULES` when `ownSecrets` is empty, the plain
+      // readback constant otherwise) — right for the deploy persist walk,
+      // wrong here, because `positioned.properties`
       // above has already been moved onto TODAY's template. Taking that as the
       // observed source for a leaf that already holds an expression would
       // rewrite the drift baseline onto a reference the stack may never have

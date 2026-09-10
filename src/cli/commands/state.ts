@@ -45,7 +45,7 @@ import { withNestedStackContext } from '../../provisioning/nested-stack-context.
 import { withStackName } from '../../provisioning/resource-name.js';
 import {
   redactSecretsForState,
-  STATE_SOURCED_READBACK_RULES,
+  STATE_SOURCED_BASELINE_RULES,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 import { stripControlChars } from '../../utils/regexp.js';
@@ -2578,7 +2578,21 @@ async function refreshObservedForStack(
           // by construction (see {@link NO_RECORDED_SECRETS}). Read that
           // function's own table for which shapes still fall through.
           //
-          // `STATE_SOURCED_READBACK_RULES` is the row this write site occupies
+          // A THIRD mechanism since issue
+          // [#2852](https://github.com/go-to-k/cdkd/issues/2852), and it is the
+          // one that decides what happens where the first two say nothing: the
+          // walk FAILS CLOSED. A position whose source subtree spells a
+          // reference and whose two sides cannot be paired is persisted as
+          // `SECRET_MASK` rather than as the readback — which is what closes
+          // this command's own raw-shape hazard, issue
+          // [#2846](https://github.com/go-to-k/cdkd/issues/2846): `cdkd import`
+          // legitimately writes a RAW `Fn::Join` / `Fn::Sub` OBJECT into
+          // `properties` (its warn path says so), and walking a STRING readback
+          // against it used to persist the decrypted value here. The remedy is
+          // in the MODULE for the same reason the two above are, and the
+          // remaining open row is named on that function.
+          //
+          // `STATE_SOURCED_BASELINE_RULES` is the row this write site occupies
           // in `secret-redaction.ts`'s generation table ("observed walk,
           // own-record source"): the source is THIS record's own persisted bag,
           // so it is the same GENERATION as the bag beside it and holds no
@@ -2615,7 +2629,7 @@ async function refreshObservedForStack(
             observed,
             NO_RECORDED_SECRETS,
             resource.properties ?? {},
-            STATE_SOURCED_READBACK_RULES
+            STATE_SOURCED_BASELINE_RULES
           );
           refreshed++;
         } catch (err) {

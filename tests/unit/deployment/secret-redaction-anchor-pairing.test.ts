@@ -3,7 +3,8 @@ import {
   redactSecretsForState,
   scrubResourceRecord,
   clearRecordedSecretExpressions,
-  STATE_SOURCED_READBACK_RULES,
+  STATE_SOURCED_BASELINE_RULES,
+  SECRET_MASK,
 } from '../../../src/deployment/secret-redaction.js';
 
 const EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
@@ -33,6 +34,18 @@ const LITERAL = 'an-unrelated-literal';
  * the load-bearing half: a refusal is a negative behaviour that is trivially
  * green for the wrong reason, so each is written so that removing the anchor
  * gate makes it fail, and that was measured rather than assumed.
+ *
+ * WHAT A REFUSAL PERSISTS CHANGED WITH ISSUE
+ * [#2852](https://github.com/go-to-k/cdkd/issues/2852), and every refusal case
+ * below asserts the new answer. A refused position used to keep the BAG — the
+ * decrypted readback — so "the anchors do not corroborate this pairing" and
+ * "this plaintext is safe to write to `state.json`" were the same output. The
+ * pairing verdict is untouched; the refused subtree now has every string leaf
+ * the SOURCE does not itself spell replaced by {@link SECRET_MASK}. So each
+ * case here still pins its own gate (delete the gate and the leaf takes EXPR
+ * instead of the mask), and the two properties are asserted separately: the
+ * mask is the refusal, and `not.toBe(EXPR)` is the no-fabricated-baseline bar
+ * the first attempt failed.
  */
 describe('secret-redaction - anchor pairing (issue #2012)', () => {
   beforeEach(() => clearRecordedSecretExpressions());
@@ -44,7 +57,7 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
       bag,
       new Map<string, string>(),
       source,
-      STATE_SOURCED_READBACK_RULES
+      STATE_SOURCED_BASELINE_RULES
     ) as Record<string, unknown>;
 
   // ---------------------------------------------------------------- CLOSES --
@@ -126,8 +139,16 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
     );
 
     const entries = out['Entries'] as Array<Record<string, unknown>>;
-    expect(entries[0]!['Value']).toBe(LITERAL);
+    // MASKED, not LITERAL (issue #2852): the names differ, so nothing here can
+    // say whether `an-unrelated-literal` is an unrelated literal or the
+    // resolved secret, and the old answer persisted it either way. `Name: ''`
+    // survives because the bag's own value is spelled in the source subtree.
+    expect(entries[0]!['Value']).toBe(SECRET_MASK);
     expect(entries[0]!['Value']).not.toBe(EXPR);
+    // `Name: ''` survives even though the source spells `'db'` here: `''` is
+    // not a value any resolved secret can take — the resolver records none, and
+    // the value scan excludes it as a needle for the same reason — so masking it
+    // would cost drift a comparison and buy nothing (issue #2852 round 2).
     expect(entries[0]!['Name']).toBe('');
   });
 
@@ -141,13 +162,14 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
       { Entries: [{ Name: 'db', Value: EXPR }] }
     );
 
-    // Only the literal is asserted. `Object.hasOwn(entries[0], 'Name')` was
-    // here too and was UNFALSIFIABLE: the walk maps over the BAG's keys, so a
-    // source-only key cannot appear whatever the pairing decides. The
+    // Only the leaf's VERDICT is asserted — the mask since issue #2852, where
+    // this line read `.toBe('x')` before. `Object.hasOwn(entries[0], 'Name')`
+    // was here too and was UNFALSIFIABLE: the walk maps over the BAG's keys, so
+    // a source-only key cannot appear whatever the pairing decides. The
     // no-fabrication property is structural rather than per-case (see the
     // `anchorsCorroboratePairing` doc), and an assertion that cannot fail is
     // worse than no assertion, because it reads as coverage.
-    expect((out['Entries'] as Array<Record<string, unknown>>)[0]!['Value']).toBe('x');
+    expect((out['Entries'] as Array<Record<string, unknown>>)[0]!['Value']).toBe(SECRET_MASK);
   });
 
   it('ROW 4 REFUSES on the KEY SETS even when a sibling anchor corroborates', () => {
@@ -174,9 +196,12 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
     );
 
     const entries = out['Entries'] as Array<Record<string, unknown>>;
-    expect(entries[0]!['Value']).toBe('x');
+    expect(entries[0]!['Value']).toBe(SECRET_MASK);
     expect(entries[0]!['Value']).not.toBe(EXPR);
     expect(Object.hasOwn(entries[0]!, 'Name')).toBe(false);
+    // `Kind` is spelled by the source, so the refusal keeps it — the mask is
+    // scoped to what the source cannot account for, not to the element.
+    expect(entries[0]!['Kind']).toBe('entry');
   });
 
   it('REFUSES a pairing whose only matching anchor is NON-DISTINGUISHING', () => {
@@ -192,7 +217,9 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
       { Entries: [{ Name: '', Value: EXPR }] }
     );
 
-    expect((out['Entries'] as Array<Record<string, unknown>>)[0]!['Value']).toBe(LITERAL);
+    const entry = (out['Entries'] as Array<Record<string, unknown>>)[0]!;
+    expect(entry['Value']).toBe(SECRET_MASK);
+    expect(entry['Value']).not.toBe(EXPR);
   });
 
   it('REFUSES a pairing anchored only by a NON-STRING equal field', () => {
@@ -206,7 +233,13 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
       { Entries: [{ Ordinal: 1, Enabled: true, Value: EXPR }] }
     );
 
-    expect((out['Entries'] as Array<Record<string, unknown>>)[0]!['Value']).toBe(LITERAL);
+    const entry = (out['Entries'] as Array<Record<string, unknown>>)[0]!;
+    expect(entry['Value']).toBe(SECRET_MASK);
+    expect(entry['Value']).not.toBe(EXPR);
+    // The non-string anchors are NOT masked: a number and a boolean cannot be a
+    // resolved secret, so the refusal leaves them alone (issue #2852).
+    expect(entry['Ordinal']).toBe(1);
+    expect(entry['Enabled']).toBe(true);
   });
 
   it('REFUSES once the list is REORDERED, which is what makes anchors evidence', () => {
@@ -223,7 +256,9 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
       { Command: ['--pw', EXPR, '--verbose'] }
     );
 
-    expect(out['Command']).toEqual(['--verbose', PLAINTEXT, '--pw']);
+    // The flags survive (spelled by the source); only the leaf the source
+    // cannot account for is masked (issue #2852).
+    expect(out['Command']).toEqual(['--verbose', SECRET_MASK, '--pw']);
   });
 
   it('REFUSES once AWS NORMALISES a sibling field, which is the stated yield cost', () => {
@@ -235,7 +270,14 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
       { Fields: [{ Field: 'pw', Mode: 'enabled', Val: EXPR }] }
     );
 
-    expect((out['Fields'] as Array<Record<string, unknown>>)[0]!['Val']).toBe(PLAINTEXT);
+    const field = (out['Fields'] as Array<Record<string, unknown>>)[0]!;
+    expect(field['Val']).toBe(SECRET_MASK);
+    expect(field['Val']).not.toBe(EXPR);
+    // AWS's normalised `Mode` is masked WITH it — the stated over-masking cost
+    // of issue #2852: once the pairing is refused nothing tells a normalised
+    // literal from a resolved secret. `Field` matches the source and survives.
+    expect(field['Field']).toBe('pw');
+    expect(field['Mode']).toBe(SECRET_MASK);
   });
 
   it('refuses the WHOLE pairing when a reference position meets a CONTAINER', () => {
@@ -267,8 +309,12 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
     );
 
     const fields = out['Fields'] as Array<Record<string, unknown>>;
-    expect(fields[0]!['Val']).toEqual({ nested: 'structure' });
-    expect(fields[1]!['Val']).toBe(`postgres://u:${PLAINTEXT}@h`);
+    // Still a CONTAINER — no scalar written over it — with its string leaf
+    // masked, and `b`'s mixed leaf masked rather than persisted in plaintext
+    // (issue #2852). `Field` survives on both, the source spelling it.
+    expect(fields[0]!['Val']).toEqual({ nested: SECRET_MASK });
+    expect(fields[1]!['Val']).toBe(SECRET_MASK);
+    expect(JSON.stringify(out)).not.toContain(PLAINTEXT);
   });
 
   it('adds no element when the bag is SHORTER than the source', () => {
@@ -277,7 +323,9 @@ describe('secret-redaction - anchor pairing (issue #2012)', () => {
     // never reported onto the live resource.
     const out = readback({ Command: ['--pw', PLAINTEXT] }, { Command: ['--pw', EXPR, '--verbose'] });
 
-    expect(out['Command']).toEqual(['--pw', PLAINTEXT]);
+    // Two elements still, never three: the refusal adds nothing (issue #2852
+    // masks, it does not rebuild from the source).
+    expect(out['Command']).toEqual(['--pw', SECRET_MASK]);
   });
 });
 
@@ -309,7 +357,7 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
       bag,
       new Map<string, string>(),
       source,
-      STATE_SOURCED_READBACK_RULES
+      STATE_SOURCED_BASELINE_RULES
     ) as Record<string, unknown>;
 
   // ------------------------------------------- (a) DUPLICATE ANCHORS + REORDER
@@ -329,8 +377,34 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
       { Command: ['--pw', EXPR_A, '--pw', EXPR_B] }
     );
 
-    expect(out['Command']).toEqual(['--pw', PLAIN_B, '--pw', PLAIN_A]);
+    // Neither reference is substituted — the property this case exists for —
+    // and since issue #2852 neither plaintext is PERSISTED either. This shape is
+    // the worst of the old fail-open rows: both refused slots held a real
+    // secret.
+    expect(out['Command']).toEqual(['--pw', SECRET_MASK, '--pw', SECRET_MASK]);
     expect(out['Command']).not.toEqual(['--pw', EXPR_A, '--pw', EXPR_B]);
+    expect(JSON.stringify(out)).not.toContain(PLAIN_A);
+    expect(JSON.stringify(out)).not.toContain(PLAIN_B);
+  });
+
+  it('REFUSES the same repeated-flag argv when AWS returned the values IN ORDER', () => {
+    // The `secrets-array-nested` integ's negative control, pinned at unit
+    // cost (its real-AWS arm is a 63 s run): same-order agreement is not
+    // evidence when the two slots are indistinguishable — a swap would have
+    // produced the same anchors — so rule 3 refuses whichever order the
+    // readback arrived in, and since issue #2852 the refused positions
+    // persist the MASK. All three wrong outcomes stay distinguishable: the
+    // raw plaintext is the retired pre-#2852 residual, and the EXPRESSIONS
+    // are a pair-everything mutation (the swap / fabrication class).
+    const out = readback(
+      { Command: ['--pw', PLAIN_A, '--pw', PLAIN_B] },
+      { Command: ['--pw', EXPR_A, '--pw', EXPR_B] }
+    );
+
+    expect(out['Command']).toEqual(['--pw', SECRET_MASK, '--pw', SECRET_MASK]);
+    expect(out['Command']).not.toEqual(['--pw', EXPR_A, '--pw', EXPR_B]);
+    expect(JSON.stringify(out)).not.toContain(PLAIN_A);
+    expect(JSON.stringify(out)).not.toContain(PLAIN_B);
   });
 
   it('REFUSES two OBJECT elements the anchors describe identically', () => {
@@ -343,9 +417,11 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     );
 
     expect(out['Fields']).toEqual([
-      { Field: 'pw', Val: PLAIN_B },
-      { Field: 'pw', Val: PLAIN_A },
+      { Field: 'pw', Val: SECRET_MASK },
+      { Field: 'pw', Val: SECRET_MASK },
     ]);
+    expect(JSON.stringify(out)).not.toContain(PLAIN_A);
+    expect(JSON.stringify(out)).not.toContain(PLAIN_B);
   });
 
   it('REFUSES the AmazonMQ Users shape, where every element carries Groups:[admin]', () => {
@@ -380,9 +456,14 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     );
 
     const users = out['Users'] as Array<Record<string, unknown>>;
-    expect(users[0]!['Password']).toBe('app-plaintext-pw');
+    // No reference is substituted, and since issue #2852 the two BROKER
+    // passwords are not persisted either — the refusal that used to leave both
+    // in `state.json` now masks them. `Groups: ['admin']` matches the source and
+    // survives.
+    expect(users[0]!['Password']).toBe(SECRET_MASK);
     expect(users[0]!['Password']).not.toBe(ADMIN_PW);
-    expect(users[1]!['Password']).toBe('admin-plaintext-pw');
+    expect(users[1]!['Password']).toBe(SECRET_MASK);
+    expect(users[0]!['Groups']).toEqual(['admin']);
   });
 
   it('CLOSES the same AmazonMQ shape once the two users are distinguishable', () => {
@@ -464,8 +545,13 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     );
 
     const users = out['Users'] as Array<Record<string, unknown>>;
-    expect(users[0]!['Password']).toBe('admin-plaintext-pw');
-    expect(users[1]!['Password']).toBe('app-plaintext-pw');
+    // Masked since issue #2852; the normalised `Groups` are masked with them,
+    // which is the over-masking this file's header states. `Username` matches
+    // the source on both elements and survives.
+    expect(users[0]!['Password']).toBe(SECRET_MASK);
+    expect(users[1]!['Password']).toBe(SECRET_MASK);
+    expect(users[0]!['Username']).toBe('mq-admin');
+    expect(users[1]!['Username']).toBe('app-svc');
   });
 
   // ------------------------------------- (b) A SIBLING'S EVIDENCE IS NOT YOURS
@@ -497,9 +583,12 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     );
 
     const list = out['L'] as Array<Record<string, unknown>>;
-    expect(list[1]!['Value']).toBe(LITERAL);
+    expect(list[1]!['Value']).toBe(SECRET_MASK);
     expect(list[1]!['Value']).not.toBe(EXPR_B);
-    expect(list[0]!['Value']).toBe(PLAIN_A);
+    // All-or-nothing still: index 0 is refused too, and refused now means
+    // masked (issue #2852) rather than the plaintext it actually held.
+    expect(list[0]!['Value']).toBe(SECRET_MASK);
+    expect(list[0]!['Name']).toBe('db');
   });
 
   it('REFUSES a no-evidence sibling anchored only by a NUMBER', () => {
@@ -521,7 +610,11 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
       }
     );
 
-    expect((out['L'] as Array<Record<string, unknown>>)[1]!['Value']).toBe(LITERAL);
+    const l = out['L'] as Array<Record<string, unknown>>;
+    expect(l[1]!['Value']).toBe(SECRET_MASK);
+    expect(l[1]!['Value']).not.toBe(EXPR_B);
+    // `Id: 7` is untouched — a number cannot be a resolved secret.
+    expect(l[1]!['Id']).toBe(7);
   });
 
   it('REFUSES overwriting an out-of-band edit that a PURE-ANCHOR sibling would license', () => {
@@ -541,8 +634,13 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     );
 
     const e = out['E'] as Array<Record<string, unknown>>;
-    expect(e[1]!['V']).toBe('someone-set-this-by-hand');
+    // The out-of-band edit is not overwritten with EXPR_A — the property this
+    // case protects. It is MASKED (issue #2852), which keeps drift reporting
+    // the position rather than silently agreeing with AWS; the value cdkd
+    // cannot account for is not what it writes back.
+    expect(e[1]!['V']).toBe(SECRET_MASK);
     expect(e[1]!['V']).not.toBe(EXPR_A);
+    expect(e[0]!['V']).toBe('us-east-1');
   });
 
   it('CLOSES a BARE reference leaf on the frame, which the case above must not', () => {
@@ -565,7 +663,8 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     // another, so the fallback the case above relies on is not available.
     const out = readback({ E: [0, PLAIN_A] }, { E: [0, EXPR_A] });
 
-    expect(out['E']).toEqual([0, PLAIN_A]);
+    expect(out['E']).toEqual([0, SECRET_MASK]);
+    expect(JSON.stringify(out)).not.toContain(PLAIN_A);
   });
 
   // ------------------------------------------------- THE deepEqual DATE HOLE --
@@ -585,7 +684,13 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
       { Fields: [{ Meta: {}, Extra: 'id', Val: EXPR_A }] }
     );
 
-    expect((out['Fields'] as Array<Record<string, unknown>>)[0]!['Val']).toBe(PLAIN_A);
+    const field = (out['Fields'] as Array<Record<string, unknown>>)[0]!;
+    expect(field['Val']).toBe(SECRET_MASK);
+    expect(field['Val']).not.toBe(EXPR_A);
+    // The `Date` itself is returned BY IDENTITY, never rebuilt as `{}` — issue
+    // #2869, whose flattening this walk's own object arm used to perform.
+    expect(field['Meta']).toBeInstanceOf(Date);
+    expect((field['Meta'] as Date).toISOString()).toBe('2020-01-01T00:00:00.000Z');
   });
 
   // ----------------------------------------------- INDEX COUNTS, BOTH SIDES --
@@ -602,7 +707,10 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
       { Command: ['--pw', EXPR_A] }
     );
 
-    expect(out['Command']).toEqual(['--pw', PLAIN_A, 'aws-added']);
+    // Three elements still — the refusal adds and drops nothing. `--pw` is
+    // spelled by the source and survives; the two the source cannot account for
+    // are masked (issue #2852).
+    expect(out['Command']).toEqual(['--pw', SECRET_MASK, SECRET_MASK]);
   });
 
   it('PAIRS a bag carrying an EXTRA key the source does not have (issue #2012)', () => {
@@ -645,8 +753,12 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     );
 
     const fields = out['Fields'] as Array<Record<string, unknown>>;
-    expect(fields[0]!['Val']).toBe(PLAIN_A);
+    // Not EXPR_A — the fabrication this case forbids — and not the plaintext
+    // either since issue #2852. `Name` is still never invented.
+    expect(fields[0]!['Val']).toBe(SECRET_MASK);
+    expect(fields[0]!['Val']).not.toBe(EXPR_A);
     expect(Object.hasOwn(fields[0]!, 'Name')).toBe(false);
+    expect(fields[0]!['Kind']).toBe('entry');
   });
 
   it('PAIRS past a bag key explicitly set to undefined that the source lacks', () => {
@@ -676,7 +788,10 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
       { L: [{ N: null, V: LITERAL }] },
       { L: [{ N: null, V: EXPR_A }] }
     );
-    expect((out['L'] as Array<Record<string, unknown>>)[0]!['V']).toBe(LITERAL);
+    const entry = (out['L'] as Array<Record<string, unknown>>)[0]!;
+    expect(entry['V']).toBe(SECRET_MASK);
+    expect(entry['V']).not.toBe(EXPR_A);
+    expect(entry['N']).toBeNull();
   });
 
   it('REFUSES a pairing anchored only by an EMPTY container', () => {
@@ -687,7 +802,11 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
       { L: [{ Meta: {}, Tags: [], V: LITERAL }] },
       { L: [{ Meta: {}, Tags: [], V: EXPR_A }] }
     );
-    expect((out['L'] as Array<Record<string, unknown>>)[0]!['V']).toBe(LITERAL);
+    const entry = (out['L'] as Array<Record<string, unknown>>)[0]!;
+    expect(entry['V']).toBe(SECRET_MASK);
+    expect(entry['V']).not.toBe(EXPR_A);
+    expect(entry['Meta']).toEqual({});
+    expect(entry['Tags']).toEqual([]);
   });
 
   // ------------------------------------------- LIST ORDER INSIDE AN ANCHOR --
@@ -725,10 +844,13 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     );
 
     const users = out['Users'] as Array<Record<string, unknown>>;
-    expect(users[0]!['Password']).toBe('plain-B');
+    // No misattribution — the property rule 3 exists for — and no plaintext
+    // persisted (issue #2852). `Groups` matches the source and survives.
+    expect(users[0]!['Password']).toBe(SECRET_MASK);
     expect(users[0]!['Password']).not.toBe(ADMIN_PW);
     expect(users[0]!['Username']).not.toBe(ADMIN_USER);
-    expect(users[1]!['Password']).toBe('plain-A');
+    expect(users[1]!['Password']).toBe(SECRET_MASK);
+    expect(users[0]!['Groups']).toEqual(['admin', 'ops']);
   });
 
   it('REFUSES a THREE-element list permutation inside an anchor', () => {
@@ -754,8 +876,10 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     // the sort. An earlier fixture put the permutation on the BAG side, where
     // rule 1's positional deep-equality refused it and the case proved nothing.
     const list = out['L'] as Array<Record<string, unknown>>;
-    expect(list[0]!['V']).toBe('plain-B');
-    expect(list[1]!['V']).toBe('plain-A');
+    expect(list[0]!['V']).toBe(SECRET_MASK);
+    expect(list[1]!['V']).toBe(SECRET_MASK);
+    expect(list[0]!['V']).not.toBe(EXPR_A);
+    expect(list[0]!['Tags']).toEqual(['a', 'b', 'c']);
   });
 
   it('REFUSES an anchor list REORDERED in place, because rule 1 stays order-SENSITIVE', () => {
@@ -785,8 +909,10 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     // rule 3 alone; making rule 1 order-blind too would be a real weakening,
     // and this pins the asymmetry.
     const list = out['L'] as Array<Record<string, unknown>>;
-    expect(list[0]!['V']).toBe(PLAIN_A);
-    expect(list[1]!['V']).toBe(PLAIN_B);
+    expect(list[0]!['V']).toBe(SECRET_MASK);
+    expect(list[1]!['V']).toBe(SECRET_MASK);
+    expect(list[0]!['V']).not.toBe(EXPR_A);
+    expect(list[0]!['Tags']).toEqual(['ops', 'admin']);
   });
 
   it('CLOSES two elements distinguished by list CONTENT, anchors matching in place', () => {

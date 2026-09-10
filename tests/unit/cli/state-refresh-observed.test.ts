@@ -558,6 +558,13 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
 
   const SECRET_EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
   const SECRET_PLAINTEXT = 'hunter2-decrypted';
+  /**
+   * Spelled here rather than imported: this file mocks the CLI boot path and
+   * imports nothing from `secret-redaction.ts`, and the mask is a persisted
+   * user-visible constant — a literal is what makes a change to it show up as a
+   * failure in the command's own test rather than track it silently.
+   */
+  const SECRET_MASK = '***';
 
   it('persists the EXPRESSION, not the decrypted value AWS reads back (scalar leaf)', async () => {
     // The advisory's own shape, and the one #1915 could not reach because this
@@ -724,6 +731,40 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
    * would answer DIFFERENTLY if it reached them — a comment claiming a row is
    * still open is worth nothing without a case that fails when it is not.
    */
+  it('RAW intrinsic properties vs a STRING readback are MASKED, not persisted (issue #2846)', async () => {
+    // `cdkd import`'s warn path deliberately persists the RAW intrinsic shape
+    // when an intrinsic references a resource outside the importable set, and
+    // says so in its warning — so a raw-shape record is a documented, ordinary
+    // outcome, not a corruption. This command then read the DECRYPTED value back
+    // and walked it against an `Fn::Join` OBJECT, which the position walk cannot
+    // pair, and persisted the plaintext into `state.json`.
+    //
+    // Since issue #2852 the walk fails CLOSED at such a position: the leaf is
+    // `SECRET_MASK`. The intrinsic is NOT written in its place — an `Fn::Join`
+    // object in a drift baseline is a value AWS never reported.
+    const raw = { 'Fn::Join': ['', ['postgres://u:', SECRET_EXPR, '@h']] };
+    const observed = await refreshWith(
+      { Url: raw },
+      { Url: `postgres://u:${SECRET_PLAINTEXT}@h` }
+    );
+    expect(observed).toEqual({ Url: SECRET_MASK });
+    expect(JSON.stringify(observed)).not.toContain(SECRET_PLAINTEXT);
+    expect(observed['Url']).not.toEqual(raw);
+  });
+
+  it('an identity key AWS NORMALISED is MASKED rather than persisted (issue #2852)', async () => {
+    // The keyed-array axis, through the command rather than the module: `DB`
+    // finds no partner, the source element carrying the reference is left over,
+    // and the plaintext it resolved to is somewhere in this remainder.
+    const observed = await refreshWith(
+      { Environment: [{ Name: 'db', Value: SECRET_EXPR }] },
+      { Environment: [{ Name: 'DB', Value: SECRET_PLAINTEXT }] }
+    );
+    expect(observed).toEqual({ Environment: [{ Name: SECRET_MASK, Value: SECRET_MASK }] });
+    expect(JSON.stringify(observed)).not.toContain(SECRET_PLAINTEXT);
+    expect(JSON.stringify(observed)).not.toContain(SECRET_EXPR);
+  });
+
   it('an array with no identity key is redacted once its literal elements anchor it', async () => {
     // `--pw` and `--verbose` are positions AWS did not rewrite, so their
     // equality is evidence the two argv lists are the same one. Before the

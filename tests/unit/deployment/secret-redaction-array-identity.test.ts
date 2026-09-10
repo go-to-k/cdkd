@@ -7,6 +7,8 @@ import {
   STATE_DERIVED_RULES,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
+  STATE_SOURCED_BASELINE_RULES,
+  SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 
@@ -144,7 +146,16 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       new Map()
     );
 
-    expect(scrubbed.observedProperties!['Command']).toEqual(['serve', PLAINTEXT]);
+    // Element 1 is MASKED rather than kept, since issue #2852: no pairing means
+    // no way to tell a resolved secret from an ordinary literal, and keeping it
+    // persisted the plaintext. `serve` survives because the SOURCE spells it,
+    // which is the whole of the narrowing that stops the refusal from emptying
+    // an ordinary baseline.
+    expect(scrubbed.observedProperties!['Command']).toEqual(['serve', SECRET_MASK]);
+    // The #1915 fence itself, restated positively: refusing must not write the
+    // source EXPRESSION onto a position it could not pair.
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(PLAINTEXT);
   });
 
   // Uniqueness is what makes a pairing impossible to get wrong, so a repeated
@@ -174,10 +185,15 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       new Map()
     );
 
+    // Neither leaf takes EXPR — the rule this case exists for. The plaintext
+    // leaf is now MASKED (issue #2852) while `plain` survives on both sides,
+    // because the SOURCE spells it: the refusal keeps what the template can
+    // account for and drops only what it cannot.
     expect(scrubbed.observedProperties!['Environment']).toEqual([
-      { Name: 'DUP', Value: PLAINTEXT },
+      { Name: 'DUP', Value: SECRET_MASK },
       { Name: 'DUP', Value: 'plain' },
     ]);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
   });
 
   // An element the source does not have is not guessed at either.
@@ -279,12 +295,19 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       new Map()
     );
 
-    // The literal must survive. Pairing these would rewrite it to EXPR — a
+    // EXPR must not appear. Pairing these would rewrite the leaf to EXPR — a
     // property silently replaced by a secret reference it has nothing to do
     // with, which on the next deploy is applied to AWS.
+    //
+    // The leaf itself is MASKED since issue #2852 rather than kept: with the
+    // pairing refused, `an-unrelated-literal` and a resolved secret are
+    // indistinguishable to this walk, and keeping it is what persisted the
+    // plaintext on every shape where it WAS the secret. `Name: ''` survives —
+    // the source spells it — so the refusal is not a blanket erase.
     expect(scrubbed.observedProperties!['Entries']).toEqual([
-      { Name: '', Value: 'an-unrelated-literal' },
+      { Name: '', Value: SECRET_MASK },
     ]);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
   });
 
   // Degenerate identity SHAPES, all of which must refuse rather than pair. Each
@@ -308,9 +331,12 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       },
       new Map()
     );
+    // Masked rather than kept since issue #2852; `Name` survives because the
+    // source carries the same value. What must NOT appear is EXPR.
     expect(scrubbed.observedProperties!['Entries']).toEqual([
-      { Name: id, Value: 'an-unrelated-literal' },
+      { Name: id, Value: SECRET_MASK },
     ]);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
   });
 
   // A MISSING identity field on one side only. The two elements are otherwise
@@ -325,9 +351,8 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       },
       new Map()
     );
-    expect(scrubbed.observedProperties!['Entries']).toEqual([
-      { Value: 'an-unrelated-literal' },
-    ]);
+    expect(scrubbed.observedProperties!['Entries']).toEqual([{ Value: SECRET_MASK }]);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
   });
 
   // SOURCE-side uniqueness, which nothing else here reaches: the duplicate case
@@ -350,9 +375,16 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       },
       new Map()
     );
-    // Unredacted is the CORRECT answer here: the source cannot say which of its
-    // two `db` entries this is, and guessing the last one is the defect.
-    expect(scrubbed.observedProperties!['Entries']).toEqual([{ Name: 'db', Value: PLAINTEXT }]);
+    // NOT REDACTED TO AN EXPRESSION is the correct answer here: the source
+    // cannot say which of its two `db` entries this is, and guessing the last
+    // one is the defect. Since issue #2852 "cannot say" is spelled as a MASK
+    // rather than as the plaintext — the guess is still refused, and neither
+    // EXPR nor OTHER_EXPR may appear.
+    expect(scrubbed.observedProperties!['Entries']).toEqual([
+      { Name: 'db', Value: SECRET_MASK },
+    ]);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(OTHER_EXPR);
   });
 
   // The flip side of running keyed BEFORE positional: two well-keyed lists can
@@ -491,11 +523,15 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       },
       new Map()
     );
-    // Unredacted — the documented residual. What must NOT happen is EXPR
-    // appearing on this element from a fabricated pairing.
+    // The IDENTITY leaf is now MASKED (issue #2852) — this is the shape the
+    // old "keeps its plaintext" residual was worst at, since the plaintext IS
+    // the secret by construction here. `Value: 'plain'` survives, the source
+    // spelling it. What must still NOT happen is EXPR appearing on this element
+    // from a fabricated pairing.
     expect(scrubbed.observedProperties!['Entries']).toEqual([
-      { Name: PLAINTEXT, Value: 'plain' },
+      { Name: SECRET_MASK, Value: 'plain' },
     ]);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
   });
 
   // FLIPPED DELIBERATELY for issue #2012, and the bound it used to pin is kept
@@ -525,8 +561,10 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
   // can still express it. Positional descent into an outer list is exactly what
   // `descendArrays: false` refuses, so the relaxation must die the moment the
   // order assumption is demonstrably false: AWS returned the two inner lists
-  // the other way round, index 0's anchors disagree, the whole array is refused
-  // and the plaintext survives — a residual, and the honest one.
+  // the other way round, index 0's anchors disagree, and the whole array is
+  // refused. Since issue #2852 the refusal MASKS what the source cannot account
+  // for instead of persisting it, so the plaintext no longer survives — the
+  // assertion below is what says so.
   //
   // The inner elements are KEYLESS on purpose, and an earlier version of this
   // case was INERT because they were not. With `{Name:'db', ...}` inside, the
@@ -544,10 +582,15 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       },
       new Map()
     );
+    // The outer refusal stands; what it PERSISTS changed with issue #2852. Every
+    // literal here (`--verbose`, `plain`, `--pw`) is spelled by the source and
+    // survives, so the whole cost of the refusal is the one leaf the source
+    // cannot account for — the plaintext.
     expect(scrubbed.observedProperties!['Matrix']).toEqual([
       ['--verbose', 'plain'],
-      ['--pw', PLAINTEXT],
+      ['--pw', SECRET_MASK],
     ]);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
   });
 
   // ORDERING: keyed descent must run BEFORE positional, not merely where
@@ -741,10 +784,15 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       new Map()
     );
 
+    // `Value` is not in `ARRAY_IDENTITY_KEYS`, so no keying happens and the
+    // anchor pass refuses the reordered list. Both `id-*` and `plain` survive
+    // (the source spells them); `an-unrelated-literal` does not and is masked
+    // (issue #2852). EXPR must not appear.
     expect(scrubbed.observedProperties!['Entries']).toEqual([
       { Value: 'id-2', Data: 'plain' },
-      { Value: 'id-1', Data: 'an-unrelated-literal' },
+      { Value: 'id-1', Data: SECRET_MASK },
     ]);
+    expect(JSON.stringify(scrubbed.observedProperties)).not.toContain(EXPR);
   });
 
   // The INTERSECTION of this PR's two issues, which only the integ covered: a
@@ -885,8 +933,13 @@ describe('secret-redaction - readback refusal (issue #1926)', () => {
   const PUBLIC_SSM = '{{resolve:ssm:/app/public-host}}';
   const SECURE_SSM = '{{resolve:ssm:/app/secure-token}}';
 
+  // `STATE_SOURCED_BASELINE_RULES`: these cases are about what a drift BASELINE
+  // persists, which is the destination the fail-closed refusal of issue #2852
+  // is declared for. The sibling constant `STATE_SOURCED_READBACK_RULES` keeps
+  // the pre-#2852 answer and is exercised in
+  // `secret-redaction-uncertified-fail-closed.test.ts`.
   const refuse = (bag: unknown, source: unknown): unknown =>
-    redactSecretsForState(bag, new Map<string, string>(), source, STATE_SOURCED_READBACK_RULES);
+    redactSecretsForState(bag, new Map<string, string>(), source, STATE_SOURCED_BASELINE_RULES);
 
   it('substitutes a MIXED leaf the whole-token arm cannot reach', () => {
     // The dominant CDK shape: an `Fn::Join` around a secret renders a leaf that
@@ -906,8 +959,14 @@ describe('secret-redaction - readback refusal (issue #1926)', () => {
     // — fabricating a baseline AWS never reported, which `--revert` then writes
     // back. Reachable when a provider structures a leaf the template spells as
     // a reference.
+    //
+    // `Foo` stays a CONTAINER — the property this case exists for. Its string
+    // leaf is masked since issue #2852 (`plain` is not spelled by the source
+    // here, which is `{Foo: EXPR}`), and `a: 1` is untouched because a number
+    // cannot be a resolved secret. This is #2852's "a source leaf promoted to a
+    // container" row, which used to persist whatever the provider returned.
     expect(refuse({ Foo: { a: 1, b: 'plain' } }, { Foo: EXPR })).toEqual({
-      Foo: { a: 1, b: 'plain' },
+      Foo: { a: 1, b: SECRET_MASK },
     });
     expect(refuse({ Foo: [1, 2] }, { Foo: EXPR })).toEqual({ Foo: [1, 2] });
     expect(refuse({ Foo: 42 }, { Foo: EXPR })).toEqual({ Foo: 42 });
