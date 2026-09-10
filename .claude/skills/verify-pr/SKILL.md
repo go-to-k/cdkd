@@ -22,9 +22,12 @@ Run each check and report pass/fail:
    `pnpm-lock.yaml` mtime ≤ `node_modules/.modules.yaml` mtime. Do not start
    step 1 until this passes, or every check below silently no-ops.
 
-1. **Code quality**
-   - `vp run typecheck`, `vp run lint` (`lint:fix` first if needed),
-     `vp run build` all pass.
+1. **Code quality** — `/check` steps 1-3, which this skill supersedes.
+   - `vp run check` (CI's exact command: typecheck + lint + Prettier; `lint`
+     alone skips Prettier, PR #363), `vp run typecheck:test` (the ONLY gate
+     covering `tests/**` — `tsconfig.json` excludes `**/*.test.ts` and
+     `vp test run`'s `Type Errors` line covers only `*.test-d.ts`; issue
+     #1133, go-to-k/cdkd#2929), `vp run build` — all pass.
    - When piping to `tail` / `head` / `grep`, **check the output content** for
      `Error` / `Command failed` — `$?` after a pipeline reflects the LAST
      stage, and a background-task notification's `exit code 0` is the chained
@@ -65,7 +68,9 @@ Run each check and report pass/fail:
      PRs #548, #1104, #1231, #1416 — so do NOT re-list). Regenerate everything:
      ```bash
      # Regenerates every artifact CI guards (offline static analysis).
-     vp run gen:all-matrices
+     # `format` is in the chain, not a tidy-up: CI's guard formats before
+     # diffing, so skipping it renders a formatting-only diff as real drift.
+     vp run gen:all-matrices && vp run format
 
      # Offline CRITIC (~0.5s), not part of the aggregate. If it fails, run
      # `vp run audit:coverage:regenerate` (heavy ~15 min, needs AWS creds with
@@ -179,12 +184,12 @@ Run each check and report pass/fail:
    `src/index.ts` exports consistent.
 
 8. **Code review**
-   - **First, run `/review-pr <N>`** for the size-appropriate plan: inline
-     spot-check (< 300 LOC or < 5 files), 1 reviewer (300–1000 LOC), 3-axis
-     parallel (≥ 1000 LOC or ≥ 10 files), plus the ADDITIVE
-     `pr-security-reviewer` at ANY tier when a security surface or fix is
-     involved. Trust the recommendation; override only with a concrete reason,
-     noted here.
+   - **First, run `/review-pr <N>`** for the size-appropriate plan, plus the
+     ADDITIVE `pr-security-reviewer` at ANY tier when a security surface or
+     fix is involved. Thresholds are NOT restated here — `pr-review-gate.sh`
+     computes the tier that gates the merge; a copy can only drift from it.
+     Trust the recommendation; override only with a concrete reason, noted
+     here.
    - Synthesize the reports into a verdict; any blocker → fix-back loop.
    - **Then re-review the FIX DELTA, not just re-run the tier heuristic.**
      Fixes are code no reviewer has seen, written under the momentum of
@@ -260,15 +265,10 @@ Run each check and report pass/fail:
       - (a) **Fixed in this PR** — point at the fix commit / file:line.
       - (b) **TODO (issue #N)** — an issue exists AND the PR body references
         it. The issue body MUST carry the four classification lines, one
-        field per line (CLAUDE.md → "The four TODO fields"), plus the
-        `Dup-check:` line `/work-issues` §5-f requires:
-
-        ```text
-        Session-fit: now (do it in this session) | next (not this session) — <reason>
-        Severity: high | medium | low — <what stays broken while it is undone>
-        Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
-        Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
-        ```
+        field per line, spelled exactly as `.claude/rules/session-report.md`
+        gives them (CLAUDE.md → "The four TODO fields") — NOT restated here,
+        because a second copy of a template is a second thing to drift — plus
+        the `Dup-check:` line `/work-issues` §5-f requires.
 
         **Reviewers grade on a DIFFERENT scale — translate, do not copy**:
         `nit` → `low`, `minor` → `medium`. There is deliberately no `blocker`
@@ -327,8 +327,8 @@ Present results as a table:
 
 | Check | Result |
 |-------|--------|
-| typecheck | pass/fail |
-| lint | pass/fail |
+| check — typecheck + lint + format (`vp run check`) | pass/fail |
+| test-project typecheck (`vp run typecheck:test`) | pass/fail |
 | build | pass/fail |
 | tests (N files, M tests) (`vp test run`) | pass/fail |
 | test coverage for changes | pass/fail |
@@ -353,18 +353,13 @@ If all pass, confirm "PR is ready to merge." If any fail, list the issues.
 only `CLAUDE.md`, which the harness injects rather than reads, so it never
 auto-loads in an ordinary session.
 
-Then add the **State** line CLAUDE.md's wrap-report rule requires — "ready
-to merge" is rarely the end of the turn:
-
-- A check merely *pending* (CI running, an integ in flight, a reviewer not
-  back) is **WAITING** — say what you wait on, the signal that re-invokes
-  you, and that you will merge on green. Never go quiet on "ready to merge".
-- A check that legitimately **cannot** pass (no AWS credentials, a
-  maintainer-only decision) is not WAITING — no signal is coming. Resolve
-  it, or ask through `AskUserQuestion`; never end the turn with the question
-  in prose.
-- Report **STOPPED** only when the PR is merged (or the user explicitly owns
-  the next step) and nothing is pending.
+Then add the **State** line CLAUDE.md's wrap-report rule requires. That file
+gives the field semantics and is not restated here; what is specific to THIS
+skill is that "ready to merge" is rarely the end of the turn. A merely
+*pending* check (CI, an integ, a reviewer not back) is **WAITING** and you
+merge on green — never go quiet on it; a check that legitimately cannot pass
+is not WAITING at all; and **STOPPED** is only for a PR already merged, or one
+whose next step the user explicitly owns.
 
 ## Final Step
 
@@ -389,17 +384,11 @@ git add -A \
   && mise exec -- markgate set verify-pr
 ```
 
-**Anything that moves HEAD afterwards invalidates the binding, by design.** After
-a rebase or force-push (which `ship.md` prescribes), repeat the BIND -- still
-chained -- once the tree is final:
-
-```bash
-git rev-parse --verify HEAD > "$(git rev-parse --show-toplevel)/.markgate-verify-pr-sha" \
-  && mise exec -- markgate set verify-pr
-```
-
-That suffices only if the tree is UNCHANGED; with changes to commit, re-run the
-full chain with `--force-with-lease`. hooks.md: why it is named, not counted.
+**Anything that moves HEAD afterwards invalidates the binding, by design.**
+After a rebase or force-push (which `ship.md` prescribes), repeat the BIND once
+the tree is final -- still chained: the last two lines of the chain above when
+the tree is UNCHANGED, the whole chain with `--force-with-lease` when there is
+anything to commit. hooks.md: why it is named, not counted.
 
 **The sentinel is the binding, `markgate verify` does not enforce it, and the
 ORDER above is forced from two directions** — the marker is bound to a COMMIT,
