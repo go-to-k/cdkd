@@ -163,11 +163,10 @@ export class DiffCalculator {
     // loop reads the RESOLVED values, where a GetAtt to an
     // in-place-referenceable resource has already been replaced by its resolved
     // current value.
-    // (This said the loop "mutates in place" the desired property intrinsics
-    // and that a GetAtt "can no longer be detected" once `resolveBestEffort`
-    // runs. Both were false from the commit that wrote them — go-to-k/cdkd#939
-    // added the clone in the same change, so the template keeps its raw
-    // intrinsics.)
+    // (This said the loop "mutates in place" the desired property intrinsics.
+    // It never has: go-to-k/cdkd#939 added the clone in the same change that
+    // wrote the note, and the loop collects into a fresh bag, so the RAW
+    // template keeps its intrinsics and this snapshot reads them either way.)
     const rawGetAttRefs = new Map<string, Map<string, Map<string, Set<string>>>>();
     for (const [logicalId, desiredResource] of Object.entries(desiredResources)) {
       if (desiredResource.Type === 'AWS::CDK::Metadata') continue;
