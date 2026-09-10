@@ -3763,17 +3763,21 @@ export function preserveLiveValuesAtUnresolvedTokens(
       // under `preserveUntemplated` — and MIXED-provenance lists exist too:
       // `mergeUntemplatedValue`'s keyed arm and `mergeTagListForRevert`
       // both emit lists whose members come from both sides. The actual
-      // bound is INDEX ALIGNMENT, not single-sourcing: those two merges
-      // preserve AWS's own positions (they iterate the AWS list and
-      // substitute by `Key`), and `Key` / `Name` are `ARRAY_IDENTITY_KEYS`,
-      // so a merged list normally takes the identity arm, which reads no
-      // order evidence at all. Identity pairing needs UNIQUENESS on BOTH
-      // sides (`isUniquelyKeyedBy` — AWS can report the same key twice,
-      // as `mergeUntemplatedValue`'s own dedupe records), and the fallback
-      // is still sound: a merged list falling to the frame arm (a
-      // duplicated or empty `Key`) sits at AWS's positions, so a live-copy
-      // frame leaf corroborates only its own index — a no-op copy — while
-      // any shifted alignment CONTRADICTS and refuses. Unkeyed arrays never
+      // bound is IDENTITY, not single-sourcing and not position: `Key` /
+      // `Name` are `ARRAY_IDENTITY_KEYS`, so a merged list normally takes
+      // the identity arm, which reads no order evidence at all. That is
+      // what carries it, because the two merges do NOT agree on ordering:
+      // `mergeUntemplatedValue`'s keyed arm iterates the AWS list and
+      // substitutes by `Key` (AWS positions), while `mergeTagListForRevert`
+      // returns `[...baselineTags, ...preserved]` — BASELINE order with
+      // AWS-only extras appended, so its output is not at AWS's positions
+      // at all. Identity pairing needs UNIQUENESS on BOTH sides
+      // (`isUniquelyKeyedBy` — AWS can report the same key twice, as
+      // `mergeUntemplatedValue`'s own dedupe records), and the fallback is
+      // still sound WITHOUT any positional premise: a merged list falling
+      // to the frame arm (a duplicated or empty `Key`) corroborates
+      // leaf-by-leaf, so an alignment that is shifted — however it got
+      // that way — CONTRADICTS and refuses rather than donating. Unkeyed arrays never
       // mix at all: the merge's fall-through takes them from the baseline
       // wholesale, and a non-drifted key's array is AWS wholesale, where
       // every copy is send ≡ live.
