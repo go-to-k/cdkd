@@ -32,6 +32,10 @@
 #      microservices, drift-revert, drift-revert-vpc, multi-stack-deps,
 #      multi-resource, remove-protection, export). Narrow integs don't
 #      touch the sentinel, so they don't refresh this marker.
+#      That set has SIX copies: the block message below is the BASE the
+#      fence compares against, and the five copies are this comment,
+#      .markgate.yml's integ-broad gate, and .claude/skills/run-integ
+#      step 11 / verify-pr step 6 / pick-integ step 2.
 #   3. The marker also carries the 14d TTL of integ-destroy / integ-local
 #      so AWS-side drift forces a fresh broad run periodically.
 #
@@ -296,10 +300,8 @@ became required for this scope.
 
 Required action — no exceptions:
   /run-integ bench-cdk-sample      # 39-resource VPC+NAT+CF+Lambda+SQS
-  # or one of (this list has SIX copies — the header comment above,
-  # .claude/skills/{run-integ step 11,verify-pr step 6,pick-integ step 2}
-  # and .markgate.yml's integ-broad gate — all fenced against THIS
-  # message; changing one alone reds CI):
+  # or one of (this message is the fence's base for the broad set; the
+  # five copies are listed in this file's header comment):
   /run-integ lambda
   /run-integ microservices
   /run-integ drift-revert

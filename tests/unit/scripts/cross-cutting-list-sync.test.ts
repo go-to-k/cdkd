@@ -119,9 +119,10 @@ const read = (p: string): string => readFileSync(p, 'utf8');
 /**
  * Floors, asserted INSIDE each extractor so no call site can forget one.
  *
- * The lists hold 12 (cross-cutting), 13 (integ-destroy scope) and 9 (broad
- * set) entries, against floors of 8, 9 and 7 -- so up to four, four and two
- * entries can go without a test edit in the same PR, while a parser that has gone blind -- which
+ * Four lists are floored: cross-cutting 12 and work-issues contention 13
+ * (both MIN_PATHS = 8), the integ-destroy scope 13 (MIN_DESTROY_SCOPE = 9)
+ * and the broad set 9 (MIN_TESTS = 7) -- so four, five, four and two entries
+ * can go without a test edit in the same PR, while a parser gone blind -- which
  * loses the whole list at once rather than one entry -- cannot clear it. A
  * single dropped entry is caught by the sequence comparisons instead, which is
  * the tighter of the two guards.
