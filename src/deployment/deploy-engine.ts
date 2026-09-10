@@ -1591,16 +1591,18 @@ export class DeployEngine {
    *
    *  - `<LogicalId>.<Attribute>` — `noteAttributeSecrecy`, a resource in this
    *    stack. LOCAL.
-   *  - `<Child>.Outputs.<Key>` — ALSO `noteAttributeSecrecy`, and the reason
-   *    this function cannot partition by spelling alone. A nested stack's
-   *    output attribute reaches the cross-stack re-resolution arm only when it
-   *    `carriesDynamicReference`, and a value that is already `SECRET_MASK`
-   *    does NOT (that predicate tests for `{{resolve:`), so a masked child
-   *    output falls through to `noteAttributeSecrecy` and is pushed in the
-   *    LOCAL spelling. Its record is the CHILD's `state.outputs` — the parent's
-   *    attributes are rebuilt from it every deploy — so a `--force` re-import
-   *    of `<Child>` in this stack overwrites an innocent row and leaves the
-   *    mask. FOREIGN, despite looking local.
+   *  - `<Child>.Outputs.<Key>` where `<Child>` is an
+   *    `AWS::CloudFormation::Stack` — ALSO `noteAttributeSecrecy`, and the
+   *    reason this function cannot partition by spelling alone. A nested
+   *    stack's output attribute reaches the cross-stack re-resolution arm only
+   *    when it `carriesDynamicReference`, and a value that is already
+   *    `SECRET_MASK` does NOT (that predicate tests for `{{resolve:`), so a
+   *    masked child output falls through to `noteAttributeSecrecy` and is
+   *    pushed in the LOCAL spelling. Its record is the CHILD's `state.outputs`,
+   *    from which the parent's attributes are rebuilt every deploy, so no
+   *    `--resource` in THIS stack clears it: `NestedStackProvider` implements
+   *    no `import()` at all, so the command would report `skipped-no-impl` and
+   *    change nothing. FOREIGN, despite looking local.
    *  - `Fn::ImportValue '...' (producer ...)`, `Fn::GetStackOutput '...'
    *    (producer ...)`, `nested stack <Child> Outputs.<Key>` —
    *    `reresolveCrossStackValue`. FOREIGN.
@@ -1616,33 +1618,51 @@ export class DeployEngine {
    * `LOCAL_MASKED_READ` is ANCHORED — that, not any property of the foreign
    * spellings, is what excludes them (`Fn::ImportValue '...'` carries no dot at
    * all and fails at `Fn:`). A dotted ATTRIBUTE path (`Cr.Endpoint.Password`)
-   * still yields `Cr`, because the capture stops at the FIRST dot; the
-   * `Outputs.` second segment is excluded explicitly by
-   * `CHILD_OUTPUT_MASKED_READ`, since that segment is the only thing
-   * distinguishing it from an ordinary dotted attribute.
+   * still yields `Cr`, because the capture stops at the FIRST dot.
+   *
+   * The nested-stack case is then excluded BY RESOURCE TYPE, not by its
+   * `Outputs.` spelling. Keying on the segment over-reaches: a local
+   * `AWS::ServiceCatalog::CloudFormationProvisionedProduct` documents
+   * `Outputs.<Key>` as a real `Fn::GetAtt` attribute, so a masked one would be
+   * misrouted to the foreign arm and the reachable remedy withheld. `resources`
+   * is on the context already, so the type is available and exact.
    *
    * An entry matching NEITHER is treated as foreign, which is the safe
    * direction: the foreign arm names no command, so an unrecognised shape
-   * costs a vaguer message rather than a destructive one.
+   * (a hand-written template's non-alphanumeric logical id) costs a vaguer
+   * message rather than a destructive one.
    */
-  private static maskedRecordRemedyFor(reads: readonly string[]): string {
+  private static maskedRecordRemedyFor(
+    reads: readonly string[],
+    resources: Record<string, { readonly resourceType?: string }>
+  ): string {
     /** `<LogicalId>.<Attribute>` — a record in THIS stack. */
-    const LOCAL_MASKED_READ = /^([A-Za-z0-9]+)\.(.+)$/;
-    /** `<Child>.Outputs.<Key>` — a masked NESTED-STACK output; the record is the child's. */
-    const CHILD_OUTPUT_MASKED_READ = /^[A-Za-z0-9]+\.Outputs\./;
+    const LOCAL_MASKED_READ = /^([A-Za-z0-9]+)\.(?:.+)$/;
+    // Spelled locally rather than imported: the only exported copy lives in
+    // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
+    // edge for one string literal is the wrong trade.
+    // `intrinsic-function-resolver.ts` keeps its own module-local copy for the
+    // same reason.
+    const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 
-    const isLocal = (read: string): boolean =>
-      LOCAL_MASKED_READ.test(read) && !CHILD_OUTPUT_MASKED_READ.test(read);
+    const targetOf = (read: string): string | undefined => LOCAL_MASKED_READ.exec(read)?.[1];
+    const isLocal = (read: string): boolean => {
+      const target = targetOf(read);
+      if (target === undefined) return false;
+      // A masked NESTED-STACK output is pushed in the local spelling but its
+      // record is the child's; no `--resource` here reaches it.
+      return resources[target]?.resourceType !== NESTED_STACK_RESOURCE_TYPE;
+    };
 
     const localTargets = [
       ...new Set(
         reads
           .filter(isLocal)
-          .map((read) => LOCAL_MASKED_READ.exec(read)?.[1])
+          .map(targetOf)
           .filter((id): id is string => id !== undefined)
       ),
     ];
-    const hasForeign = reads.some((read) => !isLocal(read));
+    const foreignReads = reads.filter((read) => !isLocal(read));
 
     const parts: string[] = [];
     if (localTargets.length > 0) {
@@ -1656,13 +1676,16 @@ export class DeployEngine {
           `.`
       );
     }
-    if (hasForeign) {
+    if (foreignReads.length > 0) {
+      // The number follows the FOREIGN count, which is what this sentence is
+      // about — keying it to the local arm rendered "The read above resolves"
+      // over two foreign entries.
+      const one = foreignReads.length === 1;
       parts.push(
-        `${localTargets.length > 0 ? 'Some of the reads above' : 'The read above'} resolve` +
-          `${localTargets.length > 0 ? '' : 's'} through ANOTHER stack (an Fn::ImportValue, an ` +
-          `Fn::GetStackOutput, or a nested stack's Outputs), whose masked record lives in that ` +
-          `stack's state — re-importing anything in this stack cannot clear it; act on the ` +
-          `producer stack instead.`
+        `${one ? 'One of the reads above resolves' : 'Some of the reads above resolve'} through ` +
+          `ANOTHER stack (an Fn::ImportValue, an Fn::GetStackOutput, or a nested stack's ` +
+          `Outputs), whose masked record lives in that stack's state — re-importing anything in ` +
+          `this stack cannot clear it; act on the producer stack instead.`
       );
     }
     return parts.join(' ');
@@ -1705,7 +1728,7 @@ export class DeployEngine {
     // as `Cr.Endpoint` for a dotted attribute path like `Cr.Endpoint.Password`,
     // and has no referent at all for the `Fn::ImportValue` /
     // `Fn::GetStackOutput` forms. The population is heterogeneous, so no single
-    // instruction describes it — `localMaskedTargets` PARTITIONS it instead,
+    // instruction describes it — `maskedRecordRemedyFor` PARTITIONS it instead,
     // and each arm says only what is true of its own shape. Adding a `reads`
     // shape means extending that helper, not this prose.
     //
@@ -1744,7 +1767,7 @@ export class DeployEngine {
         `declares read-only and masks the rest. Either the attribute named above is not one of ` +
         `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
         `cdkd could not read that schema and masked the whole model, which the import warned about ` +
-        `when it happened. ${DeployEngine.maskedRecordRemedyFor(reads)} If that warning named ` +
+        `when it happened. ${DeployEngine.maskedRecordRemedyFor(reads, context.resources)} If that warning named ` +
         `a missing cloudformation:DescribeType permission, grant it first. ` +
         `See https://github.com/go-to-k/cdkd/issues/2449.`,
       resourceType,

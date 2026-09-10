@@ -13,9 +13,9 @@
  *  - interpolating the engine's own `logicalId` named the CONSUMER, so the
  *    advised `--force` re-import overwrote an innocent row;
  *  - "the name to the LEFT of the dot" yields `Outputs` for
- *    `nested stack Child Outputs.Foo` — and the charitable reading, `Child`, is
- *    a real template id the import typo guard ACCEPTS, so following it
- *    `--force`-overwrites that row while the mask (in the child's state) stays;
+ *    `nested stack Child Outputs.Foo`, and the charitable reading `Child` sends
+ *    the user at a record that is not there (the mask is in the CHILD's state,
+ *    and `NestedStackProvider` implements no `import()` at all);
  *  - it yields `Cr.Endpoint` for the dotted attribute path
  *    `Cr.Endpoint.Password`;
  *  - and it has no referent at all for the `Fn::ImportValue` /
@@ -33,12 +33,21 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
-const remedyFor = (reads: readonly string[]): string =>
+const remedyFor = (
+  reads: readonly string[],
+  resources: Record<string, { resourceType?: string }> = {}
+): string =>
   (
     DeployEngine as unknown as {
-      maskedRecordRemedyFor(reads: readonly string[]): string;
+      maskedRecordRemedyFor(
+        reads: readonly string[],
+        resources: Record<string, { resourceType?: string }>
+      ): string;
     }
-  ).maskedRecordRemedyFor(reads);
+  ).maskedRecordRemedyFor(reads, resources);
+
+/** A state map in which `<id>` is a nested stack. */
+const nested = (id: string) => ({ [id]: { resourceType: 'AWS::CloudFormation::Stack' } });
 
 /** The three cross-stack shapes `reresolveCrossStackValue` really writes. */
 const IMPORT_VALUE = "Fn::ImportValue 'SharedDbSecret' (producer ProducerStack / us-east-1)";
@@ -71,12 +80,22 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     ['nested stack Outputs', NESTED_STACK],
   ])('refuses to advise a local re-import for the %s shape', (_name, read) => {
     const remedy = remedyFor([read]);
+    expect(remedy).toContain('One of the reads above resolves');
 
     // No command at all — a `--resource` here cannot reach the other stack's
     // record, and advising one is what named a wrong-but-real id before.
     expect(remedy).not.toContain('cdkd import');
     expect(remedy).toContain('ANOTHER stack');
     expect(remedy).toContain('producer stack');
+  });
+
+  it('numbers the cross-stack sentence by the FOREIGN count, not the local one', () => {
+    // Keyed to the local arm, two foreign reads rendered "The read above
+    // resolves" while the message had just listed both.
+    expect(remedyFor([IMPORT_VALUE, GET_STACK_OUTPUT])).toContain(
+      'Some of the reads above resolve through'
+    );
+    expect(remedyFor([IMPORT_VALUE])).toContain('One of the reads above resolves through');
   });
 
   it('never advises the nested-stack shape as a local id, which the typo guard would ACCEPT', () => {
@@ -110,24 +129,36 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   // when it `carriesDynamicReference`, and `'***'` does not (that predicate
   // tests for `{{resolve:`) — so a MASKED child output falls through to
   // `noteAttributeSecrecy` and is pushed in the LOCAL spelling `Child.Outputs.X`.
-  // The record is the CHILD's `state.outputs`, so a `--force` re-import of
-  // `Child` here overwrites an innocent row and leaves the mask. `Child` is a
-  // real template id, so the import typo guard ACCEPTS it — the advice would
-  // execute.
+  // The record is the CHILD's `state.outputs`, from which the parent's
+  // attributes are rebuilt every deploy, so no `--resource` here clears it:
+  // `NestedStackProvider` implements no `import()`, so the command would report
+  // `skipped-no-impl` and change nothing.
   it('routes a MASKED nested-stack output to the cross-stack arm despite its local-looking spelling', () => {
-    const remedy = remedyFor(['Child.Outputs.DbPassword']);
+    const remedy = remedyFor(['Child.Outputs.DbPassword'], nested('Child'));
 
     expect(remedy).not.toContain('cdkd import');
     expect(remedy).not.toContain('--resource Child=');
     expect(remedy).toContain('ANOTHER stack');
   });
 
-  it('still treats an ordinary dotted attribute on a resource named like a child as LOCAL', () => {
-    // The discriminator is the `Outputs.` SECOND SEGMENT, not the resource
-    // name — `Child.Endpoint.Address` is an ordinary nested attribute path.
-    const remedy = remedyFor(['Child.Endpoint.Address']);
+  it('still treats an ordinary dotted attribute as LOCAL', () => {
+    const remedy = remedyFor(['Cr.Endpoint.Address']);
 
-    expect(remedy).toContain('--resource Child=<physicalId>');
+    expect(remedy).toContain('--resource Cr=<physicalId>');
+    expect(remedy).not.toContain('ANOTHER stack');
+  });
+
+  // The discriminator is the resource TYPE, not the `Outputs.` segment. Keying
+  // on the segment over-reaches: `AWS::ServiceCatalog::CloudFormationProvisionedProduct`
+  // documents `Outputs.<Key>` as a real Fn::GetAtt attribute, so a masked one
+  // would be misrouted to the foreign arm and its reachable remedy withheld.
+  it('treats an Outputs.* attribute on a NON-nested-stack resource as LOCAL', () => {
+    const remedy = remedyFor(
+      ['Pp.Outputs.DbEndpoint'],
+      { Pp: { resourceType: 'AWS::ServiceCatalog::CloudFormationProvisionedProduct' } }
+    );
+
+    expect(remedy).toContain('--resource Pp=<physicalId>');
     expect(remedy).not.toContain('ANOTHER stack');
   });
 
