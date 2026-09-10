@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   buildRevertNewProperties,
+  collectUnresolvedIntrinsicObjectPaths,
   preserveLiveValuesAtMaskedLeaves,
   preserveLiveValuesAtUnresolvedTokens,
 } from '../../../src/cli/commands/drift.js';
@@ -427,14 +428,14 @@ describe('preserveLiveValuesAtMaskedLeaves (issue #2274)', () => {
 // ------------------------------------------------------- #2884, round 4 --
 //
 // `runRevert` runs `preserveLiveValuesAtUnresolvedTokens` FIRST, and that pass
-// copies live values into whole-token leaves BY INDEX. Corroborating the
-// post-token bag against the same `live` therefore counts every leaf the token
-// pass just copied as trivially deep-equal at its own index — evidence the
-// sibling pass manufactured, not the array's own frame. The fix: the caller
-// passes the PRE-token bag as `corroborationSource`, so pairing evidence
-// (identity lookup AND per-leaf corroboration) is read from values no pass
-// copied from `live`. These cases run the two passes in `runRevert`'s exact
-// order and wiring.
+// copies live values into whole-token leaves — BY INDEX when this block was
+// written, by certified pairing since issue #2893. Either way a copied leaf is
+// trivially deep-equal to `live` at its own position, so corroborating the
+// post-token bag against the same `live` counts evidence the sibling pass
+// manufactured, not the array's own frame. The fix: the caller passes the
+// PRE-token bag as `corroborationSource`, so pairing evidence (identity lookup
+// AND per-leaf corroboration) is read from values no pass copied from `live`.
+// These cases run the two passes in `runRevert`'s exact order and wiring.
 
 // Whole-token spellings the resolver resolves for nobody — the population that
 // survives to `preserveLiveValuesAtUnresolvedTokens` since issue #2482.
@@ -442,7 +443,7 @@ const TOK_A = '{{resolve:notaservice:/cdkd/round4/a}}';
 const TOK_B = '{{resolve:notaservice:/cdkd/round4/b}}';
 const TOK_C = '{{resolve:notaservice:/cdkd/round4/c}}';
 
-/** `runRevert`'s exact composition: token pass by index, then the mask pass
+/** `runRevert`'s exact composition: the token pass first, then the mask pass
  * corroborated against the PRE-token bag. */
 function runBothPasses(
   overlaid: Record<string, unknown>,
@@ -860,5 +861,292 @@ describe('the WRITE path returns a non-plain object BY IDENTITY (issue #2897, wr
     expect(Object.hasOwn(properties, '__proto__')).toBe(true);
     expect((properties as { polluted?: unknown }).polluted).toBeUndefined();
     expect(properties['Value']).toBe(LIVE);
+  });
+});
+
+// ------------------------------------------------------------- #2893 --
+//
+// `preserveLiveValuesAtUnresolvedTokens` paired array elements POSITIONALLY,
+// guarded only by a length test, so a readback AWS REORDERED copied element
+// i's live value into element i's token position and `provider.update`
+// shipped a value belonging to a DIFFERENT element. The descent now goes
+// through `pairedLiveItems` — identity field first, else the array's own
+// literal frame corroborated per leaf, with whole tokens (and masks, owned by
+// the later mask pass) wildcarded. The refusal residual is KEEPING the token,
+// this pass's documented safe residual — never the mask walk's
+// drop-the-resource refusal.
+describe('preserveLiveValuesAtUnresolvedTokens pairs arrays by identity/corroboration (#2893)', () => {
+  it('S1: a KEYED list AWS reordered takes the CORRECT element live value, not index i', () => {
+    // The defect shape. Old positional descent: live[0] is the REGION
+    // element, so the DB token took 'us-east-1' — another element's value,
+    // shipped to the live resource.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      {
+        Env: [
+          { Name: 'DB', Value: TOK_A },
+          { Name: 'REGION', Value: 'us-east-1' },
+        ],
+      },
+      {
+        Env: [
+          { Name: 'REGION', Value: 'us-east-1' },
+          { Name: 'DB', Value: 'db-live-value' },
+        ],
+      }
+    );
+
+    const env = out['Env'] as Array<Record<string, unknown>>;
+    expect(env[0]!['Value']).toBe('db-live-value');
+    expect(env[0]!['Value']).not.toBe('us-east-1');
+    expect(env[1]!['Value']).toBe('us-east-1');
+  });
+
+  it('S2: a KEYED list AWS ADDED an element to still pairs — no length gate on the identity arm', () => {
+    // Old behaviour: length mismatch → no live items → token kept. Identity
+    // needs no such partner count.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Env: [{ Name: 'DB', Value: TOK_A }] },
+      {
+        Env: [
+          { Name: 'EXTRA', Value: 'added-by-aws' },
+          { Name: 'DB', Value: 'db-live-value' },
+        ],
+      }
+    );
+
+    expect((out['Env'] as Array<Record<string, unknown>>)[0]!['Value']).toBe('db-live-value');
+  });
+
+  it('S3: a keyed element whose identity AWS NORMALISED gets no live value — the token is KEPT', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Env: [{ Name: 'DB', Value: TOK_A }, { Name: 'REGION', Value: 'us-east-1' }] },
+      { Env: [{ Name: 'db', Value: 'db-live-value' }, { Name: 'REGION', Value: 'us-east-1' }] }
+    );
+
+    // `Name` no longer keys BOTH sides uniquely-and-equally ('DB' matches no
+    // live identity), so that element keeps its token — the documented safe
+    // residual, instead of a positional guess.
+    expect((out['Env'] as Array<Record<string, unknown>>)[0]!['Value']).toBe(TOK_A);
+  });
+
+  it('S4: an identity field that is ITSELF a token pairs nothing and keeps the token', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Env: [{ Name: TOK_A, Value: TOK_B }, { Name: 'REGION', Value: 'us-east-1' }] },
+      { Env: [{ Name: 'resolved-name', Value: 'v' }, { Name: 'REGION', Value: 'us-east-1' }] }
+    );
+
+    const env = out['Env'] as Array<Record<string, unknown>>;
+    expect(env[0]!['Name']).toBe(TOK_A);
+    expect(env[0]!['Value']).toBe(TOK_B);
+  });
+
+  it('S5: an UNKEYED array whose literal frame corroborates the order still preserves', () => {
+    // The legitimate preservation this function exists for must survive the
+    // tightening: same order, every non-token leaf equal, one token slot.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Args: ['--pw', TOK_A] },
+      { Args: ['--pw', 'live-secret-arg'] }
+    );
+
+    expect((out['Args'] as unknown[])[1]).toBe('live-secret-arg');
+  });
+
+  it('S6: an UNKEYED array AWS reordered contradicts the frame — the token is KEPT', () => {
+    // Old behaviour copied live[0] ('--verbose') INTO the token position.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Args: [TOK_A, '--verbose'] },
+      { Args: ['--verbose', 'resolved-elsewhere'] }
+    );
+
+    expect((out['Args'] as unknown[])[0]).toBe(TOK_A);
+    expect((out['Args'] as unknown[])[0]).not.toBe('--verbose');
+    expect((out['Args'] as unknown[])[1]).toBe('--verbose');
+  });
+
+  it('S7: TWO token-carrying elements in an unkeyed array refuse — both tokens kept', () => {
+    // Two wildcard slots leave the surviving frame unable to say which goes
+    // where, exactly the mask walk's one-slot bound.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      {
+        I: [
+          { U: TOK_A, A: 'x' },
+          { U: TOK_B, A: 'y' },
+        ],
+      },
+      {
+        I: [
+          { U: 'live-x', A: 'x' },
+          { U: 'live-y', A: 'y' },
+        ],
+      }
+    );
+
+    const items = out['I'] as Array<Record<string, unknown>>;
+    expect(items[0]!['U']).toBe(TOK_A);
+    expect(items[1]!['U']).toBe(TOK_B);
+  });
+
+  it('S8: an ALL-TOKEN unkeyed array has zero corroborated leaves — the token is KEPT', () => {
+    // Old behaviour: `[TOK_A]` against one live value copied it in on the
+    // strength of a length-1 match, which is no evidence.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Args: [TOK_A] },
+      { Args: ['live-value'] }
+    );
+
+    expect((out['Args'] as unknown[])[0]).toBe(TOK_A);
+  });
+
+  it('S9: an unkeyed LENGTH mismatch keeps the token, as before', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Args: ['--pw', TOK_A] },
+      { Args: ['--pw', 'live-secret-arg', '--verbose'] }
+    );
+
+    expect((out['Args'] as unknown[])[1]).toBe(TOK_A);
+  });
+
+  it('S10: a token NESTED in a keyed element is preserved from the PAIRED element under reorder', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      {
+        Defs: [
+          { Name: 'app', Cfg: { Url: TOK_A } },
+          { Name: 'sidecar', Cfg: { Url: 'https://fixed' } },
+        ],
+      },
+      {
+        Defs: [
+          { Name: 'sidecar', Cfg: { Url: 'https://fixed' } },
+          { Name: 'app', Cfg: { Url: 'https://live-app' } },
+        ],
+      }
+    );
+
+    const defs = out['Defs'] as Array<Record<string, unknown>>;
+    expect((defs[0]!['Cfg'] as Record<string, unknown>)['Url']).toBe('https://live-app');
+    expect((defs[1]!['Cfg'] as Record<string, unknown>)['Url']).toBe('https://fixed');
+  });
+
+  it('S11: a sibling element carrying a MASK abstains in corroboration but counts as a slot', () => {
+    // The mask is the LATER mask pass's business: it must neither contradict
+    // (it never equals live) nor corroborate. With a mask element AND a token
+    // element that is two wildcard slots, so the pairing refuses and the
+    // token pass changes nothing — mask untouched, token kept.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      {
+        I: [
+          { A: 'x', V: SECRET_MASK },
+          { A: 'y', V: TOK_A },
+        ],
+      },
+      {
+        I: [
+          { A: 'x', V: 'live-0' },
+          { A: 'y', V: 'live-1' },
+        ],
+      }
+    );
+
+    const items = out['I'] as Array<Record<string, unknown>>;
+    expect(items[0]!['V']).toBe(SECRET_MASK);
+    expect(items[1]!['V']).toBe(TOK_A);
+  });
+
+  it('S12: a NON-PLAIN member (Date) in an unkeyed frame is a contradiction — the token is KEPT', () => {
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { I: [{ T: new Date('2020-01-01T00:00:00Z'), U: TOK_A }] },
+      { I: [{ T: new Date('2020-01-01T00:00:00Z'), U: 'live' }] }
+    );
+
+    expect((out['I'] as Array<Record<string, unknown>>)[0]!['U']).toBe(TOK_A);
+  });
+});
+
+// ------------------------------------------------------------- #2855 --
+//
+// A record refused an `observedProperties` baseline (#2842's throw arm) falls
+// back to raw `properties` holding intrinsic OBJECTS (`{Fn::Join: ...}`) from
+// `cdkd import`'s warn path. `resolveStateSecretExpressions` re-resolves only
+// `{{resolve:...}}` STRINGS, so the object survives into the send bag, and no
+// provider route fails loudly on it (measured — see the helper's doc). The
+// scan names such leaves so `runRevert` can refuse the resource.
+describe('collectUnresolvedIntrinsicObjectPaths (#2855)', () => {
+  const KEYS = (...k: string[]): ReadonlySet<string> => new Set(k);
+
+  it('H1: names a single-key Fn::* object at a drifted top-level key', () => {
+    expect(
+      collectUnresolvedIntrinsicObjectPaths(
+        { Value: { 'Fn::Join': ['', ['a', 'b']] }, Name: '/p' },
+        KEYS('Value', 'Name')
+      )
+    ).toEqual(['Value']);
+  });
+
+  it('H2: names a nested Ref with its dotted path', () => {
+    expect(
+      collectUnresolvedIntrinsicObjectPaths(
+        { Cfg: { Inner: { Ref: 'SomeResource' } } },
+        KEYS('Cfg')
+      )
+    ).toEqual(['Cfg.Inner']);
+  });
+
+  it('H3: names an intrinsic inside an ARRAY element', () => {
+    expect(
+      collectUnresolvedIntrinsicObjectPaths(
+        { List: ['plain', { 'Fn::GetAtt': ['R', 'Arn'] }] },
+        KEYS('List')
+      )
+    ).toEqual(['List[1]']);
+  });
+
+  it('H4: a MULTI-key object with an Fn::-looking key is NOT an intrinsic', () => {
+    // A CloudFormation intrinsic is always single-key; a sibling key means a
+    // real property literally named like one — the resolver's own rule.
+    expect(
+      collectUnresolvedIntrinsicObjectPaths(
+        { Cfg: { 'Fn::Join': ['', []], Other: 1 } },
+        KEYS('Cfg')
+      )
+    ).toEqual([]);
+  });
+
+  it('H5: a single-key object with an ORDINARY key is not flagged, and IS descended', () => {
+    expect(
+      collectUnresolvedIntrinsicObjectPaths(
+        { Cfg: { Only: { 'Fn::Sub': 'x-${Y}' } } },
+        KEYS('Cfg')
+      )
+    ).toEqual(['Cfg.Only']);
+  });
+
+  it('H6: a NON-drifted top-level key is out of scope — AWS-sourced echoes cannot refuse', () => {
+    expect(
+      collectUnresolvedIntrinsicObjectPaths(
+        { Value: { 'Fn::Join': ['', []] }, Drifted: 'x' },
+        KEYS('Drifted')
+      )
+    ).toEqual([]);
+  });
+
+  it('H7: a non-plain object (Date, Uint8Array) is neither flagged nor descended', () => {
+    expect(
+      collectUnresolvedIntrinsicObjectPaths(
+        { When: new Date('2020-01-01T00:00:00Z'), Blob: new Uint8Array([1]) },
+        KEYS('When', 'Blob')
+      )
+    ).toEqual([]);
+  });
+
+  it('H8: multiple finds come back sorted, one per whole flagged leaf', () => {
+    expect(
+      collectUnresolvedIntrinsicObjectPaths(
+        {
+          B: { Ref: 'X' },
+          A: { Deep: { 'Fn::Sub': ['t', { V: { Ref: 'Y' } }] } },
+        },
+        KEYS('A', 'B')
+      )
+    ).toEqual(['A.Deep', 'B']);
   });
 });

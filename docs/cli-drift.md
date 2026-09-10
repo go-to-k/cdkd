@@ -217,7 +217,10 @@ dynamic reference(s) cdkd could not re-resolve. Grant the caller
 `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference.
 That last counter also covers a resource `--revert` refused because its
 recorded baseline holds only the redaction mask and AWS reports nothing to
-preserve there. Successful resources are in sync; re-run `cdkd drift <stack>`
+preserve there, and one refused because its baseline holds a raw
+CloudFormation intrinsic **object** (`Fn::Join` / `Ref`) cdkd cannot resolve
+outside a deploy — for both, no AWS call is made and the message names the
+remedy. Successful resources are in sync; re-run `cdkd drift <stack>`
 to see what is left, then either `cdkd drift <stack> --revert` for the
 recoverable failures or `cdkd deploy <stack> --replace` for the
 update-not-supported ones.
@@ -364,6 +367,18 @@ for a `NoEcho` value, rather than to leave the position as AWS has it. The fix
 is a `cdkd deploy` of that resource, after which the baseline is captured from a
 template cdkd can position against.
 
+The last shape in the list — a record whose properties hold a raw `Fn::Join` /
+`Fn::Sub` **object** — has a second consequence of its own: when such a record
+also has no `observedProperties` (the same import produced neither), the raw
+object becomes the revert baseline itself. `--revert` **refuses the resource**
+rather than write it (counted with the unresolvable ones, exit `2`): cdkd
+cannot resolve an intrinsic outside a deploy, and no provider route rejects
+the raw object on cdkd's side — an SDK provider puts it straight into the wire
+call, and Cloud Control serializes it into the patch, where a JSON-string
+property would even make it a schema-valid string AWS accepts silently. The
+remedy is the same `cdkd deploy`, which resolves the template and records a
+resolvable baseline.
+
 `cdkd drift --accept` does not write this mask itself — it records what AWS
 reported — and neither does `cdkd import`'s own baseline capture.
 
@@ -383,8 +398,22 @@ names the token once per resource.
 What a `--revert` triggered by another drifted property on the same resource
 does to those positions depends on where the token sits:
 
-- If the property's **whole value** is the token, the live value is left
-  **unchanged** — cdkd cannot tell what it should be, so it does not touch it.
+- If the property's **whole value** is the token and cdkd can **match the
+  position** against what AWS reports, the live value is left **unchanged** —
+  cdkd cannot tell what the token should resolve to, so it keeps what AWS has.
+  A token at the top level always matches; a token inside a **list** matches
+  through its element — by an identity field (`Name` or `Key`) when both sides
+  carry one, and otherwise only when the list's other literal values
+  corroborate the order (the same pairing rule the masked-baseline revert
+  uses, because a list AWS reordered would otherwise donate **another
+  element's** live value to the token's position).
+- If the position cannot be matched — AWS reports nothing there, the list was
+  reordered or resized past what its own values can vouch for, two elements
+  carry tokens, or the list holds nothing BUT tokens — the token is written
+  **literally**, exactly as `cdkd deploy` sends it. For a stack cdkd deployed
+  that is a no-op (AWS already holds the literal); for a record adopted from
+  elsewhere it preserves whatever breakage already existed rather than
+  guessing.
 - If the token is **embedded in a longer string**, that string is written
   **with the token literal**, exactly as `cdkd deploy` does, so a value AWS
   holds there **is overwritten**.

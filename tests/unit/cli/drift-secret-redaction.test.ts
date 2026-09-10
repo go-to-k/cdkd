@@ -3245,3 +3245,169 @@ describe('cdkd drift --revert — the token pass must not manufacture the mask p
     expect(sent['Value']).toBe('live-noecho-value-2897');
   });
 });
+
+// ------------------------------------------------------------- #2855 --
+//
+// A resource refused an `observedProperties` baseline by #2842's throw arm
+// leaves `properties` holding the RAW intrinsic OBJECT `cdkd import`'s warn
+// path wrote. `runRevert` falls back to that bag, `resolveStateSecretExpressions`
+// re-resolves only `{{resolve:...}}` STRINGS, and the measured provider routes
+// all ship the object silently (SDK: raw object into the wire call; Cloud
+// Control: verbatim patch value, JSON-stringified into a schema-VALID string
+// for a JSON property). The revert must therefore REFUSE the resource before
+// `provider.update`.
+describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (issue #2855)', () => {
+  const PARAM_TYPE = 'AWS::SSM::Parameter';
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    infoSpy.mockReset();
+    resetAccountInfoCache();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  /** The #2842-refused record shape: raw intrinsic in `properties`, NO
+   * `observedProperties`. */
+  function rawIntrinsicResource(): ResourceState {
+    return {
+      physicalId: '/app/joined',
+      resourceType: PARAM_TYPE,
+      properties: {
+        Name: '/app/joined',
+        Value: { 'Fn::Join': ['', ['arn:aws:s3:::', 'bucket-from-ref']] },
+        Description: 'from-template',
+      },
+    };
+  }
+
+  it('refuses the resource and never calls provider.update', async () => {
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: rawIntrinsicResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        Value: 'the-live-resolved-value',
+        Description: 'from-template',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert Value');
+    expect(errored).toContain('unresolved CloudFormation intrinsic');
+    // The remedy must name the command that actually heals the record.
+    expect(errored).toContain("cdkd deploy");
+  });
+
+  it('exits 2 — counted unresolvable, not an AWS update failure', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: rawIntrinsicResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        Value: 'the-live-resolved-value',
+        Description: 'from-template',
+      }),
+      update: vi.fn(),
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('a NON-drifted key echoing an intrinsic-shaped value does NOT refuse the revert', async () => {
+    // The scan is scoped to the DRIFTED top-level keys — the only ones the
+    // baseline sources. A value AWS itself reports at a non-drifted key is an
+    // echo: sending it back is a no-op, so refusing on it would block a
+    // legitimate revert of the sibling.
+    const echoed = { 'Fn::Join': ['', ['already-on', '-aws']] };
+    const update = vi.fn().mockResolvedValue({ physicalId: '/app/joined' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/joined',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/joined', Value: echoed, Description: 'from-template' },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        // `Value` matches the record exactly → NOT drifted; only Description
+        // drifts.
+        Value: { 'Fn::Join': ['', ['already-on', '-aws']] },
+        Description: 'edited-in-the-console',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as Record<string, unknown>;
+    expect(sent['Description']).toBe('from-template');
+    // The echoed key rides through from the AWS side — a no-op, not a write
+    // the baseline sourced.
+    expect(sent['Value']).toEqual(echoed);
+  });
+
+  it('the mask refusal names BOTH causes and BOTH remedies (issue #2881)', async () => {
+    // Since #2852 a mask in the baseline has two causes, and the record does
+    // not say which; a message asserting the NoEcho cause prescribed a nonce
+    // bump that does nothing for the now-common uncertified-position cause.
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/token',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/token', Value: SECRET_MASK, Description: 'from-template' },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Description: 'from-template' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert');
+    // Cause 1 + its remedy, still present for the population it was written
+    // for...
+    expect(errored).toContain('NoEcho custom-resource value');
+    expect(errored).toContain('nonce');
+    // ...cause 2 + its remedy, the one the old message misattributed...
+    expect(errored).toContain('could not certify');
+    expect(errored).toContain('deploy a change to this resource');
+    // ...and no assertion of a SINGLE cause: the old parenthetical claimed the
+    // mask IS a NoEcho value.
+    expect(errored).not.toContain('(a NoEcho custom-resource value)');
+  });
+});
