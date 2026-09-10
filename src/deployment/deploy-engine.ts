@@ -6689,12 +6689,28 @@ export class DeployEngine {
     const safeStack = displaySafe(stackName, { asciiOnly: true });
     const safeLogicalId = displaySafe(logicalId, { asciiOnly: true });
 
+    // The CloudFormation comparison is stated as a DIFFERENCE, not a
+    // similarity, and that is the correction this wording carries. Both engines
+    // leave a `Retain` resource behind on a rollback and drop it from the
+    // stack — but CFn GENERATES names with a random suffix, so its next deploy
+    // asks for a NEW name and succeeds (leaving the old one orphaned but not
+    // blocking). cdkd's derivation has no random component, so its next deploy
+    // asks for the name the orphan still holds. An earlier revision said
+    // "(CloudFormation does the same)" right before the clause where it does
+    // NOT, which in a message announcing a stuck deploy reads as "this is
+    // normal, cdk deploy would stick too" — the opposite of the fact the reader
+    // needs, and false for exactly the population that hits this: a resource
+    // the template did not name. (CFn DOES stick for an explicitly-named one,
+    // which is why the sentence says "unnamed" rather than claiming CFn never
+    // collides.)
     const diagnosis =
       `${safeLogicalId}: the name AWS reports as taken (${safeId}) is one cdkd DERIVED from ` +
       `the logical id, and that derivation has no random component — so this is most likely a ` +
       `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
-      `DeletionPolicy: Retain in AWS and drops it from state (CloudFormation does the same), ` +
-      `and the next deploy then asks AWS for the name it still holds.`;
+      `DeletionPolicy: Retain in AWS and drops it from state, as CloudFormation does; what ` +
+      `differs is the name. CloudFormation would generate a fresh one for an unnamed resource ` +
+      `and redeploy clean, whereas cdkd asks again for the name the orphan still holds — so ` +
+      `re-running does not clear this.`;
     const deleteArm =
       `If it is not a resource you want to keep, delete ${safeId} in AWS — after ` +
       `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`;

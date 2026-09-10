@@ -2339,10 +2339,19 @@ cdkd deploy MyStack
 
 A resource carrying `DeletionPolicy: Retain` stays in AWS when a deploy rolls
 back, and its state record is dropped — CloudFormation does the same, and it is
-what `Retain` is for. The difference is that cdkd's generated names carry no
-random suffix, so the next `cdkd deploy` asks AWS for a name the retained
-resource still holds and fails with an already-exists error; that failure rolls
-back too, so the deploy cannot self-resolve by re-running.
+what `Retain` is for.
+
+The difference is the NAME. For a resource your template does not name,
+CloudFormation generates one with a random suffix, so its next deploy asks for
+a fresh name and succeeds — the retained resource is left orphaned but does not
+block anything. cdkd's generated names are derived from the stack and logical
+id with no random component, so the next `cdkd deploy` asks AWS for the name the
+retained resource still holds and fails with an already-exists error; that
+failure rolls back too, so the deploy cannot self-resolve by re-running.
+
+For a resource you DID name explicitly, both engines behave the same and both
+get stuck — the name is taken either way, and the recovery below applies to
+CloudFormation stacks too, via `cdk import`.
 
 cdkd names this case for you. When the colliding name is one cdkd derived, the
 failure is followed by a line saying so and giving the adoption command:
