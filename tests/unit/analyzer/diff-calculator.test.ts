@@ -1541,10 +1541,13 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
       },
     };
 
-    // A MUTATING resolver: it rewrites the Fn::Sub variable map's GetAtt in
-    // place. NOT what the real resolver does — go-to-k/cdkd#2764 retired that
-    // write-back — and injected here precisely because the clone must hold
-    // against ANY resolver. It is what keeps this case discriminating.
+    // A MUTATING resolver, and deliberately a BLUNTER one than any real
+    // resolver: every object it descends into has each key written back in
+    // place (a node carrying `Fn::GetAtt` is terminal — replaced whole, its
+    // members never walked; arrays it rebuilds). So it stands for ANY
+    // `IntrinsicResolveFn`, not for the narrow `resolveSub` write-back
+    // go-to-k/cdkd#2764 retired — that generality is the comment's own
+    // argument, and it is what keeps this case discriminating.
     const mutatingResolver = async (value: unknown): Promise<unknown> => {
       const walk = (v: unknown): unknown => {
         if (v === null || typeof v !== 'object') return v;
