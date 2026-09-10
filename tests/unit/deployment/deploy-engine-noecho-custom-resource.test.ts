@@ -512,6 +512,13 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
       // it also appears in the generic sentence that survives deleting this
       // clause, so the assertion pins wording unique to the clause itself.
       expect(refusal).toContain('stop reading it');
+      // THE ACTION ITSELF, pinned as a whole string. Four review rounds rewrote
+      // this remedy and each rewrite was wrong in a new way; the last one
+      // advised a BARE `cdkd import`, which for a Cloud-Control-imported
+      // resource drops the state row instead of healing it. Both the selective
+      // `--resource` form and `--force` are load-bearing (see the call site),
+      // so the fence pins the command rather than a phrase inside it.
+      expect(refusal).toContain("'cdkd import <stack> --resource Param=<physicalId> --force'");
       // The AWS call never happened — the refusal is BEFORE the provider.
       expect(mockProvider.update).not.toHaveBeenCalled();
     });

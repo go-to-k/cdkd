@@ -1598,16 +1598,33 @@ export class DeployEngine {
     // that gap), so the message names both rather than guessing.
     //
     // ARM (2) NAMES ONE ACTION AND DOES NOT ENUMERATE CAUSES, and that shape is
-    // the point rather than brevity. Three successive review rounds each
-    // rewrote this arm as a cause list with a remedy per cause, and each list
-    // was wrong in a NEW way — a remedy that could not apply, then a cause that
-    // cannot produce this refusal, then a remedy that was necessary but not
-    // sufficient (granting the permission changes nothing until a re-import
-    // rewrites the record). The re-import is the action for EVERY cause, and
-    // the permission is a PRECONDITION of it, not an alternative to it. Do not
-    // re-expand this into a list: the causes are not enumerable from here —
+    // the point rather than brevity. Successive review rounds each rewrote this
+    // arm as a cause list with a remedy per cause, and each list was wrong in a
+    // NEW way — a remedy that could not apply, then a cause that cannot produce
+    // this refusal, then a remedy necessary but not sufficient. Do not re-expand
+    // it into a list: the causes are not enumerable from here —
     // `getTopLevelReadOnlyProperties` answers `undefined` for any failure at
     // all — so any list written here is a claim the code cannot support.
+    //
+    // THE COMMAND IS SELECTIVE AND CARRIES `--force`, and both halves were
+    // traced through `cdkd import` rather than reasoned about. A BARE re-run is
+    // actively destructive here: `CloudControlProvider.import` is
+    // explicit-override-only, so with no `--resource` the resource resolves to
+    // `skipped-not-found`, and auto mode rebuilds the resource map from
+    // `{}` — the row is DROPPED from state and the next deploy tries to CREATE
+    // a live resource. (Auto mode refuses without `--force` at all, so the user
+    // would hit that wall first.) Selective mode merges onto the existing map,
+    // and `--force` is required because the listed id already HAS a state entry
+    // — the one holding the mask. `import.ts`'s own two refusals are the
+    // authority for both clauses. A test pins this string; three rewrites of
+    // this arm is the reason it is pinned rather than trusted.
+    //
+    // ONE CASE THE COMMAND DOES NOT HEAL, narrow but real: if the re-import's
+    // `GetResource` again yields no usable model, `import()` returns
+    // `attributes: {}`, and `buildStackState`'s same-physical-id carry-over
+    // keeps the PREVIOUS masked bag rather than replacing it — so the refusal
+    // repeats. Tracked as issue
+    // [#2927](https://github.com/go-to-k/cdkd/issues/2927).
     throw new ProvisioningError(
       `Cannot resolve ${reads.join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
         `redaction mask there, and the value is not recoverable from state. There are two ways a ` +
@@ -1624,8 +1641,9 @@ export class DeployEngine {
         `declares read-only and masks the rest. Either the attribute named above is not one of ` +
         `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
         `cdkd could not read that schema and masked the whole model, which the import warned about ` +
-        `when it happened. Re-run 'cdkd import' for this stack to rewrite its attributes; if that ` +
-        `warning named a missing cloudformation:DescribeType permission, grant it first. ` +
+        `when it happened. To rewrite this resource's attributes, re-import it by name: ` +
+        `'cdkd import <stack> --resource ${logicalId}=<physicalId> --force'. If that warning named ` +
+        `a missing cloudformation:DescribeType permission, grant it first. ` +
         `See https://github.com/go-to-k/cdkd/issues/2449.`,
       resourceType,
       logicalId
