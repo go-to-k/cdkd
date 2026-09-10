@@ -2767,11 +2767,20 @@ export class CloudControlProvider implements ResourceProvider {
    * SDK providers (S3, Lambda, IAM Role, etc.) implement their own
    * `import` with tag-based auto-lookup; this fallback only kicks in for
    * resource types that don't have a dedicated SDK provider.
-   */
-  /**
-   * Replace the value of every model key cdkd cannot certify is an ATTRIBUTE
-   * with {@link SECRET_MASK}, leaving the certified attributes untouched
+   *
+   * ---
+   *
+   * The rest of this block is the design of the attribute narrowing
+   * {@link maskUncertifiedModelValues} performs — every LEAF of a model key
+   * cdkd cannot certify is an ATTRIBUTE is replaced with {@link SECRET_MASK},
+   * container shape preserved, and the certified attributes are left untouched
    * (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
+   *
+   * It lives HERE, on `import()`, rather than in a second block above the
+   * method: two consecutive block comments attach only the LAST one, so the
+   * round-1 fix that moved the method below `import()` left `import()`'s own
+   * doc orphaned and put THIS text on it — still opening with the whole-value
+   * wording the same commit had refuted. Merged rather than re-split.
    *
    * ## What is being fixed
    *
@@ -2808,6 +2817,14 @@ export class CloudControlProvider implements ResourceProvider {
    * wrong value — which is the trade this repo already made for the mask-only
    * channel (issue #2274), reusing its machinery rather than inventing a second
    * sentinel nothing downstream recognises.
+   *
+   * ONE SHAPE ESCAPES THAT, and it is stated rather than left to be discovered:
+   * an uncertified EMPTY container (`{}` / `[]`) has no leaf to mask, so the
+   * masked bag holds no `SECRET_MASK` anywhere under that key, `carriesSecretMask`
+   * answers false, and a dotted read through it dead-ends into the
+   * `constructAttribute` fallback with no refusal. It is not a DISCLOSURE — the
+   * container was empty at AWS, so there was nothing to disclose — but the
+   * refusal genuinely does not fire there.
    *
    * ## The unresolvable-schema arm is FAIL-CLOSED
    *
@@ -2872,6 +2889,17 @@ export class CloudControlProvider implements ResourceProvider {
           const parsed = JSON.parse(raw) as unknown;
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
             parsedModel = parsed as Record<string, unknown>;
+          } else {
+            // A model that PARSED but is not an object (an array, a primitive,
+            // `null`) took the same silent path as a parse failure and logged
+            // NOTHING — the narrowed `try` walks straight past it. Same
+            // outcome, so it gets the same diagnosable line; the SHAPE is safe
+            // to name, unlike the value.
+            this.logger.debug(
+              `CC API ResourceModel for ${input.resourceType}/${input.knownPhysicalId} parsed to ` +
+                `${Array.isArray(parsed) ? 'an array' : typeof parsed}, not an object — recording ` +
+                `no attributes for it.`
+            );
           }
         } catch (parseErr) {
           // NAME ONLY, never the message: V8 embeds an input snippet in a
@@ -2991,8 +3019,14 @@ export class CloudControlProvider implements ResourceProvider {
  * `CloudControlProvider.maskUncertifiedModelValues` for why the shape must
  * survive.
  *
- * Depth is bounded by the parsed model's own nesting — a `JSON.parse` result is
- * acyclic by construction, so no visited-set is needed.
+ * A `JSON.parse` result is acyclic by construction, so no visited-set is
+ * needed — that answers CYCLES and nothing else. It is NOT a depth guarantee:
+ * measured on this repo's node, `JSON.parse` survives ~100,000 nesting levels
+ * while this recursion throws `RangeError` between 1,000 and 5,000. No Cloud
+ * Control resource model comes close, and the `try` in `import()` is narrowed
+ * to the parse, so such a `RangeError` would fail the import loudly rather than
+ * degrade it silently — which is the direction this design wants. Recorded so
+ * the acyclic sentence is not read as covering depth.
  */
 function maskLeavesDeep(value: unknown): unknown {
   if (Array.isArray(value)) {

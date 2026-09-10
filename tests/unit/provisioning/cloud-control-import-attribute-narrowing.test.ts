@@ -25,6 +25,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const mockCloudControlSend = vi.fn();
 const mockCloudFormationSend = vi.fn();
 const mockWarn = vi.fn();
+const mockDebug = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -41,7 +42,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => {
     const child = {
-      debug: vi.fn(),
+      debug: mockDebug,
       info: vi.fn(),
       warn: mockWarn,
       error: vi.fn(),
@@ -49,7 +50,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     };
     return {
       child: () => child,
-      debug: vi.fn(),
+      debug: mockDebug,
       info: vi.fn(),
       warn: mockWarn,
       error: vi.fn(),
@@ -206,6 +207,78 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     // Array length and element positions survive too.
     expect(Array.isArray(result?.attributes?.['Hosts'])).toBe(true);
     expect((result?.attributes?.['Hosts'] as unknown[]).length).toBe(2);
+  });
+
+  it('masks null / nested arrays / deep nesting, and leaves an EMPTY container empty', async () => {
+    // The leaf-walk's own branches, none of which the container case reaches.
+    // The empty-container row is a KNOWN gap rather than a desired outcome:
+    // there is no leaf to mask, so no `***` lands under that key and the
+    // refusal cannot fire for a dotted read through it. Pinned so the method's
+    // doc claim about it stays honest.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({ readOnlyProperties: ['/properties/Id'] }),
+    });
+    wireGetResource({
+      Id: 'chan-1',
+      Nulled: null,
+      EmptyObj: {},
+      EmptyArr: [],
+      Matrix: [
+        ['a', 'b'],
+        ['c', 'd'],
+      ],
+      Deep: { a: { b: { c: 'zz-lane2847-deep' } } },
+    });
+
+    const result = await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+
+    expect(result?.attributes).toEqual({
+      Id: 'chan-1',
+      Nulled: SECRET_MASK,
+      EmptyObj: {},
+      EmptyArr: [],
+      Matrix: [
+        [SECRET_MASK, SECRET_MASK],
+        [SECRET_MASK, SECRET_MASK],
+      ],
+      Deep: { a: { b: { c: SECRET_MASK } } },
+    });
+    expect(JSON.stringify(result)).not.toContain('zz-lane2847-deep');
+  });
+
+  it('records no attributes, with a diagnosable line, when the model parses to a non-object', async () => {
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({ readOnlyProperties: ['/properties/Id'] }),
+    });
+    mockCloudControlSend.mockImplementation(() =>
+      Promise.resolve({
+        ResourceDescription: { Identifier: 'chan-1', Properties: '["not","an","object"]' },
+      })
+    );
+
+    const result = await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+
+    // The physical id still registers the resource; the point is that this
+    // path no longer passes SILENTLY, which it did until the `try` narrowing
+    // walked past it.
+    expect(result?.physicalId).toBe('chan-1');
+    expect(result?.attributes).toEqual({});
+    const debugged = mockDebug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(debugged).toContain('parsed to an array');
   });
 
   it('keeps a model key literally named __proto__ as an OWN property rather than dropping it', async () => {

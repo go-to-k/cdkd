@@ -496,6 +496,18 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
         'NoEcho: true'
       );
       expect(String((failure as Error & { cause?: Error }).cause?.message)).toContain('2449');
+      // TWO populations reach this refusal since issue #2847 — a NoEcho custom
+      // resource and a Cloud-Control-IMPORTED record — and the message must
+      // name both, because the record carries no marker saying which one a
+      // mask came from (#2449). Naming only the first handed the imported user
+      // three remedies that cannot apply. Both halves of the import arm are
+      // pinned: the certified-narrowing case (the attribute simply is not an
+      // attribute) and the unresolvable-schema case (grant the permission),
+      // since a message naming only the second is inert for the first.
+      const refusal = String((failure as Error & { cause?: Error }).cause?.message);
+      expect(refusal).toContain('cdkd import');
+      expect(refusal).toContain('cloudformation:DescribeType');
+      expect(refusal).toContain('read-only');
       // The AWS call never happened — the refusal is BEFORE the provider.
       expect(mockProvider.update).not.toHaveBeenCalled();
     });

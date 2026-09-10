@@ -1608,9 +1608,12 @@ export class DeployEngine {
         `in ONE run (cdkd deploy --all) with the producer's custom resource actually running — ` +
         `re-deploying the producer by itself does not help, because it re-masks the value on the ` +
         `way into its own state. (2) The resource was adopted by 'cdkd import' through the Cloud ` +
-        `Control fallback, and cdkd could not read the type's CloudFormation schema, so it could ` +
-        `not tell which model keys are Fn::GetAtt attributes and masked all of them. Remedy: ` +
-        `grant cloudformation:DescribeType and re-run 'cdkd import' for this stack. ` +
+        `Control fallback, which records only the attributes the type's CloudFormation schema ` +
+        `declares read-only and masks the rest. Either the attribute named above is not one of ` +
+        `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
+        `cdkd could not read that schema at all and masked the whole model, in which case grant ` +
+        `cloudformation:DescribeType and re-run 'cdkd import' for this stack. The import warned ` +
+        `about the second case when it happened. ` +
         `See https://github.com/go-to-k/cdkd/issues/2449.`,
       resourceType,
       logicalId
