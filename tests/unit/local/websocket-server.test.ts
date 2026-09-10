@@ -808,6 +808,11 @@ describe('graceful shutdown bounded drain (M3)', () => {
   // awaits this handler.
   const HUNG_DISCONNECT_MS = 15_000;
   const CASE_TIMEOUT_MS = 25_000;
+  // How long the `1/2` case waits for `close()` before reporting that the
+  // drain never gave up. Above the 5s ceiling by the same margin
+  // `HUNG_DISCONNECT_MS` carries, and below `CASE_TIMEOUT_MS` so the
+  // assertion reports rather than the runner.
+  const CEILING_REPORT_MS = 15_000;
 
   beforeEach(() => {
     rieModule.__resetQueue();
@@ -948,15 +953,301 @@ describe('graceful shutdown bounded drain (M3)', () => {
       // a warn reporting the wrong number of leaked handlers satisfied every
       // other line here. What it pins is the MAGNITUDE and not the two
       // POSITIONS: one connection makes numerator and denominator both 1, so
-      // swapping them in the message would still pass. Separating them needs
-      // a second connection whose `$disconnect` settles after the
-      // socket-close loop but before the drain snapshots its count -- and
-      // the width of that window is the load-dependent quantity this case is
-      // being rewritten to stop depending on. Left as the magnitude check
-      // deliberately; the stronger fixture is filed instead.
+      // swapping them in the message would still pass. Separating them takes
+      // a second connection that is pending AT the snapshot and settles
+      // AFTER it -- settling before the snapshot leaves both counts at 1
+      // again -- and the release therefore has to be ordered against the
+      // snapshot rather than timed near it, which is what this case had no
+      // mechanism for. The magnitude check stays here; the `1/2` case below
+      // (issue go-to-k/cdkd#2904) carries the positions, on an
+      // `allSettled` signal that cannot land early.
       expect(drainWarns[0]![0]).toContain('1/1 $disconnect handlers');
       expect(drainWarns[0]![0]).toContain('still in flight');
     } finally {
+      warnSpy.mockRestore();
+      rieModule.invokeRie.mockReset();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections?.();
+      });
+    }
+  }, CASE_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------
+  // The two gaps issue go-to-k/cdkd#2904 filed against the case above, and
+  // the fixture both of them needed: a `$disconnect` that is RELEASED ON A
+  // SIGNAL rather than after a sleep.
+  //
+  // The signal is `Promise.allSettled`. It is called exactly once in
+  // `websocket-server.ts`, inside the drain and one line AFTER
+  // `drainStartCount` is snapshotted (`Promise.all(closes)` above it is a
+  // different method), so a spy on it says "the drain has started, and the
+  // count it will report has already been taken". Ordering, not timing: the
+  // release below can never land before the snapshot, which is what a sleep
+  // could not promise. The case above rejects a `setTimeout` spy for the
+  // same job because the socket-close loop schedules a 5s timer of its own
+  // and the two are not separable by value; `allSettled` has no such twin.
+  //
+  // It doubles as the vacuity guard the issue's plan asks for: if a case
+  // never registered a `$disconnect`, `close()` takes the `size > 0` early
+  // skip and the spy never fires. Both cases therefore RACE the signal
+  // against `close()` returning and assert which won, so that path reports
+  // itself in milliseconds by name -- a bare await would hang on a promise
+  // that never settles and be killed at `CASE_TIMEOUT_MS` naming nothing.
+  const gatedDisconnect = (): { opened: Promise<void>; release: () => void } => {
+    let release!: () => void;
+    const opened = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { opened, release };
+  };
+
+  /**
+   * Spy on the drain's own `allSettled`, returning both the promise that
+   * settles when the drain starts and the recorded argument — the array the
+   * count is taken from, which `gap 1` asserts on directly.
+   */
+  const watchDrainStart = (): {
+    started: Promise<unknown[]>;
+    restore: () => void;
+    calls: () => number;
+  } => {
+    const real = Promise.allSettled.bind(Promise);
+    let seen = 0;
+    let resolveStarted!: (items: unknown[]) => void;
+    const started = new Promise<unknown[]>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const spy = vi
+      .spyOn(Promise, 'allSettled')
+      .mockImplementation(((items: Iterable<unknown>) => {
+        const arr = Array.from(items);
+        seen += 1;
+        resolveStarted(arr);
+        return real(arr as never);
+      }) as typeof Promise.allSettled);
+    return { started, restore: () => spy.mockRestore(), calls: () => seen };
+  };
+
+  /**
+   * Whether the drain's CEILING actually fired, observed rather than timed.
+   * Wraps every `setTimeout` armed at `SHUTDOWN_DRAIN_MS` and counts the
+   * callbacks that RUN, so "close() returned through completion" becomes an
+   * ORDERING fact — the ceiling had not fired yet — instead of an elapsed
+   * measurement. An elapsed bound cannot do this job: the production timer is
+   * armed several microtasks BEFORE any clock the test can read, so a stall in
+   * between spends the ceiling without the test seeing it, and the
+   * completion-arm mutant passes an elapsed bound (measured by review).
+   *
+   * The socket-close loop above arms 5s timers too, and production never
+   * clears them — they fire ~5s after arming whether or not their socket
+   * closed, so this counter cannot tell them from the ceiling. What makes the
+   * count meaningful is WHEN it is read: at the moment `close()` returns. On
+   * the completion path that is milliseconds in, before any 5s timer has run,
+   * so the count is 0; on the mutant path the ceiling IS one of those
+   * callbacks and `close()` cannot return until it has run, so the count is
+   * non-zero (measured: 2, the ceiling plus the socket-close timer armed
+   * beside it). The residual is a case stalled past 5s before `close()`
+   * returns, where a socket timer would be counted — a false RED, never a
+   * pass.
+   */
+  const watchCeilingFire = (): { fired: () => number; restore: () => void } => {
+    const real = globalThis.setTimeout;
+    let fired = 0;
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: (...args: unknown[]) => void,
+      ms?: number,
+      ...rest: unknown[]
+    ) => {
+      const wrapped =
+        ms === 5_000
+          ? (...args: unknown[]): void => {
+              fired += 1;
+              fn(...args);
+            }
+          : fn;
+      return (real as unknown as (...a: unknown[]) => ReturnType<typeof setTimeout>)(
+        wrapped,
+        ms,
+        ...rest
+      );
+    }) as unknown as typeof globalThis.setTimeout);
+    return { fired: () => fired, restore: () => spy.mockRestore() };
+  };
+
+  it('returns through the drain COMPLETION arm when the $disconnect settles', async () => {
+    rieModule.__resetQueue();
+    const gate = gatedDisconnect();
+    let disconnectSettled = false;
+    rieModule.invokeRie.mockImplementation(async (_id: string, _meta: unknown, event: any) => {
+      const routeKey = event?.requestContext?.routeKey;
+      if (routeKey === '$connect') return { payload: { statusCode: 200 }, raw: '{}' };
+      await gate.opened;
+      disconnectSettled = true;
+      return { payload: {}, raw: '{}' };
+    });
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$disconnect', lambda: 'DisconnectFn' },
+    ]);
+    const server = createServer((_req, res) => {
+      res.statusCode = 404;
+      res.end();
+    });
+    const attached = attachWebSocketServer({
+      httpServer: server,
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+      rieTimeoutMs: 60_000,
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn');
+    const drain = watchDrainStart();
+    const ceiling = watchCeilingFire();
+    try {
+      const ws = await openWebSocket(port, '/prod');
+      await waitFor(() => attached.registry.size() === 1, 1000);
+      ws.close();
+      // NOT awaited: the drain has to be running for the release below to
+      // mean anything, and `close()` is what runs it.
+      const closing = attached.close();
+      // Raced against `close()` RETURNING, not awaited bare: if the drain is
+      // skipped — the `size > 0` early exit, which a case that registered no
+      // `$disconnect` takes — `drain.started` never settles and a bare await
+      // hangs until the runner kills the case at `CASE_TIMEOUT_MS` with a
+      // deadline message that names nothing. Racing makes that path report
+      // itself, in milliseconds, in this assertion (measured: the mutant
+      // `if (false)` reds here rather than timing out).
+      const reached = await Promise.race([
+        drain.started.then(() => 'drain' as const),
+        closing.then(() => 'closed' as const),
+      ]);
+      expect(reached, 'close() returned without entering the drain').toBe('drain');
+      gate.release();
+      await closing;
+
+      expect(drain.calls(), 'close() reached the drain rather than skipping it').toBe(1);
+      expect(disconnectSettled, 'the $disconnect ran to completion').toBe(true);
+      // THE discriminator, and an ORDERING one. Dropping
+      // `drainComplete.then(...)` from the race leaves only the ceiling, so
+      // `close()` can return no earlier than that timer's callback — and it
+      // returns SILENTLY, since the warn also needs handlers still in flight
+      // and this one finished. "No warn" alone therefore cannot kill that
+      // mutant, which is why this line exists.
+      //
+      // Deliberately NOT an elapsed bound. The ceiling is armed inside
+      // `close()` several microtasks before any clock this case can read, so
+      // a pause in between spends part of it uncounted and the mutant slips
+      // under a `< 5000` comparison (measured during review: a 4.5s pause let
+      // an await-the-ceiling-only path report 501ms). Counting the fired
+      // callback asks the question directly instead.
+      expect(ceiling.fired(), 'close() returned before the drain ceiling fired').toBe(0);
+      const drainWarns = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('graceful shutdown drained for')
+      );
+      expect(drainWarns).toHaveLength(0);
+    } finally {
+      ceiling.restore();
+      drain.restore();
+      warnSpy.mockRestore();
+      rieModule.invokeRie.mockReset();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections?.();
+      });
+    }
+  }, CASE_TIMEOUT_MS);
+
+  it('names the leaked count and the snapshot SEPARATELY: 1 of 2 still in flight', async () => {
+    rieModule.__resetQueue();
+    // Two connections, both pending when the count is snapshotted; one is
+    // released after the snapshot and one is never released, so numerator
+    // and denominator differ and the message's two positions are separable.
+    // The releasable one is chosen by ORDER of dispatch, which is all the
+    // handler can see.
+    const gates = [gatedDisconnect(), gatedDisconnect()];
+    let dispatched = 0;
+    rieModule.invokeRie.mockImplementation(async (_id: string, _meta: unknown, event: any) => {
+      const routeKey = event?.requestContext?.routeKey;
+      if (routeKey === '$connect') return { payload: { statusCode: 200 }, raw: '{}' };
+      const gate = gates[dispatched] ?? gates[gates.length - 1]!;
+      dispatched += 1;
+      await gate.opened;
+      return { payload: {}, raw: '{}' };
+    });
+
+    const pool = buildFakePool();
+    const api = buildApi([
+      { routeKey: '$connect', lambda: 'ConnectFn' },
+      { routeKey: '$disconnect', lambda: 'DisconnectFn' },
+    ]);
+    const server = createServer((_req, res) => {
+      res.statusCode = 404;
+      res.end();
+    });
+    const attached = attachWebSocketServer({
+      httpServer: server,
+      apis: [{ api, apiPath: '/prod' }],
+      pool,
+      rieTimeoutMs: 60_000,
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn');
+    const drain = watchDrainStart();
+    try {
+      const first = await openWebSocket(port, '/prod');
+      const second = await openWebSocket(port, '/prod');
+      await waitFor(() => attached.registry.size() === 2, 1000);
+      first.close();
+      second.close();
+      const closing = attached.close();
+      // Raced against `close()` returning for the reason the case above
+      // spells out: a skipped drain never settles `drain.started`, and a
+      // bare await would hand that to the runner as a deadline instead of an
+      // assertion.
+      const reached = await Promise.race([
+        drain.started.then((items) => ({ kind: 'drain' as const, items })),
+        closing.then(() => ({ kind: 'closed' as const, items: [] as unknown[] })),
+      ]);
+      expect(reached.kind, 'close() returned without entering the drain').toBe('drain');
+      // The count's INPUT, asserted before the message that reports it: two
+      // handlers were in flight at the snapshot. Without this the `1/2`
+      // below could be reached by a one-connection race that happened to
+      // register twice.
+      expect(reached.items).toHaveLength(2);
+      // Released AFTER the snapshot, which is the ordering `allSettled`
+      // buys: one settles inside the window, the other never does.
+      gates[0]!.release();
+      // Bounded for the same reason the case above races: the second handler
+      // is never released, so a drain that LOST its ceiling waits on it
+      // forever and `await closing` would be killed by the runner instead of
+      // reporting. The correct path returns at the 5s ceiling, so this bound
+      // carries 10s of margin, and a stall long enough to overrun it fails
+      // RED rather than passing something broken. `CASE_TIMEOUT_MS` stays
+      // above it so this assertion is always the one that speaks.
+      const returned = await Promise.race([
+        closing.then(() => 'closed' as const),
+        new Promise<'hung'>((resolve) =>
+          setTimeout(() => resolve('hung'), CEILING_REPORT_MS).unref?.()
+        ),
+      ]);
+      expect(returned, 'close() never returned — the drain waited past its ceiling').toBe('closed');
+
+      expect(drain.calls(), 'close() reached the drain rather than skipping it').toBe(1);
+      const drainWarns = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('graceful shutdown drained for')
+      );
+      expect(drainWarns).toHaveLength(1);
+      // Both POSITIONS, which one connection cannot separate: swapping the
+      // two interpolations gives `2/1` here and hard-coding `1/1` gives
+      // `1/1`, where the case above passes under either.
+      expect(drainWarns[0]![0]).toContain('1/2 $disconnect handlers');
+    } finally {
+      drain.restore();
       warnSpy.mockRestore();
       rieModule.invokeRie.mockReset();
       await new Promise<void>((resolve) => {
