@@ -121,7 +121,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // go-to-k/cdkd#2417 until 2026-09-02, while SKILL.md had been 11,548 B
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
-    orchestratorBytes: 11_752,
+    orchestratorBytes: 11_952,
     // MEASURED on the MERGED tree, never derived. This record has now collided
     // on a rebase twice: go-to-k/cdkd#2717 SHRANK the corpus (retiring nine
     // gates let four work-issues stage files drop text about restrictions that

@@ -292,14 +292,15 @@ Run each check and report pass/fail:
       step. `pr-content-checks.yml` also WARNS on it (go-to-k/cdkd#2736), but a
       warning reds nothing, so this step is still the one that acts.)
 
-11. **PR title + body freshness** (skip if no PR exists yet — `/create-pr`
+12. **PR title + body freshness** (skip if no PR exists yet — `/create-pr`
     writes them from scratch)
     - Follow-up commits routinely stale both. **Title**: confirm it describes
       the union of commits; update via
       `gh pr edit --title "..."`, or the equivalent
       `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."`.
       (`gh pr edit` used to fail SILENTLY on a Projects-classic GraphQL
-      deprecation, and a gate blocked it. MEASURED 2026-09-07 on gh 2.92.0 against a live PR: `gh pr edit --body` exited 0 AND the body was actually replaced. The Projects-classic GraphQL deprecation that made it fail silently is FIXED upstream, so
+      deprecation and a gate blocked it; that is FIXED upstream — measured
+      2026-09-07 on gh 2.92.0, `--body` exited 0 and the body was replaced — so
       both spellings work and the gate is gone.)
     - **Body**: if the PR has >1 commit, the initial body is almost certainly
       stale. Compare `gh pr view <PR> --json body -q .body` against the final
@@ -348,14 +349,16 @@ Present results as a table:
 
 If all pass, confirm "PR is ready to merge." If any fail, list the issues.
 
-Then add the **State** line CLAUDE.md's wrap-report rule requires — this
-report is the commonest place it is needed, because "ready to merge" is
-almost never the end of the turn:
+**Read `.claude/rules/session-report.md` first** — its `paths:` glob matches
+only `CLAUDE.md`, which the harness injects rather than reads, so it never
+auto-loads in an ordinary session.
+
+Then add the **State** line CLAUDE.md's wrap-report rule requires — "ready
+to merge" is rarely the end of the turn:
 
 - A check merely *pending* (CI running, an integ in flight, a reviewer not
-  back) is **WAITING**, not a failure and not a stop — say what you are
-  waiting on, the signal that re-invokes you, and that you will merge on
-  green. Do not hand over "ready to merge" and go quiet.
+  back) is **WAITING** — say what you wait on, the signal that re-invokes
+  you, and that you will merge on green. Never go quiet on "ready to merge".
 - A check that legitimately **cannot** pass (no AWS credentials, a
   maintainer-only decision) is not WAITING — no signal is coming. Resolve
   it, or ask through `AskUserQuestion`; never end the turn with the question
@@ -366,9 +369,8 @@ almost never the end of the turn:
 ## Final Step
 
 After all checks pass, record THREE markers via
-[markgate](https://github.com/go-to-k/markgate) — `/verify-pr` is a superset
-of `/check` and `/check-docs`, so its success implies all three. Use
-`mise exec` (cdkd pins markgate via mise):
+[markgate](https://github.com/go-to-k/markgate) — `/verify-pr` supersets
+`/check` and `/check-docs`. Use `mise exec` (cdkd pins markgate via mise):
 
 ```bash
 # 1. Children FIRST: `check-gate` blocks the commit below unless both are

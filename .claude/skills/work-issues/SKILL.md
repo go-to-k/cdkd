@@ -147,7 +147,10 @@ the user wants to watch); the stage files apply unchanged either way.
 - **English only in every published artifact** — issue bodies/comments, PR
   titles/bodies, commits, code. (CLAUDE.md)
 - **The run ends with the retro (stage 10) and the standard wrap report**
-  (Remaining work / State / Session close), unprompted.
+  (Remaining work / State / Session close), unprompted. Read
+  `.claude/rules/session-report.md` for the fields — its `paths:` glob matches
+  only `CLAUDE.md`, which the harness injects rather than reads, so it never
+  auto-loads in an ordinary session.
 
 ## Where lessons land (keeps this file thin)
 
