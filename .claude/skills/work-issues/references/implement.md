@@ -16,10 +16,9 @@ Never edit in the main checkout (`main-tree-branch-gate` blocks branching
 there). Per lane:
 
 ```bash
-# MAIN-CHECKOUT only; CLAUDE.md holds this recipe and why IN-PLACE (in a
-# linked worktree) creates NO worktree. IN-PLACE skips these two and branches
-# by the unconditional recipe below. (Mode probe: references/launch-mode.md,
-# its only copy.)
+# MAIN-CHECKOUT only (CLAUDE.md holds it, and why IN-PLACE creates NO
+# worktree; mode probe: references/launch-mode.md, its only copy).
+# IN-PLACE skips these two and branches by the recipe below.
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
@@ -28,10 +27,10 @@ vp run build                 # ...and no dist/ — see below
 ```
 
 **IN-PLACE: confirm the tree is YOURS before adopting it** — a stray `cd` into
-a peer's live lane looks exactly like a workspace handed to you. Read every
-probe below under §9's rule that every ownership signal establishes LIFE and
-never absence: any one saying "someone is here" means STOP and report — never
-nest a worktree inside a peer's lane to get out of it.
+a peer's live lane looks like a workspace handed to you. Under §9's rule that
+an ownership signal establishes LIFE and never absence, any probe below saying
+"someone is here" means STOP and report — never nest a worktree in a peer's
+lane to get out of it.
 
 ```bash
 # The FIRST line is the anchor: every probe under it describes THIS shell's
@@ -49,18 +48,16 @@ is the only signal the probes above cannot see.
 
 The rule is SYMMETRIC: **the orchestrator does not edit a live lane's tree
 either.** An uncommitted parent edit there is wiped without a trace by the
-lane's next amend + force-push — the lane never sees it and no conflict is
-reported (measured 2026-09-05: a parent-side `.claude/rules` trim vanished
-into go-to-k/cdkd#2620's fix round, and both parties were trimming the same
-cumulative budget). Hand the edit to the lane as an instruction and let the
-lane own the write.
+lane's next amend + force-push — no conflict is reported (2026-09-05: a
+parent-side `.claude/rules` trim vanished into go-to-k/cdkd#2620's fix round,
+both parties trimming the same cumulative budget). Hand the edit to the lane as
+an instruction; the lane owns the write.
 
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The
 branch this tree arrived on is `LAUNCH_BRANCH`: the OUTER TOOL's, not this
 run's, and §9 puts it back untouched at the end (`references/launch-mode.md`
 carries the rule and why committing onto it would DELETE the outer tool's
-branch). The ALWAYS is deliberate: the rule was conditional until
-go-to-k/cdkd#2417 and the condition was wrong in the common case.
+branch, and why the ALWAYS is unconditional — go-to-k/cdkd#2417).
 
 ```bash
 git status --porcelain   # must be empty FIRST -- `git switch` carries
@@ -105,23 +102,20 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   ```
 
   go-to-k/cdk-local (2026-08-27): the remedy-shaped grep saw 5 of 12 eligible
-  sites. This repo's defects are often missing entries (an absent
-  `handledProperties` row, a provider with no validation arm) — invisible to a
-  grep for what they lack.
-- **A count from the instance you happened to hit is not a count** — one run
-  sized a residue "one site, ~30 min"; the class was seven. `Effort` /
-  `Estimate` are what a future session budgets from.
-- **A FIX ROUND owes the same sweep, and that is where it gets skipped**: the
-  fix lands on one call site while a sibling keeps the defect, usually shipping
-  a comment claiming completeness. Measured on two lanes in one day: the 2-arg
+  sites — this repo's defects are often MISSING entries (an absent
+  `handledProperties` row), invisible to a grep for what they lack.
+- **A FIX ROUND owes the same sweep, and a sibling takes the same REMEDY only
+  when it takes the same PREMISE — for a REFUSAL, what refusing COSTS there.**
+  The sweep half is what gets skipped: the fix lands on one call site while a
+  sibling keeps the defect, usually shipping a comment claiming completeness.
+  Measured on two lanes in one day: the 2-arg
   `Fn::Sub` check missing the bare-string arm one line over; a redaction fixing
   update/delete but not create; one enumeration fixed while a second in the
   same file — and a third on the same LINE — kept the defect. All found by
-  enumerating readers with grep, none by re-reading the diff. **So does a SWEEP, over its OWN
-  output** — re-run the predicate on the
-  diff the sweep produced (go-to-k/cdkd#2662: three of a run's ten
-  false-guarantee comments were added or left by a sweep meant to end that
-  class). After writing a fix:
+  enumerating readers with grep, none by re-reading the diff. **So does a
+  SWEEP, over its OWN output** — re-run the predicate on the diff the sweep
+  produced (go-to-k/cdkd#2662: three of a run's ten false-guarantee comments
+  were added or left by a sweep meant to end that class). After writing a fix:
 
   ```bash
   # Derive the population from the CODE, not the files your diff touched.
@@ -129,7 +123,16 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   ```
 
   Cheap tell: a diff touching ONE site whose message says "every", "all",
-  "never" or "only" — derive the population or drop the quantifier.
+  "never" or "only" — derive the population or drop the quantifier. The PREMISE
+  half is worse because it looks done: enumerate the DESTINATIONS a refusal
+  reaches before round one and key on the destination, never on the EVIDENCE
+  (an empty map — the near-miss that survived two rounds). It kept returning
+  as a blocker across go-to-k/cdkd#2882 / go-to-k/cdkd#2912 in two residual
+  flavours: a mask written where refusing is a REGRESSION (`export` blocks the
+  record), and a pairing floor whose refusal WRITES a token over a live value
+  in the arm that borrowed it while safely DROPPING THE RESOURCE in the arm it
+  came from (`drift.ts`'s `acceptForcedSingleton` doc states it at the site
+  that paid).
 - **Grep for the SHAPE, not a NAME — then close the set from the READERS,
   because a literal shape is defeatable too.** A name finds only the copies you
   knew about (go-to-k/cdkd#2176: `maskDeep` found four and shipped "four";
@@ -139,7 +142,10 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   structural line every copy must share, confirm by name second, take the COUNT
   from an enumeration of the readers.
 - **Count the population BEFORE you fix, assert it afterwards** — the post-fix
-  tree cannot show a copy the sweep never saw. A fix REMOVING a behaviour owes
+  tree cannot show a copy the sweep never saw, and a count taken from the
+  instance you happened to hit is what a future session's `Effort` /
+  `Estimate` is wrong by (one run sized a residue at one site; the class was
+  seven). A fix REMOVING a behaviour owes
   a SECOND population: the assertions that it happens, which do not go red when
   it stops (`references/verify.md` §8-d).
 - **A sweep's number is unearned until you paste the command that produced
@@ -147,9 +153,9 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   13 files"; the reviewer's grep returned 47. A count RELAYED from a subagent
   is the same failure without a command (FOUR published in one run, all wrong),
   and AGREEING with one is not corroboration: on go-to-k/cdkd#2719 a subagent
-  and I both published "five sites" where `grep -c` said seven. The tell is grammatical — a number
-  arriving as a WORD was counted by an agent, as OUTPUT by a machine. Give it
-  one of `references/verify.md` §8-g's three dispositions before shipping.
+  and I both said "five sites" where `grep -c` said seven. The tell is
+  grammatical — a number arriving as a WORD was counted by an agent, as OUTPUT
+  by a machine. Give each one of `references/verify.md` §8-g's dispositions.
 - **Grep the SYMPTOM before deriving a fix** — the same QUESTION may already
   be answered (a lane spent a real-AWS round trip rediscovering the SDK
   region-redirect mechanism sitting verbatim in `src/utils/aws-region-resolver.ts`).
@@ -157,14 +163,13 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   comment CITING it; the dangerous ones are deliberate NON-assertions carrying
   neither shape nor symptom
   (`git grep -n "<issue number>" -- src tests docs .claude`). Measured on
-  go-to-k/cdkd#2466 closing go-to-k/cdkd#2421: four live citations, including
-  a "deliberately NOT asserted" bullet in a fixture that already synthesized —
-  adding the assertion cost nothing and found a SECOND failure mode. Such a
-  non-assertion is usually the cheapest high-value test in the change.
+  go-to-k/cdkd#2466 closing go-to-k/cdkd#2421: four live citations, one a
+  "deliberately NOT asserted" bullet in a fixture that already synthesized —
+  adding the assertion cost nothing and found a SECOND failure mode, usually
+  the cheapest high-value test in the change.
 
-**A defect the sweep turns up that this lane is NOT fixing gets FILED —
-`references/filing.md` (§5-f)**: N sites of one root cause is ONE issue, the
-dup-check window, the `Severity` / `Effort` labels.
+**A defect the sweep turns up that this lane is NOT fixing gets FILED** —
+`references/filing.md` (§5-f) owns those rules.
 
 ### 5-c. The fix itself
 
@@ -179,55 +184,51 @@ suites run by `run-tests.sh`, not visible from `tests/unit/**`.
   every suite resolves the hook under test from its own script path, so a
   copy fails everything with exit 127. For a before/after comparison, write
   the old copy beside the real one as `.claude/hooks/_old-<name>.test.sh` and
-  delete it after. §8's scratch-copy idiom is right for a data file, wrong
-  for a runnable harness, and wrong for a WORKTREE in a way that WRITES to
-  the live tree (§8 carries the mechanism).
+  delete it after. §8's scratch-copy idiom is right for a data file, wrong for
+  a runnable harness and wrong for a WORKTREE (§8 carries both mechanisms).
 - **When the issue reports a stale ENTRY in an enumerated list, audit the
   whole list in BOTH directions** — every entry still resolves AND everything
   that belongs is present; the second half is the one skipped
-  (go-to-k/cdkd#1972: the issue named one dead path; the audit found a second
-  plus four live surfaces never added). Then make the recurrence mechanical:
-  a list that must stay in sync with the repo is a test, not a sentence.
+  (go-to-k/cdkd#1972: the issue named one dead path, the audit found a second
+  plus four live surfaces never added). A list that must stay in sync with the
+  repo is a test, not a sentence.
 - **Adding a HANDLER to a slot that already has one REPLACES it.** Bash
   `trap` does not chain: a second `trap ... EXIT` silently disarms the first,
   which in an integ fixture is the AWS teardown (a reviewer-nit fix would
   have traded a leaked temp file for live AWS resources on every failure
-  path). Put the work inside the EXISTING handler or re-install one that
-  CALLS the original. Fenced by
-  `tests/unit/scripts/integ-single-exit-trap.test.ts`. Generalize: before
-  adding to any single-slot registration, count what is already there.
+  path). Put the work inside the EXISTING handler or re-install one that CALLS
+  the original (fenced by `tests/unit/scripts/integ-single-exit-trap.test.ts`);
+  before adding to ANY single-slot registration, count what is there.
 
 ### 5-d. Measurement audits
 
 **When the audit is a MEASUREMENT, the shape of the sample is the finding — a
 clean result from the wrong shape is indistinguishable from a clean subject.**
-Auditing go-to-k/cdkd#2096 produced SIX confident wrong answers, each from a
+go-to-k/cdkd#2096's audit produced SIX confident wrong answers, each from a
 plausible sampling shape, each hiding a real secret: newest-N (the newest
-versions come from the run most likely already fixed — sample across the
-range); one global needle (each fixture spells its own literal — derive the
-needle per subject or assert a needle-independent observable); a name derived
-from convention (read the identifier from the subject's own `STACK=` line); a
-silent parse failure inside a pipe (a parse that can fail must report
-failing, not fall through to a count); a per-page aggregate (`--query
-'length(...)'` applies PER PAGE — count rows of a projection); and grepping
-the layer the subject does not use (a type registered to NO provider takes
-the Cloud Control readback, invisible in `src/provisioning/providers/**`).
-The through-line: every one FAILED CLEAN. Run the shape against a case you
-KNOW is dirty first; only then trust a zero.
+versions come from the run likeliest already fixed — sample the range); one
+global needle (each fixture spells its own literal — derive it per subject, or
+assert a needle-independent observable); a name from convention (read it from
+the subject's own `STACK=` line); a silent parse failure in a pipe (a parse
+that can fail must report failing, not fall through to a count); a per-page
+aggregate (`--query 'length(...)'` applies PER PAGE — count rows of a
+projection); and grepping a layer the subject does not use (a type registered
+to NO provider takes the Cloud Control readback, invisible in
+`src/provisioning/providers/**`). Every one FAILED CLEAN: run the shape against
+a case you KNOW is dirty first; only then trust a zero.
 
 ### 5-e. Mutation probes
 
 **COMMIT the round's real fixes BEFORE running any mutation probe** — a probe
-deliberately breaks the tree, and an interruption mid-probe leaves breakage
-and unfinished fixes in one undifferentiated dirty tree (a lane died at the
-session limit with 9 dirty files; go-to-k/cdkd#2416). With a pre-probe commit
-the separator is just `git diff`.
+deliberately breaks the tree, so an interruption leaves breakage and unfinished
+fixes in one dirty tree (a lane died at the session limit with 9 dirty files;
+go-to-k/cdkd#2416). With a pre-probe commit the separator is `git diff`.
 
 **Restore a probe from a BYTE-EXACT COPY, never an inverse string replace**
-(`cp` before, `cp` back after, proved by `git diff -- <file>` printing
-nothing). An inverse replace is a second edit; Python's `str.replace('', x)`
-matches between every character and rewrote an 11 KB file to 838 KB, scoring
-the three probes AFTER it against a corrupted subject.
+(`cp` before, `cp` back, proved by `git diff -- <file>` printing nothing). An
+inverse replace is a second edit: Python's `str.replace('', x)` matches between
+every character and rewrote an 11 KB file to 838 KB, scoring the three probes
+after it against a corrupted subject.
 
 **Probe the CALLER too — a probed callee says nothing about its wiring.**
 go-to-k/cdkd#2719: a predicate with eight probed gates, and deleting the line
@@ -312,9 +313,9 @@ real tree:**
   `Object.assign`, an object literal, a spread rebuild); the injectable
   spelling over the one a PERSON types (go-to-k/cdkd#2052); one spelling
   where the language allows several — probe each (`||` matched while four
-  sites used `??`; widening it found a real unfiled bug —
-  go-to-k/cdkd#2111); and, for GENERATED input, the
-  UPSTREAM form not the generator's output (go-to-k/cdkd#2788 injected
+  sites used `??`; widening it found a real unfiled bug, go-to-k/cdkd#2111);
+  and, for GENERATED input, the UPSTREAM form not the generator's output
+  (go-to-k/cdkd#2788 injected
   `/properties/X`, a prefix the generator strips, so the probe "proving" it
   discriminated used a shape no fixture holds). It governs any probe's VALUE
   input too — ask what property of it the defect depends on (a
@@ -404,8 +405,11 @@ You may fan out **one subagent per lane** (disjoint files): give each its
 worktree path, allowed files, "do NOT touch other lanes' files; STOP and
 report if the fix needs a forbidden one", and **the REPORT SHAPE — the
 report IS the deliverable**: a lane's tool output never reaches you, so a
-one-line "done" loses the run (2 of 3 lanes, 2026-09-05). Resume a thin one
-with "REPORT ONLY, do not touch the tree"; a plain resume re-edits.
+one-line "done" loses the run (2 of 3 lanes, 2026-09-05) — as does a lane that
+finishes with NO report reaching you (twice, 2026-09-10: only its nested
+reviewers' notifications arrived, reading as progress). Never wait on a quiet
+lane: list the agents, resume any already `completed` with "REPORT ONLY, do not
+touch the tree" — a plain resume re-edits.
 
 A subagent's Bash **bypasses the PreToolUse gate hooks** (it can `gh pr create` past `verify-pr-gate`) —
 enforce quality yourself; the orchestrator still gates the MERGE.
@@ -416,10 +420,9 @@ enforce quality yourself; the orchestrator still gates the MERGE.
   same trees were green. Each agent runs only `vp test run <its own suite>`.
 - **A PEER SESSION's suite is invisible to every probe here** — a full suite
   exited 1 with all tests passing (`Worker exited unexpectedly`, load 54, the
-  heaviest vitest belonging to another session's worktree). Before treating a
-  suite failure as a regression, read the rc AND the error section AND
-  `uptime`, and check `ps` for a vitest whose path is not yours; re-run when
-  the machine is quiet.
+  heaviest vitest in another session's worktree). Before reading a suite
+  failure as a regression, check the rc, the error section, `uptime` and `ps`
+  for a vitest whose path is not yours; re-run when the machine is quiet.
 - Budget two fan-out costs: a lane waiting inside a tool call is killed at
   600s of silence (background long runs with a log redirect, poll with
   short `tail`s), and a fix round re-touching an `integ-*` scope invalidates

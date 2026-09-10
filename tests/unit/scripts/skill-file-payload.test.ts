@@ -227,8 +227,11 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // lists, one list went stale when a review round RESTORED a compression it
     // claimed, and the corrected list then under-counted the real ones. Three
     // wrong versions of a figure that pins nothing. `git diff --numstat`
-    // derives it on demand; the floor is NOT re-derived upward to absorb the
-    // net -- retro.md section 10-c forbids it.
+    // derives it on demand; the floor was not re-derived upward in THAT lane
+    // because its net did not lapse it -- not because upward is forbidden.
+    // Section 10-c forbids raising a CAP and requires the floor to be
+    // RE-DERIVED whenever `corpus - runnerUp` crosses it; see beside
+    // MIN_REFERENCE_CORPUS_BYTES.
     //
     // It BREACHED first, which is the useful part of this record. A review
     // round grew 8-g past the point where `corpus - runnerUp` cleared the
@@ -240,9 +243,29 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // recording it here would re-create the drift this paragraph exists to
     // stop. Read that as calibration for the assertion below: the floor is not
     // a formality, it goes red inside an ordinary editing round.
-    corpusBytes: 177_694,
-    largest: { file: 'verify.md', bytes: 29_844 },
-    runnerUp: { file: 'implement.md', bytes: 29_549 },
+    //
+    // 181,299 after the go-to-k/cdkd#2882 / go-to-k/cdkd#2912 retro. Both
+    // per-file caps were BINDING for the first time -- verify.md sat 156 B
+    // from the cap and implement.md 451 B -- so in THOSE TWO files every
+    // addition was funded by a cut in the same file (a near-duplicate bullet
+    // merged into its twin, restatements of another stage file's rule reduced
+    // to pointers, a superseded-revision history line dropped), and both still
+    // ended NET LARGER (implement.md +372, verify.md +84 -- stated by NAME
+    // because the antecedent pair above lists them in the other order).
+    // The stage files with headroom were not held to that: the corpus grew
+    // 3,605 B. Neither CAP moved; the derived corpus FLOOR was RE-DERIVED,
+    // which section 10-c requires rather than forbids -- it must stay above
+    // `corpus - runnerUp`, and the same assertion pins it from below, so the
+    // raise buys no room (probe: restoring the prior value under this corpus
+    // goes RED). The leaders SWAPPED twice across this change's review rounds,
+    // which is why `largest` / `runnerUp` are asserted rather than described.
+    // Margins are deliberately not quoted -- the largest-side one is printed by
+    // the cap's own failure message -- but the calibration to carry forward is
+    // that they are the thinnest on record in BOTH slots, so the next edit to
+    // either file opens with a compression pass, not an addition.
+    corpusBytes: 181_299,
+    largest: { file: 'verify.md', bytes: 29_928 },
+    runnerUp: { file: 'implement.md', bytes: 29_921 },
   },
 };
 
@@ -645,7 +668,26 @@ const MIN_REFERENCE_FILES = 6;
 // 176,352). Inputs now: largest implement.md 28,743, runner-up verify.md
 // 28,516, thresholds 147,609 (largest-side) and 147,836 (runner-up side,
 // binding); 148,200 clears the binding one by 364 B.
-const MIN_REFERENCE_CORPUS_BYTES = 148_200;
+// RAISED 148_200 -> 151_750 by the go-to-k/cdkd#2882 / go-to-k/cdkd#2912 retro
+// (+3,605 B, corpus 177,694 -> 181,299), which landed seven amendments across
+// six stage files. Same mechanical raise as the three above -- the growth is in
+// the non-leader files (retro.md, ship.md, gates-and-pr.md, claim.md), so it
+// pushes the derived floor up. In the two files that ARE the leaders every
+// addition was funded by a cut in the same file per retro.md section 10-c, and
+// both still ended net larger -- the CAPS are what bounded this change, not
+// this floor. A review round read the raise as defeating its own guard, on the
+// ground that a later pass could lower it back and stay green; PROBED
+// 2026-09-11 and that is false -- restoring 148_200 under this corpus fails
+// with "has lapsed ... expected 148200 to be greater than 151378", so the
+// assertion pins this constant from BELOW as well, and lowering it requires
+// compressing first. Section 10-c now states the carve-out it was missing.
+// Inputs at this
+// date: corpus 181,299, largest verify.md 29,928, runner-up implement.md
+// 29,921, so the two thresholds are 151,371 (largest-side) and 151,378
+// (runner-up side, binding); 151,750 clears the binding one by 372 B. The two
+// leaders are now 72 B and 79 B from MAX_REFERENCE_FILE_BYTES -- the binding
+// constraint for the next retro is that cap, not this floor.
+const MIN_REFERENCE_CORPUS_BYTES = 151_750;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

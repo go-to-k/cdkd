@@ -35,17 +35,29 @@ started: no branch exists yet and no file is held. If you want this issue, take 
 it and say so here; I will stand down."
 ```
 
-And when the run ends before reaching one, **stand it down rather than leaving
-the claim standing** — a QUEUED claim that outlives its session is the stale
-lock §9 makes a mechanical step of releasing. Say it is unclaimed, and carry the
-four classification fields so the next session inherits the triage instead of
-redoing it:
+And when the run ends before reaching one — or a lane never becomes RUNNABLE
+because another SESSION's open PR holds its file, §2's off-limits rule reaching
+across sessions — **stand it down rather than leaving the claim standing**: a
+QUEUED claim that outlives its session is the stale lock §9 makes a mechanical
+step of releasing. Say it is unclaimed, carry the four classification fields so
+the next session inherits the triage instead of redoing it, and **when the
+blocker is EXTERNAL, name the query that clears it** — "the session ended" has
+nothing to watch, "PR #N holds `<file>`" has `gh pr view <N> --json state`
+(2026-09-10: go-to-k/cdkd#2847 / go-to-k/cdkd#2885 stood down on open
+go-to-k/cdkd#2911). **Pass it via `--body-file`**: the resume query is
+BACKTICKED, and inside `--body "..."` the shell executes it and substitutes
+empty output — §9 has the same defect for the commit message.
 
 ```bash
-gh issue comment <n> --body "Standing this down UNCLAIMED — the session that \
-queued it ended first. Session-fit: next (not this session) — <reason>. \
-Severity: <v> — <what stays broken>. Effort: <v> — <cycle>. Estimate: <t> — \
-<what eats it>."
+cat > "$SCRATCH/standdown-<n>.md" <<'EOF'
+Standing this down UNCLAIMED — <the session that queued it ended first | open
+PR #N holds <file>>. <Resume query, when the blocker is external.>
+Session-fit: next (not this session) — <reason>.
+Severity: <v> — <what stays broken>.
+Effort: <v> — <cycle>.
+Estimate: <t> — <what eats it>.
+EOF
+gh issue comment <n> --body-file "$SCRATCH/standdown-<n>.md"
 ```
 
 For EACH issue you will start:

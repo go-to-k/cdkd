@@ -100,16 +100,30 @@ squash-merges, so flattening loses nothing:
 
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
-git commit -F /tmp/cdkd-squash-msg.txt                   # never -m -- see below
+# never -m, never a shared name -- both below. `--show-current` is EMPTY on a
+# detached HEAD, and without `:-$$` that yields `cdkd-squash-.txt`, shared by
+# every detached lane. DERIVE, WRITE and COMMIT in ONE call: shell state dies
+# between tool calls, so a later one recomputes `$$` and reads nothing.
+MSGREF=$(git branch --show-current | tr / -); MSGREF=${MSGREF:-$$}
+MSGFILE="${TMPDIR:-/tmp}/cdkd-squash-${MSGREF}.txt"
+cat > "$MSGFILE" <<'EOF'
+<the squashed message>
+EOF
+git commit -F "$MSGFILE"
 git rebase origin/main                                   # at most one conflict
 ```
 
-**Write the squashed message to a FILE.** It is the longest message the lane
-writes, so likeliest to hold a backtick or an apostrophe, and inside `-m "..."`
-the shell EVALUATES a backtick and drops the word while still creating the
-commit (measured 2026-09-09 on this file's own retro commit: `` `next` ``
-vanished, zsh printed `command not found: next`).
-`commit-msg-heredoc-gate` refuses only the HEREDOC spelling of that defect.
+**Write the squashed message to a FILE, named per BRANCH.** It is the longest
+message the lane writes, so likeliest to hold a backtick or an apostrophe, and
+inside `-m "..."` the shell EVALUATES a backtick and drops the word while still
+creating the commit (measured 2026-09-09 on this file's own retro commit:
+`` `next` `` vanished, zsh printed `command not found: next`).
+`commit-msg-heredoc-gate` refuses only the HEREDOC spelling of that defect. The
+per-branch name is the other half, and this step prescribed a FIXED path from
+go-to-k/cdkd#2878 (2026-09-09) until the next day, when a lane committing from
+a conventionally-named message file shipped the PREVIOUS lane's message — its
+own write having been discarded with the `check-gate` refusal that killed the
+call, caught by `git commit --amend`. §6 carries the general rule.
 
 Enforced by `.claude/hooks/flatten-before-rebase-gate.sh` (refuses `git rebase
 <upstream>` on a 2+-commit branch touching an append-shaped file).
