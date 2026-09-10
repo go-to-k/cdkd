@@ -38,6 +38,7 @@ import {
   cfnRefValueFromPhysicalId,
   refStateLookupFromResource,
   resetAccountInfoCache,
+  type RedactedAttributeRead,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
@@ -72,7 +73,7 @@ const TABLE_NAME = 'orders_zz2847';
 
 function contextFor(
   record: Partial<ResourceState> & { resourceType?: string },
-  redactedAttributeReads?: string[]
+  redactedAttributeReads?: RedactedAttributeRead[]
 ): ResolverContext {
   const resourceType = record.resourceType ?? TABLE_TYPE;
   const template: CloudFormationTemplate = {
@@ -177,7 +178,7 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
   });
 
   it('resolves a masked S3Tables TableName to something other than the mask, and NOTES the read', async () => {
-    const redactedAttributeReads: string[] = [];
+    const redactedAttributeReads: RedactedAttributeRead[] = [];
     const context = contextFor({ properties: { TableName: SECRET_MASK } }, redactedAttributeReads);
 
     const value = await resolver.resolve({ Ref: 'T' }, context);
@@ -188,21 +189,25 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     // `DeployEngine.refuseRedactedAttributeReads` fail the resource rather than
     // let the (wrong-but-not-secret) ARN ship. Without this the negative above
     // would be satisfied by a plain silent fall-through.
-    expect(redactedAttributeReads).toEqual(['Ref T (state key TableName)']);
+    expect(redactedAttributeReads.map((read) => read.display)).toEqual([
+      'Ref T (state key TableName)',
+    ]);
   });
 
   it('records the read ONCE however many times the same Ref is resolved', async () => {
-    const redactedAttributeReads: string[] = [];
+    const redactedAttributeReads: RedactedAttributeRead[] = [];
     const context = contextFor({ properties: { TableName: SECRET_MASK } }, redactedAttributeReads);
 
     await resolver.resolve({ Ref: 'T' }, context);
     await resolver.resolve({ Ref: 'T' }, context);
 
-    expect(redactedAttributeReads).toEqual(['Ref T (state key TableName)']);
+    expect(redactedAttributeReads.map((read) => read.display)).toEqual([
+      'Ref T (state key TableName)',
+    ]);
   });
 
   it('resolves an ORDINARY TableName normally and records nothing', async () => {
-    const redactedAttributeReads: string[] = [];
+    const redactedAttributeReads: RedactedAttributeRead[] = [];
     const context = contextFor({ properties: { TableName: TABLE_NAME } }, redactedAttributeReads);
 
     const value = await resolver.resolve({ Ref: 'T' }, context);
@@ -221,7 +226,7 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
       // The recovery branches are SIBLING SITES of one root cause: each reads
       // the same two bags through the same seam. Fixing the lookup covers all
       // of them, and this row is what proves the fix is not S3Tables-shaped.
-      const redactedAttributeReads: string[] = [];
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
       const context = contextFor(
         { resourceType, physicalId, attributes: { [key]: SECRET_MASK } },
         redactedAttributeReads
@@ -230,7 +235,16 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
       const value = await resolver.resolve({ Ref: 'T' }, context);
 
       expect(value).not.toBe(SECRET_MASK);
-      expect(redactedAttributeReads).toEqual([`Ref T (state key ${key})`]);
+      expect(redactedAttributeReads.map((read) => read.display)).toEqual([
+        `Ref T (state key ${key})`,
+      ]);
+      // The ROUTING fields, which are what the deploy engine actually reads
+      // since issue #2847 round 4 -- `kind` selects the Outputs refusal and
+      // the Ref-specific remedy clause, `logicalId` names the record to
+      // re-import. Asserted on every recovery branch, not just S3Tables.
+      expect(redactedAttributeReads[0]?.kind).toBe('ref-state-key');
+      expect(redactedAttributeReads[0]?.logicalId).toBe('T');
+      expect(redactedAttributeReads[0]?.key).toBe(key);
     }
   );
 
@@ -257,7 +271,7 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     // is observable. Without this row, changing `??=` to a plain `=` — report
     // the LAST masked key rather than the first — stays green across every
     // other case in this file.
-    const redactedAttributeReads: string[] = [];
+    const redactedAttributeReads: RedactedAttributeRead[] = [];
     const context = contextFor(
       { properties: { TableName: SECRET_MASK, Name: SECRET_MASK } },
       redactedAttributeReads
@@ -265,6 +279,8 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
 
     await resolver.resolve({ Ref: 'T' }, context);
 
-    expect(redactedAttributeReads).toEqual(['Ref T (state key TableName)']);
+    expect(redactedAttributeReads.map((read) => read.display)).toEqual([
+      'Ref T (state key TableName)',
+    ]);
   });
 });

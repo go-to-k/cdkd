@@ -88,6 +88,19 @@ function makeState(tableName: unknown): StackState {
         attributes: {},
         dependencies: [],
       },
+      // THE SAME RECORD UNDER A HYPHENATED LOGICAL ID (issue #2847 round-4
+      // review, BLOCKER B4). cdkd validates no logical-id charset and never
+      // hands the template to CloudFormation, so `overrideLogicalId` and a
+      // `--migrate-from-cloudformation` template both produce ids like this.
+      'Tbl-2': {
+        physicalId: TABLE_ARN,
+        resourceType: TABLE_TYPE,
+        properties: { TableName: tableName },
+        observedProperties: { TableName: tableName },
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'cc-api',
+      },
       // A masked ATTRIBUTE, which is the OTHER pusher's shape: an
       // `Fn::GetAtt` here serves the mask itself rather than falling through
       // to a physical id.
@@ -106,6 +119,7 @@ function makeState(tableName: unknown): StackState {
 
 const RESOURCES: CloudFormationTemplate['Resources'] = {
   Tbl: { Type: TABLE_TYPE, Properties: { TableName: 'x' } },
+  'Tbl-2': { Type: TABLE_TYPE, Properties: { TableName: 'x' } },
   Ok: { Type: 'AWS::SSM::Parameter', Properties: {} },
   Cr: { Type: 'Custom::Thing', Properties: {} },
 };
@@ -250,6 +264,52 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('Failed to resolve output TableRef:');
     expect(warned).toContain('Failed to resolve output TableRef2:');
+  });
+
+  it('refuses an output whose Ref names a HYPHENATED logical id', async () => {
+    // BLOCKER B4 (round-4 review), and the reason the entry stopped being a
+    // rendered string. This guard used to filter the pass's reads with
+    // `/^Ref ([A-Za-z0-9]+) \(state key [^)]*\)$/` — the SAME pattern the remedy
+    // builder used to name the record to re-import. `Tbl-2` falls out of that
+    // id class, so the filter matched nothing, `refuseMaskedOutputReads`
+    // returned, and the output PUBLISHED the raw physical id: an earlier
+    // round's blocker reopened through a CHARSET.
+    //
+    // Falling out of the pattern is the SAFE direction at the remedy (a vaguer
+    // sentence) and the INVERTED one here (the refusal itself), which is why
+    // one rendering could not serve both and the structure moved into the
+    // entry. The remedy-side half is fenced in
+    // `masked-record-remedy-shapes.test.ts`.
+    await makeEngine(SECRET_MASK).deploy(
+      stackName,
+      templateWith({ HyphenRef: { Value: { Ref: 'Tbl-2' } } })
+    );
+
+    const outputs = savedOutputs();
+    expect(outputs?.['HyphenRef']).toBeUndefined();
+    // THE LOAD-BEARING NEGATIVE, exactly as in the alphanumeric case: what the
+    // fall-through publishes is the ARN, and nothing downstream recognises it.
+    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_ARN);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('Failed to resolve output HyphenRef');
+    expect(warned).toContain('Ref Tbl-2 (state key TableName)');
+    // The remedy names the hyphenated record too, rather than withholding the
+    // one command that repairs it.
+    expect(warned).toContain('--resource Tbl-2=<physicalId>');
+  });
+
+  it('publishes the recovered NAME for a HYPHENATED id when the record is NOT masked', async () => {
+    // The other direction for the case above: a guard that refused every
+    // hyphenated `Ref` would pass it while breaking every stack that exports
+    // one from an `overrideLogicalId` resource.
+    await makeEngine(TABLE_NAME).deploy(
+      stackName,
+      templateWith({ HyphenRef: { Value: { Ref: 'Tbl-2' } } })
+    );
+
+    expect(savedOutputs()?.['HyphenRef']).toBe(TABLE_NAME);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).not.toContain('Failed to resolve output');
   });
 
   it('refuses ONLY the masked output, leaving a healthy sibling published', async () => {

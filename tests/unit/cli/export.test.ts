@@ -2649,13 +2649,30 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     expect(result.phase1Imports).toEqual([]);
     // TWO POPULATIONS reach this blocker since issue #2847, and naming only
     // the NoEcho one was a measured defect at the deploy engine's twin before
-    // it was one here: `CloudControlProvider.import` masks every model key it
-    // cannot certify, and `cdkd orphan --force` splices a mask into a
-    // REFERRING resource — neither has a custom resource anywhere near it,
+    // it was one here. This blocker tests `properties`, while
+    // `CloudControlProvider.import` masks only `attributes`, so arm (2) is
+    // about a mask COPIED here from another record — by `cdkd orphan --force`,
+    // or by `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over an
+    // already-masked value. Neither has a custom resource anywhere near it,
     // and every remedy the original sentence offered was custom-resource-only.
     expect(result.blocked[0]!.reason).toMatch(/NoEcho/);
     expect(result.blocked[0]!.reason).toMatch(/cdkd import/);
     expect(result.blocked[0]!.reason).toMatch(/cloudformation:DescribeType/);
+    // THE PROPOSITION THAT DISTINGUISHES THIS ARM FROM ITS PREDECESSOR (issue
+    // #2847 round-4 review, gap T-G2). The three needles above are carried by
+    // BOTH the current wording and the round-3-REJECTED one, so restoring
+    // "the record was adopted through the Cloud Control fallback" was measured
+    // GREEN here too. Same fence as the rollback executor's twin, because the
+    // two messages state the same proposition.
+    expect(result.blocked[0]!.reason).toMatch(/SPLICED from a masked record of ANOTHER resource/);
+    expect(result.blocked[0]!.reason).toMatch(/'cdkd orphan --force'/);
+    // The `Ref` route the narrowed wording omitted — under the opt-in it is the
+    // CANONICAL `cdkd import` route to a masked property.
+    expect(result.blocked[0]!.reason).toMatch(/Fn::GetAtt or a Ref/);
+    // NEGATIVE, paired with the positives above so it cannot pass by absence.
+    expect(result.blocked[0]!.reason).not.toMatch(
+      /(record|baseline)[^.]{0,40}(written|adopted)[^.]{0,40}(Cloud Control|cdkd import)/i
+    );
   });
 
   it('does NOT block an ordinary resource whose properties carry no mask', async () => {

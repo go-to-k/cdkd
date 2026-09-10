@@ -145,25 +145,18 @@ import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 const EMPTY_SECRETS: RecordedSecretValues = new Map();
 
 /**
- * `Ref <LogicalId> (state key <Key>)` — the entry
- * `IntrinsicFunctionResolver.noteRefStateMask` pushes into
- * `ResolverContext.redactedAttributeReads` (issue
- * [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
+ * One entry the resolver pushed into `ResolverContext.redactedAttributeReads`
+ * (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
  *
- * ONE definition because TWO readers in this file must agree on it, and they
- * decide different things: `maskedRecordRemedyFor` reads the logical id out of
- * it to emit the re-import command, and `resolveOutputs`' guard uses it to
- * decide whether an output's masked read is the FALL-THROUGH shape at all.
- * The anchoring argument for both ends lives at the first reader.
- *
- * Deliberately NOT imported from the resolver, which produces it: 72 of the 80
- * suites that `vi.mock` `intrinsic-function-resolver.js` use a bare factory
- * exposing only `getAccountInfo`, so a new named import reds them with a
- * missing-export error. The producer/consumer coupling is fenced instead by
- * `tests/unit/deployment/ref-state-mask-spelling-coupling.test.ts`, which
- * drives the real producer into the real consumer and carries no literal.
+ * An INLINE TYPE-ONLY alias rather than a named import, for the reason this
+ * file states at its other resolver types: 72 of the 80 suites that `vi.mock`
+ * `intrinsic-function-resolver.js` use a bare factory exposing only
+ * `getAccountInfo`, so a new VALUE import reds them with a missing-export
+ * error. A type import is erased at build time and reds nothing — which is
+ * also why the two consumers below can now share the resolver's own
+ * definition instead of re-deriving the structure from a rendered string.
  */
-const REF_STATE_MASKED_READ_PATTERN = /^Ref ([A-Za-z0-9]+) \(state key [^)]*\)$/;
+type RedactedAttributeRead = import('./intrinsic-function-resolver.js').RedactedAttributeRead;
 
 /**
  * Default per-resource warn threshold: warn the user when a single
@@ -1264,6 +1257,33 @@ export class DeployEngine {
       resources: Record<string, ResourceState>;
       parameters?: Record<string, unknown>;
       conditions?: Record<string, boolean>;
+      /**
+       * The masked-read bag, supplied by the CALLER and only by a caller that
+       * READS it (issue #2847 round-4 review). Absent means the resolver serves
+       * the mask exactly as `main` does.
+       *
+       * It used to be set here on EVERY context this method builds, on the
+       * argument that an array nobody consults costs nothing and that omitting
+       * it would leave a future provisioning site silently unguarded. The first
+       * half stopped being true when `resolveRefValue` began deciding the
+       * masked-leaf SKIP from the bag's PRESENCE: on the deploy-internal DIFF
+       * context — which has no refusal reader — the skip fired anyway, so
+       * `{Ref: X}` resolved to the raw physical id and was compared against the
+       * `'***'` in state. Measured on a pre-existing issue #2274 stack (a
+       * `NoEcho` value in `properties.TableName`, a sibling `{Ref: Tbl}`):
+       * NO_CHANGE and a clean deploy on `main`, a spurious UPDATE and then a
+       * hard failure at the provisioning refusal with the bag present. Fail-
+       * closed, so never an exposure — but a regression for existing users and
+       * a divergence from standalone `cdkd diff`, which is bagless and still
+       * reports NO_CHANGE.
+       *
+       * The second half is answered by making the decision VISIBLE instead of
+       * ambient: a provisioning site that wants the guard passes the bag on the
+       * line where it builds its context, and
+       * `tests/unit/deployment/deploy-engine-resolver-context-bag-scope.test.ts`
+       * asserts which sites do.
+       */
+      redactedAttributeReads?: RedactedAttributeRead[];
     },
     stackName: string
   ): import('./intrinsic-function-resolver.js').ResolverContext {
@@ -1340,17 +1360,19 @@ export class DeployEngine {
       // the secrets substituted during ITS OWN resolution — see the
       // `perResourceSecrets` field doc for why per-resource, not session-wide.
       recordedSecretValues,
-      // Issue #2274, and BOTH fields go on EVERY context this method builds —
-      // the diff / no-op one included — rather than only on the provisioning
-      // ones. The first can only ADD mask-only needles to a bag, which is right
-      // wherever that bag ends up redacting something and inert wherever it
-      // does not. The second is a RECORD the resolver writes and only the two
-      // provisioning sites read: putting the bag on the diff context too costs
-      // an array nobody consults, while omitting it would make a future third
-      // provisioning site silently unguarded — the failure direction that
-      // matters here is the one that ships a `***` to AWS.
+      // Issue #2274. `noEchoAttributeResources` goes on EVERY context this
+      // method builds — the diff / no-op one included — because it can only ADD
+      // mask-only needles to a bag, which is right wherever that bag ends up
+      // redacting something and inert wherever it does not.
+      //
+      // `redactedAttributeReads` is the opposite and comes from the CALLER: it
+      // is an OPT-IN whose presence changes what the resolver SERVES, so it
+      // belongs only where a reader exists. The `base` field's own doc carries
+      // the measurement that forced the split.
       noEchoAttributeResources: this.noEchoAttributeResources,
-      redactedAttributeReads: [],
+      ...(base.redactedAttributeReads && {
+        redactedAttributeReads: base.redactedAttributeReads,
+      }),
     };
   }
 
@@ -1583,31 +1605,35 @@ export class DeployEngine {
    * `ResolverContext.redactedAttributeReads` is HETEROGENEOUS, and the split
    * that matters is NOT which function pushed the entry — it is whether the
    * masked record lives in THIS stack's state, because only then can a
-   * `--resource` re-import here reach it. FIVE shapes reach the bag:
+   * `--resource` re-import here reach it. FOUR populations reach the bag, and
+   * each entry now says which it is IN ITS OWN FIELDS
+   * ({@link RedactedAttributeRead}) rather than in a rendered string this
+   * function re-parses:
    *
-   *  - `<LogicalId>.<Attribute>` — `noteAttributeSecrecy`, a resource in this
-   *    stack. LOCAL.
-   *  - `<Child>.Outputs.<Key>` where `<Child>` is an
+   *  - `kind: 'attribute'` with a `logicalId` — `noteAttributeSecrecy`, a
+   *    resource in this stack. LOCAL.
+   *  - `kind: 'attribute'` whose `logicalId` names an
    *    `AWS::CloudFormation::Stack` — ALSO `noteAttributeSecrecy`, and the
-   *    reason this function cannot partition by spelling alone. A nested
-   *    stack's output attribute reaches the cross-stack re-resolution arm only
-   *    when it `carriesDynamicReference`, and a value that is already
-   *    `SECRET_MASK` does NOT (that predicate tests for `{{resolve:`), so a
-   *    masked child output falls through to `noteAttributeSecrecy` and is
-   *    pushed in the LOCAL spelling. Its record is the CHILD's `state.outputs`,
-   *    from which the parent's attributes are rebuilt every deploy, so no
-   *    `--resource` in THIS stack clears it: `NestedStackProvider` implements
-   *    no `import()` at all, so the command would report `skipped-no-impl` and
-   *    change nothing. FOREIGN, despite looking local.
-   *  - `Fn::ImportValue '...' (producer ...)`, `Fn::GetStackOutput '...'
-   *    (producer ...)`, `nested stack <Child> Outputs.<Key>` —
-   *    `reresolveCrossStackValue`. FOREIGN.
-   *  - `Ref <LogicalId> (state key <Key>)` — `noteRefStateMask`, a resource in
-   *    this stack whose CFn `Ref` value is recovered from a state key rather
-   *    than from the physical id. LOCAL, and it needs its own regex because the
-   *    anchored `LOCAL_MASKED_READ` cannot match it (no dot follows the leading
-   *    word). It ALSO earns a sentence of its own: the read is cdkd's, not the
-   *    template's, so the `Fn::GetAtt` remedy "stop reading it" does not apply.
+   *    reason `kind` alone cannot partition. A nested stack's output attribute
+   *    reaches the cross-stack re-resolution arm only when it
+   *    `carriesDynamicReference`, and a value that is already `SECRET_MASK`
+   *    does NOT (that predicate tests for `{{resolve:`), so a masked child
+   *    output falls through to `noteAttributeSecrecy` and is pushed as an
+   *    ordinary local attribute read. Its record is the CHILD's
+   *    `state.outputs`, from which the parent's attributes are rebuilt every
+   *    deploy, so no `--resource` in THIS stack clears it:
+   *    `NestedStackProvider` implements no `import()` at all, so the command
+   *    would report `skipped-no-impl` and change nothing. FOREIGN, despite
+   *    being local by kind.
+   *  - `kind: 'cross-stack'` — `reresolveCrossStackValue`'s `Fn::ImportValue` /
+   *    `Fn::GetStackOutput` / `nested stack <Child> Outputs.<Key>` forms. It
+   *    carries NO `logicalId`, because there is no id in THIS stack to name.
+   *    FOREIGN.
+   *  - `kind: 'ref-state-key'` — `noteRefStateMask`, a resource in this stack
+   *    whose CFn `Ref` value is recovered from a state key rather than from the
+   *    physical id. LOCAL, and it earns a sentence of its own: the read is
+   *    cdkd's, not the template's, so the `Fn::GetAtt` remedy "stop reading it"
+   *    does not apply.
    *
    * Successive review rounds tried to express this as an instruction the reader
    * applies ("the name to the left of the dot"), and each phrasing was wrong
@@ -1617,13 +1643,18 @@ export class DeployEngine {
    * only what is true of its own shape, and makes a new shape a change to THIS
    * function rather than a silent widening of a sentence.
    *
-   * `LOCAL_MASKED_READ` is ANCHORED — that, not any property of the foreign
-   * spellings, is what excludes them (`Fn::ImportValue '...'` carries no dot at
-   * all and fails at `Fn:`). A dotted ATTRIBUTE path (`Cr.Endpoint.Password`)
-   * still yields `Cr`, because the capture stops at the FIRST dot.
+   * **AND THE PARTITION READS FIELDS, NEVER A REGEX OVER `display`** (round-4
+   * review). Two revisions parsed the rendering back into structure and each
+   * shipped a defect: a hand-spelled pattern that a producer rename disarms,
+   * then an `[A-Za-z0-9]+` id class that a HYPHENATED logical id falls out of —
+   * and cdkd accepts one, because it validates no logical-id charset and never
+   * hands the template to CloudFormation. Here falling out cost a re-import
+   * command withheld; at `resolveOutputs`' guard the same miss cost the REFUSAL
+   * itself. One rendering serving two consumers whose safe directions are
+   * OPPOSITE is not a pattern to tune, so the structure moved into the data.
    *
-   * The nested-stack case is then excluded BY RESOURCE TYPE, not by its
-   * `Outputs.` spelling. Keying on the segment over-reaches: a local
+   * The nested-stack case is excluded BY RESOURCE TYPE, not by an `Outputs.`
+   * spelling. Keying on the segment over-reaches: a local
    * `AWS::ServiceCatalog::CloudFormationProvisionedProduct` documents
    * `Outputs.<Key>` as a real `Fn::GetAtt` attribute, so a masked one would be
    * misrouted to the foreign arm and the reachable remedy withheld. `resources`
@@ -1638,36 +1669,20 @@ export class DeployEngine {
    * lives in another stack, and for a custom resource in this very template
    * that is false. Its arm names the resource and withholds the command.
    *
-   * An entry matching NEITHER is treated as foreign, which is the safe
-   * direction: the foreign arm names no command, so an unrecognised shape
-   * costs a vaguer message rather than a destructive one. (No example is given
-   * for that arm on purpose: an earlier revision named a non-alphanumeric
-   * logical id, which CloudFormation's own grammar forbids, so nothing reaching
-   * cdkd could be it. The arm is a fail-safe for a shape not yet enumerated,
-   * not for a case anyone has produced.)
+   * An entry carrying NO `logicalId` is treated as foreign, which is both
+   * correct (`cross-stack` is the only kind that omits it) and the safe
+   * direction for a kind nobody has added yet: the foreign arm names no
+   * command, so an unrecognised shape costs a vaguer message rather than a
+   * destructive one.
+   *
+   * A logical id spelled `Ref Foo (state key X)`, or `My-Table`, or anything
+   * else cdkd accepts, now routes on the FIELD and cannot be misread as another
+   * row — the misparse the pre-round-4 regexes had to be anchored against.
    */
   private static maskedRecordRemedyFor(
-    reads: readonly string[],
+    reads: readonly RedactedAttributeRead[],
     resources: Record<string, { readonly resourceType?: string }>
   ): string {
-    /** `<LogicalId>.<Attribute>` — a record in THIS stack. */
-    const LOCAL_MASKED_READ = /^([A-Za-z0-9]+)\.(?:.+)$/;
-    /**
-     * `Ref <LogicalId> (state key <Key>)` — also a record in THIS stack, from
-     * `IntrinsicFunctionResolver.noteRefStateMask`. Anchored at BOTH ends, and
-     * the tail anchor is the load-bearing half: start-anchored alone, a
-     * resource whose logical id is literally `Ref Foo (state key X)` makes
-     * `noteAttributeSecrecy` push `Ref Foo (state key X).SomeAttr`, which
-     * `LOCAL_MASKED_READ` cannot match (the space blocks it) while this one
-     * captures `Foo` — advising a `--force` re-import of an innocent row, the
-     * exact class the two rounds recorded above shipped. cdkd validates no
-     * logical-id charset and never hands the template to CloudFormation, so
-     * such an id is deployable here even though CFn's own grammar forbids it.
-     * End-anchored, that string matches neither regex and falls to the FOREIGN
-     * arm, which emits no command — the safe direction. Measured with
-     * `node -e` during the issue #2847 security review.
-     */
-    const REF_STATE_MASKED_READ = REF_STATE_MASKED_READ_PATTERN;
     // Spelled locally rather than imported: the only exported copy lives in
     // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
     // edge for one string literal is the wrong trade.
@@ -1700,24 +1715,26 @@ export class DeployEngine {
     const importCannotClearMask = (type: string | undefined): boolean =>
       type === 'AWS::CloudFormation::CustomResource' || (type?.startsWith('Custom::') ?? false);
 
-    const targetOf = (read: string): string | undefined =>
-      (LOCAL_MASKED_READ.exec(read) ?? REF_STATE_MASKED_READ.exec(read))?.[1];
-    const isLocal = (read: string): boolean => {
-      const target = targetOf(read);
-      if (target === undefined) return false;
-      // A masked NESTED-STACK output is pushed in the local spelling but its
-      // record is the child's; no `--resource` here reaches it.
-      return resources[target]?.resourceType !== NESTED_STACK_RESOURCE_TYPE;
+    // THE ROUTING KEY IS THE FIELD, not a capture group. `resources` is read
+    // with `Object.hasOwn` for the same reason `resolveRef` does (issue #2767):
+    // `logicalId` is template-controlled, and a bare property read walks the
+    // prototype chain, so an id of `constructor` would answer with the `Object`
+    // function and `?.resourceType` on it is `undefined` — reading as an
+    // ordinary local resource whose type is unknown.
+    const typeOf = (read: RedactedAttributeRead): string | undefined =>
+      read.logicalId !== undefined && Object.hasOwn(resources, read.logicalId)
+        ? resources[read.logicalId]?.resourceType
+        : undefined;
+    const isLocal = (read: RedactedAttributeRead): boolean => {
+      if (read.logicalId === undefined) return false;
+      // A masked NESTED-STACK output is pushed as an ordinary attribute read
+      // but its record is the child's; no `--resource` here reaches it.
+      return typeOf(read) !== NESTED_STACK_RESOURCE_TYPE;
     };
     /** LOCAL, but no `cdkd import` can rewrite it — see above. */
-    const isUnclearableLocal = (read: string): boolean => {
-      const target = targetOf(read);
-      return (
-        target !== undefined &&
-        isLocal(read) &&
-        importCannotClearMask(resources[target]?.resourceType)
-      );
-    };
+    const isUnclearableLocal = (read: RedactedAttributeRead): boolean =>
+      isLocal(read) && importCannotClearMask(typeOf(read));
+    const targetOf = (read: RedactedAttributeRead): string | undefined => read.logicalId;
 
     const localTargets = [
       ...new Set(
@@ -1736,7 +1753,7 @@ export class DeployEngine {
       ),
     ];
     const foreignReads = reads.filter((read) => !isLocal(read));
-    const hasRefStateRead = reads.some((read) => REF_STATE_MASKED_READ.test(read) && isLocal(read));
+    const hasRefStateRead = reads.some((read) => read.kind === 'ref-state-key' && isLocal(read));
 
     const parts: string[] = [];
     if (localTargets.length > 0) {
@@ -1897,7 +1914,7 @@ export class DeployEngine {
     // repeats. Tracked as issue
     // [#2927](https://github.com/go-to-k/cdkd/issues/2927).
     throw new ProvisioningError(
-      `Cannot resolve ${reads.join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
+      `Cannot resolve ${reads.map((read) => read.display).join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
         `redaction mask there, and the value is not recoverable from state. There are two ways a ` +
         `record comes to hold the mask. (1) A custom resource handler declared its response ` +
         `NoEcho: true — the value is generated by the handler, so cdkd has nothing to re-derive ` +
@@ -4826,6 +4843,11 @@ export class DeployEngine {
             resources: stateResources,
             ...(parameterValues && { parameters: parameterValues }),
             ...(conditions && { conditions }),
+            // ONE OF THE TWO SITES THAT OPT IN. The bag's presence is what lets
+            // the resolver skip a masked `Ref` state key, and this arm calls
+            // `refuseRedactedAttributeReads` below — the reader that makes the
+            // skip safe. See the field's doc on `buildResolverContext`.
+            redactedAttributeReads: [],
           },
           stackName
         );
@@ -5028,6 +5050,9 @@ export class DeployEngine {
             resources: stateResources,
             ...(parameterValues && { parameters: parameterValues }),
             ...(conditions && { conditions }),
+            // THE OTHER OPT-IN SITE — this arm calls
+            // `refuseRedactedAttributeReads` below.
+            redactedAttributeReads: [],
           },
           stackName
         );
@@ -7589,7 +7614,7 @@ export class DeployEngine {
      * properties: the guard sees exactly this output's reads, and the shared
      * bag still accumulates for anything reading it later.
      *
-     * SCOPED TO THE `Ref` STATE-KEY SHAPE, and that is a narrowing rather than
+     * SCOPED TO THE `ref-state-key` KIND, and that is a narrowing rather than
      * an oversight. The refusal exists because of the FALL-THROUGH: when the
      * lookup skips a masked leaf, `cfnRefValueFromPhysicalId` emits the raw
      * physical id, which no downstream reader recognises. Every OTHER pusher —
@@ -7603,13 +7628,29 @@ export class DeployEngine {
      * there is no physical-id fall-through — the wrong-advice class this PR
      * has spent three rounds removing.
      *
+     * **SELECTED BY THE `kind` FIELD, NEVER BY A PATTERN OVER `display`**
+     * (round-4 review, BLOCKER). The previous revision filtered with the same
+     * regex `maskedRecordRemedyFor` used, whose id class was `[A-Za-z0-9]+` —
+     * so for `{"Ref": "My-Table"}` (an `overrideLogicalId`, or a migrated
+     * template; cdkd validates no logical-id charset and never hands the
+     * template to CloudFormation) the filter matched NOTHING, this function
+     * returned, and the output published the raw physical id. That is an
+     * earlier round's blocker reopened through a CHARSET. Falling out of the
+     * pattern is the SAFE direction at the remedy — a vaguer message — and the
+     * INVERTED one here, where it is the refusal itself; one rendering cannot
+     * serve two consumers whose safe directions are opposite, so the structure
+     * moved into the entry and both consumers now ask a field.
+     *
      * It routes through {@link handleOutputResolutionFailure} rather than
      * throwing its own way out, so it inherits that method's whole contract:
      * warn-and-skip by default, promoted to a deploy error under
      * `--strict-getatt`, and masked against both secret bags on the way.
      */
-    const refuseMaskedOutputReads = (outputKey: string, ownReads: readonly string[]): void => {
-      const added = ownReads.filter((read) => REF_STATE_MASKED_READ_PATTERN.test(read));
+    const refuseMaskedOutputReads = (
+      outputKey: string,
+      ownReads: readonly RedactedAttributeRead[]
+    ): void => {
+      const added = ownReads.filter((read) => read.kind === 'ref-state-key');
       if (added.length === 0) return;
       // `markNonRetryable` for the same reason the sibling refusals carry it:
       // under `--strict-getatt` this leaves the engine as a thrown error, and
@@ -7618,7 +7659,7 @@ export class DeployEngine {
       // retry can clear a mask in state.
       throw markNonRetryable(
         new Error(
-          `Cannot resolve ${added.join(', ')} for output ${outputKey}: cdkd's recorded state ` +
+          `Cannot resolve ${added.map((read) => read.display).join(', ')} for output ${outputKey}: cdkd's recorded state ` +
             `holds only the redaction mask there, so this output would publish the resource's ` +
             `raw physical id instead of the value CloudFormation's Ref returns — a wrong value ` +
             `that a consuming stack's Fn::ImportValue would accept and send to AWS. The output ` +
@@ -7627,24 +7668,17 @@ export class DeployEngine {
       );
     };
 
-    /**
-     * Fold one output's isolated reads back into the pass-wide bag, keeping
-     * that bag's own de-duplication.
-     *
-     * The shared bag is what anything reading `context.redactedAttributeReads`
-     * after this pass sees, so isolating per output must not stop it filling.
-     * Called from a `finally` at both call sites: a resolution that recorded a
-     * read and THEN threw has still learned something about the record, and
-     * dropping it on the throw arm would make the bag depend on which output
-     * happened to fail — the same shape as `nameSecrets`' merge two loops down.
-     */
-    const mergeOwnReads = (ownReads: readonly string[]): void => {
-      const shared = context.redactedAttributeReads;
-      if (shared === undefined) return;
-      for (const read of ownReads) {
-        if (!shared.includes(read)) shared.push(read);
-      }
-    };
+    // NO PASS-WIDE BAG, and no merge back into one (issue #2847 round-4
+    // review, found independently by two reviewers). A previous revision kept
+    // `context.redactedAttributeReads` alongside the per-output bags and folded
+    // each output's reads back into it from a `finally`. Nothing read it:
+    // `context` is a local of this method, its only later uses are `.resources`
+    // and `.recordedSecretValues`, and the one consumer of the shared bag —
+    // `refuseRedactedAttributeReads` — runs on the per-RESOURCE contexts the
+    // provisioning arms build. Making the merge a no-op was measured GREEN
+    // across the suite, and its docstring named a reader that does not exist.
+    // Both resolutions below supply their own bag by spread, so the guard is
+    // unaffected; what is gone is an accumulator with no consumer.
 
     // The two bags the failure sites below mask against (issue #2728).
     // `buildResolverContext` always sets `recordedSecretValues`, so that `??`
@@ -7686,11 +7720,11 @@ export class DeployEngine {
           );
           continue;
         }
-        // THIS OUTPUT'S OWN BAG. The shared one is deduped by every pusher, so
-        // a second output over the same masked record would see nothing added;
-        // see `refuseMaskedOutputReads`. Merged back in the `finally` so the
-        // shared bag still accumulates whether this output resolved or threw.
-        const ownReads: string[] = [];
+        // THIS OUTPUT'S OWN BAG, and the isolation is what makes the guard
+        // fire at all: every pusher de-dupes, so with one bag shared across the
+        // pass a SECOND output reading the same masked record would see nothing
+        // added and be published. See `refuseMaskedOutputReads`.
+        const ownReads: RedactedAttributeRead[] = [];
         try {
           const resolved = await this.resolver.resolve(output.Value, {
             ...context,
@@ -7706,8 +7740,6 @@ export class DeployEngine {
             outputsPassSecrets,
             outputsPassInherited
           );
-        } finally {
-          mergeOwnReads(ownReads);
         }
       }
 
@@ -7762,12 +7794,9 @@ export class DeployEngine {
         // consumers to a name that is not the one the template describes.
         //
         // ITS OWN BAG, exactly like pass 1 and for exactly the same reason: the
-        // pushers dedup, so a name reading a record ANY earlier output already
-        // noted would otherwise see nothing and be published. Pass 1 has by
-        // this point merged every value's reads into the shared bag, so a
-        // length delta here is empty in the common case rather than the rare
-        // one.
-        const nameReads: string[] = [];
+        // pushers dedup, so a name sharing a bag with any earlier output's
+        // reads could see nothing added and be published.
+        const nameReads: RedactedAttributeRead[] = [];
         let exportName: unknown;
         try {
           try {
@@ -7781,7 +7810,6 @@ export class DeployEngine {
                   });
             refuseMaskedOutputReads(outputKey, nameReads);
           } finally {
-            mergeOwnReads(nameReads);
             // Merge what the name's resolution learned back into the PASS map.
             //
             // `finally`, and that is the load-bearing part rather than a style

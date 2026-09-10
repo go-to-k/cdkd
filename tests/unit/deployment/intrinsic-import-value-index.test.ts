@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type {
+  RedactedAttributeRead,
   ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
@@ -325,7 +326,7 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       const backend = mockBackend([
         { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
       ]);
-      const redactedAttributeReads: string[] = [];
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
 
       const result = await resolver.resolve(
         { 'Fn::ImportValue': 'Token' },
@@ -337,8 +338,14 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       // untouched stack.
       expect(result).toBe('***');
       expect(redactedAttributeReads).toHaveLength(1);
-      expect(redactedAttributeReads[0]).toContain("Fn::ImportValue 'Token'");
-      expect(redactedAttributeReads[0]).toContain('Producer');
+      expect(redactedAttributeReads[0]?.display).toContain("Fn::ImportValue 'Token'");
+      expect(redactedAttributeReads[0]?.display).toContain('Producer');
+      // The ROUTING fields (issue #2847 round 4). `cross-stack` carries NO
+      // `logicalId`, and that absence is what routes the entry to the FOREIGN
+      // remedy arm -- the deploy engine used to infer it from the spelling
+      // carrying no dot.
+      expect(redactedAttributeReads[0]?.kind).toBe('cross-stack');
+      expect(redactedAttributeReads[0]?.logicalId).toBeUndefined();
     });
 
     it('records NOTHING for an ordinary producer output (the negative case)', async () => {
@@ -346,7 +353,7 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       const backend = mockBackend([
         { stackName: 'Producer', region: 'us-east-1', outputs: { Token: 'ordinary-value' } },
       ]);
-      const redactedAttributeReads: string[] = [];
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
 
       const result = await resolver.resolve(
         { 'Fn::ImportValue': 'Token' },
@@ -369,7 +376,7 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       const backend = mockBackend([
         { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
       ]);
-      const redactedAttributeReads: string[] = [];
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
       const recordedSecretValues: RecordedSecretValues = new Map();
 
       const result = await resolver.resolve(
@@ -405,7 +412,7 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       const backend = mockBackend([
         { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
       ]);
-      const redactedAttributeReads: string[] = [];
+      const redactedAttributeReads: RedactedAttributeRead[] = [];
 
       const result = await resolver.resolve(
         { 'Fn::ImportValue': 'Token' },

@@ -1205,9 +1205,18 @@ function refuseMaskedReplayBaseline(
   // Cloud Control fallback" names a route that cannot put a mask HERE, and its
   // re-import remedy pointed at the wrong record. What CAN: `cdkd orphan
   // --force` splicing a mask into a referring resource's properties, and
-  // `cdkd import` resolving an `Fn::GetAtt` over an already-masked attribute
-  // into the properties it persists. Both are a mask copied FROM another
-  // record's attribute, which is why the remedy names that record.
+  // `cdkd import` resolving an `Fn::GetAtt` OR A `Ref` over an already-masked
+  // record into the properties it persists. Both are a mask copied FROM
+  // another record, which is why the remedy names that record.
+  //
+  // THE `Ref` HALF IS NOT DECORATION and it is the route a user is likelier to
+  // hit (issue #2847 round-4 review). `cdkd import` builds a BAGLESS resolver
+  // context, so `refStateLookupFromResource` serves the mask rather than
+  // skipping it — that is the whole opt-in argument — and
+  // `resolveImportedProperties` then persists `'***'` for a `{Ref: X}` whose
+  // state key is masked, exactly as it does for a masked `Fn::GetAtt`. Naming
+  // only `Fn::GetAtt` sent a user grepping their template for one that is not
+  // there. The ACTION is unchanged: repair the record that HOLDS the mask.
   throw new CdkdError(
     `Cannot roll ${logicalId} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}'), so cdkd would write that literal to the live resource. There are ` +
@@ -1216,9 +1225,9 @@ function refuseMaskedReplayBaseline(
       `update (change one of its properties, e.g. a nonce), so its handler runs again and ` +
       `supplies the real value — an ordinary re-deploy leaves the resource unchanged, so the ` +
       `handler does not run and the mask stays. (2) The value was SPLICED from a masked ` +
-      `ATTRIBUTE of another record — by 'cdkd orphan --force', or by 'cdkd import' resolving ` +
-      `an Fn::GetAtt over an attribute the Cloud Control fallback had masked. Repair the ` +
-      `record that HOLDS the masked attribute ('cdkd import <stack> ` +
+      `record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' resolving ` +
+      `an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. Repair the ` +
+      `record that HOLDS the mask ('cdkd import <stack> ` +
       `--resource <logicalId>=<physicalId> --force', granting cloudformation:DescribeType ` +
       `first if the import warned that it could not read the schema), then re-run whichever ` +
       `command wrote this property. See https://github.com/go-to-k/cdkd/issues/2449.`,

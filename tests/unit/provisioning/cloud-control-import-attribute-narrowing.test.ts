@@ -87,6 +87,24 @@ function wireGetResource(model: Record<string, unknown>): void {
   });
 }
 
+/**
+ * The ONE debug line whose text contains `needle`, or a failing marker string.
+ *
+ * Per-line selection rather than a joined blob: two modules emit a debug line
+ * carrying the template's own `Type`, so a negative over the join is satisfied
+ * whenever EITHER is sanitised. It returns a marker instead of throwing so a
+ * miss fails on the assertion that names the line, not on a helper stack.
+ */
+function debugLineContaining(needle: string): string {
+  const matches = mockDebug.mock.calls
+    .map((c) => String(c[0]))
+    .filter((line) => line.includes(needle));
+  if (matches.length !== 1) {
+    return `EXPECTED EXACTLY ONE debug line containing ${JSON.stringify(needle)}, got ${matches.length}`;
+  }
+  return matches[0] as string;
+}
+
 describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -413,13 +431,62 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     // NEGATIVE: neither the escape nor the injected newline survives.
     expect(warned).not.toContain('\u001b');
     expect(warned).not.toContain('\nFAKE');
-    // G5: the DEBUG line beside it takes the same values, and reverting only
-    // that one stayed green while the warn was asserted. It is one `--verbose`
-    // away from a terminal, and a split convention inside one method is how
-    // the next line gets it wrong.
-    const debugged = mockDebug.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(debugged).not.toContain('\u001b');
-    expect(debugged).not.toContain('\nFAKE');
+    // The DEBUG line this path DOES reach is `read-only-properties.ts`'s
+    // FAILURE line -- its own `displaySafe` call, one module further out, and
+    // reached here because `getTopLevelReadOnlyProperties` catches the
+    // rejection. Selected BY ITS OWN TEXT rather than asserted over the joined
+    // debug stream: a blob cannot say WHICH line was sanitised, and the
+    // previous revision of this case leaned on that blob to claim it fenced a
+    // line in `cloud-control-provider.ts` that this path never executes (the
+    // mask debug is gated on `attributeNames !== undefined`, which is exactly
+    // what a rejected DescribeType does not produce -- measured at ONE debug
+    // call, from the failure arm). The case below reaches that one.
+    const failureDebug = debugLineContaining('Failed to resolve read-only properties');
+    expect(failureDebug).toContain('AWS::Zz2847::Thing');
+    expect(failureDebug).not.toContain('\u001b');
+    expect(failureDebug).not.toContain('\nFAKE');
+  });
+
+  it('SANITISES the type in BOTH debug lines a SUCCESSFUL schema lookup emits', async () => {
+    // THE CASE THE SANITISATION FENCE WAS MISSING (issue #2847 round-4 review,
+    // gap T-G1). Two debug lines interpolate the template's own `Type` and are
+    // reachable ONLY when `cloudformation:DescribeType` SUCCEEDS:
+    // `read-only-properties.ts`'s "Resolved N top-level read-only properties"
+    // and `cloud-control-provider.ts`'s "Masked N non-attribute key(s)", the
+    // latter gated on `attributeNames !== undefined` AND `maskedCount > 0`.
+    // The sibling case above mocks DescribeType to REJECT, so it reaches
+    // neither, and un-sanitising the mask line was GREEN under it.
+    const HOSTILE_TYPE = 'AWS::Zz2847::Thing\u001b[31m\nFAKE: import succeeded';
+    mockCloudFormationSend.mockResolvedValue({ Schema: APNS_SCHEMA });
+    // `Id` is the schema's only readOnly member, so `PrivateKey` is masked and
+    // `maskedCount` is 1 -- the mask line's other gate.
+    wireGetResource({ Id: 'chan-1', PrivateKey: APNS_PRIVATE_KEY });
+
+    const result = await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: HOSTILE_TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+
+    // The narrowing really ran, so the debug assertions below are about lines
+    // the run EMITTED rather than about absent ones.
+    expect(result?.attributes).toEqual({ Id: 'chan-1', PrivateKey: SECRET_MASK });
+
+    // ONE ASSERTION PER LINE, each selected by its own text. Asserting over the
+    // joined debug stream would let either line carry the payload while the
+    // other's sanitisation satisfied the negative.
+    const maskDebug = debugLineContaining('Masked 1 non-attribute key(s)');
+    expect(maskDebug).toContain('AWS::Zz2847::Thing');
+    expect(maskDebug).not.toContain('\u001b');
+    expect(maskDebug).not.toContain('\nFAKE');
+
+    const resolvedDebug = debugLineContaining('top-level read-only properties for');
+    expect(resolvedDebug).toContain('AWS::Zz2847::Thing');
+    expect(resolvedDebug).not.toContain('\u001b');
+    expect(resolvedDebug).not.toContain('\nFAKE');
   });
 
   it('REJECTS when the masking step throws, rather than degrading to empty attributes', async () => {

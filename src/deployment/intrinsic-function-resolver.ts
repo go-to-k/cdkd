@@ -489,7 +489,13 @@ export function refStateLookupFromResource(
   onMaskedValue?: (key: string) => void
 ): RefStateLookup {
   return (keys) => {
-    let maskedKey: string | undefined;
+    // THE KEY AND ITS NOTIFIER ARE RECORDED TOGETHER, so the invariant is
+    // type-level rather than a comment: a skipped mask exists only where there
+    // is a callback to report it to. An earlier revision kept a bare
+    // `maskedKey` and ended with `onMaskedValue?.(maskedKey)`, whose optional
+    // call is UNREACHABLE — the arm below returns when the callback is absent
+    // — and so read as though the two could disagree.
+    let masked: { readonly key: string; readonly notify: (key: string) => void } | undefined;
     for (const source of [resource.properties, resource.attributes]) {
       if (!source) continue;
       for (const key of keys) {
@@ -503,14 +509,14 @@ export function refStateLookupFromResource(
             // byte for byte: the mask is RETURNED, four readers recognise it,
             // and this function has changed nothing for them.
             if (onMaskedValue === undefined) return value;
-            maskedKey ??= key;
+            masked ??= { key, notify: onMaskedValue };
             continue;
           }
           return value;
         }
       }
     }
-    if (maskedKey !== undefined) onMaskedValue?.(maskedKey);
+    if (masked !== undefined) masked.notify(masked.key);
     return undefined;
   };
 }
@@ -863,6 +869,58 @@ function nestedStackChildRegionFromLocalArn(physicalId: string | undefined): str
 }
 
 /**
+ * One entry in {@link ResolverContext.redactedAttributeReads} — a read the
+ * resolver served out of a REDACTED persisted record.
+ *
+ * STRUCTURED RATHER THAN A JOINED STRING, and that is the fix for a defect
+ * CLASS rather than for one consumer (issue
+ * [#2847](https://github.com/go-to-k/cdkd/issues/2847) review rounds 3 and 4).
+ * The bag used to hold only `display`, and `DeployEngine` recovered the
+ * structure back out of it with two regexes — one deciding the remedy text,
+ * one deciding whether an Outputs read is refused. Re-parsing a
+ * human-readable string produced a blocker twice, by two different mechanisms:
+ * first a SPELLING coupling (a producer rename silently disarms the consumer),
+ * then a CHARSET one (`/^Ref ([A-Za-z0-9]+) .../` cannot match a hyphenated
+ * logical id, which cdkd accepts because it validates no logical-id charset
+ * and never hands the template to CloudFormation — so the Outputs guard
+ * silently published a raw physical id for `{"Ref": "My-Table"}`).
+ *
+ * With the structure carried in the data, a consumer asks a FIELD. Neither a
+ * rename nor a character outside some regex's class can disarm one, and the
+ * rendering is free to change without a consumer noticing.
+ *
+ * `display` is the only member a user ever sees; the other two are for
+ * routing. `display` may be MASKED (both the attribute name and the
+ * cross-stack origin go through `maskSecretsForLog` on the way in, since the
+ * deploy engine joins these into a throw at DEFAULT verbosity), which is why
+ * dedup keys on `display`: that is what the message would repeat.
+ */
+export interface RedactedAttributeRead {
+  /**
+   * WHICH resolution branch served the mask. `ref-state-key` is the only kind
+   * whose fall-through emits a value NO downstream reader recognises (the raw
+   * physical id), which is why `resolveOutputs` refuses on it alone — see the
+   * scoping argument at `DeployEngine`'s `refuseMaskedOutputReads`.
+   */
+  readonly kind: 'ref-state-key' | 'attribute' | 'cross-stack';
+  /**
+   * The logical id whose STATE RECORD holds the mask — the target a
+   * `cdkd import --resource <id>=... --force` would repair. NOT the resource
+   * being provisioned. Absent for `cross-stack`, whose record lives in another
+   * stack's state and which no re-import here can reach.
+   */
+  readonly logicalId?: string;
+  /**
+   * The state key (`ref-state-key`) or attribute name (`attribute`) the read
+   * named. Informational — no consumer routes on it today; it is here so the
+   * `display` rendering stays derivable from the entry.
+   */
+  readonly key?: string;
+  /** The user-facing rendering, built where the structure is still known. */
+  readonly display: string;
+}
+
+/**
  * Resolver context for intrinsic functions
  */
 export interface ResolverContext {
@@ -998,17 +1056,30 @@ export interface ResolverContext {
    * itself is the signal.
    *
    * The resolver RECORDS; it never throws for this, and the difference decides
-   * whether a stack stays deployable. Every context the deploy engine builds
-   * carries the bag, the DIFF context included, but only the two PROVISIONING
-   * sites read it. A throw inside the diff would be caught by
-   * `resolveBestEffort`, which keeps the raw intrinsic — so the desired side
+   * whether a stack stays deployable. A throw inside the diff would be caught
+   * by `resolveBestEffort`, which keeps the raw intrinsic — so the desired side
    * would stop matching the `***` in state, the resource would look CHANGED on
    * every run, and the provisioning pass would then fail it. Recording instead
    * leaves the diff comparing `***` against `***`, i.e. a clean NO_CHANGE, so a
    * stack nobody has edited keeps deploying and only a dependent that ACTUALLY
    * has to be written is refused.
+   *
+   * **PRESENCE OF THE BAG IS THE OPT-IN, so it belongs ONLY on a context whose
+   * reads something will READ** (issue #2847 round-4 review). An earlier
+   * revision of this note said the deploy engine puts it on EVERY context, the
+   * diff one included, on the argument that an unread array costs nothing. That
+   * stopped being true the moment `resolveRefValue` began consulting the bag to
+   * decide whether {@link refStateLookupFromResource} may SKIP a masked leaf:
+   * on the diff context the skip fired with no reader behind it, so `{Ref: X}`
+   * resolved to the raw physical id and was compared against the `'***'` in
+   * state — a pre-existing #2274 stack that reported NO_CHANGE and deployed
+   * clean now reported a spurious UPDATE and then hard-failed at the
+   * provisioning refusal. Fail-closed, so never an exposure, but a regression
+   * for existing users and a divergence from standalone `cdkd diff` (bagless,
+   * still NO_CHANGE). `DeployEngine.buildResolverContext` therefore takes the
+   * bag from its CALLER, and only the two provisioning sites pass one.
    */
-  redactedAttributeReads?: string[];
+  redactedAttributeReads?: RedactedAttributeRead[];
   /**
    * Internal hook used while evaluating the template `Conditions` section.
    * A CFn Condition can reference ANOTHER named condition via
@@ -3583,7 +3654,7 @@ export class IntrinsicFunctionResolver {
     if (resource) {
       const refValue = this.resolveRefValue(logicalId, resource, context);
       // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
-      // not-in-class(refValue): a Ref result -- everything cfnRefValueFromPhysicalId can return for a RESOURCE, which is FOUR things: the physical id from state; a SEGMENT of it (after-pipe / before-first-pipe / at-index / the name extracted from an ARN); the WAFv2 compound recomposed from that ARN; or a state-recovered Ref key (TableName / SelectionId / RepositoryId / an AppSync ARN) read out of this record's own persisted properties / attributes. The last is the only member that could be SECRET_MASK, and refStateLookupFromResource now refuses to serve a masked leaf and notes it instead, so no branch can return one. A pseudo-parameter value is NOT in this enumeration -- this arm is the RESOURCE branch, and a pseudo-parameter is handled further down (a previous revision listed it here, where it is unreachable). A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog on that branch.
+      // not-in-class(refValue): a Ref result -- everything cfnRefValueFromPhysicalId can return for a RESOURCE, which is FOUR things: the physical id from state; a SEGMENT of it (after-pipe / before-first-pipe / at-index / the name extracted from an ARN); the WAFv2 compound recomposed from that ARN; or a state-recovered Ref key (TableName / SelectionId / RepositoryId / an AppSync ARN) read out of this record's own persisted properties / attributes. The last is the only member that could be SECRET_MASK, and it is IN-CLASS either way -- do not read the opt-in as removing it. Traced rather than reasoned from the design intent: refStateLookupFromResource skips a masked leaf ONLY for a caller that passed an onMaskedValue, and resolveRefValue passes one only when the context carries a redactedAttributeReads bag, so every BAGLESS caller (cdkd diff, cdkd scrub, cdkd import, cdkd export's child-parameter pass) still gets SECRET_MASK back here. That is safe for the ordinary reason rather than a special one: SECRET_MASK is not plaintext, and the four readers that recognise it still do. A pseudo-parameter value is NOT in this enumeration -- this arm is the RESOURCE branch, and a pseudo-parameter is handled further down (a previous revision listed it here, where it is unreachable). A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog on that branch.
       this.logger.debug(`Resolved Ref to resource: ${logicalId} -> ${refValue}`);
       return refValue;
     }
@@ -3784,11 +3855,31 @@ export class IntrinsicFunctionResolver {
    * attributes), all cdkd literals.
    */
   private noteRefStateMask(logicalId: string, key: string, context: ResolverContext): void {
-    if (context.redactedAttributeReads === undefined) return;
-    const read = `Ref ${logicalId} (state key ${key})`;
-    if (!context.redactedAttributeReads.includes(read)) {
-      context.redactedAttributeReads.push(read);
-    }
+    this.pushRedactedAttributeRead(context, {
+      kind: 'ref-state-key',
+      logicalId,
+      key,
+      display: `Ref ${logicalId} (state key ${key})`,
+    });
+  }
+
+  /**
+   * The ONE writer of {@link ResolverContext.redactedAttributeReads}, so the
+   * bag's absent-context check and its de-duplication rule live in one place
+   * rather than being re-spelled at each of the three pushing branches.
+   *
+   * De-dupes on `display` — deliberately, and not on the structured fields.
+   * `display` is what the deploy engine joins into its message, so two entries
+   * rendering identically would repeat a phrase for no reader benefit; and it
+   * preserves the pre-#2847-round-4 behaviour byte for byte, since `display` is
+   * exactly the string the bag used to hold. Two entries whose attribute names
+   * only DIFFER above the mask therefore still collapse, as they always did.
+   */
+  private pushRedactedAttributeRead(context: ResolverContext, read: RedactedAttributeRead): void {
+    const bag = context.redactedAttributeReads;
+    if (bag === undefined) return;
+    if (bag.some((entry) => entry.display === read.display)) return;
+    bag.push(read);
   }
 
   /**
@@ -4156,14 +4247,23 @@ export class IntrinsicFunctionResolver {
     if (attributeIsDeclared && context.recordedSecretValues) {
       recordMaskOnlyValuesIn(value, context.recordedSecretValues);
     }
+    // The bag test stays HERE as well as inside `pushRedactedAttributeRead`:
+    // a bagless context (the diff / no-op resolver, `cdkd scrub`, `cdkd
+    // import`) must not pay for `maskSecretsForLog` on the hot path.
     if (context.redactedAttributeReads !== undefined && carriesSecretMask(value)) {
       // Masked for the reason the `origin` pusher states (issue #2827 review
       // round 2): `attributeName` is `resolveGetAtt`'s resolved one, and this
       // array is joined into a default-verbosity throw by the deploy engine.
-      const read = `${logicalId}.${this.maskSecretsForLog(attributeName, context)}`;
-      if (!context.redactedAttributeReads.includes(read)) {
-        context.redactedAttributeReads.push(read);
-      }
+      // `logicalId` is NOT masked, exactly as before: it is the routing key the
+      // remedy builds its `--resource <id>=` command from, and that command has
+      // always interpolated it.
+      const maskedAttributeName = this.maskSecretsForLog(attributeName, context);
+      this.pushRedactedAttributeRead(context, {
+        kind: 'attribute',
+        logicalId,
+        key: maskedAttributeName,
+        display: `${logicalId}.${maskedAttributeName}`,
+      });
     }
     return value;
   }
@@ -6426,12 +6526,20 @@ export class IntrinsicFunctionResolver {
         // false, and the value travels — `DeployEngine.refuseRedactedAttributeReads`
         // joins this array into a throw at DEFAULT verbosity.
         //
-        // Masked BEFORE the dedup, not after: `includes` would otherwise compare
-        // a raw candidate against masked entries and push a duplicate.
+        // Masked BEFORE the dedup, not after: the dedup compares `display`, so
+        // a raw candidate would otherwise be compared against masked entries
+        // and push a duplicate.
+        //
+        // NO `logicalId`, and that absence is the ROUTING FACT rather than a
+        // missing field: this read resolved through ANOTHER stack, whose masked
+        // record no `cdkd import` in this stack can reach. `maskedRecordRemedyFor`
+        // reads the absence directly instead of inferring it from a spelling
+        // that carries no dot.
         const loggedOrigin = this.maskSecretsForLog(origin, context);
-        if (!context.redactedAttributeReads.includes(loggedOrigin)) {
-          context.redactedAttributeReads.push(loggedOrigin);
-        }
+        this.pushRedactedAttributeRead(context, {
+          kind: 'cross-stack',
+          display: loggedOrigin,
+        });
       }
     }
     if (!carriesDynamicReference(value)) return value;

@@ -1,14 +1,16 @@
 /**
  * `DeployEngine.maskedRecordRemedyFor` — the remedy clause of the masked-attribute
  * refusal, one case per `reads` SHAPE (issue
- * [#2847](https://github.com/go-to-k/cdkd/issues/2847), round-7 review).
+ * [#2847](https://github.com/go-to-k/cdkd/issues/2847), round-7 review; re-aimed
+ * by the round-4 review of the security fix).
  *
  * WHY THIS FILE EXISTS AS A SHAPE TABLE. `ResolverContext.redactedAttributeReads`
- * is heterogeneous — `noteAttributeSecrecy` writes `<LogicalId>.<Attribute>`,
- * `reresolveCrossStackValue` writes three cross-stack forms — and SIX successive
- * review rounds rewrote this remedy as prose that the reader was expected to
- * apply to whichever shape they had. Every rewrite was correct for the shape its
- * author had in mind and wrong for one they had not:
+ * is heterogeneous — `noteAttributeSecrecy` writes an ATTRIBUTE read,
+ * `noteRefStateMask` a REF-STATE-KEY one, `reresolveCrossStackValue` three
+ * CROSS-STACK forms — and SIX successive review rounds rewrote this remedy as
+ * prose that the reader was expected to apply to whichever shape they had. Every
+ * rewrite was correct for the shape its author had in mind and wrong for one
+ * they had not:
  *
  *  - interpolating the engine's own `logicalId` named the CONSUMER, so the
  *    advised `--force` re-import overwrote an innocent row;
@@ -21,9 +23,20 @@
  *  - and it has no referent at all for the `Fn::ImportValue` /
  *    `Fn::GetStackOutput` forms, whose only dots are sentence periods.
  *
- * The remedy is now COMPUTED, so the fence is a table over the shapes rather
- * than an assertion about one sentence. A new `reads` shape that this table has
- * no row for is the signal to extend the helper.
+ * THE STRUCTURE NOW TRAVELS WITH THE ENTRY, which is round 4's change and the
+ * reason several rows below now assert the OPPOSITE of what they used to. The
+ * partition ran on two regexes over the rendered text until a second defect of
+ * the same class landed: the id class `[A-Za-z0-9]+` cannot match a HYPHENATED
+ * logical id, which cdkd accepts (it validates no charset and never hands the
+ * template to CloudFormation). Falling out of that pattern cost a vaguer message
+ * here and cost the REFUSAL ITSELF at `resolveOutputs`' guard, which shared it —
+ * one rendering serving two consumers whose safe directions are opposite. So
+ * `kind` / `logicalId` are carried in the entry and both consumers ask a field.
+ *
+ * The builders below spell the DISPLAY rendering, which is a literal this file
+ * owns; the producer/consumer pair is driven end to end, with no literal, by
+ * `ref-state-mask-spelling-coupling.test.ts`. What is fenced HERE is the
+ * partition, per shape.
  *
  * The private static is reached through a cast rather than by driving a whole
  * deploy: what is under test is the STRING this function derives, and routing it
@@ -32,31 +45,55 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import type { RedactedAttributeRead } from '../../../src/deployment/intrinsic-function-resolver.js';
 
 const remedyFor = (
-  reads: readonly string[],
+  reads: readonly RedactedAttributeRead[],
   resources: Record<string, { resourceType?: string }> = {}
 ): string =>
   (
     DeployEngine as unknown as {
       maskedRecordRemedyFor(
-        reads: readonly string[],
+        reads: readonly RedactedAttributeRead[],
         resources: Record<string, { resourceType?: string }>
       ): string;
     }
   ).maskedRecordRemedyFor(reads, resources);
 
+/** What `noteAttributeSecrecy` pushes for a masked `Fn::GetAtt`. */
+const attr = (logicalId: string, attributeName: string): RedactedAttributeRead => ({
+  kind: 'attribute',
+  logicalId,
+  key: attributeName,
+  display: `${logicalId}.${attributeName}`,
+});
+
+/** What `noteRefStateMask` pushes for a masked `Ref` state key. */
+const refKey = (logicalId: string, key: string): RedactedAttributeRead => ({
+  kind: 'ref-state-key',
+  logicalId,
+  key,
+  display: `Ref ${logicalId} (state key ${key})`,
+});
+
+/** What `reresolveCrossStackValue` pushes — no `logicalId`, by construction. */
+const crossStack = (display: string): RedactedAttributeRead => ({ kind: 'cross-stack', display });
+
 /** A state map in which `<id>` is a nested stack. */
 const nested = (id: string) => ({ [id]: { resourceType: 'AWS::CloudFormation::Stack' } });
 
 /** The three cross-stack shapes `reresolveCrossStackValue` really writes. */
-const IMPORT_VALUE = "Fn::ImportValue 'SharedDbSecret' (producer ProducerStack / us-east-1)";
-const GET_STACK_OUTPUT = "Fn::GetStackOutput 'DbSecret' (producer ProducerStack / us-east-1)";
-const NESTED_STACK = 'nested stack Child Outputs.Foo';
+const IMPORT_VALUE = crossStack(
+  "Fn::ImportValue 'SharedDbSecret' (producer ProducerStack / us-east-1)"
+);
+const GET_STACK_OUTPUT = crossStack(
+  "Fn::GetStackOutput 'DbSecret' (producer ProducerStack / us-east-1)"
+);
+const NESTED_STACK = crossStack('nested stack Child Outputs.Foo');
 
 describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () => {
   it('names the GetAtt TARGET for the local shape, not the consumer', () => {
-    const remedy = remedyFor(['Cr.Secret']);
+    const remedy = remedyFor([attr('Cr', 'Secret')]);
 
     expect(remedy).toContain("'cdkd import <stack> --resource Cr=<physicalId> --force'");
     // The whole point of the round-6 fix: the consumer must not be advised.
@@ -65,12 +102,15 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy).not.toContain('ANOTHER stack');
   });
 
-  it('takes the FIRST dot, so a dotted attribute path still yields the resource id', () => {
-    // `Cr.Endpoint.Password` is a real pinned entry shape. A right-most read
-    // would advise `--resource Cr.Endpoint=`, which is not a logical id.
-    const remedy = remedyFor(['Cr.Endpoint.Password']);
+  it('names the RESOURCE for a dotted attribute path, not a prefix of the path', () => {
+    // `Cr.Endpoint.Password` is a real pinned entry shape. The retired
+    // first-dot capture was one reading of that rendering among several, each
+    // wrong for some shape; the entry now carries `Cr` outright, so no reading
+    // is involved and `--resource Cr.Endpoint=` — not a logical id — cannot be
+    // produced by any rendering.
+    const remedy = remedyFor([attr('Cr', 'Endpoint.Password')]);
 
-    expect(remedy).toContain("--resource Cr=<physicalId>");
+    expect(remedy).toContain('--resource Cr=<physicalId>');
     expect(remedy).not.toContain('Cr.Endpoint=');
   });
 
@@ -98,7 +138,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     // One read in total -> definite singular.
     expect(remedyFor([IMPORT_VALUE])).toContain('The read above resolves through');
     // Several reads, one of them foreign -> partitive singular.
-    expect(remedyFor(['Cr.Secret', IMPORT_VALUE])).toContain(
+    expect(remedyFor([attr('Cr', 'Secret'), IMPORT_VALUE])).toContain(
       'One of the reads above resolves through'
     );
     // Several foreign -> plural.
@@ -117,14 +157,14 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   });
 
   it('emits BOTH arms when the reads mix local and cross-stack entries', () => {
-    const remedy = remedyFor(['Cr.Secret', IMPORT_VALUE]);
+    const remedy = remedyFor([attr('Cr', 'Secret'), IMPORT_VALUE]);
 
     expect(remedy).toContain('--resource Cr=<physicalId>');
     expect(remedy).toContain('ANOTHER stack');
   });
 
   it('de-duplicates repeated targets and emits ONE COMMAND PER distinct target', () => {
-    const remedy = remedyFor(['Cr.Secret', 'Cr.Other', 'Db.Password']);
+    const remedy = remedyFor([attr('Cr', 'Secret'), attr('Cr', 'Other'), attr('Db', 'Password')]);
 
     // A single command beside a list of names reads as though it covered them
     // all, so each target gets its own copy-pasteable command.
@@ -133,17 +173,17 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy.match(/cdkd import/g)?.length).toBe(2);
   });
 
-  // THE FIFTH SHAPE, and the one the anchored match alone got wrong. A nested
-  // stack's output attribute reaches the cross-stack re-resolution arm only
-  // when it `carriesDynamicReference`, and `'***'` does not (that predicate
+  // A nested stack's output attribute reaches the cross-stack re-resolution arm
+  // only when it `carriesDynamicReference`, and `'***'` does not (that predicate
   // tests for `{{resolve:`) — so a MASKED child output falls through to
-  // `noteAttributeSecrecy` and is pushed in the LOCAL spelling `Child.Outputs.X`.
-  // The record is the CHILD's `state.outputs`, from which the parent's
-  // attributes are rebuilt every deploy, so no `--resource` here clears it:
-  // `NestedStackProvider` implements no `import()`, so the command would report
-  // `skipped-no-impl` and change nothing.
-  it('routes a MASKED nested-stack output to the cross-stack arm despite its local-looking spelling', () => {
-    const remedy = remedyFor(['Child.Outputs.DbPassword'], nested('Child'));
+  // `noteAttributeSecrecy` and is pushed as an ordinary ATTRIBUTE read on the
+  // child's own logical id. The record is the CHILD's `state.outputs`, from
+  // which the parent's attributes are rebuilt every deploy, so no `--resource`
+  // here clears it: `NestedStackProvider` implements no `import()`, so the
+  // command would report `skipped-no-impl` and change nothing. This is why
+  // `kind` alone cannot partition — the resource TYPE has to be consulted.
+  it('routes a MASKED nested-stack output to the cross-stack arm despite its local KIND', () => {
+    const remedy = remedyFor([attr('Child', 'Outputs.DbPassword')], nested('Child'));
 
     expect(remedy).not.toContain('cdkd import');
     expect(remedy).not.toContain('--resource Child=');
@@ -151,7 +191,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   });
 
   it('still treats an ordinary dotted attribute as LOCAL', () => {
-    const remedy = remedyFor(['Cr.Endpoint.Address']);
+    const remedy = remedyFor([attr('Cr', 'Endpoint.Address')]);
 
     expect(remedy).toContain('--resource Cr=<physicalId>');
     expect(remedy).not.toContain('ANOTHER stack');
@@ -162,28 +202,24 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   // documents `Outputs.<Key>` as a real Fn::GetAtt attribute, so a masked one
   // would be misrouted to the foreign arm and its reachable remedy withheld.
   it('treats an Outputs.* attribute on a NON-nested-stack resource as LOCAL', () => {
-    const remedy = remedyFor(
-      ['Pp.Outputs.DbEndpoint'],
-      { Pp: { resourceType: 'AWS::ServiceCatalog::CloudFormationProvisionedProduct' } }
-    );
+    const remedy = remedyFor([attr('Pp', 'Outputs.DbEndpoint')], {
+      Pp: { resourceType: 'AWS::ServiceCatalog::CloudFormationProvisionedProduct' },
+    });
 
     expect(remedy).toContain('--resource Pp=<physicalId>');
     expect(remedy).not.toContain('ANOTHER stack');
   });
 
-  // THE SIXTH SHAPE (issue #2847, independent review round): `Ref <LogicalId>
-  // (state key <Key>)`, pushed by `IntrinsicFunctionResolver.noteRefStateMask`
-  // when the value CloudFormation's `Ref` returns is recovered from a state key
-  // rather than from the physical id. The anchored `LOCAL_MASKED_READ` cannot
-  // see it (no dot follows the leading word), so without its own regex the
-  // partition would call it FOREIGN and withhold the one remedy that reaches
-  // the record.
-  it('routes the Ref state-key shape to the LOCAL arm and names the right resource', () => {
-    const remedy = remedyFor(['Ref MyTable (state key TableName)']);
+  // THE REF-STATE-KEY KIND (issue #2847, independent review round), pushed by
+  // `IntrinsicFunctionResolver.noteRefStateMask` when the value
+  // CloudFormation's `Ref` returns is recovered from a state key rather than
+  // from the physical id.
+  it('routes the Ref state-key kind to the LOCAL arm and names the right resource', () => {
+    const remedy = remedyFor([refKey('MyTable', 'TableName')]);
 
     expect(remedy).toContain("'cdkd import <stack> --resource MyTable=<physicalId> --force'");
     expect(remedy).not.toContain('ANOTHER stack');
-    // The id must be the resource, never the leading literal.
+    // The id must be the resource, never the leading literal of the rendering.
     expect(remedy).not.toContain('--resource Ref=');
   });
 
@@ -194,7 +230,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     // as a state key, so the read is cdkd's own and no template edit removes
     // it. An arm that only re-stated the command would leave the message
     // carrying advice that cannot be followed.
-    const remedy = remedyFor(['Ref MyTable (state key TableName)']);
+    const remedy = remedyFor([refKey('MyTable', 'TableName')]);
 
     expect(remedy).toContain("CDKD's own read");
     expect(remedy).toContain('does not apply');
@@ -202,18 +238,18 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
 
   it('does NOT emit the Ref clause for the ordinary GetAtt shape', () => {
     // The other direction: a clause that always fires says nothing.
-    expect(remedyFor(['Cr.Secret'])).not.toContain("CDKD's own read");
+    expect(remedyFor([attr('Cr', 'Secret')])).not.toContain("CDKD's own read");
   });
 
   it('emits ONE command for a resource reached by BOTH a Ref and a GetAtt read', () => {
-    // De-duplication has to span the two spellings, or the message advises the
+    // De-duplication has to span the two kinds, or the message advises the
     // same `--force` overwrite twice and reads as two separate repairs.
-    const remedy = remedyFor(['MyTable.TableARN', 'Ref MyTable (state key TableName)']);
+    const remedy = remedyFor([attr('MyTable', 'TableARN'), refKey('MyTable', 'TableName')]);
 
     expect(remedy.match(/cdkd import/g)?.length).toBe(1);
     expect(remedy).toContain('--resource MyTable=<physicalId>');
     // Not just de-duplicated — BOTH reads must be on the local side. Without
-    // this line the case passes under a partition that drops the `Ref` spelling
+    // this line the case passes under a partition that drops the `Ref` kind
     // to the foreign arm, since the surviving GetAtt read still emits exactly
     // one command.
     expect(remedy).not.toContain('ANOTHER stack');
@@ -221,46 +257,47 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
 
   it('does not advise a local re-import for a Ref whose target is a NESTED STACK', () => {
     // The nested-stack exclusion is applied by resource TYPE, so it must reach
-    // the new spelling too rather than being wired to the dotted one.
-    const remedy = remedyFor(['Ref Child (state key TableName)'], nested('Child'));
+    // the Ref kind too rather than being wired to the attribute one.
+    const remedy = remedyFor([refKey('Child', 'TableName')], nested('Child'));
 
     expect(remedy).not.toContain('cdkd import');
     expect(remedy).toContain('ANOTHER stack');
   });
 
-  it('refuses a FORGED Ref spelling built out of a logical id, rather than naming an innocent row', () => {
-    // Found by the issue #2847 security review. cdkd validates no logical-id
-    // charset and never hands the template to CloudFormation, so a resource
-    // literally named `Ref Foo (state key X)` is deployable here — and
-    // `noteAttributeSecrecy` would push `Ref Foo (state key X).SomeAttr` for
-    // it. `LOCAL_MASKED_READ` cannot match that (the space blocks it), so a
-    // START-anchored Ref regex captured `Foo` and advised
-    // `--force`-overwriting Foo's record, which the import typo guard ACCEPTS.
-    // The tail anchor drops it to the foreign arm instead — no command at all.
-    const remedy = remedyFor(['Ref Foo (state key X).SomeAttr'], {
+  it('names the REAL record for a logical id that mimics the Ref rendering', () => {
+    // Found by the issue #2847 security review, and this row now asserts the
+    // OPPOSITE of what it did. cdkd validates no logical-id charset and never
+    // hands the template to CloudFormation, so a resource literally named
+    // `Ref Foo (state key X)` is deployable here, and `noteAttributeSecrecy`
+    // pushes an ATTRIBUTE read whose `display` is
+    // `Ref Foo (state key X).SomeAttr`. A START-anchored Ref regex captured
+    // `Foo` out of that and advised `--force`-overwriting Foo's record, which
+    // the import typo guard ACCEPTS; the tail anchor then dropped the entry to
+    // the FOREIGN arm, which was safe but told the user to act on a producer
+    // stack about a resource in their own.
+    //
+    // Routing on `logicalId` makes both outcomes unreachable: the entry names
+    // the record that really holds the mask, which is the repair the user
+    // needs, and `Foo` is never mentioned.
+    const remedy = remedyFor([attr('Ref Foo (state key X)', 'SomeAttr')], {
       Foo: { resourceType: 'AWS::SQS::Queue' },
+      'Ref Foo (state key X)': { resourceType: 'AWS::SQS::Queue' },
     });
 
-    expect(remedy).not.toContain('cdkd import');
+    expect(remedy).toContain('--resource Ref Foo (state key X)=<physicalId>');
     expect(remedy).not.toContain('--resource Foo=');
-    expect(remedy).toContain('ANOTHER stack');
-    // The forged entry must not pick up the Ref-specific clause either — it is
-    // really an Fn::GetAtt, and the clause says the read cannot be rewritten
-    // away in the template, which is false for one.
+    // It is an `Fn::GetAtt`, so the Ref-specific clause — which says the read
+    // cannot be rewritten away in the template — must still not appear.
     expect(remedy).not.toContain("CDKD's own read");
   });
 
-  it('does NOT emit the Ref clause for a GetAtt whose ATTRIBUTE merely looks like one', () => {
-    // THE FLOOR FOR THE TAIL ANCHOR (issue #2847 round-2 review, T3). The
-    // comment on `REF_STATE_MASKED_READ` reasons about anchoring at BOTH ends
-    // and only the tail was watched: dropping the `^` stayed green. Un-anchored,
-    // `Foo.Ref Bar (state key X)` — an ordinary `Fn::GetAtt` on a resource with
-    // an oddly-named attribute — still routes its target via
-    // `LOCAL_MASKED_READ` (so the command is right) but makes `hasRefStateRead`
-    // true, printing the "cdkd's own read / does not apply" paragraph over a
-    // read the template CAN stop making. A cap without a floor rewards the
-    // inverse regression.
-    const remedy = remedyFor(['Foo.Ref Bar (state key X)'], {
+  it('does NOT emit the Ref clause for a GetAtt whose ATTRIBUTE merely mimics one', () => {
+    // THE FLOOR FOR THE OLD TAIL ANCHOR (issue #2847 round-2 review, T3), kept
+    // because the proposition it pins is still the one that matters: an
+    // ordinary `Fn::GetAtt` on a resource with an oddly-named attribute must
+    // take the attribute arm's advice, not the Ref arm's. It is now decided by
+    // `kind` rather than by where a regex anchors.
+    const remedy = remedyFor([attr('Foo', 'Ref Bar (state key X)')], {
       Foo: { resourceType: 'AWS::SQS::Queue' },
     });
 
@@ -270,7 +307,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy).not.toContain("CDKD's own read");
   });
 
-  // THE SEVENTH SHAPE (issue #2847 round-2 review): a LOCAL target whose
+  // THE UNCLEARABLE-LOCAL ARM (issue #2847 round-2 review): a LOCAL target whose
   // `import()` can never rewrite the bag. `CustomResourceProvider.import`
   // returns `attributes: {}` unconditionally, and `import.ts` carries the
   // PRIOR attributes forward whenever the physical id matches — which it does,
@@ -279,7 +316,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   it.each([['Custom::MyThing'], ['AWS::CloudFormation::CustomResource']])(
     'withholds the re-import command for a %s target and says why',
     (resourceType) => {
-      const remedy = remedyFor(['Cr.Secret'], { Cr: { resourceType } });
+      const remedy = remedyFor([attr('Cr', 'Secret')], { Cr: { resourceType } });
 
       expect(remedy).not.toContain('cdkd import');
       expect(remedy).toContain('Do NOT re-import Cr');
@@ -292,14 +329,14 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   it('still emits the command for an ordinary type (scope control for the custom-resource arm)', () => {
     // The other direction: an exclusion that swallowed every local target
     // would pass both rows above while removing the only remedy that works.
-    const remedy = remedyFor(['Cr.Secret'], { Cr: { resourceType: 'AWS::SSM::Parameter' } });
+    const remedy = remedyFor([attr('Cr', 'Secret')], { Cr: { resourceType: 'AWS::SSM::Parameter' } });
 
     expect(remedy).toContain('--resource Cr=<physicalId>');
     expect(remedy).not.toContain('Do NOT re-import');
   });
 
   it('mixes the arms: a custom resource beside an ordinary local target', () => {
-    const remedy = remedyFor(['Cr.Secret', 'Db.Password'], {
+    const remedy = remedyFor([attr('Cr', 'Secret'), attr('Db', 'Password')], {
       Cr: { resourceType: 'Custom::MyThing' },
       Db: { resourceType: 'AWS::SSM::Parameter' },
     });
@@ -312,14 +349,38 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy.match(/cdkd import/g)?.length).toBe(1);
   });
 
-  it('treats an unrecognised shape as FOREIGN, which never emits a command', () => {
-    // Fail-safe direction: a shape the partition does not recognise costs a
-    // vaguer message rather than a destructive one. No claim is made that this
-    // particular id can reach cdkd — CloudFormation's logical-id grammar is
-    // alphanumeric — only that the arm behaves safely for anything unmatched.
-    const remedy = remedyFor(['My-Resource.Secret']);
+  it('treats an entry carrying NO logicalId as FOREIGN, which never emits a command', () => {
+    // Fail-safe direction, and now a property of the DATA rather than of a
+    // pattern: `cross-stack` is the only kind that omits `logicalId` today, and
+    // a kind added later without one falls here rather than into a command.
+    const remedy = remedyFor([crossStack('some future shape nobody has written yet')]);
 
     expect(remedy).not.toContain('cdkd import');
     expect(remedy).toContain('ANOTHER stack');
+  });
+
+  it('routes a HYPHENATED logical id to the LOCAL arm — the round-4 blocker, remedy side', () => {
+    // The retired regexes' id class was `[A-Za-z0-9]+`, so `My-Table` matched
+    // NEITHER and the entry took the foreign arm: the user was told to act on a
+    // producer stack about a resource in their own, and the one command that
+    // repairs the record was withheld. cdkd accepts such an id
+    // (`overrideLogicalId`, a `--migrate-from-cloudformation` template), so this
+    // is a reachable case rather than a hypothetical.
+    //
+    // The GUARD half of the same blocker — where falling out of the pattern
+    // cost the REFUSAL rather than a sentence — is fenced in
+    // `deploy-engine-outputs-masked-ref-refusal.test.ts`.
+    const attrRemedy = remedyFor([attr('My-Table', 'Arn')], {
+      'My-Table': { resourceType: 'AWS::SQS::Queue' },
+    });
+    expect(attrRemedy).toContain('--resource My-Table=<physicalId>');
+    expect(attrRemedy).not.toContain('ANOTHER stack');
+
+    const refRemedy = remedyFor([refKey('My-Table', 'TableName')], {
+      'My-Table': { resourceType: 'AWS::S3Tables::Table' },
+    });
+    expect(refRemedy).toContain('--resource My-Table=<physicalId>');
+    expect(refRemedy).toContain("CDKD's own read");
+    expect(refRemedy).not.toContain('ANOTHER stack');
   });
 });

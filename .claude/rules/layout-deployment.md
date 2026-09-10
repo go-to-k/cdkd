@@ -10,6 +10,26 @@ Secret redaction / masking / `cdkd scrub`: [layout-deployment-secrets.md](layout
 
 Index of every area: [code-layout.md](code-layout.md).
 
+- **`DeployEngine.buildResolverContext`'s `redactedAttributeReads`** — the
+  masked-read bag ([layout-deployment-secrets.md](layout-deployment-secrets.md)
+  owns what it is FOR). Two shapes here are decisions, each bought by a
+  round-4 blocker on issue
+  [#2847](https://github.com/go-to-k/cdkd/issues/2847). An ENTRY is
+  STRUCTURED (`RedactedAttributeRead`: `kind` / `logicalId` / `key` /
+  `display`), never a rendered string a consumer re-parses — two revisions did
+  and each shipped a defect, first a producer RENAME that silently disarmed the
+  consumer, then a HYPHENATED logical id falling out of an `[A-Za-z0-9]+` id
+  class, which cost a vaguer remedy at `maskedRecordRemedyFor` and cost the
+  REFUSAL ITSELF at `resolveOutputs`' guard, whose safe direction is the
+  opposite and which shared the pattern. And the BAG's PRESENCE is an OPT-IN
+  (it decides whether `refStateLookupFromResource` may SKIP a masked leaf), so
+  it is passed by the CALLER and only the two provisioning sites pass one: set
+  on every context, the skip fired on the deploy-internal DIFF context with no
+  reader behind it, and a pre-existing #2274 stack that reported NO_CHANGE
+  began reporting a spurious UPDATE and then hard-failing. Fenced in both
+  directions by
+  `tests/unit/deployment/deploy-engine-resolver-context-bag-scope.test.ts`.
+
 - **`drain-budget.ts`** — the drain budget, REMAINING wait rather than a
   deadline (#2563). Its own module because the many unit files that mock the
   resolver's exports do not carry a new one. The resource / output /
