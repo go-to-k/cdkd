@@ -1584,52 +1584,84 @@ export class DeployEngine {
    * The remedy clause of {@link refuseRedactedAttributeReads}'s import arm,
    * derived from the `reads` entries rather than described in prose.
    *
-   * `ResolverContext.redactedAttributeReads` is HETEROGENEOUS. Only
-   * `noteAttributeSecrecy` writes the `<LogicalId>.<Attribute>` form whose
-   * target is a resource in THIS stack; `reresolveCrossStackValue` writes
-   * `Fn::ImportValue '...' (producer ...)`, `Fn::GetStackOutput '...'
-   * (producer ...)` and `nested stack <Child> Outputs.<Key>`, whose masked
-   * record lives in ANOTHER stack's state — where no `--resource` in this
-   * stack can reach it.
+   * `ResolverContext.redactedAttributeReads` is HETEROGENEOUS, and the split
+   * that matters is NOT which function pushed the entry — it is whether the
+   * masked record lives in THIS stack's state, because only then can a
+   * `--resource` re-import here reach it. FIVE shapes reach the bag:
    *
-   * Six review rounds tried to express that distinction as an instruction the
-   * reader applies ("the name to the left of the dot"), and each phrasing was
-   * wrong for a shape it had not considered — including one that named a
-   * REAL-but-wrong logical id (`nested stack Child Outputs.Foo` yields
-   * `Outputs`, and `Child` is a template id the import typo guard accepts), so
-   * following it would `--force`-overwrite an innocent row. Partitioning the
-   * entries here makes each arm say only what is true of its own shape, and
-   * makes a new shape a change to THIS function rather than a silent widening
-   * of a sentence.
+   *  - `<LogicalId>.<Attribute>` — `noteAttributeSecrecy`, a resource in this
+   *    stack. LOCAL.
+   *  - `<Child>.Outputs.<Key>` — ALSO `noteAttributeSecrecy`, and the reason
+   *    this function cannot partition by spelling alone. A nested stack's
+   *    output attribute reaches the cross-stack re-resolution arm only when it
+   *    `carriesDynamicReference`, and a value that is already `SECRET_MASK`
+   *    does NOT (that predicate tests for `{{resolve:`), so a masked child
+   *    output falls through to `noteAttributeSecrecy` and is pushed in the
+   *    LOCAL spelling. Its record is the CHILD's `state.outputs` — the parent's
+   *    attributes are rebuilt from it every deploy — so a `--force` re-import
+   *    of `<Child>` in this stack overwrites an innocent row and leaves the
+   *    mask. FOREIGN, despite looking local.
+   *  - `Fn::ImportValue '...' (producer ...)`, `Fn::GetStackOutput '...'
+   *    (producer ...)`, `nested stack <Child> Outputs.<Key>` —
+   *    `reresolveCrossStackValue`. FOREIGN.
    *
-   * The local form is matched CONSERVATIVELY: a leading identifier followed by
-   * a dot, anchored, with no whitespace — the cross-stack forms all contain a
-   * space before their first dot, so they cannot match. A dotted ATTRIBUTE
-   * path (`Cr.Endpoint.Password`) still yields `Cr`, because the capture stops
-   * at the FIRST dot.
+   * Successive review rounds tried to express this as an instruction the reader
+   * applies ("the name to the left of the dot"), and each phrasing was wrong
+   * for a shape it had not considered — twice naming a REAL-but-wrong logical
+   * id that the import typo guard ACCEPTS, so following it would
+   * `--force`-overwrite an innocent row. Partitioning here makes each arm say
+   * only what is true of its own shape, and makes a new shape a change to THIS
+   * function rather than a silent widening of a sentence.
+   *
+   * `LOCAL_MASKED_READ` is ANCHORED — that, not any property of the foreign
+   * spellings, is what excludes them (`Fn::ImportValue '...'` carries no dot at
+   * all and fails at `Fn:`). A dotted ATTRIBUTE path (`Cr.Endpoint.Password`)
+   * still yields `Cr`, because the capture stops at the FIRST dot; the
+   * `Outputs.` second segment is excluded explicitly by
+   * `CHILD_OUTPUT_MASKED_READ`, since that segment is the only thing
+   * distinguishing it from an ordinary dotted attribute.
+   *
+   * An entry matching NEITHER is treated as foreign, which is the safe
+   * direction: the foreign arm names no command, so an unrecognised shape
+   * costs a vaguer message rather than a destructive one.
    */
   private static maskedRecordRemedyFor(reads: readonly string[]): string {
+    /** `<LogicalId>.<Attribute>` — a record in THIS stack. */
+    const LOCAL_MASKED_READ = /^([A-Za-z0-9]+)\.(.+)$/;
+    /** `<Child>.Outputs.<Key>` — a masked NESTED-STACK output; the record is the child's. */
+    const CHILD_OUTPUT_MASKED_READ = /^[A-Za-z0-9]+\.Outputs\./;
+
+    const isLocal = (read: string): boolean =>
+      LOCAL_MASKED_READ.test(read) && !CHILD_OUTPUT_MASKED_READ.test(read);
+
     const localTargets = [
       ...new Set(
         reads
-          .map((read) => /^([A-Za-z0-9]+)\./.exec(read)?.[1])
+          .filter(isLocal)
+          .map((read) => LOCAL_MASKED_READ.exec(read)?.[1])
           .filter((id): id is string => id !== undefined)
       ),
     ];
-    const foreignCount = reads.length - reads.filter((r) => /^[A-Za-z0-9]+\./.test(r)).length;
+    const hasForeign = reads.some((read) => !isLocal(read));
+
     const parts: string[] = [];
     if (localTargets.length > 0) {
-      const named = localTargets.join(', ');
+      // ONE COMMAND PER TARGET: naming several ids beside a single command
+      // reads as though the one command covers them all.
       parts.push(
-        `Re-import the resource that HOLDS the mask — ${named} — with ` +
-          `'cdkd import <stack> --resource ${localTargets[0]}=<physicalId> --force'.`
+        `Re-import the record that HOLDS the mask: ` +
+          localTargets
+            .map((id) => `'cdkd import <stack> --resource ${id}=<physicalId> --force'`)
+            .join(', ') +
+          `.`
       );
     }
-    if (foreignCount > 0) {
+    if (hasForeign) {
       parts.push(
-        `Some of the reads above resolve through ANOTHER stack (an Fn::ImportValue, an ` +
+        `${localTargets.length > 0 ? 'Some of the reads above' : 'The read above'} resolve` +
+          `${localTargets.length > 0 ? '' : 's'} through ANOTHER stack (an Fn::ImportValue, an ` +
           `Fn::GetStackOutput, or a nested stack's Outputs), whose masked record lives in that ` +
-          `stack's state — re-importing anything in this stack cannot clear those; act on the ` +
+          `stack's state — re-importing anything in this stack cannot clear it; act on the ` +
           `producer stack instead.`
       );
     }

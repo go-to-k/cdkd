@@ -91,15 +91,53 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   it('emits BOTH arms when the reads mix local and cross-stack entries', () => {
     const remedy = remedyFor(['Cr.Secret', IMPORT_VALUE]);
 
-    expect(remedy).toContain("--resource Cr=<physicalId>");
+    expect(remedy).toContain('--resource Cr=<physicalId>');
     expect(remedy).toContain('ANOTHER stack');
   });
 
-  it('de-duplicates repeated targets and names every distinct one', () => {
+  it('de-duplicates repeated targets and emits ONE COMMAND PER distinct target', () => {
     const remedy = remedyFor(['Cr.Secret', 'Cr.Other', 'Db.Password']);
 
-    // Both targets named, each once.
-    expect(remedy).toContain('Cr, Db');
-    expect(remedy.match(/\bCr\b/g)?.length).toBe(2); // once in the list, once in the command
+    // A single command beside a list of names reads as though it covered them
+    // all, so each target gets its own copy-pasteable command.
+    expect(remedy).toContain("'cdkd import <stack> --resource Cr=<physicalId> --force'");
+    expect(remedy).toContain("'cdkd import <stack> --resource Db=<physicalId> --force'");
+    expect(remedy.match(/cdkd import/g)?.length).toBe(2);
+  });
+
+  // THE FIFTH SHAPE, and the one the anchored match alone got wrong. A nested
+  // stack's output attribute reaches the cross-stack re-resolution arm only
+  // when it `carriesDynamicReference`, and `'***'` does not (that predicate
+  // tests for `{{resolve:`) — so a MASKED child output falls through to
+  // `noteAttributeSecrecy` and is pushed in the LOCAL spelling `Child.Outputs.X`.
+  // The record is the CHILD's `state.outputs`, so a `--force` re-import of
+  // `Child` here overwrites an innocent row and leaves the mask. `Child` is a
+  // real template id, so the import typo guard ACCEPTS it — the advice would
+  // execute.
+  it('routes a MASKED nested-stack output to the cross-stack arm despite its local-looking spelling', () => {
+    const remedy = remedyFor(['Child.Outputs.DbPassword']);
+
+    expect(remedy).not.toContain('cdkd import');
+    expect(remedy).not.toContain('--resource Child=');
+    expect(remedy).toContain('ANOTHER stack');
+  });
+
+  it('still treats an ordinary dotted attribute on a resource named like a child as LOCAL', () => {
+    // The discriminator is the `Outputs.` SECOND SEGMENT, not the resource
+    // name — `Child.Endpoint.Address` is an ordinary nested attribute path.
+    const remedy = remedyFor(['Child.Endpoint.Address']);
+
+    expect(remedy).toContain('--resource Child=<physicalId>');
+    expect(remedy).not.toContain('ANOTHER stack');
+  });
+
+  it('treats an unrecognised shape as FOREIGN, which never emits a command', () => {
+    // Fail-safe direction: an id cdkd did not expect (a hand-written template
+    // can carry a non-alphanumeric logical id) costs a vaguer message rather
+    // than a destructive one.
+    const remedy = remedyFor(['My-Resource.Secret']);
+
+    expect(remedy).not.toContain('cdkd import');
+    expect(remedy).toContain('ANOTHER stack');
   });
 });
