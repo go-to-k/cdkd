@@ -4,6 +4,7 @@ import {
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
 import { carriesSecretMask, SECRET_MASK } from '../deployment/secret-redaction.js';
+import { displaySafe } from '../utils/display-safe.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
@@ -190,21 +191,39 @@ class AttributeFetcher {
     if (maskedKey === undefined) {
       return { ok: true, value };
     }
+    // SANITISED as DEFENCE IN DEPTH, and the comment says which because a
+    // reviewer's trace refuted the obvious reason. `reason` does reach
+    // `logger.warn` below AND the unresolvable table, both default verbosity,
+    // and `resourceType` is template text cdkd never validates — but a HOSTILE
+    // one cannot arrive HERE: `onMaskedValue` fires only from inside
+    // `cfnRefValueFromPhysicalId`'s recovery branches, and every one of them
+    // is gated on an exact literal (`=== 'AWS::S3Tables::Table'`,
+    // `=== 'AWS::Backup::BackupSelection'`, `=== 'AWS::CodeCommit::Repository'`,
+    // or a `REF_RETURNS_ARN_FROM_STATE` Map lookup), so by construction this
+    // value is one of a handful of cdkd literals. Kept because it costs
+    // nothing and a future branch matched by PREFIX would make it live; NOT
+    // fenced, because a case proving it would have to fake a reachability that
+    // does not exist.
+    const safeType = displaySafe(o.resourceType, { asciiOnly: true });
     const reason =
       `state records the redaction mask ('${SECRET_MASK}') for '${maskedKey}', the key ` +
-      `CloudFormation's Ref returns for ${o.resourceType} — cdkd cannot recover it, and the ` +
+      `CloudFormation's Ref returns for ${safeType} — cdkd cannot recover it, and the ` +
       `physical id is NOT that value`;
     if (!this.options.force) {
       return { ok: false, reason };
     }
     // ONCE PER ORPHAN, matching `cacheFallback`'s memoization: N references to
     // one masked orphan otherwise print N identical warnings, and the audit
-    // table already lists every rewritten site.
+    // table already lists every rewritten site. Keyed on the LOGICAL ID, not a
+    // run-wide flag — two masked orphans each get their own line, and the
+    // orphan is NAMED so the two are told apart (`reason` alone renders
+    // identically for two records of the same type and key).
     if (!this.warnedMaskedRefs.has(orphanLogicalId)) {
       this.warnedMaskedRefs.add(orphanLogicalId);
       this.logger.warn(
-        `--force: ${reason}. Substituting '${SECRET_MASK}' rather than the physical id, which ` +
-          `would be a wrong value no later cdkd command recognises. The referring resource's ` +
+        `--force: '${orphanLogicalId}': ${reason}. Substituting '${SECRET_MASK}' rather than ` +
+          `the physical id, which would be a wrong value no later cdkd command recognises. ` +
+          `The referring resource's ` +
           `state row now records a value the live resource does not have: the next ` +
           `'cdkd diff' / 'cdkd deploy' reports a spurious change there (a REPLACEMENT if the ` +
           `property is create-only), 'cdkd rollback' refuses the record as a replay baseline, ` +

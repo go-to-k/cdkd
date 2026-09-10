@@ -145,6 +145,27 @@ import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 const EMPTY_SECRETS: RecordedSecretValues = new Map();
 
 /**
+ * `Ref <LogicalId> (state key <Key>)` — the entry
+ * `IntrinsicFunctionResolver.noteRefStateMask` pushes into
+ * `ResolverContext.redactedAttributeReads` (issue
+ * [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
+ *
+ * ONE definition because TWO readers in this file must agree on it, and they
+ * decide different things: `maskedRecordRemedyFor` reads the logical id out of
+ * it to emit the re-import command, and `resolveOutputs`' guard uses it to
+ * decide whether an output's masked read is the FALL-THROUGH shape at all.
+ * The anchoring argument for both ends lives at the first reader.
+ *
+ * Deliberately NOT imported from the resolver, which produces it: 72 of the 80
+ * suites that `vi.mock` `intrinsic-function-resolver.js` use a bare factory
+ * exposing only `getAccountInfo`, so a new named import reds them with a
+ * missing-export error. The producer/consumer coupling is fenced instead by
+ * `tests/unit/deployment/ref-state-mask-spelling-coupling.test.ts`, which
+ * drives the real producer into the real consumer and carries no literal.
+ */
+const REF_STATE_MASKED_READ_PATTERN = /^Ref ([A-Za-z0-9]+) \(state key [^)]*\)$/;
+
+/**
  * Default per-resource warn threshold: warn the user when a single
  * resource has been in flight for 5 minutes. Most CC API resources
  * complete in under a minute; 5m is the agreed elbow.
@@ -1646,7 +1667,7 @@ export class DeployEngine {
      * arm, which emits no command — the safe direction. Measured with
      * `node -e` during the issue #2847 security review.
      */
-    const REF_STATE_MASKED_READ = /^Ref ([A-Za-z0-9]+) \(state key [^)]*\)$/;
+    const REF_STATE_MASKED_READ = REF_STATE_MASKED_READ_PATTERN;
     // Spelled locally rather than imported: the only exported copy lives in
     // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
     // edge for one string literal is the wrong trade.
@@ -7550,20 +7571,45 @@ export class DeployEngine {
      * a wrong value and sends it to AWS, with both deploys green. Publishing
      * nothing is the only outcome that keeps the consumer's guard meaningful.
      *
-     * PER-OUTPUT BY DELTA, not "is the bag non-empty at the end of the pass":
-     * the bag is per-CONTEXT and shared by every output, so a post-pass test
-     * cannot say WHICH output was affected and would fail siblings that
-     * resolved cleanly. Taking the slice added across one `resolve` names
-     * exactly the reads that output made.
+     * PER-OUTPUT BY ITS OWN BAG, and a length DELTA over the shared one is
+     * what this replaced (issue #2847 round-3 review, and the reason it is a
+     * bag rather than a `slice`). All three pushers are IDEMPOTENT — each
+     * guards with `if (!reads.includes(read))` — and `resolveOutputs` shares
+     * ONE context across every output, unlike the CREATE / UPDATE arms which
+     * build a fresh context per resource. So a second output reading the SAME
+     * masked record produced an EMPTY delta and was PUBLISHED:
+     *
+     *     Outputs:
+     *       TableRef:  { Value: { Ref: Tbl } }   # refused
+     *       TableRef2: { Value: { Ref: Tbl } }   # published the raw ARN
+     *
+     * `resolveRef` memoizes nothing, so the second resolution really does
+     * re-enter `noteRefStateMask` and really is refused a push. Giving each
+     * output its own array and MERGING the entries back afterwards keeps both
+     * properties: the guard sees exactly this output's reads, and the shared
+     * bag still accumulates for anything reading it later.
+     *
+     * SCOPED TO THE `Ref` STATE-KEY SHAPE, and that is a narrowing rather than
+     * an oversight. The refusal exists because of the FALL-THROUGH: when the
+     * lookup skips a masked leaf, `cfnRefValueFromPhysicalId` emits the raw
+     * physical id, which no downstream reader recognises. Every OTHER pusher —
+     * `noteAttributeSecrecy`'s `Fn::GetAtt`, `reresolveCrossStackValue`'s
+     * `Fn::ImportValue` / `Fn::GetStackOutput` / nested-stack forms — serves
+     * the MASK itself as the value, which `reresolveCrossStackValue` and the
+     * export blocker DO recognise. Firing there would silently change the
+     * pre-existing issue #2274 behaviour (an output that published `'***'`
+     * would vanish) for no safety gain, and would render this message's
+     * "would publish the resource's raw physical id" over a read for which
+     * there is no physical-id fall-through — the wrong-advice class this PR
+     * has spent three rounds removing.
      *
      * It routes through {@link handleOutputResolutionFailure} rather than
      * throwing its own way out, so it inherits that method's whole contract:
-     * warn-and-skip by default (the key is left `undefined`, the previously
-     * persisted outputs are kept), promoted to a deploy error under
+     * warn-and-skip by default, promoted to a deploy error under
      * `--strict-getatt`, and masked against both secret bags on the way.
      */
-    const refuseMaskedOutputReads = (outputKey: string, readsBefore: number): void => {
-      const added = context.redactedAttributeReads?.slice(readsBefore) ?? [];
+    const refuseMaskedOutputReads = (outputKey: string, ownReads: readonly string[]): void => {
+      const added = ownReads.filter((read) => REF_STATE_MASKED_READ_PATTERN.test(read));
       if (added.length === 0) return;
       // `markNonRetryable` for the same reason the sibling refusals carry it:
       // under `--strict-getatt` this leaves the engine as a thrown error, and
@@ -7579,6 +7625,25 @@ export class DeployEngine {
             `is not published. ${DeployEngine.maskedRecordRemedyFor(added, context.resources)}`
         )
       );
+    };
+
+    /**
+     * Fold one output's isolated reads back into the pass-wide bag, keeping
+     * that bag's own de-duplication.
+     *
+     * The shared bag is what anything reading `context.redactedAttributeReads`
+     * after this pass sees, so isolating per output must not stop it filling.
+     * Called from a `finally` at both call sites: a resolution that recorded a
+     * read and THEN threw has still learned something about the record, and
+     * dropping it on the throw arm would make the bag depend on which output
+     * happened to fail — the same shape as `nameSecrets`' merge two loops down.
+     */
+    const mergeOwnReads = (ownReads: readonly string[]): void => {
+      const shared = context.redactedAttributeReads;
+      if (shared === undefined) return;
+      for (const read of ownReads) {
+        if (!shared.includes(read)) shared.push(read);
+      }
     };
 
     // The two bags the failure sites below mask against (issue #2728).
@@ -7621,13 +7686,17 @@ export class DeployEngine {
           );
           continue;
         }
-        const readsBefore = context.redactedAttributeReads?.length ?? 0;
+        // THIS OUTPUT'S OWN BAG. The shared one is deduped by every pusher, so
+        // a second output over the same masked record would see nothing added;
+        // see `refuseMaskedOutputReads`. Merged back in the `finally` so the
+        // shared bag still accumulates whether this output resolved or threw.
+        const ownReads: string[] = [];
         try {
-          const resolved = await this.resolver.resolve(output.Value, context);
-          // BEFORE the assignment, so a refused output publishes nothing at
-          // all rather than being written and then cleared — `outputs` is the
-          // bag `collectSkippedOutputs` and the state save both read.
-          refuseMaskedOutputReads(outputKey, readsBefore);
+          const resolved = await this.resolver.resolve(output.Value, {
+            ...context,
+            redactedAttributeReads: ownReads,
+          });
+          refuseMaskedOutputReads(outputKey, ownReads);
           outputs[outputKey] = resolved;
         } catch (error) {
           this.handleOutputResolutionFailure(
@@ -7637,6 +7706,8 @@ export class DeployEngine {
             outputsPassSecrets,
             outputsPassInherited
           );
+        } finally {
+          mergeOwnReads(ownReads);
         }
       }
 
@@ -7686,12 +7757,17 @@ export class DeployEngine {
         // view that, on its own, could not have ordered the write either.
         const nameSecrets: RecordedSecretValues = new Map();
         // The alias NAME can carry the same masked `Ref` the value can — an
-        // `Fn::Sub` over one is ordinary — and the spread below shares this
-        // context's `redactedAttributeReads` ARRAY by reference, so a note
-        // taken here lands in the same bag. Guarded for the same reason as the
+        // `Fn::Sub` over one is ordinary. Guarded for the same reason as the
         // value: an export whose NAME is built from a raw physical id binds
         // consumers to a name that is not the one the template describes.
-        const nameReadsBefore = context.redactedAttributeReads?.length ?? 0;
+        //
+        // ITS OWN BAG, exactly like pass 1 and for exactly the same reason: the
+        // pushers dedup, so a name reading a record ANY earlier output already
+        // noted would otherwise see nothing and be published. Pass 1 has by
+        // this point merged every value's reads into the shared bag, so a
+        // length delta here is empty in the common case rather than the rare
+        // one.
+        const nameReads: string[] = [];
         let exportName: unknown;
         try {
           try {
@@ -7701,9 +7777,11 @@ export class DeployEngine {
                 : await this.resolver.resolve(output.Export.Name, {
                     ...context,
                     recordedSecretValues: nameSecrets,
+                    redactedAttributeReads: nameReads,
                   });
-            refuseMaskedOutputReads(outputKey, nameReadsBefore);
+            refuseMaskedOutputReads(outputKey, nameReads);
           } finally {
+            mergeOwnReads(nameReads);
             // Merge what the name's resolution learned back into the PASS map.
             //
             // `finally`, and that is the load-bearing part rather than a style

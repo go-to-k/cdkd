@@ -3897,26 +3897,28 @@ export async function buildImportPlan(
         resourceType,
         // TWO POPULATIONS, and this named only the first until issue
         // [#2847](https://github.com/go-to-k/cdkd/issues/2847)'s round-2
-        // review. `CloudControlProvider.import` now masks every Cloud Control
-        // model key it cannot certify is a `readOnlyProperties` attribute, and
-        // `cdkd orphan --force` splices a mask into a REFERRING resource's
-        // persisted properties — so a record with no custom resource anywhere
-        // near it reaches this blocker, and every remedy in the original
-        // sentence was custom-resource-only. Same defect the deploy engine's
-        // `refuseRedactedAttributeReads` arm (2) fixed; do not re-collapse it.
+        // review. ARM (2) was then NARROWED by round 3's trace: this blocker
+        // tests `properties`, while `CloudControlProvider.import` masks only
+        // `attributes`, so "adopted through the Cloud Control fallback" named a
+        // route that cannot put a mask here and sent the user at the wrong
+        // record. The routes that CAN are `cdkd orphan --force` and an import
+        // resolving an `Fn::GetAtt` over an already-masked attribute — both a
+        // mask copied FROM another record's attribute, which is the record the
+        // remedy now names. Do not re-collapse it, and do not re-widen it.
         reason:
           "cdkd state holds only the redaction mask ('***') for at least one property, and " +
           'cdkd cannot re-derive the value. There are two ways a record comes to hold it. ' +
           '(1) A NoEcho custom-resource value: forcing the custom resource to update does NOT ' +
           'clear this — the handler supplies the value to the deploy and cdkd re-masks it on ' +
           'the way into state, so the export still has nothing to declare. Stop setting NoEcho ' +
-          'on that response and re-deploy, then export again. (2) The record was adopted by ' +
-          "'cdkd import' through the Cloud Control fallback, which masks every model key the " +
-          "type's schema does not declare read-only, or written by 'cdkd orphan --force': " +
-          "re-import it with 'cdkd import <stack> --resource <logicalId>=<physicalId> --force', " +
-          'granting cloudformation:DescribeType first if the import warned that it could not ' +
-          'read the schema. Either way you can also export this stack without that resource ' +
-          'and adopt it into CloudFormation by hand. ' +
+          'on that response and re-deploy, then export again. (2) The value was SPLICED from a ' +
+          "masked ATTRIBUTE of another record — by 'cdkd orphan --force', or by 'cdkd import' " +
+          'resolving an Fn::GetAtt over an attribute the Cloud Control fallback had masked. ' +
+          'Repair the record that HOLDS the masked attribute ' +
+          "('cdkd import <stack> --resource <logicalId>=<physicalId> --force', granting " +
+          'cloudformation:DescribeType first if the import warned that it could not read the ' +
+          'schema), then re-run whichever command wrote this property. Either way you can also ' +
+          'export this stack without that resource and adopt it into CloudFormation by hand. ' +
           'See https://github.com/go-to-k/cdkd/issues/2274.',
       });
       continue;

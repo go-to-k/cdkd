@@ -568,6 +568,47 @@ describe('rewriteResourceReferences', () => {
     expect(maskWarnings).toHaveLength(1);
   });
 
+  it('warns once PER ORPHAN, not once per run', async () => {
+    // THE KEY, not just the count. With one masked orphan in the fixture,
+    // "one warning per run" and "one per orphan" are indistinguishable — so
+    // keying the set on a constant stayed green while a SECOND masked
+    // orphan's warning vanished, which is the diagnosis the user needs most.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const state = baseState({
+      TblA: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/aaaa1',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+      },
+      TblB: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/bbbb2',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { A: { Ref: 'TblA' }, B: { Ref: 'TblB' } },
+      },
+    });
+
+    await rewriteResourceReferences(state, ['TblA', 'TblB'], fakeRegistry(), { force: true });
+
+    const maskWarnings = warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((m) => m.includes('rather than the physical id'));
+    expect(maskWarnings).toHaveLength(2);
+    // ...and each NAMES its own orphan. Without the id the two lines render
+    // byte-identically (same key, same type), so a reader could not tell which
+    // record to repair — and a count alone would not notice a set keyed on the
+    // RESOURCE TYPE either.
+    expect(maskWarnings.some((m) => m.includes("'TblA'"))).toBe(true);
+    expect(maskWarnings.some((m) => m.includes("'TblB'"))).toBe(true);
+  });
+
   it('does NOT refuse an ordinary Ref recovery key (scope control)', async () => {
     // The other direction: a refusal that fires on every `Ref` would pass the
     // two cases above while breaking `cdkd orphan` for everyone.

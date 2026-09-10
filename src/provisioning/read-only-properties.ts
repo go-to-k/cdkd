@@ -67,6 +67,7 @@
 
 import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
 import { getLogger } from '../utils/logger.js';
+import { displaySafe } from '../utils/display-safe.js';
 
 /**
  * Per-type cache of SUCCESSFUL lookups only, holding the in-flight promise so
@@ -120,7 +121,13 @@ export function getTopLevelReadOnlyProperties(
     getLogger()
       .child('ReadOnlyProperties')
       .debug(
-        `Failed to resolve read-only properties for ${resourceType} via ` +
+        // SANITISED for the reason `cloud-control-provider.ts` states at its
+        // own promoted lines: `resourceType` is the template's `Type`, which
+        // cdkd never validates, and a `--verbose` run renders this to a
+        // terminal. Found by that file's sanitisation fence, which asserts
+        // over every debug call and so reached one module further than the
+        // finding that prompted it.
+        `Failed to resolve read-only properties for ${displaySafe(resourceType, { asciiOnly: true })} via ` +
           `cloudformation:DescribeType (${message}).`
       );
     return undefined;
@@ -157,7 +164,7 @@ async function fetchTopLevelReadOnlyProperties(resourceType: string): Promise<Re
   }
 
   logger.debug(
-    `Resolved ${result.size} top-level read-only properties for ${resourceType}` +
+    `Resolved ${result.size} top-level read-only properties for ${displaySafe(resourceType, { asciiOnly: true })}` +
       (result.size > 0 ? `: ${[...result].join(', ')}` : '')
   );
   return result;

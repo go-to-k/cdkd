@@ -1195,13 +1195,19 @@ function refuseMaskedReplayBaseline(
   if (props === undefined || !carriesSecretMask(props)) return;
   // TWO POPULATIONS REACH THIS REFUSAL, and naming only the first was a
   // measured defect at the deploy engine's twin (`refuseRedactedAttributeReads`,
-  // issue #2847) before it was one here. Since that issue,
-  // `CloudControlProvider.import` masks every Cloud Control model key it cannot
-  // certify is a `readOnlyProperties` attribute, and `cdkd orphan --force`
-  // splices a mask into a referring resource's persisted properties — so a
-  // record that never saw a custom resource lands here, and every remedy below
-  // the first is inapplicable to it. Naming both is the same fix the deploy
-  // engine's arm (2) already carries; do not collapse it back to one cause.
+  // issue #2847) before it was one here.
+  //
+  // ARM (2) IS NARROWER THAN THE FIRST ATTEMPT AT IT, and the correction came
+  // from a trace rather than from re-reading the prose. This function tests
+  // `properties`, while `CloudControlProvider.import` masks only `attributes`
+  // (`import.ts` writes the template's own properties into `properties` and the
+  // provider's bag into `attributes`) — so "the record was adopted through the
+  // Cloud Control fallback" names a route that cannot put a mask HERE, and its
+  // re-import remedy pointed at the wrong record. What CAN: `cdkd orphan
+  // --force` splicing a mask into a referring resource's properties, and
+  // `cdkd import` resolving an `Fn::GetAtt` over an already-masked attribute
+  // into the properties it persists. Both are a mask copied FROM another
+  // record's attribute, which is why the remedy names that record.
   throw new CdkdError(
     `Cannot roll ${logicalId} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}'), so cdkd would write that literal to the live resource. There are ` +
@@ -1209,13 +1215,13 @@ function refuseMaskedReplayBaseline(
       `there: restore the property with 'cdkd deploy' AFTER forcing that custom resource to ` +
       `update (change one of its properties, e.g. a nonce), so its handler runs again and ` +
       `supplies the real value — an ordinary re-deploy leaves the resource unchanged, so the ` +
-      `handler does not run and the mask stays. (2) The record was written by 'cdkd import' ` +
-      `through the Cloud Control fallback, which masks every model key the type's schema does ` +
-      `not declare read-only, or by 'cdkd orphan --force' splicing a masked value into a ` +
-      `referring resource: re-import the record that holds the mask ` +
-      `('cdkd import <stack> --resource <logicalId>=<physicalId> --force'), granting ` +
-      `cloudformation:DescribeType first if the import warned that it could not read the ` +
-      `schema. See https://github.com/go-to-k/cdkd/issues/2449.`,
+      `handler does not run and the mask stays. (2) The value was SPLICED from a masked ` +
+      `ATTRIBUTE of another record — by 'cdkd orphan --force', or by 'cdkd import' resolving ` +
+      `an Fn::GetAtt over an attribute the Cloud Control fallback had masked. Repair the ` +
+      `record that HOLDS the masked attribute ('cdkd import <stack> ` +
+      `--resource <logicalId>=<physicalId> --force', granting cloudformation:DescribeType ` +
+      `first if the import warned that it could not read the schema), then re-run whichever ` +
+      `command wrote this property. See https://github.com/go-to-k/cdkd/issues/2449.`,
     'ROLLBACK_REDACTED_BASELINE'
   );
 }

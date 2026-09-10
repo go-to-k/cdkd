@@ -413,6 +413,13 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     // NEGATIVE: neither the escape nor the injected newline survives.
     expect(warned).not.toContain('\u001b');
     expect(warned).not.toContain('\nFAKE');
+    // G5: the DEBUG line beside it takes the same values, and reverting only
+    // that one stayed green while the warn was asserted. It is one `--verbose`
+    // away from a terminal, and a split convention inside one method is how
+    // the next line gets it wrong.
+    const debugged = mockDebug.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(debugged).not.toContain('\u001b');
+    expect(debugged).not.toContain('\nFAKE');
   });
 
   it('REJECTS when the masking step throws, rather than degrading to empty attributes', async () => {

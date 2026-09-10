@@ -146,18 +146,25 @@ describe('refStateLookupFromResource refuses to serve a masked Ref value (#2847)
     expect(reported).toEqual([]);
   });
 
-  it('no longer lets cfnRefValueFromPhysicalId hand back the mask', () => {
-    // The pure function is exercised directly because it is the seam the
-    // `cdkd orphan` rewriter uses too — that caller passes no callback and
-    // still must never splice `'***'` into a sibling's persisted properties.
+  it('WITH NO CALLBACK, hands back the mask exactly as it did before #2847', () => {
+    // THE OPT-IN, asserted at the seam. This case was INVERTED in round 3: it
+    // used to require the skip here too, i.e. it pinned the unconditional
+    // behaviour that three review rounds each found a fresh caller broken by.
+    // A caller with nowhere to put a refusal is strictly better off with the
+    // mask — `refuseMaskedReplayBaseline`, `cdkd export`'s blocker, drift and
+    // the deploy refusal all recognise `'***'` and none of them recognises a
+    // raw physical id. Nothing is lost by the inversion: the skip's own
+    // behaviour is pinned by the case above, which passes a callback.
     const refValue = cfnRefValueFromPhysicalId(
       TABLE_TYPE,
       TABLE_ARN,
       refStateLookupFromResource({ properties: { TableName: SECRET_MASK } })
     );
 
-    expect(refValue).not.toBe(SECRET_MASK);
-    expect(refValue).toBe(TABLE_ARN);
+    expect(refValue).toBe(SECRET_MASK);
+    // ...and specifically NOT the fall-through, which is the value that
+    // reaches AWS unrecognised.
+    expect(refValue).not.toBe(TABLE_ARN);
   });
 });
 
@@ -227,17 +234,21 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     }
   );
 
-  it('notes nothing when the context declares no redactedAttributeReads bag (the diff pass)', async () => {
-    // Same reason `noteAttributeSecrecy` tolerates the absent bag: `cdkd diff`,
-    // `cdkd scrub` and `cdkd import` build contexts without one, and they must
-    // keep resolving rather than throwing.
+  it('serves the MASK when the context declares no redactedAttributeReads bag', async () => {
+    // The resolver-level half of the opt-in, and INVERTED in round 3 for the
+    // same reason as the seam case above. `cdkd diff`, `cdkd scrub` and
+    // `cdkd import` build contexts with no bag; `resolveRefValue` therefore
+    // passes NO callback and the resolution is byte-for-byte pre-#2847.
+    //
+    // `cdkd import` is why this matters rather than being a tidy symmetry: its
+    // result is PERSISTED into `resource.properties`, and while the skip fired
+    // here it persisted the raw physical id — which `cdkd export` writes into
+    // the imported template and `cdkd drift --revert` sends to AWS.
     const context = contextFor({ properties: { TableName: SECRET_MASK } });
 
-    // PINNED TO THE VALUE, not to `not.toBe(SECRET_MASK)`. The bare negative was
-    // satisfiable by ABSENCE: a regression yielding `undefined` here passes it
-    // while the case's real subject — the fall-through still returns the
-    // physical id — goes untested.
-    await expect(resolver.resolve({ Ref: 'T' }, context)).resolves.toBe(TABLE_ARN);
+    // Pinned to the VALUE, not to a bare negative: `undefined` would satisfy
+    // `not.toBe(TABLE_ARN)` while saying nothing about what is served.
+    await expect(resolver.resolve({ Ref: 'T' }, context)).resolves.toBe(SECRET_MASK);
   });
 
   it('reports the FIRST masked key when several of a type\'s alias keys are masked', async () => {

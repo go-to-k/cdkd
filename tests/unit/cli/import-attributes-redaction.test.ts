@@ -114,6 +114,64 @@ async function run(state: StackState): Promise<void> {
 }
 
 describe('cdkd import redacts ResourceState.attributes (issue #2847)', () => {
+  it('persists the MASK, not a raw physical id, for a Ref whose recovery key is masked', async () => {
+    // BLOCKER B2 (issue #2847 round-3 review). `import.ts` builds its resolver
+    // context with NO `redactedAttributeReads`, so it has nowhere to record a
+    // refusal — and while the mask SKIP in `refStateLookupFromResource` fired
+    // unconditionally, the fall-through emitted the raw physical id and
+    // `resolveImportedProperties` PERSISTED it into `resource.properties`.
+    //
+    // For a Cloud-Control-routed `AWS::Backup::BackupSelection` that id is the
+    // compound `<SelectionId>_<BackupPlanId>` — a value CloudFormation's `Ref`
+    // never returns. On `main` this persisted the real `SelectionId`; with the
+    // unconditional skip it persisted a wrong value NOTHING recognises, so
+    // `cdkd export` wrote it into the imported template and
+    // `cdkd drift --revert` sent it to AWS (the #1498 / #1501 class). The
+    // opt-in restores the pre-#2847 answer: the mask travels, and the four
+    // readers that recognise it still refuse it.
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      stackName: 'attrs-stack',
+      region: 'us-east-1',
+      resources: {
+        Sel: {
+          physicalId: 'sel-2847_plan-2847',
+          resourceType: 'AWS::Backup::BackupSelection',
+          properties: {},
+          // What `CloudControlProvider.import` writes with no
+          // `cloudformation:DescribeType`: the whole model masked.
+          attributes: { SelectionId: '***' },
+        },
+        Other: {
+          physicalId: 'other-phys',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: { Ref: 'Sel' } },
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } satisfies StackState;
+
+    await resolveImportedProperties(
+      state,
+      {
+        Resources: {
+          Sel: { Type: 'AWS::Backup::BackupSelection', Properties: {} },
+          Other: { Type: 'AWS::SQS::Queue', Properties: { QueueName: { Ref: 'Sel' } } },
+        },
+      } as CloudFormationTemplate,
+      'us-east-1',
+      {} as never,
+      getLogger()
+    );
+
+    // POSITIVE: the recognisable sentinel is what lands in state...
+    expect(state.resources['Other']?.properties).toEqual({ QueueName: '***' });
+    // ...and NEGATIVE: the compound physical id, which no reader tests for,
+    // must not appear anywhere in the record.
+    expect(JSON.stringify(state.resources['Other'])).not.toContain('sel-2847_plan-2847');
+  });
+
   it('rewrites a decrypted secret AWS echoed into attributes back onto its expression', async () => {
     const state = stateWith(
       { Detail: { pw: TOKEN } },

@@ -403,54 +403,73 @@ export type RefStateLookup = (keys: readonly string[]) => string | undefined;
  * skipped so the caller falls back to the raw physical id rather than emitting
  * a broken `[object Object]` / `''`.
  *
- * A leaf carrying {@link SECRET_MASK} is skipped too, and that skip is a
- * SECURITY property rather than a shape one (issue
- * [#2847](https://github.com/go-to-k/cdkd/issues/2847) review). Both bags this
- * reads can hold the mask: `attributes` because
- * `CloudControlProvider.import` masks every model key it cannot certify is a
- * read-only attribute, and `properties` because the mask-only channel (issue
- * #2274) writes it there too. `SECRET_MASK` is a non-empty string, so without
- * this arm the lookup HIT and `cfnRefValueFromPhysicalId` returned `'***'` as
- * the resource's `Ref` value — which `resolveRefValue` hands back verbatim and
- * a green deploy substitutes into the consumer's property and sends to AWS.
- * That is the #1498 / #1501 corrupted-write class, reached through the ONE
- * attribute reader that is not an `Fn::GetAtt`.
+ * A leaf carrying {@link SECRET_MASK} is handled specially, and that handling
+ * is a SECURITY property rather than a shape one (issue
+ * [#2847](https://github.com/go-to-k/cdkd/issues/2847)). Both bags this reads
+ * can hold the mask: `attributes` because `CloudControlProvider.import` masks
+ * every model key it cannot certify is a read-only attribute, and `properties`
+ * because the mask-only channel (issue #2274) writes it there too.
+ * `SECRET_MASK` is a non-empty string, so the lookup HITS and
+ * `cfnRefValueFromPhysicalId` returns `'***'` as the resource's `Ref` value —
+ * which `resolveRefValue` hands back verbatim and a green deploy substitutes
+ * into the consumer's property and sends to AWS. That is the #1498 / #1501
+ * corrupted-write class, reached through the ONE attribute reader that is not
+ * an `Fn::GetAtt`.
  *
- * SKIPPING ALONE WOULD ONLY MAKE IT QUIET: the fall-through emits the raw
- * physical id, which for the `AWS::S3Tables::Table` case is an ARN ending in a
- * UUID rather than the table name CFn `Ref` returns — a silently WRONG value,
- * the outcome `maskUncertifiedModelValues` chose masking over dropping to
- * avoid. So the skip is paired with `onMaskedValue`, which the resolver uses to
- * record a redacted attribute read and FAIL the resource
- * (`DeployEngine.refuseRedactedAttributeReads`).
+ * ## The skip is OPT-IN, and that is the load-bearing design decision
  *
- * **EVERY CALLER MUST PASS ONE, AND MUST ACT ON IT.** The optionality is for
- * the TYPE, not a licence, and neither is receiving the callback enough — what
- * matters is what the caller DOES. A caller that takes the fall-through
- * silently trades a guarded sentinel for an unguarded wrong value: before this
- * arm existed the lookup returned the literal `'***'`, which four unchanged
- * readers RECOGNISE (`refuseMaskedReplayBaseline`, `cdkd export`'s blocker,
- * `cdkd drift`'s mask handling, the deploy-time refusal), while the raw
- * physical id is tested by none of them. Two review rounds each found a fresh
- * instance of exactly that, which is why the rule is stated as a REQUIREMENT
- * on the caller rather than as advice.
+ * `onMaskedValue` is not a notification bolted onto a global behaviour change;
+ * it is the SWITCH. With no callback this function returns the mask exactly as
+ * it did before issue #2847 — same value, same callers, nothing to audit. Only
+ * a caller that passes one gets the skip, and by passing one it declares it
+ * will ACT on the report.
  *
- * A caller must land in one of THREE buckets, and anything else is a hole:
+ * IT WAS UNCONDITIONAL FOR THREE REVIEW ROUNDS, and each round found a fresh
+ * caller broken by it, because skipping a mask is only an improvement for a
+ * caller that has somewhere to put the refusal. For everyone else it REMOVES a
+ * guarded sentinel and substitutes an unguarded wrong value: the fall-through
+ * emits the raw physical id — for `AWS::S3Tables::Table` an ARN ending in a
+ * UUID rather than the table name CFn `Ref` returns — which
+ * `refuseMaskedReplayBaseline`, `cdkd export`'s blocker, `cdkd drift`'s mask
+ * handling and the deploy-time refusal all pass, where every one of them
+ * REJECTS `'***'` loudly. The rounds found it in `cdkd orphan`, then in
+ * `resolveOutputs`, then in `cdkd import`; the pattern was the design, not the
+ * call sites, so the design changed rather than the sites.
  *
- * 1. **Consult `redactedAttributeReads` and REFUSE.** `resolveRefValue` →
- *    `noteRefStateMask`, read by `DeployEngine.refuseRedactedAttributeReads`
- *    on the CREATE / UPDATE arms and by `resolveOutputs`' own per-output
- *    check. A context that sets no bag (diff, `cdkd scrub`, `cdkd import`)
- *    resolves as before and refuses nothing, which is correct: nothing it
- *    produces reaches AWS.
- * 2. **Emit `SECRET_MASK` so a downstream reader can recognise it.**
- *    `src/analyzer/orphan-rewriter.ts`'s `--force` arm, which has no resolver
- *    context and must still produce a value.
- * 3. **Provably a display / filter path**, where neither matters.
+ * A caller therefore chooses between exactly two things, and doing NOTHING is
+ * the safe default rather than a hole:
  *
- * Bucket 3 is a claim about a caller, so it is stated per caller and not
- * assumed: `cdkd orphan` without `--force` reports the site as `unresolvable`
- * and aborts, which is bucket 1's shape by another name.
+ * 1. **Pass no callback** — pre-#2847 behaviour, the mask travels, downstream
+ *    readers catch it. Every caller that has not opted in is in this bucket by
+ *    construction, so there is no per-caller audit to keep current.
+ * 2. **Pass one and act on it** — skip the mask and refuse. `resolveRefValue`
+ *    → `noteRefStateMask` → `ResolverContext.redactedAttributeReads`, read by
+ *    `DeployEngine.refuseRedactedAttributeReads` on the CREATE / UPDATE arms
+ *    and by `resolveOutputs`' own per-output check;
+ *    `src/analyzer/orphan-rewriter.ts` has no resolver context and reports the
+ *    site as `unresolvable` instead (under `--force` it warns and substitutes
+ *    `SECRET_MASK`, i.e. it opts back into bucket 1's VALUE deliberately).
+ *
+ * BUCKET 1 IS NOT "the harmless callers", and one of them was mis-described as
+ * display-only before the opt-in existed: `cdkd export`'s
+ * `resolveChildImportParameters` builds a bagless context whose result becomes
+ * a `Parameter[]` on `CreateChangeSet --change-set-type IMPORT` — a re-apply to
+ * a live system. It is safe for bucket 1's ORDINARY reason rather than a
+ * special one: bagless, so it ships `'***'`, which CloudFormation rejects
+ * loudly, exactly as it did before issue #2847. Whether it should REFUSE
+ * instead is a separate choice nobody has made. That is the shape of the
+ * argument every bucket-1 caller gets: not "this value goes nowhere" but "the
+ * mask still reaches a reader that recognises it".
+ *
+ * The resolver passes a callback from ONE site — `resolveRefValue` — and it
+ * passes one only when `context.redactedAttributeReads` EXISTS. Testing the
+ * bag at the call site rather than inside `noteRefStateMask` is the whole
+ * point: the note returning early still leaves the SKIP done, so a bagless
+ * context took the fall-through with nowhere to record the refusal. That is
+ * how `cdkd import` came to PERSIST a raw physical id into
+ * `resource.properties` — from where `cdkd export` writes it into the imported
+ * template and `cdkd drift --revert` sends it to AWS. `cdkd diff` and
+ * `cdkd scrub` are bagless too and simply resolve as they did before.
  *
  * `onMaskedValue` fires only when the WHOLE lookup came up empty, not at the
  * masked leaf. The scan spans two bags and several alias keys, so a masked
@@ -479,6 +498,11 @@ export function refStateLookupFromResource(
         const value = source[key];
         if (typeof value === 'string' && value.length > 0) {
           if (carriesSecretMask(value)) {
+            // THE OPT-IN, and it is the whole safety argument of this arm.
+            // A caller that passed no `onMaskedValue` gets `main`'s behaviour
+            // byte for byte: the mask is RETURNED, four readers recognise it,
+            // and this function has changed nothing for them.
+            if (onMaskedValue === undefined) return value;
             maskedKey ??= key;
             continue;
           }
@@ -3703,10 +3727,28 @@ export class IntrinsicFunctionResolver {
     resource: ResourceState,
     context: ResolverContext
   ): string {
+    // THE OPT-IN IS DECIDED HERE, and passing the callback unconditionally is
+    // what made it inert (issue #2847 round-3 review, BLOCKER B2). The skip in
+    // `refStateLookupFromResource` fires whenever a callback is supplied, so a
+    // context with NO `redactedAttributeReads` bag — `cdkd diff`, `cdkd scrub`
+    // and, decisively, `cdkd import` — still got the skip while
+    // `noteRefStateMask` returned early with nowhere to record it: the mask was
+    // dropped, the raw physical id fell through, and `cdkd import` PERSISTED it
+    // into `resource.properties`, from where `cdkd export` writes it into the
+    // imported template and `cdkd drift --revert` sends it to AWS.
+    //
+    // So the callback is passed only when there is somewhere to put the
+    // refusal. Without a bag this is byte-for-byte the pre-#2847 resolution:
+    // the mask is served, and the four readers that recognise it still do.
+    const canRefuse = context.redactedAttributeReads !== undefined;
     return cfnRefValueFromPhysicalId(
       resource.resourceType,
       resource.physicalId,
-      refStateLookupFromResource(resource, (key) => this.noteRefStateMask(logicalId, key, context))
+      canRefuse
+        ? refStateLookupFromResource(resource, (key) =>
+            this.noteRefStateMask(logicalId, key, context)
+          )
+        : refStateLookupFromResource(resource)
     );
   }
 
