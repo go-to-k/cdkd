@@ -782,21 +782,52 @@ describe('per-connection dispatch serialization (M1)', () => {
 
 // Issue #527 M3: graceful shutdown drains in-flight $disconnect
 // dispatches with a bounded ceiling. A hung handler pre-fix would leak
-// its rieTimeoutMs (60s+) past close()'s 5s socket-close timeout.
+// its rieTimeoutMs (60s+) past close()'s 5s socket-close timeout. Note that
+// `close()` has TWO 5s timers and they are unrelated: the socket-close
+// path's defensive per-socket timeout, and `SHUTDOWN_DRAIN_MS`, the drain
+// ceiling this block is about. Everything below turns on the second.
 describe('graceful shutdown bounded drain (M3)', () => {
+  // The hung `$disconnect` outlasts `SHUTDOWN_DRAIN_MS`, and the per-case
+  // timeout outlasts BOTH. That ordering is what lets an assertion do the
+  // reporting: a drain that lost its ceiling finishes when this handler
+  // does, and is named rather than killed by the runner at a deadline the
+  // handler was still racing.
+  //
+  // The socket-close phase runs BEFORE the drain and carries its own 5s
+  // timer, so the effective margin is
+  // `HUNG_DISCONNECT_MS - (that phase + SHUTDOWN_DRAIN_MS)` -- about 5s at
+  // these values once a slow phase is allowed for, against the 2.5s the
+  // removed wall-clock bound had.
+  //
+  // What it is bought with, scoped to the shape that pays it: a mutant that
+  // leaves the drain BLOCKED on the hung handler cannot report until that
+  // handler settles, so its failure arrives at roughly `HUNG_DISCONNECT_MS`.
+  // Widening this constant delays that one report by the same amount. The
+  // other mutants probed against this case fail at their own ceilings
+  // instead, and no cost lands on the passing path at all, which never
+  // awaits this handler.
+  const HUNG_DISCONNECT_MS = 15_000;
+  const CASE_TIMEOUT_MS = 25_000;
+
   beforeEach(() => {
     rieModule.__resetQueue();
     rieModule.invokeRie.mockClear();
   });
   it('logs a warn naming the leaking $disconnect count when drain times out', async () => {
     rieModule.__resetQueue();
-    rieModule.__queueInvokeResult({ statusCode: 200 }); // $connect for the live conn
+    // Flips only when the hung `$disconnect` finally returns — the thing the
+    // drain must NOT wait for. `close()` races `Promise.allSettled` of the
+    // in-flight handlers against a `SHUTDOWN_DRAIN_MS` timer, so "the drain
+    // gave up" IS "that allSettled had not settled", which this observes
+    // directly.
+    let disconnectSettled = false;
     // $disconnect hangs longer than the 5s drain window.
     rieModule.invokeRie.mockImplementation(async (_id: string, _meta: unknown, event: any) => {
       const routeKey = event?.requestContext?.routeKey;
       if (routeKey === '$connect') return { payload: { statusCode: 200 }, raw: '{}' };
       // Sleep past the drain window — exact value doesn't matter past 5s.
-      await new Promise((r) => setTimeout(r, 10_000).unref?.());
+      await new Promise((r) => setTimeout(r, HUNG_DISCONNECT_MS).unref?.());
+      disconnectSettled = true;
       return { payload: {}, raw: '{}' };
     });
 
@@ -821,22 +852,109 @@ describe('graceful shutdown bounded drain (M3)', () => {
     try {
       const ws = await openWebSocket(port, '/prod');
       await waitFor(() => attached.registry.size() === 1, 1000);
-      // Closing the WebSocket fires the close listener, which kicks off
-      // $disconnect. Then immediately call attached.close() which awaits
-      // the drain. The drain hits the 5s ceiling and the warn fires.
-      // We do NOT await ws's close event here because attached.close
-      // itself drives the close to completion.
+      // `ws.close()` only starts the handshake -- the close frame is an
+      // async write, so the server-side listener that dispatches
+      // `$disconnect` runs INSIDE `attached.close()`'s socket-close loop,
+      // one loopback round-trip later. We do not await ws's close event
+      // here because `attached.close()` drives it to completion. The drain
+      // then hits the ceiling and the warn fires.
+      //
+      // Calling `attached.close()` in the SAME tick is load-bearing twice
+      // over: `close()` snapshots `wss.clients` synchronously, and calling
+      // it synchronously is what GUARANTEES that snapshot is non-empty --
+      // sufficient rather than necessary, since an intervening await need
+      // not let the socket actually close; and the `$disconnect` promise is added to
+      // `inFlightDisconnects` synchronously inside the connection-time
+      // `close` listener, which was registered BEFORE `close()`'s own
+      // `ws.once('close', ...)`, so registration always wins the race
+      // against `Promise.all(closes)` rather than winning it by timing.
       ws.close();
       const t0 = Date.now();
       await attached.close();
       const elapsed = Date.now() - t0;
-      // Drain ceiling = 5000ms; some scheduler jitter accepted.
+      // The drain really waited rather than returning at once. Kept as a
+      // wall-clock bound because a LOWER one cannot fail from a slow host,
+      // only from one running faster than real time.
+      //
+      // It is also what stops the next assertion passing VACUOUSLY. If no
+      // `$disconnect` ever registered, `inFlightDisconnects` would be empty,
+      // `close()` would skip the drain block entirely and return in ~5 ms
+      // with `disconnectSettled` still false -- which reads identical to a
+      // correct give-up. This line is the guard that fails there, so the
+      // two are a pair rather than one bound plus a leftover.
       expect(elapsed).toBeGreaterThanOrEqual(4_500);
-      expect(elapsed).toBeLessThan(7_500);
+      // ...and it gave up before the handler. This and the `drained for
+      // 5000ms` assertion below together replace an `elapsed < 7_500` upper
+      // bound that went red twice under a concurrent suite with no defect
+      // present (issue #2795): a host stall inflates `elapsed` against a
+      // fixed constant, where this compares two timers that a stall delays
+      // together. Measured, not assumed to be absolute, across separate
+      // runs: the old bound red at 7751 / 7815 ms when the issue was filed,
+      // and again at 7907 ms in a run carrying BOTH bounds where the new
+      // assertions passed; the fixed case then went 5/5 at load average 35
+      // on 16 cores. It is not an INVARIANT -- the two timers are armed at different
+      // moments (the handler's when the close listener dispatches
+      // `$disconnect`, the drain's after the socket closes settle), so a
+      // stall between those two moments does move their deadlines relative
+      // to each other. What makes it hold in practice is the margin between
+      // the ceiling and the handler, where the removed bound had 2.5s
+      // against a fixed constant.
+      //
+      // This half alone would NOT: it only says the drain quit somewhere
+      // short of `HUNG_DISCONNECT_MS`, so a ceiling raised to 8s still
+      // passes it -- and the wider that constant is set, the wider this
+      // undisclosed window gets, which is the cost side of the sizing above.
+      // The removed bound did catch that, which is why the ceiling's VALUE
+      // is pinned below rather than left to this.
+      //
+      // What the trio does NOT recover: `close()` is still bounded, but at
+      // the handler's settle point rather than at 7500, so latency added between
+      // those two figures is invisible where the removed bound saw it. That
+      // is UNRELATED latency -- awaiting `drainComplete` itself is caught
+      // (measured), because the mock sets the flag before returning, so it
+      // is already true when `allSettled` resolves. A drain scheduling a
+      // delay other than the constant it logs is the reachable case. The
+      // removed bound did not see all of that class either, only the part
+      // pushing the total past its own 7500, so an extra 1s passed it too;
+      // what it had was 2.5s of slack where this has the ceiling-to-handler
+      // margin. Narrowing
+      // that needs a duration bound, the instrument this case drops on
+      // purpose, having measured it red twice with nothing wrong. A
+      // `setTimeout` spy is not a way back: the socket-close path above
+      // schedules its own 5s timer, so the delays are not separable by
+      // value, and separating them by count or order would pin the socket
+      // loop's shape instead of the drain's.
+      // The message says only what the flag OBSERVES. `disconnectSettled`
+      // being true means the handler settled before `close()` RETURNED, and
+      // `close()` still awaits `wss.close()` after the drain, so a long
+      // enough stall there flips it without the drain having waited at all.
+      // Blaming the drain in the message would be the same misreporting
+      // this case was rewritten to stop doing.
+      expect(
+        disconnectSettled,
+        'the in-flight $disconnect settled before close() returned'
+      ).toBe(false);
       const drainWarns = warnSpy.mock.calls.filter(
         (c) => typeof c[0] === 'string' && c[0].includes('graceful shutdown drained for')
       );
       expect(drainWarns).toHaveLength(1);
+      // The ceiling CONSTANT, pinned off the message rather than the clock:
+      // the warn interpolates `SHUTDOWN_DRAIN_MS`, so moving it to 8s
+      // rewrites this string where `disconnectSettled` sees nothing. It pins
+      // the constant, NOT the delay actually scheduled -- see the residual
+      // noted above.
+      expect(drainWarns[0]![0]).toContain('drained for 5000ms');
+      // The COUNT this case is named for. It was named and not asserted, so
+      // a warn reporting the wrong number of leaked handlers satisfied every
+      // other line here. What it pins is the MAGNITUDE and not the two
+      // POSITIONS: one connection makes numerator and denominator both 1, so
+      // swapping them in the message would still pass. Separating them needs
+      // a second connection whose `$disconnect` settles after the
+      // socket-close loop but before the drain snapshots its count -- and
+      // the width of that window is the load-dependent quantity this case is
+      // being rewritten to stop depending on. Left as the magnitude check
+      // deliberately; the stronger fixture is filed instead.
+      expect(drainWarns[0]![0]).toContain('1/1 $disconnect handlers');
       expect(drainWarns[0]![0]).toContain('still in flight');
     } finally {
       warnSpy.mockRestore();
@@ -846,5 +964,5 @@ describe('graceful shutdown bounded drain (M3)', () => {
         server.closeAllConnections?.();
       });
     }
-  }, 10_000);
+  }, CASE_TIMEOUT_MS);
 });
