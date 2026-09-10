@@ -62,11 +62,15 @@ after any refusal.
   the full suite, passing alone) reads as cross-file pollution. **Verify a
   restore rather than assuming it, in the same call**:
   `cp <snap> <file> && grep -c '<a marker of the fixed state>' <file>`.
-- **Its next-worst is a STALE file from an earlier session** — `/tmp/pr-body.md`
-  is conventional and shared, so a gate can report violations this session
-  never wrote. If a gate names text you do not recognise, check the file's
-  mtime. Give body files a per-session name (the scratchpad directory plus a
-  suffix), as §5 does for probe files.
+- **Its next-worst is a STALE file left by an earlier LANE** — `/tmp/pr-body.md`
+  and a squash `commit-msg.txt` are conventional and shared, and a session's
+  lanes run serially through one scratchpad, so the post-refusal retry consumes
+  whatever the last writer left. A gate naming text you do not recognise is the
+  lucky case: usually NOTHING names it and a plausible file of the right shape
+  ships (2026-09-10: lane 2 committed lane 1's message after `check-gate`
+  discarded the write). Name consumable files per LANE — not per session, the
+  granularity that fails here — as §5 does for probe files and §9 for the
+  squash message, and re-read the file where you consume it.
 
 **"All green" is the EXIT CODE, not the summary.** A run can report every test
 passing and still exit non-zero, printing the two facts on adjacent lines

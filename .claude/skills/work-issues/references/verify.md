@@ -48,12 +48,6 @@ by a probe or a trace, never by re-reading the diff:
   `tests/unit/local/docker-argv-redaction-fence.test.ts`, whose
   `readdirSync('src/local')` cannot reach go-to-k/cdkd#2623's `src/assets/**`
   sites).
-- **"TWO SPELLINGS of one question" → make both sites use ONE predicate
-  verbatim** — a better second spelling looks like a fix and passes its own
-  test (go-to-k/cdkd#2134: `producerRegion !== undefined` disagreed with the
-  authority's own `if (!producerRegion)` on the empty string, fail-OPEN).
-  Name the site that OWNS the question; every other site calls or copies it
-  exactly.
 - **"A PROXY for a question only another component can answer" → make that
   component REPORT.** The tell: each proxy is wrong in BOTH directions at
   once (go-to-k/cdkd#2157 / go-to-k/cdkd#2166: "it threw" and "the text
@@ -70,8 +64,6 @@ by a probe or a trace, never by re-reading the diff:
   every probe landed in argument position, never the flag prefix the change
   acted on). A zero measured in the wrong position is not weak evidence; it is
   none.
-- **Derive the reader population before patching readers** — one grep returns
-  every consumer at once; patching one per round IS the cascade.
 - **A benchmark or COST FENCE must exercise the path the change is on** — a
   lane published "+20% latency" from a run that early-returned before the new
   code; go-to-k/cdkd#2333's latency case was vacuous twice, first bailing at a
@@ -90,8 +82,8 @@ list says in one command whether anything is still outstanding.
 
 - **A rebase can stale a `hash: diff` marker on its own** — the merge base
   moves, so an incoming change to a file this branch also touches invalidates
-  it. Rebase BEFORE the integ; push first so CI runs alongside the integ
-  (they are independent — serializing them wastes wall-clock).
+  it. Rebase BEFORE the integ; push first so CI runs alongside it — they are
+  independent, so serializing them spends wall-clock and weakens neither.
 - **Under iterative review rounds, DECLARE the tree final, in words, to
   whoever is still editing it.** Every gate-scoped touch buys another
   real-AWS run — comment-only deltas included, since `hash: diff` digests the
@@ -120,10 +112,10 @@ list says in one command whether anything is still outstanding.
   escaping fix stayed green weakened to keys-only because its fixture had
   nothing to escape).
 - **Reviewer subagents spawned BY A LANE report to the MAIN session** — a lane
-  that dispatches and waits blocks forever while the parent collects verdicts
-  it did not ask for (go-to-k/cdkd#2417). Pick one shape: the lane runs them
-  synchronously, or the parent dispatches and relays verdicts down (§9's
-  queued-versus-`Resuming` rule).
+  that dispatches and waits blocks forever (go-to-k/cdkd#2417). Pick one shape:
+  the lane runs them synchronously, or the parent dispatches and relays down
+  (§9's queued-versus-`Resuming` rule); §5-g owns the rest of the plumbing,
+  including the lane whose OWN report never arrives.
 
 ### 8-c. The live-test tiers
 
@@ -187,8 +179,8 @@ each HALF of a multi-part fix separately** (a scrub lane's probes proved the
 halves independently fenced — a single all-or-nothing revert cannot). Add a
 NEGATIVE CONTROL inside the arm — a sibling case that must NOT trip the new
 behaviour — or a refusal that fires on everything satisfies every positive
-assertion. The vacuity shapes (none visible by reading the script; first,
-second and fourth measured on go-to-k/cdkd#2108 / go-to-k/cdkd#2109):
+assertion. The vacuity shapes, none visible by reading the script
+(go-to-k/cdkd#2108 / go-to-k/cdkd#2109):
 
 - **The host has the trigger but not the EVIDENCE, or the reverse** — a fix
   keying on recorded state needs the state AND the thing it describes in the
@@ -227,10 +219,15 @@ second and fourth measured on go-to-k/cdkd#2108 / go-to-k/cdkd#2109):
   assertion must first require the array to exist).
 - **The inverse, when a fix REMOVES a behaviour: an assertion that it HAPPENS
   goes over-determined, not red** (three fixtures kept passing on accumulated
-  delete markers after go-to-k/cdkd#2450). Sweep the test tree by the
-  assertion's SHAPE, not the issue's wording, and RE-POINT each hit rather
-  than deleting it — a deleted negative control leaves that direction
-  unfenced.
+  delete markers after go-to-k/cdkd#2450). Sweep by the assertion's SHAPE, not
+  the issue's wording, and RE-POINT each hit rather than deleting it — a
+  deleted negative control leaves that direction unfenced. **The sweep must
+  reach `tests/integration/**/verify.sh`**: vitest's `include` is `*.test.ts`
+  under `tests/` and `src/`, which no shell fixture matches, so a `verify.sh`
+  pins a contract no suite EXECUTES (several read them as text) and no
+  diff-reading reviewer sees — go-to-k/cdkd#2882 round 8: `secrets-array-nested`
+  FAILED on a negative control still pinning the residual the PR retired, "the
+  real-AWS integ round caught what six review rounds did not".
 - **A fixture that establishes its precondition on the HAPPY path cannot test
   the arm where the FAILING path creates it** (go-to-k/cdkd#2057: the refusal
   could not fire — its evidence was persisted only by the success path — yet
@@ -248,12 +245,11 @@ second and fourth measured on go-to-k/cdkd#2108 / go-to-k/cdkd#2109):
 Three fixture mechanics, each worth a stubbed dry run (all cost a real-AWS
 cycle on 2026-08-20): a `cleanup` that also runs pre-run must not destroy
 anything the run then needs (a `mktemp -d` at variable-definition time + `rm
--rf` in cleanup deletes the workdir before its first write); before waiting
-for a resource to disappear, verify the probe reports "still present" DURING
-deletion (else the wait is vacuous — measure the window so the budget is a
-number); and a fixture whose only `cdkd destroy` fails BY DESIGN cannot
-honestly flip `integ-destroy` — add a final phase that disables the
-injection, redeploys, and runs a genuinely clean destroy.
+-rf` in cleanup deletes the workdir before its first write); before waiting for
+a resource to disappear, verify the probe reports "still present" DURING
+deletion, else the wait is vacuous; and a fixture whose only `cdkd destroy`
+fails BY DESIGN cannot honestly flip `integ-destroy` — add a final phase that
+disables the injection, redeploys, and destroys cleanly.
 
 ### 8-e. Watching runs and pollers
 
@@ -270,9 +266,8 @@ a `Monitor` on phase lines AND on log-growth stalling.
 - **The harness's "completed, exit 0" is the exit code of the command you
   BACKGROUNDED** — `nohup <job> ... & echo started` reports success while the
   job still runs. Run the long job as the SOLE command of the backgrounded
-  call and read the log's own terminal line. Two nearby traps: a `cd` inside
-  the backgrounded compound leaves the parent's `$VAR` unset, and `grep -c`
-  exits 1 on a count of zero.
+  call and read the log's own terminal line. Nearby trap: a `cd` inside the
+  backgrounded compound leaves the parent's `$VAR` unset.
 
 ### 8-f. Fixture environment prechecks
 
@@ -289,9 +284,9 @@ aws s3 ls "s3://cdkd-state-<acct>/cdkd-bootstrap/"                       # which
 the same code without it** (on the merits, not availability). When docker is
 required (`integ-local`), verify registry reach FIRST (`docker pull
 hello-world` under a 120s cap) — `docker version` says nothing about registry
-networking. `/run-integ`'s "Important" section owns the hang diagnosis, the
-do-NOT-restart-Docker rule, what is never yours to spend, and the rule that a
-run blocked before its assertions is not a failing fix (with its ledger note).
+networking. `/run-integ`'s "Important" section owns the rest: hang diagnosis,
+the do-NOT-restart-Docker rule, and that a run blocked before its assertions is
+not a failing fix (with its ledger note).
 
 ### 8-g. Prose claims are verified to the same bar as code
 
@@ -304,11 +299,15 @@ false claim a review round had read past:
   (a later PR may already have falsified it).
 - **A correction can be a new false claim** — twice the replacement sentence
   was wrong in the other direction. Re-read a correction against the code.
-- **A round finding the SAME CLASS twice means stop fixing instances** — make
-  both sites ask ONE question. Four rounds on go-to-k/cdkd#2719 each subtracted
-  one input from a label meant to mirror a dispatch; every fix was correct and
-  incomplete. The tell: a finding differing from the last only in which input
-  it names.
+- **A round finding the SAME CLASS twice, or TWO SPELLINGS of one question,
+  means stop fixing instances** — name the site that OWNS the question and
+  make every other site call or copy ONE
+  predicate verbatim, because a better second spelling looks like a fix and
+  passes its own test (go-to-k/cdkd#2134: `producerRegion !== undefined`
+  disagreed with the authority's `if (!producerRegion)` on the empty string,
+  fail-OPEN). Four rounds on go-to-k/cdkd#2719 each subtracted one input from a
+  label meant to mirror a dispatch; every fix was correct and incomplete. The
+  tell: a finding differing from the last only in which input it names.
 - **In a FIX round, the fix invalidated your own prose** — every past-tense
   measurement is stale until re-derived (one run: one code defect, TEN false
   claims). Before a fix round is final, re-derive every
@@ -418,14 +417,13 @@ leftover check — the `deployments/` events store legitimately survives it.
 writes it, run by the ORCHESTRATOR after its dispatched reviewers report and
 every blocker is addressed — a lane setting it is the "sub-agent self-review
 is not independent review" failure arriving through the marker (two of three
-lanes on 2026-08-29, go-to-k/cdkd#2383; twice more on 2026-09-04 — the lane
-whose BRIEF named the prohibition was the one that obeyed, so put it there
-too). The merge gate cannot catch it: the sentinel is per-worktree and §9
+lanes on 2026-08-29, go-to-k/cdkd#2383; twice more on 2026-09-04 — only the
+lane whose BRIEF named the prohibition obeyed, so put it there too). The merge
+gate cannot catch it: the sentinel is per-worktree and §9
 merges from the lane's worktree, so a lane setting it after its final push
 matches. The PARENT can, and it is a named step of its own round — read the
-marker
-BEFORE running `/review-pr`, since one already fresh there can only be the
-lane's (`mise exec -- markgate verify pr-review`, then
+marker BEFORE running `/review-pr`, since one already fresh there can only be
+the lane's (`mise exec -- markgate verify pr-review`, then
 `.markgate-pr-review-sha` against `git rev-parse HEAD`; a sha that is not HEAD
 is the tell). On a hit, review from scratch.
 

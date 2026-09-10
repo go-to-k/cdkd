@@ -79,9 +79,12 @@ rm -f /tmp/run-touched.$$
 - **Re-read the REASON, not just the files — and when a hit CONTRADICTS it,
   the BODY is the stale side.** A reason anchored to the filing session's own
   state goes false while the decision it justified still stands.
-  `.claude/rules/session-report.md` → Session-fit carries the shape, its
-  boundary against the PR-shaped reason that is refused outright rather than
-  merely expiring, and the incident. Correct the issue when this catches one —
+  `.claude/rules/session-report.md` → Session-fit carries the shape and the
+  incident. **A reason naming an EXTERNAL blocker is checked by RUNNING the
+  query §4 makes it name** — the file criterion above never fires for a
+  stand-down whose file this run never touched (2026-09-10:
+  go-to-k/cdkd#2847 / go-to-k/cdkd#2885 stood down on open go-to-k/cdkd#2911,
+  which merged 20 minutes later). Correct the issue when this catches one —
   and when LANES REMAIN, route a hit whose file a later lane will open into
   that lane's brief instead of noting it (go-to-k/cdkd#2604: a mid-run retro
   logged the cleared blocker as "not that run's lane"; the next lane opened
@@ -122,6 +125,16 @@ probe that reported clear while a lane was live, a stale flag/path/gate name;
 instruction, wrong place — done, but a step too late; (5) followed it and
 still paid — obeyed text, retry anyway.
 
+**Which shape RECURRED is a COUNT, not a recollection** — the tally decides
+which lesson is worth a stage file's remaining bytes, and a retro's own brief
+is prose, so §8-g applies to it (2026-09-10: a brief named one pattern "the
+single most repeated defect across both PRs" and the commit bodies did not bear
+it out). Take the tally BEFORE §9 flattens the lane branches — a merged PR shows
+far fewer commits than it had rounds, a subagent-reviewed run carries no GitHub
+review comment at all, and `--delete-branch` leaves those commit bodies
+reachable from no LOCAL ref (GitHub keeps `refs/pull/<N>/head`), so cite the
+PR, never the sha.
+
 **No evidence, no edit.** A clean run's correct output is one wrap line
 ("retrospective: no skill change — §2 / §4 / §8 held"). A skill grown from
 "this would be nice" stops being read to the bottom.
@@ -159,12 +172,18 @@ unread one.
   incident behind it cannot be re-judged or retired; a rule buried in its own
   incident report is not read.
 - **Pay for what you add**: cut a line this run proved stale, subsumed, or
-  wrong. **A retro NEVER buys room by raising a byte cap or a corpus
-  bound** — the caps in `tests/unit/scripts/skill-file-payload.test.ts` are
-  the mechanical stop on this skill's growth loop, and a retro that raises one
-  converts the stop into a ratchet (a 2026-09-02 retro raised the corpus floor
-  to fit its additions; the 2026-09-04 pass reversed it). A lesson compression
-  cannot pay for splits the stage instead; the floor moves DOWN only.
+  wrong. **A retro NEVER buys room by raising a CAP** — the per-file caps in
+  `tests/unit/scripts/skill-file-payload.test.ts` are the mechanical stop on
+  this skill's growth loop, and raising one converts the stop into a ratchet (a
+  2026-09-02 retro raised a bound to fit its additions; 2026-09-04 reversed
+  it). A lesson compression cannot pay for splits the stage instead.
+  **`MIN_REFERENCE_CORPUS_BYTES` is the one exception, and only RE-DERIVED**:
+  it must stay above `corpus - runnerUp`, so ANY growth lapses it and "moves
+  DOWN only" would make it unmaintainable (go-to-k/cdkd#2720 /
+  go-to-k/cdkd#1837 / go-to-k/cdkd#2779 each re-derived it upward). It buys no
+  room — the same assertion pins it from BELOW, so restoring a prior value
+  under a grown corpus goes RED (measured 2026-09-11). Recompute from the
+  tree, never pick.
 - Do not restate a rule living in `CLAUDE.md` or another step — point at it.
   `CLAUDE.md` is injected into every context, so a stage-file paragraph
   re-explaining a gate it documents is paid for twice in every lane.
