@@ -137,23 +137,55 @@ trap '(exit 143); cleanup; exit 143' TERM
 
 # Triage helper: dump cdkd events RESOURCE_FAILED lines on a deploy failure so a
 # CI run shows exactly which race edge failed + the AWS error.
+# Fetch the newest run's FLAT event array, or print nothing.
+#
+# `cdkd events <stack> --format json` WITHOUT `--run` returns
+# `{stackName, region, runs: [DeploymentRunSummary]}`, and a run summary carries
+# `runId / command / cdkdVersion / startedAt / finishedAt / result / eventCount`
+# and NO events at all -- so a jq filtering event fields over that payload
+# matches nothing, whatever it asks for. Only `--run <id>` returns the array.
+# Never fatal: this feeds diagnostics, so a failure here must not mask the
+# failure being diagnosed.
+fetch_run_events() { # stdout: a JSON array of DeploymentEvent, or empty
+  ( set +eu
+    runs_json=$(node "${LOCAL_DIST}" events "${STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --format json 2>/dev/null) || return 0
+    [ -n "${runs_json}" ] || return 0
+    # Newest by startedAt; `// empty` so an unparseable payload yields nothing
+    # rather than the string "null" reaching --run.
+    run_id=$(printf '%s' "${runs_json}" \
+      | jq -r '(.runs // []) | sort_by(.startedAt) | last | .runId // empty' 2>/dev/null)
+    [ -n "${run_id}" ] || return 0
+    node "${LOCAL_DIST}" events "${STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --run "${run_id}" \
+      --format json 2>/dev/null
+  )
+}
+
 dump_failure_triage() {
-  echo "==> DEPLOY FAILED — triage via cdkd events --format json" >&2
+  echo "==> DEPLOY FAILED -- triage via cdkd events --format json" >&2
   set +e
-  EVENTS_JSON=$(node "${LOCAL_DIST}" events "${STACK}" \
-    --state-bucket "${STATE_BUCKET}" \
-    --region "${REGION}" \
-    --format json 2>/dev/null)
+  EVENTS_JSON=$(fetch_run_events)
   if [ -n "${EVENTS_JSON}" ]; then
-    echo "${EVENTS_JSON}" | jq -r '
-      (if type == "array" then . else (.events // .runs // []) end)
-      | (if (.[0] | type) == "object" and (.[0] | has("events")) then (.[] .events // []) | add else . end)
-      | map(select(.type == "RESOURCE_FAILED" or .type == "ROLLBACK_RESOURCE_FAILED"))
+    # `eventType`, NOT `type`: `DeploymentEvent` has no `type` field, so the
+    # previous filter matched nothing even when handed a real event stream.
+    FAILED=$(printf '%s' "${EVENTS_JSON}" | jq -r '
+      map(select(.eventType == "RESOURCE_FAILED" or .eventType == "ROLLBACK_RESOURCE_FAILED"))
       | .[]
-      | "  RESOURCE_FAILED: \(.logicalId // "?") (\(.resourceType // "?"))\n    \(.error.name // "?") \(if .error.awsErrorCode then "(\(.error.awsErrorCode))" else "" end): \(.error.message // "?")"
-    ' 2>/dev/null || echo "  (could not parse events JSON; raw below)" && echo "${EVENTS_JSON}" >&2
+      | "  \(.eventType): \(.logicalId // "?") (\(.resourceType // "?"))\n    \(.error.name // "?")\(if .error.awsErrorCode then " (\(.error.awsErrorCode))" else "" end): \(.error.message // "?")"
+    ' 2>/dev/null)
+    if [ -n "${FAILED}" ]; then
+      printf '%s\n' "${FAILED}" >&2
+    else
+      echo "  (event stream parsed but carried no RESOURCE_FAILED / ROLLBACK_RESOURCE_FAILED; raw below)" >&2
+      printf '%s\n' "${EVENTS_JSON}" >&2
+    fi
   else
-    echo "  (no events recorded — deploy may have failed before any resource started)" >&2
+    echo "  (no events recorded -- deploy may have failed before any resource started)" >&2
   fi
   set -e
 }
@@ -332,6 +364,62 @@ if [ "${MFA_SNS_ARN}" != "${POOL_SNS_ARN}" ]; then
 fi
 echo "    OK: pool + SMS MFA config both bound the fresh role (${POOL_SNS_ARN})"
 
+# --- Window report: how much propagation time each edge actually got ---
+# A green run of a RACE fixture does not prove the retry works -- it may simply
+# never have raced. #2018 makes the same point about its own fixture, and asks
+# for the window to be MEASURED rather than inferred. So record it: for each
+# producer/consumer pair, print the gap between the producer's CREATE finishing
+# and the consumer's starting. A small gap means this run exercised the window;
+# a large one means the DAG had unrelated work in between and the edge was
+# never under test, whatever the assertions above say.
+#
+# Informational ONLY -- a large gap is not a failure (it is not something the
+# fixture controls), and an unparseable events stream is not either. What it
+# buys is that "the retry is covered" stops being assumed from a green run.
+echo "==> Window report: producer -> consumer gaps (informational, never fatal)"
+set +e
+WINDOW_EVENTS=$(fetch_run_events)
+if [ -n "${WINDOW_EVENTS}" ]; then
+  echo "${WINDOW_EVENTS}" | jq -r '
+    # Millisecond precision is the whole point -- the reported window was
+    # 336ms, and `fromdateiso8601` alone truncates to whole SECONDS, which
+    # would print 0ms for every gap this measurement exists to see.
+    def tms:
+      capture("(?<base>.*)\\.(?<ms>[0-9]{3})Z$")
+      | ((.base + "Z") | fromdateiso8601) * 1000 + (.ms | tonumber);
+    # `fetch_run_events` always yields a FLAT array, so no run-wrapper
+    # unwrapping is needed -- and the unwrapping this replaced was wrong
+    # anyway: `(.[] .events // []) | add` applies `add` to each stream element,
+    # merging event OBJECTS instead of concatenating the arrays.
+    (if type == "array" then . else [] end)
+    | map(select(.logicalId != null and (.timestamp | type) == "string"))
+    | map({logicalId, eventType, t: (.timestamp | tms)})
+    | group_by(.logicalId)
+    | map({
+        id: .[0].logicalId,
+        start: ([.[] | select(.eventType == "RESOURCE_STARTED") | .t] | min),
+        done:  ([.[] | select(.eventType == "RESOURCE_SUCCEEDED") | .t] | max)
+      })
+    | (reduce .[] as $r ({}; .[$r.id] = $r)) as $byId
+    | [
+        ["InstanceProfile", "Instance"],
+        ["UserPoolsmsRole1998E37F", "RacedUserPool"]
+      ]
+    | map(
+        ($byId[.[0]].done) as $p
+        | ($byId[.[1]].start) as $c
+        | if $p != null and $c != null
+          then "    \(.[1]) started \(($c - $p) | floor)ms after \(.[0]) completed"
+          else "    \(.[1]): gap unavailable (producer or consumer event missing)"
+          end
+      )
+    | .[]
+  ' 2>/dev/null || echo "    (could not parse the events stream for window timing)"
+else
+  echo "    (no events recorded — window timing unavailable)"
+fi
+set -e
+
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -422,4 +510,4 @@ POLICED_BUCKET=""
 KEY_ID=""
 
 echo ""
-echo "=== PASS: propagation-races-2 integ (4 fresh-principal/consumer race edges deployed, asserted, destroyed clean) ==="
+echo "=== PASS: propagation-races-2 integ (5 fresh-principal/consumer race edges deployed, asserted, destroyed clean) ==="
