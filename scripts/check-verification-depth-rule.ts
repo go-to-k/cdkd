@@ -38,7 +38,7 @@
  * `allow-mode-gated-drop` convention in `check-integ-mode-gated-resources.ts`.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** CLAUDE.md must still carry this exact anchor. */
@@ -162,11 +162,38 @@ export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
   const patternScannedSkills: string[] = [];
   let patternScannedLines = 0;
 
+  // A governed skill is its SKILL.md PLUS every `references/*.md` stage file,
+  // because a split moves the governed text out of SKILL.md without moving it
+  // out of the skill. Measured on go-to-k/cdkd#2930, which split `/verify-pr`:
+  // step 8 -- the reviewer-tier text this rule exists to police -- landed in
+  // `references/code-review.md`, and appending "For a small diff, skip the
+  // reviewers." there produced ZERO violations while `patternScannedSkills`
+  // still reported `verify-pr`. A target that reports as scanned while its
+  // governed content is invisible is the worst of the three states.
   const targets: Array<{ name: string; rel: string }> = [
-    ...GOVERNED_SKILLS.map((skill) => ({
-      name: skill,
-      rel: join('.claude', 'skills', skill, 'SKILL.md'),
-    })),
+    ...GOVERNED_SKILLS.flatMap((skill) => {
+      const skillDir = join('.claude', 'skills', skill);
+      const refsDir = join(repoRoot, skillDir, 'references');
+      let refs: string[] = [];
+      try {
+        refs = readdirSync(refsDir)
+          .filter((f) => f.endsWith('.md'))
+          .sort();
+      } catch (err) {
+        // ENOENT means an UNSPLIT skill, which is normal. Anything else --
+        // ENOTDIR, EACCES -- is a directory this checker could not read, and
+        // swallowing it would silently downgrade a governed skill to
+        // "SKILL.md only", the exact invisibility go-to-k/cdkd#2930 closed.
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+      }
+      return [
+        { name: skill, rel: join(skillDir, 'SKILL.md') },
+        ...refs.map((f) => ({
+          name: `${skill}/references/${f}`,
+          rel: join(skillDir, 'references', f),
+        })),
+      ];
+    }),
     ...GOVERNED_ROOT_DOCS.map((doc) => ({ name: doc, rel: doc })),
   ];
 

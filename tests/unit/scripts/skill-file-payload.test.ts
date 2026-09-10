@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -755,6 +755,90 @@ describe('skill file payload budget', () => {
         ).toBeLessThanOrEqual(MAX_REFERENCE_FILE_BYTES);
       });
     }
+  }
+
+  /**
+   * A reference an orchestrator points at, in either spelling used in this
+   * tree: `/verify-pr` writes markdown links (`[text](references/x.md)`),
+   * `/work-issues` writes backticked paths (`` `references/x.md` ``). Matching
+   * the bare path covers both.
+   *
+   * The lookbehind is load-bearing and NOT cosmetic: without it the pattern
+   * also matches ANOTHER skill's path. `/hunt-bugs` cites
+   * `work-issues/references/filing.md` three times, so the moment hunt-bugs
+   * gains a `references/` dir of its own those citations would be reported as
+   * dangling links naming a file that is fine — a false FAIL pointing at the
+   * wrong skill (measured on go-to-k/cdkd#2930 review round 2).
+   */
+  const REFERENCE_LINK_SOURCE = String.raw`(?<![\w./-])references\/([A-Za-z0-9._-]+\.md)`;
+  /** Non-global: used ONLY with `.test()`, which cannot touch `lastIndex`. */
+  const REFERENCE_LINK_RE = new RegExp(REFERENCE_LINK_SOURCE);
+  /**
+   * Global: used ONLY with `matchAll`, which is safe across iterations because
+   * it clones the regex — but it HONOURS a non-zero `lastIndex` on the
+   * original (measured: setting it to 99 makes `matchAll` return nothing and
+   * leaves it at 99). So never `.exec()` or `.test()` this one; that would
+   * advance `lastIndex` and silently empty a later skill's link set.
+   */
+  const REFERENCE_LINK_RE_G = new RegExp(REFERENCE_LINK_SOURCE, 'g');
+
+  /**
+   * Every `references/<file>.md` an orchestrator LINKS must exist, and every
+   * stage file must be linked from its orchestrator.
+   *
+   * This is the guard that applies to a split skill NOT in `SPLIT_SKILLS`.
+   * Those two floors are work-issues-calibrated (6 files / 151,750 B), so a
+   * smaller corpus cannot join them without per-skill numbers — measured on
+   * go-to-k/cdkd#2930, where deleting TWO of `/verify-pr`'s three stage files
+   * left the whole `tests/unit/scripts` suite green, because every other
+   * assertion here is a one-sided UPPER bound and reads a deletion as an
+   * improvement. A dangling pointer was equally silent: repointing SKILL.md at
+   * `references/does-not-exist.md` was green too.
+   *
+   * Both directions, because they fail differently: a missing target strands
+   * the step that needed it, and an unlinked stage file is content the
+   * orchestrator can no longer route anyone to. Neither needs a byte floor —
+   * existence and reachability are the properties a wholesale deletion breaks.
+   */
+  for (const name of names) {
+    const skillMdPath = join(skillsDir, name, 'SKILL.md');
+    const skillBody = readFileSync(skillMdPath, 'utf8');
+    // Run whenever EITHER side exists. Gating on `refs.length > 0` alone would
+    // skip the case its own docstring names: deleting ALL of a skill's stage
+    // files leaves the orchestrator full of dangling links and no references/
+    // dir to notice, so the case would be SKIPPED and the suite green
+    // (measured on go-to-k/cdkd#2930 review round 2 — deleting all three of
+    // verify-pr's stage files produced 0 failures under the earlier guard).
+    if (referenceFiles(name).length === 0 && !REFERENCE_LINK_RE.test(skillBody)) continue;
+    it(`${name}: every references/ link resolves and every stage file is linked`, () => {
+      const refs = referenceFiles(name);
+      const linked = new Set(
+        [...skillBody.matchAll(REFERENCE_LINK_RE_G)].map((m) => m[1]!),
+      );
+      expect(
+        linked.size,
+        `.claude/skills/${name}/SKILL.md links no references/*.md, but the skill has ` +
+          `${refs.length} stage file(s). An orchestrator whose pointers are gone is a ` +
+          `skill whose stages are unreachable.`,
+      ).toBeGreaterThan(0);
+      for (const target of [...linked].sort()) {
+        expect(
+          existsSync(join(skillsDir, name, 'references', target)),
+          `.claude/skills/${name}/SKILL.md links references/${target}, which does not ` +
+            `exist. Either the stage file was deleted or the link was mistyped; both ` +
+            `strand the step that reads it.`,
+        ).toBe(true);
+      }
+      for (const ref of refs) {
+        const base = ref.split('/').pop()!;
+        expect(
+          linked.has(base),
+          `.claude/skills/${name}/references/${base} exists but SKILL.md links no ` +
+            `reference by that name, so nothing routes a run into it. Link it, or ` +
+            `delete it deliberately.`,
+        ).toBe(true);
+      }
+    });
   }
 
   for (const name of SPLIT_SKILLS) {

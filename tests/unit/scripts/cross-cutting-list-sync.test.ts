@@ -12,9 +12,12 @@ import { dirname, join } from 'node:path';
  *      a. `.claude/hooks/integ-broad-gate.sh` -- `CROSS_CUTTING_REGEX`, the live
  *         merge gate, and therefore the source of truth every other copy is
  *         compared against.
- *      b. `.claude/skills/verify-pr/SKILL.md` step 6 -- the bullet list.
- *      c. `.claude/skills/verify-pr/SKILL.md` step 6 -- a VERBATIM copy of the
- *         regex, in the detection snippet a few lines below the bullet list.
+ *      b. `.claude/skills/verify-pr/references/leftover-and-integ-gates.md` --
+ *         the bullet list. Step 6 moved out of SKILL.md when that skill was
+ *         split into orchestrator + references/ (go-to-k/cdkd#2930); the
+ *         anchors are unchanged, only the file holding them.
+ *      c. the same file -- a VERBATIM copy of the regex, in the detection
+ *         snippet a few lines below the bullet list.
  *      d. `.claude/skills/pick-integ/SKILL.md` step 2 -- the changed-path table.
  *
  *    `CLAUDE.md` used to be a fifth: it enumerated the paths inline in its
@@ -26,8 +29,8 @@ import { dirname, join } from 'node:path';
  * 2. The BROAD-SET TEST-NAME list -- which integ fixtures are broad enough to
  *    refresh the marker. Six spellings live in files: the hook's header
  *    comment, the hook's block message, `.markgate.yml`'s `integ-broad`
- *    comment, `/run-integ` step 11, `/verify-pr` step 6, and `/pick-integ`
- *    step 2. The fence also compares `BROAD_SET_PIN` below. `CLAUDE.md`
+ *    comment, `/run-integ` step 11, `/verify-pr` step 6 (in the reference file
+ *    named above, not SKILL.md), and `/pick-integ` step 2. The fence also compares `BROAD_SET_PIN` below. `CLAUDE.md`
  *    carried one more and no longer does, for the same reason.
  *
  * Why a fence rather than the "keep in sync" comments the copies already carry:
@@ -102,7 +105,19 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 const BROAD_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-broad-gate.sh');
 const DESTROY_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-destroy-gate.sh');
-const VERIFY_PR = join(repoRoot, '.claude', 'skills', 'verify-pr', 'SKILL.md');
+// Step 6's content, and therefore all three anchors below, lives in the
+// reference file rather than SKILL.md since the go-to-k/cdkd#2930 split. The
+// error messages still say "verify-pr" so a failure names the skill a reader
+// is looking for; `VERIFY_PR_LABEL` is what they interpolate.
+const VERIFY_PR = join(
+  repoRoot,
+  '.claude',
+  'skills',
+  'verify-pr',
+  'references',
+  'leftover-and-integ-gates.md'
+);
+const VERIFY_PR_LABEL = 'verify-pr/references/leftover-and-integ-gates.md';
 const PICK_INTEG = join(repoRoot, '.claude', 'skills', 'pick-integ', 'SKILL.md');
 const WORK_ISSUES = join(
   repoRoot,
@@ -362,7 +377,7 @@ function pathsFromVerifyPrBullets(): string[] {
   const m = /When the PR diff touches ANY of:\n((?:\s*- `[^`]+`\n)+)/.exec(read(VERIFY_PR));
   expect(
     m,
-    'verify-pr/SKILL.md: could not find the "When the PR diff touches ANY of:" bullet list. ' +
+    `${VERIFY_PR_LABEL}: could not find the "When the PR diff touches ANY of:" bullet list. ` +
       'The anchor was reworded or the first bullet no longer has the `- `<path>`` shape. ' +
       '(An interleaved sentence LATER in the list does not reach here -- it truncates the ' +
       'scan, and the floor or the sequence comparison is what rejects that.)',
@@ -372,11 +387,11 @@ function pathsFromVerifyPrBullets(): string[] {
     .filter((l) => l.trim() !== '')
     .map((line) => {
       const entry = /^\s*- `([^`]+)`$/.exec(line);
-      expect(entry, `verify-pr/SKILL.md: bullet ${JSON.stringify(line)} is not a plain path`).not
+      expect(entry, `${VERIFY_PR_LABEL}: bullet ${JSON.stringify(line)} is not a plain path`).not
         .toBeNull();
       return entry![1];
     });
-  assertFloor(out, 'verify-pr/SKILL.md bullet list', MIN_PATHS);
+  assertFloor(out, `${VERIFY_PR_LABEL} bullet list`, MIN_PATHS);
   return out;
 }
 
@@ -385,9 +400,9 @@ function pathsFromVerifyPrRegex(): string[] {
   const m = /git diff origin\/main\.\.\.HEAD --name-only \| grep -qE '([^']+)'/.exec(
     read(VERIFY_PR),
   );
-  expect(m, 'verify-pr/SKILL.md: no `git diff ... | grep -qE \'...\'` detection snippet found').not
+  expect(m, `${VERIFY_PR_LABEL}: no \`git diff ... | grep -qE '...'\` detection snippet found`).not
     .toBeNull();
-  return expandPathRegex(m![1], 'verify-pr/SKILL.md detection regex');
+  return expandPathRegex(m![1], `${VERIFY_PR_LABEL} detection regex`);
 }
 
 /**
@@ -722,17 +737,17 @@ function testsFromRunInteg(): string[] {
 function testsFromVerifyPr(): string[] {
   const m = /The canonical broad set \(keep in sync[\s\S]*?\):\n((?:\s*- `[a-z0-9-]+`[^\n]*\n)+)/
     .exec(read(VERIFY_PR));
-  expect(m, 'verify-pr/SKILL.md: no "canonical broad set" bullet list found').not.toBeNull();
+  expect(m, `${VERIFY_PR_LABEL}: no "canonical broad set" bullet list found`).not.toBeNull();
   const names = m![1]
     .split('\n')
     .filter((l) => l.trim() !== '')
     .map((l) => {
       const entry = /^\s*- `([a-z0-9-]+)`/.exec(l);
-      expect(entry, `verify-pr/SKILL.md: broad-set bullet ${JSON.stringify(l)} has no name`).not
+      expect(entry, `${VERIFY_PR_LABEL}: broad-set bullet ${JSON.stringify(l)} has no name`).not
         .toBeNull();
       return entry![1];
     });
-  return assertTestNames(names, 'verify-pr/SKILL.md broad set');
+  return assertTestNames(names, `${VERIFY_PR_LABEL} broad set`);
 }
 
 /** `/pick-integ`'s BROAD-set table cell. */
@@ -757,8 +772,8 @@ describe('cross-cutting file list stays in sync across its four copies', () => {
     // it points at integ-broad-gate.sh's CROSS_CUTTING_REGEX. Nothing to compare
     // there -- do not add one back.
     const copies: Array<[string, string[]]> = [
-      ['verify-pr/SKILL.md bullet list', pathsFromVerifyPrBullets()],
-      ['verify-pr/SKILL.md detection regex', pathsFromVerifyPrRegex()],
+      [`${VERIFY_PR_LABEL} bullet list`, pathsFromVerifyPrBullets()],
+      [`${VERIFY_PR_LABEL} detection regex`, pathsFromVerifyPrRegex()],
       ['pick-integ/SKILL.md BROAD-set row', pathsFromPickInteg()],
     ];
     for (const [name, entries] of copies) {
@@ -891,7 +906,7 @@ describe('broad-integ test-name list stays in sync across its six copies', () =>
       ['integ-broad-gate.sh header comment', testsFromHookComment()],
       ['.markgate.yml integ-broad comment', testsFromMarkgateYml()],
       ['run-integ/SKILL.md step 11', testsFromRunInteg()],
-      ['verify-pr/SKILL.md step 6', testsFromVerifyPr()],
+      [`${VERIFY_PR_LABEL} step 6`, testsFromVerifyPr()],
       ['pick-integ/SKILL.md step 2', testsFromPickInteg()],
     ];
     for (const [name, entries] of copies) {

@@ -10,6 +10,14 @@ Heavy pre-merge gate. Run before creating or merging a pull request — NOT
 before every commit (per-commit verification is `/check`, enforced by the
 `check-gate` hook).
 
+Steps 6, 8 and 10-12 live in `references/*.md`, read at the step that uses
+them, so the always-loaded payload stays small — and having them caps THIS
+file at 12,000 B rather than 23,000, so new material usually belongs in a
+stage file. Each is bulky for a different reason:
+step 6 is almost entirely conditional on what the diff touches, step 8 is long
+because it RECURSES (every fix round is re-reviewed), and 10-12 run once at the
+very end. Everything kept below is read on every invocation.
+
 ## Checklist
 
 Run each check and report pass/fail:
@@ -65,173 +73,43 @@ Run each check and report pass/fail:
    - Invoke `/check-docs` logic: docs match code changes; no stale references.
    - **Generated-artifact freshness**: CI carries a staleness guard per
      generated artifact (nine of them; a hand-list here drifted four times —
-     PRs #548, #1104, #1231, #1416 — so do NOT re-list). Regenerate everything:
+     PRs #548, #1104, #1231, #1416 — so do NOT re-list). Regenerate
+     everything, then check nothing is dirty:
      ```bash
      # Regenerates every artifact CI guards (offline static analysis).
      # `format` is in the chain, not a tidy-up: CI's guard formats before
      # diffing, so skipping it renders a formatting-only diff as real drift.
      vp run gen:all-matrices && vp run format
-
-     # Offline CRITIC (~0.5s), not part of the aggregate. If it fails, run
-     # `vp run audit:coverage:regenerate` (heavy ~15 min, needs AWS creds with
-     # cloudformation:ListTypes + DescribeType) and commit the cache —
-     # /verify-pr does not auto-run :regenerate.
+     # Offline CRITIC (~0.5s), not part of the aggregate.
      vp run audit:coverage:check
-
-     # Anything dirty here was stale before you ran the above.
      git status --short docs/ src/provisioning/property-coverage.generated.ts \
                         src/provisioning/unsupported-types.generated.ts
      ```
-     Anything dirty: stage it into the PR and re-run `/check-docs`.
+     Anything dirty was stale before you ran the above: stage it into the PR
+     and re-run `/check-docs`. If `audit:coverage:check` fails, run
+     `vp run audit:coverage:regenerate` (heavy ~15 min, needs AWS creds with
+     `cloudformation:ListTypes` + `DescribeType`) and commit the cache —
+     `/verify-pr` does not auto-run `:regenerate`.
      `tests/unit/scripts/matrix-regen-coverage.test.ts` pins
      `gen:all-matrices` against `ci.yml`'s guards in both directions — keep
      pointing at the aggregate. (The `provider-integ-gate.sh` hook blocks a
      new `registry.register(...)` without integ coverage but does not enforce
      matrix regeneration; this step closes that gap.)
 
-6. **Leftover resources**
-   - Account: `aws sts get-caller-identity --query Account --output text`;
-     `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1`
-     — no leftover state.
-   - **For deletion-touching PRs** (changes under
-     `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`,
-     `src/analyzer/dag-builder.ts`, etc.): the `integ-destroy` gate physically
-     blocks `gh pr merge` on a stale marker. Verify it here so failures
-     surface early:
-     ```bash
-     mise exec -- markgate verify integ-destroy
-     ```
-     **Read the exit code — two non-zero outcomes have opposite remedies**:
-     - **exit 1** — genuinely stale (in-scope change on this branch, or the
-       14d TTL expired). Run `/run-integ <relevant-test>` and confirm 0
-       errors / 0 orphans; the skill sets the marker itself.
-     - **exit 2** — markgate could not EVALUATE the gate (`origin/main`
-       unresolvable, or no delta against the merge base). `/run-integ`
-       cannot fix this — `markgate set` fails on the identical condition, so
-       running one burns a real-AWS run and leaves the gate blocked. Remedy:
-       `git fetch origin` (or `--unshallow`, or commit the branch's work).
-     CI is necessary but not sufficient — it does not exercise real-AWS
-     destroy; the gate is the structural enforcement of that fact.
-   - **CROSS-CUTTING CHECK (load-bearing)**: the `integ-destroy` marker
-     accepts ANY clean real-AWS destroy — a narrow feature integ flips it
-     without exercising the broad deploy/destroy paths a cross-cutting change
-     touches. When the PR diff touches ANY of:
-     - `src/deployment/deploy-engine.ts`
-     - `src/deployment/intrinsic-function-resolver.ts`
-     - `src/cli/commands/destroy-runner.ts`
-     - `src/cli/commands/destroy.ts`
-     - `src/cli/commands/deploy.ts`
-     - `src/analyzer/dag-builder.ts`
-     - `src/analyzer/template-parser.ts`
-     - `src/provisioning/register-providers.ts`
-     - `src/provisioning/provider-registry.ts`
-     - `src/deployment/retry.ts`
-     - `src/deployment/retryable-errors.ts`
-     - `src/deployment/rollback-executor.ts`
-
-     ...you MUST run a **broad integ** in addition to the feature integ.
-     (Both lists in this step are duplicated across several files and fenced
-     against the hook by `tests/unit/scripts/cross-cutting-list-sync.test.ts`,
-     so editing one copy alone fails CI.) The canonical broad set (keep in sync
-     with `.claude/hooks/integ-broad-gate.sh`'s block message, which
-     `cross-cutting-list-sync.test.ts` compares every other copy against):
-     - `bench-cdk-sample` (39-resource VPC+NAT+CF+Lambda+SQS)
-     - `lambda`
-     - `microservices`
-     - `drift-revert`
-     - `drift-revert-vpc`
-     - `multi-stack-deps`
-     - `multi-resource`
-     - `remove-protection`
-     - `export`
-
-     Cross-cutting code affects EVERY user's deploy/destroy; the broad integ
-     is the only structural defense against a regression that surfaces on
-     stacks unlike your fixture (the PR #348 / issue #343 incident).
-     ```bash
-     # Detection: only fires when the diff actually touches cross-cutting code.
-     if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/(provider-registry|register-providers)\.ts$'; then
-       echo "Cross-cutting code touched — broad integ required (bench-cdk-sample / lambda / microservices / drift-revert)."
-       # Then run the broad integ via /run-integ and confirm 0 errors / 0 orphans.
-     fi
-     ```
-     Both integs must pass; both refresh the same `integ-destroy` marker.
-   - **For local-execution-touching PRs** (`src/local/**`,
-     `src/cli/commands/local-*.ts`, `tests/integration/local-*/**`): the
-     `integ-local` gate blocks the merge on a stale marker, but reads the
-     LOCAL working-tree digest — merged from a parent worktree still on
-     pre-PR `main`, it passes silently. `/verify-pr` runs in the PR's own
-     worktree, closing that gap:
-     ```bash
-     if git diff origin/main...HEAD --name-only | grep -qE '^src/local/|^src/cli/commands/local-|^tests/integration/local-'; then
-       mise exec -- markgate verify integ-local
-     fi
-     ```
-     Non-zero → run `/run-integ local-<test>` matching the changed surface
-     (`local-start-api` for HTTP-server / authorizer / container-pool,
-     `local-invoke` for Lambda-runtime / ZIP-asset, `local-run-task` for ECS,
-     `local-invoke-container` for container-Lambda, `local-invoke-layers` for
-     Layers). The integ skill sets `integ-local` itself.
-   - Spot-check the failure-prone types per region the PR touched (typically
-     `us-east-1`): VPCs
-     (`describe-vpcs --filters "Name=tag:Name,Values=Cdkd*/Vpc"`), Lambda
-     hyperplane ENIs
-     (`describe-network-interfaces --filters "Name=description,Values=AWS Lambda VPC ENI-*"`),
-     CloudFront Distributions, NAT Gateways. Any match against a stack name in
-     the diff = orphan; clean up before merge.
+6. **Leftover resources + the integ gates** — read
+   [references/leftover-and-integ-gates.md](references/leftover-and-integ-gates.md).
+   Always do the baseline state-bucket check; the `integ-destroy` /
+   `integ-broad` / `integ-local` blocks fire only when the diff touches their
+   scope, and that file carries the scope lists, the exit-code remedies and
+   the orphan spot-check.
 
 7. **No stale references**: grep for removed imports / old module names;
    `src/index.ts` exports consistent.
 
-8. **Code review**
-   - **First, run `/review-pr <N>`** for the size-appropriate plan, plus the
-     ADDITIVE `pr-security-reviewer` at ANY tier when a security surface or
-     fix is involved. Thresholds are NOT restated here — `pr-review-gate.sh`
-     computes the tier that gates the merge; a copy can only drift from it.
-     Trust the recommendation; override only with a concrete reason, noted
-     here.
-   - Synthesize the reports into a verdict; any blocker → fix-back loop.
-   - **Then re-review the FIX DELTA, not just re-run the tier heuristic.**
-     Fixes are code no reviewer has seen, written under the momentum of
-     agreeing with a finding, landing exactly where a reviewer just proved is
-     subtle (PR #2044: round 2 found round 1's fix reintroduced the first
-     bug one line away, plus eight surviving mutants in branches round 1's
-     fixes introduced). Scope round 2 to the delta and say the original
-     design is accepted.
-   - **The rule RECURSES — "review every fix round", not "the second round".**
-     Keep going while the round changed anything, PROSE INCLUDED — a fix's
-     rationale is its least-probed text (4 false ones, PRs #2913 / #2916); a
-     TEST rewrite counts too (PR #2420: a round-2 fix replacing a crude
-     assertion with a derived one dropped a wire fact the crude form had been
-     pinning by accident — only a third round found it). When a round
-     REPLACES an assertion rather than adding one, KEEP BOTH unless you can
-     NAME, in the commit message, the mutation the old one could not catch.
-     "More precise" is not that name: precision is not a superset of what it
-     replaces, and if you cannot name the mutation the replacement is a
-     deletion (issue #2606: four rounds, each fix blind on a different axis
-     than the assertion it dropped).
-   - Corollary for mutation probes: **enumerate the branches the diff ADDS
-     and probe each one** — a new `if`, a new token in a rendered string, a
-     new early return and a new gate condition are four probes, not one.
-   - `git diff origin/main...HEAD` — confirm the diff is what you reviewed.
-   - For each change: correct? complete? necessary? Logic errors, dead code,
-     inconsistencies between files; all callers of changed functions handle
-     the new behavior; types consistent with implementation.
-   - **Shared-utility regression check**: if `src/utils/**` (or another
-     widely-imported module) changed, list every importer
-     (`grep -rl "from '\.\./.*utils/<file>'" src tests`) and walk each one.
-   - **Internal-interface contract change check**: if the diff changes the
-     SEMANTICS of arguments an interface receives — even with the type
-     signature unchanged — list every implementer and walk each one for
-     load-bearing assumptions about the old shape (truthy gates, "absent =
-     remove" semantics, JSON.parse on stringly input). PR #161's
-     "drifted-only partial newProperties" design had to be reworked after
-     audit found two implementers would silently clear non-drifted attrs.
-     **Audit BEFORE writing tests against the new design** — discovering the
-     breaks tests-after-design forces a rework and invalidates the tests.
-     ```bash
-     grep -rln "implements ResourceProvider" src/provisioning/providers/
-     ```
+8. **Code review** — read [references/code-review.md](references/code-review.md).
+   `/review-pr <N>` picks the tier, `pr-security-reviewer` is additive at any
+   tier, and every fix round gets re-reviewed — that file carries the rules and
+   the incidents behind them.
 
 9. **Live-test changed behavior**
    - Unit tests verify code correctness; this verifies *feature* correctness
@@ -246,80 +124,11 @@ Run each check and report pass/fail:
      explicitly rather than skip silently — the gate exits non-zero so a
      reviewer can decide.
 
-10. **Retrospective + rules update**
-    - Walk the session that produced this PR. For each surprise, friction, or
-      user correction: one-off, or recurring pattern? For each pattern,
-      propose where it lands: **hook** (mechanically detectable — strongest),
-      **skill / marker** (a pre-action checklist), **memory** (judgmental —
-      weakest). Surface the proposals before merging; write agreed
-      code/skill/hook artifacts in the same PR.
-    - The retrospective is itself covered by the `verify-pr` marker —
-      skipping it sets the marker on incomplete work.
-
-11. **Residual review-nit sweep** (mandatory — a multi-PR session once left
-    ~9 reviewer-flagged nits unfiled at "session complete")
-    - For every reviewer output this session (including re-reviews), walk the
-      "Minor / Nit / Informational" section. For EACH item, confirm ONE of
-      these BEFORE setting the `verify-pr` marker (same buckets as CLAUDE.md's
-      Remaining-work taxonomy):
-      - (a) **Fixed in this PR** — point at the fix commit / file:line.
-      - (b) **TODO (issue #N)** — an issue exists AND the PR body references
-        it. The issue body MUST carry the four classification lines, one
-        field per line, spelled exactly as `.claude/rules/session-report.md`
-        gives them (CLAUDE.md → "The four TODO fields") — NOT restated here,
-        because a second copy of a template is a second thing to drift — plus
-        the `Dup-check:` line `/work-issues` §5-f requires.
-
-        **Reviewers grade on a DIFFERENT scale — translate, do not copy**:
-        `nit` → `low`, `minor` → `medium`. There is deliberately no `blocker`
-        arm — a blocker is resolved by step 8's fix-back loop; one reaching
-        this step means the steps ran out of order. Re-read the mapped value
-        against the Severity scale: reviewer severity grades the FINDING,
-        `Severity` grades what stays broken for a USER.
-        **This step is the deferral moment** — the call gets made here, not
-        at wrap time when the evidence is gone. A `now` item must be fixed
-        before the marker is set, or re-classified with the reason recorded.
-      - (c) **Won't-do (decided + recorded)** — the PR body or a comment
-        names the nit and why shipping as-is is right.
-    - If none holds for any nit, file a bundled follow-up issue NOW and
-      reference it from the PR body. Do not set `verify-pr` until every
-      reviewer-flagged item is on one of the three paths.
-    - Also walk the transcript for memory-rule candidates — each written as a
-      memory file (with MEMORY.md index entry) or explicitly de-prioritized.
-    - **Auto-close audit**: read the PR body; for every `(#N)` parens-form
-      reference adjacent to a close keyword, the merge will NOT auto-close —
-      rewrite to parens-free `Closes #N` or add a manual `gh issue close <N>`
-      step. `pr-content-checks.yml` also WARNS on it (go-to-k/cdkd#2736), but a
-      warning reds nothing, so this step is still the one that acts.)
-
-12. **PR title + body freshness** (skip if no PR exists yet — `/create-pr`
-    writes them from scratch)
-    - Follow-up commits routinely stale both. **Title**: confirm it describes
-      the union of commits; update via
-      `gh pr edit --title "..."`, or the equivalent
-      `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."`.
-      (`gh pr edit` used to fail SILENTLY on a Projects-classic GraphQL
-      deprecation and a gate blocked it; that is FIXED upstream — measured
-      2026-09-07 on gh 2.92.0, `--body` exited 0 and the body was replaced — so
-      both spellings work and the gate is gone.)
-    - **Body**: if the PR has >1 commit, the initial body is almost certainly
-      stale. Compare `gh pr view <PR> --json body -q .body` against the final
-      diff; flag bullets describing reverted behavior or removed checks,
-      dead file:line citations, wording contradicting current docs, stale
-      numeric claims. If stale, rewrite and patch:
-     ```bash
-     cat > /tmp/pr-body.md <<'EOF'
-     ## Summary
-     ...
-     ## Test plan
-     ...
-     EOF
-     gh api repos/{owner}/{repo}/pulls/{number} -X PATCH --field "body=@/tmp/pr-body.md" -q '.html_url'
-     ```
-     (Either spelling works since the deprecation was fixed upstream; the
-     `gh api PATCH` form is kept here because `-F body=@<file>` reads the file
-     verbatim, which sidesteps shell-escaping a body full of backticks.) Verify with
-     `gh pr view <PR> --json body -q .body | head -5`.
+10. **Retrospective, residual-nit sweep, PR title + body freshness (steps
+    10-12)** — read [references/wrap-up.md](references/wrap-up.md). All three
+    run once, at the end. The nit sweep is where a deferral gets CLASSIFIED, so
+    it gates the marker below: do not set `verify-pr` with a reviewer-flagged
+    item that is neither fixed, filed, nor recorded as won't-do.
 
 ## Output
 

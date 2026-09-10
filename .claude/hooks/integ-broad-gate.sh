@@ -134,7 +134,8 @@ cd "$target_dir" 2>/dev/null || exit 0
 
 # Cross-cutting code paths whose modification can affect EVERY user's
 # deploy/destroy, not just the feature scenario the PR adds. Keep in
-# sync with the same list in .claude/skills/verify-pr/SKILL.md step 6 --
+# sync with the same list in
+# .claude/skills/verify-pr/references/leftover-and-integ-gates.md (step 6) --
 # BOTH its bullet list and the verbatim regex in its detection snippet --
 # and .claude/skills/pick-integ/SKILL.md step 2's changed-path table.
 # (feedback_cross_cutting_needs_broad_integ.md records why the gate
