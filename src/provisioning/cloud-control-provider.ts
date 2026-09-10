@@ -40,6 +40,7 @@ import { markNonRetryable } from '../deployment/retryable-errors.js';
 // imports are types, so a new edge INTO it cannot close a cycle.
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
@@ -2896,6 +2897,15 @@ export class CloudControlProvider implements ResourceProvider {
       // DROP outcome this design explicitly rejects, reached silently and
       // mislabelled. A masking failure must propagate to the outer catch and
       // fail the import loudly.
+      // SANITISED because the two lines below are DEFAULT verbosity since this
+      // fix round; at `debug` they reached a developer who had asked for them.
+      // Both interpolate the `--resource <id>=<physicalId>` value the user
+      // typed and the template's own `Type`, neither of which cdkd validates,
+      // so an ANSI or line-break sequence in either forges terminal output and
+      // JSON-log lines. `asciiOnly` matches what `lock-contention-message.ts`
+      // applies to the same class of value.
+      const safeType = displaySafe(input.resourceType, { asciiOnly: true });
+      const safeId = displaySafe(input.knownPhysicalId, { asciiOnly: true });
       let parsedModel: Record<string, unknown> | undefined;
       const raw = resp.ResourceDescription?.Properties;
       if (typeof raw === 'string' && raw.length > 0) {
@@ -2915,7 +2925,7 @@ export class CloudControlProvider implements ResourceProvider {
             const shape =
               parsed === null ? 'null' : Array.isArray(parsed) ? 'an array' : typeof parsed;
             this.logger.warn(
-              `CC API ResourceModel for ${input.resourceType}/${input.knownPhysicalId} parsed to ` +
+              `CC API ResourceModel for ${safeType}/${safeId} parsed to ` +
                 `${shape}, not an object — recording no attributes for it. An Fn::GetAtt against ` +
                 `this resource will fall back to a value constructed from its physical id.`
             );
@@ -2929,7 +2939,7 @@ export class CloudControlProvider implements ResourceProvider {
           // into the log. Fenced by
           // `tests/unit/provisioning/cloud-control-import-attribute-narrowing.test.ts`.
           this.logger.warn(
-            `Failed to parse CC API ResourceModel for ${input.resourceType}/${input.knownPhysicalId}: ${
+            `Failed to parse CC API ResourceModel for ${safeType}/${safeId}: ${
               parseErr instanceof Error ? parseErr.name : typeof parseErr
             }. Recording no attributes for it; an Fn::GetAtt against this resource will fall ` +
               `back to a value constructed from its physical id.`

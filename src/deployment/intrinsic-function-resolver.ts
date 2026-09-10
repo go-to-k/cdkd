@@ -422,11 +422,19 @@ export type RefStateLookup = (keys: readonly string[]) => string | undefined;
  * the outcome `maskUncertifiedModelValues` chose masking over dropping to
  * avoid. So the skip is paired with `onMaskedValue`, which the resolver uses to
  * record a redacted attribute read and FAIL the resource
- * (`DeployEngine.refuseRedactedAttributeReads`). Callers with no refusal
- * machinery — `src/analyzer/orphan-rewriter.ts`, an analyzer-layer pass over
- * persisted state — pass nothing and get the fall-through, which is still
- * strictly better there than splicing `'***'` into a sibling's persisted
- * properties.
+ * (`DeployEngine.refuseRedactedAttributeReads`).
+ *
+ * **EVERY CALLER MUST PASS ONE.** The optionality is for the TYPE, not a
+ * licence: a caller that ignores the notification takes the fall-through
+ * silently, and the security review of this fix measured why that is worse
+ * than the bug. Before this arm existed the lookup returned the literal
+ * `'***'`, which four unchanged readers RECOGNISE (`refuseMaskedReplayBaseline`,
+ * `cdkd export`'s blocker, `cdkd drift`'s mask handling, the deploy-time
+ * refusal); the fall-through returns a raw physical id, which none of them
+ * test. So a silent caller trades a guarded sentinel for an unguarded wrong
+ * value. Both callers pass one — `src/analyzer/orphan-rewriter.ts` has no
+ * resolver context, so it reports the site as `unresolvable` (or, under
+ * `--force`, warns and proceeds) instead of recording a redacted read.
  *
  * `onMaskedValue` fires only when the WHOLE lookup came up empty, not at the
  * masked leaf. The scan spans two bags and several alias keys, so a masked

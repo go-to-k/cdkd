@@ -233,6 +233,27 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     // keep resolving rather than throwing.
     const context = contextFor({ properties: { TableName: SECRET_MASK } });
 
-    await expect(resolver.resolve({ Ref: 'T' }, context)).resolves.not.toBe(SECRET_MASK);
+    // PINNED TO THE VALUE, not to `not.toBe(SECRET_MASK)`. The bare negative was
+    // satisfiable by ABSENCE: a regression yielding `undefined` here passes it
+    // while the case's real subject — the fall-through still returns the
+    // physical id — goes untested.
+    await expect(resolver.resolve({ Ref: 'T' }, context)).resolves.toBe(TABLE_ARN);
+  });
+
+  it('reports the FIRST masked key when several of a type\'s alias keys are masked', async () => {
+    // `AWS::S3Tables::Table` is the only type with an alias list
+    // (`['TableName', 'Name']`), so it is the only place `maskedKey ??= key`
+    // is observable. Without this row, changing `??=` to a plain `=` — report
+    // the LAST masked key rather than the first — stays green across every
+    // other case in this file.
+    const redactedAttributeReads: string[] = [];
+    const context = contextFor(
+      { properties: { TableName: SECRET_MASK, Name: SECRET_MASK } },
+      redactedAttributeReads
+    );
+
+    await resolver.resolve({ Ref: 'T' }, context);
+
+    expect(redactedAttributeReads).toEqual(['Ref T (state key TableName)']);
   });
 });

@@ -127,15 +127,62 @@ class AttributeFetcher {
    * is NOT the raw physical id (compound `<parent>|<child>` CC ids, ARN-stored
    * SDK ids like `AWS::Events::Rule`) substitute the same value CloudFormation
    * would have resolved.
+   *
+   * IT CAN FAIL, and the one failure is a REDACTED recovery key (issue
+   * [#2847](https://github.com/go-to-k/cdkd/issues/2847), security review of
+   * the fix round). For a handful of types CFn's `Ref` is a value stored in
+   * `properties` / `attributes` rather than the physical id, and `cdkd import`
+   * now masks any such key it cannot certify is a read-only attribute. The
+   * lookup refuses to serve a mask, so the fall-through emits the RAW PHYSICAL
+   * ID — for a Cloud-Control-routed `AWS::S3Tables::Table` a bare `TableARN`
+   * ending in a UUID, not the table name — and that value would be spliced into
+   * a sibling's persisted properties where NOTHING recognises it.
+   *
+   * That last clause is why this returns a result rather than a string. Before
+   * the lookup learned to refuse a mask it returned the literal `'***'`, which
+   * four unchanged readers DO recognise (`refuseMaskedReplayBaseline`, the
+   * `cdkd export` blocker, drift's mask handling, the deploy-time refusal) — so
+   * silently taking the fall-through here would have traded a guarded sentinel
+   * for an unguarded wrong value, which is a worse outcome than the one the
+   * refusal exists to prevent.
+   *
+   * The `--force` semantics MIRROR {@link cacheFallback} deliberately: refuse
+   * by default so the caller records an `unresolvable` site and aborts, and
+   * under `--force` warn and hand back the physical id, because `--force`'s
+   * whole contract is "use a possibly-wrong value rather than stranding me".
    */
-  ref(orphanLogicalId: string): string {
+  ref(orphanLogicalId: string): { ok: true; value: string } | { ok: false; reason: string } {
     const o = this.orphans[orphanLogicalId];
     if (!o) {
       throw new Error(
         `Internal: Ref to '${orphanLogicalId}' has no orphan entry — should have been filtered out`
       );
     }
-    return cfnRefValueFromPhysicalId(o.resourceType, o.physicalId, refStateLookupFromResource(o));
+    let maskedKey: string | undefined;
+    const value = cfnRefValueFromPhysicalId(
+      o.resourceType,
+      o.physicalId,
+      refStateLookupFromResource(o, (key) => {
+        maskedKey = key;
+      })
+    );
+    if (maskedKey === undefined) {
+      return { ok: true, value };
+    }
+    const reason =
+      `state records the redaction mask ('${SECRET_MASK}') for '${maskedKey}', the key ` +
+      `CloudFormation's Ref returns for ${o.resourceType} — cdkd cannot recover it, and the ` +
+      `physical id is NOT that value`;
+    if (!this.options.force) {
+      return { ok: false, reason };
+    }
+    this.logger.warn(
+      `--force: ${reason}. Substituting the raw physical id instead; it is very likely the ` +
+        `WRONG value for this reference, and no later cdkd command recognises it as a ` +
+        `substitute. Re-import the record that holds the mask, or fix the referring property ` +
+        `by hand.`
+    );
+    return { ok: true, value };
   }
 
   /**
@@ -282,18 +329,30 @@ class AttributeFetcher {
     //
     // WARN RATHER THAN REFUSE, matching the arm above: `--force`'s whole
     // contract is "use a possibly-stale cached value", and refusing would
-    // strand a `cdkd orphan --force` with no other way forward. Deploy-time is
-    // where the refusal lives (`DeployEngine.refuseRedactedAttributeReads`), so
-    // this value cannot reach AWS unannounced — it is the state file it
-    // corrupts, and the warning is what makes that diagnosable.
+    // strand a `cdkd orphan --force` with no other way forward.
+    //
+    // WHAT HAPPENS NEXT IS STATED FROM THE READERS, not from the deploy-time
+    // refusal. An earlier revision of this warning promised that "a later
+    // 'cdkd deploy' will REFUSE that resource", and review measured that FALSE:
+    // `DeployEngine.refuseRedactedAttributeReads` reads
+    // `ResolverContext.redactedAttributeReads`, which is filled while resolving
+    // the DESIRED (template) bag, while this splice lands in the referring
+    // resource's PERSISTED properties — the CURRENT side. No deploy-path guard
+    // tests a masked current bag; `rollback-executor.ts` says so outright at
+    // `refuseMaskedReplayBaseline` ("a patch provider comparing `***` against
+    // the desired value simply sees a change"). The readers that DO recognise
+    // it are named instead.
     if (carriesSecretMask(cached)) {
       this.logger.warn(
         `--force: the cached value for '${orphanLogicalId}.${attribute}' is the REDACTION MASK ` +
           `('${SECRET_MASK}'), not the attribute's value — cdkd redacted it into state and ` +
           `cannot recover it. It is being written into the referring resource's state VERBATIM, ` +
-          `and a later 'cdkd deploy' will REFUSE that resource rather than send the mask to AWS. ` +
-          `Re-run without --force once the live attribute is readable, re-import the record that ` +
-          `holds the mask, or fix the referring property by hand.`
+          `so that row now records a value the live resource does not have: the next ` +
+          `'cdkd diff' / 'cdkd deploy' reports a spurious change there (a REPLACEMENT if the ` +
+          `property is create-only), 'cdkd rollback' refuses the record as a replay baseline, ` +
+          `and 'cdkd export' blocks it. Re-run without --force once the live attribute is ` +
+          `readable, re-import the record that holds the mask, or fix the referring property ` +
+          `by hand.`
       );
     }
     const cacheKey = `${orphanLogicalId}\0${attribute}`;
@@ -520,16 +579,29 @@ async function rewriteValue(
   if ('Ref' in obj && Object.keys(obj).length === 1 && typeof obj['Ref'] === 'string') {
     const target = obj['Ref'];
     if (orphanSet.has(target)) {
-      const replaced = fetcher.ref(target);
+      const result = fetcher.ref(target);
+      if (!result.ok) {
+        // Same shape as the `Fn::GetAtt` arm below: record the site and leave
+        // the original intrinsic in place. `attribute` is the literal `Ref`,
+        // which the `UnresolvableReference` doc already reserves for this form.
+        unresolvable.push({
+          logicalId: ownerLogicalId,
+          path: pathPrefix,
+          orphanLogicalId: target,
+          attribute: 'Ref',
+          reason: result.reason,
+        });
+        return value;
+      }
       rewrites.push({
         logicalId: ownerLogicalId,
         path: pathPrefix,
         kind: 'ref',
         before: { Ref: target },
-        after: replaced,
+        after: result.value,
         orphanLogicalId: target,
       });
-      return replaced;
+      return result.value;
     }
     return value;
   }
@@ -711,17 +783,32 @@ async function rewriteSubTemplate(
     if (dot < 0) {
       // ${X} — Ref form.
       if (orphanSet.has(inner)) {
-        const replaced = fetcher.ref(inner);
-        rewrites.push({
-          logicalId: ownerLogicalId,
-          path: pathPrefix,
-          kind: 'sub',
-          before: m[0],
-          after: replaced,
-          orphanLogicalId: inner,
-        });
-        out += replaced;
-        didChange = true;
+        const result = fetcher.ref(inner);
+        if (!result.ok) {
+          // Mirrors the `${X.attr}` arm below: preserve the placeholder and
+          // record the site, so a non-`--force` run aborts instead of splicing
+          // a value cdkd knows is wrong.
+          unresolvable.push({
+            logicalId: ownerLogicalId,
+            path: pathPrefix,
+            orphanLogicalId: inner,
+            attribute: 'Ref',
+            reason: result.reason,
+          });
+          out += m[0];
+          hasUnresolvable = true;
+        } else {
+          rewrites.push({
+            logicalId: ownerLogicalId,
+            path: pathPrefix,
+            kind: 'sub',
+            before: m[0],
+            after: result.value,
+            orphanLogicalId: inner,
+          });
+          out += result.value;
+          didChange = true;
+        }
       } else {
         out += m[0];
       }

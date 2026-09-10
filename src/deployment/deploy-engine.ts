@@ -1624,11 +1624,20 @@ export class DeployEngine {
     const LOCAL_MASKED_READ = /^([A-Za-z0-9]+)\.(?:.+)$/;
     /**
      * `Ref <LogicalId> (state key <Key>)` — also a record in THIS stack, from
-     * `IntrinsicFunctionResolver.noteRefStateMask`. Anchored on the literal
-     * prefix AND the `(state key ` opener so a logical id that merely begins
-     * with the letters `Ref` cannot be read out of the ordinary local spelling.
+     * `IntrinsicFunctionResolver.noteRefStateMask`. Anchored at BOTH ends, and
+     * the tail anchor is the load-bearing half: start-anchored alone, a
+     * resource whose logical id is literally `Ref Foo (state key X)` makes
+     * `noteAttributeSecrecy` push `Ref Foo (state key X).SomeAttr`, which
+     * `LOCAL_MASKED_READ` cannot match (the space blocks it) while this one
+     * captures `Foo` — advising a `--force` re-import of an innocent row, the
+     * exact class the two rounds recorded above shipped. cdkd validates no
+     * logical-id charset and never hands the template to CloudFormation, so
+     * such an id is deployable here even though CFn's own grammar forbids it.
+     * End-anchored, that string matches neither regex and falls to the FOREIGN
+     * arm, which emits no command — the safe direction. Measured with
+     * `node -e` during the issue #2847 security review.
      */
-    const REF_STATE_MASKED_READ = /^Ref ([A-Za-z0-9]+) \(state key /;
+    const REF_STATE_MASKED_READ = /^Ref ([A-Za-z0-9]+) \(state key [^)]*\)$/;
     // Spelled locally rather than imported: the only exported copy lives in
     // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
     // edge for one string literal is the wrong trade.

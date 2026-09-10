@@ -431,9 +431,136 @@ describe('rewriteResourceReferences', () => {
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).toContain('REDACTION MASK');
     expect(warned).toContain('PrivateKey');
-    // It must say what happens NEXT, which is what makes the state file's
-    // corruption diagnosable rather than a surprise at deploy time.
-    expect(warned).toContain('REFUSE');
+    // It must say what happens NEXT — and say it TRUTHFULLY. An earlier
+    // revision promised "a later 'cdkd deploy' will REFUSE that resource",
+    // which review measured false: `refuseRedactedAttributeReads` reads the
+    // DESIRED-side resolution bag, while this splice lands in the CURRENT
+    // (persisted) properties, which no deploy-path guard tests. These pin the
+    // readers that really do recognise it.
+    expect(warned).toContain('spurious change');
+    expect(warned).toContain('cdkd rollback');
+    expect(warned).toContain('cdkd export');
+    // ...and pin the retracted claim as retracted, so restoring it reds.
+    expect(warned).not.toContain('REFUSE');
+  });
+
+  it('REFUSES a {Ref: orphan} whose recovery key is the redaction mask, without --force', async () => {
+    // The `Ref` path is NOT `--force`-gated and never was, so before this arm
+    // it silently spliced whatever `cfnRefValueFromPhysicalId` returned. Once
+    // the lookup learned to refuse a mask (issue #2847) that became the raw
+    // physical id — an `AWS::S3Tables::Table` ARN ending in a UUID, not the
+    // table name CFn's `Ref` returns — which, unlike the `'***'` it replaced,
+    // NO later cdkd command recognises. So the refusal is the point: a
+    // guarded sentinel must not be traded for an unguarded wrong value.
+    const TABLE_ARN =
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-aaaa';
+    const state = baseState({
+      Tbl: {
+        physicalId: TABLE_ARN,
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+        provisionedBy: 'cc-api',
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
+
+    // The intrinsic is LEFT IN PLACE — neither the mask nor the ARN is spliced.
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: { Ref: 'Tbl' } });
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_ARN);
+    // And the site is reported, which is what makes the command abort.
+    expect(result.unresolvable).toHaveLength(1);
+    expect(result.unresolvable[0]?.orphanLogicalId).toBe('Tbl');
+    expect(result.unresolvable[0]?.attribute).toBe('Ref');
+    expect(result.unresolvable[0]?.reason).toContain('TableName');
+  });
+
+  it('--force splices the physical id for that Ref, and SAYS it is probably wrong', async () => {
+    // `--force`'s contract is "use a possibly-wrong value rather than stranding
+    // me", so the escape hatch still works — but the warning has to say the
+    // substitute is unrecognised downstream, or the user reads a clean run.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const TABLE_ARN =
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-bbbb';
+    const state = baseState({
+      Tbl: {
+        physicalId: TABLE_ARN,
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+        provisionedBy: 'cc-api',
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry(), {
+      force: true,
+    });
+
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: TABLE_ARN });
+    expect(result.unresolvable).toHaveLength(0);
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).toContain('TableName');
+    expect(warned).toContain('WRONG value');
+  });
+
+  it('does NOT refuse an ordinary Ref recovery key (scope control)', async () => {
+    // The other direction: a refusal that fires on every `Ref` would pass the
+    // two cases above while breaking `cdkd orphan` for everyone.
+    const state = baseState({
+      Tbl: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/cccc',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: { TableName: 'orders_2847' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
+
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: 'orders_2847' });
+    expect(result.unresolvable).toHaveLength(0);
+  });
+
+  it('REFUSES an Fn::Sub ${orphan} whose recovery key is the mask, preserving the placeholder', async () => {
+    // The SECOND `ref()` call site. A fix landing on one and not the other is
+    // this repo's named sibling-site failure, so it gets its own row.
+    const state = baseState({
+      Tbl: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/dddd',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::Sub': 'table-${Tbl}-suffix' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
+
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Value: { 'Fn::Sub': 'table-${Tbl}-suffix' },
+    });
+    expect(result.unresolvable).toHaveLength(1);
+    expect(result.unresolvable[0]?.attribute).toBe('Ref');
   });
 
   it('--force does NOT emit the MASK warning for an ordinary cached value (scope control)', async () => {

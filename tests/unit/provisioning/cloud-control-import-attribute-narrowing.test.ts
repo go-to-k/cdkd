@@ -354,6 +354,39 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     expect(JSON.stringify(result)).not.toContain(SNIPPET);
   });
 
+  it('SANITISES the type and physical id in the two default-verbosity lines', async () => {
+    // These two lines moved from `debug` to `warn` in the issue #2847 review
+    // round, and that promotion is what makes sanitising load-bearing: at
+    // `debug` they reached a developer who had asked for them; at default
+    // verbosity they reach every user, and both interpolate values cdkd does
+    // not validate — the `--resource <id>=<physicalId>` string the user typed
+    // and the template's own `Type`. An ANSI or line-break sequence in either
+    // forges terminal output and JSON-log lines.
+    const HOSTILE_ID = 'chan-1\u001b[31m\nFAKE: deploy succeeded';
+    mockCloudControlSend.mockImplementation(() =>
+      Promise.resolve({ ResourceDescription: { Identifier: 'x', Properties: 'not-json{{{' } })
+    );
+
+    await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: HOSTILE_ID,
+    });
+
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    // POSITIVE: the identifying part still reaches the user, so the line stays
+    // diagnosable — a fence satisfied by dropping the id entirely would be
+    // satisfied by a broken message too.
+    expect(warned).toContain('chan-1');
+    expect(warned).toContain(TYPE);
+    // NEGATIVE: neither the escape nor the injected newline survives.
+    expect(warned).not.toContain('\u001b');
+    expect(warned).not.toContain('\nFAKE');
+  });
+
   it('REJECTS when the masking step throws, rather than degrading to empty attributes', async () => {
     // THE OTHER UNFENCED CLAIM: `import()`'s inner `try` wraps the `JSON.parse`
     // and NOTHING ELSE. It used to span the masking call, whose `catch` turned

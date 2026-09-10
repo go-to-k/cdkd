@@ -228,6 +228,28 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy).toContain('ANOTHER stack');
   });
 
+  it('refuses a FORGED Ref spelling built out of a logical id, rather than naming an innocent row', () => {
+    // Found by the issue #2847 security review. cdkd validates no logical-id
+    // charset and never hands the template to CloudFormation, so a resource
+    // literally named `Ref Foo (state key X)` is deployable here — and
+    // `noteAttributeSecrecy` would push `Ref Foo (state key X).SomeAttr` for
+    // it. `LOCAL_MASKED_READ` cannot match that (the space blocks it), so a
+    // START-anchored Ref regex captured `Foo` and advised
+    // `--force`-overwriting Foo's record, which the import typo guard ACCEPTS.
+    // The tail anchor drops it to the foreign arm instead — no command at all.
+    const remedy = remedyFor(['Ref Foo (state key X).SomeAttr'], {
+      Foo: { resourceType: 'AWS::SQS::Queue' },
+    });
+
+    expect(remedy).not.toContain('cdkd import');
+    expect(remedy).not.toContain('--resource Foo=');
+    expect(remedy).toContain('ANOTHER stack');
+    // The forged entry must not pick up the Ref-specific clause either — it is
+    // really an Fn::GetAtt, and the clause says the read cannot be rewritten
+    // away in the template, which is false for one.
+    expect(remedy).not.toContain("CDKD's own read");
+  });
+
   it('treats an unrecognised shape as FOREIGN, which never emits a command', () => {
     // Fail-safe direction: a shape the partition does not recognise costs a
     // vaguer message rather than a destructive one. No claim is made that this
