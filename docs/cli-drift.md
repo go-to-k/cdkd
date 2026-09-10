@@ -289,10 +289,21 @@ arms above therefore answer differently, and none of them needs a
 - `--accept` refuses the property, because accepting would write the live
   plaintext over a deliberate redaction;
 - `--revert` leaves that position exactly as AWS has it rather than pushing
-  the mask. When AWS reports nothing there, it refuses the whole resource
-  (counted with the other unresolvable ones, exit `2`), because sending `***`
-  would corrupt the live value and dropping the key would delete a property
-  the resource may require.
+  the mask — *when it can tell which live value belongs there.* It refuses the
+  whole resource (counted with the other unresolvable ones, exit `2`) whenever
+  it cannot, because sending `***` would corrupt the live value and dropping
+  the key would delete a property the resource may require. Three cases
+  refuse: AWS reports nothing at that position; AWS reports a LIST whose
+  elements cannot be matched to the recorded ones; and — a defensive arm no
+  known readback shape reaches today — the mask sits inside a container cdkd
+  will not rebuild (a non-plain object such as a `Date` or binary value). A list is matched by an identity
+  field (`Name` or `Key`) when both sides carry one, and otherwise by the
+  array's own surviving literal values; a list AWS returns in another order
+  with no identity field, or one carrying two masked entries, cannot be
+  matched, and guessing would write one entry's secret onto another. Values
+  the revert itself substituted — a preserved `{{resolve:...}}` token cdkd
+  resolves for nobody — vouch for nothing, so a list whose only other values
+  are such tokens refuses too.
 
 **Such a position drifts on every run, and that is expected.** cdkd's side is
 the mask and AWS's side is the real value, so the two never converge: the
@@ -314,6 +325,47 @@ position out.
 A property whose real value happens to BE the string `***` is treated the same
 way, since nothing in state distinguishes the two — see
 [State Management](state-management.md#noecho-custom-resource-responses).
+
+#### The other cause of a masked baseline: a position cdkd could not certify
+
+A `NoEcho` response is not the only way the mask reaches a baseline. When cdkd
+refreshes `observedProperties` — during a deploy, or from
+[`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed) — it
+rewrites the decrypted value AWS returns back
+onto the `{{resolve:...}}` reference the record holds, **by position**. Where
+the readback and the record cannot be lined up at a reference-bearing position,
+cdkd has no way to tell a resolved secret from an ordinary literal, so it
+writes `***` there instead of the value AWS reported. Shapes that reach it:
+
+- AWS restructured the property (an object returned as a list, an extra nesting
+  level, a scalar returned as a container);
+- AWS normalised an identity field, so a list element lost its counterpart —
+  `Name: 'db'` echoed back as `'DB'`, or a name expanded to an ARN;
+- a list with no identity field that AWS reordered, or in which it normalised
+  one of the neighbouring literal values;
+- the record's properties hold a raw `Fn::Join` / `Fn::Sub` **object** where the
+  readback holds a string, which is what `cdkd import` writes when a reference
+  names a resource outside the imported set (it warns when it does).
+
+Everything the record itself spells at that position — the surrounding literal
+values, an already-stored `{{resolve:...}}` reference, numbers and booleans —
+is kept, so an ordinary baseline is unaffected. A neighbouring value AWS
+normalised is masked along with the secret; that is deliberate over-masking, and
+the reason is that the alternative is writing a decrypted secret into
+`state.json`.
+
+The effect on drift is the one described just above: such a position reports as
+drifted on every run and `--accept` refuses it. `--revert` is where the two
+populations differ, and in the direction that matters — a mask written for the
+reasons listed above exists *because* the record and the readback could not be
+matched at that position, which is exactly when `--revert` has no live value it
+may safely copy. So expect it to refuse the whole resource here more often than
+for a `NoEcho` value, rather than to leave the position as AWS has it. The fix
+is a `cdkd deploy` of that resource, after which the baseline is captured from a
+template cdkd can position against.
+
+`cdkd drift --accept` does not write this mask itself — it records what AWS
+reported — and neither does `cdkd import`'s own baseline capture.
 
 ### Tokens that are not references
 

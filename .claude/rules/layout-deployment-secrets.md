@@ -415,16 +415,17 @@ Index of every area: [code-layout.md](code-layout.md).
     capture**, by a dropped or traded reference
     ([#2850](https://github.com/go-to-k/cdkd/issues/2850)), a parameter bound to
     a placeholder `Default`
-    ([#2854](https://github.com/go-to-k/cdkd/issues/2854)), a position the walk
-    cannot pair ([#2852](https://github.com/go-to-k/cdkd/issues/2852), which
-    carries the measured probe table), or a secret with no counterpart in the
-    source at all ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). The
+    ([#2854](https://github.com/go-to-k/cdkd/issues/2854)), an observed KEY the
+    source does not carry (the row #2852 left open), or a secret with no
+    counterpart in the source at all
+    ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). The
     list is not proven exhaustive, for a mechanical reason: the only evidence is
     a POST-HOC comparison of the persisted bag against the readback, so whatever
     that comparison cannot see is trusted. The instrument is
     `tests/unit/cli/import-observed-baseline-refusal-matrix.test.ts`, which
     asserts the SAFETY property per row alongside the verdict and replays each
-    EARNED refusal to prove it would really have leaked.
+    EARNED refusal to prove it would really have leaked — and, since #2852, a
+    refusal whose leak closes one layer down is proved by the MASK instead.
   - **`refuseUncertifiedReadbackPositions`** closes the MIXED-leaf row
     (`postgres://u:{{resolve:...}}@h`, an `Fn::Join` around
     `secretValueFromJson`) on every empty-map readback path — the path pass
@@ -444,6 +445,12 @@ Index of every area: [code-layout.md](code-layout.md).
     `:AWSCURRENT` (the #1917 hazard, which `--revert` applies to AWS). It
     refuses only what POSITION justifies and descends per identity-keyed
     element so a mixed leaf inside a paired element is reached.
+  - **The walk FAILS CLOSED where it cannot certify, for a caller that DECLARES
+    its bag a drift baseline** (`STATE_SOURCED_BASELINE_RULES`; #2852, closing
+    #2846). Destination is not derivable — `drift --accept` writes to
+    `properties` — and `import`'s capture is still on the other constant
+    (#2885). `refuseUncertifiedSubtree`'s doc comment is the authority for
+    what it masks, spares and costs; do not restate it here.
   - A MIXED leaf embedding a plain `{{resolve:ssm:` token splits on whether a
     SECRETS MAP exists (forced by the `secrets-dynamic-ref` integ after every
     unit assertion passed without it): with a map, absence from the verdict

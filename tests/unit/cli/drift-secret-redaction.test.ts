@@ -3106,3 +3106,142 @@ describe('cdkd drift — a REDACTED (NoEcho custom-resource) baseline (issue #22
     expect(warned).not.toContain(LIVE);
   });
 });
+
+describe('cdkd drift --revert — the token pass must not manufacture the mask pairing evidence (#2884 round 4)', () => {
+  // The production WIRING pin for the round-4 fix: `runRevert` corroborates
+  // `preserveLiveValuesAtMaskedLeaves` against the PRE-token bag. Through the
+  // command, both passes run in their real order with their real arguments —
+  // a helper-level test cannot catch the call site quietly handing the
+  // post-token bag back in.
+  const TASK_TYPE = 'AWS::ECS::TaskDefinition';
+  // Whole-token spellings cdkd resolves for nobody (#2482), so they survive
+  // re-resolution, are recorded as unresolved tokens, and reach
+  // `preserveLiveValuesAtUnresolvedTokens`.
+  const TOK_1 = '{{resolve:notaservice:/cdkd/round4/one}}';
+  const TOK_2 = '{{resolve:notaservice:/cdkd/round4/two}}';
+  const TOK_3 = '{{resolve:notaservice:/cdkd/round4/three}}';
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  /** The #2852 shape on the type's REAL property layout
+   * (`ContainerDefinitions[].Environment[]`): a keyed list whose identity
+   * field itself holds a surviving token, so the redaction walk masked the
+   * element it could not pair. This is the identity-LAUNDERING variant — the
+   * one only reachable through the production wiring, because the token pass
+   * copies live `Name`s in BY INDEX before the mask pass pairs by `Name`. */
+  function tokenFramedMaskedResource(): ResourceState {
+    const bag = {
+      ContainerDefinitions: [
+        {
+          Name: 'app',
+          Environment: [
+            { Name: TOK_1, Value: SECRET_MASK },
+            { Name: TOK_2, Value: TOK_3 },
+          ],
+        },
+      ],
+      Cpu: '256',
+    };
+    return {
+      physicalId: 'td-1',
+      resourceType: TASK_TYPE,
+      properties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+      observedProperties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+    };
+  }
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    infoSpy.mockReset();
+    resetAccountInfoCache();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  it('--revert REFUSES the masked env entry whose identity the token pass rewrote', async () => {
+    // On the pre-fix wiring the token pass copies live `Name`s into the token
+    // identity leaves BY INDEX, and `pairedLiveItems`' keyed lookup then
+    // "pairs" each element straight back to its own index — index alignment
+    // wearing an identity disguise — so the mask takes live[0]'s value. The
+    // fix pairs against the PRE-token bag, where the identity is the token,
+    // which matches no live element: the resource is refused and nothing is
+    // sent.
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Task: tokenFramedMaskedResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        ContainerDefinitions: [
+          {
+            Name: 'app',
+            Environment: [
+              { Name: 'nb', Value: 'vb' },
+              { Name: 'na', Value: 'va' },
+            ],
+          },
+        ],
+        Cpu: '256',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert');
+    expect(errored).toContain('ContainerDefinitions[0].Environment[0].Value');
+  });
+
+  it('--revert ships a RAW SDK Uint8Array through the walks untouched — the reachability pin', async () => {
+    // The write-path identity guards' reachability claim, pinned END TO END
+    // rather than asserted in a comment: `readCurrentState`'s return reaches
+    // `provider.update` with no JSON round-trip, so a non-plain SDK value
+    // (`Uint8Array`) rides the send bag through the mask walk. Without the
+    // guards it arrived as `{"0":9,"1":8,"2":7}` — the #2869 index-map
+    // fabrication, written to live AWS.
+    const blob = new Uint8Array([9, 8, 7]);
+    const update = vi.fn().mockResolvedValue({ physicalId: 'p-1' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: 'p-1',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: '/app/token', Value: SECRET_MASK },
+          observedProperties: { Name: '/app/token', Value: SECRET_MASK },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/token',
+        Value: 'live-noecho-value-2897',
+        Blob: blob,
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as Record<string, unknown>;
+    // Identity, not shape: the walk must not rebuild the value at all.
+    expect(sent['Blob']).toBe(blob);
+    // ...and the mask itself was preserved from the live side as usual.
+    expect(sent['Value']).toBe('live-noecho-value-2897');
+  });
+});

@@ -39,6 +39,7 @@ import {
   redactSecretsForState,
   mergeResolvedPairs,
   scrubResourceRecord,
+  STATE_SOURCED_READBACK_RULES,
   maskSecretsInText,
   maskSecretsInError,
   createSecretMasker,
@@ -1633,7 +1634,25 @@ export class DeployEngine {
       }
       if (next.previousState) {
         // No `sourceProperties`: the previous record positions itself.
-        next.previousState = scrubResourceRecord(next.previousState, ownSecrets);
+        //
+        // `STATE_SOURCED_READBACK_RULES` is passed EXPLICITLY (issue #2886):
+        // left to `scrubResourceRecord`'s derivation, an op whose resource
+        // resolved nothing this deploy — a DELETE, an UPDATE with no reference
+        // of its own — arrives here with an EMPTY map (the guard above admits
+        // it whenever `previousState` exists) and would take the FAIL-CLOSED
+        // baseline constant, masking every position the walk cannot certify in
+        // this journal snapshot. `replayRollback` restores that record, so the
+        // masks would land in `state.json` as permanent phantom drift on a
+        // baseline that was intact before the deploy. The journal is a
+        // REPLAYED baseline, not a fresh readback: its bag already sits in
+        // `state.json`, so a mask here protects nothing a reader could still
+        // be protected from and poisons the record a rollback rebuilds.
+        next.previousState = scrubResourceRecord(
+          next.previousState,
+          ownSecrets,
+          undefined,
+          STATE_SOURCED_READBACK_RULES
+        );
       }
       return next as unknown as T;
     });

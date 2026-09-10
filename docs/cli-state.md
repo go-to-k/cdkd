@@ -410,6 +410,15 @@ record's own properties are expected to hold the unresolved
 decrypted value AWS echoes. A record whose properties already hold plaintext
 has nothing to redact from.
 
+Where the readback and the record cannot be lined up at a reference-bearing
+position — AWS restructured the property, normalised a list element's identity
+field, reordered a list, or the record holds a raw `Fn::Join` object where the
+readback holds a string — cdkd cannot tell a resolved secret from an ordinary
+literal, so it writes the mask `***` at that position rather than the value AWS
+reported. Such a position then reports as drifted on every `cdkd drift` run and
+is refused by `--accept`; a `cdkd deploy` of the resource repairs it. See
+[Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
+
 Resources whose provider cannot read current state, and resources AWS reports
 as not found, are counted as unsupported and keep their previous baseline —
 a transient not-found can never null one out. Per-resource read failures are

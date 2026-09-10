@@ -31,7 +31,8 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   redactSecretsForState,
   TEMPLATE_SOURCED_RULES,
-  STATE_SOURCED_READBACK_RULES,
+  STATE_SOURCED_BASELINE_RULES,
+  SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 
@@ -181,7 +182,7 @@ describe('the ANCHOR arm is idempotent too (issue #2667 item 4)', () => {
    * `unkeyedArrayPairsByAnchors` is reached only through
    * `refuseUncertifiedReadbackPositions`, which `redactSecretsForState` gates
    * on `isReadbackProjectedFromState(rules)` — true for
-   * `STATE_SOURCED_READBACK_RULES` and false for the outputs constant above.
+   * `STATE_SOURCED_BASELINE_RULES` and false for the outputs constant above.
    * The empty secrets map is that path's own construction: the arm exists
    * BECAUSE the value scan has no needles there.
    */
@@ -190,7 +191,7 @@ describe('the ANCHOR arm is idempotent too (issue #2667 item 4)', () => {
       bag,
       new Map<string, string>(),
       source,
-      STATE_SOURCED_READBACK_RULES
+      STATE_SOURCED_BASELINE_RULES
     );
   }
 
@@ -217,10 +218,16 @@ describe('the ANCHOR arm is idempotent too (issue #2667 item 4)', () => {
     const once = A(bag, source);
     const twice = A(once, source);
 
+    // The anchors DO pair these two elements, so the walk descends — and at
+    // `Items[1].Url` the source is an `Fn::Join` OBJECT against a STRING
+    // readback, the shape-divergence branch. Since issue #2852 that branch
+    // MASKS instead of persisting the decrypted value, and the mask is stable
+    // across the second pass, which is what this file measures.
     expect(once['Items']).toEqual([
       { Url: 'https://public.example.com', Tag: 'first' },
-      { Url: `postgres://u:${SECRET_PLAINTEXT}@h`, Tag: 'second' },
+      { Url: SECRET_MASK, Tag: 'second' },
     ]);
+    expect(JSON.stringify(once)).not.toContain(SECRET_PLAINTEXT);
     expect(twice).toEqual(once);
   });
 
@@ -262,7 +269,12 @@ describe('the ANCHOR arm is idempotent too (issue #2667 item 4)', () => {
     const once = A(bag, source);
     const twice = A(once, source);
 
-    expect(once['Items']).toEqual([{ Value: 'anchor-literal' }, { Value: SECRET_PLAINTEXT }]);
+    // `anchor-literal` survives (the source spells it); the plaintext the source
+    // cannot account for is masked (issue #2852). A refusal that moved something
+    // on the second pass would be the divergence this file looks for, and a mask
+    // is a fixed point.
+    expect(once['Items']).toEqual([{ Value: 'anchor-literal' }, { Value: SECRET_MASK }]);
+    expect(JSON.stringify(once)).not.toContain(SECRET_PLAINTEXT);
     expect(twice).toEqual(once);
   });
 });

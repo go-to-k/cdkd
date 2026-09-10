@@ -60,6 +60,7 @@ import {
   carriesSecretMask,
   createSecretMasker,
   dynamicReferenceTokens,
+  identityKeyFor,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
   maskSecretsInError,
   maskSecretsInText,
@@ -3499,6 +3500,23 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Does this value carry an ORDINARY object prototype?
+ *
+ * {@link isPlainRecord} admits `Date` / `Map` / `Set` / class instances, whose
+ * own enumerable keys are `[]` — so a key-walk over one reports "no
+ * contradiction" between two values that actually differ. The redaction walk's
+ * `deepEqualJsonValue` carries the same guard for the same reason
+ * (`secret-redaction.ts`, issue #2869): a `Date` anchor corroborates NOTHING.
+ * Kept file-local rather than imported because `secret-redaction.js` is
+ * `vi.mock`ed by several drift suites, and a value import from it reds them
+ * with a missing-export failure.
+ */
+function hasPlainPrototype(value: object): boolean {
+  const proto = Object.getPrototypeOf(value) as unknown;
+  return proto === Object.prototype || proto === null;
+}
+
+/**
  * Merge the AWS-current value with the revert baseline, KEEPING every path the
  * baseline does not declare (issue
  * [#1626](https://github.com/go-to-k/cdkd/issues/1626) items 2 + 3).
@@ -3602,7 +3620,22 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
     // path can reason about. The baseline wins, exactly as before.
     return desiredValue;
   }
-  const merged: Record<string, unknown> = {};
+  if (!hasPlainPrototype(awsValue) || !hasPlainPrototype(desiredValue)) {
+    // A non-plain object (`Uint8Array`, `Date`, a class instance) cannot be
+    // key-merged: `Object.entries` over one fabricates an index map / `{}`
+    // into the bag `provider.update` ships — the #2869 class, and strictly
+    // worse than the flag-off overlay. Treat it as the shape mismatch it is:
+    // the baseline wins, exactly like the arm above. Guarded on BOTH sides
+    // deliberately: a non-plain DESIRED side would otherwise fall through to
+    // the merge loops, whose `key in desiredValue` reads the prototype chain
+    // and whose second loop walks no own keys — silently returning the AWS
+    // side wholesale, the OPPOSITE of "the baseline wins".
+    return desiredValue;
+  }
+  // `Object.create(null)`: an own `__proto__` key (a `JSON.parse`d baseline
+  // yields one as an OWN key) must stay an own key, not become the prototype —
+  // same rule as the preserve walks' rebuild targets below.
+  const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(awsValue)) {
     merged[key] = key in desiredValue ? mergeUntemplatedValue(value, desiredValue[key]) : value;
   }
@@ -3701,8 +3734,20 @@ export function preserveLiveValuesAtUnresolvedTokens(
       return value.map((item, i) => walk(item, liveItems?.[i]));
     }
     if (value !== null && typeof value === 'object') {
+      // A non-plain object (`Date`, `Uint8Array`, a class instance) is a LEAF
+      // returned BY IDENTITY, never rebuilt: `Object.entries` over one yields
+      // `[]` or index keys, so the rebuild below would FABRICATE `{}` (or a
+      // plain index map) and `provider.update` would ship it — the #1498 /
+      // #1501 corruption class on the WRITE path, the #2869 flattening's twin.
+      // Reachable: `awsProperties` is `readCurrentState`'s RAW SDK return with
+      // no JSON round-trip, and `buildRevertNewProperties` copies its
+      // non-drifted subtrees into the send bag. Such a value cannot carry a
+      // nested `{{resolve:...}}` token anyway.
+      if (!hasPlainPrototype(value)) return value;
       const liveObject = isPlainRecord(live) ? live : undefined;
-      const out: Record<string, unknown> = {};
+      // `Object.create(null)`: see the mask walk's twin comment — an own
+      // `__proto__` key must stay an own key, not become the prototype.
+      const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
         out[k] = walk(v, liveObject?.[k]);
       }
@@ -3711,6 +3756,153 @@ export function preserveLiveValuesAtUnresolvedTokens(
     return value;
   };
   return walk(send, awsProperties) as Record<string, unknown>;
+}
+
+/**
+ * The live array to read a masked leaf's replacement from, aligned to `send`'s
+ * indices — or `undefined` when the two lists cannot be aligned at all, which
+ * routes every mask beneath them to `unpreservablePaths`.
+ *
+ * WHY THIS IS NOT INDEX ALIGNMENT ANY MORE (issue
+ * [#2884](https://github.com/go-to-k/cdkd/issues/2884)). Until issue
+ * [#2852](https://github.com/go-to-k/cdkd/issues/2852) the only mask in a
+ * persisted bag came from a `NoEcho` custom resource's `Data` (issue #2274),
+ * which sits at a scalar leaf of a property the template names. #2852 added a
+ * second source, and it lands in exactly the population index alignment is
+ * WRONG on: a leaf is masked BECAUSE `refuseUncertifiedReadbackPositions` could
+ * not pair the two lists — an unkeyed array AWS reordered, or a keyed element
+ * whose identity AWS normalised. A resource that produced a mask is by
+ * construction one whose list does not come back in a stable order.
+ *
+ * Traced consequence, which is the issue #1498 / #1501 data-loss class this
+ * module's own doc calls "strictly worse than the disclosure": for
+ * `Environment: [{Name:'DB_PASS', Value:<ref>}, {Name:'REGION', Value:'...'}]`
+ * echoed back case-normalised and reordered, the baseline becomes
+ * `[{Name:'REGION',...}, {Name:'***', Value:'***'}]`, and an index-aligned
+ * revert copies `live[1]` into the masked slot — shipping a duplicated `REGION`
+ * and DELETING the password variable from the live task definition.
+ *
+ * So the alignment must be one AWS's own reordering cannot break:
+ * {@link identityKeyFor} — the same rule the redaction walk pairs by, so the
+ * two can never disagree about which elements correspond. It is asked FIRST and
+ * with NO length test, which is a change from the first cut of this function: a
+ * length test ahead of it refuses a list AWS legitimately ADDED an element to,
+ * while the keyed lookup needs no such partner — a `send` element whose identity
+ * AWS does not report simply yields no live value, which is already the
+ * refusing arm.
+ *
+ * WITHOUT AN IDENTITY FIELD the array's own literal FRAME has to vouch for the
+ * order — the same corroboration `unkeyedArrayPairsByAnchors` requires on the
+ * redaction side — and the test is PER-LEAF. Three rules, and the first cut of
+ * this function had none of them right:
+ *
+ * - **the lengths must match**, positional alignment being all that is left;
+ * - **every leaf of `send` that is not a mask must equal `live`'s leaf at the
+ *   same position** ({@link corroboratedLeafCount}), masked leaves wildcarded.
+ *   A whole-ELEMENT exemption is what shipped first, and it corroborated
+ *   NOTHING: {@link carriesSecretMask} is a DEEP, whole-subtree test, so an
+ *   element carrying one mask anywhere skipped the comparison entirely.
+ *   Measured on `[{Pw:'***',Role:'reader'},{Pw:'***',Role:'admin'}]` against a
+ *   live list AWS returned in the other order — the admin password was written
+ *   onto the reader entry and `provider.update` shipped it;
+ * - **at most ONE element may carry a mask, and at least one non-mask leaf must
+ *   actually have been COMPARED.** Two masked slots leave the surviving literal
+ *   frame unable to say which mask goes where (two secret environment variables
+ *   in one container definition is the ordinary shape), and zero compared
+ *   leaves is the all-masked array {@link SECRET_MASK} produces when AWS
+ *   normalised the identity field too — there the old `every` was vacuously
+ *   true and the alignment rested on no evidence at all. With ONE masked slot
+ *   and every other position literally equal, the single live element left over
+ *   is the only value that can belong there.
+ *
+ * The `compared > 0` floor DELIBERATELY also refuses a single-element scalar
+ * array — `[SECRET_MASK]` against one live value — even though one masked slot
+ * against one live slot looks unambiguous. It is unambiguous only IF the live
+ * list corresponds to this one, and with zero corroborated leaves the only
+ * evidence for that is the length-1 match, which is no evidence: this is the
+ * all-masked reading applied to its smallest shape, and the cost is a refusal
+ * (the safe residual), not a wrong write.
+ *
+ * THE EVIDENCE MUST NOT BE MANUFACTURED BY A SIBLING PASS. `send` here must be
+ * values the caller did not itself copy from `live` — see
+ * {@link preserveLiveValuesAtMaskedLeaves}'s `corroborationSource` parameter
+ * for the round-4 #2884 defect where the token pass's index-copied live values
+ * corroborated their own indices.
+ *
+ * Refusing is the correct outcome — the caller drops the whole resource rather
+ * than sending a guess.
+ */
+function pairedLiveItems(send: readonly unknown[], live: unknown): readonly unknown[] | undefined {
+  if (!Array.isArray(live)) return undefined;
+  const key = identityKeyFor(send, live);
+  if (key !== undefined) {
+    const byIdentity = new Map<unknown, unknown>();
+    for (const item of live) byIdentity.set((item as Record<string, unknown>)[key], item);
+    // A send element whose identity AWS does not report yields `undefined`
+    // here, which is the "no live value" arm — the same answer as a missing key.
+    return send.map((item) => byIdentity.get((item as Record<string, unknown>)[key]));
+  }
+  // No identity field: the literal frame has to vouch for the order, per LEAF.
+  if (live.length !== send.length) return undefined;
+  let maskedSlots = 0;
+  let compared = 0;
+  for (let i = 0; i < send.length; i++) {
+    if (carriesSecretMask(send[i])) maskedSlots++;
+    const corroborated = corroboratedLeafCount(send[i], live[i]);
+    if (corroborated === undefined) return undefined;
+    compared += corroborated;
+  }
+  if (maskedSlots > 1 || compared === 0) return undefined;
+  return live;
+}
+
+/**
+ * How many of `send`'s leaves the live side CORROBORATES, or `undefined` the
+ * moment one of them CONTRADICTS it.
+ *
+ * A mask contributes 0 and is never compared: it is the value being paired FOR,
+ * so requiring it to match would refuse every array {@link pairedLiveItems}
+ * exists to align. Everything else must agree — including the container SHAPE
+ * around it, since a subtree of a different shape is a contradiction rather
+ * than an absent comparison.
+ *
+ * A COUNT rather than a boolean, because "nothing contradicted me" is exactly
+ * the answer an all-masked array gives and it is not evidence. The caller
+ * requires a non-zero count before it reads the order as corroborated.
+ */
+function corroboratedLeafCount(send: unknown, live: unknown): number | undefined {
+  if (send === SECRET_MASK) return 0;
+  if (Array.isArray(send)) {
+    if (!Array.isArray(live) || live.length !== send.length) return undefined;
+    let total = 0;
+    for (let i = 0; i < send.length; i++) {
+      const corroborated = corroboratedLeafCount(send[i], live[i]);
+      if (corroborated === undefined) return undefined;
+      total += corroborated;
+    }
+    return total;
+  }
+  if (isPlainRecord(send)) {
+    // A non-plain object (`Date`, `Map`, `Set`, a class instance) on EITHER
+    // side is a CONTRADICTION, never an abstention: its own enumerable keys
+    // are `[]`, so the walk below would count two differing `Date`s as "no
+    // contradiction" and let an unrelated sibling leaf corroborate the
+    // pairing — the #2869 flattening's corroboration twin (see
+    // {@link hasPlainPrototype}).
+    if (!hasPlainPrototype(send)) return undefined;
+    if (!isPlainRecord(live) || !hasPlainPrototype(live)) return undefined;
+    const keys = Object.keys(send);
+    if (keys.length !== Object.keys(live).length) return undefined;
+    let total = 0;
+    for (const k of keys) {
+      if (!Object.prototype.hasOwnProperty.call(live, k)) return undefined;
+      const corroborated = corroboratedLeafCount(send[k], live[k]);
+      if (corroborated === undefined) return undefined;
+      total += corroborated;
+    }
+    return total;
+  }
+  return deepEqualUnordered(send, live) ? 1 : undefined;
 }
 
 /**
@@ -3766,21 +3958,54 @@ export function preserveLiveValuesAtUnresolvedTokens(
  *   would be the corruption; dropping the key would delete a property the
  *   resource may require.
  *
- * Array descent is POSITIONAL and bails to "no live value" on any length
- * mismatch, matching the sibling: a reordered readback cannot be positioned
- * against, and guessing would put one element's live value at another's index.
+ * Array descent is NOT positional and does NOT bail on a length mismatch —
+ * {@link pairedLiveItems} owns that question, and the sibling's answer (index
+ * alignment behind a length test) is wrong by construction on the population
+ * that produces these masks. An earlier revision of this paragraph still
+ * claimed the sibling's rule after the pairing had changed underneath it.
  *
- * Returns the input bag BY IDENTITY when it holds no mask, so the ordinary
- * revert is byte-identical and pays one walk.
+ * `corroborationSource` is the bag the PAIRING EVIDENCE is read from, and it
+ * exists because of a round-4 #2884 defect: `runRevert` runs
+ * {@link preserveLiveValuesAtUnresolvedTokens} FIRST, and that pass copies
+ * `live` values into whole-token leaves BY INDEX — so corroborating `send`
+ * (the post-token bag) against that same `live` counts every leaf the token
+ * pass just copied as trivially deep-equal at its own index. An unkeyed array
+ * whose only non-mask leaves were tokens then satisfied both the
+ * `compared > 0` floor and the one-mask bound on evidence the sibling pass
+ * manufactured, and a reordered `live` wrote another element's secret into the
+ * masked slot — the credential-swap class the guards were added for. The same
+ * fabrication reached the IDENTITY arm: an identity field that was itself a
+ * token took its live value by index, and {@link pairedLiveItems}' keyed
+ * lookup then "paired" it right back to that index. So the caller passes the
+ * PRE-token bag here; both the identity lookup and the per-leaf corroboration
+ * run over values no sibling pass copied from `live`, a token leaf compares
+ * against the resolved live value and CONTRADICTS (its live counterpart is
+ * unknowable, and an abstention would make token leaves unbounded wildcards
+ * beside the deliberately bounded one-mask rule), and the array refuses. The
+ * masked VALUES the walk writes still come from `send` — only the evidence
+ * source changes. Defaults to `send` (self-corroboration, the pre-round-4
+ * behaviour) for a caller with no sibling pass; a structural mismatch between
+ * the two bags — which the token pass CAN produce, by returning the live
+ * CONTAINER AWS holds over a whole-token string leaf — refuses the masks
+ * beneath it rather than falling back to the fabricable bag. That refusal is
+ * a deliberate fail-closed cost, not a reachable loss: the mismatching
+ * subtree is live-derived and carries no mask, so nothing preservable is
+ * refused today.
+ *
+ * Returns the input bag BY IDENTITY when it holds no mask — checked FIRST via
+ * {@link carriesSecretMask}, so a mask-free revert (the ordinary case) pays
+ * one boolean walk instead of a full rebuild plus per-array pairing.
  */
 export function preserveLiveValuesAtMaskedLeaves(
   send: Record<string, unknown>,
   awsProperties: Record<string, unknown>,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  corroborationSource: Record<string, unknown> = send
 ): { properties: Record<string, unknown>; unpreservablePaths: string[] } {
+  if (!carriesSecretMask(send)) return { properties: send, unpreservablePaths: [] };
   const unpreservablePaths: string[] = [];
   let changed = false;
-  const walk = (value: unknown, live: unknown, path: string): unknown => {
+  const walk = (value: unknown, corr: unknown, live: unknown, path: string): unknown => {
     if (value === SECRET_MASK) {
       if (live === undefined) {
         unpreservablePaths.push(path);
@@ -3796,20 +4021,57 @@ export function preserveLiveValuesAtMaskedLeaves(
       return live;
     }
     if (Array.isArray(value)) {
-      const liveItems = Array.isArray(live) && live.length === value.length ? live : undefined;
-      return value.map((item, i) => walk(item, liveItems?.[i], `${path}[${i}]`));
+      // Pairing evidence comes from `corr` — see `corroborationSource` above.
+      // In the self-corroboration default `corr` IS `value`, so this test
+      // always passes there. A provided source of any other shape is REFUSED,
+      // not fallen back from — and the mismatch is producible: the token pass
+      // returns `live` at a whole-token leaf, so a string in `corr` can sit
+      // where `value` holds the container AWS reported. Deliberate fail-closed
+      // cost: the container is live-derived and holds no mask, so the refusal
+      // guards nothing today, but falling back to `value` would hand the
+      // fabricable bag back exactly where the two bags disagree.
+      const corrItems =
+        Array.isArray(corr) && corr.length === value.length
+          ? (corr as readonly unknown[])
+          : undefined;
+      const liveItems = corrItems === undefined ? undefined : pairedLiveItems(corrItems, live);
+      return value.map((item, i) => walk(item, corrItems?.[i], liveItems?.[i], `${path}[${i}]`));
     }
     if (value !== null && typeof value === 'object') {
+      // A non-plain object is a LEAF returned BY IDENTITY — same guard and
+      // same reason as the token pass's object arm above: rebuilding a `Date`
+      // / `Uint8Array` / class instance through `Object.entries` fabricates
+      // `{}` (or an index map) into the bag `provider.update` ships, and the
+      // raw SDK readback genuinely reaches this walk through
+      // `buildRevertNewProperties`.
+      if (!hasPlainPrototype(value)) {
+        // ENFORCED, not asserted: `carriesSecretMask` descends ANY object via
+        // `Object.values`, so a mask nested inside a non-plain container is
+        // reachable to the GATE while this walk stops here — and returning
+        // silently would ship the literal `***` to AWS unreported, the
+        // fail-open half of exactly the gate/walk asymmetry class. No shape
+        // reaches this today (this module writes masks only at string leaves
+        // of plain containers), but the day one does, the resource is
+        // REFUSED, not corrupted.
+        if (carriesSecretMask(value)) unpreservablePaths.push(path);
+        return value;
+      }
       const liveObject = isPlainRecord(live) ? live : undefined;
-      const out: Record<string, unknown> = {};
+      const corrObject = isPlainRecord(corr) ? corr : undefined;
+      // `Object.create(null)`: an own `__proto__` key (producible —
+      // `JSON.parse` on state.json yields one as an OWN key) assigned onto a
+      // `{}` literal SETS the prototype and silently drops the key; a
+      // null-prototype target takes it as the ordinary own key it is. Same
+      // rule and reason as `secret-redaction.ts`'s rebuild sites.
+      const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        out[k] = walk(v, liveObject?.[k], path === '' ? k : `${path}.${k}`);
+        out[k] = walk(v, corrObject?.[k], liveObject?.[k], path === '' ? k : `${path}.${k}`);
       }
       return out;
     }
     return value;
   };
-  const properties = walk(send, awsProperties, '') as Record<string, unknown>;
+  const properties = walk(send, corroborationSource, awsProperties, '') as Record<string, unknown>;
   if (!changed && unpreservablePaths.length === 0) return { properties: send, unpreservablePaths };
   return { properties, unpreservablePaths };
 }
@@ -4305,10 +4567,18 @@ async function runRevert(
           // this hazard is decided by the send bag alone, and `unresolvedTokens`
           // says nothing about it. The helper returns its input by identity when
           // there is no mask, so an ordinary revert is unaffected.
+          //
+          // `overlaid` — the PRE-token bag — is the corroboration source, and
+          // passing `tokenPreserved` there instead re-opens the round-4 #2884
+          // hole: the token pass copies live values in BY INDEX, so the
+          // post-token bag corroborates (and identity-pairs) its own indices
+          // against the very `live` it was copied from. See the parameter's
+          // doc on `preserveLiveValuesAtMaskedLeaves`.
           const maskPreserved = preserveLiveValuesAtMaskedLeaves(
             tokenPreserved,
             outcome.awsProperties,
-            secrets
+            secrets,
+            overlaid
           );
           if (maskPreserved.unpreservablePaths.length > 0) {
             // REFUSE the resource rather than send the mask. `totalUnresolvable`
@@ -4316,6 +4586,19 @@ async function runRevert(
             // re-resolution refusal one arm down for the same reason: no AWS
             // call was attempted, and the cause is a value cdkd cannot name —
             // not an update that failed.
+            //
+            // THE MESSAGE BELOW IS STALE AND IS ISSUE
+            // [#2881](https://github.com/go-to-k/cdkd/issues/2881)'s TO FIX,
+            // not this arm's. It names a `NoEcho` custom-resource value as THE
+            // cause and prescribes a nonce bump, which was exact while issue
+            // #2274 was the only source of a mask. Issue #2852 added a second —
+            // a readback position the redaction walk could not certify — and
+            // that one is COMMON rather than rare, is not a custom resource,
+            // and a nonce does nothing for it (its remedy is a `cdkd deploy` of
+            // the resource, which recaptures the baseline from a template cdkd
+            // can position against). `export.ts` and `rollback-executor.ts`
+            // carry the same sentence, which is why the fix is one issue across
+            // all three rather than an edit here.
             totalUnresolvable++;
             logger.error(
               `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +

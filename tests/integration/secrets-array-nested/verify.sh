@@ -36,13 +36,17 @@
 #     CONTROL. Every anchor still matches, so rules 1 and 2 pass and the
 #     refusal is attributable to rule 3 -- the two reference-bearing elements
 #     share an `anchorSignature`, so a swap between them would be invisible.
-#     Indices 1 and 3 must be left holding exactly what AWS reported.
+#     Since issue #2852 a refused position FAILS CLOSED: indices 1 and 3 must
+#     hold exactly the literal mask `***`, never the decrypted readback.
 #
 # Without that second array, a gate that paired EVERYTHING would satisfy every
-# positive assertion here. Its refused indices therefore keep a resolved
-# plaintext in the observed baseline ON PURPOSE -- that is the documented
-# residual behaviour, and the S3 VERSION sweep at the end is what bounds how
-# long those bytes live in the bucket.
+# positive assertion here. Before #2852 its refused indices kept the resolved
+# plaintext in the observed baseline as a documented residual, and the S3
+# VERSION sweep at the end existed partly to bound how long those bytes lived
+# in the bucket. That residual is GONE: the refused position persists the
+# mask, so no plaintext is written for the sweep to bound. The sweep stays for
+# the producer's own `unsafePlainText` properties (the s3-versions.sh note
+# below) and as issue #2096 hygiene.
 #
 # Phases:
 #   1. Deploy with --no-capture-observed-state. Assert the reference reached AWS
@@ -613,9 +617,10 @@ if printf '%s' "${TD_RECORD}" | grep -qF "cdkd-decoy-never-created"; then
   exit 1
 fi
 # ALL THREE anchor-arm plaintexts, and all three unconditionally: phase 1
-# carries no observed baseline at all, so even the negative control -- whose
-# values legitimately survive in phase 2 -- must be absent here. grep -qF and
-# no echo of the needle, like the two above.
+# carries no observed baseline at all. (Until issue #2852 this differed from
+# phase 2, where the negative control's values legitimately survived; the
+# refused position now fails closed there too.) grep -qF and no echo of the
+# needle, like the two above.
 for anchor_needle in "${EXPECTED_ANCHOR_PW}" "${EXPECTED_AMBIG_ALPHA}" "${EXPECTED_AMBIG_BRAVO}"; do
   if printf '%s' "${TD_RECORD}" | grep -qF "${anchor_needle}"; then
     echo "FAIL: an anchor-arm plaintext is present in the task definition record after phase 1 (issue #2012)" >&2
@@ -754,8 +759,9 @@ echo "    OK: the anchor gate PAIRED the unkeyed Command array and persisted the
 # THE NEGATIVE CONTROL. Same shape, same empty map, same intact anchors -- but
 # the two reference-bearing elements are indistinguishable to `anchorSignature`
 # (both bare references, behind an identical `-p`), so rule 3 must refuse the
-# whole array and leave AWS's own values in place. Without this, a gate that
-# paired EVERYTHING would satisfy every assertion above.
+# whole array -- and, since issue #2852, a refused position FAILS CLOSED to
+# the literal mask. Without this, a gate that paired EVERYTHING would satisfy
+# every assertion above.
 P2_ANCHOR_EP=$(cd_field_of "${P2_OBSERVED}" anchorprobe EntryPoint)
 assert_read "observedProperties ContainerDefinitions[anchorprobe].EntryPoint" "${P2_ANCHOR_EP}"
 assert_unkeyed_string_array "observedProperties anchorprobe EntryPoint" "${P2_ANCHOR_EP}" 4
@@ -768,13 +774,18 @@ P2_EP_1=$(json_index "${P2_ANCHOR_EP}" 1)
 P2_EP_3=$(json_index "${P2_ANCHOR_EP}" 3)
 assert_read "observedProperties anchorprobe EntryPoint[1]" "${P2_EP_1}"
 assert_read "observedProperties anchorprobe EntryPoint[3]" "${P2_EP_3}"
-if [ "${P2_EP_1}" != "${EXPECTED_AMBIG_ALPHA}" ] || [ "${P2_EP_3}" != "${EXPECTED_AMBIG_BRAVO}" ]; then
-  echo "FAIL: the anchor gate must REFUSE an array whose reference-bearing elements are indistinguishable (issue #2012, rule 3)." >&2
-  echo "      Each position has to be left exactly as AWS reported it." >&2
+# The literal mask keeps this control's DISCRIMINATING power -- all three
+# outcomes stay distinguishable: the raw plaintext is the pre-#2852 leak, the
+# EXPRESSION is a pair-everything mutation (the swap / fabrication class rule
+# 3 exists for), and '***' alone is the fail-closed refusal #2852 decided a
+# refused baseline position takes.
+if [ "${P2_EP_1}" != "***" ] || [ "${P2_EP_3}" != "***" ]; then
+  echo "FAIL: a refused indistinguishable position must FAIL CLOSED to the literal mask (issue #2012 rule 3 disposition per issue #2852)." >&2
+  echo "      plaintext here is the old leak; the EXPRESSION here is a pair-everything mutation; only '***' is correct." >&2
   echo "      got[1]: $(mask "${P2_EP_1}")  got[3]: $(mask "${P2_EP_3}")" >&2
   exit 1
 fi
-echo "    OK: the anchor gate REFUSED the indistinguishable array and left the readback untouched"
+echo "    OK: the anchor gate REFUSED the indistinguishable array and FAILED CLOSED to the mask"
 
 # Scoped to the consumer's record for the reason phase 1 gives.
 if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_PASSWORD}"; then
@@ -785,13 +796,19 @@ if printf '%s' "${TD_RECORD}" | grep -qF "cdkd-decoy-never-created"; then
   echo "FAIL: the token-shaped secret plaintext is present in the task definition record after the unchanged redeploy (issue #1917)" >&2
   exit 1
 fi
-# ONLY the PAIRED arm's plaintext. The negative control's two values are
-# deliberately still in this record -- that IS its assertion, above -- so
-# grepping for them here would contradict it. Read this line as a PAIR with
-# the positive marker above: "no plaintext" on its own is also satisfied by an
-# arm that never ran.
+# ALL THREE anchor-arm plaintexts must be absent. Until issue #2852 the
+# negative control's two values were deliberately still in this record (its
+# refusal left the readback in place); the refused position now FAILS CLOSED
+# to the mask, so their absence is the stronger assertion. Read these as a
+# PAIR with the positive markers above: "no plaintext" on its own is also
+# satisfied by an arm that never ran.
 if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_ANCHOR_PW}"; then
   echo "FAIL: the anchor-paired plaintext is present in the task definition record after the unchanged redeploy (issue #2012)" >&2
+  exit 1
+fi
+if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_AMBIG_ALPHA}" \
+  || printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_AMBIG_BRAVO}"; then
+  echo "FAIL: a refused indistinguishable position persisted its decrypted readback -- the issue #2852 fail-closed contract is broken" >&2
   exit 1
 fi
 echo "    OK: no resolved plaintext in the consumer record after phase 2"
@@ -926,4 +943,4 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "secrets-array-nested state teardown"
 
-echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused (issue #2012), non-secret siblings untouched, clean destroy"
+echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused and FAILS CLOSED to the mask (issues #2012 / #2852), non-secret siblings untouched, clean destroy"

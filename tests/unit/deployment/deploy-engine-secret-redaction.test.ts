@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  scrubResourceRecord,
+  redactSecretsForState,
+  SECRET_MASK,
+  STATE_SOURCED_BASELINE_RULES,
+} from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
@@ -453,5 +459,145 @@ describe('DeployEngine - resolved secrets are redacted out of persisted state (G
     >;
     expect(attempted['client_secret']).toBe(SECRET_EXPR);
     expect(attempted['client_id']).toBe('public-client-id');
+  });
+});
+
+// ---------------------------------------------------------------- #2886 --
+
+describe('the deploy journal previousState is a REPLAYED baseline, not a fresh one (issue #2886)', () => {
+  // The #2852 fail-closed refusal is keyed on the DESTINATION: a bag that
+  // BECOMES a drift baseline masks every position it cannot certify, while the
+  // journal's `previousState` — a snapshot of a bag that ALREADY sits in
+  // `state.json` — must not gain masks, because `replayRollback` restores that
+  // record wholesale and the masks would land in `state.json` as permanent
+  // phantom drift on a baseline that was intact before the deploy.
+  //
+  // BOTH directions are pinned HERE, in one file, so a future edit cannot
+  // satisfy one and drop the other: the journal call site passes
+  // `STATE_SOURCED_READBACK_RULES` explicitly (case 1), while the SAME record
+  // through the same choke point's DERIVATION (the deploy persist path's
+  // issue-1900 walk, and `cdkd state refresh-observed`'s declared constant)
+  // still masks (cases 2 and 3).
+
+  // Issue #2852's ancestor-reshaped shape: the source spells a reference at
+  // `A.B`, the readback reshaped `A` into an array — a position the walk
+  // cannot certify, so the BASELINE destination masks it.
+  const JOURNAL_EXPR = '{{resolve:secretsmanager:journal-secret:SecretString:pw::}}';
+  const UNCERTIFIABLE_LIVE = 'journal-live-uncertifiable-value';
+  function replayedRecord() {
+    return {
+      physicalId: 'db-1',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { A: { B: JOURNAL_EXPR } },
+      observedProperties: { A: [UNCERTIFIABLE_LIVE] },
+    };
+  }
+
+  function makeBareEngine(): DeployEngine {
+    return new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { dryRun: false },
+      'us-east-1'
+    );
+  }
+
+  it('an op with previousState and an EMPTY secrets map keeps observedProperties UNMASKED in the journal', () => {
+    // The engine resolved nothing for this logicalId (a DELETE, or an UPDATE
+    // with no reference of its own), so `redactOperationsForJournal` reaches
+    // the scrub with an empty map — the exact call `deploy-engine.ts` admits
+    // whenever `previousState` exists. Without the explicit readback constant
+    // at that call site, the derivation fails closed and this masks.
+    const engine = makeBareEngine();
+    const redact = (
+      engine as unknown as {
+        redactOperationsForJournal: <T>(ops: T[]) => T[];
+      }
+    ).redactOperationsForJournal.bind(engine);
+
+    const [redacted] = redact([
+      {
+        logicalId: 'Db',
+        resourceType: 'AWS::RDS::DBInstance',
+        changeType: 'DELETE',
+        previousState: replayedRecord(),
+      } as never,
+    ]) as Array<{ previousState: { observedProperties: Record<string, unknown> } }>;
+
+    expect(redacted!.previousState.observedProperties).toEqual({ A: [UNCERTIFIABLE_LIVE] });
+    expect(JSON.stringify(redacted)).not.toContain(SECRET_MASK);
+  });
+
+  it('...while the SAME record through the empty-map DERIVATION still masks (the baseline destination)', () => {
+    // The other half of the pair: the deploy persist choke point (the
+    // issue-1900 unchanged-resource walk) derives the fail-closed constant for
+    // an empty map, and that must SURVIVE the journal fix — weakening the
+    // derivation instead of passing the constant at the journal call site
+    // would re-open GHSA-p5qg-v9gv-hc7w and reds this case.
+    const scrubbed = scrubResourceRecord(replayedRecord(), new Map<string, string>());
+
+    expect(scrubbed.observedProperties).toEqual({ A: [SECRET_MASK] });
+    expect(JSON.stringify(scrubbed)).not.toContain(UNCERTIFIABLE_LIVE);
+  });
+
+  it('...and a POPULATED map still redacts the journal previousState — the scrub is ALIVE', () => {
+    // The negative the two cases above cannot carry: an UNMASKED bag is also
+    // what a DELETED scrub produces, so without this row replacing the whole
+    // call with `next.previousState = next.previousState` stays green. A
+    // NoEcho mask-only needle recorded by THIS deploy (the
+    // `registerNoEchoAttributes` -> `recordMaskOnlyValuesIn` path fills
+    // `perResourceSecrets`, the same map the journal scrub receives) must
+    // still be masked out of the journaled snapshot.
+    const NOECHO_PLAINTEXT = 'journal-noecho-plaintext-2886';
+    const engine = makeBareEngine();
+    (
+      engine as unknown as { perResourceSecrets: Map<string, Map<string, string>> }
+    ).perResourceSecrets.set('Db', new Map([[NOECHO_PLAINTEXT, SECRET_MASK]]));
+    const redact = (
+      engine as unknown as {
+        redactOperationsForJournal: <T>(ops: T[]) => T[];
+      }
+    ).redactOperationsForJournal.bind(engine);
+
+    const [redacted] = redact([
+      {
+        logicalId: 'Db',
+        resourceType: 'AWS::RDS::DBInstance',
+        changeType: 'DELETE',
+        previousState: {
+          physicalId: 'db-1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: {
+            MasterUserPassword: NOECHO_PLAINTEXT,
+            DBInstanceClass: 'db.t3.micro',
+          },
+        },
+      } as never,
+    ]) as Array<{ previousState: { properties: Record<string, unknown> } }>;
+
+    expect(redacted!.previousState.properties['MasterUserPassword']).toBe(SECRET_MASK);
+    expect(JSON.stringify(redacted)).not.toContain(NOECHO_PLAINTEXT);
+    // The public sibling is untouched — the scrub redacts, it does not erase.
+    expect(redacted!.previousState.properties['DBInstanceClass']).toBe('db.t3.micro');
+  });
+
+  it('...and the `cdkd state refresh-observed` call shape (declared BASELINE destination) still masks', () => {
+    // `state.ts` passes `STATE_SOURCED_BASELINE_RULES` itself; the
+    // command-level pin is `tests/unit/cli/state-refresh-observed.test.ts`.
+    // This row repeats the call SHAPE here so this one file alone pins the
+    // journal/baseline split in both directions.
+    const record = replayedRecord();
+    const out = redactSecretsForState(
+      record.observedProperties,
+      new Map<string, string>(),
+      record.properties,
+      STATE_SOURCED_BASELINE_RULES
+    );
+
+    expect(out).toEqual({ A: [SECRET_MASK] });
+    expect(JSON.stringify(out)).not.toContain(UNCERTIFIABLE_LIVE);
   });
 });
