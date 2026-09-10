@@ -512,22 +512,18 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
       // it also appears in the generic sentence that survives deleting this
       // clause, so the assertion pins wording unique to the clause itself.
       expect(refusal).toContain('stop reading it');
-      // THE ACTION ITSELF, pinned as a whole string. Five review rounds rewrote
-      // this remedy and each rewrite was wrong in a new way: a bare
-      // `cdkd import` (drops the state row instead of healing it), then the
-      // right command naming the WRONG resource. Both the selective
-      // `--resource` form and `--force` are load-bearing (see the call site).
-      expect(refusal).toContain(
-        "'cdkd import <stack> --resource <LogicalId>=<physicalId> --force'"
-      );
+      // THE ACTION ITSELF, now DERIVED from the reads rather than described.
+      // Six review rounds rewrote this remedy and each was wrong for a `reads`
+      // shape it had not considered; the per-shape table is
+      // `masked-record-remedy-shapes.test.ts`. What this case pins is the
+      // END-TO-END rendering for the local shape: the engine really reaches
+      // that helper and the target id really arrives in the thrown message.
+      expect(refusal).toContain("'cdkd import <stack> --resource Cr=<physicalId> --force'");
       // The discriminator for the wrong-resource bug. `Param` is the CONSUMER
       // (this method's `logicalId`); the mask is held by `Cr`, the Fn::GetAtt
-      // TARGET named to the left of the dot in `Cannot resolve Cr.Secret`.
-      // Interpolating the consumer told the user to `--force`-overwrite the
-      // wrong record, so the fence asserts the consumer is NOT the id advised
-      // and that the message says which side to take.
+      // TARGET. Interpolating the consumer told the user to `--force`-overwrite
+      // the wrong record.
       expect(refusal).not.toContain('--resource Param=');
-      expect(refusal).toContain('to the LEFT of the dot');
       // The AWS call never happened — the refusal is BEFORE the provider.
       expect(mockProvider.update).not.toHaveBeenCalled();
     });

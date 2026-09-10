@@ -1580,6 +1580,62 @@ export class DeployEngine {
    * mask". And the diff pass does not consult the bag at all, so an untouched
    * stack still reports NO_CHANGE and deploys.
    */
+  /**
+   * The remedy clause of {@link refuseRedactedAttributeReads}'s import arm,
+   * derived from the `reads` entries rather than described in prose.
+   *
+   * `ResolverContext.redactedAttributeReads` is HETEROGENEOUS. Only
+   * `noteAttributeSecrecy` writes the `<LogicalId>.<Attribute>` form whose
+   * target is a resource in THIS stack; `reresolveCrossStackValue` writes
+   * `Fn::ImportValue '...' (producer ...)`, `Fn::GetStackOutput '...'
+   * (producer ...)` and `nested stack <Child> Outputs.<Key>`, whose masked
+   * record lives in ANOTHER stack's state — where no `--resource` in this
+   * stack can reach it.
+   *
+   * Six review rounds tried to express that distinction as an instruction the
+   * reader applies ("the name to the left of the dot"), and each phrasing was
+   * wrong for a shape it had not considered — including one that named a
+   * REAL-but-wrong logical id (`nested stack Child Outputs.Foo` yields
+   * `Outputs`, and `Child` is a template id the import typo guard accepts), so
+   * following it would `--force`-overwrite an innocent row. Partitioning the
+   * entries here makes each arm say only what is true of its own shape, and
+   * makes a new shape a change to THIS function rather than a silent widening
+   * of a sentence.
+   *
+   * The local form is matched CONSERVATIVELY: a leading identifier followed by
+   * a dot, anchored, with no whitespace — the cross-stack forms all contain a
+   * space before their first dot, so they cannot match. A dotted ATTRIBUTE
+   * path (`Cr.Endpoint.Password`) still yields `Cr`, because the capture stops
+   * at the FIRST dot.
+   */
+  private static maskedRecordRemedyFor(reads: readonly string[]): string {
+    const localTargets = [
+      ...new Set(
+        reads
+          .map((read) => /^([A-Za-z0-9]+)\./.exec(read)?.[1])
+          .filter((id): id is string => id !== undefined)
+      ),
+    ];
+    const foreignCount = reads.length - reads.filter((r) => /^[A-Za-z0-9]+\./.test(r)).length;
+    const parts: string[] = [];
+    if (localTargets.length > 0) {
+      const named = localTargets.join(', ');
+      parts.push(
+        `Re-import the resource that HOLDS the mask — ${named} — with ` +
+          `'cdkd import <stack> --resource ${localTargets[0]}=<physicalId> --force'.`
+      );
+    }
+    if (foreignCount > 0) {
+      parts.push(
+        `Some of the reads above resolve through ANOTHER stack (an Fn::ImportValue, an ` +
+          `Fn::GetStackOutput, or a nested stack's Outputs), whose masked record lives in that ` +
+          `stack's state — re-importing anything in this stack cannot clear those; act on the ` +
+          `producer stack instead.`
+      );
+    }
+    return parts.join(' ');
+  }
+
   private refuseRedactedAttributeReads(
     logicalId: string,
     resourceType: string,
@@ -1606,18 +1662,20 @@ export class DeployEngine {
     // `getTopLevelReadOnlyProperties` answers `undefined` for any failure at
     // all — so any list written here is a claim the code cannot support.
     //
-    // THE COMMAND'S `<LogicalId>` IS A PLACEHOLDER, NOT `logicalId`, and that
-    // is the correction of a real defect rather than a style choice. This
-    // method's `logicalId` is the resource being PROVISIONED — the consumer
-    // that read the attribute. The masked record belongs to the `Fn::GetAtt`
-    // TARGET, which is the name `noteAttributeSecrecy` puts to the LEFT of the
-    // dot in each `reads` entry (`Cr.Secret for Param`: `Cr` holds the mask,
-    // `Param` is this `logicalId`). Interpolating it told the user to re-import
-    // the wrong resource WITH `--force`, which overwrites that resource's row —
-    // attributes, properties and `provisionedBy` — while leaving the mask in
-    // place. Deriving it from `reads[0]` instead is also wrong: cross-stack
-    // entries are `Fn::ImportValue '…'` / `nested stack X Outputs.Y`, whose
-    // record lives in ANOTHER stack, where no `--resource` here can help.
+    // THE TARGET IDS ARE COMPUTED, NOT DESCRIBED, and that is the fix for a
+    // defect class rather than for one sentence. This method's `logicalId` is
+    // the resource being PROVISIONED — the consumer that read the attribute —
+    // while the masked record belongs to the READ's target. Successive rounds
+    // tried to convey that in prose and each attempt was wrong for a `reads`
+    // shape it had not considered: interpolating `logicalId` named the consumer
+    // and told the user to `--force`-overwrite the wrong row; "the name to the
+    // left of the dot" reads as `Outputs` for `nested stack Child Outputs.Foo`,
+    // as `Cr.Endpoint` for a dotted attribute path like `Cr.Endpoint.Password`,
+    // and has no referent at all for the `Fn::ImportValue` /
+    // `Fn::GetStackOutput` forms. The population is heterogeneous, so no single
+    // instruction describes it — `localMaskedTargets` PARTITIONS it instead,
+    // and each arm says only what is true of its own shape. Adding a `reads`
+    // shape means extending that helper, not this prose.
     //
     // THE COMMAND IS SELECTIVE AND CARRIES `--force`, and both halves were
     // traced through `cdkd import` rather than reasoned about. A BARE re-run is
@@ -1629,8 +1687,8 @@ export class DeployEngine {
     // would hit that wall first.) Selective mode merges onto the existing map,
     // and `--force` is required because the listed id already HAS a state entry
     // — the one holding the mask. `import.ts`'s own two refusals are the
-    // authority for both clauses. A test pins this string; three rewrites of
-    // this arm is the reason it is pinned rather than trusted.
+    // authority for both clauses. A test pins this string per `reads` shape;
+    // the rewrite history above is why it is pinned rather than trusted.
     //
     // ONE CASE THE COMMAND DOES NOT HEAL, narrow but real: if the re-import's
     // `GetResource` again yields no usable model, `import()` returns
@@ -1654,9 +1712,7 @@ export class DeployEngine {
         `declares read-only and masks the rest. Either the attribute named above is not one of ` +
         `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
         `cdkd could not read that schema and masked the whole model, which the import warned about ` +
-        `when it happened. Re-import the resource that HOLDS the mask — the name to the LEFT of ` +
-        `the dot above, not ${logicalId} — with ` +
-        `'cdkd import <stack> --resource <LogicalId>=<physicalId> --force'. If that warning named ` +
+        `when it happened. ${DeployEngine.maskedRecordRemedyFor(reads)} If that warning named ` +
         `a missing cloudformation:DescribeType permission, grant it first. ` +
         `See https://github.com/go-to-k/cdkd/issues/2449.`,
       resourceType,
