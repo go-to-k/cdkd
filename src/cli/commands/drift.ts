@@ -2554,10 +2554,13 @@ async function runDriftForStack(
             `${logicalId} (${resource.resourceType}): cdkd cannot resolve ` +
               `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — those properties ` +
               `are NOT compared. A revert leaves a property whose WHOLE value is one of these ` +
-              `tokens untouched; where a token is EMBEDDED in a longer string, the revert writes ` +
-              `that string with the token literal, exactly as 'cdkd deploy' does — so a resolved ` +
-              `value AWS holds there WOULD be overwritten. cdkd resolves 'secretsmanager', 'ssm' ` +
-              `and 'ssm-secure' references; anything else is left as written.`
+              `tokens untouched where its position can be matched against AWS's report (a list ` +
+              `element pairs by an identity field, or by the list's own unchanged literal ` +
+              `values); where it cannot be matched, and where a token is EMBEDDED in a longer ` +
+              `string, the revert writes the token literal, exactly as 'cdkd deploy' does — so ` +
+              `a resolved value AWS holds there WOULD be overwritten. cdkd resolves ` +
+              `'secretsmanager', 'ssm' and 'ssm-secure' references; anything else is left as ` +
+              `written.`
           );
         }
         // Observed-baseline blind spot (issue #1498): the snapshot is captured
@@ -3674,9 +3677,26 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
  *
  * Falls back to KEEPING the token wherever AWS has nothing at that position —
  * that is what `cdkd deploy` sends, so it is the safe residual rather than
- * dropping a property the resource may require. Array descent is positional
- * and bails to that same residual on any length mismatch, since a reordered
- * readback cannot be positioned against.
+ * dropping a property the resource may require. Array descent pairs live
+ * elements through {@link pairedLiveItems} — an identity field first, else the
+ * array's own literal frame corroborated per LEAF — never by blind index
+ * (issue [#2893](https://github.com/go-to-k/cdkd/issues/2893)): until that
+ * issue the descent was positional behind a length test, so a readback AWS
+ * REORDERED copied element *i*'s live value into element *i*'s token position
+ * and `provider.update` shipped a value belonging to a DIFFERENT element. The
+ * wildcard handed to the pairing is "whole token OR the redaction mask": a
+ * token leaf cannot corroborate an order (its live counterpart is the resolved
+ * value, so comparing would refuse every array this pass exists to serve), and
+ * a mask leaf belongs to the SIBLING mask walk but must abstain here rather
+ * than contradict. Where the pairing refuses, the token is KEPT — the same
+ * residual as everywhere else in this pass, and deliberately NOT the mask
+ * walk's drop-the-resource refusal: that one would abandon every other drifted
+ * property over an alignment this pass never needed, while the kept token is
+ * what `cdkd deploy` sends. The trade this accepts: an array whose OTHER
+ * leaves genuinely drifted no longer takes a positional copy (the frame cannot
+ * corroborate an order it no longer matches), so the token ships there —
+ * a no-op for a record cdkd deployed, and for any other record a preserved
+ * pre-existing breakage rather than another element's value written live.
  */
 export function preserveLiveValuesAtUnresolvedTokens(
   send: Record<string, unknown>,
@@ -3730,7 +3750,38 @@ export function preserveLiveValuesAtUnresolvedTokens(
       return live;
     }
     if (Array.isArray(value)) {
-      const liveItems = Array.isArray(live) && live.length === value.length ? live : undefined;
+      // Pair live elements the way the sibling mask walk does — identity
+      // field first, else the array's own literal frame corroborated per
+      // leaf — with the wildcard tuned to THIS pass's markers, and the
+      // forced-singleton acceptance its refusal cost demands (issue #2893 +
+      // PR #2912 blocker 1; see the pairing's doc for both derivations).
+      //
+      // Self-corroboration needs a bound and "it runs FIRST" is not it (PR
+      // #2912 review, both rounds): `buildRevertNewProperties` DOES copy
+      // live values into this bag — `{...awsProperties}` for every
+      // non-drifted key, and `mergeUntemplatedValue`'s untemplated paths
+      // under `preserveUntemplated` — and MIXED-provenance lists exist too:
+      // `mergeUntemplatedValue`'s keyed arm and `mergeTagListForRevert`
+      // both emit lists whose members come from both sides. The actual
+      // bound is IDENTITY, not single-sourcing and not position: `Key` /
+      // `Name` are `ARRAY_IDENTITY_KEYS`, so a merged list normally takes
+      // the identity arm, which reads no order evidence at all. That is
+      // what carries it, because the two merges do NOT agree on ordering:
+      // `mergeUntemplatedValue`'s keyed arm iterates the AWS list and
+      // substitutes by `Key` (AWS positions), while `mergeTagListForRevert`
+      // returns `[...baselineTags, ...preserved]` — BASELINE order with
+      // AWS-only extras appended, so its output is not at AWS's positions
+      // at all. Identity pairing needs UNIQUENESS on BOTH sides
+      // (`isUniquelyKeyedBy` — AWS can report the same key twice, as
+      // `mergeUntemplatedValue`'s own dedupe records), and the fallback is
+      // still sound WITHOUT any positional premise: a merged list falling
+      // to the frame arm (a duplicated or empty `Key`) corroborates
+      // leaf-by-leaf, so an alignment that is shifted — however it got
+      // that way — CONTRADICTS and refuses rather than donating. Unkeyed arrays never
+      // mix at all: the merge's fall-through takes them from the baseline
+      // wholesale, and a non-drifted key's array is AWS wholesale, where
+      // every copy is send ≡ live.
+      const liveItems = pairedLiveItems(value, live, isTokenOrMaskLeaf, carriesTokenOrMask, true);
       return value.map((item, i) => walk(item, liveItems?.[i]));
     }
     if (value !== null && typeof value === 'object') {
@@ -3759,9 +3810,99 @@ export function preserveLiveValuesAtUnresolvedTokens(
 }
 
 /**
- * The live array to read a masked leaf's replacement from, aligned to `send`'s
- * indices — or `undefined` when the two lists cannot be aligned at all, which
- * routes every mask beneath them to `unpreservablePaths`.
+ * Paths in the bag `--revert` is about to send whose value is an unresolved
+ * CloudFormation intrinsic OBJECT — `{ Ref: ... }` or a single-key
+ * `{ 'Fn::*': ... }` (issue
+ * [#2855](https://github.com/go-to-k/cdkd/issues/2855)).
+ *
+ * WHY THE SHAPE IS REACHABLE. `cdkd import`'s warn path persists raw intrinsic
+ * objects into a record's `properties`, and issue #2842's baseline refusal is
+ * what routes such a record here: it leaves `observedProperties` undefined, so
+ * `runRevert`'s `revertBaseline` falls back to the raw bag.
+ * `resolveStateSecretExpressions` re-resolves only `{{resolve:...}}` STRINGS,
+ * so the OBJECT walks through it untouched, and the drift comparator's
+ * `{{resolve:` skip is a string test too — the object simply differs from the
+ * readback, drifts, and `buildRevertNewProperties` overlays it into the send
+ * bag.
+ *
+ * WHY IT MUST BE REFUSED rather than shipped or live-preserved. Measured
+ * (issue #2855's open question) with mocked SDK clients on both routes: NO
+ * route fails loudly on cdkd's side. `SSMParameterProvider.update` puts the
+ * raw object straight into `PutParameterCommand.input.Value`;
+ * `CloudControlProvider.update` emits it verbatim as a JSON-patch value, and
+ * for a `JSON_STRING_PROPERTIES` type (`AWS::Events::Rule.EventPattern`) it is
+ * `JSON.stringify`ed into a schema-VALID string — a payload AWS cannot even
+ * reject on type, i.e. guaranteed silent corruption. Live-preserving (the
+ * token pass's answer) is no better: the intrinsic's real value depends on
+ * template context a synth-free command does not have, and copying whatever
+ * AWS holds would silently bless an out-of-band edit as the baseline.
+ *
+ * The predicate mirrors the resolver's own rule (a CloudFormation intrinsic is
+ * ALWAYS a single-key object; `detectUnknownIntrinsicKey` in
+ * `intrinsic-function-resolver.ts` states why single-key is what keeps a real
+ * property literally named `Ref` from false-positiving). A non-plain object
+ * (`Date`, `Uint8Array`) cannot be an intrinsic and is not descended. The scan
+ * is scoped to `topLevelKeys` — the DRIFTED keys, the only ones
+ * `buildRevertNewProperties` sources from the baseline — so a value that
+ * merely looks intrinsic under a non-drifted key cannot refuse a revert it
+ * never participates in. The caller hands it the BASELINE
+ * (`desiredProperties`), never the post-overlay send bag: on the very
+ * population this refusal exists for, `mergeUntemplatedValue`'s key-merge can
+ * FUSE a single-key intrinsic with a plain-record live value into a multi-key
+ * object the predicate no longer matches, while every overlay arm re-emits
+ * every baseline path into the send bag in some shape — so the baseline scan
+ * is complete where the merged-bag scan was dilutable, and an AWS-echoed
+ * lookalike (which lives only in the overlay) stays exempt by construction.
+ * The caller additionally gates the whole scan on
+ * `observedProperties === undefined` — intrinsic objects reach a revert
+ * baseline only through the raw-`properties` fallback, while an
+ * `observedProperties` baseline is READBACK-derived, where a single-key map
+ * named like an intrinsic is a real AWS value and a refusal would be
+ * permanent (the call site's comment carries the full derivation).
+ *
+ * The whole flagged leaf is reported once; nothing beneath it is separately
+ * scanned, since the caller refuses the resource on the first path anyway.
+ */
+export function collectUnresolvedIntrinsicObjectPaths(
+  bag: Record<string, unknown>,
+  topLevelKeys: ReadonlySet<string>
+): string[] {
+  const found: string[] = [];
+  const visit = (value: unknown, path: string): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item, i) => visit(item, `${path}[${i}]`));
+      return;
+    }
+    if (value !== null && typeof value === 'object') {
+      if (!hasPlainPrototype(value)) return;
+      const record = value as Record<string, unknown>;
+      const keys = Object.keys(record);
+      const key = keys[0];
+      if (keys.length === 1 && key !== undefined && (key === 'Ref' || key.startsWith('Fn::'))) {
+        found.push(path);
+        return;
+      }
+      for (const [k, v] of Object.entries(record)) {
+        // `path` is never '' here: the scan loop below seeds every visit
+        // with the top-level key itself.
+        visit(v, `${path}.${k}`);
+      }
+    }
+  };
+  for (const key of topLevelKeys) {
+    // `Object.hasOwn`, not `in`: the bag is a caller-built record and an
+    // inherited name (`constructor`, `toString`) is not a baseline property.
+    if (Object.hasOwn(bag, key)) visit(bag[key], key);
+  }
+  return found.sort();
+}
+
+/**
+ * The live array to read a preserved leaf's replacement from, aligned to
+ * `send`'s indices — or `undefined` when the two lists cannot be aligned at
+ * all, which routes every mask beneath them to `unpreservablePaths` in the
+ * mask walk and keeps the token in the token walk (see the wildcard
+ * paragraph below for the split).
  *
  * WHY THIS IS NOT INDEX ALIGNMENT ANY MORE (issue
  * [#2884](https://github.com/go-to-k/cdkd/issues/2884)). Until issue
@@ -3821,7 +3962,10 @@ export function preserveLiveValuesAtUnresolvedTokens(
  * list corresponds to this one, and with zero corroborated leaves the only
  * evidence for that is the length-1 match, which is no evidence: this is the
  * all-masked reading applied to its smallest shape, and the cost is a refusal
- * (the safe residual), not a wrong write.
+ * (the safe residual), not a wrong write. THAT COST SENTENCE IS THE MASK
+ * WALK'S ALONE — for the token walk a refusal WRITES the token, so the same
+ * floor inverts there and the singleton is accepted instead; see
+ * `pairedLiveItems`' `acceptForcedSingleton` for the derivation.
  *
  * THE EVIDENCE MUST NOT BE MANUFACTURED BY A SIBLING PASS. `send` here must be
  * values the caller did not itself copy from `live` — see
@@ -3829,54 +3973,186 @@ export function preserveLiveValuesAtUnresolvedTokens(
  * for the round-4 #2884 defect where the token pass's index-copied live values
  * corroborated their own indices.
  *
- * Refusing is the correct outcome — the caller drops the whole resource rather
- * than sending a guess.
+ * Refusing is the correct outcome for the MASK caller — it drops the whole
+ * resource rather than send a guess. The TOKEN caller's refusal residual is
+ * KEEPING the token (see below); both are the refusal `undefined` spells here,
+ * and what it costs is the CALLER's contract, not this function's.
+ *
+ * PARAMETERISED WILDCARDS (issue #2893). This pairing now serves BOTH preserve
+ * walks, because the two questions are identical — "which live element belongs
+ * to this send element?" — and a second hand-rolled copy of the rule is
+ * exactly how the `maskDeep` class of divergence starts. What differs per
+ * caller is only WHICH leaf is the one being paired FOR (and so must be
+ * wildcarded rather than compared) and what a refusal costs:
+ *
+ * - the MASK walk wildcards {@link SECRET_MASK} alone; a refusal drops the
+ *   resource, so over-refusal is a safe posture there;
+ * - the TOKEN walk wildcards a WHOLE `{{resolve:...}}` token (its live
+ *   counterpart is the resolved value, so comparing would contradict on every
+ *   array that pass exists to serve) AND the mask (owned by the LATER mask
+ *   walk — comparing `***` against live would contradict spuriously, and
+ *   treating it as evidence would be wrong in the other direction). Its
+ *   refusal residual is keeping the token, which `provider.update` ships —
+ *   a no-op for a record cdkd deployed, a preserved pre-existing breakage
+ *   otherwise, and in both cases better than another element's live value
+ *   copied into the wrong position.
+ *
+ * `carriesWildcard` must be the DEEP form of `wildcardLeaf` (an element
+ * carrying a wildcard anywhere is a slot whose alignment part-rests on
+ * abstention), and the one-slot bound applies to it: with two such elements
+ * the surviving literal frame cannot say which wildcard goes where.
+ *
+ * `acceptForcedSingleton` (PR #2912 review, blocker 1) is where the two
+ * callers' refusal COSTS meet the evidence rules, and it exists because a
+ * rule that is sound for one arm BECAUSE of what its refusal costs cannot be
+ * shared without re-deriving that cost. At `send.length === 1` against
+ * `live.length === 1` no evidence question remains OPEN: the position is
+ * FORCED (there is no other candidate to mis-pair with), and a positional
+ * copy writes each live value back to its own position, so no
+ * cross-POSITION donation — the credential-swap class every bound above
+ * exists to stop — is constructible. Cross-IDENTITY donation is: the
+ * bypass sits above the identity arm and its wildcard-identity guard, so
+ * `[{Name:'DB', Value:<token>}]` against a live `[{Name:'OTHER', Value:'X'}]`
+ * ships `{Name:'DB', Value:'X'}` — a value from a differently-identified
+ * element. That is position-neutral (X lands at the exact position AWS
+ * holds it), it is what the pre-#2893 positional descent did for every such
+ * array, and the alternative writes the token over X; the trade is stated
+ * here rather than claimed away. What the evidence rules still doubt at
+ * 1-vs-1 is only "does this live list correspond to this send list at
+ * all", and the two callers answer that doubt oppositely because their
+ * refusal residuals invert:
+ *
+ * - the MASK walk refuses (`false`, the default): its residual is dropping
+ *   the resource, so doubt costs a refusal — the safe direction, and the
+ *   `[SECRET_MASK]`-vs-one-live-value reading its own doc defends;
+ * - the TOKEN walk accepts (`true`): its residual WRITES the literal token
+ *   over whatever AWS holds (`provider.update` ships it — the #1914
+ *   corruption), so refusing on a forced position DESTROYS the live value a
+ *   pairing would have preserved, while accepting is write-neutral even when
+ *   the correspondence doubt is real (the copied value lands at the exact
+ *   position AWS already holds it). Refusal buys nothing and costs a
+ *   destructive write, so the token walk takes the pairing — which is also
+ *   exactly the pre-#2893 behaviour for every 1-vs-1 array.
+ *
+ * The bypass sits ABOVE the identity arm deliberately: at 1-vs-1 an identity
+ * mismatch (AWS normalised the one element's Name) changes which EVIDENCE
+ * rule fails, not the forced position, and routing it through the identity
+ * arm would re-open the same inverted cost through a different door. Every
+ * bound below is untouched for `length >= 2`, where mis-pairing is real.
  */
-function pairedLiveItems(send: readonly unknown[], live: unknown): readonly unknown[] | undefined {
+function pairedLiveItems(
+  send: readonly unknown[],
+  live: unknown,
+  wildcardLeaf: (leaf: unknown) => boolean = isMaskLeaf,
+  carriesWildcard: (value: unknown) => boolean = carriesSecretMask,
+  acceptForcedSingleton = false
+): readonly unknown[] | undefined {
   if (!Array.isArray(live)) return undefined;
+  if (acceptForcedSingleton && send.length === 1 && live.length === 1) return live;
   const key = identityKeyFor(send, live);
   if (key !== undefined) {
     const byIdentity = new Map<unknown, unknown>();
     for (const item of live) byIdentity.set((item as Record<string, unknown>)[key], item);
     // A send element whose identity AWS does not report yields `undefined`
-    // here, which is the "no live value" arm — the same answer as a missing key.
-    return send.map((item) => byIdentity.get((item as Record<string, unknown>)[key]));
+    // here, which is the "no live value" arm — the same answer as a missing
+    // key. An identity value that is ITSELF a wildcard (a token, the mask) is
+    // refused EXPLICITLY rather than trusted to miss: equality pairing on it
+    // is a guess, and the miss is not structural — AWS can literally hold
+    // `'***'` as an element's Name (a pre-#2274 shipped mask, or a user
+    // literal), and a live element literally named by the token text is
+    // producible the same way, so without this guard such an element would
+    // "pair" and donate its live leaves (PR #2912 security review).
+    return send.map((item) => {
+      const identity = (item as Record<string, unknown>)[key];
+      return wildcardLeaf(identity) ? undefined : byIdentity.get(identity);
+    });
   }
   // No identity field: the literal frame has to vouch for the order, per LEAF.
   if (live.length !== send.length) return undefined;
-  let maskedSlots = 0;
+  let wildcardSlots = 0;
   let compared = 0;
   for (let i = 0; i < send.length; i++) {
-    if (carriesSecretMask(send[i])) maskedSlots++;
-    const corroborated = corroboratedLeafCount(send[i], live[i]);
+    if (carriesWildcard(send[i])) wildcardSlots++;
+    const corroborated = corroboratedLeafCount(send[i], live[i], wildcardLeaf);
     if (corroborated === undefined) return undefined;
     compared += corroborated;
   }
-  if (maskedSlots > 1 || compared === 0) return undefined;
+  if (wildcardSlots > 1 || compared === 0) return undefined;
   return live;
+}
+
+/** The MASK walk's wildcard: the redaction mask alone. */
+function isMaskLeaf(leaf: unknown): boolean {
+  return leaf === SECRET_MASK;
+}
+
+/**
+ * The TOKEN walk's wildcard: a leaf whose WHOLE value is a `{{resolve:...}}`
+ * token, plus the mask (which that walk never touches but must abstain on —
+ * see {@link pairedLiveItems}). A MIXED leaf (a token embedded in a longer
+ * string) is deliberately NOT a wildcard: the token walk does not preserve it
+ * either, and its live counterpart genuinely differs, so letting it abstain
+ * would make every partially-resolved string an unbounded free pass.
+ */
+function isTokenOrMaskLeaf(leaf: unknown): boolean {
+  if (leaf === SECRET_MASK) return true;
+  return typeof leaf === 'string' && leaf.includes('{{resolve:') && isWholeDynamicReference(leaf);
+}
+
+/**
+ * Deep form of {@link isTokenOrMaskLeaf}, for the one-slot bound.
+ *
+ * Cycle-guarded like its sibling `carriesSecretMask`, via the same inner
+ * closure so the visited set is not a callable parameter (PR #2912 review):
+ * the value walked here is an element of `buildRevertNewProperties`' output,
+ * which carries RAW `readCurrentState` returns — provider-authored, not
+ * JSON-round-tripped — so a self-referential object must answer `false`
+ * rather than throw `RangeError` out of the pairing. The guard bounds the
+ * PAIRING frame only: a cyclic PLAIN element still overflows the enclosing
+ * preserve walk one frame later (pre-existing, caught by `runRevert`'s
+ * per-resource payload-build catch); what this guard keeps alive is the
+ * NON-PLAIN cyclic element, which that walk returns by identity and only
+ * this slot count ever descends.
+ */
+function carriesTokenOrMask(value: unknown): boolean {
+  const seen = new Set<object>();
+  const walkNode = (node: unknown): boolean => {
+    if (isTokenOrMaskLeaf(node)) return true;
+    if (node === null || typeof node !== 'object') return false;
+    if (seen.has(node)) return false;
+    seen.add(node);
+    if (Array.isArray(node)) return node.some(walkNode);
+    return Object.values(node).some(walkNode);
+  };
+  return walkNode(value);
 }
 
 /**
  * How many of `send`'s leaves the live side CORROBORATES, or `undefined` the
  * moment one of them CONTRADICTS it.
  *
- * A mask contributes 0 and is never compared: it is the value being paired FOR,
- * so requiring it to match would refuse every array {@link pairedLiveItems}
- * exists to align. Everything else must agree — including the container SHAPE
- * around it, since a subtree of a different shape is a contradiction rather
- * than an absent comparison.
+ * A WILDCARD leaf (the caller's `wildcardLeaf` — the mask for the mask walk,
+ * a whole token or the mask for the token walk) contributes 0 and is never
+ * compared: it is the value being paired FOR, so requiring it to match would
+ * refuse every array {@link pairedLiveItems} exists to align. Everything else
+ * must agree — including the container SHAPE around it, since a subtree of a
+ * different shape is a contradiction rather than an absent comparison.
  *
  * A COUNT rather than a boolean, because "nothing contradicted me" is exactly
- * the answer an all-masked array gives and it is not evidence. The caller
+ * the answer an all-wildcard array gives and it is not evidence. The caller
  * requires a non-zero count before it reads the order as corroborated.
  */
-function corroboratedLeafCount(send: unknown, live: unknown): number | undefined {
-  if (send === SECRET_MASK) return 0;
+function corroboratedLeafCount(
+  send: unknown,
+  live: unknown,
+  wildcardLeaf: (leaf: unknown) => boolean = isMaskLeaf
+): number | undefined {
+  if (wildcardLeaf(send)) return 0;
   if (Array.isArray(send)) {
     if (!Array.isArray(live) || live.length !== send.length) return undefined;
     let total = 0;
     for (let i = 0; i < send.length; i++) {
-      const corroborated = corroboratedLeafCount(send[i], live[i]);
+      const corroborated = corroboratedLeafCount(send[i], live[i], wildcardLeaf);
       if (corroborated === undefined) return undefined;
       total += corroborated;
     }
@@ -3896,7 +4172,7 @@ function corroboratedLeafCount(send: unknown, live: unknown): number | undefined
     let total = 0;
     for (const k of keys) {
       if (!Object.prototype.hasOwnProperty.call(live, k)) return undefined;
-      const corroborated = corroboratedLeafCount(send[k], live[k]);
+      const corroborated = corroboratedLeafCount(send[k], live[k], wildcardLeaf);
       if (corroborated === undefined) return undefined;
       total += corroborated;
     }
@@ -3929,9 +4205,16 @@ function corroboratedLeafCount(send: unknown, live: unknown): number | undefined
  * revision's reason for not doing so was wrong: it said "the live value is one
  * cdkd never resolved and cannot recognise, so there is no needle to record".
  * The needle is `liveValue -> {@link SECRET_MASK}`, i.e. a MASK-ONLY entry, and
- * the evidence for it is the position — THE MASKED POSITION IS THE PROOF THE
- * VALUE IS SECRET, since nothing but this module's own redaction puts a mask at
- * a leaf. Without the registration this function copies live plaintext into the
+ * the evidence for it is the position — the masked position proves the value
+ * is ONE CDKD CHOSE TO MASK, since nothing but this module's own redaction
+ * puts a mask at a leaf. That is deliberately weaker than "proof the value is
+ * secret" (issue #2881): a #2852 fail-closed mask deliberately over-masks a
+ * value the walk merely could not certify — a normalised `US-EAST-1` as
+ * readily as a credential — so the live value registered here may be an
+ * ordinary literal. The consequence is bounded to over-masking log output,
+ * the safe direction, and registering it is still right: when the position
+ * DOES hold a secret, the registration is what keeps the moved plaintext out
+ * of every reader below. Without it this function copies live plaintext into the
  * send bag and then `collectNarrowedTopLevelKeys` persists that delta into
  * `observedProperties` against a `secrets` map holding no entry for it — the
  * same disclosure the mask exists to prevent, arriving through the mechanism
@@ -3959,18 +4242,24 @@ function corroboratedLeafCount(send: unknown, live: unknown): number | undefined
  *   resource may require.
  *
  * Array descent is NOT positional and does NOT bail on a length mismatch —
- * {@link pairedLiveItems} owns that question, and the sibling's answer (index
- * alignment behind a length test) is wrong by construction on the population
- * that produces these masks. An earlier revision of this paragraph still
- * claimed the sibling's rule after the pairing had changed underneath it.
+ * {@link pairedLiveItems} owns that question, for BOTH walks since issue
+ * #2893 (the sibling's earlier answer, index alignment behind a length test,
+ * was wrong by construction on the population that produces these masks, and
+ * wrong under any reordered readback for the sibling's own tokens). An
+ * earlier revision of this paragraph still claimed the sibling's rule after
+ * the pairing had changed underneath it.
  *
  * `corroborationSource` is the bag the PAIRING EVIDENCE is read from, and it
  * exists because of a round-4 #2884 defect: `runRevert` runs
  * {@link preserveLiveValuesAtUnresolvedTokens} FIRST, and that pass copies
- * `live` values into whole-token leaves BY INDEX — so corroborating `send`
- * (the post-token bag) against that same `live` counts every leaf the token
- * pass just copied as trivially deep-equal at its own index. An unkeyed array
- * whose only non-mask leaves were tokens then satisfied both the
+ * `live` values into whole-token leaves — BY INDEX when the defect was found;
+ * by certified pairing since issue #2893, which does not retire this
+ * parameter, because a copied leaf is trivially deep-equal to `live` at its
+ * own position HOWEVER it was chosen, so corroborating `send` (the post-token
+ * bag) against that same `live` still counts evidence a sibling pass
+ * manufactured rather than evidence AWS's readback supplied. Under the
+ * original index copies, an unkeyed array
+ * whose only non-mask leaves were tokens satisfied both the
  * `compared > 0` floor and the one-mask bound on evidence the sibling pass
  * manufactured, and a reordered `live` wrote another element's secret into the
  * masked slot — the credential-swap class the guards were added for. The same
@@ -4500,11 +4789,88 @@ async function runRevert(
         const unrevertablePaths = outcome.changes
           .map((c) => c.path)
           .filter((path) => (path.split('.', 1)[0] ?? '').includes(SECRET_MASK));
+        // Issue #2855: an unresolved intrinsic OBJECT (`{Fn::Join: ...}`,
+        // `{Ref: ...}`) in the send bag must never reach `provider.update`.
+        // Measured on both routes (see the helper's doc): no provider fails
+        // loudly — the SDK route puts the raw object into the wire call and
+        // the Cloud Control route serializes it into the patch, where a
+        // JSON-string property makes it schema-valid, i.e. silently
+        // accepted.
+        //
+        // Three scopings, each load-bearing:
+        //
+        // - GATED on `observedProperties === undefined` — the #2855
+        //   population by provenance (PR #2912 review). Intrinsic OBJECTS
+        //   reach a revert baseline only through the raw-`properties`
+        //   fallback (`cdkd import`'s warn path writes them there; #2842's
+        //   refusal is what routes the revert to that bag). An
+        //   `observedProperties` baseline is READBACK-derived — cdkd never
+        //   writes an intrinsic object into it — so there a single-key map
+        //   literally named `Ref` / `Fn::*` is a real AWS value (a Lambda
+        //   env var, a config map), and refusing on it would pin the
+        //   resource unrevertable FOREVER, the prescribed remedy re-recording
+        //   the same readback on every deploy. Stated residual (PR #2912
+        //   round 2): a HAND-EDITED `observedProperties` carrying a genuine
+        //   intrinsic ships silently under this gate — outside cdkd's write
+        //   contract (no cdkd writer puts an intrinsic object there), and
+        //   accepted as the cost of not pinning the readback population.
+        // - Scoped to the DRIFTED top-level keys, the only ones the baseline
+        //   sources into the send bag.
+        // - Reading `desiredProperties` — the BASELINE — rather than the
+        //   overlay output (PR #2912 review): `mergeUntemplatedValue`'s
+        //   key-merge FUSES a single-key intrinsic with a plain-record live
+        //   value (`{Ref:'X'}` against live `{A:1}` becomes
+        //   `{A:1, Ref:'X'}`) — multi-key, invisible to the single-key
+        //   predicate in the merged bag. The baseline scan has no such
+        //   dilution and no over-refusal: every overlay arm re-emits every
+        //   baseline path into the send bag (wholesale, key-merge, and both
+        //   tag-list merges), so a flagged leaf always reaches
+        //   `provider.update` in some shape.
+        //
+        // Positioned BEFORE the warnings below as well as before the
+        // preserve passes: a refused resource must not first be promised
+        // "left UNCHANGED by this revert" by the token warning (nothing is
+        // written at all), and no side effect (a registered mask-only
+        // needle) may outlive the refusal.
+        if (stateResource.observedProperties === undefined) {
+          const driftedTopLevelKeys = new Set<string>();
+          for (const change of outcome.changes) {
+            const topLevelKey = change.path.split('.', 1)[0];
+            if (topLevelKey) driftedTopLevelKeys.add(topLevelKey);
+          }
+          const intrinsicObjectPaths = collectUnresolvedIntrinsicObjectPaths(
+            desiredProperties,
+            driftedTopLevelKeys
+          );
+          if (intrinsicObjectPaths.length > 0) {
+            // `totalUnresolvable` rather than `totalFailed`, like the mask
+            // refusal below: no AWS call was attempted, and the cause is a
+            // value cdkd cannot produce — not an update that failed.
+            //
+            // The paths are property KEYS from the baseline, and a key can
+            // carry a secret (the same fact that makes `redactDriftChanges`
+            // mask `change.path`), so they go through `maskSecretsInText`
+            // like every other reader on this path.
+            totalUnresolvable++;
+            logger.error(
+              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `refused to revert ` +
+                `${maskSecretsInText(intrinsicObjectPaths.join(', '), secrets)} — the recorded ` +
+                `baseline holds an unresolved CloudFormation intrinsic there (e.g. Fn::Join, ` +
+                `Ref), which cdkd cannot resolve outside a deploy; writing it would set the ` +
+                `live property to the raw intrinsic object instead of its value. Run ` +
+                `'cdkd deploy' for this stack — the deploy resolves the template and records ` +
+                `a resolvable baseline — then re-run the revert if drift remains.`
+            );
+            return;
+          }
+        }
         if (unrevertablePaths.length > 0) {
           logger.warn(
             `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): cannot ` +
-              `revert ${unrevertablePaths.join(', ')} — cdkd cannot name the property, so it is ` +
-              `left as AWS has it. ROTATE the secret that leaked into the property name.`
+              `revert ${maskSecretsInText(unrevertablePaths.join(', '), secrets)} — cdkd cannot ` +
+              `name the property, so it is left as AWS has it. ROTATE the secret that leaked ` +
+              `into the property name.`
           );
         }
         if (unresolvedTokens.size > 0) {
@@ -4514,8 +4880,10 @@ async function runRevert(
           // cdkd deployed, false where the position was adopted from elsewhere
           // or edited out of band) NOR that the live value is
           // always preserved: `preserveLiveValuesAtUnresolvedTokens` preserves
-          // it only where the property's WHOLE value is the token, and declines
-          // for an embedded one.
+          // it only where the property's WHOLE value is the token AND the
+          // position can be paired against the readback (issue #2893 — a list
+          // element by identity field or its list's corroborated frame), and
+          // declines for an embedded one and an unpairable one.
           logger.warn(
             // Deliberately worded so it cannot be confused with the
             // DETECTION-side warning, which names the same tokens: a test that
@@ -4524,9 +4892,11 @@ async function runRevert(
             `  ! [revert] ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
               `cdkd cannot resolve ` +
               `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — a property ` +
-              `whose WHOLE value is one of these tokens is left UNCHANGED by this revert. Where ` +
-              `a token is EMBEDDED in a longer string, that string is written with the token ` +
-              `literal, exactly as 'cdkd deploy' does, so a resolved value AWS holds there is ` +
+              `whose WHOLE value is one of these tokens is left UNCHANGED by this revert when ` +
+              `cdkd can pair its position against AWS's report (a list element by an identity ` +
+              `field, or by its list's own unchanged literal values). Where it cannot pair, and ` +
+              `where a token is EMBEDDED in a longer string, the token is written literally, ` +
+              `exactly as 'cdkd deploy' does, so a resolved value AWS holds there is ` +
               `overwritten.`
           );
         }
@@ -4570,10 +4940,11 @@ async function runRevert(
           //
           // `overlaid` — the PRE-token bag — is the corroboration source, and
           // passing `tokenPreserved` there instead re-opens the round-4 #2884
-          // hole: the token pass copies live values in BY INDEX, so the
-          // post-token bag corroborates (and identity-pairs) its own indices
-          // against the very `live` it was copied from. See the parameter's
-          // doc on `preserveLiveValuesAtMaskedLeaves`.
+          // hole: the token pass copies live values in (by certified pairing
+          // since issue #2893, by index before it — the distinction does not
+          // matter here), so the post-token bag corroborates (and
+          // identity-pairs) leaves against the very `live` they were copied
+          // from. See the parameter's doc on `preserveLiveValuesAtMaskedLeaves`.
           const maskPreserved = preserveLiveValuesAtMaskedLeaves(
             tokenPreserved,
             outcome.awsProperties,
@@ -4587,27 +4958,37 @@ async function runRevert(
             // call was attempted, and the cause is a value cdkd cannot name —
             // not an update that failed.
             //
-            // THE MESSAGE BELOW IS STALE AND IS ISSUE
-            // [#2881](https://github.com/go-to-k/cdkd/issues/2881)'s TO FIX,
-            // not this arm's. It names a `NoEcho` custom-resource value as THE
-            // cause and prescribes a nonce bump, which was exact while issue
-            // #2274 was the only source of a mask. Issue #2852 added a second —
-            // a readback position the redaction walk could not certify — and
-            // that one is COMMON rather than rare, is not a custom resource,
-            // and a nonce does nothing for it (its remedy is a `cdkd deploy` of
-            // the resource, which recaptures the baseline from a template cdkd
-            // can position against). `export.ts` and `rollback-executor.ts`
-            // carry the same sentence, which is why the fix is one issue across
-            // all three rather than an edit here.
+            // The message names BOTH causes of a mask (issue #2881): a NoEcho
+            // custom-resource value (issue #2274, the only cause while the
+            // message asserted it as THE cause) and a readback position the
+            // #2852 fail-closed walk could not certify — the COMMON one since
+            // that change, for which the old nonce prescription did nothing.
+            // Nothing in the record distinguishes the two (issue #2449's
+            // absent per-attribute flag), so the message must offer both
+            // remedies rather than assert one cause. The sibling messages in
+            // `export.ts` and `rollback-executor.ts` KEEP their NoEcho
+            // attribution deliberately: both read `properties`, and their
+            // wording stays right exactly as long as NoEcho is the only
+            // writer of a mask into `properties` — #2852's fail-closed mask
+            // lands only in `observedProperties`, and issue #2759 (an
+            // `Fn::Base64`-encoded secret registering a mask-only needle) is
+            // OPEN, `resolveBase64` calling no `recordMaskOnlyValue` today.
+            // If #2759 ships, issue #2881's remaining checklist items own
+            // re-widening those messages; do not re-assert the conclusion
+            // here without re-checking that dependency.
             totalUnresolvable++;
             logger.error(
               `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-                `refused to revert ${maskPreserved.unpreservablePaths.join(', ')} — the recorded ` +
-                `baseline holds only the redaction mask there (a NoEcho custom-resource value), ` +
-                `and AWS reports nothing to preserve, so cdkd has no value it may write. ` +
-                `Force that custom resource to update (change one of its properties, e.g. a ` +
-                `nonce) and re-deploy, so its handler runs again and supplies the value — an ` +
-                `ordinary re-deploy leaves it unchanged and the mask stays.`
+                `refused to revert ` +
+                `${maskSecretsInText(maskPreserved.unpreservablePaths.join(', '), secrets)} — the recorded ` +
+                `baseline holds only the redaction mask there, and AWS reports nothing to ` +
+                `preserve, so cdkd has no value it may write. Two causes leave such a mask, and ` +
+                `the record does not say which: a NoEcho custom-resource value (force that ` +
+                `custom resource to update — change one of its properties, e.g. a nonce — and ` +
+                `re-deploy, so its handler runs again and supplies the value), or a readback ` +
+                `position cdkd could not certify when the baseline was captured (deploy a ` +
+                `change to this resource, so the baseline is recaptured against the template). ` +
+                `An ordinary no-change re-deploy clears neither.`
             );
             return;
           }
@@ -5017,9 +5398,10 @@ async function runRevert(
     throw new PartialFailureError(
       `Revert completed with ${totalFailed + totalUnsupported + totalUnresolvable} resource ` +
         `error(s) (${totalFailed} AWS update failure(s), ${totalUnsupported} ` +
-        `update-not-supported, ${totalUnresolvable} whose dynamic reference(s) could not be ` +
-        `resolved — those never reached provider.update; grant the caller ` +
-        `secretsmanager:GetSecretValue / ssm:GetParameter, or fix the reference). ` +
+        `update-not-supported, ${totalUnresolvable} refused or unresolvable — those never ` +
+        `reached provider.update; each per-resource message above names its cause and remedy, ` +
+        `e.g. missing secretsmanager:GetSecretValue / ssm:GetParameter grants for an ` +
+        `unresolvable reference). ` +
         `Re-run 'cdkd drift <stack>' to see the remaining drift, then 'cdkd drift <stack> --revert' to retry.`
     );
   }

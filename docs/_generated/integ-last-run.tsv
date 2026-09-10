@@ -78,8 +78,8 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-05T22:48:21Z	PASS	94	verify.sh	PR2662 gate run; destroy 3 deleted 0 errors, 0 orphans
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-09-05T14:04:48Z	PASS	75	verify.sh	rc 0, real deploy+destroy 2 deleted 0 errors, 0 ECR orphans, state gone
-drift-revert	2026-09-10T08:49:03Z	PASS	168	verify.sh	re-run on the REBASED tree after PR 2797 landed; rc0, 13 deleted 0 errors, orphan log group swept
-drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
+drift-revert	2026-09-10T13:40:26Z	PASS	169	verify.sh	gating PR 2912; rc0, 13 deleted 0 errors, orphan log group swept
+drift-revert-arrays	2026-09-10T13:40:26Z	PASS	192	verify.sh	gating PR 2912 (#2884/#2893 name it); rc0, 19 deleted 0 errors, orphan log group swept
 drift-revert-vpc	2026-09-09T20:48:16Z	PASS	299	verify.sh	broad gate for #2878 (resolver comment); 21 deleted, 0 errors, 0 orphans
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-08-21T18:32:07Z	PASS	164	verify.sh	#2157 live arm (Phase 3e), FINAL run on the merged shape. A THIRD stack carries ONE assembled foreign-ARN SecureString reference and no region-less one -- the other two spell theirs region-LESSLY and would classify ambiguous and refuse FIRST once foreign outputReads is seeded. Seeds the legacy plaintext plus that evidence, requires rc=0 AND 'Scrubbed 1 resource record(s)' AND the record back on its expression. MUTATION-PROBED against real AWS on an earlier build: restoring the pre-2157 refusal reds it with 'exited 2, expected 0'. The deferred-lookup FINDING that a Phase 3f once fenced was withdrawn after 3 review rounds (residual filed as go-to-k/cdkd#2166), so that phase is gone with it. 3 stacks destroyed, 0 errors, 0 orphans, 0 surviving state object versions

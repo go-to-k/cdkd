@@ -2545,7 +2545,11 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // then exits — so the message is on the error logger, not on the throw.
     const reported = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(reported).toContain('0 AWS update failure(s)');
-    expect(reported).toContain('1 whose dynamic reference(s) could not be resolved');
+    // Generic since PR 2912: the bucket also carries the #2855 intrinsic
+    // refusal, whose remedy differs, so the summary defers to the
+    // per-resource messages instead of prescribing the IAM-grant one.
+    expect(reported).toContain('1 refused or unresolvable');
+    expect(reported).toContain('names its cause and remedy');
   });
 
   it('--revert replays an unresolvable token as the LITERAL it was deployed as, and warns', async () => {
@@ -3243,5 +3247,327 @@ describe('cdkd drift --revert — the token pass must not manufacture the mask p
     expect(sent['Blob']).toBe(blob);
     // ...and the mask itself was preserved from the live side as usual.
     expect(sent['Value']).toBe('live-noecho-value-2897');
+  });
+});
+
+// ------------------------------------------------------------- #2855 --
+//
+// A resource refused an `observedProperties` baseline by #2842's throw arm
+// leaves `properties` holding the RAW intrinsic OBJECT `cdkd import`'s warn
+// path wrote. `runRevert` falls back to that bag, `resolveStateSecretExpressions`
+// re-resolves only `{{resolve:...}}` STRINGS, and the measured provider routes
+// all ship the object silently (SDK: raw object into the wire call; Cloud
+// Control: verbatim patch value, JSON-stringified into a schema-VALID string
+// for a JSON property). The revert must therefore REFUSE the resource before
+// `provider.update`.
+describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (issue #2855)', () => {
+  const PARAM_TYPE = 'AWS::SSM::Parameter';
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    infoSpy.mockReset();
+    resetAccountInfoCache();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  /** The #2842-refused record shape: raw intrinsic in `properties`, NO
+   * `observedProperties`. */
+  function rawIntrinsicResource(): ResourceState {
+    return {
+      physicalId: '/app/joined',
+      resourceType: PARAM_TYPE,
+      properties: {
+        Name: '/app/joined',
+        Value: { 'Fn::Join': ['', ['arn:aws:s3:::', 'bucket-from-ref']] },
+        Description: 'from-template',
+      },
+    };
+  }
+
+  it('refuses the resource and never calls provider.update', async () => {
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: rawIntrinsicResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        Value: 'the-live-resolved-value',
+        Description: 'from-template',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert Value');
+    expect(errored).toContain('unresolved CloudFormation intrinsic');
+    // The remedy must name the command that actually heals the record.
+    expect(errored).toContain("cdkd deploy");
+  });
+
+  it('exits 2 — counted unresolvable, not an AWS update failure', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: rawIntrinsicResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        Value: 'the-live-resolved-value',
+        Description: 'from-template',
+      }),
+      update: vi.fn(),
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('a NON-drifted key echoing an intrinsic-shaped value does NOT refuse the revert', async () => {
+    // The scan is scoped to the DRIFTED top-level keys — the only ones the
+    // baseline sources. A value AWS itself reports at a non-drifted key is an
+    // echo: sending it back is a no-op, so refusing on it would block a
+    // legitimate revert of the sibling.
+    const echoed = { 'Fn::Join': ['', ['already-on', '-aws']] };
+    const update = vi.fn().mockResolvedValue({ physicalId: '/app/joined' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/joined',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/joined', Value: echoed, Description: 'from-template' },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        // `Value` matches the record exactly → NOT drifted; only Description
+        // drifts.
+        Value: { 'Fn::Join': ['', ['already-on', '-aws']] },
+        Description: 'edited-in-the-console',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as Record<string, unknown>;
+    expect(sent['Description']).toBe('from-template');
+    // The echoed key rides through from the AWS side — a no-op, not a write
+    // the baseline sourced.
+    expect(sent['Value']).toEqual(echoed);
+  });
+
+  it('refuses even when the overlay MERGE fuses the intrinsic with a live record', async () => {
+    // PR 2912 review, round 1 major: on exactly this population
+    // (`observedProperties` undefined) the overlay routes drifted keys
+    // through `mergeUntemplatedValue`, whose key-merge fuses `{Ref:'X'}`
+    // with a live `{A:1}` into the multi-key `{A:1, Ref:'X'}` — invisible
+    // to a single-key scan of the MERGED bag. The scan therefore reads the
+    // BASELINE, where the intrinsic is still single-key.
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/joined',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/joined', Cfg: { Ref: 'SomeResource' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/joined', Cfg: { A: 1 } }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert Cfg');
+    expect(errored).toContain('unresolved CloudFormation intrinsic');
+  });
+
+  it('MASKS a secret-bearing property NAME in the intrinsic refusal message', async () => {
+    // PR 2912 security review M1: the refused paths are baseline KEYS, and a
+    // key can carry a resolved secret's plaintext. The message must go
+    // through `maskSecretsInText` like every other reader on this path.
+    const update = vi.fn();
+    mockSecretsManagerSend.mockImplementation(async () => ({
+      SecretString: JSON.stringify({ password: SECRET_PLAINTEXT }),
+    }));
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/joined',
+          resourceType: PARAM_TYPE,
+          properties: {
+            Name: '/app/joined',
+            // Resolves into the secrets map, so the masker has a needle...
+            Value: SECRET_EXPR,
+            // ...and the same plaintext leaked into a property NAME above an
+            // intrinsic leaf, so the refusal path contains it.
+            Cfg: { [SECRET_PLAINTEXT]: { Ref: 'SomeResource' } },
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        Value: SECRET_PLAINTEXT,
+        Cfg: { other: 1 },
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert');
+    expect(errored).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it('the refusal fires BEFORE the per-resource warnings — a refused resource is promised nothing', async () => {
+    // PR 2912 round 2 (MEDIUM): the ordering claim in the code was unpinned.
+    // A resource that will be REFUSED must not first emit the masked-path
+    // warning ("cannot revert ... left as AWS has it") or the token warning
+    // ("[revert] ... left UNCHANGED by this revert") — nothing is written at
+    // all, so both promises would be false. This fixture arms BOTH warning
+    // populations on the refused resource: a drifted key whose name carries
+    // the mask, and a surviving unresolvable token in the baseline.
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/joined',
+          resourceType: PARAM_TYPE,
+          properties: {
+            Name: '/app/joined',
+            [`Tok${SECRET_MASK}Key`]: 'baseline-a',
+            Value: { 'Fn::Join': ['', ['arn:aws:s3:::', 'bucket']] },
+            Url: '{{resolve:notaservice:/cdkd/2912/order}}',
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        [`Tok${SECRET_MASK}Key`]: 'edited-b',
+        Value: 'the-live-resolved-value',
+        Url: '{{resolve:notaservice:/cdkd/2912/order}}',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert Value');
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).not.toContain('cannot revert');
+    expect(warned).not.toContain('[revert]');
+  });
+
+  it('an OBSERVED baseline is never scanned — a readback value shaped like an intrinsic reverts normally', async () => {
+    // PR 2912 review: `observedProperties` is READBACK-derived, so a
+    // single-key map literally named `Ref` there is a real AWS value (a
+    // config map, an env var). Refusing on it would pin the resource
+    // unrevertable forever — the prescribed remedy re-records the same
+    // readback. The scan is therefore gated on the raw-`properties`
+    // fallback, the only provenance that can hold a genuine intrinsic.
+    const refShaped = { Ref: 'not-an-intrinsic-here' };
+    const update = vi.fn().mockResolvedValue({ physicalId: '/app/cfg' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/cfg',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/cfg', Cfg: refShaped, Description: 'from-template' },
+          observedProperties: { Name: '/app/cfg', Cfg: refShaped, Description: 'from-template' },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/cfg',
+        // `Cfg` itself drifted: AWS now reports a different single-key
+        // Ref-shaped map, so the drifted subtree the overlay sources from
+        // the baseline IS the intrinsic-shaped value.
+        Cfg: { Ref: 'edited-in-console' },
+        Description: 'from-template',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as Record<string, unknown>;
+    expect(sent['Cfg']).toEqual(refShaped);
+  });
+
+  it('the mask refusal names BOTH causes and BOTH remedies (issue #2881)', async () => {
+    // Since #2852 a mask in the baseline has two causes, and the record does
+    // not say which; a message asserting the NoEcho cause prescribed a nonce
+    // bump that does nothing for the now-common uncertified-position cause.
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/token',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/token', Value: SECRET_MASK, Description: 'from-template' },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Description: 'from-template' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert');
+    // Cause 1 + its remedy, still present for the population it was written
+    // for...
+    expect(errored).toContain('NoEcho custom-resource value');
+    expect(errored).toContain('nonce');
+    // ...cause 2 + its remedy, the one the old message misattributed...
+    expect(errored).toContain('could not certify');
+    expect(errored).toContain('deploy a change to this resource');
+    // ...and no assertion of a SINGLE cause: the old parenthetical claimed the
+    // mask IS a NoEcho value.
+    expect(errored).not.toContain('(a NoEcho custom-resource value)');
   });
 });
