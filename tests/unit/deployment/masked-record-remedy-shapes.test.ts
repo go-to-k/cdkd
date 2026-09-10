@@ -212,6 +212,11 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
 
     expect(remedy.match(/cdkd import/g)?.length).toBe(1);
     expect(remedy).toContain('--resource MyTable=<physicalId>');
+    // Not just de-duplicated — BOTH reads must be on the local side. Without
+    // this line the case passes under a partition that drops the `Ref` spelling
+    // to the foreign arm, since the surviving GetAtt read still emits exactly
+    // one command.
+    expect(remedy).not.toContain('ANOTHER stack');
   });
 
   it('does not advise a local re-import for a Ref whose target is a NESTED STACK', () => {
