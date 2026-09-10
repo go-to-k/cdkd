@@ -3007,6 +3007,14 @@ export class CloudControlProvider implements ResourceProvider {
     resourceType: string,
     physicalId: string
   ): Promise<Record<string, unknown>> {
+    // SANITISED for the same reason as `import()`'s two arms: `resourceType` is
+    // the template's own `Type` and `physicalId` the `--resource` value the
+    // user typed, neither validated by cdkd, and the warn below prints at
+    // DEFAULT verbosity where an ANSI or line-break sequence forges output.
+    // The debug line takes them too — it is one `--verbose` away, and a split
+    // convention inside one method is how the next line gets it wrong.
+    const safeType = displaySafe(resourceType, { asciiOnly: true });
+    const safeId = displaySafe(physicalId, { asciiOnly: true });
     const attributeNames = await getTopLevelReadOnlyProperties(resourceType);
     if (attributeNames === undefined) {
       // ONCE PER TYPE, not once per resource: a whole-stack import of N
@@ -3017,7 +3025,7 @@ export class CloudControlProvider implements ResourceProvider {
       if (!this.warnedUnresolvableSchemaTypes.has(resourceType)) {
         this.warnedUnresolvableSchemaTypes.add(resourceType);
         this.logger.warn(
-          `Could not resolve the CloudFormation schema for ${resourceType}, so ` +
+          `Could not resolve the CloudFormation schema for ${safeType}, so ` +
             `cdkd cannot tell which of its Cloud Control model keys are ` +
             `Fn::GetAtt attributes. Every imported attribute for this type is ` +
             `recorded as "${SECRET_MASK}" rather than risking a credential in ` +
@@ -3040,8 +3048,8 @@ export class CloudControlProvider implements ResourceProvider {
     }
     if (maskedCount > 0 && attributeNames !== undefined) {
       this.logger.debug(
-        `Masked ${maskedCount} non-attribute key(s) out of the ${resourceType} ` +
-          `Cloud Control model for ${physicalId}: they are not in the type's ` +
+        `Masked ${maskedCount} non-attribute key(s) out of the ${safeType} ` +
+          `Cloud Control model for ${safeId}: they are not in the type's ` +
           `readOnlyProperties, so CloudFormation would reject an Fn::GetAtt ` +
           `naming them and cdkd has no evidence they are safe to persist.`
       );

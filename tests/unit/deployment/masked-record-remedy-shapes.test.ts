@@ -250,6 +250,68 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy).not.toContain("CDKD's own read");
   });
 
+  it('does NOT emit the Ref clause for a GetAtt whose ATTRIBUTE merely looks like one', () => {
+    // THE FLOOR FOR THE TAIL ANCHOR (issue #2847 round-2 review, T3). The
+    // comment on `REF_STATE_MASKED_READ` reasons about anchoring at BOTH ends
+    // and only the tail was watched: dropping the `^` stayed green. Un-anchored,
+    // `Foo.Ref Bar (state key X)` — an ordinary `Fn::GetAtt` on a resource with
+    // an oddly-named attribute — still routes its target via
+    // `LOCAL_MASKED_READ` (so the command is right) but makes `hasRefStateRead`
+    // true, printing the "cdkd's own read / does not apply" paragraph over a
+    // read the template CAN stop making. A cap without a floor rewards the
+    // inverse regression.
+    const remedy = remedyFor(['Foo.Ref Bar (state key X)'], {
+      Foo: { resourceType: 'AWS::SQS::Queue' },
+    });
+
+    // The GetAtt arm is unaffected — this is the control half.
+    expect(remedy).toContain('--resource Foo=<physicalId>');
+    // ...but the Ref-specific advice must not appear.
+    expect(remedy).not.toContain("CDKD's own read");
+  });
+
+  // THE SEVENTH SHAPE (issue #2847 round-2 review): a LOCAL target whose
+  // `import()` can never rewrite the bag. `CustomResourceProvider.import`
+  // returns `attributes: {}` unconditionally, and `import.ts` carries the
+  // PRIOR attributes forward whenever the physical id matches — which it does,
+  // since the advised command supplies that very id. So the emitted command
+  // ran cleanly and changed nothing, forever.
+  it.each([['Custom::MyThing'], ['AWS::CloudFormation::CustomResource']])(
+    'withholds the re-import command for a %s target and says why',
+    (resourceType) => {
+      const remedy = remedyFor(['Cr.Secret'], { Cr: { resourceType } });
+
+      expect(remedy).not.toContain('cdkd import');
+      expect(remedy).toContain('Do NOT re-import Cr');
+      // NOT the cross-stack arm: the record IS in this stack, and telling the
+      // user to act on a producer stack would be plainly false.
+      expect(remedy).not.toContain('ANOTHER stack');
+    }
+  );
+
+  it('still emits the command for an ordinary type (scope control for the custom-resource arm)', () => {
+    // The other direction: an exclusion that swallowed every local target
+    // would pass both rows above while removing the only remedy that works.
+    const remedy = remedyFor(['Cr.Secret'], { Cr: { resourceType: 'AWS::SSM::Parameter' } });
+
+    expect(remedy).toContain('--resource Cr=<physicalId>');
+    expect(remedy).not.toContain('Do NOT re-import');
+  });
+
+  it('mixes the arms: a custom resource beside an ordinary local target', () => {
+    const remedy = remedyFor(['Cr.Secret', 'Db.Password'], {
+      Cr: { resourceType: 'Custom::MyThing' },
+      Db: { resourceType: 'AWS::SSM::Parameter' },
+    });
+
+    // The ordinary one keeps its command...
+    expect(remedy).toContain('--resource Db=<physicalId>');
+    // ...the custom resource is named as unclearable, and never as a target.
+    expect(remedy).toContain('Do NOT re-import Cr');
+    expect(remedy).not.toContain('--resource Cr=');
+    expect(remedy.match(/cdkd import/g)?.length).toBe(1);
+  });
+
   it('treats an unrecognised shape as FOREIGN, which never emits a command', () => {
     // Fail-safe direction: a shape the partition does not recognise costs a
     // vaguer message rather than a destructive one. No claim is made that this

@@ -1608,6 +1608,15 @@ export class DeployEngine {
    * misrouted to the foreign arm and the reachable remedy withheld. `resources`
    * is on the context already, so the type is available and exact.
    *
+   * A LOCAL target whose type cannot be repaired by `cdkd import` at all gets
+   * a THIRD arm since the issue #2847 round-2 review — a `Custom::*` /
+   * `AWS::CloudFormation::CustomResource`, whose provider records no
+   * attributes, so the import's same-physical-id carry-over restores the
+   * masked bag and the refusal repeats forever. It is NOT simply excluded from
+   * `isLocal`: that would route it to the FOREIGN arm, which asserts the record
+   * lives in another stack, and for a custom resource in this very template
+   * that is false. Its arm names the resource and withholds the command.
+   *
    * An entry matching NEITHER is treated as foreign, which is the safe
    * direction: the foreign arm names no command, so an unrecognised shape
    * costs a vaguer message rather than a destructive one. (No example is given
@@ -1646,6 +1655,29 @@ export class DeployEngine {
     // in a comment is one that goes stale. Theirs sit at module scope, this one
     // is function-local because this is its only reader.
     const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
+    /**
+     * Types whose `import()` can NEVER clear a mask, so advising a re-import
+     * for them is a guaranteed no-op (issue #2847 round-2 review).
+     *
+     * TRACED, not assumed. `CustomResourceProvider.import` returns
+     * `{ physicalId, attributes: {} }` unconditionally; `import.ts`'s
+     * `rowAttributes` normalises an empty bag to `undefined` and the coalesce
+     * behind it CARRIES FORWARD the prior record's attributes whenever the
+     * physical id matches — which it does, since the command is run with that
+     * very id. So the masked bag is copied back verbatim and the refusal
+     * repeats, forever.
+     *
+     * This is the NoEcho population — arm (1) of the refusal's own message —
+     * which already has the right remedy there (force the custom resource to
+     * update so its handler runs again). It gets its OWN arm rather than being
+     * excluded from `isLocal`: excluding it would route the read to the FOREIGN
+     * arm, which says the record lives in ANOTHER stack, and for a custom
+     * resource sitting in this very template that is simply false. Narrower
+     * than issue #2927, which is about a re-import whose `GetResource` merely
+     * came back empty; here the provider cannot produce attributes at all.
+     */
+    const importCannotClearMask = (type: string | undefined): boolean =>
+      type === 'AWS::CloudFormation::CustomResource' || (type?.startsWith('Custom::') ?? false);
 
     const targetOf = (read: string): string | undefined =>
       (LOCAL_MASKED_READ.exec(read) ?? REF_STATE_MASKED_READ.exec(read))?.[1];
@@ -1656,11 +1688,28 @@ export class DeployEngine {
       // record is the child's; no `--resource` here reaches it.
       return resources[target]?.resourceType !== NESTED_STACK_RESOURCE_TYPE;
     };
+    /** LOCAL, but no `cdkd import` can rewrite it — see above. */
+    const isUnclearableLocal = (read: string): boolean => {
+      const target = targetOf(read);
+      return (
+        target !== undefined &&
+        isLocal(read) &&
+        importCannotClearMask(resources[target]?.resourceType)
+      );
+    };
 
     const localTargets = [
       ...new Set(
         reads
-          .filter(isLocal)
+          .filter((read) => isLocal(read) && !isUnclearableLocal(read))
+          .map(targetOf)
+          .filter((id): id is string => id !== undefined)
+      ),
+    ];
+    const unclearableTargets = [
+      ...new Set(
+        reads
+          .filter(isUnclearableLocal)
           .map(targetOf)
           .filter((id): id is string => id !== undefined)
       ),
@@ -1678,6 +1727,17 @@ export class DeployEngine {
             .map((id) => `'cdkd import <stack> --resource ${id}=<physicalId> --force'`)
             .join(', ') +
           `.`
+      );
+    }
+    if (unclearableTargets.length > 0) {
+      // NAMES THE RESOURCE AND WITHHOLDS THE COMMAND. `CustomResourceProvider.import`
+      // returns no attributes, and the import's same-physical-id carry-over
+      // then restores the masked bag, so the re-import above would run cleanly
+      // and change nothing.
+      parts.push(
+        `Do NOT re-import ${unclearableTargets.join(', ')}: a custom resource's import records ` +
+          `no attributes, so the masked bag is carried forward unchanged and the refusal ` +
+          `repeats. Cause (1) above is the one that applies to it.`
       );
     }
     if (foreignReads.length > 0) {
@@ -7468,6 +7528,59 @@ export class DeployEngine {
       stackName
     );
 
+    /**
+     * Fail an output whose resolution served a value out of a MASKED state
+     * record, instead of publishing what the fall-through produced (issue
+     * [#2847](https://github.com/go-to-k/cdkd/issues/2847), independent
+     * round-2 review — the BLOCKER).
+     *
+     * `refuseRedactedAttributeReads` is called at exactly TWO sites, both
+     * per-resource CREATE / UPDATE. `resolveOutputs` builds its own context
+     * and consulted nothing, so the note this pass records was written and
+     * never read — and once `refStateLookupFromResource` learned to refuse a
+     * masked leaf, "never read" stopped being harmless. A `{"Ref": <record
+     * whose TableName / SelectionId / RepositoryId / AppSync ARN is masked>}`
+     * in `Outputs` publishes the RAW PHYSICAL ID: for a Cloud-Control-routed
+     * `AWS::S3Tables::Table`, a UUID-tailed ARN where the table NAME belongs.
+     *
+     * THE ASYMMETRY IS WHY THIS IS A REFUSAL RATHER THAN A WARNING. Before the
+     * refusal existed this published `'***'`, which the CONSUMER stack rejects
+     * — `reresolveCrossStackValue` tests `carriesSecretMask` and refuses. An
+     * ARN passes that test, so the consumer resolves its `Fn::ImportValue` to
+     * a wrong value and sends it to AWS, with both deploys green. Publishing
+     * nothing is the only outcome that keeps the consumer's guard meaningful.
+     *
+     * PER-OUTPUT BY DELTA, not "is the bag non-empty at the end of the pass":
+     * the bag is per-CONTEXT and shared by every output, so a post-pass test
+     * cannot say WHICH output was affected and would fail siblings that
+     * resolved cleanly. Taking the slice added across one `resolve` names
+     * exactly the reads that output made.
+     *
+     * It routes through {@link handleOutputResolutionFailure} rather than
+     * throwing its own way out, so it inherits that method's whole contract:
+     * warn-and-skip by default (the key is left `undefined`, the previously
+     * persisted outputs are kept), promoted to a deploy error under
+     * `--strict-getatt`, and masked against both secret bags on the way.
+     */
+    const refuseMaskedOutputReads = (outputKey: string, readsBefore: number): void => {
+      const added = context.redactedAttributeReads?.slice(readsBefore) ?? [];
+      if (added.length === 0) return;
+      // `markNonRetryable` for the same reason the sibling refusals carry it:
+      // under `--strict-getatt` this leaves the engine as a thrown error, and
+      // on a nested-stack child it lands in the PARENT's `withRetry`, whose
+      // classifier matches substrings of template-controlled identifiers. No
+      // retry can clear a mask in state.
+      throw markNonRetryable(
+        new Error(
+          `Cannot resolve ${added.join(', ')} for output ${outputKey}: cdkd's recorded state ` +
+            `holds only the redaction mask there, so this output would publish the resource's ` +
+            `raw physical id instead of the value CloudFormation's Ref returns — a wrong value ` +
+            `that a consuming stack's Fn::ImportValue would accept and send to AWS. The output ` +
+            `is not published. ${DeployEngine.maskedRecordRemedyFor(added, context.resources)}`
+        )
+      );
+    };
+
     // The two bags the failure sites below mask against (issue #2728).
     // `buildResolverContext` always sets `recordedSecretValues`, so that `??`
     // is for the TYPE (which leaves it optional) and is never taken; the
@@ -7508,8 +7621,14 @@ export class DeployEngine {
           );
           continue;
         }
+        const readsBefore = context.redactedAttributeReads?.length ?? 0;
         try {
-          outputs[outputKey] = await this.resolver.resolve(output.Value, context);
+          const resolved = await this.resolver.resolve(output.Value, context);
+          // BEFORE the assignment, so a refused output publishes nothing at
+          // all rather than being written and then cleared — `outputs` is the
+          // bag `collectSkippedOutputs` and the state save both read.
+          refuseMaskedOutputReads(outputKey, readsBefore);
+          outputs[outputKey] = resolved;
         } catch (error) {
           this.handleOutputResolutionFailure(
             error,
@@ -7566,6 +7685,13 @@ export class DeployEngine {
         // name through a live VIEW of its pass map instead (issue #2531) — a
         // view that, on its own, could not have ordered the write either.
         const nameSecrets: RecordedSecretValues = new Map();
+        // The alias NAME can carry the same masked `Ref` the value can — an
+        // `Fn::Sub` over one is ordinary — and the spread below shares this
+        // context's `redactedAttributeReads` ARRAY by reference, so a note
+        // taken here lands in the same bag. Guarded for the same reason as the
+        // value: an export whose NAME is built from a raw physical id binds
+        // consumers to a name that is not the one the template describes.
+        const nameReadsBefore = context.redactedAttributeReads?.length ?? 0;
         let exportName: unknown;
         try {
           try {
@@ -7576,6 +7702,7 @@ export class DeployEngine {
                     ...context,
                     recordedSecretValues: nameSecrets,
                   });
+            refuseMaskedOutputReads(outputKey, nameReadsBefore);
           } finally {
             // Merge what the name's resolution learned back into the PASS map.
             //

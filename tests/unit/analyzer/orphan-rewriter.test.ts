@@ -441,7 +441,13 @@ describe('rewriteResourceReferences', () => {
     expect(warned).toContain('cdkd rollback');
     expect(warned).toContain('cdkd export');
     // ...and pin the retracted claim as retracted, so restoring it reds.
-    expect(warned).not.toContain('REFUSE');
+    //
+    // THE PROPOSITION, NOT THE TYPOGRAPHY. This asserted `not.toContain('REFUSE')`
+    // and review measured that green against the IDENTICAL false claim in
+    // sentence case (`…a later 'cdkd deploy' will refuse that resource…`). A
+    // pin that a re-word defeats fences the shouting, not the statement.
+    expect(warned).not.toMatch(/deploy'? will refuse/i);
+    expect(warned).not.toMatch(/deploy will refuse/i);
   });
 
   it('REFUSES a {Ref: orphan} whose recovery key is the redaction mask, without --force', async () => {
@@ -481,10 +487,16 @@ describe('rewriteResourceReferences', () => {
     expect(result.unresolvable[0]?.reason).toContain('TableName');
   });
 
-  it('--force splices the physical id for that Ref, and SAYS it is probably wrong', async () => {
-    // `--force`'s contract is "use a possibly-wrong value rather than stranding
-    // me", so the escape hatch still works — but the warning has to say the
-    // substitute is unrecognised downstream, or the user reads a clean run.
+  it('--force substitutes the MASK, never the physical id, so downstream readers still catch it', async () => {
+    // THE ROUND-2 SECURITY FINDING. `--force`'s contract is "use a
+    // possibly-wrong value rather than stranding me", so the escape hatch
+    // still produces a value — but WHICH value decides whether the damage
+    // stays inside cdkd. The physical id here is a UUID-tailed `TableARN`
+    // where the table NAME belongs; `refuseMaskedReplayBaseline`, `cdkd
+    // export`'s blocker, drift and the deploy refusal all pass it, so every
+    // later deploy would ship it to AWS. `SECRET_MASK` is the value those
+    // four DO recognise, which is what `cacheFallback` — this arm's stated
+    // mirror — already substitutes.
     const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
     warn.mockClear();
     const TABLE_ARN =
@@ -508,11 +520,52 @@ describe('rewriteResourceReferences', () => {
       force: true,
     });
 
-    expect(result.state.resources['Other']?.properties).toEqual({ Value: TABLE_ARN });
+    // POSITIVE: the escape hatch completed and the reference WAS rewritten.
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: SECRET_MASK });
     expect(result.unresolvable).toHaveLength(0);
+    // NEGATIVE, and the one the finding turns on: the physical id must not
+    // appear anywhere in the rewritten record.
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_ARN);
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).toContain('TableName');
-    expect(warned).toContain('WRONG value');
+    expect(warned).toContain('rather than the physical id');
+    // The same truthfulness rule as the cacheFallback arm: no promise that a
+    // deploy will refuse — it reads the DESIRED side, and this lands in the
+    // persisted CURRENT one.
+    expect(warned).not.toMatch(/deploy'? will refuse/i);
+  });
+
+  it('--force warns ONCE per masked orphan however many references it has', async () => {
+    // `cacheFallback` memoizes through `this.cache`; the `Ref` arm has no
+    // cacheable value, so without its own set N references print N identical
+    // warnings over one orphan.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const state = baseState({
+      Tbl: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/eeee',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+      },
+      A: {
+        physicalId: 'a',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+      B: {
+        physicalId: 'b',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' }, Other: { 'Fn::Sub': 'x-${Tbl}' } },
+      },
+    });
+
+    await rewriteResourceReferences(state, ['Tbl'], fakeRegistry(), { force: true });
+
+    const maskWarnings = warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((m) => m.includes('rather than the physical id'));
+    expect(maskWarnings).toHaveLength(1);
   });
 
   it('does NOT refuse an ordinary Ref recovery key (scope control)', async () => {

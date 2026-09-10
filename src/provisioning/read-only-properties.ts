@@ -32,6 +32,19 @@
  * keep working; reducing to the leaf instead would drop the object the walk
  * descends into.
  *
+ * WHAT THAT COSTS, stated because the caller is a redaction and the reduction
+ * WIDENS what survives it: certifying `Endpoint` certifies the WHOLE container,
+ * including sibling leaves the schema does not declare read-only. A type whose
+ * schema marks `/properties/Endpoint/Address` read-only while `Endpoint` also
+ * carries, say, a credential member would keep that member in the clear. The
+ * alternative — reduce to the leaf and mask the rest of the container — was
+ * rejected because it breaks `Fn::GetAtt Endpoint.Port` for every ordinary
+ * type, which is a certain regression against a hypothetical exposure; a
+ * PATH-precise certification is the real fix and is not what this module does.
+ * The residual sits inside the wider one `import()`'s doc already states (a
+ * read-only attribute that IS a credential is persisted in the clear), so it
+ * adds a shape rather than a new class.
+ *
  * CACHING matches the sibling exactly, including the part that is easy to get
  * wrong: the promise stored in the cache is the ALREADY-RECOVERED one, and what
  * keeps a failure from being cached is the handler DELETING its own entry, not

@@ -512,13 +512,33 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
       // it also appears in the generic sentence that survives deleting this
       // clause, so the assertion pins wording unique to the clause itself.
       expect(refusal).toContain('stop reading it');
-      // THE ACTION ITSELF, now DERIVED from the reads rather than described.
-      // Six review rounds rewrote this remedy and each was wrong for a `reads`
+      // THE ACTION ITSELF, DERIVED from the reads rather than described. Six
+      // review rounds rewrote this remedy and each was wrong for a `reads`
       // shape it had not considered; the per-shape table is
       // `masked-record-remedy-shapes.test.ts`. What this case pins is the
-      // END-TO-END rendering for the local shape: the engine really reaches
-      // that helper and the target id really arrives in the thrown message.
-      expect(refusal).toContain("'cdkd import <stack> --resource Cr=<physicalId> --force'");
+      // END-TO-END rendering: the engine really reaches that helper and the
+      // target id really arrives in the thrown message.
+      //
+      // THIS ASSERTION WAS INVERTED, and the inversion is the point rather
+      // than a rename (issue #2847 round-2 review). It used to require the
+      // `--resource Cr=<physicalId> --force` command for THIS fixture, whose
+      // `Cr` is a `Custom::*` — and that command is a guaranteed no-op there:
+      // `CustomResourceProvider.import` returns `attributes: {}`, so
+      // `import.ts` carries the PREVIOUS masked bag forward on the matching
+      // physical id and the refusal repeats forever. So the old assertion was
+      // pinning wrong advice. Nothing is lost by replacing it: the command's
+      // rendering for a target that CAN be repaired is pinned by the shapes
+      // table, which covers the ordinary-type row this fixture cannot reach.
+      expect(refusal).toContain('Do NOT re-import Cr');
+      expect(refusal).not.toContain('--resource Cr=<physicalId>');
+      // ...and the withholding must not silently route a LOCAL record to the
+      // cross-stack arm, which would assert the record lives elsewhere.
+      //
+      // The needle is the FOREIGN arm's own closing clause, not `ANOTHER
+      // stack`: that phrase also occurs in cause (1)'s prose about a producer
+      // stack's custom resource, so the obvious negative fails on text this
+      // assertion is not about (measured).
+      expect(refusal).not.toContain('act on the producer stack instead');
       // The discriminator for the wrong-resource bug. `Param` is the CONSUMER
       // (this method's `logicalId`); the mask is held by `Cr`, the Fn::GetAtt
       // TARGET. Interpolating the consumer told the user to `--force`-overwrite

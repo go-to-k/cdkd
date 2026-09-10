@@ -424,17 +424,33 @@ export type RefStateLookup = (keys: readonly string[]) => string | undefined;
  * record a redacted attribute read and FAIL the resource
  * (`DeployEngine.refuseRedactedAttributeReads`).
  *
- * **EVERY CALLER MUST PASS ONE.** The optionality is for the TYPE, not a
- * licence: a caller that ignores the notification takes the fall-through
- * silently, and the security review of this fix measured why that is worse
- * than the bug. Before this arm existed the lookup returned the literal
- * `'***'`, which four unchanged readers RECOGNISE (`refuseMaskedReplayBaseline`,
- * `cdkd export`'s blocker, `cdkd drift`'s mask handling, the deploy-time
- * refusal); the fall-through returns a raw physical id, which none of them
- * test. So a silent caller trades a guarded sentinel for an unguarded wrong
- * value. Both callers pass one — `src/analyzer/orphan-rewriter.ts` has no
- * resolver context, so it reports the site as `unresolvable` (or, under
- * `--force`, warns and proceeds) instead of recording a redacted read.
+ * **EVERY CALLER MUST PASS ONE, AND MUST ACT ON IT.** The optionality is for
+ * the TYPE, not a licence, and neither is receiving the callback enough — what
+ * matters is what the caller DOES. A caller that takes the fall-through
+ * silently trades a guarded sentinel for an unguarded wrong value: before this
+ * arm existed the lookup returned the literal `'***'`, which four unchanged
+ * readers RECOGNISE (`refuseMaskedReplayBaseline`, `cdkd export`'s blocker,
+ * `cdkd drift`'s mask handling, the deploy-time refusal), while the raw
+ * physical id is tested by none of them. Two review rounds each found a fresh
+ * instance of exactly that, which is why the rule is stated as a REQUIREMENT
+ * on the caller rather than as advice.
+ *
+ * A caller must land in one of THREE buckets, and anything else is a hole:
+ *
+ * 1. **Consult `redactedAttributeReads` and REFUSE.** `resolveRefValue` →
+ *    `noteRefStateMask`, read by `DeployEngine.refuseRedactedAttributeReads`
+ *    on the CREATE / UPDATE arms and by `resolveOutputs`' own per-output
+ *    check. A context that sets no bag (diff, `cdkd scrub`, `cdkd import`)
+ *    resolves as before and refuses nothing, which is correct: nothing it
+ *    produces reaches AWS.
+ * 2. **Emit `SECRET_MASK` so a downstream reader can recognise it.**
+ *    `src/analyzer/orphan-rewriter.ts`'s `--force` arm, which has no resolver
+ *    context and must still produce a value.
+ * 3. **Provably a display / filter path**, where neither matters.
+ *
+ * Bucket 3 is a claim about a caller, so it is stated per caller and not
+ * assumed: `cdkd orphan` without `--force` reports the site as `unresolvable`
+ * and aborts, which is bucket 1's shape by another name.
  *
  * `onMaskedValue` fires only when the WHOLE lookup came up empty, not at the
  * masked leaf. The scan spans two bags and several alias keys, so a masked
@@ -3543,7 +3559,7 @@ export class IntrinsicFunctionResolver {
     if (resource) {
       const refValue = this.resolveRefValue(logicalId, resource, context);
       // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
-      // not-in-class(refValue): a Ref result, and the enumeration is THREE things, not two -- a physical id from state, a pseudo-parameter value, or a state-recovered Ref key (TableName / SelectionId / RepositoryId / an AppSync ARN) that refStateLookupFromResource read out of this record's own persisted properties / attributes. That third member used to be missing here, and it is the one that could be SECRET_MASK; the lookup now refuses to serve a masked leaf and notes it instead, so no branch of cfnRefValueFromPhysicalId can return one. A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog.
+      // not-in-class(refValue): a Ref result -- everything cfnRefValueFromPhysicalId can return for a RESOURCE, which is FOUR things: the physical id from state; a SEGMENT of it (after-pipe / before-first-pipe / at-index / the name extracted from an ARN); the WAFv2 compound recomposed from that ARN; or a state-recovered Ref key (TableName / SelectionId / RepositoryId / an AppSync ARN) read out of this record's own persisted properties / attributes. The last is the only member that could be SECRET_MASK, and refStateLookupFromResource now refuses to serve a masked leaf and notes it instead, so no branch can return one. A pseudo-parameter value is NOT in this enumeration -- this arm is the RESOURCE branch, and a pseudo-parameter is handled further down (a previous revision listed it here, where it is unreachable). A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog on that branch.
       this.logger.debug(`Resolved Ref to resource: ${logicalId} -> ${refValue}`);
       return refValue;
     }

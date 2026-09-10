@@ -106,6 +106,13 @@ export interface OrphanRewriteOptions {
  */
 class AttributeFetcher {
   private cache = new Map<string, unknown>();
+  /**
+   * Orphans whose masked-`Ref` `--force` warning has already been printed.
+   * Separate from {@link cache}, which memoizes VALUES keyed by
+   * `(orphan, attribute)`; a `Ref` has no attribute and produces no cacheable
+   * value, so sharing that map would need a sentinel key that means "warned".
+   */
+  private warnedMaskedRefs = new Set<string>();
   private logger = getLogger().child('OrphanRewriter');
   private orphans: Record<string, ResourceState>;
   private providerRegistry: ProviderRegistry;
@@ -146,10 +153,24 @@ class AttributeFetcher {
    * for an unguarded wrong value, which is a worse outcome than the one the
    * refusal exists to prevent.
    *
-   * The `--force` semantics MIRROR {@link cacheFallback} deliberately: refuse
-   * by default so the caller records an `unresolvable` site and aborts, and
-   * under `--force` warn and hand back the physical id, because `--force`'s
-   * whole contract is "use a possibly-wrong value rather than stranding me".
+   * ## The `--force` arm SUBSTITUTES THE MASK, not the physical id
+   *
+   * `--force`'s contract is "use a possibly-wrong value rather than stranding
+   * me", so this arm still produces a value — but WHICH value is the whole
+   * finding of the issue #2847 round-2 security review, and an earlier
+   * revision of this method got it backwards by handing back the physical id.
+   * That is the unguarded-wrong-value outcome the paragraph above calls worse
+   * than the bug, reached through the one arm that skips the refusal:
+   * `cdkd orphan --force` over a CC-imported `AWS::S3Tables::Table` whose
+   * `TableName` is masked wrote `arn:aws:s3tables:…/<uuid>` into a sibling's
+   * persisted property, every later deploy shipped that ARN where a table name
+   * belongs, and export / rollback / drift / deploy all passed it.
+   *
+   * {@link SECRET_MASK} keeps the `--force` escape hatch open — the rewrite
+   * completes and the orphan leaves state — while leaving a value those four
+   * readers still catch, so the damage stays inside cdkd instead of reaching
+   * AWS. That is also what {@link cacheFallback}, this method's stated mirror,
+   * already does with a masked cached attribute; the two arms now agree.
    */
   ref(orphanLogicalId: string): { ok: true; value: string } | { ok: false; reason: string } {
     const o = this.orphans[orphanLogicalId];
@@ -176,13 +197,22 @@ class AttributeFetcher {
     if (!this.options.force) {
       return { ok: false, reason };
     }
-    this.logger.warn(
-      `--force: ${reason}. Substituting the raw physical id instead; it is very likely the ` +
-        `WRONG value for this reference, and no later cdkd command recognises it as a ` +
-        `substitute. Re-import the record that holds the mask, or fix the referring property ` +
-        `by hand.`
-    );
-    return { ok: true, value };
+    // ONCE PER ORPHAN, matching `cacheFallback`'s memoization: N references to
+    // one masked orphan otherwise print N identical warnings, and the audit
+    // table already lists every rewritten site.
+    if (!this.warnedMaskedRefs.has(orphanLogicalId)) {
+      this.warnedMaskedRefs.add(orphanLogicalId);
+      this.logger.warn(
+        `--force: ${reason}. Substituting '${SECRET_MASK}' rather than the physical id, which ` +
+          `would be a wrong value no later cdkd command recognises. The referring resource's ` +
+          `state row now records a value the live resource does not have: the next ` +
+          `'cdkd diff' / 'cdkd deploy' reports a spurious change there (a REPLACEMENT if the ` +
+          `property is create-only), 'cdkd rollback' refuses the record as a replay baseline, ` +
+          `and 'cdkd export' blocks it. Re-import the record that holds the mask, or fix the ` +
+          `referring property by hand.`
+      );
+    }
+    return { ok: true, value: SECRET_MASK };
   }
 
   /**
