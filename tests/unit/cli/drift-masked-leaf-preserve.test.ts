@@ -1062,6 +1062,34 @@ describe('preserveLiveValuesAtUnresolvedTokens pairs arrays by identity/corrobor
     expect(args[1]![0]).toBe(TOK_B);
   });
 
+  it('S18: a CYCLIC non-plain element answers the slot count instead of overflowing it', () => {
+    // Pins `carriesTokenOrMask`'s visited set (PR 2912 round 2, LOW). The
+    // guard bounds the PAIRING frame only: a cyclic PLAIN element still
+    // overflows the enclosing walk (pre-existing, caught per-resource in
+    // runRevert), so the covered shape is the NON-PLAIN cyclic element —
+    // the walk returns it by identity and only the slot count descends it.
+    class Node {
+      A = 'x';
+      self: Node;
+      constructor() {
+        this.self = this;
+      }
+    }
+    const cyc = new Node();
+
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { I: [cyc, { A: 'y', U: TOK_A }] },
+      { I: [{ A: 'x' }, { A: 'y', U: 'live-1' }] }
+    );
+
+    const items = out['I'] as unknown[];
+    // Non-plain: returned BY IDENTITY by the walk...
+    expect(items[0]).toBe(cyc);
+    // ...and the pairing refused (the non-plain element contradicts the
+    // frame), so the token is kept rather than copied.
+    expect((items[1] as Record<string, unknown>)['U']).toBe(TOK_A);
+  });
+
   it('S17: a MIXED leaf (embedded token) is a contradiction, never a wildcard', () => {
     // Pins `isTokenOrMaskLeaf`'s `isWholeDynamicReference` conjunct (PR 2912
     // review G2). If a mixed leaf abstained, the sibling element's frame

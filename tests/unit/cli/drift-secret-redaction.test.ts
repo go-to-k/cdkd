@@ -3451,6 +3451,50 @@ describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (i
     expect(errored).not.toContain(SECRET_PLAINTEXT);
   });
 
+  it('the refusal fires BEFORE the per-resource warnings — a refused resource is promised nothing', async () => {
+    // PR 2912 round 2 (MEDIUM): the ordering claim in the code was unpinned.
+    // A resource that will be REFUSED must not first emit the masked-path
+    // warning ("cannot revert ... left as AWS has it") or the token warning
+    // ("[revert] ... left UNCHANGED by this revert") — nothing is written at
+    // all, so both promises would be false. This fixture arms BOTH warning
+    // populations on the refused resource: a drifted key whose name carries
+    // the mask, and a surviving unresolvable token in the baseline.
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/joined',
+          resourceType: PARAM_TYPE,
+          properties: {
+            Name: '/app/joined',
+            [`Tok${SECRET_MASK}Key`]: 'baseline-a',
+            Value: { 'Fn::Join': ['', ['arn:aws:s3:::', 'bucket']] },
+            Url: '{{resolve:notaservice:/cdkd/2912/order}}',
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        [`Tok${SECRET_MASK}Key`]: 'edited-b',
+        Value: 'the-live-resolved-value',
+        Url: '{{resolve:notaservice:/cdkd/2912/order}}',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert Value');
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).not.toContain('cannot revert');
+    expect(warned).not.toContain('[revert]');
+  });
+
   it('an OBSERVED baseline is never scanned — a readback value shaped like an intrinsic reverts normally', async () => {
     // PR 2912 review: `observedProperties` is READBACK-derived, so a
     // single-key map literally named `Ref` there is a real AWS value (a

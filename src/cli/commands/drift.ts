@@ -3757,19 +3757,26 @@ export function preserveLiveValuesAtUnresolvedTokens(
       // PR #2912 blocker 1; see the pairing's doc for both derivations).
       //
       // Self-corroboration needs a bound and "it runs FIRST" is not it (PR
-      // #2912 review): `buildRevertNewProperties` DOES copy live values into
-      // this bag — `{...awsProperties}` for every non-drifted key, and
-      // `mergeUntemplatedValue`'s untemplated paths under
-      // `preserveUntemplated`. The actual bound is structural: every overlay
-      // arm hands UNKEYED arrays over from ONE side wholesale (baseline
-      // wins in the merge's fall-through, AWS wholesale on a non-drifted
-      // key), so the per-leaf frame this pairing corroborates is never a
-      // mixed fabrication — a baseline-sourced frame is genuine evidence,
-      // and a live-sourced frame (non-drifted key) makes every copy a no-op
-      // (send ≡ live there, so a "preserved" token leaf takes the very
-      // token AWS holds). KEYED lists CAN carry live-derived members and
-      // live-derived order out of the merge, and those pair by identity,
-      // which reads no order evidence at all.
+      // #2912 review, both rounds): `buildRevertNewProperties` DOES copy
+      // live values into this bag — `{...awsProperties}` for every
+      // non-drifted key, and `mergeUntemplatedValue`'s untemplated paths
+      // under `preserveUntemplated` — and MIXED-provenance lists exist too:
+      // `mergeUntemplatedValue`'s keyed arm and `mergeTagListForRevert`
+      // both emit lists whose members come from both sides. The actual
+      // bound is INDEX ALIGNMENT, not single-sourcing: those two merges
+      // preserve AWS's own positions (they iterate the AWS list and
+      // substitute by `Key`), and `Key` / `Name` are `ARRAY_IDENTITY_KEYS`,
+      // so a merged list normally takes the identity arm, which reads no
+      // order evidence at all. Identity pairing needs UNIQUENESS on BOTH
+      // sides (`isUniquelyKeyedBy` — AWS can report the same key twice,
+      // as `mergeUntemplatedValue`'s own dedupe records), and the fallback
+      // is still sound: a merged list falling to the frame arm (a
+      // duplicated or empty `Key`) sits at AWS's positions, so a live-copy
+      // frame leaf corroborates only its own index — a no-op copy — while
+      // any shifted alignment CONTRADICTS and refuses. Unkeyed arrays never
+      // mix at all: the merge's fall-through takes them from the baseline
+      // wholesale, and a non-drifted key's array is AWS wholesale, where
+      // every copy is send ≡ live.
       const liveItems = pairedLiveItems(value, live, isTokenOrMaskLeaf, carriesTokenOrMask, true);
       return value.map((item, i) => walk(item, liveItems?.[i]));
     }
@@ -3997,12 +4004,19 @@ export function collectUnresolvedIntrinsicObjectPaths(
  * shared without re-deriving that cost. At `send.length === 1` against
  * `live.length === 1` no evidence question remains OPEN: the position is
  * FORCED (there is no other candidate to mis-pair with), and a positional
- * copy writes each live value back to its own position, so no cross-element
- * donation — the credential-swap class every bound above exists to stop — is
- * even constructible. What the evidence rules still doubt there is only
- * "does this live list correspond to this send list at all", and the two
- * callers answer that doubt oppositely because their refusal residuals
- * invert:
+ * copy writes each live value back to its own position, so no
+ * cross-POSITION donation — the credential-swap class every bound above
+ * exists to stop — is constructible. Cross-IDENTITY donation is: the
+ * bypass sits above the identity arm and its wildcard-identity guard, so
+ * `[{Name:'DB', Value:<token>}]` against a live `[{Name:'OTHER', Value:'X'}]`
+ * ships `{Name:'DB', Value:'X'}` — a value from a differently-identified
+ * element. That is position-neutral (X lands at the exact position AWS
+ * holds it), it is what the pre-#2893 positional descent did for every such
+ * array, and the alternative writes the token over X; the trade is stated
+ * here rather than claimed away. What the evidence rules still doubt at
+ * 1-vs-1 is only "does this live list correspond to this send list at
+ * all", and the two callers answer that doubt oppositely because their
+ * refusal residuals invert:
  *
  * - the MASK walk refuses (`false`, the default): its residual is dropping
  *   the resource, so doubt costs a refusal — the safe direction, and the
@@ -4084,19 +4098,29 @@ function isTokenOrMaskLeaf(leaf: unknown): boolean {
 /**
  * Deep form of {@link isTokenOrMaskLeaf}, for the one-slot bound.
  *
- * Cycle-guarded like its sibling `carriesSecretMask` (PR #2912 review): the
- * value walked here is an element of `buildRevertNewProperties`' output,
+ * Cycle-guarded like its sibling `carriesSecretMask`, via the same inner
+ * closure so the visited set is not a callable parameter (PR #2912 review):
+ * the value walked here is an element of `buildRevertNewProperties`' output,
  * which carries RAW `readCurrentState` returns — provider-authored, not
  * JSON-round-tripped — so a self-referential object must answer `false`
- * rather than throw `RangeError` out of the pairing.
+ * rather than throw `RangeError` out of the pairing. The guard bounds the
+ * PAIRING frame only: a cyclic PLAIN element still overflows the enclosing
+ * preserve walk one frame later (pre-existing, caught by `runRevert`'s
+ * per-resource payload-build catch); what this guard keeps alive is the
+ * NON-PLAIN cyclic element, which that walk returns by identity and only
+ * this slot count ever descends.
  */
-function carriesTokenOrMask(value: unknown, seen = new Set<object>()): boolean {
-  if (isTokenOrMaskLeaf(value)) return true;
-  if (value === null || typeof value !== 'object') return false;
-  if (seen.has(value)) return false;
-  seen.add(value);
-  if (Array.isArray(value)) return value.some((v) => carriesTokenOrMask(v, seen));
-  return Object.values(value).some((v) => carriesTokenOrMask(v, seen));
+function carriesTokenOrMask(value: unknown): boolean {
+  const seen = new Set<object>();
+  const walkNode = (node: unknown): boolean => {
+    if (isTokenOrMaskLeaf(node)) return true;
+    if (node === null || typeof node !== 'object') return false;
+    if (seen.has(node)) return false;
+    seen.add(node);
+    if (Array.isArray(node)) return node.some(walkNode);
+    return Object.values(node).some(walkNode);
+  };
+  return walkNode(value);
 }
 
 /**
@@ -4781,7 +4805,11 @@ async function runRevert(
         //   literally named `Ref` / `Fn::*` is a real AWS value (a Lambda
         //   env var, a config map), and refusing on it would pin the
         //   resource unrevertable FOREVER, the prescribed remedy re-recording
-        //   the same readback on every deploy.
+        //   the same readback on every deploy. Stated residual (PR #2912
+        //   round 2): a HAND-EDITED `observedProperties` carrying a genuine
+        //   intrinsic ships silently under this gate — outside cdkd's write
+        //   contract (no cdkd writer puts an intrinsic object there), and
+        //   accepted as the cost of not pinning the readback population.
         // - Scoped to the DRIFTED top-level keys, the only ones the baseline
         //   sources into the send bag.
         // - Reading `desiredProperties` — the BASELINE — rather than the
