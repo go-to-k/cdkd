@@ -45,12 +45,15 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *      `SmsConfiguration.SnsCallerArn` role, and `SetUserPoolMfaConfig` — which
  *      cdkd issues right after, to apply `EnabledMfas` — re-sends the SAME
  *      block and checks it again. Reported as issue #2901 against a real app,
- *      where cdkd issued `CreateUserPool` 336ms after the role's own CREATE and
- *      AWS answered `InvalidSmsRoleTrustRelationshipException` / "Role does not
- *      have a trust relationship allowing Cognito to assume the role".
+ *      where AWS answered `InvalidSmsRoleTrustRelationshipException` / "Role
+ *      does not have a trust relationship allowing Cognito to assume the role".
+ *      That report's `336ms` is the failed operation's own `durationMs`, NOT
+ *      the gap since the role's CREATE — the payload carries no such gap. The
+ *      window report below is where this repo measures the gap for real.
  *
- *      Authored as an L1 for this fixture's usual reason — control over the
- *      exact property set — and NOT because the L2 would route elsewhere. An
+ *      Authored as an L1 for this fixture's general reason — the exact
+ *      property set is chosen here — and NOT because the L2 would route
+ *      elsewhere. An
  *      earlier revision of this comment claimed it would flip the resource to
  *      Cloud Control; that is FALSE, and the issue itself disproves it: its
  *      `RESOURCE_FAILED` event records `"provisionedBy": "sdk"`, and the
@@ -115,10 +118,16 @@ export class PropagationRaces2Stack extends cdk.Stack {
 
     const ami = ec2.MachineImage.latestAmazonLinux2023().getImage(this).imageId;
 
-    // RAW L1 instance. Emit only cdkd-handled top-level props so the instance
-    // stays on the SDK provider path (an L2 instance emits AvailabilityZone, a
-    // silent-drop that flips the whole resource onto Cloud Control). The
-    // IamInstanceProfile reference to the fresh profile is the race edge.
+    // RAW L1 instance, for this fixture's general reason: the exact property
+    // set is chosen HERE, so every property stays in the type's `handled` set
+    // and the resource cannot drift onto the Cloud Control route (which would
+    // take it off the SDK path these edges exercise). An earlier revision
+    // justified it by claiming an L2 instance emits `AvailabilityZone` as a
+    // SILENT DROP; that is false -- it is in this type's `handled` set. (The
+    // type string is deliberately not spelled out in this comment: the integ
+    // coverage generator scans fixture sources for type literals and would
+    // credit the fixture with `literal` coverage it does not have.) The
+    // `IamInstanceProfile` reference to the fresh profile is the race edge.
     const instance = new ec2.CfnInstance(this, 'Instance', {
       imageId: ami,
       instanceType: 't3.micro',

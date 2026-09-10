@@ -1007,8 +1007,8 @@ describe('isIamPropagationError', () => {
       'Failed to create CloudTrail Trail Trail: Access denied. Verify in IAM that the role has adequate trust relationships.',
       'CloudTrail CW Logs delivery role',
     ],
-    // Cognito UserPool racing the CDK `UserPool` L2's auto-created SMS role,
-    // ~336ms after that role's CREATE (issue #2901). Spelled the way the
+    // Cognito UserPool racing the CDK `UserPool` L2's auto-created SMS role
+    // (issue #2901). Spelled the way the
     // PROVIDER produces it -- `CognitoUserPoolProvider.create`'s catch wraps
     // `error.message` in this sentence -- rather than as the bare AWS text, so
     // the case exercises the string the classifier actually receives.

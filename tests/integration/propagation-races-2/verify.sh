@@ -383,9 +383,10 @@ set +e
 WINDOW_EVENTS=$(fetch_run_events)
 if [ -n "${WINDOW_EVENTS}" ]; then
   echo "${WINDOW_EVENTS}" | jq -r '
-    # Millisecond precision is the whole point -- the reported window was
-    # 336ms, and `fromdateiso8601` alone truncates to whole SECONDS, which
-    # would print 0ms for every gap this measurement exists to see.
+    # Millisecond precision is the whole point: these gaps are sub-second
+    # (0ms on both recorded runs of this edge), and `fromdateiso8601` alone
+    # truncates to whole SECONDS -- it would print 0ms for EVERY gap, including
+    # the large ones that mean the opposite of what 0ms means here.
     def tms:
       capture("(?<base>.*)\\.(?<ms>[0-9]{3})Z$")
       | ((.base + "Z") | fromdateiso8601) * 1000 + (.ms | tonumber);

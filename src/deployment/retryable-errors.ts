@@ -172,11 +172,21 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // `SmsConfiguration.SnsCallerArn` role at call time. CDK's `UserPool` L2
   // auto-creates that SNS-publish role (`...UserPoolsmsRole...`) in the SAME
   // stack whenever SMS MFA / SMS verification is configured, and cdkd's fast
-  // SDK path issues the pool create only ~336ms after the role's own CREATE
-  // (MEASURED, issue #2901 — from the reporter's `cdkd events` JSON), before
-  // IAM has propagated the trust policy to Cognito's assume layer. AWS rejects
-  // it with `InvalidSmsRoleTrustRelationshipException` / "Role does not have a
-  // trust relationship allowing Cognito to assume the role".
+  // SDK path issues the pool create before IAM has propagated the trust policy
+  // to Cognito's assume layer. AWS rejects it with
+  // `InvalidSmsRoleTrustRelationshipException` / "Role does not have a trust
+  // relationship allowing Cognito to assume the role" (issue #2901).
+  //
+  // What the report's payload SUPPORTS is that the create failed in 336ms —
+  // that figure is the event's `durationMs`, the failing operation's own
+  // elapsed time, not the gap since the role's CREATE, which the payload does
+  // not carry. Read correctly it is still the decisive number: 336ms is far
+  // too short for any retry to have happened, which is the single-shot
+  // behaviour below. (The issue's prose reads it as the gap; that inference is
+  // not supported by the JSON beside it, and an earlier revision of this
+  // comment repeated it as MEASURED.) The gap IS measured, on cdkd's own
+  // fixture: `tests/integration/propagation-races-2` reports it per run and
+  // has recorded 0ms twice.
   //
   // NONE of the patterns above matched it — verified exhaustively against all
   // three arrays rather than by eye, since several look like near misses:
@@ -186,9 +196,11 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // anchors on a phrasing AWS does not use here. So `isRetryableTransientError`
   // returned false and the create was SINGLE-SHOT: not a mis-shaped budget, no
   // retry at all. Neither escape applied either — the exception name is not in
-  // `THROTTLING_ERROR_NAMES`, and the failure is HTTP 400 (READ from AWS's API
-  // docs, not measured: the report's `cdkd events` payload carries no status
-  // code, so nothing in this issue could have supplied one).
+  // `THROTTLING_ERROR_NAMES`, and the failure is HTTP 400 (MEASURED against
+  // real AWS, 2026-09-10: the give-up line's classifier bracket reported
+  // `[name=InvalidSmsRoleTrustRelationshipException http=400 requestId=...]`.
+  // The issue's own payload could not have supplied it — a `cdkd events`
+  // record carries no status code).
   //
   // Anchored on the message TAIL rather than on the error CODE, which is not
   // reachable from here: classification is deliberately message-only
@@ -225,6 +237,17 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // 3s, spent on the wrong grid before the outer one starts. (Its own doc
   // comment says "1s -> 2s -> 4s, default 3 attempts"; the 4s step is
   // unreachable at that attempt count.)
+  //
+  // Live A/B against real AWS, 2026-09-10, one variable — a stack whose SMS
+  // role's trust policy deliberately omits Cognito, so AWS returns this
+  // rejection PERMANENTLY and the retry runs to exhaustion:
+  //
+  //   with this entry    -> 70s, "gave up after 26 IAM-propagation retries
+  //                         over 47.75s of propagation backoff"
+  //   with it removed    -> 13s, no retry line at all
+  //
+  // Same template, same AWS message. That is what establishes the DENSE grid
+  // is selected rather than merely that the create is retried at all.
   //
   // Fenced by `tests/unit/deployment/retryable-errors.test.ts` (this message is
   // matched by EXACTLY this entry, plus the near misses named above asserted to

@@ -550,7 +550,7 @@ describe('CognitoUserPoolProvider', () => {
       // partial-pool cleanup. `retryOnTransientControlPlane`'s budget is 3
       // attempts, so an inner retry of this class would show up here as five.
       // This is the count the outer dense grid depends on -- retried inside,
-      // the first ~7s would be spent on the wrong schedule.
+      // the first 3s (two sleeps, 1s + 2s) would be spent on the wrong grid.
       expect(mockSend).toHaveBeenCalledTimes(3);
       expect(mockSend.mock.calls[1][0].constructor.name).toBe('SetUserPoolMfaConfigCommand');
       expect(mockSend.mock.calls[2][0].constructor.name).toBe('DeleteUserPoolCommand');
@@ -634,12 +634,27 @@ describe('CognitoUserPoolProvider', () => {
         expect(error.message).toContain('does not have a trust relationship allowing');
         expect(isIamPropagationError(error.message)).toBe(true);
         expect(isRetryableTransientError(error, error.message)).toBe(true);
+
+        // The rethrow itself, not just the classification. Without this the
+        // case is satisfied by an inner loop that RETRIED and then failed --
+        // widening `retryOnTransientControlPlane`'s classifier would leave it
+        // green while merely making it sleep, which is a flake rather than a
+        // red. Exactly ONE SetUserPoolMfaConfig means the loop declined it.
+        const mfaSends = mockSend.mock.calls.filter(
+          (c: unknown[]) =>
+            (c[0] as { constructor: { name: string } }).constructor.name ===
+            'SetUserPoolMfaConfigCommand'
+        );
+        expect(mfaSends).toHaveLength(1);
       } finally {
         // `vi.clearAllMocks()` does NOT drop an implementation, so leaving this
         // one installed would answer every later test in the file.
         mockSend.mockReset();
       }
-    });
+      // Explicit, because the mutation this case exists to catch makes the
+      // inner loop SLEEP (1s + 2s) rather than return -- under vitest's 5s
+      // default that reads as a timeout flake instead of the assertion above.
+    }, 20_000);
   });
 
   // Issue #609 backfill: UserPoolTier (CreateUserPool/UpdateUserPool direct)
