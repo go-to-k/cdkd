@@ -3374,6 +3374,79 @@ describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (i
     expect(sent['Value']).toEqual(echoed);
   });
 
+  it('refuses even when the overlay MERGE fuses the intrinsic with a live record', async () => {
+    // PR 2912 review, round 1 major: on exactly this population
+    // (`observedProperties` undefined) the overlay routes drifted keys
+    // through `mergeUntemplatedValue`, whose key-merge fuses `{Ref:'X'}`
+    // with a live `{A:1}` into the multi-key `{A:1, Ref:'X'}` — invisible
+    // to a single-key scan of the MERGED bag. The scan therefore reads the
+    // BASELINE, where the intrinsic is still single-key.
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/joined',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/joined', Cfg: { Ref: 'SomeResource' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/joined', Cfg: { A: 1 } }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert Cfg');
+    expect(errored).toContain('unresolved CloudFormation intrinsic');
+  });
+
+  it('MASKS a secret-bearing property NAME in the intrinsic refusal message', async () => {
+    // PR 2912 security review M1: the refused paths are baseline KEYS, and a
+    // key can carry a resolved secret's plaintext. The message must go
+    // through `maskSecretsInText` like every other reader on this path.
+    const update = vi.fn();
+    mockSecretsManagerSend.mockImplementation(async () => ({
+      SecretString: JSON.stringify({ password: SECRET_PLAINTEXT }),
+    }));
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/joined',
+          resourceType: PARAM_TYPE,
+          properties: {
+            Name: '/app/joined',
+            // Resolves into the secrets map, so the masker has a needle...
+            Value: SECRET_EXPR,
+            // ...and the same plaintext leaked into a property NAME above an
+            // intrinsic leaf, so the refusal path contains it.
+            Cfg: { [SECRET_PLAINTEXT]: { Ref: 'SomeResource' } },
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/joined',
+        Value: SECRET_PLAINTEXT,
+        Cfg: { other: 1 },
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toContain('refused to revert');
+    expect(errored).not.toContain(SECRET_PLAINTEXT);
+  });
+
   it('the mask refusal names BOTH causes and BOTH remedies (issue #2881)', async () => {
     // Since #2852 a mask in the baseline has two causes, and the record does
     // not say which; a message asserting the NoEcho cause prescribed a nonce

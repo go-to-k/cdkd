@@ -1060,6 +1060,52 @@ describe('preserveLiveValuesAtUnresolvedTokens pairs arrays by identity/corrobor
 
     expect((out['I'] as Array<Record<string, unknown>>)[0]!['U']).toBe(TOK_A);
   });
+
+  it('S13: an identity value that is ITSELF a token never pairs, even against a literal echo of it', () => {
+    // PR 2912 security review (N1): the identity arm used to rely on the
+    // wildcard identity MISSING the live map, but the miss is not structural —
+    // AWS can literally hold the token text as an element's Name (an echo of a
+    // shipped literal). Pairing on it is a guess, so it is refused explicitly.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Env: [{ Name: TOK_A, Value: TOK_B }] },
+      { Env: [{ Name: TOK_A, Value: 'live-v' }] }
+    );
+
+    const env = out['Env'] as Array<Record<string, unknown>>;
+    expect(env[0]!['Name']).toBe(TOK_A);
+    expect(env[0]!['Value']).toBe(TOK_B);
+  });
+});
+
+describe('pairedLiveItems refuses a WILDCARD identity value in the mask walk too (PR 2912 N1)', () => {
+  it('a masked identity does not pair against a live element literally named ***', () => {
+    // Producible: a pre-#2274 binary shipped the literal mask as a value, or
+    // a user wrote `***` as a Name. Equality pairing on a mask is a guess —
+    // the send-side mask stands for an UNKNOWN name — so the element takes
+    // the no-live-value arm and the resource is refused, never donated
+    // another element's (or a guessed element's) live leaves.
+    const secrets: RecordedSecretValues = new Map();
+
+    const { unpreservablePaths } = preserveLiveValuesAtMaskedLeaves(
+      {
+        Tags: [
+          { Name: SECRET_MASK, Value: SECRET_MASK },
+          { Name: 'b', Value: 'y' },
+        ],
+      },
+      {
+        Tags: [
+          { Name: SECRET_MASK, Value: 'live-secret-n1' },
+          { Name: 'b', Value: 'y' },
+        ],
+      },
+      secrets
+    );
+
+    expect(unpreservablePaths).toEqual(['Tags[0].Name', 'Tags[0].Value']);
+    // Nothing was moved for the guessed element, so nothing is registered.
+    expect(secrets.size).toBe(0);
+  });
 });
 
 // ------------------------------------------------------------- #2855 --
