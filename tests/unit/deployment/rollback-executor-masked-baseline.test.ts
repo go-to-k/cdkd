@@ -111,6 +111,19 @@ describe('rollback replay refuses a REDACTED baseline (issue #2274)', () => {
     expect(result.failures).toBe(1);
     expect(warnLines.join('\n')).toContain('redaction mask');
     expect(warnLines.join('\n')).toContain("cdkd deploy");
+    // TWO POPULATIONS reach this refusal since issue #2847, and naming only
+    // the NoEcho one was a measured defect at the deploy engine's twin before
+    // it was one here. `CloudControlProvider.import` masks every Cloud Control
+    // model key it cannot certify as an attribute, and `cdkd orphan --force`
+    // splices a mask into a REFERRING resource's persisted properties — so a
+    // record with no custom resource anywhere near it lands here, and the
+    // handler-re-run remedy is inapplicable to it.
+    const refusal = warnLines.join('\n');
+    // Cause (1), the NoEcho arm — the pre-existing assertions above.
+    expect(refusal).toContain('NoEcho');
+    // Cause (2), the import / orphan arm, with the command that reaches it.
+    expect(refusal).toContain('cdkd import');
+    expect(refusal).toContain('cloudformation:DescribeType');
   });
 
   it('reverse-replacement (CREATE): does not re-create from the mask', async () => {

@@ -2647,6 +2647,15 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     expect(result.blocked[0]!.logicalId).toBe('Param');
     expect(result.blocked[0]!.reason).toMatch(/redaction mask/);
     expect(result.phase1Imports).toEqual([]);
+    // TWO POPULATIONS reach this blocker since issue #2847, and naming only
+    // the NoEcho one was a measured defect at the deploy engine's twin before
+    // it was one here: `CloudControlProvider.import` masks every model key it
+    // cannot certify, and `cdkd orphan --force` splices a mask into a
+    // REFERRING resource — neither has a custom resource anywhere near it,
+    // and every remedy the original sentence offered was custom-resource-only.
+    expect(result.blocked[0]!.reason).toMatch(/NoEcho/);
+    expect(result.blocked[0]!.reason).toMatch(/cdkd import/);
+    expect(result.blocked[0]!.reason).toMatch(/cloudformation:DescribeType/);
   });
 
   it('does NOT block an ordinary resource whose properties carry no mask', async () => {

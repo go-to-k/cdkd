@@ -387,6 +387,34 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     expect(warned).not.toContain('\nFAKE');
   });
 
+  it('SANITISES the type in the unresolvable-schema warn too', async () => {
+    // The THIRD default-verbosity line in this file, and the one the first
+    // sanitisation pass missed: `maskUncertifiedModelValues`' missing-grant
+    // warn interpolates the template's own `Type`, forty lines below two
+    // sites that already route the same value class through `displaySafe`.
+    // A split convention inside one method is how the next line gets it wrong.
+    const HOSTILE_TYPE = 'AWS::Zz2847::Thing\u001b[31m\nFAKE: import succeeded';
+    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+    wireGetResource({ Id: 'chan-1' });
+
+    await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: HOSTILE_TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    // POSITIVE: the line still identifies the type, so it stays diagnosable.
+    expect(warned).toContain('AWS::Zz2847::Thing');
+    expect(warned).toContain('cloudformation:DescribeType');
+    // NEGATIVE: neither the escape nor the injected newline survives.
+    expect(warned).not.toContain('\u001b');
+    expect(warned).not.toContain('\nFAKE');
+  });
+
   it('REJECTS when the masking step throws, rather than degrading to empty attributes', async () => {
     // THE OTHER UNFENCED CLAIM: `import()`'s inner `try` wraps the `JSON.parse`
     // and NOTHING ELSE. It used to span the masking call, whose `catch` turned
