@@ -2321,7 +2321,10 @@ cdkd state resources MyStack
 cdkd import MyStack --dry-run
 
 # 3. Adopt. Add --resource for anything reported "not found" — cdkd's
-#    generated physical names are deterministic <StackName>-<LogicalId>.
+#    generated names are deterministic (no random component), but read the
+#    exact name off AWS rather than constructing it: the form is
+#    <StackName>-<LogicalId> only when that FITS the type's length limit,
+#    otherwise cdkd truncates and appends "-" + 8 hex characters.
 cdkd import MyStack --resource MyBucket=mystack-mybucket
 ```
 
@@ -2331,6 +2334,42 @@ Or, to start over, delete the AWS resources through cdkd rather than by hand:
 cdkd state destroy MyStack --yes   # deletes the AWS resources AND the state
 cdkd deploy MyStack
 ```
+
+**If a rollback left a `Retain` resource behind**:
+
+A resource carrying `DeletionPolicy: Retain` stays in AWS when a deploy rolls
+back, and its state record is dropped — CloudFormation does the same, and it is
+what `Retain` is for. The difference is that cdkd's generated names carry no
+random suffix, so the next `cdkd deploy` asks AWS for a name the retained
+resource still holds and fails with an already-exists error; that failure rolls
+back too, so the deploy cannot self-resolve by re-running.
+
+cdkd names this case for you. When the colliding name is one cdkd derived, the
+failure is followed by a line saying so and giving the adoption command:
+
+```text
+ApiGatewayAccountCloudWatchRole: the name AWS reports as taken
+(mystack-apigatewayaccountcl-19184149) is one cdkd DERIVED from the logical id
+... To recover, adopt it back into state instead of re-creating it:
+cdkd import MyStack --resource 'ApiGatewayAccountCloudWatchRole=mystack-apigatewayaccountcl-19184149'
+```
+
+A selective `--resource` import merges into existing state and needs no
+`--force` while the resource is absent from it.
+
+**Confirm the resource is yours before adopting it.** A name cdkd derives is
+predictable, so a collision is not proof the resource is this stack's: for a
+type whose names are globally unique it can belong to another account, and the
+same stack deployed in another region derives the same name — importing that
+would leave two stacks sharing one resource, and destroying either would delete
+it out from under the other.
+
+If the resource is not one you want to keep, delete it in AWS — after
+confirming it holds nothing you need, since `Retain` is what kept it — and
+re-deploy. cdkd says so instead of offering the command in three cases: the
+type's provider implements no import, the resource is in a nested stack (whose
+stack name `cdkd import` cannot resolve), or its name contains characters that
+would make the printed command name something else.
 
 > **Do not delete `state.json` and redeploy.** It is not a reset, and what
 > happens next is not uniform: most types fail the CREATE with an
@@ -2483,7 +2522,12 @@ With no flags, `cdkd import` resolves each physical id from the template's own
 name property and then from a same-named CloudFormation stack. A resource whose
 name CDK left for cdkd to generate has no name in the template, so it is
 reported `not found` — name those explicitly. cdkd's generated names are
-deterministic `<StackName>-<LogicalId>`:
+deterministic (nothing random goes into them), and the form is
+`<StackName>-<LogicalId>` **when that fits the type's length limit**; when it
+does not, cdkd truncates and appends `-` plus 8 hex characters
+(`mystack-averylongconstructna-19184149`). So copy the name AWS reports rather
+than building it by hand — for a long stack or logical id the plain form does
+not exist:
 
 ```bash
 cdkd import MyStack --resource MyBucket=mystack-mybucket

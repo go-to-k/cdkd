@@ -21,6 +21,8 @@ import {
   ResourceUpdateNotSupportedError,
   CdkdError,
 } from '../utils/error-handler.js';
+import { displaySafe } from '../utils/display-safe.js';
+import { shellQuote } from '../state/lock-contention-message.js';
 import {
   isStatefulRecreateTargetForReplace,
   renderStatefulReason,
@@ -75,6 +77,7 @@ import {
   type StateOutputReadEntry,
   type ResourceState,
   type ResourceChange,
+  type ChangeType,
 } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import {
@@ -4009,6 +4012,16 @@ export class DeployEngine {
         )
       );
 
+      // Issue #2901's sibling, #2902: a plain CREATE colliding with a name
+      // cdkd itself derived. Emitted as its own line so the AWS sentence above
+      // stays verbatim, and masked like it — the id is template-derived, so a
+      // stack or logical id built from a resolved secret would otherwise reach
+      // a DEFAULT-level line the one above is masked for.
+      const orphanAdvice = this.orphanedNameCollisionAdvice(change.changeType, logicalId, error);
+      if (orphanAdvice) {
+        this.logger.error(this.maskForResource(logicalId, orphanAdvice));
+      }
+
       // #808 best-effort event: per-resource op failed. Error metadata
       // only — no resource properties.
       this.recordEvent({
@@ -6579,6 +6592,187 @@ export class DeployEngine {
         `Either rename the resource in your CDK code (a fresh name lets the safe ` +
         `create-first order proceed)`,
     };
+  }
+
+  /**
+   * The plain-CREATE sibling of {@link replacementNameOrigin} (issue
+   * [#2902](https://github.com/go-to-k/cdkd/issues/2902)).
+   *
+   * A CREATE that collides on a name cdkd DERIVED is very likely a resource
+   * cdkd itself left behind: `DeletionPolicy: Retain` makes a rollback drop
+   * the state record while leaving the resource in AWS (CloudFormation
+   * semantics, and deliberate), and cdkd's generated names carry no random
+   * component (`generateResourceName`) — so the next deploy asks AWS for
+   * exactly the name the orphan still holds, fails, rolls back again, and
+   * repeats forever. Before this, the user saw only the bare AWS sentence:
+   * nothing named the collision's cause and nothing named a way out, so the
+   * reported recovery was hand-deleting resources through the AWS API.
+   *
+   * CloudFormation never shows this because its generated names carry a
+   * random suffix, so a retained orphan cannot collide with a later deploy.
+   * The breakage is that combination — CFn's retain semantics with cdkd's
+   * deterministic naming — rather than either half, which is why the fix here
+   * is a diagnosis and a remedy rather than a behaviour change. Whether cdkd
+   * should instead RE-ADOPT the retained resource is issue
+   * [#2914](https://github.com/go-to-k/cdkd/issues/2914).
+   *
+   * Returns `undefined` — leaving the pre-existing wording untouched — for
+   * every case it cannot vouch for:
+   *
+   * - not a CREATE. A replacement collision DOES arrive here — the
+   *   `NAMED_REPLACEMENT_COLLISION` throws happen inside `provisionResourceBody`,
+   *   which the caller invokes inside the same `try`, and this method's own
+   *   suite asserts their line was logged. What refuses them is the
+   *   `ProvisioningError` check below (they throw `CdkdError`), so deleting
+   *   EITHER guard alone leaves the suite green. That does not make this one
+   *   dead: a non-CREATE `ProvisioningError` whose message carries
+   *   `already exists` — an UPDATE-path sub-resource conflict — would reach
+   *   the advice without it, and the replacement message's remedy is to
+   *   RENAME, which does not recover an orphan. (An earlier revision of this
+   *   comment claimed the throws "never reach this catch at all". Three
+   *   reviewers disproved it independently.);
+   * - not a name collision;
+   * - no physical id on the error (a create that failed BEFORE the AWS call
+   *   never names one). At RUNTIME this is subsumed by the next guard --
+   *   `looksLikeCdkdGeneratedName` refuses a falsy id on its own first line,
+   *   measured: deleting this check ALONE leaves the suite green, deleting
+   *   both together reds it. It stays for the TYPE narrowing the message
+   *   interpolation needs, and so the refusal is readable here rather than
+   *   inferred from another module;
+   * - a name cdkd did not derive — a user-supplied name may collide with a
+   *   resource of someone else's entirely, and telling that user to
+   *   `cdkd import` it would be advice to adopt what this stack does not own;
+   * - a NESTED-STACK child. Its stack name is `<parent>~<logicalId>`, and CDK's
+   *   own stack-name rule bars `~`, so no Cloud Assembly stack can ever carry
+   *   it — `cdkd import` resolves its target from the assembly and walks
+   *   top-level stacks only, so the command would be unrunnable. That is the
+   *   same #2610 class this method's `canImport` check exists for, one level
+   *   down, so the child takes the delete-only arm.
+   *
+   * **A cdkd-DERIVED name is not proof the resource is THIS stack's**, which
+   * the first revision of this advice assumed. Two ways it is not, both
+   * reachable: a globally-namespaced type (`AWS::S3::Bucket` is the documented
+   * exception — see `.claude/rules/provider-resource-identity.md`) can collide
+   * with ANOTHER ACCOUNT's resource, and because the derivation is predictable
+   * that name can be pre-registered by someone else; and the same stack name
+   * deployed in two REGIONS derives the same name for a global type, so the
+   * collision is with a live resource another state file already owns —
+   * importing it would give two stacks one resource, and either `cdkd destroy`
+   * would then delete it out from under the other. So the message names the
+   * orphan as the LIKELY case rather than the certain one, and asks the reader
+   * to confirm ownership before adopting.
+   */
+  private orphanedNameCollisionAdvice(
+    changeType: ChangeType,
+    logicalId: string,
+    error: unknown
+  ): string | undefined {
+    if (changeType !== 'CREATE') return undefined;
+    if (!(error instanceof ProvisioningError)) return undefined;
+    const physicalId = error.physicalId;
+    if (!physicalId) return undefined;
+    if (!isNameCollisionError(error.message)) return undefined;
+    const stackName = getCurrentStackName();
+    if (!looksLikeCdkdGeneratedName(physicalId, logicalId, stackName)) return undefined;
+    // Implied by the guard above — it returns `false` for a falsy stack name —
+    // but stated so the type system can see it, and so a future change to that
+    // helper cannot make this method read an undefined stack name silently.
+    if (!stackName) return undefined;
+
+    // EVERY interpolation goes through this, the prose included and not only
+    // the pasteable command. An earlier revision sanitised the command
+    // alone while `diagnosis` and `deleteArm` printed the raw value, so a name
+    // carrying a control character (which `looksLikeCdkdGeneratedName` accepts,
+    // since its skeleton strips every non-alphanumeric) reached the terminal
+    // unchanged whichever branch was taken.
+    const safeId = displaySafe(physicalId, { asciiOnly: true });
+    const safeStack = displaySafe(stackName, { asciiOnly: true });
+    const safeLogicalId = displaySafe(logicalId, { asciiOnly: true });
+
+    const diagnosis =
+      `${safeLogicalId}: the name AWS reports as taken (${safeId}) is one cdkd DERIVED from ` +
+      `the logical id, and that derivation has no random component — so this is most likely a ` +
+      `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
+      `DeletionPolicy: Retain in AWS and drops it from state (CloudFormation does the same), ` +
+      `and the next deploy then asks AWS for the name it still holds.`;
+    const deleteArm =
+      `If it is not a resource you want to keep, delete ${safeId} in AWS — after ` +
+      `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`;
+
+    // Only advise `cdkd import` for a type that can actually be imported.
+    // `runImportForResource` SKIPS a provider with no `import` implementation
+    // (`skipped-no-impl`) rather than failing, so a blanket recommendation
+    // would not break anything — it would just send the user through a command
+    // that reports "provider does not implement import (yet)" and leaves them
+    // where they started. Naming a remedy whose precondition the code never
+    // checks is the defect class issue
+    // [#2610](https://github.com/go-to-k/cdkd/issues/2610) swept, so the
+    // precondition is checked here. `getProvider` is the right call and
+    // `getProviderFor` would be wrong: `cdkd import` itself uses `getProvider`,
+    // so this predicts exactly what that command will do.
+    //
+    // The `catch` is unreachable for the type that got us here, and is kept
+    // rather than removed: `provisionResource` already called `getProvider`
+    // with this same type before the create, to read its timeout floor, so a
+    // throwing lookup would have failed the deploy there instead. Keeping a
+    // catch inside a builder that runs on the failure path costs nothing and
+    // means a future caller cannot turn a diagnostic into a second failure --
+    // but it is NOT a checked precondition, and nothing tests it, because
+    // nothing can drive it.
+    let canImport: boolean;
+    try {
+      canImport =
+        typeof this.providerRegistry.getProvider(error.resourceType).import === 'function';
+    } catch {
+      canImport = false;
+    }
+
+    // The command is meant to be PASTED, so it gets this repo's established
+    // sanitize / quote / SUPPRESS treatment (`renderDisableCommand` in
+    // `replacement-protection-advice.ts` is the shape). The two halves answer
+    // DIFFERENT questions, and an earlier revision of this comment got the
+    // second one wrong:
+    //
+    // - `shellQuote` makes the command SAFE TO RUN. It single-quotes anything
+    //   outside a conservative safe set and escapes embedded quotes, so a `$()`
+    //   payload — which `looksLikeCdkdGeneratedName` admits, its skeleton
+    //   stripping every non-alphanumeric before comparing — pastes as an inert
+    //   literal. `=` is outside that set, so the argument is always quoted.
+    // - Comparing the SANITISED value against the original decides whether the
+    //   command would name the RIGHT RESOURCE. It is not about printing: the
+    //   prose above already prints the sanitised name in every branch. When
+    //   sanitising CHANGES the value, the command would carry a name AWS does
+    //   not hold, so it is withheld rather than shipped wrong — the same
+    //   reasoning `renderDisableCommand` records.
+    // All THREE values the command carries, not two. The logical id is
+    // interpolated into it as well, and `looksLikeCdkdGeneratedName` admits a
+    // dirty one for the same reason it admits a dirty name — its skeleton
+    // strips every non-alphanumeric — so a control character there produced a
+    // command naming a logical id no template or state record holds. Measured
+    // against production before this line covered it, which is the same defect
+    // the two other comparisons exist for, one field over.
+    const commandNamesTheRightResource =
+      safeId === physicalId && safeStack === stackName && safeLogicalId === logicalId;
+    const importableTarget = !stackName.includes('~');
+
+    if (!canImport || !commandNamesTheRightResource || !importableTarget) {
+      const why = !canImport
+        ? `cdkd cannot adopt ${displaySafe(error.resourceType, { asciiOnly: true })} back into ` +
+          `state (its provider implements no import)`
+        : !importableTarget
+          ? `this is a nested-stack child, whose stack name cdkd import cannot resolve`
+          : `cdkd cannot render an import command that provably names this resource`;
+      return `${diagnosis} ${why}, so the way forward is to delete it. ${deleteArm}`;
+    }
+
+    return (
+      `${diagnosis} To recover, adopt it back into state instead of re-creating it: ` +
+      `cdkd import ${shellQuote(safeStack)} --resource ${shellQuote(`${safeLogicalId}=${safeId}`)} ` +
+      `(a selective import merges into existing state and needs no --force while the resource ` +
+      `is absent from it). CONFIRM IT IS YOURS FIRST — a name cdkd derives is predictable, so ` +
+      `for a globally-namespaced type it can belong to another account, and the same stack ` +
+      `deployed in another region derives the same name. ${deleteArm}`
+    );
   }
 
   /**
