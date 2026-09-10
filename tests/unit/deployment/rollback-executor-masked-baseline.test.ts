@@ -111,6 +111,49 @@ describe('rollback replay refuses a REDACTED baseline (issue #2274)', () => {
     expect(result.failures).toBe(1);
     expect(warnLines.join('\n')).toContain('redaction mask');
     expect(warnLines.join('\n')).toContain("cdkd deploy");
+    // TWO POPULATIONS reach this refusal since issue #2847, and naming only
+    // the NoEcho one was a measured defect at the deploy engine's twin before
+    // it was one here. This function tests `properties`, while
+    // `CloudControlProvider.import` masks only `attributes`, so arm (2) is
+    // about a mask COPIED here from another record — by `cdkd orphan --force`,
+    // or by `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over an
+    // already-masked value. A record with no custom resource anywhere near it
+    // lands here, and the handler-re-run remedy is inapplicable to it.
+    const refusal = warnLines.join('\n');
+    // Cause (1), the NoEcho arm — the pre-existing assertions above.
+    expect(refusal).toContain('NoEcho');
+    // Cause (2), the import / orphan arm, with the command that reaches it.
+    expect(refusal).toContain('cdkd import');
+    expect(refusal).toContain('cloudformation:DescribeType');
+    // THE PROPOSITION THAT DISTINGUISHES THIS ARM FROM ITS PREDECESSOR (issue
+    // #2847 round-4 review, gap T-G2). The three needles above are carried by
+    // BOTH the current wording and the round-3-REJECTED one, so restoring
+    // "The record was written by 'cdkd import' through the Cloud Control
+    // fallback" was measured GREEN. That claim is false for a `properties`
+    // refusal and sends the user to re-import THIS record. What arm (2) must
+    // say is that the mask was copied here from ANOTHER record.
+    expect(refusal).toContain('SPLICED from a masked record of ANOTHER resource');
+    expect(refusal).toContain("'cdkd orphan --force'");
+    // The `Ref` route, which the narrowed wording omitted: under the opt-in it
+    // is the CANONICAL `cdkd import` route to a masked property, since import
+    // builds a bagless context and persists the mask the lookup serves. Naming
+    // only `Fn::GetAtt` sent a user grepping for one that is not there.
+    expect(refusal).toContain('Fn::GetAtt or a Ref');
+    // NEGATIVE, paired with the positives above so it cannot pass by absence:
+    // the message must not attribute THIS record's own creation to the import
+    // or the Cloud Control fallback. Written as the CLASS of that claim rather
+    // than as the exact retired sentence.
+    // THE FENCE'S BOUND, measured rather than assumed (issue #2847 round-5
+    // review). It catches the RETIRED sentence and near variants -- proved by
+    // a probe that ADDS the wrong claim beside the right one, which reds -- but
+    // a PARAPHRASE evades it: `This row came from a Cloud Control import, so
+    // re-import THIS resource.` beside the correct arm is GREEN. That residual
+    // is inherent to any wording fence and is stated here so a reader does not
+    // take this negative for a total one; what makes the arm hard to get wrong
+    // again is the positive above, which pins the proposition.
+    expect(refusal).not.toMatch(
+      /(record|baseline)[^.]{0,40}(written|adopted)[^.]{0,40}(Cloud Control|cdkd import)/i
+    );
   });
 
   it('reverse-replacement (CREATE): does not re-create from the mask', async () => {

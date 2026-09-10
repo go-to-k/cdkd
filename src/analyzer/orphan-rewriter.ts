@@ -3,6 +3,8 @@ import {
   cfnRefValueFromPhysicalId,
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
+import { carriesSecretMask, SECRET_MASK } from '../deployment/secret-redaction.js';
+import { displaySafe } from '../utils/display-safe.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
@@ -105,6 +107,13 @@ export interface OrphanRewriteOptions {
  */
 class AttributeFetcher {
   private cache = new Map<string, unknown>();
+  /**
+   * Orphans whose masked-`Ref` `--force` warning has already been printed.
+   * Separate from {@link cache}, which memoizes VALUES keyed by
+   * `(orphan, attribute)`; a `Ref` has no attribute and produces no cacheable
+   * value, so sharing that map would need a sentinel key that means "warned".
+   */
+  private warnedMaskedRefs = new Set<string>();
   private logger = getLogger().child('OrphanRewriter');
   private orphans: Record<string, ResourceState>;
   private providerRegistry: ProviderRegistry;
@@ -126,15 +135,103 @@ class AttributeFetcher {
    * is NOT the raw physical id (compound `<parent>|<child>` CC ids, ARN-stored
    * SDK ids like `AWS::Events::Rule`) substitute the same value CloudFormation
    * would have resolved.
+   *
+   * IT CAN FAIL, and the one failure is a REDACTED recovery key (issue
+   * [#2847](https://github.com/go-to-k/cdkd/issues/2847), security review of
+   * the fix round). For a handful of types CFn's `Ref` is a value stored in
+   * `properties` / `attributes` rather than the physical id, and `cdkd import`
+   * now masks any such key it cannot certify is a read-only attribute. The
+   * lookup refuses to serve a mask, so the fall-through emits the RAW PHYSICAL
+   * ID — for a Cloud-Control-routed `AWS::S3Tables::Table` a bare `TableARN`
+   * ending in a UUID, not the table name — and that value would be spliced into
+   * a sibling's persisted properties where NOTHING recognises it.
+   *
+   * That last clause is why this returns a result rather than a string. Before
+   * the lookup learned to refuse a mask it returned the literal `'***'`, which
+   * four unchanged readers DO recognise (`refuseMaskedReplayBaseline`, the
+   * `cdkd export` blocker, drift's mask handling, the deploy-time refusal) — so
+   * silently taking the fall-through here would have traded a guarded sentinel
+   * for an unguarded wrong value, which is a worse outcome than the one the
+   * refusal exists to prevent.
+   *
+   * ## The `--force` arm SUBSTITUTES THE MASK, not the physical id
+   *
+   * `--force`'s contract is "use a possibly-wrong value rather than stranding
+   * me", so this arm still produces a value — but WHICH value is the whole
+   * finding of the issue #2847 round-2 security review, and an earlier
+   * revision of this method got it backwards by handing back the physical id.
+   * That is the unguarded-wrong-value outcome the paragraph above calls worse
+   * than the bug, reached through the one arm that skips the refusal:
+   * `cdkd orphan --force` over a CC-imported `AWS::S3Tables::Table` whose
+   * `TableName` is masked wrote `arn:aws:s3tables:…/<uuid>` into a sibling's
+   * persisted property, every later deploy shipped that ARN where a table name
+   * belongs, and export / rollback / drift / deploy all passed it.
+   *
+   * {@link SECRET_MASK} keeps the `--force` escape hatch open — the rewrite
+   * completes and the orphan leaves state — while leaving a value those four
+   * readers still catch, so the damage stays inside cdkd instead of reaching
+   * AWS. That is also what {@link cacheFallback}, this method's stated mirror,
+   * already does with a masked cached attribute; the two arms now agree.
    */
-  ref(orphanLogicalId: string): string {
+  ref(orphanLogicalId: string): { ok: true; value: string } | { ok: false; reason: string } {
     const o = this.orphans[orphanLogicalId];
     if (!o) {
       throw new Error(
         `Internal: Ref to '${orphanLogicalId}' has no orphan entry — should have been filtered out`
       );
     }
-    return cfnRefValueFromPhysicalId(o.resourceType, o.physicalId, refStateLookupFromResource(o));
+    let maskedKey: string | undefined;
+    const value = cfnRefValueFromPhysicalId(
+      o.resourceType,
+      o.physicalId,
+      refStateLookupFromResource(o, (key) => {
+        maskedKey = key;
+      })
+    );
+    if (maskedKey === undefined) {
+      return { ok: true, value };
+    }
+    // SANITISED as DEFENCE IN DEPTH, and the comment says which because a
+    // reviewer's trace refuted the obvious reason. `reason` does reach
+    // `logger.warn` below AND the unresolvable table, both default verbosity,
+    // and `resourceType` is template text cdkd never validates — but a HOSTILE
+    // one cannot arrive HERE: `onMaskedValue` fires only from inside
+    // `cfnRefValueFromPhysicalId`'s recovery branches, and every one of them
+    // is gated on an exact literal (`=== 'AWS::S3Tables::Table'`,
+    // `=== 'AWS::Backup::BackupSelection'`, `=== 'AWS::CodeCommit::Repository'`,
+    // or a `REF_RETURNS_ARN_FROM_STATE` Map lookup), so by construction this
+    // value is one of a handful of cdkd literals. Kept because it costs
+    // nothing and a future branch matched by PREFIX would make it live; NOT
+    // fenced, because a case proving it would have to fake a reachability that
+    // does not exist.
+    const safeType = displaySafe(o.resourceType, { asciiOnly: true });
+    const reason =
+      `state records the redaction mask ('${SECRET_MASK}') for '${maskedKey}', the key ` +
+      `CloudFormation's Ref returns for ${safeType} — cdkd cannot recover it, and the ` +
+      `physical id is NOT that value`;
+    if (!this.options.force) {
+      return { ok: false, reason };
+    }
+    // ONCE PER ORPHAN, matching `cacheFallback`'s memoization: N references to
+    // one masked orphan otherwise print N identical warnings, and the audit
+    // table already lists every rewritten site. Keyed on the LOGICAL ID, not a
+    // run-wide flag — two masked orphans each get their own line, and the
+    // orphan is NAMED so the two are told apart (`reason` alone renders
+    // identically for two records of the same type and key).
+    if (!this.warnedMaskedRefs.has(orphanLogicalId)) {
+      this.warnedMaskedRefs.add(orphanLogicalId);
+      this.logger.warn(
+        `--force: '${orphanLogicalId}': ${reason}. Substituting '${SECRET_MASK}' rather than ` +
+          `the physical id, which would be a wrong value no later cdkd command recognises. ` +
+          `The referring resource's ` +
+          `state row now records a value the live resource does not have: the next ` +
+          `'cdkd diff' / 'cdkd deploy' reports a spurious change there (a REPLACEMENT if the ` +
+          `property is create-only), 'cdkd rollback' refuses the record as a replay baseline, ` +
+          `and 'cdkd export' blocks it. Re-import the record that holds the mask, or fix the ` +
+          `referring property by hand.`
+      );
+    }
+    return { ok: true, value: SECRET_MASK };
   }
 
   /**
@@ -259,6 +356,52 @@ class AttributeFetcher {
           `written into the referring resource's state VERBATIM — cdkd cannot re-resolve it ` +
           `from here. Re-run without --force once the live attribute is readable, or fix the ` +
           `referring property by hand.`
+      );
+    }
+    // THE SECOND UNRESOLVABLE CLASS, and it is not the same as the one above:
+    // a `{{resolve:...}}` token still NAMES the value, while `SECRET_MASK` is
+    // all cdkd kept of it. Nothing can re-derive it — there is no durable
+    // `NoEcho` flag (issue #2449) and no expression to re-resolve — so the
+    // literal `***` is what gets spliced into the referring resource's
+    // persisted properties, from where the next deploy sends it to AWS (the
+    // #1498 / #1501 corrupted-write class).
+    //
+    // TWO POPULATIONS reach the mask here, and the second is why this arm was
+    // added at all. Long-standing: a custom resource whose handler declared its
+    // response `NoEcho`. New with issue
+    // [#2847](https://github.com/go-to-k/cdkd/issues/2847):
+    // `CloudControlProvider.import` masks every model key it cannot certify as
+    // a read-only attribute, and that class implements NO `getAttribute`, so a
+    // Cloud-Control-routed orphan ALWAYS lands in this fallback — widening the
+    // population from "a NoEcho custom resource" to "every uncertified key of
+    // every CC-imported resource".
+    //
+    // WARN RATHER THAN REFUSE, matching the arm above: `--force`'s whole
+    // contract is "use a possibly-stale cached value", and refusing would
+    // strand a `cdkd orphan --force` with no other way forward.
+    //
+    // WHAT HAPPENS NEXT IS STATED FROM THE READERS, not from the deploy-time
+    // refusal. An earlier revision of this warning promised that "a later
+    // 'cdkd deploy' will REFUSE that resource", and review measured that FALSE:
+    // `DeployEngine.refuseRedactedAttributeReads` reads
+    // `ResolverContext.redactedAttributeReads`, which is filled while resolving
+    // the DESIRED (template) bag, while this splice lands in the referring
+    // resource's PERSISTED properties — the CURRENT side. No deploy-path guard
+    // tests a masked current bag; `rollback-executor.ts` says so outright at
+    // `refuseMaskedReplayBaseline` ("a patch provider comparing `***` against
+    // the desired value simply sees a change"). The readers that DO recognise
+    // it are named instead.
+    if (carriesSecretMask(cached)) {
+      this.logger.warn(
+        `--force: the cached value for '${orphanLogicalId}.${attribute}' is the REDACTION MASK ` +
+          `('${SECRET_MASK}'), not the attribute's value — cdkd redacted it into state and ` +
+          `cannot recover it. It is being written into the referring resource's state VERBATIM, ` +
+          `so that row now records a value the live resource does not have: the next ` +
+          `'cdkd diff' / 'cdkd deploy' reports a spurious change there (a REPLACEMENT if the ` +
+          `property is create-only), 'cdkd rollback' refuses the record as a replay baseline, ` +
+          `and 'cdkd export' blocks it. Re-run without --force once the live attribute is ` +
+          `readable, re-import the record that holds the mask, or fix the referring property ` +
+          `by hand.`
       );
     }
     const cacheKey = `${orphanLogicalId}\0${attribute}`;
@@ -485,16 +628,29 @@ async function rewriteValue(
   if ('Ref' in obj && Object.keys(obj).length === 1 && typeof obj['Ref'] === 'string') {
     const target = obj['Ref'];
     if (orphanSet.has(target)) {
-      const replaced = fetcher.ref(target);
+      const result = fetcher.ref(target);
+      if (!result.ok) {
+        // Same shape as the `Fn::GetAtt` arm below: record the site and leave
+        // the original intrinsic in place. `attribute` is the literal `Ref`,
+        // which the `UnresolvableReference` doc already reserves for this form.
+        unresolvable.push({
+          logicalId: ownerLogicalId,
+          path: pathPrefix,
+          orphanLogicalId: target,
+          attribute: 'Ref',
+          reason: result.reason,
+        });
+        return value;
+      }
       rewrites.push({
         logicalId: ownerLogicalId,
         path: pathPrefix,
         kind: 'ref',
         before: { Ref: target },
-        after: replaced,
+        after: result.value,
         orphanLogicalId: target,
       });
-      return replaced;
+      return result.value;
     }
     return value;
   }
@@ -676,17 +832,32 @@ async function rewriteSubTemplate(
     if (dot < 0) {
       // ${X} — Ref form.
       if (orphanSet.has(inner)) {
-        const replaced = fetcher.ref(inner);
-        rewrites.push({
-          logicalId: ownerLogicalId,
-          path: pathPrefix,
-          kind: 'sub',
-          before: m[0],
-          after: replaced,
-          orphanLogicalId: inner,
-        });
-        out += replaced;
-        didChange = true;
+        const result = fetcher.ref(inner);
+        if (!result.ok) {
+          // Mirrors the `${X.attr}` arm below: preserve the placeholder and
+          // record the site, so a non-`--force` run aborts instead of splicing
+          // a value cdkd knows is wrong.
+          unresolvable.push({
+            logicalId: ownerLogicalId,
+            path: pathPrefix,
+            orphanLogicalId: inner,
+            attribute: 'Ref',
+            reason: result.reason,
+          });
+          out += m[0];
+          hasUnresolvable = true;
+        } else {
+          rewrites.push({
+            logicalId: ownerLogicalId,
+            path: pathPrefix,
+            kind: 'sub',
+            before: m[0],
+            after: result.value,
+            orphanLogicalId: inner,
+          });
+          out += result.value;
+          didChange = true;
+        }
       } else {
         out += m[0];
       }

@@ -431,6 +431,35 @@ describe('AppSyncProvider.import records the child ARN attributes (issue #1728)'
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  // WHY ISSUE #2847 DID NOT MASK THIS ATTRIBUTE — recorded as a MEASUREMENT so
+  // the omission reads as a decision rather than an oversight.
+  //
+  // That issue named `AppSyncProvider.import`'s `{ ApiKey: <apiKeyId> }` as its
+  // second counterexample: for AppSync the key id IS the credential (it is what
+  // a caller sends in `x-api-key`). The obvious remedy — record `***` for the
+  // `ApiKey` attribute — was rejected, because it would have CERTIFIED a site it
+  // does not protect: the same value is a segment of the composite `physicalId`,
+  // which `cdkd import` persists regardless and which no redactor touches. So
+  // masking the attribute would have removed the value from one field of
+  // `state.json` while leaving it in another, cost `Fn::GetAtt ApiKey` its
+  // resolution, and left a comment claiming a protection that was not there.
+  //
+  // This case pins the fact the rejection rests on. It goes RED if the physical
+  // id ever stops carrying the key — which is exactly when masking the attribute
+  // WOULD start buying something, and therefore when this decision should be
+  // revisited.
+  it('carries the API key inside the composite physicalId, not only in attributes (issue #2847)', async () => {
+    const apiKeyId = 'da2-abcdefghij';
+    const result = await provider.import(
+      importInput('AWS::AppSync::ApiKey', `abcd1234|${apiKeyId}`)
+    );
+
+    expect(result?.attributes?.['ApiKey']).toBe(apiKeyId);
+    // The load-bearing half: redacting the attribute alone cannot remove the
+    // credential from the record, because the physical id still spells it.
+    expect(result?.physicalId).toContain(apiKeyId);
+  });
+
   // The recorded value must be usable, not merely present: the pre-#1681
   // spelling would satisfy a "records an ARN" assertion while being exactly the
   // value the resolver refuses.

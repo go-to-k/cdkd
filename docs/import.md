@@ -558,6 +558,34 @@ over Cloud Control API by default — that would issue an
 `aws-cloudcontrol:ListResources` call per type, which is too expensive for
 whole-stack adoption.
 
+**What lands in `attributes`.** Cloud Control's `GetResource` returns the
+resource's whole model — every readable property, not just its attributes — so
+cdkd narrows it to the type's schema-declared `readOnlyProperties`, which is
+what CloudFormation itself allows `Fn::GetAtt` to read. Every other model key is
+recorded as the redaction mask `***` rather than dropped, because a dropped key
+would let a later `Fn::GetAtt` fall back to the physical id and resolve to
+something wrong; a masked one is refused by name instead. This needs
+`cloudformation:DescribeType` (one call per resource type, cached for the run).
+Without that permission cdkd cannot tell an attribute from a property, so it
+masks the whole model and warns. An `Fn::GetAtt` against such a resource then
+fails with a named refusal — and it keeps failing until **that resource** is
+next created or updated by a deploy, which is what rewrites its attributes;
+deploying the stack does not on its own heal a resource nothing changed. The
+direct remedy is to grant `cloudformation:DescribeType` and re-run
+`cdkd import`.
+
+This does not make an imported record safe to treat as non-sensitive, for three
+reasons. A credential that is itself a read-only attribute is still recorded in
+the clear — the CloudFormation registry schema has no general sensitivity
+marking to key on, and `writeOnlyProperties` marks values a read never returns,
+so it says nothing about what `GetResource` hands back. The narrowing applies to
+`attributes` only: the drift baseline in `observedProperties` is the whole model
+by design, since that is what drift compares against. And the narrowing is
+**undone by the next deploy that creates or updates the resource** — the Cloud
+Control create/update path writes the whole model back into `attributes`, so a
+plaintext this import kept out returns then. Treat `state.json` as sensitive
+regardless.
+
 ### Unsupported
 
 Resource types whose cdkd provider does not implement `import()` (or

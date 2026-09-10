@@ -105,6 +105,7 @@ import {
   handlerAuthFailureHint,
 } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 
 describe('CloudControlProvider delete region verification', () => {
@@ -368,6 +369,13 @@ describe('CloudControlProvider import (CC API fallback)', () => {
   beforeEach(() => {
     mockCloudControlSend.mockReset();
     mockCloudControlConfigRegion.mockReset();
+    // Both added by issue #2847's review: the block above this one leaves a
+    // persistent `mockRejectedValue('AccessDenied')` on the CFn mock, and the
+    // read-only-property cache is MODULE-level, so without these a later
+    // import case inherits another block's schema answer — the shape that
+    // makes a case pass for the wrong reason.
+    mockCloudFormationSend.mockReset();
+    clearReadOnlyPropertiesCache();
     provider = new CloudControlProvider();
   });
 
@@ -390,7 +398,22 @@ describe('CloudControlProvider import (CC API fallback)', () => {
     expect(mockCloudControlSend).not.toHaveBeenCalled();
   });
 
-  it('with knownPhysicalId: GetResource succeeds and ResourceModel is parsed into attributes', async () => {
+  // This case asserted that the WHOLE parsed ResourceModel became `attributes`
+  // until issue [#2847](https://github.com/go-to-k/cdkd/issues/2847). It did,
+  // and that was the disclosure: the model is every readable property, so for a
+  // type whose model carries a credential the credential went into `state.json`
+  // in the clear. The model is now narrowed to the type's schema-declared
+  // `readOnlyProperties` — CloudFormation's own definition of an attribute —
+  // with every other key MASKED rather than dropped (dropping degrades
+  // `Fn::GetAtt` to a silently wrong physical-id fallback; see the narrowing
+  // suite, `cloud-control-import-attribute-narrowing.test.ts`, for the full
+  // argument and the fail-closed arm).
+  it('with knownPhysicalId: the ResourceModel is narrowed to the schema-declared attributes', async () => {
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        readOnlyProperties: ['/properties/Arn', '/properties/DkimAttributes'],
+      }),
+    });
     mockCloudControlSend.mockResolvedValueOnce({
       ResourceDescription: {
         Identifier: 'user@example.com',
@@ -407,7 +430,10 @@ describe('CloudControlProvider import (CC API fallback)', () => {
     expect(result).toEqual({
       physicalId: 'user@example.com',
       attributes: {
-        EmailIdentity: 'user@example.com',
+        // `EmailIdentity` is a WRITABLE property, so CloudFormation rejects an
+        // `Fn::GetAtt` naming it — it was never a legitimate attribute. It stays
+        // PRESENT and masked so the resolver's lookup still hits.
+        EmailIdentity: '***',
         DkimAttributes: { SigningEnabled: true },
         Arn: 'arn:aws:ses:us-east-1:123:identity/user@example.com',
       },

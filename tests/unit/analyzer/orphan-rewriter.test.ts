@@ -13,6 +13,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { rewriteResourceReferences } from '../../../src/analyzer/orphan-rewriter.js';
+import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
@@ -390,6 +391,294 @@ describe('rewriteResourceReferences', () => {
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).toContain('UNRESOLVED');
     expect(warned).toContain('Outputs.DbPassword');
+  });
+
+  it('--force WARNS when the cached attribute is the REDACTION MASK (#2847)', async () => {
+    // THE SECOND UNRESOLVABLE CLASS at this seam, and not the same as the one
+    // above: a `{{resolve:...}}` token still NAMES the value, while
+    // `SECRET_MASK` is all cdkd kept of it. Pre-existing for a `NoEcho` custom
+    // resource, but issue #2847 WIDENED the population — `CloudControlProvider`
+    // implements no `getAttribute` at all, so every CC-routed orphan lands in
+    // this fallback, and `import` now masks every model key it cannot certify
+    // as a read-only attribute.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    // No `getAttribute` on the provider — the real CC shape, and the reason
+    // this fallback is now the DEFAULT path for such a resource rather than an
+    // error arm.
+    const state = baseState({
+      Chan: {
+        physicalId: 'chan-1',
+        resourceType: 'AWS::Pinpoint::APNSChannel',
+        properties: {},
+        attributes: { PrivateKey: SECRET_MASK },
+        provisionedBy: 'cc-api',
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Chan', 'PrivateKey'] } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Chan'], fakeRegistry(), {
+      force: true,
+    });
+
+    // Behaviour is deliberately unchanged — `--force` means "use the cached
+    // value" — so the POSITIVE is the warning, not a refusal.
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: SECRET_MASK });
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).toContain('REDACTION MASK');
+    expect(warned).toContain('PrivateKey');
+    // It must say what happens NEXT — and say it TRUTHFULLY. An earlier
+    // revision promised "a later 'cdkd deploy' will REFUSE that resource",
+    // which review measured false: `refuseRedactedAttributeReads` reads the
+    // DESIRED-side resolution bag, while this splice lands in the CURRENT
+    // (persisted) properties, which no deploy-path guard tests. These pin the
+    // readers that really do recognise it.
+    expect(warned).toContain('spurious change');
+    expect(warned).toContain('cdkd rollback');
+    expect(warned).toContain('cdkd export');
+    // ...and pin the retracted claim as retracted, so restoring it reds.
+    //
+    // THE PROPOSITION, NOT THE TYPOGRAPHY. This asserted `not.toContain('REFUSE')`
+    // and review measured that green against the IDENTICAL false claim in
+    // sentence case (`…a later 'cdkd deploy' will refuse that resource…`). A
+    // pin that a re-word defeats fences the shouting, not the statement.
+    expect(warned).not.toMatch(/deploy'? will refuse/i);
+    expect(warned).not.toMatch(/deploy will refuse/i);
+  });
+
+  it('REFUSES a {Ref: orphan} whose recovery key is the redaction mask, without --force', async () => {
+    // The `Ref` path is NOT `--force`-gated and never was, so before this arm
+    // it silently spliced whatever `cfnRefValueFromPhysicalId` returned. Once
+    // the lookup learned to refuse a mask (issue #2847) that became the raw
+    // physical id — an `AWS::S3Tables::Table` ARN ending in a UUID, not the
+    // table name CFn's `Ref` returns — which, unlike the `'***'` it replaced,
+    // NO later cdkd command recognises. So the refusal is the point: a
+    // guarded sentinel must not be traded for an unguarded wrong value.
+    const TABLE_ARN =
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-aaaa';
+    const state = baseState({
+      Tbl: {
+        physicalId: TABLE_ARN,
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+        provisionedBy: 'cc-api',
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
+
+    // The intrinsic is LEFT IN PLACE — neither the mask nor the ARN is spliced.
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: { Ref: 'Tbl' } });
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_ARN);
+    // And the site is reported, which is what makes the command abort.
+    expect(result.unresolvable).toHaveLength(1);
+    expect(result.unresolvable[0]?.orphanLogicalId).toBe('Tbl');
+    expect(result.unresolvable[0]?.attribute).toBe('Ref');
+    expect(result.unresolvable[0]?.reason).toContain('TableName');
+  });
+
+  it('--force substitutes the MASK, never the physical id, so downstream readers still catch it', async () => {
+    // THE ROUND-2 SECURITY FINDING. `--force`'s contract is "use a
+    // possibly-wrong value rather than stranding me", so the escape hatch
+    // still produces a value — but WHICH value decides whether the damage
+    // stays inside cdkd. The physical id here is a UUID-tailed `TableARN`
+    // where the table NAME belongs; `refuseMaskedReplayBaseline`, `cdkd
+    // export`'s blocker, drift and the deploy refusal all pass it, so every
+    // later deploy would ship it to AWS. `SECRET_MASK` is the value those
+    // four DO recognise, which is what `cacheFallback` — this arm's stated
+    // mirror — already substitutes.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const TABLE_ARN =
+      'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-bbbb';
+    const state = baseState({
+      Tbl: {
+        physicalId: TABLE_ARN,
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+        provisionedBy: 'cc-api',
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry(), {
+      force: true,
+    });
+
+    // POSITIVE: the escape hatch completed and the reference WAS rewritten.
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: SECRET_MASK });
+    expect(result.unresolvable).toHaveLength(0);
+    // NEGATIVE, and the one the finding turns on: the physical id must not
+    // appear anywhere in the rewritten record.
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_ARN);
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).toContain('TableName');
+    expect(warned).toContain('rather than the physical id');
+    // The same truthfulness rule as the cacheFallback arm: no promise that a
+    // deploy will refuse — it reads the DESIRED side, and this lands in the
+    // persisted CURRENT one.
+    expect(warned).not.toMatch(/deploy'? will refuse/i);
+  });
+
+  it('--force warns ONCE per masked orphan however many references it has', async () => {
+    // `cacheFallback` memoizes through `this.cache`; the `Ref` arm has no
+    // cacheable value, so without its own set N references print N identical
+    // warnings over one orphan.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const state = baseState({
+      Tbl: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/eeee',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+      },
+      A: {
+        physicalId: 'a',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+      B: {
+        physicalId: 'b',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' }, Other: { 'Fn::Sub': 'x-${Tbl}' } },
+      },
+    });
+
+    await rewriteResourceReferences(state, ['Tbl'], fakeRegistry(), { force: true });
+
+    const maskWarnings = warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((m) => m.includes('rather than the physical id'));
+    expect(maskWarnings).toHaveLength(1);
+  });
+
+  it('warns once PER ORPHAN, not once per run', async () => {
+    // THE KEY, not just the count. With one masked orphan in the fixture,
+    // "one warning per run" and "one per orphan" are indistinguishable — so
+    // keying the set on a constant stayed green while a SECOND masked
+    // orphan's warning vanished, which is the diagnosis the user needs most.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const state = baseState({
+      TblA: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/aaaa1',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+      },
+      TblB: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/bbbb2',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { A: { Ref: 'TblA' }, B: { Ref: 'TblB' } },
+      },
+    });
+
+    await rewriteResourceReferences(state, ['TblA', 'TblB'], fakeRegistry(), { force: true });
+
+    const maskWarnings = warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((m) => m.includes('rather than the physical id'));
+    expect(maskWarnings).toHaveLength(2);
+    // ...and each NAMES its own orphan. Without the id the two lines render
+    // byte-identically (same key, same type), so a reader could not tell which
+    // record to repair — and a count alone would not notice a set keyed on the
+    // RESOURCE TYPE either.
+    expect(maskWarnings.some((m) => m.includes("'TblA'"))).toBe(true);
+    expect(maskWarnings.some((m) => m.includes("'TblB'"))).toBe(true);
+  });
+
+  it('does NOT refuse an ordinary Ref recovery key (scope control)', async () => {
+    // The other direction: a refusal that fires on every `Ref` would pass the
+    // two cases above while breaking `cdkd orphan` for everyone.
+    const state = baseState({
+      Tbl: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/cccc',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: { TableName: 'orders_2847' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { Ref: 'Tbl' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
+
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: 'orders_2847' });
+    expect(result.unresolvable).toHaveLength(0);
+  });
+
+  it('REFUSES an Fn::Sub ${orphan} whose recovery key is the mask, preserving the placeholder', async () => {
+    // The SECOND `ref()` call site. A fix landing on one and not the other is
+    // this repo's named sibling-site failure, so it gets its own row.
+    const state = baseState({
+      Tbl: {
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/dddd',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableName: SECRET_MASK },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::Sub': 'table-${Tbl}-suffix' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
+
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Value: { 'Fn::Sub': 'table-${Tbl}-suffix' },
+    });
+    expect(result.unresolvable).toHaveLength(1);
+    expect(result.unresolvable[0]?.attribute).toBe('Ref');
+  });
+
+  it('--force does NOT emit the MASK warning for an ordinary cached value (scope control)', async () => {
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const state = baseState({
+      Bucket: {
+        physicalId: 'b',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: { Arn: 'arn:aws:s3:::b-cached' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::Lambda::Function',
+        properties: { Arn: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+      },
+    });
+
+    await rewriteResourceReferences(state, ['Bucket'], fakeRegistry(), { force: true });
+
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).toContain('falling back to cached value');
+    expect(warned).not.toContain('REDACTION MASK');
   });
 
   it('--force does NOT emit that warning for an ordinary cached value (scope control)', async () => {

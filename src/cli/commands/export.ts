@@ -3895,13 +3895,38 @@ export async function buildImportPlan(
       blocked.push({
         logicalId,
         resourceType,
+        // TWO POPULATIONS, and this named only the first until issue
+        // [#2847](https://github.com/go-to-k/cdkd/issues/2847)'s round-2
+        // review. ARM (2) was then NARROWED by round 3's trace: this blocker
+        // tests `properties`, while `CloudControlProvider.import` masks only
+        // `attributes`, so "adopted through the Cloud Control fallback" named a
+        // route that cannot put a mask here and sent the user at the wrong
+        // record. The routes that CAN are `cdkd orphan --force` and an import
+        // resolving an `Fn::GetAtt` OR A `Ref` over an already-masked record —
+        // both a mask copied FROM another record, which is the record the
+        // remedy now names. Do not re-collapse it, and do not re-widen it.
+        //
+        // THE `Ref` HALF WAS MISSING until round 4, and it is the route a user
+        // is likelier to hit: `cdkd import` builds a BAGLESS resolver context,
+        // so `refStateLookupFromResource` serves the mask rather than skipping
+        // it, and `resolveImportedProperties` persists `'***'` for a `{Ref: X}`
+        // whose state key is masked exactly as it does for a masked
+        // `Fn::GetAtt`. Naming only `Fn::GetAtt` sent a user grepping their
+        // template for one that is not there.
         reason:
-          "cdkd state holds only the redaction mask ('***') for at least one property — a " +
-          'NoEcho custom-resource value cdkd cannot re-derive. Forcing the custom resource to ' +
-          'update does NOT clear this: the handler supplies the value to the deploy, and cdkd ' +
-          're-masks it on the way into state, so the export still has nothing to declare. Stop ' +
-          'setting NoEcho on that response and re-deploy, then export again; or export this ' +
-          'stack without that resource and adopt it into CloudFormation by hand. ' +
+          "cdkd state holds only the redaction mask ('***') for at least one property, and " +
+          'cdkd cannot re-derive the value. There are two ways a record comes to hold it. ' +
+          '(1) A NoEcho custom-resource value: forcing the custom resource to update does NOT ' +
+          'clear this — the handler supplies the value to the deploy and cdkd re-masks it on ' +
+          'the way into state, so the export still has nothing to declare. Stop setting NoEcho ' +
+          'on that response and re-deploy, then export again. (2) The value was SPLICED from a ' +
+          "masked record of ANOTHER resource — by 'cdkd orphan --force', or by 'cdkd import' " +
+          'resolving an Fn::GetAtt or a Ref over a value the Cloud Control fallback had masked. ' +
+          'Repair the record that HOLDS the mask ' +
+          "('cdkd import <stack> --resource <logicalId>=<physicalId> --force', granting " +
+          'cloudformation:DescribeType first if the import warned that it could not read the ' +
+          'schema), then re-run whichever command wrote this property. Either way you can also ' +
+          'export this stack without that resource and adopt it into CloudFormation by hand. ' +
           'See https://github.com/go-to-k/cdkd/issues/2274.',
       });
       continue;

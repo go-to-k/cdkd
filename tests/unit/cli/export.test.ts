@@ -2647,6 +2647,40 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     expect(result.blocked[0]!.logicalId).toBe('Param');
     expect(result.blocked[0]!.reason).toMatch(/redaction mask/);
     expect(result.phase1Imports).toEqual([]);
+    // TWO POPULATIONS reach this blocker since issue #2847, and naming only
+    // the NoEcho one was a measured defect at the deploy engine's twin before
+    // it was one here. This blocker tests `properties`, while
+    // `CloudControlProvider.import` masks only `attributes`, so arm (2) is
+    // about a mask COPIED here from another record — by `cdkd orphan --force`,
+    // or by `cdkd import` resolving an `Fn::GetAtt` or a `Ref` over an
+    // already-masked value. Neither has a custom resource anywhere near it,
+    // and every remedy the original sentence offered was custom-resource-only.
+    expect(result.blocked[0]!.reason).toMatch(/NoEcho/);
+    expect(result.blocked[0]!.reason).toMatch(/cdkd import/);
+    expect(result.blocked[0]!.reason).toMatch(/cloudformation:DescribeType/);
+    // THE PROPOSITION THAT DISTINGUISHES THIS ARM FROM ITS PREDECESSOR (issue
+    // #2847 round-4 review, gap T-G2). The three needles above are carried by
+    // BOTH the current wording and the round-3-REJECTED one, so restoring
+    // "the record was adopted through the Cloud Control fallback" was measured
+    // GREEN here too. Same fence as the rollback executor's twin, because the
+    // two messages state the same proposition.
+    expect(result.blocked[0]!.reason).toMatch(/SPLICED from a masked record of ANOTHER resource/);
+    expect(result.blocked[0]!.reason).toMatch(/'cdkd orphan --force'/);
+    // The `Ref` route the narrowed wording omitted — under the opt-in it is the
+    // CANONICAL `cdkd import` route to a masked property.
+    expect(result.blocked[0]!.reason).toMatch(/Fn::GetAtt or a Ref/);
+    // NEGATIVE, paired with the positives above so it cannot pass by absence.
+    // THE FENCE'S BOUND, measured rather than assumed (issue #2847 round-5
+    // review). It catches the RETIRED sentence and near variants -- proved by
+    // a probe that ADDS the wrong claim beside the right one, which reds -- but
+    // a PARAPHRASE evades it: `This row came from a Cloud Control import, so
+    // re-import THIS resource.` beside the correct arm is GREEN. That residual
+    // is inherent to any wording fence and is stated here so a reader does not
+    // take this negative for a total one; what makes the arm hard to get wrong
+    // again is the positive above, which pins the proposition.
+    expect(result.blocked[0]!.reason).not.toMatch(
+      /(record|baseline)[^.]{0,40}(written|adopted)[^.]{0,40}(Cloud Control|cdkd import)/i
+    );
   });
 
   it('does NOT block an ordinary resource whose properties carry no mask', async () => {

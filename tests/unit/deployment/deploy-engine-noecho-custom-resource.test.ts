@@ -496,6 +496,54 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
         'NoEcho: true'
       );
       expect(String((failure as Error & { cause?: Error }).cause?.message)).toContain('2449');
+      // TWO populations reach this refusal since issue #2847 — a NoEcho custom
+      // resource and a Cloud-Control-IMPORTED record — and the message must
+      // name both, because the record carries no marker saying which one a
+      // mask came from (#2449). Naming only the first handed the imported user
+      // three remedies that cannot apply. Both halves of the import arm are
+      // pinned: the certified-narrowing case (the attribute simply is not an
+      // attribute) and the unresolvable-schema case (grant the permission),
+      // since a message naming only the second is inert for the first.
+      const refusal = String((failure as Error & { cause?: Error }).cause?.message);
+      expect(refusal).toContain('cdkd import');
+      // The unresolvable-schema half.
+      expect(refusal).toContain('cloudformation:DescribeType');
+      // The certified-narrowing half. `read-only` alone would NOT discriminate:
+      // it also appears in the generic sentence that survives deleting this
+      // clause, so the assertion pins wording unique to the clause itself.
+      expect(refusal).toContain('stop reading it');
+      // THE ACTION ITSELF, DERIVED from the reads rather than described. Six
+      // review rounds rewrote this remedy and each was wrong for a `reads`
+      // shape it had not considered; the per-shape table is
+      // `masked-record-remedy-shapes.test.ts`. What this case pins is the
+      // END-TO-END rendering: the engine really reaches that helper and the
+      // target id really arrives in the thrown message.
+      //
+      // THIS ASSERTION WAS INVERTED, and the inversion is the point rather
+      // than a rename (issue #2847 round-2 review). It used to require the
+      // `--resource Cr=<physicalId> --force` command for THIS fixture, whose
+      // `Cr` is a `Custom::*` — and that command is a guaranteed no-op there:
+      // `CustomResourceProvider.import` returns `attributes: {}`, so
+      // `import.ts` carries the PREVIOUS masked bag forward on the matching
+      // physical id and the refusal repeats forever. So the old assertion was
+      // pinning wrong advice. Nothing is lost by replacing it: the command's
+      // rendering for a target that CAN be repaired is pinned by the shapes
+      // table, which covers the ordinary-type row this fixture cannot reach.
+      expect(refusal).toContain('Do NOT re-import Cr');
+      expect(refusal).not.toContain('--resource Cr=<physicalId>');
+      // ...and the withholding must not silently route a LOCAL record to the
+      // cross-stack arm, which would assert the record lives elsewhere.
+      //
+      // The needle is the FOREIGN arm's own closing clause, not `ANOTHER
+      // stack`: that phrase also occurs in cause (1)'s prose about a producer
+      // stack's custom resource, so the obvious negative fails on text this
+      // assertion is not about (measured).
+      expect(refusal).not.toContain('act on the producer stack instead');
+      // The discriminator for the wrong-resource bug. `Param` is the CONSUMER
+      // (this method's `logicalId`); the mask is held by `Cr`, the Fn::GetAtt
+      // TARGET. Interpolating the consumer told the user to `--force`-overwrite
+      // the wrong record.
+      expect(refusal).not.toContain('--resource Param=');
       // The AWS call never happened — the refusal is BEFORE the provider.
       expect(mockProvider.update).not.toHaveBeenCalled();
     });
