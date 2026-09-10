@@ -183,6 +183,24 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     expect(advice).toContain(`cdkd import ${STACK} --resource '${LOGICAL}=${STACK}-${LOGICAL}'`);
   });
 
+  it('names CloudFormation as the DIFFERENCE, not as doing the same thing', async () => {
+    // The message is printed to someone whose deploy just got stuck. An earlier
+    // revision said "(CloudFormation does the same)" immediately before the
+    // clause where it does NOT -- which reads as "this is normal, cdk deploy
+    // would stick too", and is false for exactly the population that hits this:
+    // a resource the template did not name, for which CFn generates a fresh
+    // random-suffixed name and redeploys clean.
+    //
+    // Fenced because nothing else would notice a reword back. The positive
+    // half is asserted too, so deleting the sentence is not a way to pass.
+    const advice = adviceIn(await attempt());
+
+    expect(advice).toBeDefined();
+    expect(advice).toContain('what differs is the name');
+    expect(advice).toContain('CloudFormation would generate a fresh one');
+    expect(advice).not.toContain('CloudFormation does the same');
+  });
+
   it('leaves the raw AWS sentence intact on its own line', async () => {
     const lines = await attempt();
     // The retry classifiers read the AWS text by SUBSTRING, so the advice must
