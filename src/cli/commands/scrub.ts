@@ -21,6 +21,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ExportIndexStore, type ExportIndexEntry } from '../../state/export-index-store.js';
@@ -3761,357 +3762,382 @@ export async function scrubStack(
     }
 
     const templateResources = stack.template.Resources ?? {};
-    for (const logicalId of Object.keys(state.resources)) {
-      const templateResource = templateResources[logicalId];
-      if (!templateResource?.Properties) continue;
-      const recordedSecretValues = new Map<string, string>();
-      // REGISTERED BEFORE the pin and the pre-pass, not after them (issue #2133
-      // review). The map is filled IN PLACE, so registering it early changes
-      // nothing about what the loop below reads — but `maskSecretsInError` at
-      // the bottom of this function masks against
-      // `allRecordedSecrets(outputSecrets, perResourceSecrets)`, and both
-      // `pinCrossRegionSecrets` and the cross-stack pre-pass can THROW after
-      // recording a foreign plaintext into this map. Registering afterwards
-      // left exactly that window unmasked: the escaping error, and every link
-      // of its cause chain that `formatError` / `util.inspect` walks, could
-      // carry a plaintext the boundary had no needle for.
-      //
-      // Unconditional, where the old registration was gated on
-      // `size > 0`. An empty map is what every reader already substitutes for a
-      // missing entry (`secrets ?? new Map()`), and `allRecordedSecrets`
-      // filters by needle length, so an empty entry contributes nothing.
-      perResourceSecrets.set(logicalId, recordedSecretValues);
-      // Issue #2109: resolve any FOREIGN-region reference in its own region
-      // first, and REFUSE one whose region cannot be established. Deliberately
-      // OUTSIDE the best-effort catch below — a refusal that a `logger.debug`
-      // swallowed would leave the command reporting success over a state file
-      // it never scrubbed, which is the one outcome the issue says must not
-      // survive.
-      const resolveInput = await pinCrossRegionSecrets(
-        templateResource.Properties,
-        stack.stackName,
-        {
-          stackRegion: region,
-          producerRegions,
-          resolvers,
-          recordedSecretValues,
-          origin: `resource '${logicalId}'`,
-        }
-      );
-      const resourceContext = resolverContext(recordedSecretValues);
-      // Issue #2133, and OUTSIDE the best-effort catch below for the same reason
-      // the pin above is: a cross-stack read that failed silently would leave
-      // scrub with no needle for whatever that reference carries, and the
-      // command would report success over a state file it could not examine.
-      // REFUSAL ARMED here, unlike the two OUTPUT sites below, and the
-      // asymmetry is the point: this loop iterates `state.resources`, so the
-      // record EXISTS — the deploy created it and may have persisted the
-      // imported plaintext into it. A suppressed OUTPUT was never written at
-      // all, so a read it needs is one the deploy never made.
-      await resolveCrossStackReads(resolveInput, resourceContext, `resource '${logicalId}'`);
-      try {
-        await resolver.resolve(resolveInput, resourceContext);
-      } catch (err) {
-        // A region-AMBIGUOUS refusal is not best-effort -- see
-        // `isRegionAmbiguousRefusal`.
-        if (isRegionAmbiguousRefusal(err)) throw err;
-        // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
-        // something not in state) still has its own {{resolve:...}} leaves
-        // recorded along the way; leave the rest untouched.
-        //
-        // MASKED, for the reason `unresolvableForeignScrubSecretError` states:
-        // `resolveInput` is a bag `pinCrossRegionSecrets` may already have
-        // SUBSTITUTED a foreign plaintext into, so a resolver error that echoes
-        // what it was handed can carry one — and `recordedSecretValues` holds
-        // exactly the plaintexts this resource's pin recorded. Verbose-only, so
-        // this is the lower-severity sibling of the `Export.Name` warn below,
-        // but it is the same site class.
-        logger.debug(
-          `Resolution of ${logicalId} during scrub was partial: ` +
-            `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
-        );
-      }
-      // The unresolved template bag is this record's POSITION source (#1910).
-      // Captured for EVERY templated resource, not only the secret-bearing ones,
-      // because `scrubResourceRecord` uses it for the `observedProperties` walk
-      // too — and unlike the deploy engine, `cdkd scrub` re-resolves the whole
-      // template every run, so a resource with no recorded secret still has a
-      // usable source in hand.
-      perResourceTemplateProps.set(logicalId, templateResource.Properties);
-    }
-
-    // Outputs are secret-bearing too (a CfnOutput resolving a secret reference),
-    // so re-resolve the template Outputs to record any secret they carry.
     const templateOutputs = stack.template.Outputs ?? {};
-    // The SAME key-space rules the deploy engine applies when it builds this bag
-    // (issue #1919) — shared rather than re-spelled, because this bag only works
-    // if it reproduces the deploy engine's key ownership. Without a guard here
-    // `cdkd scrub` was the WORSE half of that defect: its bag is legacy state
-    // holding plaintext, and the alias write below runs AFTER the owning
-    // output's write in this single loop (the opposite winner from the deploy
-    // engine, where the post-loop pass wins), so a colliding export name
-    // positioned a CORRECT public output by the exporting output's secret
-    // expression and rewrote it into a reference naming a DIFFERENT output's
-    // secret — in the command that exists to remediate the advisory, and
-    // republished from there into the exports index.
-    //
-    // Three rules differ from the engine's on purpose, and all follow from what
-    // scrub can KNOW about state some earlier binary wrote:
-    //
-    // 1. A colliding key gets NO source at all, rather than the owning output's.
-    //    The engine just resolved that key's value and knows whose it is; scrub
-    //    does not, and in the corrupted-legacy case — the case it exists for —
-    //    the alias may well have WON the key. So the key falls to the VALUE
-    //    scan, which reads the plaintext actually stored and maps it back to
-    //    the expression that produced it — as far as a value scan can, which is
-    //    exactly: a WHOLE-value match always, and an EMBEDDED one only for
-    //    secrets at or above `secret-redaction`'s minimum needle length. A
-    //    short secret embedded in a longer stored value therefore survives this
-    //    fallback, and the stack is reported clean; that bound is the value
-    //    scan's, not this rule's, but this rule is what exposes the key to it.
-    //    That is the pre-#1910 behavior, which
-    //    for this key is what the issue calls "weaker but not wrong: it
-    //    returned an expression that at least resolved to the value it
-    //    replaced". The residual it accepts is stated exactly, because an
-    //    earlier revision understated it: when two DISTINCT secrets happen to
-    //    resolve to one plaintext, the value map keeps one of them, so the
-    //    ambiguous key can be persisted holding a reference naming the OTHER
-    //    secret — not merely a lost precision bound. Neither rule dominates
-    //    (position can name the wrong secret on this key too, from the other
-    //    direction), and the test file pins both sides of the trade.
-    //
-    // 2. Collisions are tested against every DECLARED output name, conditions
-    //    ignored, and an INTRINSIC `Export.Name` is best-effort resolved for
-    //    that test alone — see `collectDeclaredOutputNames` for why scrub must
-    //    over-approximate here, and note the legacy population is exactly the
-    //    binaries that DID resolve intrinsic export names into state keys, so a
-    //    literal-only test leaves the original corruption reachable. The
-    //    resolved name is never written as a source key: it is only compared.
-    //
-    // 3. If an intrinsic `Export.Name` cannot be resolved at all, the WHOLE
-    //    outputs source bag is dropped and every output key falls to the value
-    //    scan. The deploy keyed state under a name scrub then cannot reproduce,
-    //    and that name could be ANY output's — so there is no key to mark
-    //    ambiguous and no honest way to keep positioning the rest. A residual
-    //    remains and is documented rather than hidden: a name that resolves
-    //    SUCCESSFULLY but differently from what the deploy resolved (a
-    //    parameterized prefix, since scrub has only template defaults) is
-    //    undetectable from here.
     const declaredOutputNames = collectDeclaredOutputNames(templateOutputs);
-    // Which `state.outputs` KEYS today's template can account for (issue #2005).
-    // Every declared output name, plus every `Export.Name` this run could
-    // FULLY compute — the literal ones AND the intrinsic ones whose best-effort
-    // resolution actually landed. That is still wider than the set that gets a
-    // position source below (only a LITERAL export name may be written under),
-    // but NOT wider than what the template can name: a name that did not fully
-    // resolve is excluded, because over-approximating there SUPPRESSES the
-    // repair rather than merely widening it (see the per-name comment below).
-    // The widened outputs pass at the end of this function fires ONLY on keys
-    // that are in NEITHER set.
     const accountedOutputKeys = new Set<string>(declaredOutputNames);
     const ambiguousKeys = new Set<string>();
     const collisions: Array<[outputKey: string, exportName: string]> = [];
     let outputsSourceUntrusted = false;
-    for (const [name, output] of Object.entries(templateOutputs)) {
-      // The declared type says `string`, but templates carry intrinsics here and
-      // the pre-fix binary resolved them into state keys.
-      const declaredExportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
-      let exportName: unknown = declaredExportName;
-      if (declaredExportName !== undefined && typeof declaredExportName !== 'string') {
-        // Resolved through a VIEW of the pass map (issue #2531): the entries
-        // are the pass map's, live, but the resolved PAIRS the resolver
-        // records beside them hang off this instance and die with it — see
-        // `SharedEntriesSecrets` for why both halves matter. This loop runs
-        // FIRST and re-asks AWS for a reference the resolver never caches (an
-        // unclassifiable-`Type` `ssm` parameter), so a value that moves
-        // between this resolution and the value loop's would, recorded
-        // straight into the pass map, conflict the pair a literal Output
-        // embedding the token needs. (An earlier comment here grounded the
-        // shared map on the cache-hit arm re-recording "only what it can
-        // still prove is secret"; since issue #1933 the cache carries the
-        // verdict beside the value, so the hit arm re-records a cached secret
-        // too, and the never-cached reference above re-asks AWS regardless.
-        // The entries are shared either way, without leaning on that.)
-        const nameSecrets: RecordedSecretValues = new SharedEntriesSecrets(outputSecrets);
-        // Whether the name's resolution threw (a swallowed, best-effort
-        // failure). A boolean rather than the error's presence: `undefined`
-        // is a legal thrown value, and the old catch warned for it too.
-        let nameFailed = false;
-        let nameError: unknown;
-        // Issue #2109, same treatment as the resource bag above and outside
-        // the catch for the same reason. An `Export.Name` is rarely
-        // secret-bearing, but the region question is the expression's, not
-        // the position's — and this resolution's RESULT becomes a state key,
-        // so a wrong-region answer here mis-keys the whole positioned outputs
-        // pass.
-        const nameSource = await pinCrossRegionSecrets(declaredExportName, stack.stackName, {
-          stackRegion: region,
-          producerRegions,
-          resolvers,
-          recordedSecretValues: nameSecrets,
-          origin: `Export.Name of output '${name}'`,
-        });
-        const nameContext = resolverContext(nameSecrets);
-        // Issue #2133, same treatment and same placement as the resource bag
-        // above: a name assembled from a cross-stack read that scrub cannot
-        // perform is a name it cannot reproduce, and swallowing that is how
-        // the whole outputs pass came to be positioned against a key the
-        // deploy never wrote.
-        await resolveCrossStackReads(nameSource, nameContext, `Export.Name of output '${name}'`, {
-          canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
-        });
+    // Declared above the wrap because the block below it reads some of them.
+
+    // ONE drain budget for the resolve LOOPS between here and the
+    // `saveState` below (issue #2563): the resources loop, both output
+    // loops, and `resolveCrossStackReads`, itself a per-leaf resolve loop
+    // that all three invoke. Each `resolver.resolve` in them can WAIT on a
+    // rejection and unwrapped would open its own budget, so the aggregate
+    // drain WAIT would be at most
+    // `(#resources + 2 x #outputs) x (1 + #cross-stack-leaves) x` the cap.
+    // An UPPER bound: an iteration that resolves nothing -- a resource with
+    // no `Properties`, an absent or literal export name -- costs nothing.
+    // And it bounds that WAIT, not the pass, which ordinary resolution time
+    // extends without any limit from here. CloudFormation allows 500
+    // resources against 200 outputs.
+    //
+    // NOT the condition evaluation above it, which keeps a budget per
+    // condition: a failed condition is downgraded and evaluation continues,
+    // so one condition's slow parts must not spend the next one's, and that
+    // reasoning does not change under a lock.
+    await withSharedDrainBudget(async () => {
+      for (const logicalId of Object.keys(state.resources)) {
+        const templateResource = templateResources[logicalId];
+        if (!templateResource?.Properties) continue;
+        const recordedSecretValues = new Map<string, string>();
+        // REGISTERED BEFORE the pin and the pre-pass, not after them (issue #2133
+        // review). The map is filled IN PLACE, so registering it early changes
+        // nothing about what the loop below reads — but `maskSecretsInError` at
+        // the bottom of this function masks against
+        // `allRecordedSecrets(outputSecrets, perResourceSecrets)`, and both
+        // `pinCrossRegionSecrets` and the cross-stack pre-pass can THROW after
+        // recording a foreign plaintext into this map. Registering afterwards
+        // left exactly that window unmasked: the escaping error, and every link
+        // of its cause chain that `formatError` / `util.inspect` walks, could
+        // carry a plaintext the boundary had no needle for.
+        //
+        // Unconditional, where the old registration was gated on
+        // `size > 0`. An empty map is what every reader already substitutes for a
+        // missing entry (`secrets ?? new Map()`), and `allRecordedSecrets`
+        // filters by needle length, so an empty entry contributes nothing.
+        perResourceSecrets.set(logicalId, recordedSecretValues);
+        // Issue #2109: resolve any FOREIGN-region reference in its own region
+        // first, and REFUSE one whose region cannot be established. Deliberately
+        // OUTSIDE the best-effort catch below — a refusal that a `logger.debug`
+        // swallowed would leave the command reporting success over a state file
+        // it never scrubbed, which is the one outcome the issue says must not
+        // survive.
+        const resolveInput = await pinCrossRegionSecrets(
+          templateResource.Properties,
+          stack.stackName,
+          {
+            stackRegion: region,
+            producerRegions,
+            resolvers,
+            recordedSecretValues,
+            origin: `resource '${logicalId}'`,
+          }
+        );
+        const resourceContext = resolverContext(recordedSecretValues);
+        // Issue #2133, and OUTSIDE the best-effort catch below for the same reason
+        // the pin above is: a cross-stack read that failed silently would leave
+        // scrub with no needle for whatever that reference carries, and the
+        // command would report success over a state file it could not examine.
+        // REFUSAL ARMED here, unlike the two OUTPUT sites below, and the
+        // asymmetry is the point: this loop iterates `state.resources`, so the
+        // record EXISTS — the deploy created it and may have persisted the
+        // imported plaintext into it. A suppressed OUTPUT was never written at
+        // all, so a read it needs is one the deploy never made.
+        await resolveCrossStackReads(resolveInput, resourceContext, `resource '${logicalId}'`);
         try {
-          exportName = await resolver.resolve(nameSource, nameContext);
+          await resolver.resolve(resolveInput, resourceContext);
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err)) throw err;
-          nameFailed = true;
-          nameError = err;
+          // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
+          // something not in state) still has its own {{resolve:...}} leaves
+          // recorded along the way; leave the rest untouched.
+          //
+          // MASKED, for the reason `unresolvableForeignScrubSecretError` states:
+          // `resolveInput` is a bag `pinCrossRegionSecrets` may already have
+          // SUBSTITUTED a foreign plaintext into, so a resolver error that echoes
+          // what it was handed can carry one — and `recordedSecretValues` holds
+          // exactly the plaintexts this resource's pin recorded. Verbose-only, so
+          // this is the lower-severity sibling of the `Export.Name` warn below,
+          // but it is the same site class.
+          logger.debug(
+            `Resolution of ${logicalId} during scrub was partial: ` +
+              `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
+          );
         }
-        if (nameFailed) {
-          // No key to mark ambiguous — the name the deploy used is unknown and
-          // could be any output's — so the whole source bag becomes untrusted.
+        // The unresolved template bag is this record's POSITION source (#1910).
+        // Captured for EVERY templated resource, not only the secret-bearing ones,
+        // because `scrubResourceRecord` uses it for the `observedProperties` walk
+        // too — and unlike the deploy engine, `cdkd scrub` re-resolves the whole
+        // template every run, so a resource with no recorded secret still has a
+        // usable source in hand.
+        perResourceTemplateProps.set(logicalId, templateResource.Properties);
+      }
+
+      // Outputs are secret-bearing too (a CfnOutput resolving a secret reference),
+      // so re-resolve the template Outputs to record any secret they carry.
+      // The SAME key-space rules the deploy engine applies when it builds this bag
+      // (issue #1919) — shared rather than re-spelled, because this bag only works
+      // if it reproduces the deploy engine's key ownership. Without a guard here
+      // `cdkd scrub` was the WORSE half of that defect: its bag is legacy state
+      // holding plaintext, and the alias write below runs AFTER the owning
+      // output's write in this single loop (the opposite winner from the deploy
+      // engine, where the post-loop pass wins), so a colliding export name
+      // positioned a CORRECT public output by the exporting output's secret
+      // expression and rewrote it into a reference naming a DIFFERENT output's
+      // secret — in the command that exists to remediate the advisory, and
+      // republished from there into the exports index.
+      //
+      // Three rules differ from the engine's on purpose, and all follow from what
+      // scrub can KNOW about state some earlier binary wrote:
+      //
+      // 1. A colliding key gets NO source at all, rather than the owning output's.
+      //    The engine just resolved that key's value and knows whose it is; scrub
+      //    does not, and in the corrupted-legacy case — the case it exists for —
+      //    the alias may well have WON the key. So the key falls to the VALUE
+      //    scan, which reads the plaintext actually stored and maps it back to
+      //    the expression that produced it — as far as a value scan can, which is
+      //    exactly: a WHOLE-value match always, and an EMBEDDED one only for
+      //    secrets at or above `secret-redaction`'s minimum needle length. A
+      //    short secret embedded in a longer stored value therefore survives this
+      //    fallback, and the stack is reported clean; that bound is the value
+      //    scan's, not this rule's, but this rule is what exposes the key to it.
+      //    That is the pre-#1910 behavior, which
+      //    for this key is what the issue calls "weaker but not wrong: it
+      //    returned an expression that at least resolved to the value it
+      //    replaced". The residual it accepts is stated exactly, because an
+      //    earlier revision understated it: when two DISTINCT secrets happen to
+      //    resolve to one plaintext, the value map keeps one of them, so the
+      //    ambiguous key can be persisted holding a reference naming the OTHER
+      //    secret — not merely a lost precision bound. Neither rule dominates
+      //    (position can name the wrong secret on this key too, from the other
+      //    direction), and the test file pins both sides of the trade.
+      //
+      // 2. Collisions are tested against every DECLARED output name, conditions
+      //    ignored, and an INTRINSIC `Export.Name` is best-effort resolved for
+      //    that test alone — see `collectDeclaredOutputNames` for why scrub must
+      //    over-approximate here, and note the legacy population is exactly the
+      //    binaries that DID resolve intrinsic export names into state keys, so a
+      //    literal-only test leaves the original corruption reachable. The
+      //    resolved name is never written as a source key: it is only compared.
+      //
+      // 3. If an intrinsic `Export.Name` cannot be resolved at all, the WHOLE
+      //    outputs source bag is dropped and every output key falls to the value
+      //    scan. The deploy keyed state under a name scrub then cannot reproduce,
+      //    and that name could be ANY output's — so there is no key to mark
+      //    ambiguous and no honest way to keep positioning the rest. A residual
+      //    remains and is documented rather than hidden: a name that resolves
+      //    SUCCESSFULLY but differently from what the deploy resolved (a
+      //    parameterized prefix, since scrub has only template defaults) is
+      //    undetectable from here.
+      // Which `state.outputs` KEYS today's template can account for (issue #2005).
+      // Every declared output name, plus every `Export.Name` this run could
+      // FULLY compute — the literal ones AND the intrinsic ones whose best-effort
+      // resolution actually landed. That is still wider than the set that gets a
+      // position source below (only a LITERAL export name may be written under),
+      // but NOT wider than what the template can name: a name that did not fully
+      // resolve is excluded, because over-approximating there SUPPRESSES the
+      // repair rather than merely widening it (see the per-name comment below).
+      // The widened outputs pass at the end of this function fires ONLY on keys
+      // that are in NEITHER set.
+      for (const [name, output] of Object.entries(templateOutputs)) {
+        // The declared type says `string`, but templates carry intrinsics here and
+        // the pre-fix binary resolved them into state keys.
+        const declaredExportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
+        let exportName: unknown = declaredExportName;
+        if (declaredExportName !== undefined && typeof declaredExportName !== 'string') {
+          // Resolved through a VIEW of the pass map (issue #2531): the entries
+          // are the pass map's, live, but the resolved PAIRS the resolver
+          // records beside them hang off this instance and die with it — see
+          // `SharedEntriesSecrets` for why both halves matter. This loop runs
+          // FIRST and re-asks AWS for a reference the resolver never caches (an
+          // unclassifiable-`Type` `ssm` parameter), so a value that moves
+          // between this resolution and the value loop's would, recorded
+          // straight into the pass map, conflict the pair a literal Output
+          // embedding the token needs. (An earlier comment here grounded the
+          // shared map on the cache-hit arm re-recording "only what it can
+          // still prove is secret"; since issue #1933 the cache carries the
+          // verdict beside the value, so the hit arm re-records a cached secret
+          // too, and the never-cached reference above re-asks AWS regardless.
+          // The entries are shared either way, without leaning on that.)
+          const nameSecrets: RecordedSecretValues = new SharedEntriesSecrets(outputSecrets);
+          // Whether the name's resolution threw (a swallowed, best-effort
+          // failure). A boolean rather than the error's presence: `undefined`
+          // is a legal thrown value, and the old catch warned for it too.
+          let nameFailed = false;
+          let nameError: unknown;
+          // Issue #2109, same treatment as the resource bag above and outside
+          // the catch for the same reason. An `Export.Name` is rarely
+          // secret-bearing, but the region question is the expression's, not
+          // the position's — and this resolution's RESULT becomes a state key,
+          // so a wrong-region answer here mis-keys the whole positioned outputs
+          // pass.
+          const nameSource = await pinCrossRegionSecrets(declaredExportName, stack.stackName, {
+            stackRegion: region,
+            producerRegions,
+            resolvers,
+            recordedSecretValues: nameSecrets,
+            origin: `Export.Name of output '${name}'`,
+          });
+          const nameContext = resolverContext(nameSecrets);
+          // Issue #2133, same treatment and same placement as the resource bag
+          // above: a name assembled from a cross-stack read that scrub cannot
+          // perform is a name it cannot reproduce, and swallowing that is how
+          // the whole outputs pass came to be positioned against a key the
+          // deploy never wrote.
+          await resolveCrossStackReads(nameSource, nameContext, `Export.Name of output '${name}'`, {
+            canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
+          });
+          try {
+            exportName = await resolver.resolve(nameSource, nameContext);
+          } catch (err) {
+            // A region-AMBIGUOUS refusal is not best-effort -- see
+            // `isRegionAmbiguousRefusal`.
+            if (isRegionAmbiguousRefusal(err)) throw err;
+            nameFailed = true;
+            nameError = err;
+          }
+          if (nameFailed) {
+            // No key to mark ambiguous — the name the deploy used is unknown and
+            // could be any output's — so the whole source bag becomes untrusted.
+            outputsSourceUntrusted = true;
+            // MASKED, and this is the one of the three that prints at DEFAULT
+            // verbosity. UNCHANGED by issue #2563: a needle missed because a
+            // drain released on a spent budget under-redacts here, and that
+            // is not a regression -- the merge base has no drain at all, so
+            // its grace is zero unconditionally. Do not re-derive it as one.
+            // Full context: `nameSource` is a bag `pinCrossRegionSecrets` may
+            // already have substituted a foreign plaintext into, so a resolver
+            // error echoing its input reaches the terminal of a command whose
+            // entire subject is removing that plaintext. `outputSecrets` holds
+            // everything the pin and the resolution recorded (the view writes
+            // through), so it is the right needle set.
+            logger.warn(
+              `Export.Name of output ${name} could not be resolved during scrub ` +
+                `(${maskSecretsInText(nameError instanceof Error ? nameError.message : String(nameError), outputSecrets)}) — ` +
+                `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
+            );
+          }
+        }
+        if (declaredExportName !== undefined && typeof exportName !== 'string') {
+          // Same reasoning as the catch: a name that resolved to a non-string is
+          // a name scrub cannot reproduce.
           outputsSourceUntrusted = true;
-          // MASKED, and this is the one of the three that prints at DEFAULT
-          // verbosity: `nameSource` is a bag `pinCrossRegionSecrets` may
-          // already have substituted a foreign plaintext into, so a resolver
-          // error echoing its input reaches the terminal of a command whose
-          // entire subject is removing that plaintext. `outputSecrets` holds
-          // everything the pin and the resolution recorded (the view writes
-          // through), so it is the right needle set.
+        }
+        // A resolution that came BACK is not the same as one that SUCCEEDED:
+        // `resolveSub` does not throw on an unresolvable placeholder, it warns and
+        // keeps `${Foo}` in the string. Scrub takes no `--parameters`, so that is
+        // the COMMON shape for a parameterized export name — and trusting it would
+        // run the collision test against a name scrub provably could not
+        // reproduce, re-enabling the wrong-secret rewrite in the remediation
+        // command. Same rule the diff twin applies, imported rather than
+        // re-spelled.
+        const exportNameUnresolved =
+          declaredExportName !== undefined &&
+          typeof exportName === 'string' &&
+          isUnresolvedValue(exportName, templateUsesSub(declaredExportName));
+        // ACCOUNTED regardless of what the collision check below decides about
+        // trusting it as a position SOURCE (issue #2005): the question here is
+        // only "could today's template have produced this state key", and a name
+        // that FULLY resolved is a name the deploy could have keyed under.
+        //
+        // A name that did NOT fully resolve is deliberately NOT added, and the
+        // first cut of this got it backwards on a premise that is false: it added
+        // the literal `${Foo}` too, calling it inert because "that is not a key
+        // any deploy wrote". It can be — `deploy-engine.ts`'s alias write guards
+        // only on `typeof exportName !== 'string'`, with no `isUnresolvedValue`
+        // test, so a deploy whose `Fn::Sub` warn-and-KEPT `${Foo}` writes that
+        // literal into `state.outputs` as a key. Marking it accounted then
+        // EXCLUDES it from the widened pass while the positioned pass runs
+        // source-less against `outputSecrets` alone — so a secret living only in
+        // `perResourceSecrets`, which is exactly issue #2005's population, is
+        // never repaired and `--dry-run --fail` exits clean over surviving
+        // plaintext. Not adding it is strictly narrowing: the key it could not
+        // compute was already unaccounted, and now the literal one is too.
+        if (typeof exportName === 'string' && !exportNameUnresolved) {
+          accountedOutputKeys.add(exportName);
+        }
+        if (exportNameUnresolved) {
+          outputsSourceUntrusted = true;
           logger.warn(
-            `Export.Name of output ${name} could not be resolved during scrub ` +
-              `(${maskSecretsInText(nameError instanceof Error ? nameError.message : String(nameError), outputSecrets)}) — ` +
+            `Export.Name of output ${name} did not fully resolve during scrub — ` +
               `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
+          );
+        } else if (
+          typeof exportName === 'string' &&
+          isExportAliasCollision(exportName, name, declaredOutputNames)
+        ) {
+          ambiguousKeys.add(exportName);
+          // The WARNING is deferred to after the value loop below, for the same
+          // reason the deploy engine decides aliases in a second pass: this loop
+          // runs first, so `outputSecrets` is not yet complete, and the message
+          // masks its name against that map. Warning here would print a resolved
+          // name whose plaintext had not been recorded yet.
+          collisions.push([name, exportName]);
+        }
+      }
+      for (const [name, output] of Object.entries(templateOutputs)) {
+        const value = output.Value;
+        if (value === undefined) continue;
+        // The unresolved output value is its POSITION source (#1910).
+        if (!ambiguousKeys.has(name)) outputsTemplateSource[name] = value;
+        // `state.outputs` ALSO carries an export-name ALIAS for the same value
+        // (the deploy engine writes one so `Fn::ImportValue` can find it), and
+        // that second key needs the same source or it falls to the value scan and
+        // collapses onto a sibling's expression. Only a LITERAL export name gets a
+        // source: the resolved form of an intrinsic one is trusted for the
+        // collision TEST above but not as a key to write under, since a
+        // best-effort resolution with template-default parameters can differ from
+        // what the deploy resolved. (Nor can scrub meet the secret-bearing-name
+        // case the deploy engine refuses: it never writes a resolved name.)
+        const exportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
+        if (typeof exportName === 'string' && !ambiguousKeys.has(exportName)) {
+          outputsTemplateSource[exportName] = value;
+        }
+        // NOT gated on the suppression rules the deploy engine applies, and this
+        // is load-bearing rather than an omission: skipping the iteration would
+        // skip the resolve below, so a secret this output carries would never be
+        // RECORDED, and a stack whose only secret sits in a
+        // (possibly-spuriously) suppressed output would be reported CLEAN by the
+        // command whose job is to find it. The write above is the only thing a
+        // suppressed output could get wrong, and the ambiguity set already covers
+        // that.
+        //
+        // BOTH HALVES, because the first cut stated only this one and then let it
+        // carry more weight than it can (issue #2133 review). "Resolve a
+        // suppressed output for its needles" does NOT imply "refuse the stack
+        // when that resolution fails": a suppressed output wrote no
+        // `state.outputs` key, so there is no stored plaintext behind it to
+        // protect, while refusing would make a prod-only
+        // `Fn::ImportValue` unscrubbable in dev — every OTHER secret in the stack
+        // stranded over a reference the deploy never read. Hence the
+        // `canRefuse` flag on the pre-pass call below; see
+        // {@link isOutputSuppressed}.
+        // Issue #2109, same treatment and same placement as the two above. The
+        // POSITION source written just above is the ORIGINAL `value`, never this
+        // copy: `redactSecretsForState` reads UNRESOLVED expressions off it.
+        const valueSource = await pinCrossRegionSecrets(value, stack.stackName, {
+          stackRegion: region,
+          producerRegions,
+          resolvers,
+          recordedSecretValues: outputSecrets,
+          origin: `output '${name}'`,
+        });
+        const valueContext = resolverContext(outputSecrets);
+        // Issue #2133, same treatment and same placement as the two above. An
+        // output that re-publishes an imported value is the ordinary shape here,
+        // and its plaintext becomes a needle only if the read succeeds.
+        await resolveCrossStackReads(valueSource, valueContext, `output '${name}'`, {
+          canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
+        });
+        try {
+          await resolver.resolve(valueSource, valueContext);
+        } catch (err) {
+          // A region-AMBIGUOUS refusal is not best-effort -- see
+          // `isRegionAmbiguousRefusal`.
+          if (isRegionAmbiguousRefusal(err)) throw err;
+          // MASKED for the same reason as the two above — `valueSource` is a
+          // post-pin bag. Verbose-only.
+          logger.debug(
+            `Resolution of output ${name} during scrub was partial: ` +
+              `${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
           );
         }
       }
-      if (declaredExportName !== undefined && typeof exportName !== 'string') {
-        // Same reasoning as the catch: a name that resolved to a non-string is
-        // a name scrub cannot reproduce.
-        outputsSourceUntrusted = true;
-      }
-      // A resolution that came BACK is not the same as one that SUCCEEDED:
-      // `resolveSub` does not throw on an unresolvable placeholder, it warns and
-      // keeps `${Foo}` in the string. Scrub takes no `--parameters`, so that is
-      // the COMMON shape for a parameterized export name — and trusting it would
-      // run the collision test against a name scrub provably could not
-      // reproduce, re-enabling the wrong-secret rewrite in the remediation
-      // command. Same rule the diff twin applies, imported rather than
-      // re-spelled.
-      const exportNameUnresolved =
-        declaredExportName !== undefined &&
-        typeof exportName === 'string' &&
-        isUnresolvedValue(exportName, templateUsesSub(declaredExportName));
-      // ACCOUNTED regardless of what the collision check below decides about
-      // trusting it as a position SOURCE (issue #2005): the question here is
-      // only "could today's template have produced this state key", and a name
-      // that FULLY resolved is a name the deploy could have keyed under.
-      //
-      // A name that did NOT fully resolve is deliberately NOT added, and the
-      // first cut of this got it backwards on a premise that is false: it added
-      // the literal `${Foo}` too, calling it inert because "that is not a key
-      // any deploy wrote". It can be — `deploy-engine.ts`'s alias write guards
-      // only on `typeof exportName !== 'string'`, with no `isUnresolvedValue`
-      // test, so a deploy whose `Fn::Sub` warn-and-KEPT `${Foo}` writes that
-      // literal into `state.outputs` as a key. Marking it accounted then
-      // EXCLUDES it from the widened pass while the positioned pass runs
-      // source-less against `outputSecrets` alone — so a secret living only in
-      // `perResourceSecrets`, which is exactly issue #2005's population, is
-      // never repaired and `--dry-run --fail` exits clean over surviving
-      // plaintext. Not adding it is strictly narrowing: the key it could not
-      // compute was already unaccounted, and now the literal one is too.
-      if (typeof exportName === 'string' && !exportNameUnresolved) {
-        accountedOutputKeys.add(exportName);
-      }
-      if (exportNameUnresolved) {
-        outputsSourceUntrusted = true;
-        logger.warn(
-          `Export.Name of output ${name} did not fully resolve during scrub — ` +
-            `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
-        );
-      } else if (
-        typeof exportName === 'string' &&
-        isExportAliasCollision(exportName, name, declaredOutputNames)
-      ) {
-        ambiguousKeys.add(exportName);
-        // The WARNING is deferred to after the value loop below, for the same
-        // reason the deploy engine decides aliases in a second pass: this loop
-        // runs first, so `outputSecrets` is not yet complete, and the message
-        // masks its name against that map. Warning here would print a resolved
-        // name whose plaintext had not been recorded yet.
-        collisions.push([name, exportName]);
-      }
-    }
-    for (const [name, output] of Object.entries(templateOutputs)) {
-      const value = output.Value;
-      if (value === undefined) continue;
-      // The unresolved output value is its POSITION source (#1910).
-      if (!ambiguousKeys.has(name)) outputsTemplateSource[name] = value;
-      // `state.outputs` ALSO carries an export-name ALIAS for the same value
-      // (the deploy engine writes one so `Fn::ImportValue` can find it), and
-      // that second key needs the same source or it falls to the value scan and
-      // collapses onto a sibling's expression. Only a LITERAL export name gets a
-      // source: the resolved form of an intrinsic one is trusted for the
-      // collision TEST above but not as a key to write under, since a
-      // best-effort resolution with template-default parameters can differ from
-      // what the deploy resolved. (Nor can scrub meet the secret-bearing-name
-      // case the deploy engine refuses: it never writes a resolved name.)
-      const exportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
-      if (typeof exportName === 'string' && !ambiguousKeys.has(exportName)) {
-        outputsTemplateSource[exportName] = value;
-      }
-      // NOT gated on the suppression rules the deploy engine applies, and this
-      // is load-bearing rather than an omission: skipping the iteration would
-      // skip the resolve below, so a secret this output carries would never be
-      // RECORDED, and a stack whose only secret sits in a
-      // (possibly-spuriously) suppressed output would be reported CLEAN by the
-      // command whose job is to find it. The write above is the only thing a
-      // suppressed output could get wrong, and the ambiguity set already covers
-      // that.
-      //
-      // BOTH HALVES, because the first cut stated only this one and then let it
-      // carry more weight than it can (issue #2133 review). "Resolve a
-      // suppressed output for its needles" does NOT imply "refuse the stack
-      // when that resolution fails": a suppressed output wrote no
-      // `state.outputs` key, so there is no stored plaintext behind it to
-      // protect, while refusing would make a prod-only
-      // `Fn::ImportValue` unscrubbable in dev — every OTHER secret in the stack
-      // stranded over a reference the deploy never read. Hence the
-      // `canRefuse` flag on the pre-pass call below; see
-      // {@link isOutputSuppressed}.
-      // Issue #2109, same treatment and same placement as the two above. The
-      // POSITION source written just above is the ORIGINAL `value`, never this
-      // copy: `redactSecretsForState` reads UNRESOLVED expressions off it.
-      const valueSource = await pinCrossRegionSecrets(value, stack.stackName, {
-        stackRegion: region,
-        producerRegions,
-        resolvers,
-        recordedSecretValues: outputSecrets,
-        origin: `output '${name}'`,
-      });
-      const valueContext = resolverContext(outputSecrets);
-      // Issue #2133, same treatment and same placement as the two above. An
-      // output that re-publishes an imported value is the ordinary shape here,
-      // and its plaintext becomes a needle only if the read succeeds.
-      await resolveCrossStackReads(valueSource, valueContext, `output '${name}'`, {
-        canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
-      });
-      try {
-        await resolver.resolve(valueSource, valueContext);
-      } catch (err) {
-        // A region-AMBIGUOUS refusal is not best-effort -- see
-        // `isRegionAmbiguousRefusal`.
-        if (isRegionAmbiguousRefusal(err)) throw err;
-        // MASKED for the same reason as the two above — `valueSource` is a
-        // post-pin bag. Verbose-only.
-        logger.debug(
-          `Resolution of output ${name} during scrub was partial: ` +
-            `${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}`
-        );
-      }
-    }
+    });
 
     for (const [name, exportName] of collisions) {
       logger.warn(exportAliasCollisionScrubWarning(name, exportName, outputSecrets));

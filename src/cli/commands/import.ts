@@ -9,6 +9,7 @@ import {
   stateOptions,
   useCdkBootstrapAssetsOption,
 } from '../options.js';
+import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -774,12 +775,12 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // and left as-is rather than aborting the whole import. The
       // eventual destroy failure on the un-resolved props is narrower
       // than blowing up the entire adoption flow.
-      const unsafeObservedBaselineLogicalIds = await resolveImportedProperties(
-        stackState,
-        stateTemplate,
-        targetRegion,
-        stateBackend,
-        logger
+      // ONE drain budget for the whole resolve LOOP inside it (issue #2563),
+      // for the same reason the deploy engine's outputs pass wraps: the lock
+      // is held above and `saveState` is downstream, and each `resolve` in
+      // there can now WAIT on a rejection.
+      const unsafeObservedBaselineLogicalIds = await withSharedDrainBudget(() =>
+        resolveImportedProperties(stackState, stateTemplate, targetRegion, stateBackend, logger)
       );
 
       // Populate observedProperties for the freshly-imported resources so
@@ -1746,6 +1747,11 @@ export async function resolveImportedProperties(
       //
       // What this site owns, and what the test file pins: the bag is hoisted
       // so the `catch` can name it, and the message is masked against it.
+      //
+      // UNCHANGED by issue #2563, which added the drain: a needle missed
+      // because a drain released on a spent budget under-redacts here, and
+      // that is not a regression -- the merge base has no drain at all, so
+      // its grace is zero unconditionally. Do not re-derive it as one.
       logger.warn(
         `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}. ` +
           `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.` +
@@ -2517,12 +2523,15 @@ async function importNestedStackChildrenRecursive(args: {
       // sub-resource provider deletes read resolved props), populate
       // observedProperties baseline, then save. Re-uses the same
       // helpers as the root so behavior stays in sync.
-      const childUnsafeObservedBaselineLogicalIds = await resolveImportedProperties(
-        childStackState,
-        childStateTemplate,
-        childRegion,
-        stateBackend,
-        logger
+      // One budget for this child's resolve loop too; see the root call.
+      const childUnsafeObservedBaselineLogicalIds = await withSharedDrainBudget(() =>
+        resolveImportedProperties(
+          childStackState,
+          childStateTemplate,
+          childRegion,
+          stateBackend,
+          logger
+        )
       );
       await captureObservedForImportedResources(
         childStackState,

@@ -33,6 +33,7 @@ import {
 } from '../provisioning/resource-name.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
+import { withSharedDrainBudget } from './drain-budget.js';
 import {
   markSameGenerationBag,
   redactSecretsForState,
@@ -2462,13 +2463,16 @@ export class DeployEngine {
           // condition pruning only touches `Resources`, so resolving against
           // `effectiveTemplate` vs the raw `template` is equivalent here.
           const resolvedOutputs = this.redactOutputs(
-            await this.resolveOutputs(
-              effectiveTemplate,
-              currentState.resources,
-              stackName,
-              outputsDigestSource,
-              parameterValues,
-              conditions
+            // One budget for the whole pass, as on the deploy path above.
+            await withSharedDrainBudget(() =>
+              this.resolveOutputs(
+                effectiveTemplate,
+                currentState.resources,
+                stackName,
+                outputsDigestSource,
+                parameterValues,
+                conditions
+              )
             )
           );
           // resolveOutputs stores `undefined` for any output it could not
@@ -3367,13 +3371,24 @@ export class DeployEngine {
     // (review blocker on issue #1111 item 2).
     let outputs: Record<string, unknown>;
     try {
-      outputs = await this.resolveOutputs(
-        template,
-        newResources,
-        stackName,
-        outputsDigestSource,
-        parameterValues,
-        conditions
+      // ONE drain budget for the whole pass, not one per output (issue
+      // #2563). `resolveOutputs` walks `template.Outputs` sequentially and
+      // calls `resolve` per output, so without this the DRAIN GRACE spendable
+      // here -- after every resource exists in AWS, before `saveState`, with
+      // the S3 lock held -- was `#outputs x` the cap rather than the cap, and
+      // CloudFormation allows 200 outputs. It bounds the GRACE, not the pass:
+      // the cap arms on a rejection, so a lookup that hangs without one is as
+      // unbounded here as it ever was. The trade the wrap makes is on
+      // `withSharedDrainBudget`.
+      outputs = await withSharedDrainBudget(() =>
+        this.resolveOutputs(
+          template,
+          newResources,
+          stackName,
+          outputsDigestSource,
+          parameterValues,
+          conditions
+        )
       );
       // Redact resolved secrets out of outputs before they flow to the exports
       // index / deploy summary / state (GHSA fix). The state save also redacts
@@ -6852,9 +6867,16 @@ export class DeployEngine {
    * opposite sides of the same question. `secrets` is the outputs pass's own
    * map: everything recorded before this handler runs, an `Export.Name`
    * resolution's entries included (its `finally` merges them back before the
-   * `catch` reaches here). What a still-pending concurrent part would have
-   * recorded is outside both — issue #2563's late write, the same bound every
-   * other masking site in this engine has.
+   * `catch` reaches here). Since issue #2563 a still-pending concurrent part
+   * is in the PASS bag before this handler runs: the resolver drains every
+   * part it started before a rejection reaches a caller. Not
+   * unconditionally, and the weaker claim is the true one -- the drain is
+   * bounded, and since the outputs pass wraps BOTH its loops in one budget
+   * the bound spans the whole pass rather than one resolution: an early
+   * failing output can leave a later `Export.Name` drain with no wait at all,
+   * so a late record needs only a leg that had not finished recording by
+   * then rather than one that outlived a full cap. (`inheritedSecrets` is the parent's, and no
+   * resolution writes to it.)
    *
    * The strict arm's `cause` is masked as an OBJECT, through
    * `maskSecretsInError` — a clone of each `Error` link `errorCauseChain`
@@ -7063,13 +7085,22 @@ export class DeployEngine {
         // secret, and an unclassifiable-`Type` reference is never cached at
         // all (`cacheable = false`) — it re-asks AWS and records again. The
         // merge keeps every entry this resolution recorded BEFORE the block
-        // ended. What it cannot keep is an entry recorded AFTER: `Fn::Join`
-        // resolves its parts concurrently, so a part that rejects while a
-        // secret part is still pending ends the block — and the copy in the
-        // `finally` below — before that part records into `nameSecrets`,
-        // where the entry then dies with the local. That is the residual of
-        // this copy shape (issue #2563); `cdkd scrub`'s sibling loop resolves
-        // the name through a live VIEW of its pass map instead (issue #2531).
+        // ended, and since issue #2563 the resolver DRAINS every part it
+        // started before a rejection reaches a caller
+        // (`allSettledKeepingFirstRejection`), which is what makes this copy
+        // shape safe as it stands: a concurrent resolution used to surface a
+        // part's rejection at once, so a sibling still in flight recorded
+        // into `nameSecrets` after this copy had run and the entry died with
+        // the local. The drain is BOUNDED so a hung part cannot hold a
+        // deploy's state save, and the budget is shared across this whole
+        // outputs pass rather than per resolution -- so an entry can still be
+        // recorded after this block, and it does not take a part that
+        // outlived a full cap: an earlier failing output can leave this
+        // drain with no wait at all, and this map is a per-iteration local,
+        // so such a record is DROPPED rather than late (residual: issue
+        // #2814). `cdkd scrub`'s sibling loop resolves the
+        // name through a live VIEW of its pass map instead (issue #2531) — a
+        // view that, on its own, could not have ordered the write either.
         const nameSecrets: RecordedSecretValues = new Map();
         let exportName: unknown;
         try {
@@ -7087,16 +7118,17 @@ export class DeployEngine {
             // `finally`, and that is the load-bearing part rather than a style
             // choice: the resolver records and caches AS IT GOES, so a
             // resolution that records one element and then throws on the next
-            // (an `Fn::Join` whose `Promise.all` has a sibling reject) has
-            // already put a plaintext in this map that a success-path merge
-            // would drop — and that plaintext must be a needle for the
-            // failure's own message and for the rest of the pass. (Not, as an
-            // earlier version said, because a later cache hit "records
-            // nothing": see the note above the map.) Any exit that skips this merge
-            // — `throw` here, `continue`, a discarded local — reopens that hole,
-            // so the invariant is: this recording survives EVERY exit from this
-            // block. Unconditional for the same reason: a name that resolved to
-            // a non-string warmed the cache just the same.
+            // (an `Fn::Join` where one part records before a concurrent sibling
+            // throws) has already put a plaintext in this map that a
+            // success-path merge would drop — and that plaintext must be a
+            // needle for the failure's own message and for the rest of the
+            // pass. (Not, as an earlier version said, because a later cache hit
+            // "records nothing": see the note above the map.) Any exit that
+            // skips this merge — `throw` here, `continue`, a discarded local —
+            // reopens that hole, so the invariant is: this recording survives
+            // EVERY exit from this block. Unconditional for the same reason: a
+            // name that resolved to a non-string warmed the cache just the
+            // same.
 
             for (const [plaintext, expression] of nameSecrets) {
               context.recordedSecretValues?.set(plaintext, expression);

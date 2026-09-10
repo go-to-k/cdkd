@@ -34,6 +34,7 @@ import {
   DynamicReferenceRegionAmbiguousError,
   IntrinsicResolutionRefusalError,
 } from '../utils/error-handler.js';
+import { drainDeadlines, withSharedDrainBudget } from './drain-budget.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
 import { isListParameterType, ssmResolvedValueType } from '../utils/parameter-types.js';
 import { classifyReplaySecretRegion } from './secret-region-classification.js';
@@ -1303,6 +1304,237 @@ const MAX_LISTED_AVAILABLE_OUTPUTS = 10;
 export const dynamicReferenceRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
 
 /**
+ * How long {@link allSettledKeepingFirstRejection} waits for the remaining
+ * parts AFTER a rejection is in hand. Double the largest FIXED wait in this
+ * file (the `Fn::GetAtt` `Ipv6CidrBlocks` poll's sleep budget, 15 attempts
+ * x 2 s), which makes it a hang guard rather than a schedule — not a
+ * guarantee that healthy work fits inside it; see the function's own note.
+ *
+ * It is the budget for one CALL of {@link IntrinsicFunctionResolver.resolve}
+ * and everything nested under it: nested drains share the REMAINING wait, so
+ * a template's nesting depth cannot multiply it. It is NOT a bound on a caller
+ * that resolves in a LOOP -- each iteration opens its own budget unless the
+ * caller wraps the loop in {@link withSharedDrainBudget}, which the outputs
+ * pass does and `evaluateConditions` deliberately does not (its aggregate is
+ * `#conditions x` this, before any resource is provisioned but with the
+ * deploy lock already held).
+ */
+const DRAIN_AFTER_REJECTION_MS = 60_000;
+
+/** Sentinel for "the cap expired", distinguishable from any resolved value. */
+const CAP_EXPIRED = Symbol('drain-cap-expired');
+
+/**
+ * Test seam: overriding `ms` lets a unit test drive the cap without a real
+ * minute of waiting (mirrors {@link dynamicReferenceRetryDelays}).
+ */
+export const concurrentDrainCap: { ms?: number } = {};
+
+/**
+ * `Promise.all`'s RESULT and its choice of error, with `Promise.allSettled`'s
+ * TIMING: every promise started here has settled before this returns, and
+ * before it throws unless the cap below expires first (issue
+ * [#2563](https://github.com/go-to-k/cdkd/issues/2563)).
+ *
+ * Why the resolver needs that. Resolving a secret dynamic reference RECORDS
+ * `plaintext -> expression` into `context.recordedSecretValues` just before
+ * its promise settles, and that map is what every masking and redaction site
+ * downstream uses as its needle set. Under a bare `Promise.all` a rejecting
+ * part surfaces IMMEDIATELY, so a caller's `catch` / `finally` can run while a
+ * sibling part is still in flight: `DeployEngine`'s `Export.Name` block copies
+ * its private map into the pass map in exactly such a `finally`, and the
+ * sibling's recording then lands in the private map after the copy and reaches
+ * nothing. Draining here fixes it for every caller at once, which a
+ * consumer-side drain cannot — `cdkd scrub`'s shared-map view (issue
+ * [#2531](https://github.com/go-to-k/cdkd/issues/2531)) lets a late write land
+ * whenever it happens but still cannot make it land before the next consumer
+ * runs.
+ *
+ * THE ERROR IS SELECTED BY TIME, NOT BY INPUT ORDER, which is what `Promise.all`
+ * does and what a naive `Promise.allSettled` + "first rejected entry" would
+ * silently change: with two parts rejecting out of input order, the entry scan
+ * reports the LATER one. Each promise gets its own `catch`, so the callbacks
+ * fire in rejection order and the first assignment wins.
+ *
+ * Every input is `catch`-ed, so nothing here can raise an unhandled rejection
+ * while the drain waits.
+ *
+ * THE WAIT IS CAPPED ONCE A REJECTION IS IN HAND. The drain exists to let a
+ * sibling finish RECORDING, and that is worth a wait — but `resolveOutputs`
+ * runs at `deploy-engine.ts`'s worst moment: after every resource has been
+ * created in AWS, before the final `saveState`, with the S3 lock held and its
+ * heartbeat pushing `expiresAt` forward. An unbounded wait there costs a deploy
+ * its state and its lock, and on a FIRST deploy (`currentEtag` undefined, so
+ * the incremental saves were no-ops) every created resource becomes invisible
+ * to cdkd. Nothing else bounds it: `withRetry` caps ATTEMPTS not duration, no
+ * `requestTimeout` is configured, and `withResourceDeadline` wraps
+ * `provisionResourceBody` — which does bound the resource path, property
+ * resolution included, but not the outputs pass. So once a rejection is
+ * recorded the remaining settles race {@link DRAIN_AFTER_REJECTION_MS}, and the
+ * recorded rejection is thrown when it expires.
+ *
+ * The cap is a HANG GUARD, and it does not claim to be more. It is sized
+ * against the largest fixed wait in this file — the `Fn::GetAtt`
+ * `Ipv6CidrBlocks` poll's sleep budget, 15 attempts x 2 s, about 30 s — but
+ * that budget is a floor, not a ceiling: the poll also awaits 15 AWS calls,
+ * and one part can drive several lookups in sequence through object
+ * properties or `Fn::Sub` variables. Two healthy shapes measured on review
+ * already exceed 60 s — three sequential `Ipv6CidrBlocks` polls in one part
+ * is 3 x (15 x 2 s) = 90 s with no hang and no throttling, and five throttled
+ * dynamic references is 5 x (1+2+4+8 s) = 75 s at
+ * `MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES` = 4. Healthy work CAN therefore
+ * outlast the cap, and when it does its recording lands after the rejection
+ * was released, which is the window this whole function exists to close.
+ * Nothing here cancels that sibling — it keeps running and can record
+ * arbitrarily later — so what the cap bounds is the WAIT, not the lateness.
+ * That is the trade taken deliberately: a bounded wait with a late record
+ * still possible beyond it, against an unbounded hold on a deploy's state
+ * save.
+ *
+ * AND A DRAIN CAN GET NO GRACE AT ALL. The budget is shared REMAINING wait,
+ * so a drain that arms once it is spent gets
+ * `Math.max(0, remaining - openWindow)` = 0 and releases its rejection on the
+ * next macrotask. That applies to any drain NOT ALREADY ARMED when a rejection
+ * reaches it: the ordinary case is an inner drain that spends the full budget
+ * and throws, whose every not-yet-armed ancestor then arms against an
+ * exhausted remaining-wait budget. What it does NOT mean is that a fast sibling is exposed: a
+ * sibling still pending at that moment has itself been running at least the
+ * budget. What it means is that the sibling's own RECORDING gets no wait --
+ * a lookup begun late inside a long-running part is fast in itself and still
+ * lands after the rejection was released. That reasoning covers the NESTED
+ * ancestor case; a caller that wraps a LOOP widens it, because a later
+ * iteration starts FRESH siblings against a budget an earlier one already
+ * spent and those need not be long-running at all. So the exposure does not
+ * require the "healthy work slower than 60 s" shape the sizing paragraph
+ * describes; that shape is the cheapest way to reach it with no nesting and
+ * no wrapped loop, not the floor.
+ * Residual: issue
+ * [#2814](https://github.com/go-to-k/cdkd/issues/2814).
+ *
+ * ONE REMAINING CONSEQUENCE, deliberate and pinned by a case rather than only
+ * described: the earliest-in-time rule holds PER INVOCATION, not across
+ * NESTED resolutions. For a join whose parts are `[listWithAnEarlyFailure,
+ * laterFailure]`, the inner list's drain holds its own rejection while its
+ * slow sibling finishes, so the outer join captures the later failure first
+ * and reports that instead. That is not only cosmetic: the retry classifiers
+ * DO read the message (`retryClassificationText` feeds
+ * `isRetryableTransientError`, whose `RETRYABLE_ERROR_MESSAGE_PATTERNS` is an
+ * explicit substring table), so swapping which failure surfaces can swap a
+ * transient verdict for a terminal one. What does not change is that the
+ * resolution FAILS: both are genuine failures of the same resolve, and the
+ * selection was already timing-dependent — `Promise.all` reports whichever
+ * lost the race. The drain adds a systematic bias toward the SHALLOWER
+ * failure where the old race was arbitrary. Residual: issue
+ * [#2805](https://github.com/go-to-k/cdkd/issues/2805).
+ */
+async function allSettledKeepingFirstRejection<T>(promises: readonly Promise<T>[]): Promise<T[]> {
+  let rejection: { readonly error: unknown } | undefined;
+  // Unreachable through today's entry points: both public methods that reach
+  // a drain open a store (`resolve`, `evaluateConditions`). A case in the
+  // drain test reds when a public member reaches a drain without opening one
+  // -- but only along the shape it walks, which is a `this.<identifier>(...)`
+  // chain from THIS helper's call sites, over methods and callable fields. It
+  // is a SYNTACTIC regression check and not a proof, on two axes: it asks
+  // whether the member opens a budget somewhere in its body rather than
+  // whether the resolution runs inside it, and an aliased receiver, a
+  // `.bind`, an element-access call or a closure returned from a getter each
+  // walk past it. That case enumerates them, measured. Kept as a fallback
+  // because the alternative -- throwing -- would turn a fence miss into a
+  // failed deploy, and a caller that somehow reached here should get the OLD
+  // per-invocation bound rather than none. Never exercised by the suite:
+  // instrumented across all of it, zero drains took it.
+  const shared = drainDeadlines.getStore();
+  // Armed by the FIRST rejection, so the cap measures the wait that a failure
+  // caused rather than the resolution's own runtime: a slow but successful
+  // pass is not on a clock.
+  let armCap: (() => void) | undefined;
+  const guarded = promises.map((promise) =>
+    promise.catch((error: unknown) => {
+      if (rejection === undefined) {
+        rejection = { error };
+        armCap?.();
+      }
+      // The value is never read: the throw below happens first whenever any
+      // input rejected, and this cast keeps the settled-values type honest
+      // for the caller rather than widening it to `T | undefined`.
+      return undefined as unknown as T;
+    })
+  );
+  let capTimer: ReturnType<typeof setTimeout> | undefined;
+  // Whether this drain took a share of the budget, so the `finally` knows to
+  // release it. Not `capTimer !== undefined`: a drain with no store arms a
+  // timer and charges nothing.
+  let charged = false;
+  const capped = new Promise<typeof CAP_EXPIRED>((resolve) => {
+    armCap = () => {
+      // A REMAINING budget, not a deadline. An absolute `at` spends the
+      // budget by WALL CLOCK: ordinary resolution time between two drains
+      // burns it although nothing drained, so in a wrapped loop an output
+      // that failed with a 5 ms sibling could leave a later one with zero
+      // grace after 60 s of clean AWS work. What the cap is supposed to
+      // bound is total drain WAIT.
+      const budget = concurrentDrainCap.ms ?? DRAIN_AFTER_REJECTION_MS;
+      let wait = budget;
+      if (shared !== undefined) {
+        shared.remaining ??= budget;
+        // `remaining` is only charged when the last waiter leaves, so a drain
+        // arming while another is ALREADY waiting must subtract the part of
+        // the open window that has run -- otherwise two staggered drains each
+        // arm against the full remainder and keep extending the bound (drain
+        // A at t=0 and B at t=80 of a 100 ms budget released at 100 and 180).
+        const openWindow = shared.since === undefined ? 0 : Date.now() - shared.since;
+        wait = Math.max(0, shared.remaining - openWindow);
+        // Only the OUTERMOST waiting drain charges the budget. Nested drains
+        // wait CONCURRENTLY -- an outer drain's wait contains its inner
+        // one's -- so charging each would spend the budget once per level
+        // and re-create the depth x cap shape one layer down.
+        if (shared.waiting === 0) shared.since = Date.now();
+        shared.waiting += 1;
+        charged = true;
+      }
+      capTimer = setTimeout(() => resolve(CAP_EXPIRED), wait);
+      // NOT `unref`'d, deliberately. The `finally` below clears the timer on
+      // every exit from the race, so it is live only while something is
+      // awaiting it — and an unref'd timer lets Node empty the loop and exit
+      // 0 mid-deploy when the hung sibling holds nothing itself, which is
+      // strictly worse than the hang this cap replaced. The unit suite
+      // structurally cannot catch that: vitest's own loop holds the process
+      // open regardless.
+    };
+  });
+  try {
+    const outcome = await Promise.race([Promise.all(guarded), capped]);
+    if (rejection !== undefined) throw rejection.error;
+    // Narrowed rather than cast: winning the race without a rejection is
+    // unreachable today, since only a rejection arms the cap — and an edit
+    // that armed it elsewhere would otherwise hand a Symbol to the caller's
+    // `resolvedValues.join(...)` with the compiler's blessing. Removing this
+    // guard reds no TEST, and cannot: what it buys is a compile error, caught
+    // by `vp run typecheck` over `src/**` (`vp test`'s inline typecheck covers
+    // test files only). That is the fence, not a missing case.
+    if (outcome === CAP_EXPIRED) {
+      // `markNonRetryable` even though this arm is documented unreachable:
+      // if it ever fires, the retry classifiers read the message, and this
+      // file's other deterministic refusals are marked the same way.
+      throw markNonRetryable(new Error('drain cap expired with no rejection recorded'));
+    }
+    return outcome;
+  } finally {
+    if (capTimer !== undefined) clearTimeout(capTimer);
+    if (charged && shared !== undefined) {
+      shared.waiting -= 1;
+      if (shared.waiting === 0 && shared.since !== undefined) {
+        // Charge the wall clock spent while ANY drain under this budget was
+        // waiting, which for overlapping waits is exactly the total drain
+        // wait. Clean work between drains costs nothing.
+        shared.remaining = Math.max(0, (shared.remaining ?? 0) - (Date.now() - shared.since));
+        shared.since = undefined;
+      }
+    }
+  }
+}
+
+/**
  * Is `region` safe to build an AWS SDK client from?
  *
  * This is a SECURITY gate, not an AWS region registry, and the distinction
@@ -2555,7 +2787,9 @@ export class IntrinsicFunctionResolver {
    * Resolve all intrinsic functions in a value
    */
   async resolve(value: unknown, context: ResolverContext): Promise<unknown> {
-    return await this.resolveValue(value, context);
+    // One drain budget per CALL unless the caller already opened one; see
+    // {@link withSharedDrainBudget}.
+    return await withSharedDrainBudget(() => this.resolveValue(value, context));
   }
 
   /**
@@ -2676,7 +2910,24 @@ export class IntrinsicFunctionResolver {
     // the whole deploy, matching the prior per-condition error tolerance.
     for (const name of Object.keys(templateConditions)) {
       try {
-        await evaluateByName(name);
+        // Its own drain budget, like `resolve`'s: a condition operand can
+        // nest lists and joins just as deep, and without a store every level
+        // would take a fresh cap (issue #2563). Opened per condition rather
+        // than around the loop, because one condition's slow parts should not
+        // spend the next one's budget. A condition that depends on another
+        // re-enters `evaluateByName` INSIDE this store and inherits it.
+        //
+        // `withSharedDrainBudget` and NOT `drainDeadlines.run`, which always
+        // installs a FRESH store. Both halves matter and the first cut of
+        // this had only one: with no caller budget open, each condition gets
+        // its own cap, which is what a downgraded-and-continue loop wants --
+        // one condition's slow parts must not spend the next one's. INSIDE a
+        // caller's budget it inherits instead, so the caller's aggregate
+        // bound actually holds. `cdkd import` made that reachable: it calls
+        // `evaluateConditions` inside the wrap around its resource loop
+        // (`import.ts`), with a lock held and `saveState` downstream, so
+        // `run` there would have cost `#conditions x` the cap on top.
+        await withSharedDrainBudget(() => evaluateByName(name));
       } catch (error) {
         // MASKED (issue #2748). This catch renders a resolver error verbatim
         // at WARN level, so it is reached on an ordinary `cdkd deploy` with no
@@ -2726,7 +2977,13 @@ export class IntrinsicFunctionResolver {
 
     // Arrays: resolve each element, filtering out AWS::NoValue
     if (Array.isArray(value)) {
-      const resolved = await Promise.all(value.map((v) => this.resolveValue(v, context)));
+      // Drained, not a bare `Promise.all`: a list is a concurrent resolution
+      // like a join's parts, and a list nested INSIDE a join part is how a
+      // join-level drain alone would still let a late recording escape (issue
+      // #2563).
+      const resolved = await allSettledKeepingFirstRejection(
+        value.map((v) => this.resolveValue(v, context))
+      );
       return resolved.filter((v) => v !== AWS_NO_VALUE);
     }
 
@@ -4650,8 +4907,10 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    // Resolve each value first
-    const resolvedValues = await Promise.all(
+    // Resolve each value first, draining every part before a rejection
+    // surfaces (issue #2563): a part that records a secret must finish
+    // recording before a caller's `catch` / `finally` sees the failure.
+    const resolvedValues = await allSettledKeepingFirstRejection(
       values.map(async (v) => {
         const resolved = await this.resolveValue(v, context);
         return String(resolved);

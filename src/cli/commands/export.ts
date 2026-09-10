@@ -34,6 +34,7 @@ import {
   warnIfDeprecatedRegion,
   parseStackRegion,
 } from '../options.js';
+import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
@@ -6101,18 +6102,23 @@ export async function runPerStackImportLoop(args: {
     // submits `rootParameters` verbatim.
     const paramResolver = new IntrinsicFunctionResolver(rootRegion);
     const { paramsByCdkdName, intrinsicSkippedByCdkdName: sessionIntrinsicSkipped } =
-      await buildResolvedParametersPerStack({
-        rootStackName,
-        rootParameters,
-        perStackNodes: perStackPlans.map((p) => ({
-          cdkdName: p.cdkdName,
-          template: p.template,
-          state: p.state,
-        })),
-        tree,
-        resolver: paramResolver,
-        stateBackend: deps.stateBackend,
-      });
+      // ONE drain budget for the resolve LOOP inside it (issue #2563): the
+      // child locks are acquired above, and each `resolve` in that loop can
+      // now WAIT on a rejection.
+      await withSharedDrainBudget(() =>
+        buildResolvedParametersPerStack({
+          rootStackName,
+          rootParameters,
+          perStackNodes: perStackPlans.map((p) => ({
+            cdkdName: p.cdkdName,
+            template: p.template,
+            state: p.state,
+          })),
+          tree,
+          resolver: paramResolver,
+          stateBackend: deps.stateBackend,
+        })
+      );
     for (const [cdkdName, skipped] of sessionIntrinsicSkipped) {
       logger.warn(
         `  Child '${cdkdName}': could not resolve intrinsic-valued Parameter(s) ` +
