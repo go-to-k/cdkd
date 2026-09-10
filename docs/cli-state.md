@@ -195,8 +195,68 @@ cdkd state show MyParent --show-nested
 cdkd state show MyParent --show-nested --json
 ```
 
-The deepest read: stack metadata, the lock record, outputs, and every resource
-with its properties, attributes, dependencies, and `provisionedBy` routing.
+The deepest read: stack metadata, the lock record, outputs, skipped outputs,
+and every resource with its properties, attributes, dependencies, and
+`provisionedBy` routing.
+
+### Skipped outputs
+
+A `Skipped outputs:` block appears when `skippedOutputs` contains entries. Its
+rows are the Outputs keys the last deploy could not resolve, each mapped to a
+digest of that output's template inputs.
+
+It sits after `Outputs:` where that section is rendered at all. `Outputs:` is
+omitted when the outputs bag is empty, which includes the first-deploy case
+this record exists for, every output having failed — so the two blocks do not
+always appear together:
+
+```text
+Skipped outputs:
+  ApiUrl: 1f3c9a0b7d42…
+
+The last deploy could not resolve the keys listed under `Skipped outputs:`
+above, and recorded a digest of their template inputs. While the record
+binds and a key is still absent from the stored outputs, `cdkd diff`
+previews it as ABSENT — no row, no warning. A key whose earlier value was
+retained is also stored under `Outputs:` here, where the record does NOT
+suppress it: the ordinary rules apply, up to `cdkd diff` suppressing its
+whole Outputs section if the key still cannot resolve. Binding rule:
+`bindingSkippedOutputs` in src/analyzer/skipped-outputs.ts.
+```
+
+The explanation sits at column zero, unlike the key rows, so it cannot be
+mistaken for another entry. Under `--show-nested` it is printed ONCE for the
+whole tree rather than after every child that skipped something.
+
+This block is the reason to look here rather than at `cdkd diff`: a suppressed
+key gets **no diff row and no warning**, so the text view is where the
+explanation lives. Suppression takes both conditions above — the record still
+binding, and the key still absent from the stored outputs.
+
+For an output whose resolver THREW, the deploy's own warning already names it;
+for one that merely resolved to `undefined` there is no per-output warning at
+all. For such a key while it is ABSENT from the stored outputs, this block is
+the first place it is named in the human-readable view. A key whose earlier
+value was retained is ALSO stored under `Outputs:` — it appears in both
+sections — and is NOT suppressed by the record. It takes the ordinary resolve
+path, which can end in `cdkd diff` suppressing its whole Outputs section with
+a warning if the key fails again. `--json` and the stored `state.json` carry the
+record either way.
+
+The digest is TRUNCATED to 12 characters here, after control characters are
+stripped — so an ESC costs no preview space, though a sequence's printable
+tail (`[2J`) still does. A trailing `…` marks a value that was actually cut,
+so a value exactly 12 characters long is not mistaken for a
+truncated one. A prefix DIFFERENCE tells you
+at a glance that two records differ; a prefix MATCH proves nothing, so compare
+digests through `--json`, which carries them whole, as does the stored
+`state.json`.
+
+The block is omitted when the field is present but empty, and when it is
+absent. Absence means only that no skipped set was RECORDED, not that nothing
+was skipped: records written before the field existed never carried one, and
+several state writers deliberately drop it. The `--json` shape is unchanged
+either way.
 
 | Flag | Default | Description |
 | --- | --- | --- |

@@ -751,8 +751,9 @@ function createStateResourcesCommand(): Command {
  * - `--show-nested` (issue #555 A4): when the stack contains
  *   `AWS::CloudFormation::Stack` rows, recursively load every child state
  *   record (`cdkd/<parent>~<childLogicalId>/<region>/state.json`) and append
- *   its block after the parent's. No-op when the stack has no nested
- *   children.
+ *   its block after the parent's. With no nested children the rendered
+ *   blocks are the same, though a `Skipped outputs:` explanation moves to
+ *   the end of the tree.
  */
 async function stateShowCommand(
   stackName: string,
@@ -829,10 +830,67 @@ async function stateShowCommand(
       return;
     }
 
-    process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo).join('\n')}\n`);
+    process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo, true).join('\n')}\n`);
   } finally {
     setup.dispose();
   }
+}
+
+/**
+ * How much of a `skippedOutputs` digest the text view shows. A prefix
+ * DIFFERENCE proves two records differ, which is what a reader wants at a
+ * glance; a prefix MATCH proves nothing, so an exact comparison belongs to
+ * `--json`, which carries the digest whole.
+ */
+const SKIPPED_DIGEST_PREVIEW_LEN = 12;
+
+/**
+ * The `skippedOutputs` rows a state record owes, sorted by key.
+ */
+function sortedSkippedOutputs(state: StackState): [string, string][] {
+  return Object.entries(state.skippedOutputs ?? {}).sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** Whether one record renders the block. The ONE copy of that condition. */
+function rendersSkippedBlock(state: StackState): boolean {
+  return Object.keys(state.skippedOutputs ?? {}).length > 0;
+}
+
+/**
+ * The explanation printed under a `Skipped outputs:` block.
+ *
+ * At column ZERO, unlike the rows it follows. At the rows' two-space indent a
+ * reader — or a `grep '^  '` — takes these lines for another key. It also
+ * quotes `Outputs:` mid-sentence, so a test matching that as a SUBSTRING has
+ * to anchor on the section's own line to mean anything.
+ *
+ * Emitted ONCE per render rather than per block: under `--show-nested` the
+ * same explanation would otherwise repeat for every child that skipped
+ * anything.
+ *
+ * That placement is why the opening sentence NAMES its referent rather than
+ * saying "these". At the end of a tree render it follows every rendered stack
+ * block, so it is not adjacent to the block it explains and a bare
+ * demonstrative reads as belonging to whichever stack printed last. The
+ * single-stack path still has the adjacency; the wording holds in both.
+ *
+ * It does not claim `Outputs:` is on the screen. That block is omitted when
+ * the bag is empty, which includes the first-deploy case this record exists
+ * for — every output failed, so `outputs` is `{}` while `skippedOutputs` is
+ * populated.
+ */
+function skippedOutputsLegend(): string[] {
+  return [
+    '',
+    'The last deploy could not resolve the keys listed under `Skipped outputs:`',
+    'above, and recorded a digest of their template inputs. While the record',
+    'binds and a key is still absent from the stored outputs, `cdkd diff`',
+    'previews it as ABSENT — no row, no warning. A key whose earlier value was',
+    'retained is also stored under `Outputs:` here, where the record does NOT',
+    'suppress it: the ordinary rules apply, up to `cdkd diff` suppressing its',
+    'whole Outputs section if the key still cannot resolve. Binding rule:',
+    '`bindingSkippedOutputs` in src/analyzer/skipped-outputs.ts.',
+  ];
 }
 
 /**
@@ -840,7 +898,13 @@ async function stateShowCommand(
  * the shared body used by both the single-stack default output and each
  * nested child rendered under `--show-nested`.
  */
-function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[] {
+function renderStateBlock(
+  state: StackState,
+  lockInfo: LockInfo | null,
+  // No default: both tree call sites pass `false` and the single-stack one
+  // passes `true`, so a default would only hide which mode a call is in.
+  withLegend: boolean
+): string[] {
   const lines: string[] = [];
 
   lines.push(`Stack: ${state.stackName}`);
@@ -860,10 +924,8 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     lines.push('');
     lines.push('Outputs:');
     for (const [k, v] of outputEntries) {
-      // The KEY is stripped here; the VALUE by `formatAttributeValue`, which
-      // every other row in this block also goes through (issue #1948). Unlike
-      // a resource logical id — which CloudFormation constrains to
-      // [A-Za-z0-9] — an Outputs bag KEY can be an `Export.Name` that cdkd
+      // The KEY is stripped here; the VALUE by `formatAttributeValue`
+      // (issue #1948). An Outputs bag KEY can be an `Export.Name` that cdkd
       // RESOLVED from an `Fn::Sub` / parameter / SSM value, so it passed no
       // CFn validator and may carry ANSI escapes or bidi overrides that
       // rewrite the surrounding terminal output. Same guard
@@ -873,6 +935,64 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     }
   }
 
+  // The field #2740 added, rendered because its effect on `cdkd diff` is
+  // deliberately SILENT — a key the diff suppresses gets no row and no
+  // warning — so this view is where a user looks for why an Output has no
+  // diff row. Suppression needs the record to bind AND the key to be absent
+  // from the stored outputs; a binding digest alone does not suppress a key
+  // state already holds. Absent field renders nothing, which means only that
+  // no skipped set was recorded: pre-#2740 records never carried one, and
+  // several writers DROP it (see the field's doc in `types/state.ts`).
+  const skippedEntries = sortedSkippedOutputs(state);
+  if (rendersSkippedBlock(state)) {
+    lines.push('');
+    lines.push('Skipped outputs:');
+    for (const [k, digest] of skippedEntries) {
+      // The KEY is stripped like every other key this block prints. The
+      // `Export.Name` argument above does not reach these: they are template
+      // `Outputs` keys, so this is defence against a template cdkd never
+      // validated rather than against a value it resolved.
+      //
+      // The DIGEST goes through `formatAttributeValue`, like the Outputs value
+      // above. The argument is stronger than for the key: a key is a string
+      // whatever an operator
+      // put there, while a VALUE can be any JSON type, and state is read as an
+      // unchecked cast that validates neither. A String method called on it
+      // directly would throw on a hand-edited number or `null` and take the
+      // WHOLE render with it: `renderStateBlock` builds every line before
+      // anything is written, so one bad digest costs the stack header and
+      // every resource, and under `--show-nested` the parent and every
+      // sibling.
+      //
+      // `skippedOutputsEqual` normalises a hand-edited `null` RECORD on this
+      // same field — a different level from a null DIGEST inside it, but the
+      // same premise: an operator edits this field by hand.
+      //
+      // Stripped BEFORE truncating. The order does NOT decide terminal
+      // safety — stripping after slicing removes the ESC just as well. What it
+      // decides is how many PRINTABLE characters the reader gets: strip-first
+      // spends none of the 12 on a control character, slice-first spends one
+      // slot per control character inside the window on something that then
+      // vanishes. For a digest with one leading ESC and printable text past
+      // the window that is 12 against 11. Neither recovers a sequence's
+      // printable tail, so `ESC [ 2 J` still costs 3 of the 12.
+      //
+      // Truncated: a prefix DIFFERENCE tells two records apart at a glance,
+      // which is this view's job. A prefix MATCH proves nothing, so exact
+      // comparison belongs to `--json`, which carries the digest whole.
+      // Marked when it actually happened, so a value that is EXACTLY the
+      // window's length is not read as one that was cut, and a cut value is
+      // not read as whole.
+      const fullDigest = formatAttributeValue(digest);
+      const shownDigest =
+        fullDigest.length > SKIPPED_DIGEST_PREVIEW_LEN
+          ? `${fullDigest.slice(0, SKIPPED_DIGEST_PREVIEW_LEN)}…`
+          : fullDigest;
+      lines.push(`  ${stripControlChars(k)}: ${shownDigest}`);
+    }
+    if (withLegend) lines.push(...skippedOutputsLegend());
+  }
+
   const resourceEntries = Object.entries(state.resources ?? {}).sort(([a], [b]) =>
     a.localeCompare(b)
   );
@@ -880,9 +1000,18 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
   lines.push(`Resources (${resourceEntries.length}):`);
   for (const [logicalId, resource] of resourceEntries) {
     lines.push('');
-    lines.push(logicalId);
+    // Stripped like every other key this block prints. CloudFormation
+    // constrains a logical id to [A-Za-z0-9], but nothing enforces that
+    // constraint HERE — state is read as an unchecked cast, so a hand-edited
+    // record can carry anything. A case in the `state show` suite spells a
+    // logical id `Skipped outputs:` for a different reason and demonstrates
+    // exactly that.
+    lines.push(stripControlChars(logicalId));
     lines.push(`  Type: ${resource.resourceType}`);
-    lines.push(`  PhysicalID: ${stripControlChars(resource.physicalId)}`);
+    // `formatAttributeValue`, not the bare strip: behaviour-identical for every
+    // string and it also survives a hand-edited non-string, which the strip
+    // alone would throw on.
+    lines.push(`  PhysicalID: ${formatAttributeValue(resource.physicalId)}`);
     // v7+ (#614): show the provisioning layer so users can see which
     // resources took the Cloud Control auto-route. Absent on pre-v7
     // state — print "(sdk, legacy default)" so the absence is explicit.
@@ -992,6 +1121,15 @@ async function loadLocksForTree(
 }
 
 /**
+ * Whether any node in this tree owes a `Skipped outputs:` block, and so
+ * whether the tree render owes the legend once at its end. Asked through
+ * {@link rendersSkippedBlock}, the same predicate the block's own guard uses.
+ */
+function treeOwesSkippedLegend(node: CdkdStateStackTreeWithLock): boolean {
+  return rendersSkippedBlock(node.state) || node.children.some(treeOwesSkippedLegend);
+}
+
+/**
  * Render the parent's block followed by every descendant in DFS order,
  * each separated by a blank line and prefixed with a `Nested stack: ...`
  * header so the user can scan the tree top-down in one screen.
@@ -1002,8 +1140,16 @@ async function loadLocksForTree(
  */
 function renderTreeWithChildren(root: CdkdStateStackTreeWithLock): string[] {
   const lines: string[] = [];
-  lines.push(...renderStateBlock(root.state, root.lock));
+  lines.push(...renderStateBlock(root.state, root.lock, false));
   appendDescendants(root.children, lines);
+  // Once for the whole tree, and only when some node rendered the block — the
+  // alternative repeats it per child. Both this and the block's own guard call
+  // `rendersSkippedBlock`, which is the only copy of that condition. Scanning
+  // the rendered lines for the header instead looks tempting and is wrong: a
+  // resource logical id is printed as its own line, and stripping it does not
+  // change a hand-edited `Skipped outputs:`, so such a record would emit a
+  // legend having skipped nothing.
+  if (treeOwesSkippedLegend(root)) lines.push(...skippedOutputsLegend());
   return lines;
 }
 
@@ -1011,7 +1157,7 @@ function appendDescendants(children: readonly CdkdStateStackTreeWithLock[], out:
   for (const child of children) {
     out.push('');
     out.push(`Nested stack: ${child.stackName}`);
-    out.push(...renderStateBlock(child.state, child.lock));
+    out.push(...renderStateBlock(child.state, child.lock, false));
     appendDescendants(child.children, out);
   }
 }

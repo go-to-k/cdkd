@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { LockInfo, ResourceState, StackState } from '../../../src/types/state.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
@@ -121,6 +123,12 @@ function makeState(overrides: Partial<StackState> = {}): { state: StackState } {
         parentLogicalId: overrides.parentLogicalId,
       }),
       ...(overrides.parentRegion !== undefined && { parentRegion: overrides.parentRegion }),
+      // Spread rather than defaulted, so `{}` and ABSENT stay distinguishable
+      // — the renderer treats them the same but for different reasons, and a
+      // default would make the absent case untestable through this helper.
+      ...(overrides.skippedOutputs !== undefined && {
+        skippedOutputs: overrides.skippedOutputs,
+      }),
     },
   };
 }
@@ -298,7 +306,7 @@ describe('cdkd state show', () => {
     // Same provenance as the Outputs row and the same terminal: a resource
     // PROPERTY is a resolved template value and an ATTRIBUTE is a provider
     // readback, neither of which passed a CloudFormation validator. The guard
-    // lives inside `formatAttributeValue` so every row in the block gets it.
+    // lives inside `formatAttributeValue` so this row gets it.
     mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
     mockGetState.mockResolvedValue(
       makeState({
@@ -353,6 +361,53 @@ describe('cdkd state show', () => {
     expect(out.split('\n').find((l) => l.includes('Arn'))).toBe('    Arn: plain-arn');
   });
 
+  it('STRIPS control characters from a resource LOGICAL ID', async () => {
+    // CloudFormation constrains a logical id, but a hand-edited record is not
+    // bound by that, and this row is a terminal sink like every other key.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilIdStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilIdStack',
+        resources: {
+          'My\u001bTable\u202e': makeResource({
+            resourceType: 'AWS::DynamoDB::Table',
+            physicalId: 'tbl-1',
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilIdStack']);
+
+    const idRow = out.split('\n').find((l) => l.includes('MyTable'));
+    expect(idRow).toBe('MyTable');
+    expect(out).not.toContain('\u001b');
+  });
+
+  it('renders a non-string PhysicalID instead of throwing', async () => {
+    // `stripControlChars` alone would throw on it; the formatter names it.
+    mockListStacks.mockResolvedValue(defaultListResponse('OddPhysStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'OddPhysStack',
+        resources: {
+          R1: {
+            physicalId: 4242 as unknown as string,
+            resourceType: 'AWS::SNS::Topic',
+            properties: {},
+          },
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'OddPhysStack']);
+
+    expect(out).toContain('  PhysicalID: 4242');
+    expect(out).toContain('Resources (1):');
+  });
+
   it('renders an `undefined` attribute value instead of throwing', async () => {
     // The `value === undefined` guard was unfenced: without it
     // `stripControlChars(JSON.stringify(undefined))` throws a TypeError,
@@ -379,9 +434,8 @@ describe('cdkd state show', () => {
   });
 
   it('strips control characters from the PhysicalID too (issue #1926 review)', async () => {
-    // A physical id is often COMPOSITE — built from template-authored segments —
-    // so it is the one field in this block that passed no CFn validator, and it
-    // was the last one still printing raw.
+    // A physical id is often COMPOSITE — built from template-authored
+    // segments — so it can carry whatever those segments carried.
     mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
     mockGetState.mockResolvedValue(
       makeState({
@@ -459,12 +513,505 @@ describe('cdkd state show', () => {
     expect(out).not.toContain('Outputs:');
   });
 
+  it('renders a Skipped outputs block naming each key and a truncated digest (issue #2772)', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('SkipStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        outputs: { Live: 'http://x' },
+        // Inserted in REVERSE alphabetical order, so the row order below
+        // pins the comparator rather than the object's insertion order.
+        skippedOutputs: {
+          Endpoint: 'b'.repeat(64),
+          ApiUrl: 'a'.repeat(64),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'SkipStack']);
+
+    expect(out).toContain('Skipped outputs:');
+    // The KEY is the point of the block. The record covers BOTH failure arms,
+    // and they differ: an output whose resolver THREW is already named by the
+    // deploy's own warn, while one that quietly returned `undefined` gets no
+    // per-output warn at all. For the quiet arm, while the key is absent from
+    // the stored bag -- as here -- this block is the only place the name
+    // appears in the human-readable view; a key whose earlier value was
+    // retained also shows under `Outputs:`. `--json` carries it either way.
+    expect(out).toContain('ApiUrl');
+    expect(out).toContain('Endpoint');
+    // TRUNCATED, not whole: 12 of the 64 hex characters. Asserted as an
+    // absence of the full digest as well, because `toContain` on the prefix
+    // alone passes against an untruncated render.
+    expect(out).toContain(`ApiUrl: ${'a'.repeat(12)}…`);
+    expect(out).toContain(`Endpoint: ${'b'.repeat(12)}…`);
+    expect(out).not.toContain('a'.repeat(13));
+    expect(out).not.toContain('b'.repeat(13));
+    // Sorted, not insertion-ordered.
+    const rows = out.split('\n');
+    const apiRow = rows.findIndex((l) => l.startsWith('  ApiUrl:'));
+    const endpointRow = rows.findIndex((l) => l.startsWith('  Endpoint:'));
+    expect(apiRow).toBeGreaterThan(-1);
+    expect(endpointRow).toBeGreaterThan(apiRow);
+    // The retained-value qualification: the record does NOT suppress such a
+    // key, and the ordinary path can end in the whole Outputs section going —
+    // the opposite of the legend's own "no row, no warning".
+    // Whitespace-normalised: the legend is hard-wrapped, so any phrase can
+    // straddle a line break and a raw `toContain` would then miss it.
+    const legendText = out.replace(/\s+/g, ' ');
+    expect(legendText).toContain('does NOT suppress it');
+    // WHOSE Outputs section: the legend's first `Outputs:` is this view's own
+    // block, the suppression is `cdkd diff`'s. Dropping the attribution leaves
+    // a sentence that reads as `state show` hiding its own section.
+    expect(legendText).toContain('`cdkd diff` suppressing its whole Outputs section');
+    // The block explains the SILENT diff behaviour AND points at the rule.
+    // Both halves are pinned because either survives deleting the other: a
+    // pointer-only assertion passes against a legend with no explanation, and
+    // an explanation-only one passes against a legend with no pointer. What
+    // they keep is both halves present, not the prose in step with the code.
+    expect(legendText).toContain('could not resolve the keys listed');
+    expect(legendText).toContain('ABSENT');
+    expect(legendText).toContain('bindingSkippedOutputs');
+    // The neighbouring section still renders its row in full. Anchored,
+    // because the legend itself contains the literal `Outputs:` and would
+    // satisfy a bare `toContain` even with the section gone.
+    expect(out).toContain('\nOutputs:\n');
+    expect(out).toContain('  Live: http://x');
+  });
+
+  it('the fixture keeps ABSENT and present-but-empty distinguishable', async () => {
+    // The two omission cases below would both pass against a helper that
+    // defaulted the field to `{}`, which would make the absent case a
+    // restatement of the empty one. This pins the fixture itself so those
+    // two names keep meaning what they say.
+    const absent = makeState({ outputs: { Live: 'http://x' } }).state;
+    expect(Object.prototype.hasOwnProperty.call(absent, 'skippedOutputs')).toBe(false);
+
+    const empty = makeState({ skippedOutputs: {} }).state;
+    expect(Object.prototype.hasOwnProperty.call(empty, 'skippedOutputs')).toBe(true);
+    expect(empty.skippedOutputs).toEqual({});
+  });
+
+  it('omits the Skipped outputs block when the field is absent (pre-#2740 records)', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('NoSkipStack'));
+    mockGetState.mockResolvedValue(makeState({ outputs: { Live: 'http://x' } }));
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'NoSkipStack']);
+
+    expect(out).not.toContain('Skipped outputs:');
+    // Not vacuous: the record rendered, it simply carried no skipped set.
+    expect(out).toContain('Outputs:');
+  });
+
+  it('omits the Skipped outputs block when the field is present but EMPTY', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('EmptySkipStack'));
+    mockGetState.mockResolvedValue(makeState({ skippedOutputs: {} }));
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EmptySkipStack']);
+
+    expect(out).not.toContain('Skipped outputs:');
+    // Not vacuous for the same reason as the absent case: the block is gone
+    // because the set is empty, not because nothing rendered.
+    expect(out).toContain('Resources (');
+  });
+
+  it('STRIPS control characters from a Skipped outputs KEY', async () => {
+    // A bare ESC plus a bidi override, following the Outputs-row case above:
+    // only the control CHARACTER is removed, so a full `\u001b[31m` would
+    // leave `[31m` behind and an expectation written around it could not tell
+    // a strip from a rewrite. These keys are template `Outputs` keys rather
+    // than resolved export names, so this is defence against a template cdkd
+    // never validated, not against a value it resolved.
+    mockListStacks.mockResolvedValue(defaultListResponse('SkipCtrlStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        skippedOutputs: { 'Api\u001bUrl\u202e': 'c'.repeat(64) },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'SkipCtrlStack']);
+
+    // Scoped to the ROW and asserted whole, so a surviving escape anywhere in
+    // the rendered key fails rather than being absorbed by a `toContain`.
+    const skippedRow = out.split('\n').find((l) => l.includes('ApiUrl'));
+    expect(skippedRow).toBe(`  ApiUrl: ${'c'.repeat(12)}…`);
+  });
+
+  it('tolerates a non-string digest instead of killing the whole render', async () => {
+    // State is read as an unchecked cast, so this map's value types are
+    // whatever the object holds. A String method called directly on the digest
+    // would throw, and because `renderStateBlock` builds every line before
+    // anything is written, that would cost the stack header and every resource
+    // as well — an empty stdout rather than a partial block.
+    for (const [bad, shown] of [
+      [12345, '12345'],
+      [null, 'null'],
+      [{ nested: true }, '{"nested":tr…'],
+    ] as const) {
+      mockListStacks.mockResolvedValue(defaultListResponse('OddDigestStack'));
+      mockGetState.mockResolvedValue(
+        makeState({
+          stackName: 'OddDigestStack',
+          outputs: { Live: 'http://x' },
+          skippedOutputs: { ApiUrl: bad as unknown as string },
+          resources: {
+            R1: makeResource({ resourceType: 'AWS::IAM::Role', physicalId: 'r-1' }),
+          },
+        })
+      );
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'OddDigestStack']);
+
+      // The render SURVIVES, asserted on CONTENT rather than on a header that
+      // a zero-resource record would print anyway: the stack header, the
+      // sibling output's value, and the resource's own rows.
+      expect(out).toContain('Stack: OddDigestStack');
+      expect(out).toContain('  Live: http://x');
+      expect(out).toContain('Resources (1):');
+      expect(out).toContain('  PhysicalID: r-1');
+      // The CELL, not just its presence: `toBeDefined()` alone stays green
+      // with the digest replaced by an empty string, which would render the
+      // fix inert while looking fixed.
+      const row = out.split('\n').find((l) => l.startsWith('  ApiUrl:'));
+      expect(row, `row for digest ${JSON.stringify(bad)}`).toBe(`  ApiUrl: ${shown}`);
+    }
+  });
+
+  it('marks a digest ONLY when it was actually cut', async () => {
+    // The boundary: a value exactly the window's length is NOT truncated, so
+    // it takes no marker. A fixture formatting to exactly the window's length
+    // is what separates `>` from `>=`.
+    mockListStacks.mockResolvedValue(defaultListResponse('BoundaryStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        skippedOutputs: {
+          Exactly: 'e'.repeat(12),
+          OneMore: 'f'.repeat(13),
+          Short: 'ab',
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'BoundaryStack']);
+    const rowFor = (k: string) => out.split('\n').find((l) => l.startsWith(`  ${k}:`));
+
+    expect(rowFor('Exactly')).toBe(`  Exactly: ${'e'.repeat(12)}`);
+    expect(rowFor('OneMore')).toBe(`  OneMore: ${'f'.repeat(12)}…`);
+    expect(rowFor('Short')).toBe('  Short: ab');
+  });
+
+  it('STRIPS control characters from the DIGEST, not only the key', async () => {
+    // An ANSI CSI fits inside the 12 shown characters. Stripping happens
+    // either way, so the ORDER is about how many printable characters survive:
+    // strip-then-slice yields a full 12, slice-then-strip yields 11.
+    mockListStacks.mockResolvedValue(defaultListResponse('EscDigestStack'));
+    mockGetState.mockResolvedValue(
+      makeState({ skippedOutputs: { ApiUrl: '\u001b[2Jabcdefghijklmnop' } })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EscDigestStack']);
+
+    const row = out.split('\n').find((l) => l.startsWith('  ApiUrl:'));
+    // Whole-row equality: the ESC is gone AND the strip happened BEFORE the
+    // truncation, so the reader gets 12 printable characters rather than 11.
+    // 12 printable characters once the ESC is gone, asserted WHOLE so a
+    // miscount cannot hide behind a prefix match.
+    expect(row).toBe('  ApiUrl: [2Jabcdefghi…');
+    expect(out).not.toContain('\u001b');
+  });
+
+  it('renders the block with no Outputs: section above it', async () => {
+    // The first-deploy case this record exists for: every output failed, so
+    // the bag is empty and `Outputs:` is omitted entirely. The legend must not
+    // claim a section that is not on the screen.
+    mockListStacks.mockResolvedValue(defaultListResponse('NoOutputsStack'));
+    mockGetState.mockResolvedValue(
+      makeState({ outputs: {}, skippedOutputs: { ApiUrl: 'a'.repeat(64) } })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'NoOutputsStack']);
+
+    expect(out).toContain('Skipped outputs:');
+    // No `Outputs:` SECTION rendered. The anchored form matters: the legend
+    // itself contains the literal `Outputs:`, so an unanchored check would
+    // fail on the legend rather than on a section.
+    expect(out).not.toContain('Outputs:\n');
+    // ...and the legend does not claim one is on the screen. It legitimately
+    // says "listed under `Skipped outputs:` above", naming the block it
+    // explains, so what must NOT appear is that phrasing pointed at
+    // `Outputs:`. Whitespace-normalised because the referent and the word
+    // `above` fall on different rendered lines, and a raw `toContain` would
+    // miss the pairing.
+    const flat = out.replace(/\s+/g, ' ');
+    expect(flat).toContain('under `Skipped outputs:` above');
+    expect(flat).not.toContain('under `Outputs:` above');
+  });
+
+  it('the legend sits at column zero, not at the rows indent', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('IndentStack'));
+    mockGetState.mockResolvedValue(
+      makeState({ skippedOutputs: { ApiUrl: 'a'.repeat(64) } })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'IndentStack']);
+
+    // EVERY indented line from the header to the next block must be a
+    // `key: value` row, so `grep '^  '` cannot pick up prose. Checking only
+    // the first would pass with the rest of the legend re-indented, including
+    // the line quoting `Outputs:` mid-sentence, which an indented substring
+    // match would then read as a row.
+    const rows = out.split('\n');
+    const start = rows.findIndex((l) => l === 'Skipped outputs:');
+    expect(start).toBeGreaterThan(-1);
+    const nextBlock = rows.findIndex((l, i) => i > start && l.startsWith('Resources ('));
+    expect(nextBlock).toBeGreaterThan(start);
+    const indented = rows.slice(start + 1, nextBlock).filter((l) => l.startsWith('  '));
+    expect(indented).toEqual([`  ApiUrl: ${'a'.repeat(12)}…`]);
+    // ...and EVERY nonblank legend line is at column zero, not just the
+    // opening sentence: indenting the continuations by a space or a tab is the
+    // shape that otherwise slips through.
+    const span = rows.slice(start + 1, nextBlock);
+    const prose = span.filter((l) => l !== '' && l !== `  ApiUrl: ${'a'.repeat(12)}…`);
+    expect(prose.length, 'the legend is in this span').toBeGreaterThan(1);
+    expect(prose.filter((l) => /^\s/.test(l))).toEqual([]);
+  });
+
+  it('the pointer the legend SHIPS resolves: symbol exists, cited path exists', async () => {
+    // The legend is user-visible text naming a symbol and a source file, and
+    // asserting the literal string only proves the string is there. A rename
+    // or a file move would otherwise ship a dangling pointer. Same shape as
+    // `docs-site-links.test.ts`.
+    mockListStacks.mockResolvedValue(defaultListResponse('PointerStack'));
+    mockGetState.mockResolvedValue(makeState({ skippedOutputs: { ApiUrl: 'a'.repeat(64) } }));
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'PointerStack']);
+
+    // Both halves are DERIVED from the rendered text, so a move, or a rename
+    // within the subset the identifier filter accepts, reds here rather than
+    // leaving a dangling pointer in shipped output.
+    const cited = [...out.matchAll(/src\/[\w/-]+\.ts/g)].map((m) => m[0]);
+    expect(cited.length, 'the legend cites at least one source path').toBeGreaterThan(0);
+    for (const path of cited) {
+      expect(existsSync(resolve(import.meta.dirname, '../../../', path)), path).toBe(true);
+    }
+
+    // ...and every backticked run matching an ASCII bare identifier must be
+    // exported by the module the legend cites. ASCII is a SUBSET of what a JS
+    // identifier may be — it covers the one this legend names today, and a
+    // non-ASCII one would be skipped. Deliberately not a naming-convention
+    // filter, which would drop names on a narrower and less obvious basis.
+    const named = [...out.matchAll(/`([^`]+)`/g)]
+      .map((m) => m[1] ?? '')
+      .filter((n) => /^[A-Za-z_$][\w$]*$/.test(n));
+    expect(named.length, 'the legend names at least one symbol').toBeGreaterThan(0);
+    const mod = (await import(`../../../${cited[0]}`)) as Record<string, unknown>;
+    for (const sym of named) {
+      expect(typeof mod[sym], `${sym} exported by ${cited[0]}`).toBe('function');
+    }
+  });
+
+  it('the legend follows a CHILD-only or GRANDCHILD-only skipped set', async () => {
+    // `treeOwesSkippedLegend` recurses. With the parent carrying the set the
+    // recursion short-circuits, so deleting the descendant scan survives that
+    // fixture -- these two are what pin it.
+    for (const carrier of ['NestedSkip~Child', 'NestedSkip~Child~Grandchild'] as const) {
+      mockListStacks.mockResolvedValue([{ stackName: 'NestedSkip', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name: string) => {
+        const skipped =
+          name === carrier ? { OnlyHere: 'a'.repeat(64) } : (undefined as unknown as undefined);
+        if (name === 'NestedSkip') {
+          return makeState({
+            stackName: 'NestedSkip',
+            ...(skipped !== undefined && { skippedOutputs: skipped }),
+            resources: {
+              Child: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::NestedSkip~Child',
+              }),
+            },
+          });
+        }
+        if (name === 'NestedSkip~Child') {
+          return makeState({
+            stackName: 'NestedSkip~Child',
+            ...(skipped !== undefined && { skippedOutputs: skipped }),
+            resources: {
+              Grandchild: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::NestedSkip~Child~Grandchild',
+              }),
+            },
+          });
+        }
+        return makeState({
+          stackName: 'NestedSkip~Child~Grandchild',
+          ...(skipped !== undefined && { skippedOutputs: skipped }),
+        });
+      });
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'NestedSkip', '--show-nested']);
+
+      // Counted as a HEADER LINE, not a substring: the legend now names the
+      // block it explains, so `Skipped outputs:` appears in the prose too.
+      const headers = out.split('\n').filter((l) => l === 'Skipped outputs:');
+      expect(headers, `block for ${carrier}`).toHaveLength(1);
+      expect(
+        out.split('The last deploy could not resolve the keys listed').length - 1,
+        `legend for ${carrier}`
+      ).toBe(1);
+      // FOLLOWS, as the name says: counting alone passes with the legend
+      // printed before the block it explains.
+      const lines = out.split('\n');
+      const block = lines.findIndex((l) => l === 'Skipped outputs:');
+      const legend = lines.findIndex((l) => l.startsWith('The last deploy'));
+      expect(legend, `legend after block for ${carrier}`).toBeGreaterThan(block);
+    }
+  });
+
+  it('a resource logical id spelled like the header emits NO legend', async () => {
+    // A logical id is printed on its own line, and stripping it leaves a
+    // hand-edited `Skipped outputs:` unchanged. A tree renderer that decided
+    // the legend by scanning rendered lines for the header would emit one for
+    // a stack that skipped nothing.
+    mockListStacks.mockResolvedValue([{ stackName: 'SpoofRoot', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'SpoofRoot',
+        resources: {
+          'Skipped outputs:': makeResource({
+            resourceType: 'AWS::SNS::Topic',
+            physicalId: 'arn:spoof',
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'SpoofRoot', '--show-nested']);
+
+    expect(out).toContain('Skipped outputs:');
+    expect(out).not.toContain('The last deploy could not resolve the keys listed');
+  });
+
+  it('emits the legend for a CHILDLESS root under --show-nested', async () => {
+    // A root with a skipped set and no children still owes the legend once.
+    mockListStacks.mockResolvedValue([{ stackName: 'LoneRoot', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue(
+      makeState({ stackName: 'LoneRoot', skippedOutputs: { Only: 'a'.repeat(64) } })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'LoneRoot', '--show-nested']);
+
+    expect(out.split('\n').filter((l) => l === 'Skipped outputs:')).toHaveLength(1);
+    expect(out.split('The last deploy could not resolve the keys listed').length - 1).toBe(1);
+    expect(out).not.toContain('Nested stack:');
+  });
+
+  it('a tree node carrying an EMPTY skipped map gets neither block nor legend', async () => {
+    // The single-predicate property: the tree's legend guard and the block's
+    // own guard must answer the same question. This fixture separates field
+    // PRESENCE from a NON-EMPTY map on the nested path, so a tree guard asking
+    // `skippedOutputs !== undefined` emits the legend with no block anywhere
+    // in the tree.
+    mockListStacks.mockResolvedValue([{ stackName: 'EmptyMapTree', region: 'us-east-1' }]);
+    mockGetState.mockImplementation(async (name: string) =>
+      name === 'EmptyMapTree'
+        ? makeState({
+            stackName: 'EmptyMapTree',
+            resources: {
+              Child: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::EmptyMapTree~Child',
+              }),
+            },
+          })
+        : makeState({ stackName: 'EmptyMapTree~Child', skippedOutputs: {} })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EmptyMapTree', '--show-nested']);
+
+    expect(out).toContain('Nested stack: EmptyMapTree~Child');
+    expect(out.split('\n').filter((l) => l === 'Skipped outputs:')).toHaveLength(0);
+    expect(out).not.toContain('The last deploy could not resolve the keys listed');
+  });
+
+  it('emits NO legend for a tree where nothing was skipped', async () => {
+    // The other side of the guard: a tree that owes no legend must not get
+    // one, which is what unconditional emission would break.
+    mockListStacks.mockResolvedValue([{ stackName: 'CleanTree', region: 'us-east-1' }]);
+    mockGetState.mockImplementation(async (name: string) =>
+      name === 'CleanTree'
+        ? makeState({
+            stackName: 'CleanTree',
+            resources: {
+              Child: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: 'cdkd-local::stack::CleanTree~Child',
+              }),
+            },
+          })
+        : makeState({ stackName: 'CleanTree~Child' })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'CleanTree', '--show-nested']);
+
+    expect(out).toContain('Nested stack: CleanTree~Child');
+    expect(out).not.toContain('Skipped outputs:');
+    expect(out).not.toContain('The last deploy could not resolve the keys listed');
+  });
+
+  it('emits the legend ONCE for a nested tree, not per child', async () => {
+    const child = makeState({
+      stackName: 'Parent~Child',
+      skippedOutputs: { ChildUrl: 'b'.repeat(64) },
+    }).state;
+    const parent = makeState({
+      stackName: 'Parent',
+      resources: {
+        Child: {
+          physicalId: 'arn:child',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: {},
+        },
+      },
+      skippedOutputs: { ParentUrl: 'a'.repeat(64) },
+    }).state;
+    mockListStacks.mockResolvedValue(defaultListResponse('Parent'));
+    mockGetState.mockImplementation(async (name: string) =>
+      name === 'Parent' ? { state: parent } : { state: child }
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'Parent', '--show-nested']);
+
+    // Both blocks render; the explanation does not repeat. Header LINES, not
+    // substrings -- the legend names the block, so the literal appears there.
+    expect(out.split('\n').filter((l) => l === 'Skipped outputs:')).toHaveLength(2);
+    expect(out.split('The last deploy could not resolve the keys listed').length - 1).toBe(1);
+  });
+
   it('emits a `{state, lock}` JSON object with --json', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('JsonStack', 'us-west-2'));
     const stateRecord = makeState({
       stackName: 'JsonStack',
       region: 'us-west-2',
       outputs: { Endpoint: 'http://x' },
+      // `docs/cli-state.md` sends readers to `--json` for an EXACT digest
+      // comparison, so the untruncated digest is part of that promise.
+      skippedOutputs: { ApiUrl: 'a'.repeat(64) },
       resources: {
         R1: makeResource({ resourceType: 'AWS::IAM::Role', physicalId: 'r-1' }),
       },
@@ -485,6 +1032,9 @@ describe('cdkd state show', () => {
     expect(parsed.state.region).toBe('us-west-2');
     expect(parsed.state.outputs).toEqual({ Endpoint: 'http://x' });
     expect(parsed.state.resources.R1.physicalId).toBe('r-1');
+    // WHOLE, not the 12 the text view shows -- this is the claim the docs make
+    // when they send a reader here for an exact comparison.
+    expect(parsed.state.skippedOutputs).toEqual({ ApiUrl: 'a'.repeat(64) });
     expect(parsed.lock).toEqual(lockRecord);
   });
 
