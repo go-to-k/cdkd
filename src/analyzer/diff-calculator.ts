@@ -158,11 +158,19 @@ export class DiffCalculator {
     const processedLogicalIds = new Set<string>();
 
     // Snapshot each resource's `Fn::GetAtt` / `Fn::Sub`-`${X.Attr}` references
-    // from the RAW template, BEFORE the comparison loop below resolves (and
-    // mutates in place) the desired property intrinsics. Used by
-    // promoteInPlaceAttributeDependents — once `resolveBestEffort` runs, a
-    // GetAtt to an in-place-referenceable resource has been replaced by its
-    // resolved current value and can no longer be detected.
+    // from the RAW template, in one pass, for promoteInPlaceAttributeDependents
+    // below: it needs the references a property DECLARED, while the comparison
+    // loop works on RESOLVED values, where a GetAtt to an
+    // in-place-referenceable resource has already been replaced by its resolved
+    // current value. A PRECOMPUTATION rather than a rescue — that function also
+    // receives `desiredTemplate` and could re-extract from it, since the raw
+    // template survives the loop: the `try` arm clones, and the `catch` arm
+    // only aliases the leaf into a bag no consumer mutates.
+    // (This note used to say the loop "mutates in place" the desired property
+    // intrinsics. It has not since go-to-k/cdkd#939 added the clone in the same
+    // change that wrote the note; BEFORE that commit the loop ran the real
+    // resolver over the template leaf itself, and `resolveSub` wrote its
+    // resolved values back into the caller's `Fn::Sub` variable map.)
     const rawGetAttRefs = new Map<string, Map<string, Map<string, Set<string>>>>();
     for (const [logicalId, desiredResource] of Object.entries(desiredResources)) {
       if (desiredResource.Type === 'AWS::CDK::Metadata') continue;
@@ -784,14 +792,25 @@ export class DiffCalculator {
     const resolved: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(properties)) {
       try {
-        // Resolve a CLONE: the intrinsic resolver mutates its input in place
-        // (e.g. it rewrites an `Fn::Sub` variable map's `Fn::GetAtt` to the
-        // resolved current-state value). Mutating the shared desired template
-        // here would bake the OLD value into the template, so the deploy phase's
-        // later re-resolution (against the in-flight state, where an in-place-
-        // updated upstream now holds its NEW value) would still see the stale
-        // literal and skip a genuinely-changed dependent. Cloning keeps the raw
-        // intrinsics intact for the deploy phase.
+        // Resolve a CLONE. The reason is the OWNERSHIP contract, not any
+        // resolver's behaviour: this value is a leaf of a template its CALLER
+        // still shares with other consumers, so nothing here may let a resolver
+        // write through it. Both call sites share it — `cdkd diff` hands the
+        // same object on to the Outputs resolution that follows, and `cdkd
+        // deploy` re-resolves it against the in-flight state and provisions
+        // from it. The deploy one is the consequence with teeth: a
+        // resolved current-state value baked in here would still be read as a
+        // literal then, and a genuinely-changed dependent of an in-place-updated
+        // upstream would be skipped. Cloning makes that impossible whatever the
+        // resolver does.
+        // (The resolver does not mutate its input today: `resolveSub` wrote back
+        // into the caller's `Fn::Sub` variable map until go-to-k/cdkd#2764
+        // retired it, and this comment named that write-back. Kept as history so
+        // the clone is not read as dead weight. Both directions are fenced:
+        // `tests/unit/deployment/intrinsic-sub-variables-not-mutated.test.ts`
+        // holds the resolver to it, and deleting this `structuredClone` reds
+        // `does NOT mutate the desired template (resolveBestEffort resolves a
+        // clone)` in `tests/unit/analyzer/diff-calculator.test.ts`.)
         resolved[key] = await resolveFn(structuredClone(value));
       } catch {
         resolved[key] = value;
