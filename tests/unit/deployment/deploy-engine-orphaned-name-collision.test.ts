@@ -351,8 +351,6 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const advice = adviceIn(await attempt());
 
     expect(advice).toBeDefined();
-    // `--resource` and not `cdkd import`: the prose can NAME the command while
-    // withholding it, so only the flag distinguishes the two arms.
     expect(advice).not.toContain('--resource');
     // ...and the name is still printed, sanitised, in the prose.
     expect(advice).not.toContain('\u0007');
@@ -395,8 +393,11 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const advice = adviceIn(await attempt('CREATE', nested));
 
     expect(advice).toBeDefined();
-    // `--resource` and not `cdkd import`: the prose can NAME the command while
-    // withholding it, so only the flag distinguishes the two arms.
+    // `--resource` and not `cdkd import`: THIS arm's reason names the command
+    // while withholding it ("whose stack name cdkd import cannot resolve"), so
+    // only the flag distinguishes it. Measured: swapping the assertion reddens
+    // this case alone -- the other withholding arms' prose contains no
+    // `cdkd import` at all, which is why this note lives here and nowhere else.
     expect(advice).not.toContain('--resource');
   });
 
@@ -420,8 +421,6 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // Naming a remedy whose precondition the code never checks is the #2610
     // class; `runImportForResource` would SKIP such a type with
     // `skipped-no-impl` and leave the user exactly where they started.
-    // `--resource` and not `cdkd import`: the prose can NAME the command while
-    // withholding it, so only the flag distinguishes the two arms.
     expect(advice).not.toContain('--resource');
   });
 });
