@@ -2,7 +2,7 @@
 
   On a plain CREATE whose colliding name is one cdkd DERIVED, the failure is now followed by a line naming the cause and giving the adoption command (`cdkd import <stack> --resource <id>=<name>`). A diagnosis, not a behaviour change; whether a rollback should instead RE-ADOPT the resource is issue [#2914](https://github.com/go-to-k/cdkd/issues/2914).
 
-  **It stays silent for a name cdkd did not derive**, and withholds the command — saying why — for a nested-stack child, a type with no import, or a name whose characters would make the command name something else. The command is shell-quoted. A derived name is predictable rather than proof of ownership (a globally-unique one can belong to another account; the same stack in another region derives it too), so the message asks you to confirm the resource is yours first.
+  **It stays silent for a name cdkd did not derive**, and withholds the command — saying why — for a nested-stack child, a type with no import, or a name whose characters would make the command name something else. The command is shell-quoted. A derived name is predictable rather than proof of ownership (a globally-unique one can belong to another account; the same stack in another region derives it too), so the message asks you to confirm it is yours first.
 
   `docs/troubleshooting.md` gains this case, and corrects its physical-name description: `<StackName>-<LogicalId>` holds only when it fits the type's length limit, otherwise cdkd truncates and appends 8 hex chars.
 

@@ -129,12 +129,14 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
   async function attempt(
     changeType: ChangeType = 'CREATE',
     stackName: string = STACK,
-    physicalIdOverride?: string
+    physicalIdOverride?: string,
+    logicalIdOverride?: string
   ): Promise<string[]> {
     if (physicalIdOverride !== undefined) createError = collisionError(physicalIdOverride);
+    const id = logicalIdOverride ?? LOGICAL;
     const engine = makeEngine();
     const change: ResourceChange = {
-      logicalId: LOGICAL,
+      logicalId: id,
       changeType,
       resourceType: TYPE,
       desiredProperties: { Source: 'arn:b' },
@@ -142,7 +144,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
       ...(changeType === 'CREATE' ? {} : { currentProperties: { Source: 'arn:a' } }),
     } as ResourceChange;
     const template: CloudFormationTemplate = {
-      Resources: { [LOGICAL]: { Type: TYPE, Properties: { Source: 'arn:b' } } },
+      Resources: { [id]: { Type: TYPE, Properties: { Source: 'arn:b' } } },
     };
     const provisionResource = (
       engine as unknown as {
@@ -157,7 +159,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     ).provisionResource.bind(engine);
 
     await withStackName(stackName, () =>
-      provisionResource(LOGICAL, change, {}, stackName, template).then(
+      provisionResource(id, change, {}, stackName, template).then(
         () => {
           throw new Error('expected the create to fail');
         },
@@ -356,6 +358,19 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     expect(advice).not.toContain('\u0007');
   });
 
+  it('withholds the command when sanitising changes the LOGICAL id', async () => {
+    // The third value the command carries. It was outside the comparison until
+    // round 3: with a clean physical id, the guard admits a dirty logical id
+    // (its skeleton strips the control character) and cdkd emitted a command
+    // naming a logical id no template or state record holds.
+    const advice = adviceIn(
+      await attempt('CREATE', STACK, `${STACK}-${LOGICAL}`, `${LOGICAL}\u0007`)
+    );
+
+    expect(advice).toBeDefined();
+    expect(advice).not.toContain('--resource');
+  });
+
   it('withholds the command when sanitising changes the STACK name', async () => {
     // The stack-name half of the same comparison, ISOLATED from the id half.
     // The physical id is deliberately CLEAN: the guard's skeleton strips the
@@ -367,8 +382,6 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const advice = adviceIn(await attempt('CREATE', `${STACK}\u0007`, `${STACK}-${LOGICAL}`));
 
     expect(advice).toBeDefined();
-    // `--resource` and not `cdkd import`: the prose can NAME the command while
-    // withholding it, so only the flag distinguishes the two arms.
     expect(advice).not.toContain('--resource');
   });
 

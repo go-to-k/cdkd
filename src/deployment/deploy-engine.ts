@@ -6679,8 +6679,8 @@ export class DeployEngine {
     // helper cannot make this method read an undefined stack name silently.
     if (!stackName) return undefined;
 
-    // EVERY interpolation of the name goes through this, the prose included --
-    // not only the pasteable command. An earlier revision sanitised the command
+    // EVERY interpolation goes through this, the prose included and not only
+    // the pasteable command. An earlier revision sanitised the command
     // alone while `diagnosis` and `deleteArm` printed the raw value, so a name
     // carrying a control character (which `looksLikeCdkdGeneratedName` accepts,
     // since its skeleton strips every non-alphanumeric) reached the terminal
@@ -6744,12 +6744,21 @@ export class DeployEngine {
     //   sanitising CHANGES the value, the command would carry a name AWS does
     //   not hold, so it is withheld rather than shipped wrong — the same
     //   reasoning `renderDisableCommand` records.
-    const commandNamesTheRightResource = safeId === physicalId && safeStack === stackName;
+    // All THREE values the command carries, not two. The logical id is
+    // interpolated into it as well, and `looksLikeCdkdGeneratedName` admits a
+    // dirty one for the same reason it admits a dirty name — its skeleton
+    // strips every non-alphanumeric — so a control character there produced a
+    // command naming a logical id no template or state record holds. Measured
+    // against production before this line covered it, which is the same defect
+    // the two other comparisons exist for, one field over.
+    const commandNamesTheRightResource =
+      safeId === physicalId && safeStack === stackName && safeLogicalId === logicalId;
     const importableTarget = !stackName.includes('~');
 
     if (!canImport || !commandNamesTheRightResource || !importableTarget) {
       const why = !canImport
-        ? `cdkd cannot adopt ${error.resourceType} back into state (its provider implements no import)`
+        ? `cdkd cannot adopt ${displaySafe(error.resourceType, { asciiOnly: true })} back into ` +
+          `state (its provider implements no import)`
         : !importableTarget
           ? `this is a nested-stack child, whose stack name cdkd import cannot resolve`
           : `cdkd cannot render an import command that provably names this resource`;
