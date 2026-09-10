@@ -796,7 +796,24 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
       'utf8'
     );
     expect(source).toContain('exportNameSecretExposure(');
-    expect(source).toContain('secretBearingExportNameWarning(outputKey, exportName, exposure)');
+    // TWO INDEPENDENT ASSERTIONS rather than one pinned call spelling. A
+    // first cut normalised whitespace and pinned the whole argument list --
+    // which review measured was still brittle in the other direction: the
+    // normalised needle carried the WRAPPED spacing, so the ONE-LINE form
+    // would have reddened. Formatting is not the subject; the callee and its
+    // fourth argument are.
+    //
+    // The fourth argument is load-bearing: `exposure` is what resolution PUT
+    // in the name, `context.recordedSecretValues` is the corpus the printed
+    // text is tested against, and dropping the second silently un-widens the
+    // check back to the two-string shape issue #2874 fixed. This is the only
+    // fence on it -- a callee that ignores the argument is invisible to every
+    // behavior test in the tree.
+    const callArgs = /secretBearingExportNameWarning\(([^)]*)\)/.exec(source)?.[1] ?? '';
+    expect(callArgs).not.toBe('');
+    for (const arg of ['outputKey', 'exportName', 'exposure', 'context.recordedSecretValues']) {
+      expect(callArgs).toContain(arg);
+    }
     expect(twin).toContain('declaredExportIsIntrinsic && isSecretDynamicReference(exportName)');
     // ...and the LITERAL arm, which is what keeps the diff from publishing an
     // alias deploy refuses without being able to see the secret.

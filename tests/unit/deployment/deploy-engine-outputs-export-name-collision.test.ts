@@ -35,6 +35,9 @@
  * reword cannot silently make them vacuous.
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import * as path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
@@ -70,6 +73,20 @@ const PLAINTEXT_A = 'alpha-plaintext-secret';
 const EXPR_A = '{{resolve:secretsmanager:alpha:SecretString:password:AWSCURRENT}}';
 const PLAINTEXT_B = 'beta-plaintext-secret';
 const EXPR_B = '{{resolve:secretsmanager:beta:SecretString:password:AWSCURRENT}}';
+
+/**
+ * The corpus the engine threads into the collision warning.
+ *
+ * Deliberately NON-EMPTY: every name in these collision cases is secret-free,
+ * so passing the real recorded secrets asserts that a populated corpus does
+ * not change what an innocent name renders as. An empty map would make the
+ * argument unobservable, which is the shape review flagged in these four
+ * assertions (issue #2874 round 2).
+ */
+const RECORDED = new Map([
+  [PLAINTEXT_A, EXPR_A],
+  [PLAINTEXT_B, EXPR_B],
+]);
 // The OTHER version stage of the same secret: a DIFFERENT expression resolving
 // to the SAME plaintext, so the value-keyed map keeps only the last and cannot
 // tell the two leaves apart. Only a POSITION source can.
@@ -376,7 +393,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     // export (issue #2193) — so the index is fed NOTHING for this stack.
     expect(indexed).toEqual({});
     expect(savedStateJson).not.toContain(PLAINTEXT_B);
-    expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic'));
+    expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic', RECORDED));
   });
 
   it('polarity A->B (owner name sorts AFTER the exporter) behaves identically', async () => {
@@ -393,7 +410,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(saved['AlphaSecret']).toBe(EXPR_A);
     expect(indexed).toEqual({});
     expect(savedStateJson).not.toContain(PLAINTEXT_A);
-    expect(warnings()).toContain(exportAliasCollisionWarning('AlphaSecret', 'ZuluPublic'));
+    expect(warnings()).toContain(exportAliasCollisionWarning('AlphaSecret', 'ZuluPublic', RECORDED));
   });
 
   it('ALL-PUBLIC collision: no secret machinery involved, the owner value survives', async () => {
@@ -408,7 +425,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(saved['PublicOne']).toBe(PUBLIC_A);
     expect(saved['PublicTwo']).toBe(PUBLIC_B);
     expect(indexed).toEqual({});
-    expect(warnings()).toContain(exportAliasCollisionWarning('PublicTwo', 'PublicOne'));
+    expect(warnings()).toContain(exportAliasCollisionWarning('PublicTwo', 'PublicOne', RECORDED));
   });
 
   it('two SECRET outputs colliding: each keeps its OWN expression, and it warns', async () => {
@@ -427,7 +444,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(indexed).toEqual({});
     expect(savedStateJson).not.toContain(PLAINTEXT_A);
     expect(savedStateJson).not.toContain(PLAINTEXT_B);
-    expect(warnings()).toContain(exportAliasCollisionWarning('SecretBeta', 'SecretAlpha'));
+    expect(warnings()).toContain(exportAliasCollisionWarning('SecretBeta', 'SecretAlpha', RECORDED));
   });
 
   it('CONTROL — the REVERSED order never corrupted, and is still skipped + warned', async () => {
@@ -443,7 +460,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(saved['AlphaPublic']).toBe(PUBLIC_A);
     expect(saved['ZuluSecret']).toBe(EXPR_B);
     expect(indexed).toEqual({});
-    expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic'));
+    expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic', RECORDED));
   });
 
   it('the collision guard also covers the NO-CHANGE re-check call site', async () => {
@@ -462,7 +479,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
 
     expect(saved['AlphaPublic']).toBe(PUBLIC_A);
     expect(indexed).toEqual({});
-    expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic'));
+    expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic', RECORDED));
   });
 
   // --- key space: what does NOT collide -------------------------------------
@@ -575,6 +592,34 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
       ),
     ]);
     expect(secretWarnings[0]).not.toContain(PLAINTEXT_A);
+  });
+
+  it('the engine threads its secret corpus into BOTH collision warnings', () => {
+    // A SOURCE FENCE, and the only one on the wiring. Review measured that
+    // dropping the corpus argument from `exportAliasCollisionWarning` silently
+    // reverts the fourth site's fix while every behavior test stays green,
+    // because the four collision tests build their expected string from the
+    // builder itself -- pinning the 2- and 3-argument forms as EQUAL, which is
+    // the opposite of what the parameter is for (issue #2874 round 2).
+    //
+    // The sibling call already had this fence in `analyzer/outputs-diff.test.ts`;
+    // the identical one was not written here.
+    const engineSource = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/deployment/deploy-engine.ts'),
+      'utf8'
+    );
+    const args = /exportAliasCollisionWarning\(([\s\S]*?)\)\s*\);/.exec(engineSource)?.[1] ?? '';
+    expect(args).not.toBe('');
+    // The corpus is named `outputsPassSecrets` -- the bag this method already
+    // computed. This fence caught the rename when it happened, which is the
+    // whole point of pinning the identifier rather than "some third argument".
+    for (const arg of ['outputKey', 'exportName', 'outputsPassSecrets']) {
+      expect(args).toContain(arg);
+    }
+    // ...and NOT a fresh empty map. That spelling type-checks, satisfies a
+    // "three arguments" test, and reinstates the leak the required parameter
+    // exists to prevent.
+    expect(args).not.toContain('new Map()');
   });
 
   // --- the property the pruned-name decision rests on ------------------------
