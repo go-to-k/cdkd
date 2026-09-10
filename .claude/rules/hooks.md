@@ -763,9 +763,12 @@ the retry pair plus `rollback-executor.ts` were in neither list, until
 #2042's audit. Both directions fenced by
 `tests/unit/scripts/cross-cutting-list-sync.test.ts`; the per-gate file
 lists live in `.markgate.yml`'s `integ-destroy.include` and the hooks' own
-activation patterns. CLAUDE.md deliberately keeps no copy of either integ
-gate's path list; the scopes it does still state are `check`, `docs`,
-`integ-local` and `integ-schema-migration`, none of which is fenced here.
+activation patterns. CLAUDE.md deliberately keeps no copy of any gate's path
+list — not the two integ gates', and since the hook-pointer pass not
+`integ-local`'s or `integ-schema-migration`'s either. What it still carries for
+`check` and `docs` is an explicitly non-authoritative rough guide pointing
+here and at `.markgate.yml`; nothing in that guide is fenced, so read the
+`include:` lists rather than it.
 
 **PR-diff scope guards (integ-destroy / integ-broad / integ-local).** The
 three integ gates first check whether the merged PR's diff touches their

@@ -106,7 +106,7 @@ const MAX_WORKFLOW_RULES_BYTES = 21_515;
  * Whether the relocated text still LOADS is a different question, and the
  * injected-only sweep further down is what answers it.
  */
-const MAX_INJECTED_CONTEXT_BYTES = 58_250;
+const MAX_INJECTED_CONTEXT_BYTES = 58_200;
 
 /**
  * `## Workflow Rules` must keep at least this many top-level `- **` bullets.
