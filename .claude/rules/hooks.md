@@ -761,8 +761,9 @@ proceeds unverified) — the dangerous direction, indistinguishable from a
 working gate. `destroy-runner.ts` / `region-check.ts` sat in that state, and
 the retry pair plus `rollback-executor.ts` were in neither list, until
 #2042's audit. Both directions fenced by
-`tests/unit/scripts/cross-cutting-list-sync.test.ts`; per-gate file lists
-live in CLAUDE.md's `integ-destroy` / `integ-broad` entries.
+`tests/unit/scripts/cross-cutting-list-sync.test.ts`; the per-gate file
+lists live in `.markgate.yml`'s `integ-destroy.include` and the hooks' own
+activation patterns. CLAUDE.md deliberately keeps no copy of either.
 
 **PR-diff scope guards (integ-destroy / integ-broad / integ-local).** The
 three integ gates first check whether the merged PR's diff touches their

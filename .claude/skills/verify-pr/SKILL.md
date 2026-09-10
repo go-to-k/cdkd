@@ -130,7 +130,7 @@ Run each check and report pass/fail:
      so editing one copy alone fails CI.) The canonical broad set (keep in sync
      with `.claude/hooks/integ-broad-gate.sh`,
      `.claude/skills/run-integ/SKILL.md` step 11, `.markgate.yml` integ-broad
-     gate, CLAUDE.md "integ-broad" entry):
+     gate):
      - `bench-cdk-sample` (39-resource VPC+NAT+CF+Lambda+SQS)
      - `lambda`
      - `microservices`

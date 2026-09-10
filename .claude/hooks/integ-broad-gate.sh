@@ -131,8 +131,8 @@ cd "$target_dir" 2>/dev/null || exit 0
 # deploy/destroy, not just the feature scenario the PR adds. Keep in
 # sync with the same list in .claude/skills/verify-pr/SKILL.md
 # (step 6, "CROSS-CUTTING CHECK"), .claude/skills/pick-integ/SKILL.md
-# (step 2's changed-path table), the CLAUDE.md "integ-broad" entry, and
-# the memory rule feedback_cross_cutting_needs_broad_integ.md. The four
+# (step 2's changed-path table), and the memory rule
+# feedback_cross_cutting_needs_broad_integ.md. The three
 # prose copies are fenced against this one by
 # tests/unit/scripts/cross-cutting-list-sync.test.ts, because the list
 # had already drifted between copies before that fence existed.
@@ -297,8 +297,7 @@ Required action — no exceptions:
   /run-integ bench-cdk-sample      # 39-resource VPC+NAT+CF+Lambda+SQS
   # or one of (the canonical broad-set is duplicated in
   # .claude/skills/run-integ/SKILL.md step 11 + .markgate.yml
-  # integ-broad gate's docs + CLAUDE.md "integ-broad" entry — keep
-  # all four in sync):
+  # integ-broad gate's docs — keep all three in sync):
   /run-integ lambda
   /run-integ microservices
   /run-integ drift-revert

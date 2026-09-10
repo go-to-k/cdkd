@@ -119,7 +119,7 @@ const read = (p: string): string => readFileSync(p, 'utf8');
 /**
  * Floors, asserted INSIDE each extractor so no call site can forget one.
  *
- * The cross-cutting list holds 11 entries and the broad set 9. Both floors sit
+ * The cross-cutting list holds 12 entries and the broad set 9. Both floors sit
  * a couple of entries below that so a genuine one- or two-entry shrink does not
  * need a test edit in the same PR, while a parser that has gone blind -- which
  * loses the whole list at once rather than one entry -- cannot clear it. A
@@ -154,7 +154,7 @@ const canonical = (entries: readonly string[]): string[] => [...entries].sort();
  * deleting `src/deployment/deploy-engine.ts` from the hook regex AND every one
  * of them left the whole suite GREEN -- the `names only paths that exist` test
  * does not fire (the survivors all exist) and `MIN_PATHS = 8` leaves
- * room for a silent three-entry shrink. The narrow predecessor of this pin
+ * room for a silent four-entry shrink. The narrow predecessor of this pin
  * protected only the three entries issue #2042 added, so it had exactly the hole
  * its own docblock disclosed for entries never added, plus one it did not: a
  * REMOVAL was invisible too.
@@ -388,7 +388,7 @@ function pathsFromVerifyPrRegex(): string[] {
  * This copy additionally uses a per-directory brace spelling that stands for
  * several entries (`src/cli/commands/{deploy,destroy}.ts`). It is a second
  * spelling of the same list, not a second list, so it is expanded rather than
- * skipped -- skipping it would drop three of the eleven entries and leave the
+ * skipped -- skipping it would drop three of the twelve entries and leave the
  * copy that names the most paths the least fenced.
  */
 function pathsFromPickInteg(): string[] {
