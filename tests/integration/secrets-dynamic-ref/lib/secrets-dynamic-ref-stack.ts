@@ -320,6 +320,50 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         }),
       });
     }
+
+    // Issue #2759: `Fn::Base64` over a dynamic reference. The resolver returns
+    // the ENCODED value, and every redaction needle matches the plaintext
+    // LITERALLY — so before the derived needle the encoded secret was
+    // persisted to `state.json`, decodable with one command, and printed
+    // beside its own mask (`Resolved Fn::Base64: *** -> <the secret>`). This
+    // is the ordinary CloudFormation spelling for EC2 `UserData`, so it is not
+    // a contrived shape.
+    //
+    // `cdk.Fn.base64` rather than a hand-written intrinsic so the template
+    // carries whatever spelling the installed CDK emits; verify.sh guards the
+    // premise by asserting the synthesized shape.
+    //
+    // ITS OWN TOKEN, and that is the whole point of this block being separate.
+    // It rode on `CDKD_TEST_OUTPUT_LEAK` for one live run and could NEVER have
+    // passed: `resolveOutputs` sets `resolutionFailed` when ANY output value
+    // comes back `undefined`, and `OutputFailureLeak` is DESIGNED to fail — so
+    // the engine kept `persistedOutputs` wholesale and this key never reached
+    // state at all. The two outputs must therefore never share a deploy: one
+    // exists to fail, and a failing sibling freezes the whole bag. Measured
+    // 2026-09-10, which is why the arm's assertion is "the key is the MASK"
+    // rather than "no base64 in state" — the negative alone passed while the
+    // arm was inert.
+    //
+    // Still GATED rather than permanent: the diff pass resolves outputs with
+    // `skipDynamicReferences`, under which the body is
+    // `base64('{{resolve:...}}')` rather than `base64(<plaintext>)`. Those two
+    // never agree, so a permanently declared `Fn::Base64`-over-a-secret output
+    // shows a change on every run, with or without this fix — measured on this
+    // branch and tracked, with both encodings, as issue
+    // [#2909](https://github.com/go-to-k/cdkd/issues/2909). verify.sh drops the
+    // key from state right after asserting on it, so the unchanged-stack
+    // `diff --fail` guard later is unperturbed.
+    //
+    // `literalSecretName` (the account CONCRETE) for the same reason
+    // `OutputFailureLeak` uses it: a CDK token would make the leaf an
+    // `Fn::Join` and the template would not carry a plain reference string.
+    if (process.env.CDKD_TEST_BASE64_LEAK === 'true') {
+      new cdk.CfnOutput(this, 'Base64Secret', {
+        value: cdk.Fn.base64(
+          `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}`
+        ),
+      });
+    }
     // A literal OUTPUT embedding the two-character reference (issue #2516):
     // the same leaf shape as DB_PORT_LITERAL, walked by the outputs
     // redaction against the template's `Outputs`. verify.sh asserts

@@ -82,21 +82,21 @@ Index of every area: [code-layout.md](code-layout.md).
     and each alone is insufficient: the bag is HOISTED above the `try` so the
     `catch` can name it at all, and the message is then MASKED — keeping the
     hoist and dropping the mask still puts the plaintext on stderr (measured).
-    **Where a caller masks an error the RESOLVER THREW, it is masking text the
-    resolver built unmasked** (the #2728 sites above are a different half of
-    the same file: the resolver's own debug / warn ECHOES, which it masks
-    itself). So every new caller of a throwing resolver inherits the
-    obligation, which is why the class keeps recurring one boundary at a time
-    (#2728, then #2803 — NOT #2531, which replaced scrub's PRIVATE name map
-    with a view of the pass map, a bag-identity change carrying no mask and no
-    throw). **Every one of these masks is BOUNDED** — `maskSecretsInText`
-    matches literally, so a plaintext that arrives truncated or re-encoded is
-    not masked, and neither is one below `MIN_NEEDLE_LENGTH` (4) unless it is
-    the ENTIRE string. Embedding alone is NOT a limit: the substring arm masks
-    a plaintext inside a longer message. Do not restate WHICH shapes
-    escape or where a fix would sit: issue #2827 carries that enumeration with
-    its measurements, and five review rounds on #2803 each wrote a version of
-    it here and in the code that measurement then refuted.
+    **Since #2827 the resolver masks its OWN throws**, at the raw value rather
+    than the assembled message, so a caller's boundary mask now covers mainly
+    what the resolver did NOT build — an SDK rejection propagated through it,
+    which names the resource it refused. The class had recurred one boundary
+    at a time (#2728, then #2803 — NOT #2531, a bag-identity change carrying
+    no mask and no throw) precisely because it was fixed at callers.
+    **Every one of these masks is BOUNDED** — `maskSecretsInText` matches
+    literally, so a plaintext that has been truncated or re-encoded is not
+    masked, and neither is one below `MIN_NEEDLE_LENGTH` (4)
+    unless it is the ENTIRE string. Embedding alone is NOT a limit: the
+    substring arm masks a plaintext inside a longer message. Do not restate
+    WHICH shapes escape or where a fix would sit — that is acted on and kept
+    true in `intrinsic-function-resolver.ts` (`maskValueLeaves`, and the
+    residual above `maskingContext`), and five review rounds on #2803 each
+    wrote a version of it here that measurement then refuted.
   - **Concurrent resolutions DRAIN before a rejection surfaces, BOUNDED by
     one cap per resolution** (#2563, residual #2814; see
     `allSettledKeepingFirstRejection`).

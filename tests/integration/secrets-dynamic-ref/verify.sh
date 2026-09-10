@@ -127,6 +127,21 @@ SECURE_PARAM_NAME="cdkd-test-dynref-secure-${ACCOUNT_ID}"
 # Known values authored in the fixture stack (NOT secret in any real sense;
 # this is test data, but we still mask the secret-derived ones in output).
 EXPECTED_PASSWORD="cdkd-known-pw-123"
+# The BASE64 of that password (issue #2759), derived HERE rather than at the arm
+# that asserts on it. `diag_output` is defined below and first called long before
+# Phase 1b2, and it must be able to WITHHOLD this form from the moment it can be
+# called: on a derived-needle regression the very line the arm would dump is
+# `Resolved Fn::Base64: *** -> <base64(password)>`, which the plaintext arms do
+# not match. Deriving it at the assertion left a window in which `diag_output`
+# printed a decodable secret into the run log `/run-integ` persists (review round
+# 2). Round-tripped so a host `base64` with different flags cannot make the arm
+# match a needle nothing emits.
+EXPECTED_PASSWORD_B64=$(printf '%s' "${EXPECTED_PASSWORD}" | base64 | tr -d '\n')
+if [ -z "${EXPECTED_PASSWORD_B64}" ] \
+  || [ "$(printf '%s' "${EXPECTED_PASSWORD_B64}" | base64 --decode)" != "${EXPECTED_PASSWORD}" ]; then
+  echo "FAIL: premise: could not derive/round-trip the base64 of the known password -- diag_output could not withhold it and the #2759 assertions would be vacuous" >&2
+  exit 1
+fi
 EXPECTED_FULL='{"username":"cdkd-user","password":"cdkd-known-pw-123","pin":"q7"}'
 EXPECTED_SSM="cdkd-known-ssm-value"
 # The TWO-character secret (issue #2516): below the redaction value scan's
@@ -327,6 +342,7 @@ diag_output() { # diag_output <text>
     || [[ "${text}" == *"${EXPECTED_SECURE}"* ]] \
     || [[ "${text}" == *"${EXPECTED_USERNAME}"* ]] \
     || [[ "${text}" == *"${EXPECTED_DB_PORT_LITERAL}"* ]] \
+    || [[ "${text}" == *"${EXPECTED_PASSWORD_B64}"* ]] \
     || [[ "${text}" =~ $pin_re ]]; then
     echo "      output: <WITHHELD — it carries a resolved secret, which is itself the bug>" >&2
     return 0
@@ -358,7 +374,8 @@ assert_diag_output_arms() {
     "$(printf 'zero-param \033[m%s tail' "${EXPECTED_PIN}")" \
     "$(printf 'non-SGR final byte \033[2K%s tail' "${EXPECTED_PIN}")" \
     "$(printf 'colon params \033[38:5:1m%s tail' "${EXPECTED_PIN}")" \
-    "$(printf 'private params \033[?25h%s tail' "${EXPECTED_PIN}")"; do
+    "$(printf 'private params \033[?25h%s tail' "${EXPECTED_PIN}")" \
+    "Resolved Fn::Base64: *** -> ${EXPECTED_PASSWORD_B64}"; do
     case "$(diag_output "${diag_probe}" 2>&1)" in
       *WITHHELD*) ;;
       *) echo "FAIL: premise: diag_output would print a diagnostic carrying a secret" >&2; exit 1 ;;
@@ -441,9 +458,20 @@ if [ "${diag_probe-unset}" != "unset" ]; then
   exit 1
 fi
 
+# Scratch copies of `state.json` this script makes mid-run. Removed inside the
+# EXISTING `cleanup`, not by a tail `rm`: every assertion between a `mktemp` and
+# such a tail exits under `set -e`, so a tail cleanup runs only on the happy
+# path. And registered here rather than behind a second `trap ... EXIT`, which
+# does not chain -- it would silently DISARM this function and leak the AWS
+# teardown (fenced repo-wide by `tests/unit/scripts/integ-single-exit-trap.test.ts`).
+SCRATCH_FILES=()
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  if [ "${#SCRATCH_FILES[@]}" -gt 0 ]; then
+    rm -f "${SCRATCH_FILES[@]}" || true
+  fi
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -656,6 +684,142 @@ echo "    OK: the OutputFailureLeak resolution failure was reported masked (#272
 # password, and the helper withholds a line carrying any of the fixture's
 # three secrets, so nothing this echo prints can be one.
 diag_output "${OUTPUT_FAILURE_WARN}"
+
+# --- Phase 1b2: Fn::Base64 over a dynamic reference (issue #2759) ----------
+# ITS OWN DEPLOY, under its own token, and that separation is the arm rather
+# than a tidiness choice. It first rode on Phase 1b's `CDKD_TEST_OUTPUT_LEAK`
+# deploy and could never have passed: `resolveOutputs` sets `resolutionFailed`
+# when ANY output resolves to `undefined`, and `OutputFailureLeak` is DESIGNED
+# to fail -- so the engine kept `persistedOutputs` wholesale and `Base64Secret`
+# never reached state. Measured live 2026-09-10; the negative assertion ("no
+# base64 in state") passed the whole time, and only the positive one ("the key
+# is the MASK") caught it.
+#
+# `Base64Secret`'s value is `Fn::Base64` over the secret's `password`
+# reference. The resolver returns the ENCODED value, and
+# `redactSecretsForState` / `maskSecretsInText` both match the recorded
+# plaintext LITERALLY -- so nothing matched the encoding and the secret was
+# persisted to `state.json` in a form one command decodes, and printed on the
+# resolver's own debug line beside its mask. The fix registers the TRANSFORMED
+# value as a derived MASK-ONLY needle at the transform site.
+#
+# The encoding is computed HERE from the same known plaintext the rest of the
+# fixture uses, so the assertion is about a value this script derived rather
+# than about whatever the binary happened to emit.
+echo "==> Phase 1b2: CDKD_TEST_BASE64_LEAK probe deploy (issue #2759)"
+if ! DEPLOY_OUT_B64=$(CDKD_TEST_BASE64_LEAK=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the CDKD_TEST_BASE64_LEAK probe deploy exited non-zero -- Base64Secret resolves cleanly, so this deploy must succeed (issue #2759)" >&2
+  diag_output "${DEPLOY_OUT_B64}"
+  exit 1
+fi
+# THE PREMISE THAT WOULD HAVE NAMED THE FAILURE DIRECTLY, rather than leaving
+# it to be inferred from an absent key. `resolveOutputs` freezes the whole bag
+# to `persistedOutputs` when any output resolves to `undefined`, and it says so
+# on this line. If it ever fires here again, the arm is inert for the same
+# reason as before and this reports THAT instead of "the needle did not fire".
+#
+# SILENTLY DISARMABLE, and accepted as such rather than left to be discovered
+# (review round 2): the sentence is CONCATENATED across two lines in
+# `src/deployment/deploy-engine.ts`, so it is not greppable there and a reword
+# would disarm this guard with no failure anywhere. It is a DIAGNOSTIC, not the
+# assertion — the backstop is the `== '***'` check below, which is a fact about
+# state rather than about wording, and which is what actually caught the
+# original inert arm. Anchored on the shortest stable fragment for that reason.
+if [[ "${DEPLOY_OUT_B64}" == *"keeping the previously persisted outputs"* ]]; then
+  echo "FAIL: premise: the Base64 probe deploy suppressed its outputs persist -- some output failed to resolve, so the whole bag was kept and this arm cannot test anything (issue #2759)" >&2
+  diag_output "${DEPLOY_OUT_B64}"
+  exit 1
+fi
+# The same whole-log negatives Phase 1b applies to its own capture: this deploy
+# resolves every secret the stack references, so a masking regression anywhere
+# in it would print here too.
+if [[ "${DEPLOY_OUT_B64}" == *"${EXPECTED_PASSWORD}"* ]]; then
+  echo "FAIL: the Base64 probe deploy's --verbose log carries the resolved password in plaintext (issue #2759)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_B64}" == *"${EXPECTED_SECURE}"* ]] || [[ "${DEPLOY_OUT_B64}" == *"${EXPECTED_USERNAME}"* ]]; then
+  echo "FAIL: the Base64 probe deploy's --verbose log carries the SecureString value or the username in plaintext (issue #2759)" >&2
+  exit 1
+fi
+# The needle and its round-trip check are derived beside EXPECTED_PASSWORD above,
+# so `diag_output` can withhold this form from its first callable moment.
+# Premise: the probe deploy's own synth carried the output as an `Fn::Base64`
+# over THIS run's secret reference. Equality, not a shape test: a gate that
+# stopped declaring it, a CDK token turning the leaf into an `Fn::Join`, or a
+# reference to a different key would each leave the assertions below with no
+# arm behind them.
+B64_SHAPE=$(jq -r --arg secret "${SECRET_NAME}" '.Outputs.Base64Secret.Value
+  | if . == null then "absent"
+    elif type != "object" then "not-an-intrinsic"
+    elif .["Fn::Base64"] == ("{{resolve:secretsmanager:" + $secret + ":SecretString:password}}") then "Fn::Base64"
+    else "other" end' "${SYNTH_TEMPLATE}")
+if [ "${B64_SHAPE}" != "Fn::Base64" ]; then
+  echo "FAIL: premise: Base64Secret synthesized as '${B64_SHAPE}', not an Fn::Base64 over this run's password reference -- the #2759 arm is not what this deploy exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: Base64Secret is an Fn::Base64 over the password reference (${B64_SHAPE})"
+# The whole persisted state document, which is the sink #2759 is about: the
+# resolved value flows through the save choke point into `state.outputs`, and
+# the pre-fix answer was the encoding verbatim. Grepping the WHOLE document
+# rather than the one key is deliberate -- the encoding has no legitimate home
+# anywhere in this stack's state.
+# Both scratch copies are registered with the EXISTING exit trap rather than
+# `rm`-ed at the end of the block: every assertion between here and there exits
+# on failure under `set -e`, so a tail cleanup runs only on the happy path --
+# the shape `.claude/rules` calls out, one scale down from a leaked AWS
+# resource. `cleanup` is the fixture's single EXIT handler; adding a second
+# `trap ... EXIT` would DISARM it and leak the real teardown.
+B64_STATE=$(mktemp)
+B64_TRIMMED=$(mktemp)
+SCRATCH_FILES+=("${B64_STATE}" "${B64_TRIMMED}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${B64_STATE}" --quiet
+if grep -qF "${EXPECTED_PASSWORD_B64}" "${B64_STATE}"; then
+  echo "FAIL: state.json carries the base64 of the resolved password -- one command decodes it (issue #2759)" >&2
+  exit 1
+fi
+# ...and MASKED rather than merely absent. Without this the negative above
+# passes for a deploy that skipped the output, dropped it, or never resolved
+# it at all -- none of which is the fix.
+B64_PERSISTED=$(jq -r '.outputs.Base64Secret // "<absent>"' "${B64_STATE}")
+if [ "${B64_PERSISTED}" != "***" ]; then
+  # Through `diag_output`, not interpolated: the grep above catches the exact
+  # `base64(password)` needle, but an ASSEMBLED body (base64 of a string merely
+  # CONTAINING the password) is a different string that still decodes, so a bare
+  # echo would print it (review round 2).
+  echo "FAIL: state.outputs.Base64Secret is not the mask '***' -- the derived needle did not fire (issue #2759); value follows" >&2
+  diag_output "${B64_PERSISTED}"
+  exit 1
+fi
+echo "    OK: the Fn::Base64 output persisted as the mask, not as a decodable secret (#2759)"
+# The LOG half of the same defect: `Resolved Fn::Base64: *** -> <encoding>`
+# masked the input and printed the output in the same breath. `--verbose` is
+# on for this deploy, so the line is in the captured log.
+if [[ "${DEPLOY_OUT_B64}" == *"${EXPECTED_PASSWORD_B64}"* ]]; then
+  echo "FAIL: the probe deploy's --verbose log carries the base64 of the resolved password (issue #2759)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_B64}" != *"Resolved Fn::Base64:"* ]]; then
+  echo "FAIL: premise: the probe deploy logged no 'Resolved Fn::Base64:' line -- the negative above passes for free (issue #2759)" >&2
+  diag_output "${DEPLOY_OUT_B64}"
+  exit 1
+fi
+echo "    OK: no 'Resolved Fn::Base64' line carried the encoded secret (#2759)"
+# DROP the key from state before anything else runs. `Base64Secret` is declared
+# only for this probe deploy, and the diff pass resolves outputs with
+# `skipDynamicReferences` -- so it would show as a REMOVE row and red the
+# unchanged-stack `diff --fail` guard later in this fixture. Same direct-S3
+# write idiom Phase 1f / 1f2 use, and safe for the same reason: nothing holds
+# the lock between phases and the next `saveState` reads its own etag.
+jq 'del(.outputs.Base64Secret)' "${B64_STATE}" > "${B64_TRIMMED}"
+if jq -e 'has("outputs") and (.outputs | has("Base64Secret"))' "${B64_TRIMMED}" >/dev/null; then
+  echo "FAIL: could not drop Base64Secret from the persisted outputs -- the diff --fail guard later would red on it" >&2
+  exit 1
+fi
+aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
 
 # --- Assertion: dynamic references resolved on the deployed Lambda ----
 echo "==> Reading consumer Lambda env vars from AWS (GetFunctionConfiguration)"

@@ -551,16 +551,28 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       resolverMode.real = true;
     });
 
-    it('the resolver really echoes the plaintext — premise, measured on the error the resolver threw', async () => {
+    it('the resolver reaches this throw and masks it AT THE THROW — premise, restated by issue #2827', async () => {
       await makeEngine().deploy(stackName, templateWith({ Leak: { Value: assembled() } }));
 
-      // The premise: the real resolver's own message carries the password.
-      // Without it the masking assertions below would be satisfied by a
-      // message that never had anything to mask. Read at the mock seam, not
-      // off the engine's error: the strict arm's `cause` is a masked clone.
+      // WHAT CHANGED. This case used to assert the real resolver's own message
+      // CARRIES the password — the premise the boundary mask rested on. Issue
+      // #2827 fixed the producer end: the resolver masks the raw `secretId` /
+      // `jsonKey` before interpolating them, so the message never leaves it
+      // unmasked and no caller inherits the obligation.
+      //
+      // Kept, inverted, rather than deleted, because the REACHABILITY half is
+      // what the cases below depend on: two `GetSecretValueCommand` sends and
+      // a not-found-key throw naming the secret. A shape that stopped reaching
+      // the throw would satisfy every `not.toContain(PASSWORD)` below
+      // vacuously, and `not.toContain` alone cannot tell masked from absent.
+      // The boundary mask this file is about is NOT made inert: the fake-resolver
+      // `__leak__` cases above drive an error the resolver did not build, and
+      // those are what discriminate `handleOutputResolutionFailure` now.
       const thrown = lastThrown.value as Error;
       expect(thrown).toBeInstanceOf(Error);
-      expect(thrown.message).toContain(`key '${PASSWORD}' not found in secret '${SECRET_ID}'`);
+      expect(thrown.message).toContain(`not found in secret '${SECRET_ID}'`);
+      expect(thrown.message).toContain('***');
+      expect(thrown.message).not.toContain(PASSWORD);
       expect(secretSends.filter((c) => c === 'GetSecretValueCommand').length).toBeGreaterThanOrEqual(2);
     });
 
@@ -606,7 +618,12 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       expect(error.message).not.toContain(PASSWORD);
       expect((error.cause as Error).message).toContain(`key '***' not found in secret '${SECRET_ID}'`);
       expect((error.cause as Error).message).not.toContain(PASSWORD);
-      expect((lastThrown.value as Error).message).toContain(PASSWORD); // the resolver's own instance is untouched
+      // The resolver's OWN instance is masked at the throw since issue #2827,
+      // so the engine's clone and the original now agree. Before that fix this
+      // line read `toContain(PASSWORD)` — the whole point of the producer-side
+      // change is that the original no longer carries it either.
+      expect((lastThrown.value as Error).message).not.toContain(PASSWORD);
+      expect((lastThrown.value as Error).message).toContain('***');
       // What the CLI prints for this error (`handleError` logs
       // `formatError(error)`): a plain `Error` renders as name + message.
       const rendered = formatError(error);

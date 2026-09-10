@@ -37,6 +37,13 @@ const PASSWORD = 'Zk7pQw2mVx';
 /** Below `MIN_NEEDLE_LENGTH` (4) — the documented residual's subject. */
 const SHORT_SECRET_ID = 'cdkd-import-mask-short';
 const SHORT_PASSWORD = 'ab3';
+/**
+ * Its own secret, and its own plaintext, so the AccessDenied arm cannot be
+ * satisfied by another case's needle: the id assembled from THIS password is
+ * the one the fake refuses.
+ */
+const DENIED_SECRET_ID = 'cdkd-import-mask-denied';
+const DENIED_PASSWORD = 'Qr4tYu8iOp';
 /** Recorded by one resource, and a coincidental substring of ANOTHER's literal. */
 const NEIGHBOUR_LITERAL = `queue-${PASSWORD}`;
 
@@ -72,6 +79,22 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
       }
       if (command.input?.SecretId === SHORT_SECRET_ID) {
         return { SecretString: JSON.stringify({ password: SHORT_PASSWORD }) };
+      }
+      if (command.input?.SecretId === DENIED_SECRET_ID) {
+        return { SecretString: JSON.stringify({ password: DENIED_PASSWORD }) };
+      }
+      // The SDK-error population the resolver's own throw-site mask cannot
+      // reach: raised inside `send`, so nothing in the resolver interpolates
+      // it and nothing there masks it. The wording is IAM's, and it quotes the
+      // RESOURCE — which for an assembled id IS the decrypted plaintext.
+      if (command.input?.SecretId === DENIED_PASSWORD) {
+        const denied = new Error(
+          `User: arn:aws:iam::123456789012:user/cdkd is not authorized to perform: ` +
+            `secretsmanager:GetSecretValue on resource: ${command.input.SecretId} ` +
+            `because no identity-based policy allows the secretsmanager:GetSecretValue action`
+        );
+        denied.name = 'AccessDeniedException';
+        throw denied;
       }
       // The id ASSEMBLED from the password resolves to a real secret that
       // carries only a binary value, which is what reaches the resolver's
@@ -125,10 +148,42 @@ const ID_ASSEMBLED_PROPERTY = {
   'Fn::Sub': [`{{resolve:secretsmanager:\${Pw}:SecretString:password}}`, { Pw: ref('password') }],
 };
 
-/** The sub-floor twin of `ECHOING_PROPERTY`, against the short secret. */
-const SHORT_ECHOING_PROPERTY = {
+/**
+ * The same assembly against `DENIED_SECRET_ID`, whose password the fake
+ * refuses with an AccessDenied quoting the id — an error the RESOLVER never
+ * builds, so only `import.ts`'s own mask stands between it and the terminal.
+ */
+const ID_ASSEMBLED_DENIED_PROPERTY = {
+  'Fn::Sub': [
+    `{{resolve:secretsmanager:\${Pw}:SecretString:password}}`,
+    { Pw: `{{resolve:secretsmanager:${DENIED_SECRET_ID}:SecretString:password}}` },
+  ],
+};
+
+/**
+ * The sub-floor twin of `ECHOING_PROPERTY`, against the short secret, with the
+ * placeholder as the ENTIRE interpolated segment. Issue #2827 CLOSES this
+ * shape: the resolver masks the raw `jsonKey`, which is the plaintext exactly,
+ * so it reaches `maskSecretsInText`'s whole-value arm — the one arm with no
+ * `MIN_NEEDLE_LENGTH` floor.
+ */
+const SHORT_WHOLE_SEGMENT_PROPERTY = {
   'Fn::Sub': [
     `{{resolve:secretsmanager:${SHORT_SECRET_ID}:SecretString:\${Pw}}}`,
+    { Pw: `{{resolve:secretsmanager:${SHORT_SECRET_ID}:SecretString:password}}` },
+  ],
+};
+
+/**
+ * The shape that stays open at ANY masker, and the reason issue #2827's
+ * enumeration ends where it does (its comment 4 carries the measurement): ONE
+ * literal character beside the placeholder makes the raw value a SUPERSTRING
+ * of the plaintext, so the mask lands back on the substring arm and the
+ * `MIN_NEEDLE_LENGTH` (4) floor drops the needle.
+ */
+const SHORT_SUPERSTRING_PROPERTY = {
+  'Fn::Sub': [
+    `{{resolve:secretsmanager:${SHORT_SECRET_ID}:SecretString:key-\${Pw}}}`,
     { Pw: `{{resolve:secretsmanager:${SHORT_SECRET_ID}:SecretString:password}}` },
   ],
 };
@@ -202,10 +257,23 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
     debugSpy.mockClear();
   });
 
-  it('the resolver genuinely echoes the plaintext — the premise this file rests on', async () => {
-    // Measured at the resolver, not asserted from the fix's own output: if the
-    // message never carried the password, every case below would pass against
-    // an unmasked build too. Reached by resolving the same shape directly.
+  it('the resolver reaches this throw AND masks it at the source — the premise, restated by issue #2827', async () => {
+    // WHAT CHANGED. This case used to assert the opposite — that the
+    // resolver's own message CARRIES the password — and that was the premise
+    // the boundary mask below rested on. Issue #2827 fixed the PRODUCER end:
+    // the resolver masks the raw `secretId` / `jsonKey` BEFORE interpolating
+    // them, so the message that leaves the resolver is already masked and no
+    // caller inherits the obligation. The assertion is inverted rather than
+    // deleted, because the thing it is really pinning is unchanged: this shape
+    // still REACHES the throw that used to leak, and that reachability is what
+    // every case below depends on. A shape that stopped reaching it would make
+    // them all vacuous, and the `not.toContain` alone cannot tell "masked"
+    // from "never got there".
+    //
+    // The boundary mask this file is about is NOT made inert by that: it still
+    // covers errors the resolver did not BUILD — the AccessDenied case further
+    // down drives one, and that case is what discriminates `import.ts`'s own
+    // mask now.
     const { IntrinsicFunctionResolver } = await import(
       '../../../src/deployment/intrinsic-function-resolver.js'
     );
@@ -224,8 +292,13 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
     expect(thrown, 'the second lookup must fail, or there is no message').toBeInstanceOf(Error);
     expect(
       (thrown as Error).message,
-      'the resolver echoes the resolved password as the missing JSON key'
-    ).toContain(PASSWORD);
+      'the shape still reaches the not-found-key throw — otherwise every case below is vacuous'
+    ).toContain(`not found in secret '${SECRET_ID}'`);
+    expect(
+      (thrown as Error).message,
+      'and issue #2827 masks it at the throw, so the plaintext never leaves the resolver'
+    ).not.toContain(PASSWORD);
+    expect((thrown as Error).message, 'masked, not dropped').toContain('***');
   });
 
   it('the warn carries the mask, not the plaintext, and masks only the NEEDLE', async () => {
@@ -310,20 +383,64 @@ describe('cdkd import masks the resolver error text it logs (issue #2803)', () =
     ).toBe(NEIGHBOUR_LITERAL);
   });
 
-  it('RESIDUAL, pinned rather than only described: a sub-floor plaintext still prints', async () => {
-    // One of the bounds `import.ts`'s warn comment points at issue #2827 for.
-    // `buildNeedleRegex` filters a needle shorter
-    // than `MIN_NEEDLE_LENGTH` (4), and the plaintext is EMBEDDED here rather
-    // than being the whole string, so the whole-value arm does not apply
-    // either. Asserted so the day the floor changes, this reds and the comment
-    // gets revisited — the repo pins this boundary at the SITE in every other
-    // masking test rather than leaving it as prose.
-    await runWalk({ Password: SHORT_ECHOING_PROPERTY });
+  it('CLOSED by issue #2827: a sub-floor plaintext that IS the whole segment is masked', async () => {
+    // This case used to assert the plaintext printed. It does not any more,
+    // and the mechanism is exactly the one issue #2827's comments 4-6 settled:
+    // the resolver masks the RAW `jsonKey`, which here is `ab3` and nothing
+    // else, so it reaches `maskSecretsInText`'s WHOLE-VALUE arm — the only arm
+    // `buildNeedleRegex`'s `MIN_NEEDLE_LENGTH` (4) filter does not gate.
+    // Masking the assembled MESSAGE, which is what the boundary does, closes
+    // neither this nor its superstring twin below.
+    await runWalk({ Password: SHORT_WHOLE_SEGMENT_PROPERTY });
 
     const text = warnedText();
     expect(text, 'the failure is reported').toContain('Failed to resolve intrinsics');
-    expect(text, 'a sub-floor plaintext is NOT masked — this is the documented residual').toContain(
-      SHORT_PASSWORD
+    expect(text, 'the sub-floor plaintext no longer prints').not.toContain(SHORT_PASSWORD);
+    expect(text, 'masked, not dropped').toContain('***');
+  });
+
+  it('RESIDUAL, pinned rather than only described: a sub-floor plaintext INSIDE a longer segment still prints', async () => {
+    // The bound issue #2827 stops at, and its counter-example verbatim: one
+    // literal character beside the placeholder makes the raw value `key-ab3`,
+    // a SUPERSTRING of the recorded `ab3`. A superstring is not a whole-value
+    // match, so the mask falls to the substring arm and the floor drops the
+    // needle — at the throw and at every boundary alike. Asserted so the day
+    // `MIN_NEEDLE_LENGTH` changes, or a masker gains a sub-floor substring
+    // arm, this reds and the enumeration gets revisited.
+    await runWalk({ Password: SHORT_SUPERSTRING_PROPERTY });
+
+    const text = warnedText();
+    expect(text, 'the failure is reported').toContain('Failed to resolve intrinsics');
+    expect(
+      text,
+      'a sub-floor plaintext inside a longer segment is NOT masked — the documented residual'
+    ).toContain(SHORT_PASSWORD);
+  });
+
+  it("import.ts's OWN mask still discriminates: an AWS error the resolver never built is masked here", async () => {
+    // WHY THIS CASE EXISTS. With issue #2827 masking at the throw, every case
+    // above would pass with `import.ts`'s boundary mask DELETED — the resolver
+    // hands it an already-masked message. That would leave this file's actual
+    // subject unfenced. An SDK rejection is the population the boundary still
+    // owns: it is raised inside `client.send`, propagates through
+    // `resolveDynamicReferences` untouched, and reaches the terminal only
+    // through this catch.
+    //
+    // NOT a manufactured leak. The fake echoes `command.input.SecretId` in the
+    // wording IAM actually uses (`... is not authorized to perform:
+    // secretsmanager:GetSecretValue on resource: <resource>`), so the
+    // plaintext is in the message because the RESOURCE NAME is, which is the
+    // real behaviour for an id an `Fn::Sub` assembled out of a secret.
+    // Measured: with the mask removed from `import.ts` this case reds and the
+    // others do not.
+    await runWalk({ Password: ID_ASSEMBLED_DENIED_PROPERTY });
+
+    const text = warnedText();
+    expect(text, 'the failure is reported').toContain('Failed to resolve intrinsics');
+    expect(text, 'the AWS wording survives, so the mask is not a blanket').toContain(
+      'is not authorized to perform'
     );
+    expect(text, 'the plaintext must not reach the terminal').not.toContain(DENIED_PASSWORD);
+    expect(text, 'masked, not dropped').toContain('***');
   });
 });

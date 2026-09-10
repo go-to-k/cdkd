@@ -531,6 +531,25 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/check-template-keyed-bag-reads.ts',
         cache: false,
       },
+      // Issue #2827 — every interpolating `throw` / `logger.*` in the intrinsic
+      // resolver is MASKED or carries a deliberate-exclusion note. Three hand
+      // enumerations of that population disagreed, each asserting completeness
+      // and each refuted by the next round's grep (the issue body listed ~14
+      // throws; the first sweep found 18 and missed every success-path log line
+      // beside them; the second still missed `guardedPhysicalIdFallback`, the
+      // `default:` arm of 38 `Fn::GetAtt` call sites). The checker does NOT
+      // judge whether a value is secret-bearing — that judgement is what kept
+      // being wrong and is not mechanisable — it asks the weaker question it can
+      // answer, "has someone written down which this site is", and forces the
+      // answer to be visible AT the site. An unannotated bare site is
+      // indistinguishable from a missed one, and that indistinguishability is
+      // the defect. `cache: false` for the sibling critics' reason: a green
+      // replayed from cache is a checker reporting "all annotated" without
+      // having looked.
+      'audit:resolver-mask-coverage:check': {
+        command: 'node --experimental-strip-types scripts/check-resolver-mask-coverage.ts',
+        cache: false,
+      },
       // Issue #2178 — a provider interpolating a `properties`-derived value into
       // a message must mask it BEFORE `JSON.stringify`, not after. Masking the
       // finished message cannot recover it: `JSON.stringify` escapes `"` / `\` /
