@@ -1,0 +1,9 @@
+- **`cdkd import` no longer writes an unredacted AWS readback into `ResourceState.attributes`** (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)). `attributes` was the only bag on an imported record no redactor touched: `properties` has been redacted since the original GHSA fix, `observedProperties` since [#2828](https://github.com/go-to-k/cdkd/issues/2828). The deploy path has no equivalent gap — `scrubResourceRecord` walks all three.
+
+  **The choke point**: `resolveImportedProperties` now redacts `attributes` against the same per-resource secrets map that just redacted `properties`, so a `{{resolve:secretsmanager:...}}` value AWS echoes back persists as its expression. It runs on the THROW arm too — the resolver records needles as it goes, so a resolve that decrypted one reference before failing on the next has already put a plaintext in the bag.
+
+  **The Cloud Control surface**: `CloudControlProvider.import` surfaced the whole `GetResource` model. Its keys are not GetAtt-compatible attribute names — that comment was wrong — so it is narrowed to the type's schema-declared `readOnlyProperties`, CloudFormation's own definition of an attribute. Uncertified keys are MASKED (`***`), not dropped: there is no live fallback on the read side, so a dropped key degrades `Fn::GetAtt` to a silently wrong physical-id fallback, while a masked one is refused by name at deploy time. An unresolvable schema certifies nothing, masks the whole model, and warns naming `cloudformation:DescribeType`.
+
+  **Not closed**: a credential that is itself a read-only attribute is still persisted in the clear — the registry schema carries no sensitivity marking to key a general fix on. Masking AppSync's `ApiKey` was rejected, reason pinned by a test: the same value is a segment of the composite `physicalId`.
+
+  Changed: `src/cli/commands/import.ts`, `src/provisioning/cloud-control-provider.ts`, new `src/provisioning/read-only-properties.ts`.

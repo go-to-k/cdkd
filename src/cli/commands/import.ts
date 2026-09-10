@@ -1771,6 +1771,49 @@ export async function resolveImportedProperties(
       threw = true;
     }
 
+    // THE `attributes` CHOKE POINT (issue
+    // [#2847](https://github.com/go-to-k/cdkd/issues/2847)). `attributes` is
+    // the third bag on this record and, until this line, the only one no
+    // redactor on the import path ever touched: `properties` has been redacted
+    // since the original GHSA fix (just above) and `observedProperties` since
+    // issue #2828. The deploy path has no such gap — every `saveState` goes
+    // through `scrubResourceRecord`, which walks all THREE fields uniformly —
+    // so this is import catching up to the choke point deploy already has,
+    // not a new mechanism.
+    //
+    // WHY THE VALUE SCAN AND NO POSITION SOURCE. `redactSecretsForState`'s
+    // source argument positions a bag against the TEMPLATE SHAPE it was
+    // resolved from. `attributes` is an AWS READBACK with its own key set — it
+    // is not the resolved form of `unresolvedProperties` and does not
+    // correspond to it positionally, so handing that bag over as a source
+    // would be a claim this site cannot make. `scrubResourceRecord` redacts
+    // `attributes` with NO source for exactly this reason (the #1900
+    // fallback), and this site takes the same shape deliberately rather than
+    // inventing a fourth positioning rule.
+    //
+    // WHY IT RUNS ON THE THROW ARM TOO, and why it is placed ABOVE the refusal
+    // below rather than after it. The resolver records `plaintext ->
+    // expression` into `recordedSecretValues` AS IT GOES, so a resolve that
+    // decrypted one reference and then threw on the next has ALREADY put a
+    // needle in the bag — that is the same property the hoist above the `try`
+    // exists for, and the `catch`'s own mask relies on it. Skipping the throw
+    // arm would leave the readback unredacted in exactly the runs where the
+    // needles are known to exist. The refusal below `continue`s, so anything
+    // written after it would never reach a throwing resource.
+    //
+    // THE MAP CAN BE EMPTY, and then this is an identity return — the guard is
+    // the same one the `properties` line above uses. That is the ordinary case
+    // and it is NOT a gap this line could close: with no needles there is
+    // nothing to scan for. What survives an empty map, and what survives a
+    // NON-empty one, is the AWS-GENERATED secret — a credential AWS minted
+    // that no template ever spelled, so no expression exists to rewrite it to.
+    // `CloudControlProvider.import` addresses its own half of that class
+    // structurally (see `maskUncertifiedModelValues`); the residue is recorded
+    // on the issue rather than claimed closed here.
+    if (recordedSecretValues.size > 0 && resource.attributes !== undefined) {
+      resource.attributes = redactSecretsForState(resource.attributes, recordedSecretValues);
+    }
+
     // THE REFUSAL (see this function's doc block for the two arms and why the
     // predicate is deliberately CONSERVATIVE rather than precise).
     // ARM 1 -- the resolve THREW. Refuse, FULL STOP: no inspection of the bag at

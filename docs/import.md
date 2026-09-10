@@ -558,6 +558,24 @@ over Cloud Control API by default — that would issue an
 `aws-cloudcontrol:ListResources` call per type, which is too expensive for
 whole-stack adoption.
 
+**What lands in `attributes`.** Cloud Control's `GetResource` returns the
+resource's whole model — every readable property, not just its attributes — so
+cdkd narrows it to the type's schema-declared `readOnlyProperties`, which is
+what CloudFormation itself allows `Fn::GetAtt` to read. Every other model key is
+recorded as the redaction mask `***` rather than dropped, because a dropped key
+would let a later `Fn::GetAtt` fall back to the physical id and resolve to
+something wrong; a masked one is refused by name instead. This needs
+`cloudformation:DescribeType` (one call per resource type, cached for the run).
+Without that permission cdkd cannot tell an attribute from a property, so it
+masks the whole model and warns — an `Fn::GetAtt` against such a resource then
+fails until the stack is deployed once. Grant `cloudformation:DescribeType` to
+avoid that.
+
+This does not make an imported record safe to treat as non-sensitive: a
+credential that is itself a read-only attribute is still recorded in the clear,
+because the CloudFormation registry schema carries no sensitivity marking to
+key on.
+
 ### Unsupported
 
 Resource types whose cdkd provider does not implement `import()` (or

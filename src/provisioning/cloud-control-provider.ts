@@ -42,6 +42,8 @@ import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
+import { getTopLevelReadOnlyProperties } from './read-only-properties.js';
+import { SECRET_MASK } from '../deployment/secret-redaction.js';
 import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './region-check.js';
 import { ccProtectionProperty, type CcProtectionEntry } from './cc-protection-properties.js';
 import { isNonProvisionable } from './unsupported-types.js';
@@ -2737,7 +2739,9 @@ export class CloudControlProvider implements ResourceProvider {
    *   - With `knownPhysicalId` (from `--resource <id>=<physicalId>` or
    *     `--resource-mapping`): call `GetResource(TypeName, Identifier)`,
    *     parse `ResourceModel` (returned as a JSON string by CC API), and
-   *     return its keys as `attributes`.
+   *     return the ATTRIBUTE keys as `attributes` — see
+   *     {@link maskUncertifiedModelValues} for what "attribute" means here and
+   *     why every other key comes back MASKED rather than dropped.
    *   - Without `knownPhysicalId`: return `null`. CC API has no efficient
    *     `aws:cdk:path`-tag lookup — `ListResources` returns identifiers
    *     only, so tag lookup would require one `GetResource` per resource
@@ -2750,6 +2754,110 @@ export class CloudControlProvider implements ResourceProvider {
    * `import` with tag-based auto-lookup; this fallback only kicks in for
    * resource types that don't have a dedicated SDK provider.
    */
+  /**
+   * Replace the value of every model key cdkd cannot certify is an ATTRIBUTE
+   * with {@link SECRET_MASK}, leaving the certified attributes untouched
+   * (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
+   *
+   * ## What is being fixed
+   *
+   * `GetResource` returns the resource MODEL — every readable property, not
+   * just the attributes. `cdkd import` persisted that model verbatim into
+   * `ResourceState.attributes`, through no redactor, for every
+   * Cloud-Control-routed type. Where the model carries a credential, the
+   * credential landed in `state.json` in the clear.
+   *
+   * ## Why "attribute" means `readOnlyProperties`
+   *
+   * That is CloudFormation's own definition: a type's `readOnlyProperties` are
+   * exactly what `Fn::GetAtt` may read, and CloudFormation REJECTS a
+   * `Fn::GetAtt` naming a writable property at template validation. So a key
+   * outside that set was never a legitimate attribute, and cdkd persisting it
+   * bought nothing a valid template could use.
+   *
+   * ## Why MASK and not DROP — the load-bearing decision
+   *
+   * Dropping looks cleaner and is WRONG here, because there is no live
+   * fallback on the read side. `IntrinsicFunctionResolver.resolveGetAtt` looks
+   * the key up in this bag and, on a miss, falls through to
+   * `constructAttribute` — which synthesizes from `physicalId` alone and, for
+   * an attribute name that is neither `*Arn` nor `*Url`, WARNS and returns the
+   * physical id. That is a silently wrong value shipped to AWS. There is no
+   * `provider.getAttribute` rescue on the deploy path (the only caller of it
+   * outside the providers is `cdkd orphan`), and this class has no
+   * `getAttribute` at all.
+   *
+   * Masking keeps the KEY present, so the lookup HITS and the value flows
+   * through `noteAttributeSecrecy` into `ResolverContext.redactedAttributeReads`,
+   * where `DeployEngine.refuseRedactedAttributeReads` FAILS the resource rather
+   * than sending the mask. So the outcome is a loud, named refusal instead of a
+   * wrong value — which is the trade this repo already made for the mask-only
+   * channel (issue #2274), reusing its machinery rather than inventing a second
+   * sentinel nothing downstream recognises.
+   *
+   * ## The unresolvable-schema arm is FAIL-CLOSED
+   *
+   * `getTopLevelReadOnlyProperties` answers `undefined` when it could not find
+   * out — a missing `cloudformation:DescribeType` grant, an exhausted throttle
+   * retry, or a type with no registry entry. cdkd then cannot tell an attribute
+   * from a property for this type, so it certifies NOTHING and masks the whole
+   * model, warning at default verbosity with the grant to add. Failing OPEN
+   * here would make a missing IAM permission silently restore the exact
+   * disclosure this method exists to close.
+   *
+   * ## What this does NOT close, stated as the danger direction
+   *
+   * A CREDENTIAL THAT IS ITSELF A READ-ONLY ATTRIBUTE IS STILL PERSISTED IN THE
+   * CLEAR. `readOnlyProperties` is a structural test, not a sensitivity one —
+   * the CloudFormation registry schema carries NO sensitivity marking at all
+   * (measured across AWS's published bundle: the string `sensitive` occurs only
+   * inside `description` prose), which is why the "mask by the schema's own
+   * marking" shape the issue floated does not exist to be implemented. Known
+   * members of the surviving class include `AWS::IAM::AccessKey`'s
+   * `SecretAccessKey`, `AWS::Cognito::UserPoolClient`'s `ClientSecret` and
+   * `AWS::EC2::IpamExternalResourceVerificationToken`'s `TokenValue`. The list
+   * is not claimed to be exhaustive and no count is quoted here, because
+   * nothing in the tree fences one; the derivation and its residual are
+   * recorded on the issue.
+   */
+  private async maskUncertifiedModelValues(
+    model: Record<string, unknown>,
+    resourceType: string,
+    physicalId: string
+  ): Promise<Record<string, unknown>> {
+    const attributeNames = await getTopLevelReadOnlyProperties(resourceType);
+    if (attributeNames === undefined) {
+      this.logger.warn(
+        `Could not resolve the CloudFormation schema for ${resourceType} ` +
+          `(${physicalId}), so cdkd cannot tell which of its Cloud Control model ` +
+          `keys are Fn::GetAtt attributes. Every imported attribute for this ` +
+          `resource is recorded as "${SECRET_MASK}" rather than risking a ` +
+          `credential in state.json; an Fn::GetAtt against it will fail with a ` +
+          `named refusal until the resource is deployed. Grant ` +
+          `cloudformation:DescribeType to record its attributes.`
+      );
+    }
+    const masked: Record<string, unknown> = {};
+    let maskedCount = 0;
+    for (const [key, value] of Object.entries(model)) {
+      if (attributeNames?.has(key)) {
+        masked[key] = value;
+      } else {
+        masked[key] = SECRET_MASK;
+        maskedCount++;
+      }
+    }
+    if (maskedCount > 0 && attributeNames !== undefined) {
+      this.logger.debug(
+        `Masked ${maskedCount} non-attribute key(s) out of the ${resourceType} ` +
+          `Cloud Control model for ${physicalId}: they are not in the type's ` +
+          `readOnlyProperties, so CloudFormation would reject an Fn::GetAtt ` +
+          `naming them and cdkd has no evidence they are safe to persist.`
+      );
+    }
+    return masked;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (!input.knownPhysicalId) {
       // Explicit-override-only: no auto lookup via CC API.
@@ -2764,17 +2872,23 @@ export class CloudControlProvider implements ResourceProvider {
         })
       );
 
-      // CC API returns `ResourceModel` as a JSON string of all the
-      // resource's properties — its keys map 1:1 to GetAtt-compatible
-      // attribute names. Parse and surface them so deploy-time
-      // `Fn::GetAtt` resolution can find them in state.
+      // CC API returns `ResourceModel` as a JSON string of the resource's
+      // whole model. Its keys do NOT map 1:1 to GetAtt-compatible attribute
+      // names — this comment claimed they did until issue
+      // [#2847](https://github.com/go-to-k/cdkd/issues/2847) — so the parsed
+      // model is filtered through `maskUncertifiedModelValues` before it
+      // becomes state.
       let attributes: Record<string, unknown> = {};
       const raw = resp.ResourceDescription?.Properties;
       if (typeof raw === 'string' && raw.length > 0) {
         try {
           const parsed = JSON.parse(raw) as unknown;
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            attributes = parsed as Record<string, unknown>;
+            attributes = await this.maskUncertifiedModelValues(
+              parsed as Record<string, unknown>,
+              input.resourceType,
+              input.knownPhysicalId
+            );
           }
         } catch (parseErr) {
           this.logger.debug(
