@@ -58,7 +58,7 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
 
-const MAX_CLAUDE_MD_BYTES = 46_980;
+const MAX_CLAUDE_MD_BYTES = 45_066;
 
 /**
  * `## Workflow Rules` is the section that grows: it took 62% of the file at
@@ -67,7 +67,7 @@ const MAX_CLAUDE_MD_BYTES = 46_980;
  * shrinking the reference sections, which are the parts a reader needs least
  * often but can least afford to lose.
  */
-const MAX_WORKFLOW_RULES_BYTES = 26_480;
+const MAX_WORKFLOW_RULES_BYTES = 26_455;
 
 /**
  * CLAUDE.md plus every rule file that loads ONLY with it (see
@@ -89,7 +89,7 @@ const MAX_WORKFLOW_RULES_BYTES = 26_480;
  * the relocated text still LOADS is a different question, and the
  * injected-only sweep further down is what answers it.
  */
-const MAX_INJECTED_CONTEXT_BYTES = 65_180;
+const MAX_INJECTED_CONTEXT_BYTES = 63_200;
 
 /**
  * `## Workflow Rules` must keep at least this many top-level `- **` bullets.
