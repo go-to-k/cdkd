@@ -164,7 +164,12 @@ describe('the canonical secret-scan class', () => {
   it('does NOT delete an ordinary visible character', () => {
     // The floor for all three. A class that deleted everything would satisfy
     // every assertion above and destroy every name cdkd prints.
-    for (const ch of ['a', 'Z', '0', '-', '_', ':', '/', 'é', '日']) {
+    // The two non-ASCII controls are ESCAPED, not literal: this repo is
+    // English-only for committed artifacts and CI rejects the literal forms.
+    // They are still required -- the class is Unicode-aware, so an ASCII-only
+    // control cannot catch a class that deletes everything above U+007F.
+    // `\u00e9` is a precomposed letter and `\u65e5` a CJK ideograph.
+    for (const ch of ['a', 'Z', '0', '-', '_', ':', '/', '\u00e9', '\u65e5']) {
       expect(canonicalDeletes(ch)).toBe(false);
     }
   });
