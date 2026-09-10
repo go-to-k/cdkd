@@ -1644,10 +1644,10 @@ export class DeployEngine {
     // Spelled locally rather than imported: the only exported copy lives in
     // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
     // edge for one string literal is the wrong trade.
-    // `intrinsic-function-resolver.ts`, `secret-redaction.ts` and
-    // `type-change-guard.ts` each keep their own copy for that same reason —
-    // theirs at module scope, this one function-local because this is its only
-    // reader.
+    // Several modules keep their own copy for that same reason; no count is
+    // given, following `recreate-targets.ts`'s own note that an unfenced number
+    // in a comment is one that goes stale. Theirs sit at module scope, this one
+    // is function-local because this is its only reader.
     const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 
     const targetOf = (read: string): string | undefined => LOCAL_MASKED_READ.exec(read)?.[1];

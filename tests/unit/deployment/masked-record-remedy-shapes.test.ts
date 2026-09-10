@@ -172,9 +172,10 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   });
 
   it('treats an unrecognised shape as FOREIGN, which never emits a command', () => {
-    // Fail-safe direction: an id cdkd did not expect (a hand-written template
-    // can carry a non-alphanumeric logical id) costs a vaguer message rather
-    // than a destructive one.
+    // Fail-safe direction: a shape the partition does not recognise costs a
+    // vaguer message rather than a destructive one. No claim is made that this
+    // particular id can reach cdkd — CloudFormation's logical-id grammar is
+    // alphanumeric — only that the arm behaves safely for anything unmatched.
     const remedy = remedyFor(['My-Resource.Secret']);
 
     expect(remedy).not.toContain('cdkd import');
