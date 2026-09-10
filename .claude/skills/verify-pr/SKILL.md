@@ -195,16 +195,17 @@ Run each check and report pass/fail:
      fixes introduced). Scope round 2 to the delta and say the original
      design is accepted.
    - **The rule RECURSES — "review every fix round", not "the second round".**
-     Keep going while the round just applied contains anything beyond prose;
-     a TEST rewrite counts (PR #2420: a round-2 fix replacing a crude
+     Keep going while the round changed anything, PROSE INCLUDED — a fix's
+     rationale is its least-probed text (4 false ones, PRs #2913 / #2916); a
+     TEST rewrite counts too (PR #2420: a round-2 fix replacing a crude
      assertion with a derived one dropped a wire fact the crude form had been
      pinning by accident — only a third round found it). When a round
      REPLACES an assertion rather than adding one, KEEP BOTH unless you can
      NAME, in the commit message, the mutation the old one could not catch.
      "More precise" is not that name: precision is not a superset of what it
      replaces, and if you cannot name the mutation the replacement is a
-     deletion (issue #2606: four rounds on one PR, each fix blind on a
-     different axis than the assertion it dropped, every one measured green).
+     deletion (issue #2606: four rounds, each fix blind on a different axis
+     than the assertion it dropped).
    - Corollary for mutation probes: **enumerate the branches the diff ADDS
      and probe each one** — a new `if`, a new token in a rendered string, a
      new early return and a new gate condition are four probes, not one.
