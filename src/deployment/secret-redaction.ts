@@ -1803,7 +1803,7 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   `cdkd scrub` observed walk                 REPOSITIONED props   STATE_SOURCED_CROSS_GENERATION_RULES  VALUE SCAN
  *   observed walk, own-record source           the record itself    STATE_SOURCED_BASELINE_RULES *        TAKE SOURCE
  *   `cdkd state refresh-observed`              the record itself    STATE_SOURCED_BASELINE_RULES          TAKE SOURCE
- *   `cdkd import` observed capture             the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
+ *   `cdkd import` observed capture             the record itself    STATE_SOURCED_BASELINE_RULES          TAKE SOURCE
  *   `cdkd drift --accept` new baseline         the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
  *   `cdkd drift --revert` narrowed delta       revert baseline      STATE_SOURCED_READBACK_RULES          TAKE SOURCE
  *   deploy journal `previousState`             the record itself    STATE_SOURCED_READBACK_RULES (passed) TAKE SOURCE
@@ -1874,10 +1874,16 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   false. An earlier revision here said "every `drainObservedCaptures`
  *   baseline", which is a strictly larger set than the one that arms.
  *
- * `cdkd state refresh-observed` passes `STATE_SOURCED_BASELINE_RULES` itself
- * and needs no derivation; `cdkd import`'s capture passes the plain readback
- * constant and keeps the pre-#2852 answer (issue
- * [#2885](https://github.com/go-to-k/cdkd/issues/2885)).
+ * `cdkd state refresh-observed` and `cdkd import`'s observed capture both pass
+ * `STATE_SOURCED_BASELINE_RULES` themselves and need no derivation — import
+ * moved onto it in issue
+ * [#2885](https://github.com/go-to-k/cdkd/issues/2885), the residue #2852 left
+ * behind. Both are baseline callers for the same reason: their one destination
+ * is `observedProperties`. The two `cdkd drift` writers are NOT, and that is
+ * the whole reason the flag is DECLARED rather than derived — `--accept` writes
+ * its result into `properties` FOR A RECORD WITH NO `observedProperties` (it
+ * writes the baseline for one that has it), and a mask in `properties` is a
+ * regression.
  *
  * The two rows reach this through
  * `scrubResourceRecord` with NO `sourceProperties`:
@@ -1975,7 +1981,7 @@ export const TEMPLATE_SOURCED_RULES: PathSourceRules = {
  *
  * Does NOT fail closed. This is the constant a caller reaches for when it knows
  * the SHAPE of its two bags and nothing about where the result lands —
- * `cdkd drift`'s two writers and `cdkd import`'s capture pass it, and so does
+ * `cdkd drift`'s two writers pass it, and so does
  * `DeployEngine.redactOperationsForJournal` for the journal's `previousState`
  * (issue [#2886](https://github.com/go-to-k/cdkd/issues/2886): a REPLAYED
  * baseline must not gain masks a rollback restore then persists). See
@@ -1998,10 +2004,19 @@ export const STATE_SOURCED_READBACK_RULES: PathSourceRules = {
  * readback path already had applies unchanged; the only difference is that a
  * position this pass cannot certify is written as {@link SECRET_MASK} rather
  * than as the DECRYPTED readback. Passed by `cdkd state refresh-observed` and
- * derived by {@link scrubResourceRecord} for the observed bag — the deploy's
- * `drainObservedCaptures` baseline reaches it that way. `cdkd import`'s own
- * capture still passes the non-failing constant and keeps the residue; moving
- * it is a one-constant change in `src/cli/commands/import.ts`.
+ * by `cdkd import`'s observed capture (issue
+ * [#2885](https://github.com/go-to-k/cdkd/issues/2885), which moved it off the
+ * non-failing constant), and derived by {@link scrubResourceRecord} for the
+ * observed bag — the deploy's `drainObservedCaptures` baseline reaches it that
+ * way.
+ *
+ * WHAT SELECTS IT IS THE DESTINATION, which is why it cannot be derived from
+ * the two bags: `cdkd drift --accept` walks with the same shape flags and then
+ * writes its result into `properties` for a record with no
+ * `observedProperties`, where a mask is a REGRESSION rather than a refusal
+ * (`cdkd export` blocks such a record and the rollback replay refuses the
+ * operation). A caller declares this constant when it knows its bag becomes a
+ * drift baseline and nothing else.
  */
 export const STATE_SOURCED_BASELINE_RULES: PathSourceRules = {
   descendArrays: false,

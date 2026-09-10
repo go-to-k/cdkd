@@ -304,6 +304,40 @@ the next `cdkd deploy` will UPDATE them to match. If you imported only
 some resources (selective mode), the remaining template resources
 appear as `to create` in the diff.
 
+### The drift baseline an import records
+
+For each adopted resource cdkd also reads its current AWS state and records it
+as the drift baseline (`observedProperties`), so the very first `cdkd drift`
+run has something real to compare against. Two things about that baseline are
+worth knowing before you read a report:
+
+- **A property your template declares as a
+  `{{resolve:secretsmanager:...}}` reference comes back from AWS DECRYPTED.**
+  cdkd writes the reference back over it, by position. Where the readback and
+  the record cannot be lined up at such a position, cdkd writes the mask `***`
+  there instead — it cannot tell a resolved secret from an ordinary literal
+  once the pairing is gone, and the alternative is a decrypted secret in
+  `state.json`. Those positions report as drifted on every run and
+  `cdkd drift --accept` refuses them. The shapes that reach it are listed under
+  [Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
+- **Some resources get no baseline at all.** Where the recorded properties no
+  longer spell the template's dynamic reference, cdkd cannot position the
+  redaction and skips the capture rather than risk persisting a decrypted
+  value (it says so at `--verbose`). Drift then compares against the recorded
+  properties for that resource, which can show as phantom drift.
+
+Both clear on a deploy that actually creates or updates the affected resource —
+not on any `cdkd deploy`. The **automatic refresh** cdkd runs at the start of a
+deploy only fills in a *missing* baseline, so it passes over a masked one; a
+create or update rewrites the baseline unconditionally.
+
+**Neither mechanism makes an imported `state.json` safe to treat as
+non-sensitive**, and the same caveat the
+[Cloud Control API fallback](#cloud-control-api-fallback) section gives for
+`attributes` applies here: this redaction is positional, so a reference the
+import could not line up against the readback at all can still leave a
+decrypted value in the record. Treat `state.json` as sensitive regardless.
+
 ## Importing a stack into a cdkd-assets region
 
 When the target region is opted into cdkd-owned asset storage (`cdkd

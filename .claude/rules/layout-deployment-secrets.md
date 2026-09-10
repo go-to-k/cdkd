@@ -315,9 +315,9 @@ Index of every area: [code-layout.md](code-layout.md).
       SOURCE describes the same GENERATION of the resource the BAG does, for
       one shape: a bag leaf ALREADY a complete `{{resolve:...}}` token (a
       previously-persisted expression, or a plaintext that LOOKS like one).
-      TRUE for exactly the two STATE-sourced constants whose source is that
-      record's own persisted bag — `STATE_DERIVED_RULES` and
-      `STATE_SOURCED_READBACK_RULES`. Every TEMPLATE-sourced constant is
+      TRUE for the three whose source is that record's own persisted bag —
+      `STATE_DERIVED_RULES` and both `STATE_SOURCED_READBACK_RULES` and
+      `STATE_SOURCED_BASELINE_RULES`. Every TEMPLATE-sourced constant is
       FALSE, INCLUDING `TEMPLATE_DERIVED_RULES` — the review's correction:
       `redactStateForPersist` walks EVERY record while
       `perResourceTemplateProps` is populated BEFORE the provider call, so a
@@ -375,7 +375,7 @@ Index of every area: [code-layout.md](code-layout.md).
     the DECRYPTED value for any resource deployed from a secret reference and
     its secrets map is EMPTY by construction — the #1900 shape, positioned
     against the record's own `properties` under
-    `STATE_SOURCED_READBACK_RULES`. THREE mechanisms carry it, not one, and
+    `STATE_SOURCED_BASELINE_RULES`. THREE mechanisms carry it, not one, and
     the source comment (`src/cli/commands/state.ts`) names all three: the PATH
     pass with #1915's keyed array descent; #2012's corroborated positional walk
     (`unkeyedArrayPairsByAnchors`) for a list with no identity key; and, because
@@ -388,7 +388,7 @@ Index of every area: [code-layout.md](code-layout.md).
     sixth searched for CALLERS of this module, and import already had one in
     `resolveImportedProperties`, so the file read as covered while its second
     writer persisted the decrypted readback verbatim. Same empty map, same
-    `STATE_SOURCED_READBACK_RULES`, positioned against the record's own
+    `STATE_SOURCED_BASELINE_RULES`, positioned against the record's own
     `properties` at both call sites (the root walk and the recursive
     `--migrate-from-cloudformation` child walk). An earlier revision of this paragraph
     asserted the properties were "already redacted", and review measured two
@@ -425,7 +425,7 @@ Index of every area: [code-layout.md](code-layout.md).
     that comparison cannot see is trusted. The instrument is
     `tests/unit/cli/import-observed-baseline-refusal-matrix.test.ts`, which
     asserts the SAFETY property per row alongside the verdict and replays each
-    EARNED refusal to prove it would really have leaked — and, since #2852, a
+    EARNED refusal to prove it would really have leaked — and, since #2885, a
     refusal whose leak closes one layer down is proved by the MASK instead.
   - **`refuseUncertifiedReadbackPositions`** closes the MIXED-leaf row
     (`postgres://u:{{resolve:...}}@h`, an `Fn::Join` around
@@ -449,8 +449,8 @@ Index of every area: [code-layout.md](code-layout.md).
   - **The walk FAILS CLOSED where it cannot certify, for a caller that DECLARES
     its bag a drift baseline** (`STATE_SOURCED_BASELINE_RULES`; #2852, closing
     #2846). Destination is not derivable — `drift --accept` writes to
-    `properties` — and `import`'s capture is still on the other constant
-    (#2885). `refuseUncertifiedSubtree`'s doc comment is the authority for
+    `properties` — and `import`'s capture moved onto it in #2885.
+    `refuseUncertifiedSubtree`'s doc comment is the authority for
     what it masks, spares and costs; do not restate it here.
   - A MIXED leaf embedding a plain `{{resolve:ssm:` token splits on whether a
     SECRETS MAP exists (forced by the `secrets-dynamic-ref` integ after every

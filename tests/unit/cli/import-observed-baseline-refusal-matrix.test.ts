@@ -29,7 +29,7 @@
  * THE INVARIANT, per row, and it is deliberately independent of HOW the
  * classifier decides: either the resource is REFUSED, or replaying exactly what
  * `captureObservedForImportedResources` does — `redactSecretsForState(readback,
- * EMPTY, properties, STATE_SOURCED_READBACK_RULES)` — produces a bag with no
+ * EMPTY, properties, STATE_SOURCED_BASELINE_RULES)` — produces a bag with no
  * plaintext in it. A shape nobody imagined therefore reds here even though no
  * one wrote its expected verdict down, which is the whole point.
  *
@@ -43,22 +43,70 @@
  * what the resolver DOES to these shapes, so a fake that produced the expected
  * shapes would be asserting the fixture.
  *
- * THE KNOWN-LEAKING SHAPES HAVE NO ROWS HERE, and that absence is recorded
- * rather than left to read as coverage. Issue
- * [#2852](https://github.com/go-to-k/cdkd/issues/2852)'s shapes -- a reshaped
- * container, an identity key AWS normalised, a readback key the source lacks,
- * an unkeyed array anchors cannot corroborate -- all persist the plaintext
- * today, so a row for any of them would red the SAFETY invariant below.
- * #2852's fix made the position walk FAIL CLOSED at those shapes, but only for
- * a caller that declares its bag is a drift baseline
- * (`STATE_SOURCED_BASELINE_RULES`). THIS capture still passes
- * `STATE_SOURCED_READBACK_RULES`, one constant away, so the rows stay absent
- * and the residue is `src/cli/commands/import.ts`'s to close -- issue
- * [#2885](https://github.com/go-to-k/cdkd/issues/2885). That
- * issue carries the probe table measured against this module; this table
- * covers the shapes that hold plus the refusals. Same handling issue
- * [#2850](https://github.com/go-to-k/cdkd/issues/2850) already gets. When #2852
- * is fixed, those rows belong here and the probe table is what to move.
+ * THE #2852 SHAPES NOW HAVE ROWS. Issue
+ * [#2852](https://github.com/go-to-k/cdkd/issues/2852) made the position walk
+ * FAIL CLOSED where it cannot certify, but only for a caller that DECLARES its
+ * bag is a drift baseline (`STATE_SOURCED_BASELINE_RULES`); this capture passed
+ * the plain readback constant until issue
+ * [#2885](https://github.com/go-to-k/cdkd/issues/2885) swapped it, so every one
+ * of those shapes persisted the decrypted value and a row for any of them would
+ * have red the SAFETY invariant. The rows that arrived with the swap are
+ * TRANSCRIBED from the fail-closed block of
+ * `tests/unit/deployment/secret-redaction-uncertified-fail-closed.test.ts` --
+ * the enumerated source #2885 names, rather than a fresh hand-pick -- ALL NINE
+ * of its shape cases, in its order, plus two more. Each is driven through the
+ * real capture here, which is the part transcription cannot assume: that suite
+ * calls the module directly.
+ *
+ * THE TWO EXTRA ROWS are an array AWS REORDERED and an array whose LENGTH AWS
+ * changed, and their provenance is `unkeyedArrayPairsByAnchors`' four
+ * conditions rather than any issue body -- condition 1 is the index counts, and
+ * a reorder is what the anchors stop corroborating. An earlier revision of this
+ * line credited them to #2885's body, which names a reorder and does NOT name a
+ * length change; the shapes are right and the attribution was not.
+ *
+ * The NINTH transcribed case (a RAW intrinsic source OBJECT against a STRING
+ * readback, #2846) needs its own note, because it nearly went unrowed on the
+ * reasoning that the four `closedByMask` rows below already cover it. They do
+ * not: those are REFUSED by the classifier, and the shape is reachable on the
+ * ADMITTED path too -- measured, an `Fn::Transform` wrapper resolves WITHOUT
+ * throwing, so nothing refuses and the raw object survives into the persisted
+ * bag. That is the row, and the near-miss is why the count above is stated as
+ * "all nine" rather than left to a reader to check.
+ *
+ * WHAT IS STILL ABSENT, and it is recorded rather than left to read as
+ * coverage. `plaintext can still be persisted by this capture` — by a dropped
+ * or traded reference
+ * ([#2850](https://github.com/go-to-k/cdkd/issues/2850), whose shape the
+ * PARAMETER-DEFAULT negative control below points at), a parameter bound to a
+ * placeholder `Default` ([#2854](https://github.com/go-to-k/cdkd/issues/2854)),
+ * and a secret with no counterpart in the source at all
+ * ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). A row for any of
+ * those would red the SAFETY invariant, exactly as the #2852 rows did before
+ * the swap.
+ *
+ * #2868 IS WORTH STATING PRECISELY, because the note this paragraph replaced
+ * listed "a readback key the source lacks" among the shapes #2852 closed and it
+ * does NOT — measured through this file's own harness on 2026-09-11 under the
+ * BASELINE constant, a readback of `{Detail: {pw: <plaintext>, Extra:
+ * <a DIFFERENT plaintext>}}` against a source of `{Detail: {pw: <token>}}`
+ * persists `Extra` in the clear, because the source has no leaf at that
+ * position to refuse from and `refuseUncertifiedReadbackPositions`' own table
+ * marks that row deliberately open. With the SAME plaintext at both keys the
+ * derived needles of issue #2012 rewrite the extra key for free and the shape
+ * reads as closed, which is why the measurement used two different secrets —
+ * the same trap `SECRET_ID_2` below was introduced for.
+ *
+ * WHAT THIS TABLE DELIBERATELY DOES NOT ROW, because the MODULE suite already
+ * fences it and an import-path duplicate would only re-test the module: the
+ * remaining rows of `refuseUncertifiedReadbackPositions`' own doc table — a
+ * MIXED leaf inside a PAIRED element, an unpaired element with every source
+ * reference paired (needle-only), a `Date` kept by identity (#2869), and a
+ * PUBLIC ssm MIXED leaf under an EMPTY map (over-redacts, #2036) — plus the
+ * non-string arms of `refuseUncertifiedSubtree` this capture can now reach
+ * (`Uint8Array` masked, `''` kept, the DAG / cycle memoisation). All are
+ * covered in `tests/unit/deployment/`; none is a leak this capture is the only
+ * route to.
  */
 
 import { describe, it, expect, vi } from 'vite-plus/test';
@@ -122,9 +170,7 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
 const { resolveImportedProperties, captureObservedForImportedResources } = await import(
   '../../../src/cli/commands/import.js'
 );
-const { redactSecretsForState, STATE_SOURCED_BASELINE_RULES, SECRET_MASK } = await import(
-  '../../../src/deployment/secret-redaction.js'
-);
+const { SECRET_MASK } = await import('../../../src/deployment/secret-redaction.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
 
 const TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pw::}}`;
@@ -157,6 +203,35 @@ interface Row {
    * bounded rather than hiding among the earned ones.
    */
   readonly overRefusal?: boolean;
+  /**
+   * A refusal whose LEAK closes ONE LAYER DOWN. The classifier still refuses,
+   * and replaying the capture anyway now writes {@link SECRET_MASK} at the
+   * refused position instead of the plaintext, because issue #2885 put this
+   * capture on `STATE_SOURCED_BASELINE_RULES`.
+   *
+   * The premise loop proves the MASK for these rows rather than the plaintext,
+   * and that is not a weaker claim: the mask IS the evidence that the position
+   * walk could not certify the position, which is the hazard the refusal is
+   * about. Asserting the plaintext here would red for the fail-closed layer
+   * doing its job. Distinct from {@link overRefusal}, where the walk COULD have
+   * paired the position and nothing was ever at risk — measured apart, and the
+   * counts below keep them apart.
+   */
+  readonly closedByMask?: boolean;
+  /**
+   * The exact bag a {@link closedByMask} row's capture persists when it is
+   * replayed with the refusal NOT applied — the `expected` column for the
+   * premise loop, and required on every such row.
+   *
+   * Without it that loop asserted only `toContain(SECRET_MASK)` over a
+   * STRINGIFIED bag, which is position- and shape-blind: a walk that masked the
+   * WRONG leaf, masked every leaf, or reshaped the container would satisfy it.
+   * That is the same absence-vacuity these rows' `expected` column exists to
+   * close, one branch over, and it was found by review rather than by a probe —
+   * the mutation that motivated the assertion changed the mask LITERAL, which
+   * `toContain` does catch, so nothing pointed at the gap.
+   */
+  readonly expectedOnReplay?: Record<string, unknown>;
   /**
    * The plaintext this row is about, when it is not the default one. A row
    * carrying two different secrets has to name the one whose disclosure it
@@ -213,7 +288,12 @@ const ROWS: readonly Row[] = [
     },
     readback: { Detail: { pw: PLAINTEXT } },
     refused: true,
-    why: 'raw OBJECT leaf vs STRING readback — the walk cannot pair them (round 1)',
+    closedByMask: true,
+    expectedOnReplay: { Detail: { pw: SECRET_MASK } },
+    why:
+      'raw OBJECT leaf vs STRING readback — the walk cannot pair them (round 1). ' +
+      'Since #2885 that same un-pairability makes the capture write a MASK, so ' +
+      'the refusal is now the outer of two layers rather than the only one',
   },
   {
     name: 'whole-token STRING leaf, resolve THROWS on a SIBLING property',
@@ -233,10 +313,15 @@ const ROWS: readonly Row[] = [
     },
     readback: { Detail: { pw: PLAINTEXT } },
     refused: true,
+    closedByMask: true,
+    expectedOnReplay: { Detail: { pw: SECRET_MASK } },
     why:
       'THE REGRESSION ROW. A precise throw-arm test counted this token as complete ' +
       'on both sides and admitted it; the walk sees an OBJECT where the readback ' +
-      'has a STRING and returns the plaintext untouched',
+      'has a STRING and cannot pair them. It USED TO return the plaintext ' +
+      'untouched, which is what made admitting it a leak; since #2885 the ' +
+      'un-paired position is masked, so the regression this row records is now ' +
+      'a masked baseline rather than a disclosure',
   },
   {
     name: 'complete token wrapped in Fn::Sub, resolve THROWS',
@@ -246,6 +331,8 @@ const ROWS: readonly Row[] = [
     },
     readback: { Detail: { pw: PLAINTEXT } },
     refused: true,
+    closedByMask: true,
+    expectedOnReplay: { Detail: { pw: SECRET_MASK } },
     why: 'second spelling of the row above — the wrapper is what matters, not Fn::Join',
   },
   {
@@ -256,6 +343,8 @@ const ROWS: readonly Row[] = [
     },
     readback: { Detail: { pw: PLAINTEXT } },
     refused: true,
+    closedByMask: true,
+    expectedOnReplay: { Detail: { pw: SECRET_MASK } },
     why: 'third spelling — an unresolved Fn::If is an object leaf like any other',
     template: {
       Parameters: { Stage: { Type: 'String' } },
@@ -373,6 +462,130 @@ const ROWS: readonly Row[] = [
     overRefusal: true,
     why: 'a throw carrying any opener refuses, whether or not this one could have paired',
   },
+
+  // ---------------------------------------------------------------------------
+  // THE #2852 SHAPES (issue #2885). Every row below is ADMITTED by the
+  // classifier — the resolve neither throws nor loses its marker, so the
+  // refusal above never fires — and is closed one layer down, by the
+  // fail-closed position walk this capture reaches since it moved to
+  // `STATE_SOURCED_BASELINE_RULES`. Each `expected` bag spells the mask at the
+  // exact positions the walk could not certify, which is the CONTENT half the
+  // header argues for: a `not.toContain` alone cannot tell a masked baseline
+  // from an empty one, and cannot tell either from a walk that quietly went
+  // back to writing the source.
+  //
+  // Transcribed from `secret-redaction-uncertified-fail-closed.test.ts`'s
+  // fail-closed block, in its order, and driven through the REAL capture rather
+  // than through `redactSecretsForState` directly — which is what these rows
+  // add over that suite, and the only thing that would notice the constant at
+  // the call site moving back.
+  // ---------------------------------------------------------------------------
+  {
+    name: 'ANCESTOR container RESHAPED object -> array',
+    properties: { Detail: { pw: TOKEN } },
+    readback: { Detail: [PLAINTEXT] },
+    expected: { Detail: [SECRET_MASK] },
+    refused: false,
+    why: 'no position pairs a record key against an array index, so the leaf is masked',
+  },
+  {
+    name: 'ANCESTOR gained a WRAPPER level',
+    properties: { Detail: { pw: TOKEN } },
+    readback: { Detail: { pw: { Inner: PLAINTEXT } } },
+    expected: { Detail: { pw: { Inner: SECRET_MASK } } },
+    refused: false,
+    why: 'the source leaf is a scalar where the readback has a container — masked, not taken',
+  },
+  {
+    name: 'scalar source leaf PROMOTED to a container',
+    properties: { Detail: TOKEN },
+    readback: { Detail: { Nested: PLAINTEXT } },
+    expected: { Detail: { Nested: SECRET_MASK } },
+    refused: false,
+    why: 'same divergence one level up, at the top of the bag rather than inside it',
+  },
+  {
+    name: 'identity key AWS CASE-normalised',
+    properties: { Detail: { Env: [{ Name: 'db', Value: TOKEN }] } },
+    readback: { Detail: { Env: [{ Name: 'DB', Value: PLAINTEXT }] } },
+    expected: { Detail: { Env: [{ Name: SECRET_MASK, Value: SECRET_MASK }] } },
+    refused: false,
+    why:
+      'the keyed descent finds no partner for `DB`, so the whole element is refused ' +
+      '— the identity field with it, because once the pairing is gone nothing ' +
+      'distinguishes a normalised literal from a resolved secret',
+  },
+  {
+    name: 'identity key AWS expanded to an ARN',
+    properties: { Detail: { Env: [{ Name: 'A', Value: TOKEN }] } },
+    readback: { Detail: { Env: [{ Name: 'arn:aws:x:::A', Value: PLAINTEXT }] } },
+    expected: { Detail: { Env: [{ Name: SECRET_MASK, Value: SECRET_MASK }] } },
+    refused: false,
+    why: 'second spelling of the axis — does the identity round-trip BYTE-identically',
+  },
+  {
+    name: 'UNKEYED array whose sibling literal AWS normalised',
+    properties: { Detail: { Items: [TOKEN, 'us-east-1'] } },
+    readback: { Detail: { Items: [PLAINTEXT, 'US-EAST-1'] } },
+    expected: { Detail: { Items: [SECRET_MASK, SECRET_MASK] } },
+    refused: false,
+    why: 'the anchors stop corroborating, so the positional walk is not licensed',
+  },
+  {
+    name: 'UNKEYED array AWS REORDERED',
+    properties: { Detail: { Items: [TOKEN, 'plain'] } },
+    readback: { Detail: { Items: ['plain', PLAINTEXT] } },
+    expected: { Detail: { Items: ['plain', SECRET_MASK] } },
+    refused: false,
+    why:
+      'the mirror of the corroborated row above: same two values, order swapped, and ' +
+      'the anchor `plain` is SPARED because the source array spells it SOMEWHERE in ' +
+      'the refused subtree — the spare set is position-INDEPENDENT, which is why it ' +
+      'survives at index 0 where the source spells the token',
+  },
+  {
+    name: 'UNKEYED array whose LENGTH AWS changed',
+    properties: { Detail: { Items: [TOKEN, 'plain'] } },
+    readback: { Detail: { Items: [PLAINTEXT, 'plain', 'aws-added'] } },
+    expected: { Detail: { Items: [SECRET_MASK, 'plain', SECRET_MASK] } },
+    refused: false,
+    why:
+      'index counts differ, the first of the four anchor conditions — the AWS-added ' +
+      'element is masked alongside the secret, which is the over-masking the ' +
+      'fail-closed direction accepts by design',
+  },
+  {
+    name: 'two LOOKALIKE reference elements in an unkeyed array',
+    properties: { Detail: { Items: [{ V: TOKEN }, { V: TOKEN_2 }] } },
+    readback: { Detail: { Items: [{ V: PLAINTEXT }, { V: PLAINTEXT_2 }] } },
+    expected: { Detail: { Items: [{ V: SECRET_MASK }, { V: SECRET_MASK }] } },
+    refused: false,
+    why:
+      'nothing tells the two elements apart, so pairing them by index would ' +
+      "misattribute each secret to the other's expression",
+  },
+  {
+    name: 'a single bare-token element with no literal FRAME',
+    properties: { Detail: { Items: [TOKEN] } },
+    readback: { Detail: { Items: [PLAINTEXT] } },
+    expected: { Detail: { Items: [SECRET_MASK] } },
+    refused: false,
+    why:
+      'the NEGATIVE of the corroborated one-frame row above: a one-element list ' +
+      'whose only member is the reference has no literal position left to anchor on',
+  },
+  {
+    name: 'RAW intrinsic source OBJECT vs STRING readback, resolve does NOT throw',
+    properties: { Detail: { pw: { 'Fn::Transform': { Name: 'X', Parameters: { v: TOKEN } } } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    expected: { Detail: { pw: SECRET_MASK } },
+    refused: false,
+    why:
+      'the #2846 shape on the ADMITTED path. The four closedByMask rows reach it by ' +
+      'THROWING, which is what nearly cost this row: an `Fn::Transform` is left ' +
+      'unresolved with nothing thrown, so the classifier admits the resource and the ' +
+      'raw object reaches the walk as an unpairable source leaf',
+  },
 ];
 
 function stateFor(row: Row): StackState {
@@ -421,7 +634,15 @@ async function classify(row: Row): Promise<{ refused: boolean; persisted: Record
  *
  * The provider double takes the FIVE arguments production passes
  * (`physicalId`, `logicalId`, `resourceType`, `properties`, `context`) and
- * records them, so the call shape is pinned too.
+ * records them. FOUR are asserted by the caller — `physicalId`,
+ * `resourceType`, `logicalId` and `properties`. `context` is recorded and
+ * deliberately NOT asserted: it is `buildReadCurrentStateContext`'s output,
+ * whose own shape is fenced by that function's suite, and pinning it here
+ * would couple this table to a sibling-map layout no row varies.
+ *
+ * An earlier revision of this paragraph said the call shape "is pinned too"
+ * while only TWO of the five were read — the recorded-but-unread arguments
+ * looked like coverage and were not. Say which are asserted.
  */
 async function captureVia(
   row: Row,
@@ -455,15 +676,33 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     // A floor on the POOL, written as literals from this file rather than
     // derived from the array: a table that quietly lost its refusing rows would
     // otherwise satisfy every assertion below by having nothing to check.
-    expect(ROWS).toHaveLength(19);
+    expect(ROWS).toHaveLength(30);
     expect(ROWS.filter((r) => r.refused)).toHaveLength(11);
-    expect(ROWS.filter((r) => !r.refused)).toHaveLength(8);
+    expect(ROWS.filter((r) => !r.refused)).toHaveLength(19);
     // The deliberate over-refusals, counted so they cannot grow unnoticed: each
     // costs a real resource its drift baseline.
     expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(3);
     expect(
       ROWS.filter((r) => r.overRefusal && !r.refused),
       'an over-refusal that is not a refusal is a contradiction'
+    ).toHaveLength(0);
+    // A floor PER CLASS, not just on the total: the premise loop proves a
+    // different property for each, so a row silently changing class would move
+    // which assertion guards it while every aggregate stayed put.
+    expect(ROWS.filter((r) => r.closedByMask)).toHaveLength(4);
+    expect(
+      ROWS.filter((r) => r.closedByMask && !r.refused),
+      'a row closed by the mask below is still a REFUSAL at this layer'
+    ).toHaveLength(0);
+    expect(
+      ROWS.filter((r) => r.closedByMask && r.overRefusal),
+      'the two exemptions are disjoint: one says the walk COULD pair, the other that it could not'
+    ).toHaveLength(0);
+    // `expectedOnReplay` belongs to the mask class and to nothing else — a row
+    // carrying one without the marker is asserted by no branch at all.
+    expect(
+      ROWS.filter((r) => r.expectedOnReplay !== undefined && !r.closedByMask),
+      'expectedOnReplay is the closedByMask branch\'s expected column; on any other row nothing reads it'
     ).toHaveLength(0);
     expect(new Set(ROWS.map((r) => r.name)).size, 'row names are unique').toBe(ROWS.length);
   });
@@ -482,6 +721,19 @@ describe('cdkd import: which resources may take an observedProperties baseline (
           `${row.name}: production must pass the recorded physicalId`
         ).toBe('res-phys');
         expect((seen[0] as { resourceType: string }).resourceType).toBe('AWS::SQS::Queue');
+        expect(
+          (seen[0] as { logicalId: string }).logicalId,
+          `${row.name}: production must pass the record's own logical id`
+        ).toBe('Res');
+        // The bag the provider is READ WITH is the record's PERSISTED
+        // properties, not the row's template input — the same object the
+        // redaction below positions against. Pinning it is what stops a future
+        // edit reading AWS with one bag and positioning against another, which
+        // would make every certified position a coincidence.
+        expect(
+          (seen[0] as { properties: unknown }).properties,
+          `${row.name}: production must read with the record's persisted properties`
+        ).toEqual(persisted);
         expect(
           JSON.stringify(redacted),
           `${row.name}: captured a baseline that still holds the plaintext (${row.why})`
@@ -503,73 +755,59 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     });
   }
 
-  it('RESIDUE (issue #2885): the capture still leaks at an uncertifiable position', async () => {
-    // The absence recorded in this file's header, stated as a RUNNING
-    // assertion instead of prose. Issue #2852 made the position walk fail
-    // CLOSED, but only for a caller that declares its bag is a drift baseline
-    // (`STATE_SOURCED_BASELINE_RULES`); this capture still passes
-    // `STATE_SOURCED_READBACK_RULES`, one constant away.
-    //
-    // Asserted in BOTH directions on purpose. The first half is the residue —
-    // the plaintext survives today, so a row for this shape in the table above
-    // would red its SAFETY invariant. The second half is the fix waiting: the
-    // same input under the baseline constant already masks, so #2885 is a
-    // constant swap and this case goes RED the moment it lands, which is what
-    // makes it a test rather than a comment.
-    //
-    // THE FIRST HALF GOES THROUGH `captureVia`, i.e. through the real
-    // `captureObservedForImportedResources`, and that is the whole point of the
-    // case. An earlier revision called `redactSecretsForState` with
-    // `STATE_SOURCED_READBACK_RULES` spelled HERE — which pins this file's own
-    // argument, not production's: swapping the constant at the call site
-    // (`src/cli/commands/import.ts`, the one edit #2885 asks for) left this case
-    // GREEN, measured, so its failure message could never fire for the reason it
-    // names. The second half stays a direct call because it describes an
-    // argument production does not pass YET.
-    const properties = { Detail: { pw: TOKEN } };
-    const readback = { Detail: [PLAINTEXT] };
-    const row: Row = {
-      name: 'RESIDUE #2885: readback container where the source spells a record',
-      properties,
-      readback,
-      refused: false,
-      why: 'the shape #2852 closed for a baseline caller, still open for this one',
-    };
-
-    const { refused, persisted } = await classify(row);
-    expect(refused, 'the residue is only reachable on a row the classifier ADMITS').toBe(false);
-    const { observed: leaks } = await captureVia(row, persisted, new Set());
-    expect(
-      JSON.stringify(leaks),
-      'issue #2885 has landed — move this shape into ROWS and delete this case'
-    ).toContain(PLAINTEXT);
-
-    const closed = redactSecretsForState(
-      readback,
-      new Map<string, string>(),
-      properties,
-      STATE_SOURCED_BASELINE_RULES
-    );
-    expect(JSON.stringify(closed)).not.toContain(PLAINTEXT);
-    expect(JSON.stringify(closed)).toContain(SECRET_MASK);
-  });
-
-  it('the premise holds: every refused row would REALLY have leaked', async () => {
+  it('the premise holds: every refused row was refused over something REAL', async () => {
     // Without this the refusing half of the table is unfalsifiable — a row
     // could be refused for a shape that was never dangerous, and the fence
     // would read as protective while protecting nothing. So replay the capture
-    // for each refused row ANYWAY and require the plaintext to survive: that is
-    // what the refusal is buying, measured rather than assumed.
-    let proven = 0;
+    // for each refused row ANYWAY and require the hazard to show: that is what
+    // the refusal is buying, measured rather than assumed.
+    //
+    // TWO SHAPES OF PROOF since issue #2885, one per class, and a floor on
+    // each. Before the swap every earned refusal proved itself with a surviving
+    // PLAINTEXT. Four of them now prove it with a MASK instead: the classifier
+    // still refuses, and replaying anyway reaches the fail-closed position walk
+    // — so the plaintext assertion would red for the layer below doing its job,
+    // while the MASK is the same evidence (the position could not be certified)
+    // read off the layer that now records it. Losing that distinction is how
+    // this loop would go quietly vacuous, which is why each class carries its
+    // own count rather than one total.
+    let provenByPlaintext = 0;
+    let provenByMask = 0;
     for (const row of ROWS.filter((r) => r.refused && !r.overRefusal)) {
       const { persisted } = await classify(row);
       const { observed: redacted } = await captureVia(row, persisted, new Set());
-      expect(
-        JSON.stringify(redacted),
-        `${row.name}: refused, but capturing would NOT have leaked — the refusal is unearned`
-      ).toContain(row.needle ?? PLAINTEXT);
-      proven++;
+      const json = JSON.stringify(redacted);
+      const needle = row.needle ?? PLAINTEXT;
+      if (row.closedByMask) {
+        expect(
+          json,
+          `${row.name}: marked closedByMask, but the plaintext survived the capture — ` +
+            'the row belongs in the plaintext class, and the fail-closed walk did not fire'
+        ).not.toContain(needle);
+        expect(
+          json,
+          `${row.name}: refused, and capturing leaves NEITHER the plaintext nor a mask — ` +
+            'nothing was at risk here, so the refusal is unearned and the row is an overRefusal'
+        ).toContain(SECRET_MASK);
+        // CONTENT, exactly as the admitted rows get. `toContain` over a
+        // STRINGIFIED bag is position- and shape-blind: a walk that masked the
+        // wrong leaf, masked every leaf, or reshaped the container satisfies it.
+        expect(
+          row.expectedOnReplay,
+          `${row.name}: a closedByMask row must declare the bag its replay persists. ` +
+            'Without one this branch degrades to a presence check on `***`.'
+        ).toBeDefined();
+        expect(redacted, `${row.name}: wrong bag on replay`).toEqual(row.expectedOnReplay);
+        provenByMask++;
+      } else {
+        expect(
+          json,
+          `${row.name}: refused, but capturing would NOT have leaked — the refusal is unearned`
+        ).toContain(needle);
+        provenByPlaintext++;
+      }
     }
-    expect(proven, 'the loop ran over every EARNED refusal').toBe(8);
+    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(4);
+    expect(provenByMask, 'the loop ran over every refusal earned by a MASK').toBe(4);
   });
 });

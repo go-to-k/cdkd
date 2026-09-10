@@ -332,9 +332,10 @@ way, since nothing in state distinguishes the two — see
 #### The other cause of a masked baseline: a position cdkd could not certify
 
 A `NoEcho` response is not the only way the mask reaches a baseline. When cdkd
-refreshes `observedProperties` — during a deploy, or from
-[`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed) — it
-rewrites the decrypted value AWS returns back
+refreshes `observedProperties` — during a deploy, from
+[`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed), or
+from the baseline [`cdkd import`](import.md) captures for each resource it
+adopts — it rewrites the decrypted value AWS returns back
 onto the `{{resolve:...}}` reference the record holds, **by position**. Where
 the readback and the record cannot be lined up at a reference-bearing position,
 cdkd has no way to tell a resolved secret from an ordinary literal, so it
@@ -364,8 +365,12 @@ reasons listed above exists *because* the record and the readback could not be
 matched at that position, which is exactly when `--revert` has no live value it
 may safely copy. So expect it to refuse the whole resource here more often than
 for a `NoEcho` value, rather than to leave the position as AWS has it. The fix
-is a `cdkd deploy` of that resource, after which the baseline is captured from a
-template cdkd can position against.
+is a deploy that actually creates or updates that resource, after which the
+baseline is captured from a template cdkd can position against. A plain
+`cdkd deploy` that finds nothing to change does **not** clear it: the
+**automatic refresh** cdkd runs at the start of a deploy only fills in a
+*missing* baseline, and a mask is not missing. A create or update rewrites the
+baseline unconditionally, which is why it is the remedy.
 
 The last shape in the list — a record whose properties hold a raw `Fn::Join` /
 `Fn::Sub` **object** — has a second consequence of its own: when such a record
@@ -380,7 +385,16 @@ remedy is the same `cdkd deploy`, which resolves the template and records a
 resolvable baseline.
 
 `cdkd drift --accept` does not write this mask itself — it records what AWS
-reported — and neither does `cdkd import`'s own baseline capture.
+reported. For a resource that has no baseline yet, that write lands in
+`properties` — the fallback described under `--accept` below — where a mask
+would block [`cdkd export`](cli-export.md) and the rollback replay rather than
+protect anything. For a resource that already has a baseline, `--accept` writes
+the baseline.
+
+`cdkd import`'s own baseline capture **does** write it, for the same reason a
+deploy's does: its one destination is `observedProperties`. So a stack freshly
+adopted with `cdkd import` can report a masked position on its very first
+`cdkd drift` run, before any deploy has run at all.
 
 ### Tokens that are not references
 
