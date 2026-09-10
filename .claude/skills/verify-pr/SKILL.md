@@ -128,9 +128,8 @@ Run each check and report pass/fail:
      (Both lists in this step are duplicated across several files and fenced
      against the hook by `tests/unit/scripts/cross-cutting-list-sync.test.ts`,
      so editing one copy alone fails CI.) The canonical broad set (keep in sync
-     with `.claude/hooks/integ-broad-gate.sh` (header comment + block message,
-     the fence's base), `.claude/skills/run-integ/SKILL.md` step 11,
-     `.claude/skills/pick-integ/SKILL.md` step 2 and `.markgate.yml`):
+     with `.claude/hooks/integ-broad-gate.sh`'s block message, which
+     `cross-cutting-list-sync.test.ts` compares every other copy against):
      - `bench-cdk-sample` (39-resource VPC+NAT+CF+Lambda+SQS)
      - `lambda`
      - `microservices`

@@ -121,15 +121,15 @@ const read = (p: string): string => readFileSync(p, 'utf8');
  *
  * These three constants floor four lists: cross-cutting 12 and work-issues
  * contention 13 (both MIN_PATHS = 8), the integ-destroy scope 13
- * (MIN_DESTROY_SCOPE = 9) and the broad set 9 (MIN_TESTS = 7). Other lists
- * here carry their own literal floors instead -- the per-bucket activation
- * patterns and the strict-delete copies below. The floor ALONE tolerates a
- * four, five, four and two entry shrink; the sequence comparisons and pins
- * fail first, so a real shrink is a test edit either way. What no pin can
- * catch is a parser gone blind -- which loses the whole list at once rather
- * than one entry -- and the floors are what stop that. A
- * single dropped entry is caught by the sequence comparisons instead, which is
- * the tighter of the two guards.
+ * (MIN_DESTROY_SCOPE = 9) and the broad set 9 (MIN_TESTS = 7), leaving four,
+ * five, four and two entries of slack.
+ *
+ * That slack is not what guards a shrink -- every one of those lists is ALSO
+ * pinned against a literal array below, so dropping an entry fails the pin
+ * long before the floor notices. The floors earn their place in the
+ * copy-vs-base comparisons: two extractors that BOTH stop parsing compare
+ * [] to [] and agree, and the floor is what turns that into a failure that
+ * names the file which went blind.
  */
 const MIN_PATHS = 8;
 const MIN_TESTS = 7;

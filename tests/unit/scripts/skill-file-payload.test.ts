@@ -46,12 +46,16 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 23_000; // RE-DERIVED DOWNWARD 36_000 -> 23_000 by the 2026-09-04 token-diet
-// pass: largest non-split skill is now verify-pr at 20,556 B (was 33,598 B),
-// and leaving the old cap would let regrowth silently erode most of the
-// verify-pr / run-integ compression gain -- the same fold-back erosion the
-// MAX_REFERENCE_FILE_BYTES re-derivation below exists to prevent. ~12%
-// headroom over the leader; per retro.md section 10-c a retro never raises
-// this to fit an addition.
+// pass: the leader was verify-pr at 20,556 B (was 33,598 B), and leaving the
+// old cap would let regrowth silently erode most of the verify-pr /
+// run-integ compression gain -- the same fold-back erosion the
+// MAX_REFERENCE_FILE_BYTES re-derivation below exists to prevent. The 12%
+// headroom that figure implied is GONE: verify-pr has grown back to within
+// ~100 B of the cap, so the next addition to it has to be funded by a
+// compression in the same file. No CURRENT size is quoted here -- one
+// drifts on every edit; `wc -c .claude/skills/*/SKILL.md` is the live
+// value. Per retro.md section 10-c a retro never raises this to fit an
+// addition.
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; its CURRENT size is asserted as MEASURED.orchestratorBytes below, never quoted here
 // That number is the point, not trivia: the orchestrator has repeatedly grown to
 // within a few hundred bytes of its cap while this comment still quoted the

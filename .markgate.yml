@@ -536,9 +536,9 @@ gates:
   integ-broad:
     # Records the last broad real-AWS integ run. The canonical
     # broad-integ set (keep in sync with .claude/hooks/integ-broad-gate.sh's
-    # block message -- the BASE this fence compares against -- and with the
-    # four other copies: that hook's header comment, .claude/skills/run-integ
-    # step 11, verify-pr step 6 and pick-integ step 2):
+    # block message -- the BASE that tests/unit/scripts/
+    # cross-cutting-list-sync.test.ts compares every copy against, that file
+    # being the one place the current population is recorded):
     #   bench-cdk-sample
     #   lambda
     #   microservices
