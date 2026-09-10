@@ -32,6 +32,11 @@
 #      microservices, drift-revert, drift-revert-vpc, multi-stack-deps,
 #      multi-resource, remove-protection, export). Narrow integs don't
 #      touch the sentinel, so they don't refresh this marker.
+#      The set is written out in this comment, the block message below,
+#      .markgate.yml and several skills. Do not list the copies here:
+#      tests/unit/scripts/cross-cutting-list-sync.test.ts holds the
+#      current population and compares every copy against the block
+#      message, which is the base.
 #   3. The marker also carries the 14d TTL of integ-destroy / integ-local
 #      so AWS-side drift forces a fresh broad run periodically.
 #
@@ -129,11 +134,12 @@ cd "$target_dir" 2>/dev/null || exit 0
 
 # Cross-cutting code paths whose modification can affect EVERY user's
 # deploy/destroy, not just the feature scenario the PR adds. Keep in
-# sync with the same list in .claude/skills/verify-pr/SKILL.md
-# (step 6, "CROSS-CUTTING CHECK"), .claude/skills/pick-integ/SKILL.md
-# (step 2's changed-path table), the CLAUDE.md "integ-broad" entry, and
-# the memory rule feedback_cross_cutting_needs_broad_integ.md. The four
-# prose copies are fenced against this one by
+# sync with the same list in .claude/skills/verify-pr/SKILL.md step 6 --
+# BOTH its bullet list and the verbatim regex in its detection snippet --
+# and .claude/skills/pick-integ/SKILL.md step 2's changed-path table.
+# (feedback_cross_cutting_needs_broad_integ.md records why the gate
+# exists; it names no paths, so it is not one of the copies.) Those
+# three prose copies are fenced against this one by
 # tests/unit/scripts/cross-cutting-list-sync.test.ts, because the list
 # had already drifted between copies before that fence existed.
 #
@@ -295,10 +301,8 @@ became required for this scope.
 
 Required action — no exceptions:
   /run-integ bench-cdk-sample      # 39-resource VPC+NAT+CF+Lambda+SQS
-  # or one of (the canonical broad-set is duplicated in
-  # .claude/skills/run-integ/SKILL.md step 11 + .markgate.yml
-  # integ-broad gate's docs + CLAUDE.md "integ-broad" entry — keep
-  # all four in sync):
+  # or one of (this message is the base that
+  # cross-cutting-list-sync.test.ts compares every other copy against):
   /run-integ lambda
   /run-integ microservices
   /run-integ drift-revert

@@ -535,9 +535,10 @@ gates:
 
   integ-broad:
     # Records the last broad real-AWS integ run. The canonical
-    # broad-integ set (keep in sync with .claude/hooks/integ-broad-gate.sh
-    # error message + .claude/skills/run-integ/SKILL.md step 11 +
-    # .claude/skills/verify-pr/SKILL.md step 6 + CLAUDE.md):
+    # broad-integ set (keep in sync with .claude/hooks/integ-broad-gate.sh's
+    # block message -- the BASE that tests/unit/scripts/
+    # cross-cutting-list-sync.test.ts compares every copy against, that file
+    # being the one place the current population is recorded):
     #   bench-cdk-sample
     #   lambda
     #   microservices
@@ -547,7 +548,7 @@ gates:
     #   multi-resource
     #   remove-protection
     #   export
-    # That seven-way duplication is fenced rather than merely requested:
+    # That six-way duplication is fenced rather than merely requested:
     # tests/unit/scripts/cross-cutting-list-sync.test.ts compares every
     # copy against the hook's block message. It was written after the
     # hook's own header comment was found carrying 8 of these 9 names.

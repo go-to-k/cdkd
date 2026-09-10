@@ -205,7 +205,7 @@ issues the `Agent` calls.
      silent ways (an entry stops existing; a live surface never gets added —
      both seen in issue #1972);
      `tests/unit/scripts/security-surface-list-sync.test.ts` fences the first
-     and the four-copy sync, the second needs the (a)/(b)/(c) test re-applied
+     and the three-copy sync, the second needs the (a)/(b)/(c) test re-applied
      when this area changes.
 
    - Any path under `src/provisioning/providers/**` (deletion-sensitive —

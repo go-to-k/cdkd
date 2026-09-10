@@ -4,14 +4,20 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * The "security / process-launch surface" entry list is duplicated in FOUR
+ * The "security / process-launch surface" entry list is duplicated in THREE
  * places, one of which is executable:
  *
  *   1. `.claude/hooks/pr-review-gate.sh`  -- `UP_PATH_REGEX`, a live merge gate
  *   2. `.claude/skills/review-pr/SKILL.md` -- the bullet list the hook calls
  *      its source of truth
  *   3. `.claude/agents/pr-security-reviewer.md` -- section 4
- *   4. `CLAUDE.md` -- twice (gate description + "PR review pattern")
+ *
+ * `CLAUDE.md` used to carry it TWICE more -- a slash-separated form in the
+ * `pr-review` gate bullet and a brace form in the "PR review pattern" bullet --
+ * and both were compared here. It no longer spells the surface out; the bullets
+ * point at the hook and the skill instead, so there is nothing left to compare.
+ * Do not "restore" either copy: a hand-copy in the file every session loads is
+ * the most expensive of the spellings and the least likely to be re-read.
  *
  * Three failure modes, all silent, all fenced here:
  *
@@ -32,7 +38,7 @@ import { dirname, join } from 'node:path';
  *     drift it exists to catch.
  *
  * NOT fenced, and no test here should be read as covering it: **a live security
- * surface that was never added to ANY copy**. All five spellings agreeing
+ * surface that was never added to ANY copy**. All three spellings agreeing
  * proves the copies say the same thing, never that what they say is complete --
  * `sigv4-verify.ts` and `docker-cmd.ts` were both missing from every copy at
  * once while their callers were listed. That one needs the (a)/(b)/(c) judgment
@@ -40,18 +46,17 @@ import { dirname, join } from 'node:path';
  * about itself.
  *
  * What the copies must prove is that they are the SAME LIST, and a list is an
- * ordered sequence with multiplicity -- not a set. All five spellings (the four
- * files, with CLAUDE.md contributing two) are in the identical document order
- * today, so the order is free signal and is asserted; every extractor below
- * therefore yields document order with duplicates preserved, and the
- * comparisons are sequence comparisons.
+ * ordered sequence with multiplicity -- not a set. All three spellings are in
+ * the identical document order today, so the order is free signal and is
+ * asserted; every extractor below therefore yields document order with
+ * duplicates preserved, and the comparisons are sequence comparisons.
  *
  * The `src/provisioning/providers/**` glob is a first-class member of that
  * sequence, not a special case skipped for parsing convenience. It is the
  * broadest and highest-blast-radius entry on the list, so an extractor that
  * dropped it would leave the entry that matters most unfenced. The hook spells
  * it as the regex `src/provisioning/providers/.*`; that is normalised to the
- * `/**` spelling the four prose copies use.
+ * `/**` spelling the prose copies use.
  *
  * HOW the prose copies are read, and why it is shaped this way. Every prose
  * extractor validates that its whole region IS an enumeration -- a positive
@@ -70,12 +75,11 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const HOOK = join(repoRoot, '.claude', 'hooks', 'pr-review-gate.sh');
 const SKILL = join(repoRoot, '.claude', 'skills', 'review-pr', 'SKILL.md');
 const AGENT = join(repoRoot, '.claude', 'agents', 'pr-security-reviewer.md');
-const CLAUDE_MD = join(repoRoot, 'CLAUDE.md');
 
 /**
  * One spelling of a surface entry -- a concrete `src/**` file or a `/**` glob.
  *
- * Every extractor that reads an entry uses this one alphabet, so all five see
+ * Every extractor that reads an entry uses this one alphabet, so all three see
  * the same characters. Per-extractor charsets are how a copy silently stops
  * being compared: an entry with an underscore, an uppercase letter or a dotted
  * basename would be visible to the permissive extractors and invisible to the
@@ -85,22 +89,14 @@ const CLAUDE_MD = join(repoRoot, 'CLAUDE.md');
 const ENTRY = 'src/[A-Za-z0-9_./-]+(?:\\*\\*)?';
 
 /**
- * CLAUDE.md's "PR review pattern" bullet additionally uses a per-directory
- * brace spelling that expands to several entries: `src/local/{a,b}.ts`. It is a
- * second spelling of the same alphabet, not a second alphabet -- the directory
- * part admits `/` so a nested directory group is read rather than skipped.
- */
-const BRACE_GROUP = '(src/[A-Za-z0-9_./-]+)/\\{([A-Za-z0-9_,.-]+)\\}\\.ts';
-
-/**
  * Floor for every extractor below, asserted INSIDE each one so no call site can
  * forget it.
  *
  * The job no other assertion in this file does: the `names only paths that
  * exist` test consumes a list and asserts nothing was missing, so an extractor
  * returning `[]` passes it vacuously -- and that is a reachable state, not a
- * hypothetical. Simplify `UP_PATH_REGEX` to nothing but globs, or reword any of
- * the four prose anchors, and the corresponding extractor yields an empty
+ * hypothetical. Simplify `UP_PATH_REGEX` to nothing but globs, or reword either
+ * of the two prose anchors, and the corresponding extractor yields an empty
  * sequence. The sync tests would then compare empty against empty and agree.
  *
  * The surface currently holds 13 entries. The floor sits at 10 rather than 13
@@ -155,24 +151,6 @@ function readEnumeration(region: string, itemSource: string, source: string): st
       `silently refill it (issue #2006). Region as parsed:\n  ${flat}`,
   ).toBe(true);
   return [...flat.matchAll(new RegExp(itemSource, 'g'))].map((m) => m[0]);
-}
-
-/**
- * One top-level CLAUDE.md bullet, so an extractor cannot pick up a same-shaped
- * span from an unrelated part of a 300-line instruction file.
- *
- * The bullet ends at the next top-level `- ` rather than the next `- **`: the
- * bolder boundary would silently widen this scope the day someone unbolds the
- * following bullet.
- */
-function claudeMdBullet(md: string, startsWith: string, source: string): string {
-  const at = md.indexOf(startsWith);
-  expect(at, `CLAUDE.md must carry the ${source} bullet, starting "${startsWith}"`).toBeGreaterThan(
-    -1,
-  );
-  const after = md.slice(at + 1);
-  const end = after.indexOf('\n- ');
-  return end > -1 ? after.slice(0, end) : after;
 }
 
 /** The hook's UP_PATH_REGEX alternations, in regex order. */
@@ -241,7 +219,7 @@ function agentEntries(): string[] {
   //
   // The boundary is the colon, NOT the providers glob that happens to carry it
   // today -- pinning the literal would turn a legitimate consistent shrink
-  // (dropping that entry from all five copies at once) into a failure telling
+  // (dropping that entry from all three copies at once) into a failure telling
   // the maintainer to undo a correct edit.
   //
   // What `readEnumeration` guarantees, precisely: nothing inside the region
@@ -286,82 +264,18 @@ function agentEntries(): string[] {
 }
 
 /**
- * CLAUDE.md carries the list twice in two different spellings: a
- * slash-separated form in the gate description and a brace-expansion form in
- * the "PR review pattern" bullet. Both must expand to the same sequence.
+ * Every copy, keyed by where it lives, for the shape-independent checks.
  *
- * Both are scoped to their own bullet first. An unscoped `md.match` takes the
- * FIRST same-shaped span in a 300-line file, so an unrelated phrase elsewhere
- * either injects entries or substitutes a fake list wholesale -- the same "a
- * mention elsewhere contributes an entry" class as issue #2006.
+ * No CLAUDE.md rows: neither the `pr-review` gate bullet nor the "PR review
+ * pattern" bullet enumerates the surface any more -- both point at
+ * `pr-review-gate.sh`'s `UP_PATH_REGEX` and the `/review-pr` skill. Nothing to
+ * compare there; do not add either back.
  */
-function claudeMdEntrySequences(): [string[], string[]] {
-  const md = readFileSync(CLAUDE_MD, 'utf8');
-
-  const gateBullet = claudeMdBullet(
-    md,
-    '- **Before merging large / security-sensitive PRs**',
-    'pr-review gate description',
-  );
-  // The CHAIN is its own positive shape -- a ` / `-joined run of entries matched
-  // end to end -- so no prose between two entries can contribute one. WHICH
-  // chain is a different question the anchor does not settle: this is a
-  // first-match `.match`, so a second `any path under `a` / `b`` phrase earlier
-  // in the same bullet would substitute its chain wholesale. What bounds that is
-  // the floor (a short decoy) and the sequence comparison against the hook (a
-  // long one), not the anchor.
-  const slashForm = gateBullet.match(
-    new RegExp('any path under (`' + ENTRY + '`(?: / `' + ENTRY + '`)+)'),
-  );
-  expect(slashForm, 'CLAUDE.md gate description must carry the slash-separated surface list')
-    .not.toBeNull();
-  const slashEntries = [...slashForm![1]!.matchAll(new RegExp('`(' + ENTRY + ')`', 'g'))].map(
-    (m) => m[1]!,
-  );
-  assertFloor(slashEntries, 'CLAUDE.md gate-description slash form');
-
-  const patternBullet = claudeMdBullet(md, '- **PR review pattern**', 'PR review pattern');
-  const listOpen = 'security / process-launch surface is touched (';
-  const listAt = patternBullet.indexOf(listOpen);
-  expect(
-    listAt,
-    `CLAUDE.md "PR review pattern" must introduce the surface list with "${listOpen}"`,
-  ).toBeGreaterThan(-1);
-  // No paragraph bound to relax here, unlike the agent section: the list opens
-  // immediately after `touched (`, so there is no lead-in region a legitimate
-  // edit could add prose to. The only prose that can land inside these bounds is
-  // prose interleaved with the entries themselves -- exactly what the shape
-  // check exists to refuse -- so the strictness costs nothing here.
-  const parenFrom = patternBullet.slice(listAt + listOpen.length);
-  const parenEnd = parenFrom.indexOf(')');
-  expect(parenEnd, 'the "PR review pattern" surface list must be parenthesised').toBeGreaterThan(-1);
-
-  // Two spellings share the enumeration: brace groups that expand to several
-  // entries, and plain entries (the providers glob today, a singleton file
-  // tomorrow). Both are read; a group with no plain-entry alternative would
-  // silently drop a singleton and blame CLAUDE.md for drift it does not have.
-  const braceEntries = readEnumeration(
-    parenFrom.slice(0, parenEnd),
-    '(?:`' + BRACE_GROUP + '`|`' + ENTRY + '`)',
-    'CLAUDE.md "PR review pattern" surface list',
-  ).flatMap((span) => {
-    const group = span.match(new RegExp('^`' + BRACE_GROUP + '`$'));
-    return group ? group[2]!.split(',').map((n) => `${group[1]}/${n}.ts`) : [span.slice(1, -1)];
-  });
-  assertFloor(braceEntries, 'CLAUDE.md "PR review pattern" brace form');
-
-  return [slashEntries, braceEntries];
-}
-
-/** Every copy, keyed by where it lives, for the shape-independent checks. */
 function allCopies(): Record<string, string[]> {
-  const [slashEntries, braceEntries] = claudeMdEntrySequences();
   return {
     'pr-review-gate.sh UP_PATH_REGEX': hookEntries(),
     'review-pr/SKILL.md bullet list': skillEntries(),
     'pr-security-reviewer.md section 4': agentEntries(),
-    'CLAUDE.md gate description': slashEntries,
-    'CLAUDE.md "PR review pattern"': braceEntries,
   };
 }
 
@@ -399,13 +313,6 @@ describe('security-surface entry list', () => {
       'pr-security-reviewer.md section 4 lists a different surface sequence than the ' +
         'gate, so the reviewer would be told to audit files the gate never flags.',
     ).toEqual(hook);
-  });
-
-  it('is in sync across both spellings in CLAUDE.md', () => {
-    const hook = hookEntries();
-    const [slashEntries, braceEntries] = claudeMdEntrySequences();
-    expect(slashEntries, 'CLAUDE.md gate description drifted from UP_PATH_REGEX').toEqual(hook);
-    expect(braceEntries, 'CLAUDE.md "PR review pattern" drifted from UP_PATH_REGEX').toEqual(hook);
   });
 
   // Sequence equality already fails a duplicate that only ONE copy carries. This
