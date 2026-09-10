@@ -67,7 +67,7 @@ const MAX_CLAUDE_MD_BYTES = 45_066;
  * shrinking the reference sections, which are the parts a reader needs least
  * often but can least afford to lose.
  */
-const MAX_WORKFLOW_RULES_BYTES = 26_455;
+const MAX_WORKFLOW_RULES_BYTES = 26_452;
 
 /**
  * CLAUDE.md plus every rule file that loads ONLY with it (see
@@ -83,10 +83,15 @@ const MAX_WORKFLOW_RULES_BYTES = 26_455;
  * same shape as the ordering case's first cut: a guard whose comparand does not
  * test the property its comment asserts.
  *
- * What DOES bound the relocation is this band being the TIGHTEST of the three
- * (asserted below against live sizes), so a net addition trips it before the
- * file ceiling and cannot be laundered by moving the bytes sideways. Whether
- * the relocated text still LOADS is a different question, and the
+ * What DOES bound the relocation is this band being tighter than the WHOLE-FILE
+ * ceiling (asserted below against live sizes), so a net addition trips it
+ * before that one and cannot be laundered by moving the bytes sideways. It is
+ * NOT the tightest of the three -- `MAX_WORKFLOW_RULES_BYTES` is, deliberately,
+ * and an earlier revision of this sentence said "TIGHTEST of the three" while
+ * the case below compared only band-vs-file. Section-vs-band is not ordered
+ * here and does not need to be: they bound different populations, and the
+ * section ceiling's own ordering case pairs it against the file ceiling.
+ * Whether the relocated text still LOADS is a different question, and the
  * injected-only sweep further down is what answers it.
  */
 const MAX_INJECTED_CONTEXT_BYTES = 63_200;
