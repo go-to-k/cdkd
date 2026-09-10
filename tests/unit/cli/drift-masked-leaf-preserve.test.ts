@@ -986,15 +986,105 @@ describe('preserveLiveValuesAtUnresolvedTokens pairs arrays by identity/corrobor
     expect(items[1]!['U']).toBe(TOK_B);
   });
 
-  it('S8: an ALL-TOKEN unkeyed array has zero corroborated leaves — the token is KEPT', () => {
-    // Old behaviour: `[TOK_A]` against one live value copied it in on the
-    // strength of a length-1 match, which is no evidence.
+  it('S8: a 1-vs-1 all-token array is a FORCED position — the live value is preserved', () => {
+    // PR 2912 review blocker 1. The mask walk's `compared > 0` floor was
+    // imported verbatim and its COST inverts here: a token-walk refusal
+    // WRITES the literal token, destroying the live value this function
+    // exists to preserve (`Args: ['{{resolve:x}}']` shipping over
+    // 'live-value' is the #1914 corruption). At 1-vs-1 there is no other
+    // candidate to mis-pair with, and the copy lands at the exact position
+    // AWS already holds it — refusal buys nothing. This is also the
+    // pre-#2893 behaviour for every 1-vs-1 array.
     const out = preserveLiveValuesAtUnresolvedTokens(
       { Args: [TOK_A] },
       { Args: ['live-value'] }
     );
 
+    expect((out['Args'] as unknown[])[0]).toBe('live-value');
+  });
+
+  it('S8b: an ALL-TOKEN array of length 2 still refuses — zero corroborated leaves', () => {
+    // The floor keeps its job where mis-pairing is real: with two token
+    // slots and no literal frame, nothing says which live value belongs
+    // where.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Args: [TOK_A, TOK_B] },
+      { Args: ['live-0', 'live-1'] }
+    );
+
     expect((out['Args'] as unknown[])[0]).toBe(TOK_A);
+    expect((out['Args'] as unknown[])[1]).toBe(TOK_B);
+  });
+
+  it('S14: a 1-vs-1 KEYED element whose identity AWS normalised still preserves — the position is forced', () => {
+    // The same blocker through the identity arm's door: at 1-vs-1 an
+    // identity mismatch changes which evidence rule fails, not the forced
+    // position, so routing it through the identity arm would destroy the
+    // live value the same way the floor did.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Env: [{ Name: 'DB', Value: TOK_A }] },
+      { Env: [{ Name: 'db', Value: 'db-live-value' }] }
+    );
+
+    expect((out['Env'] as Array<Record<string, unknown>>)[0]!['Value']).toBe('db-live-value');
+  });
+
+  it('S15: a 1-vs-1 element with a CONTRADICTING sibling leaf still preserves the token position', () => {
+    // A contradiction is a mis-pairing signal only when another candidate
+    // exists; at 1-vs-1 it just means the element drifted, and the
+    // non-array object walk already preserves a token beside a drifted
+    // sibling (the revert restores the sibling, the token position keeps
+    // what AWS holds). Pre-#2893 parity.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { I: [{ A: 'baseline', U: TOK_A }] },
+      { I: [{ A: 'changed-live', U: 'live-secret' }] }
+    );
+
+    const item = (out['I'] as Array<Record<string, unknown>>)[0]!;
+    expect(item['U']).toBe('live-secret');
+    // The sibling literal is NOT touched by this pass — the revert itself
+    // writes the baseline there.
+    expect(item['A']).toBe('baseline');
+  });
+
+  it('S16: NESTED arrays each carrying a token are TWO wildcard slots — both tokens kept', () => {
+    // Pins the deep-ARRAY arm of `carriesTokenOrMask` (PR 2912 review G1):
+    // with that arm neutered, zero slots are counted, the literal frame
+    // corroborates on x/y, and a reordered readback would copy element 1's
+    // live value into element 0's token slot — the credential-swap class.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      { Args: [[TOK_A, 'x'], [TOK_B, 'y']] },
+      { Args: [['live-0', 'x'], ['live-1', 'y']] }
+    );
+
+    const args = out['Args'] as Array<unknown[]>;
+    expect(args[0]![0]).toBe(TOK_A);
+    expect(args[1]![0]).toBe(TOK_B);
+  });
+
+  it('S17: a MIXED leaf (embedded token) is a contradiction, never a wildcard', () => {
+    // Pins `isTokenOrMaskLeaf`'s `isWholeDynamicReference` conjunct (PR 2912
+    // review G2). If a mixed leaf abstained, the sibling element's frame
+    // would corroborate the order and the whole-token slot would take a live
+    // value on evidence the mixed leaf cannot give.
+    const out = preserveLiveValuesAtUnresolvedTokens(
+      {
+        I: [
+          { M: `jdbc:${TOK_A}`, U: TOK_B },
+          { M: 'plain', U: 'u2' },
+        ],
+      },
+      {
+        I: [
+          { M: 'jdbc:resolved-value', U: 'live-secret' },
+          { M: 'plain', U: 'u2' },
+        ],
+      }
+    );
+
+    const items = out['I'] as Array<Record<string, unknown>>;
+    expect(items[0]!['U']).toBe(TOK_B);
+    expect(items[0]!['M']).toBe(`jdbc:${TOK_A}`);
   });
 
   it('S9: an unkeyed LENGTH mismatch keeps the token, as before', () => {
@@ -1053,9 +1143,22 @@ describe('preserveLiveValuesAtUnresolvedTokens pairs arrays by identity/corrobor
   });
 
   it('S12: a NON-PLAIN member (Date) in an unkeyed frame is a contradiction — the token is KEPT', () => {
+    // Length 2: at 1-vs-1 the forced-position rule pairs regardless of the
+    // frame (S15); with two candidates a non-plain member can vouch for
+    // nothing, so the pairing refuses rather than lean on the sibling.
     const out = preserveLiveValuesAtUnresolvedTokens(
-      { I: [{ T: new Date('2020-01-01T00:00:00Z'), U: TOK_A }] },
-      { I: [{ T: new Date('2020-01-01T00:00:00Z'), U: 'live' }] }
+      {
+        I: [
+          { T: new Date('2020-01-01T00:00:00Z'), U: TOK_A },
+          { T: new Date('2021-01-01T00:00:00Z'), U: 'plain' },
+        ],
+      },
+      {
+        I: [
+          { T: new Date('2020-01-01T00:00:00Z'), U: 'live-0' },
+          { T: new Date('2021-01-01T00:00:00Z'), U: 'plain' },
+        ],
+      }
     );
 
     expect((out['I'] as Array<Record<string, unknown>>)[0]!['U']).toBe(TOK_A);
@@ -1066,9 +1169,21 @@ describe('preserveLiveValuesAtUnresolvedTokens pairs arrays by identity/corrobor
     // wildcard identity MISSING the live map, but the miss is not structural —
     // AWS can literally hold the token text as an element's Name (an echo of a
     // shipped literal). Pairing on it is a guess, so it is refused explicitly.
+    // Length 2, where a wrong pairing is constructible — at 1-vs-1 the forced
+    // position wins instead (S14).
     const out = preserveLiveValuesAtUnresolvedTokens(
-      { Env: [{ Name: TOK_A, Value: TOK_B }] },
-      { Env: [{ Name: TOK_A, Value: 'live-v' }] }
+      {
+        Env: [
+          { Name: TOK_A, Value: TOK_B },
+          { Name: 'REGION', Value: 'us-east-1' },
+        ],
+      },
+      {
+        Env: [
+          { Name: TOK_A, Value: 'live-v' },
+          { Name: 'REGION', Value: 'us-east-1' },
+        ],
+      }
     );
 
     const env = out['Env'] as Array<Record<string, unknown>>;

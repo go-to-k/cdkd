@@ -413,7 +413,9 @@ does to those positions depends on where the token sits:
   **literally**, exactly as `cdkd deploy` sends it. For a stack cdkd deployed
   that is a no-op (AWS already holds the literal); for a record adopted from
   elsewhere it preserves whatever breakage already existed rather than
-  guessing.
+  guessing. A **one-element list against a one-element readback always
+  matches**: there is no other element to mis-pair with, so the live value is
+  preserved there even when nothing else in the element corroborates.
 - If the token is **embedded in a longer string**, that string is written
   **with the token literal**, exactly as `cdkd deploy` does, so a value AWS
   holds there **is overwritten**.

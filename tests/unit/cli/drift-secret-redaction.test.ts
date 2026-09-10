@@ -2545,7 +2545,11 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // then exits — so the message is on the error logger, not on the throw.
     const reported = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(reported).toContain('0 AWS update failure(s)');
-    expect(reported).toContain('1 whose dynamic reference(s) could not be resolved');
+    // Generic since PR 2912: the bucket also carries the #2855 intrinsic
+    // refusal, whose remedy differs, so the summary defers to the
+    // per-resource messages instead of prescribing the IAM-grant one.
+    expect(reported).toContain('1 refused or unresolvable');
+    expect(reported).toContain('names its cause and remedy');
   });
 
   it('--revert replays an unresolvable token as the LITERAL it was deployed as, and warns', async () => {
@@ -3445,6 +3449,45 @@ describe('cdkd drift --revert refuses an unresolved intrinsic OBJECT baseline (i
     const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(errored).toContain('refused to revert');
     expect(errored).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it('an OBSERVED baseline is never scanned — a readback value shaped like an intrinsic reverts normally', async () => {
+    // PR 2912 review: `observedProperties` is READBACK-derived, so a
+    // single-key map literally named `Ref` there is a real AWS value (a
+    // config map, an env var). Refusing on it would pin the resource
+    // unrevertable forever — the prescribed remedy re-records the same
+    // readback. The scan is therefore gated on the raw-`properties`
+    // fallback, the only provenance that can hold a genuine intrinsic.
+    const refShaped = { Ref: 'not-an-intrinsic-here' };
+    const update = vi.fn().mockResolvedValue({ physicalId: '/app/cfg' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/cfg',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/cfg', Cfg: refShaped, Description: 'from-template' },
+          observedProperties: { Name: '/app/cfg', Cfg: refShaped, Description: 'from-template' },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/cfg',
+        // `Cfg` itself drifted: AWS now reports a different single-key
+        // Ref-shaped map, so the drifted subtree the overlay sources from
+        // the baseline IS the intrinsic-shaped value.
+        Cfg: { Ref: 'edited-in-console' },
+        Description: 'from-template',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as Record<string, unknown>;
+    expect(sent['Cfg']).toEqual(refShaped);
   });
 
   it('the mask refusal names BOTH causes and BOTH remedies (issue #2881)', async () => {

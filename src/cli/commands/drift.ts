@@ -3752,12 +3752,25 @@ export function preserveLiveValuesAtUnresolvedTokens(
     if (Array.isArray(value)) {
       // Pair live elements the way the sibling mask walk does — identity
       // field first, else the array's own literal frame corroborated per
-      // leaf — with the wildcard tuned to THIS pass's markers (issue #2893;
-      // see the function doc for the residual on refusal and why blind index
-      // alignment copied another element's value here). Self-corroboration
-      // is sound in this pass: it runs FIRST, so no sibling pass has copied
-      // live values into the bag it reads evidence from.
-      const liveItems = pairedLiveItems(value, live, isTokenOrMaskLeaf, carriesTokenOrMask);
+      // leaf — with the wildcard tuned to THIS pass's markers, and the
+      // forced-singleton acceptance its refusal cost demands (issue #2893 +
+      // PR #2912 blocker 1; see the pairing's doc for both derivations).
+      //
+      // Self-corroboration needs a bound and "it runs FIRST" is not it (PR
+      // #2912 review): `buildRevertNewProperties` DOES copy live values into
+      // this bag — `{...awsProperties}` for every non-drifted key, and
+      // `mergeUntemplatedValue`'s untemplated paths under
+      // `preserveUntemplated`. The actual bound is structural: every overlay
+      // arm hands UNKEYED arrays over from ONE side wholesale (baseline
+      // wins in the merge's fall-through, AWS wholesale on a non-drifted
+      // key), so the per-leaf frame this pairing corroborates is never a
+      // mixed fabrication — a baseline-sourced frame is genuine evidence,
+      // and a live-sourced frame (non-drifted key) makes every copy a no-op
+      // (send ≡ live there, so a "preserved" token leaf takes the very
+      // token AWS holds). KEYED lists CAN carry live-derived members and
+      // live-derived order out of the merge, and those pair by identity,
+      // which reads no order evidence at all.
+      const liveItems = pairedLiveItems(value, live, isTokenOrMaskLeaf, carriesTokenOrMask, true);
       return value.map((item, i) => walk(item, liveItems?.[i]));
     }
     if (value !== null && typeof value === 'object') {
@@ -3829,6 +3842,12 @@ export function preserveLiveValuesAtUnresolvedTokens(
  * every baseline path into the send bag in some shape — so the baseline scan
  * is complete where the merged-bag scan was dilutable, and an AWS-echoed
  * lookalike (which lives only in the overlay) stays exempt by construction.
+ * The caller additionally gates the whole scan on
+ * `observedProperties === undefined` — intrinsic objects reach a revert
+ * baseline only through the raw-`properties` fallback, while an
+ * `observedProperties` baseline is READBACK-derived, where a single-key map
+ * named like an intrinsic is a real AWS value and a refusal would be
+ * permanent (the call site's comment carries the full derivation).
  *
  * The whole flagged leaf is reported once; nothing beneath it is separately
  * scanned, since the caller refuses the resource on the first path anyway.
@@ -3853,7 +3872,9 @@ export function collectUnresolvedIntrinsicObjectPaths(
         return;
       }
       for (const [k, v] of Object.entries(record)) {
-        visit(v, path === '' ? k : `${path}.${k}`);
+        // `path` is never '' here: the scan loop below seeds every visit
+        // with the top-level key itself.
+        visit(v, `${path}.${k}`);
       }
     }
   };
@@ -3930,7 +3951,10 @@ export function collectUnresolvedIntrinsicObjectPaths(
  * list corresponds to this one, and with zero corroborated leaves the only
  * evidence for that is the length-1 match, which is no evidence: this is the
  * all-masked reading applied to its smallest shape, and the cost is a refusal
- * (the safe residual), not a wrong write.
+ * (the safe residual), not a wrong write. THAT COST SENTENCE IS THE MASK
+ * WALK'S ALONE — for the token walk a refusal WRITES the token, so the same
+ * floor inverts there and the singleton is accepted instead; see
+ * `pairedLiveItems`' `acceptForcedSingleton` for the derivation.
  *
  * THE EVIDENCE MUST NOT BE MANUFACTURED BY A SIBLING PASS. `send` here must be
  * values the caller did not itself copy from `live` — see
@@ -3966,14 +3990,47 @@ export function collectUnresolvedIntrinsicObjectPaths(
  * carrying a wildcard anywhere is a slot whose alignment part-rests on
  * abstention), and the one-slot bound applies to it: with two such elements
  * the surviving literal frame cannot say which wildcard goes where.
+ *
+ * `acceptForcedSingleton` (PR #2912 review, blocker 1) is where the two
+ * callers' refusal COSTS meet the evidence rules, and it exists because a
+ * rule that is sound for one arm BECAUSE of what its refusal costs cannot be
+ * shared without re-deriving that cost. At `send.length === 1` against
+ * `live.length === 1` no evidence question remains OPEN: the position is
+ * FORCED (there is no other candidate to mis-pair with), and a positional
+ * copy writes each live value back to its own position, so no cross-element
+ * donation — the credential-swap class every bound above exists to stop — is
+ * even constructible. What the evidence rules still doubt there is only
+ * "does this live list correspond to this send list at all", and the two
+ * callers answer that doubt oppositely because their refusal residuals
+ * invert:
+ *
+ * - the MASK walk refuses (`false`, the default): its residual is dropping
+ *   the resource, so doubt costs a refusal — the safe direction, and the
+ *   `[SECRET_MASK]`-vs-one-live-value reading its own doc defends;
+ * - the TOKEN walk accepts (`true`): its residual WRITES the literal token
+ *   over whatever AWS holds (`provider.update` ships it — the #1914
+ *   corruption), so refusing on a forced position DESTROYS the live value a
+ *   pairing would have preserved, while accepting is write-neutral even when
+ *   the correspondence doubt is real (the copied value lands at the exact
+ *   position AWS already holds it). Refusal buys nothing and costs a
+ *   destructive write, so the token walk takes the pairing — which is also
+ *   exactly the pre-#2893 behaviour for every 1-vs-1 array.
+ *
+ * The bypass sits ABOVE the identity arm deliberately: at 1-vs-1 an identity
+ * mismatch (AWS normalised the one element's Name) changes which EVIDENCE
+ * rule fails, not the forced position, and routing it through the identity
+ * arm would re-open the same inverted cost through a different door. Every
+ * bound below is untouched for `length >= 2`, where mis-pairing is real.
  */
 function pairedLiveItems(
   send: readonly unknown[],
   live: unknown,
   wildcardLeaf: (leaf: unknown) => boolean = isMaskLeaf,
-  carriesWildcard: (value: unknown) => boolean = carriesSecretMask
+  carriesWildcard: (value: unknown) => boolean = carriesSecretMask,
+  acceptForcedSingleton = false
 ): readonly unknown[] | undefined {
   if (!Array.isArray(live)) return undefined;
+  if (acceptForcedSingleton && send.length === 1 && live.length === 1) return live;
   const key = identityKeyFor(send, live);
   if (key !== undefined) {
     const byIdentity = new Map<unknown, unknown>();
@@ -4024,14 +4081,22 @@ function isTokenOrMaskLeaf(leaf: unknown): boolean {
   return typeof leaf === 'string' && leaf.includes('{{resolve:') && isWholeDynamicReference(leaf);
 }
 
-/** Deep form of {@link isTokenOrMaskLeaf}, for the one-slot bound. */
-function carriesTokenOrMask(value: unknown): boolean {
+/**
+ * Deep form of {@link isTokenOrMaskLeaf}, for the one-slot bound.
+ *
+ * Cycle-guarded like its sibling `carriesSecretMask` (PR #2912 review): the
+ * value walked here is an element of `buildRevertNewProperties`' output,
+ * which carries RAW `readCurrentState` returns — provider-authored, not
+ * JSON-round-tripped — so a self-referential object must answer `false`
+ * rather than throw `RangeError` out of the pairing.
+ */
+function carriesTokenOrMask(value: unknown, seen = new Set<object>()): boolean {
   if (isTokenOrMaskLeaf(value)) return true;
-  if (Array.isArray(value)) return value.some(carriesTokenOrMask);
-  if (value !== null && typeof value === 'object') {
-    return Object.values(value).some(carriesTokenOrMask);
-  }
-  return false;
+  if (value === null || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((v) => carriesTokenOrMask(v, seen));
+  return Object.values(value).some((v) => carriesTokenOrMask(v, seen));
 }
 
 /**
@@ -4696,6 +4761,78 @@ async function runRevert(
         const unrevertablePaths = outcome.changes
           .map((c) => c.path)
           .filter((path) => (path.split('.', 1)[0] ?? '').includes(SECRET_MASK));
+        // Issue #2855: an unresolved intrinsic OBJECT (`{Fn::Join: ...}`,
+        // `{Ref: ...}`) in the send bag must never reach `provider.update`.
+        // Measured on both routes (see the helper's doc): no provider fails
+        // loudly — the SDK route puts the raw object into the wire call and
+        // the Cloud Control route serializes it into the patch, where a
+        // JSON-string property makes it schema-valid, i.e. silently
+        // accepted.
+        //
+        // Three scopings, each load-bearing:
+        //
+        // - GATED on `observedProperties === undefined` — the #2855
+        //   population by provenance (PR #2912 review). Intrinsic OBJECTS
+        //   reach a revert baseline only through the raw-`properties`
+        //   fallback (`cdkd import`'s warn path writes them there; #2842's
+        //   refusal is what routes the revert to that bag). An
+        //   `observedProperties` baseline is READBACK-derived — cdkd never
+        //   writes an intrinsic object into it — so there a single-key map
+        //   literally named `Ref` / `Fn::*` is a real AWS value (a Lambda
+        //   env var, a config map), and refusing on it would pin the
+        //   resource unrevertable FOREVER, the prescribed remedy re-recording
+        //   the same readback on every deploy.
+        // - Scoped to the DRIFTED top-level keys, the only ones the baseline
+        //   sources into the send bag.
+        // - Reading `desiredProperties` — the BASELINE — rather than the
+        //   overlay output (PR #2912 review): `mergeUntemplatedValue`'s
+        //   key-merge FUSES a single-key intrinsic with a plain-record live
+        //   value (`{Ref:'X'}` against live `{A:1}` becomes
+        //   `{A:1, Ref:'X'}`) — multi-key, invisible to the single-key
+        //   predicate in the merged bag. The baseline scan has no such
+        //   dilution and no over-refusal: every overlay arm re-emits every
+        //   baseline path into the send bag (wholesale, key-merge, and both
+        //   tag-list merges), so a flagged leaf always reaches
+        //   `provider.update` in some shape.
+        //
+        // Positioned BEFORE the warnings below as well as before the
+        // preserve passes: a refused resource must not first be promised
+        // "left UNCHANGED by this revert" by the token warning (nothing is
+        // written at all), and no side effect (a registered mask-only
+        // needle) may outlive the refusal.
+        if (stateResource.observedProperties === undefined) {
+          const driftedTopLevelKeys = new Set<string>();
+          for (const change of outcome.changes) {
+            const topLevelKey = change.path.split('.', 1)[0];
+            if (topLevelKey) driftedTopLevelKeys.add(topLevelKey);
+          }
+          const intrinsicObjectPaths = collectUnresolvedIntrinsicObjectPaths(
+            desiredProperties,
+            driftedTopLevelKeys
+          );
+          if (intrinsicObjectPaths.length > 0) {
+            // `totalUnresolvable` rather than `totalFailed`, like the mask
+            // refusal below: no AWS call was attempted, and the cause is a
+            // value cdkd cannot produce — not an update that failed.
+            //
+            // The paths are property KEYS from the baseline, and a key can
+            // carry a secret (the same fact that makes `redactDriftChanges`
+            // mask `change.path`), so they go through `maskSecretsInText`
+            // like every other reader on this path.
+            totalUnresolvable++;
+            logger.error(
+              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `refused to revert ` +
+                `${maskSecretsInText(intrinsicObjectPaths.join(', '), secrets)} — the recorded ` +
+                `baseline holds an unresolved CloudFormation intrinsic there (e.g. Fn::Join, ` +
+                `Ref), which cdkd cannot resolve outside a deploy; writing it would set the ` +
+                `live property to the raw intrinsic object instead of its value. Run ` +
+                `'cdkd deploy' for this stack — the deploy resolves the template and records ` +
+                `a resolvable baseline — then re-run the revert if drift remains.`
+            );
+            return;
+          }
+        }
         if (unrevertablePaths.length > 0) {
           logger.warn(
             `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): cannot ` +
@@ -4754,61 +4891,6 @@ async function runRevert(
             outcome.awsProperties,
             { preserveUntemplated: stateResource.observedProperties === undefined }
           );
-          // Issue #2855: an unresolved intrinsic OBJECT (`{Fn::Join: ...}`,
-          // `{Ref: ...}`) in the send bag must never reach `provider.update`.
-          // Measured on both routes (see the helper's doc): no provider fails
-          // loudly — the SDK route puts the raw object into the wire call and
-          // the Cloud Control route serializes it into the patch, where a
-          // JSON-string property makes it schema-valid, i.e. silently
-          // accepted. Scoped to the DRIFTED top-level keys, the only ones the
-          // baseline sources; refused BEFORE the preserve passes so no
-          // side effect (a registered mask-only needle) outlives the refusal.
-          //
-          // The scan reads `desiredProperties` — the BASELINE — rather than
-          // `overlaid`, and the difference is load-bearing (PR #2912 review):
-          // on exactly the #2855 population (`observedProperties` undefined),
-          // the overlay routes every drifted key through
-          // `mergeUntemplatedValue`, whose key-merge FUSES a single-key
-          // intrinsic with a plain-record live value (`{Ref:'X'}` against
-          // live `{A:1}` becomes `{A:1, Ref:'X'}`) — multi-key, so the
-          // single-key predicate no longer sees it in the merged bag. The
-          // baseline scan has no such dilution and no over-refusal either:
-          // every overlay arm re-emits every baseline path into the send bag
-          // (wholesale, key-merge, and both tag-list merges), so an intrinsic
-          // in the baseline at a drifted key always reaches `provider.update`
-          // in some shape, while an AWS-echoed lookalike lives only in
-          // `overlaid` and stays exempt.
-          const driftedTopLevelKeys = new Set<string>();
-          for (const change of outcome.changes) {
-            const topLevelKey = change.path.split('.', 1)[0];
-            if (topLevelKey) driftedTopLevelKeys.add(topLevelKey);
-          }
-          const intrinsicObjectPaths = collectUnresolvedIntrinsicObjectPaths(
-            desiredProperties,
-            driftedTopLevelKeys
-          );
-          if (intrinsicObjectPaths.length > 0) {
-            // `totalUnresolvable` rather than `totalFailed`, like the mask
-            // refusal below: no AWS call was attempted, and the cause is a
-            // value cdkd cannot produce — not an update that failed.
-            //
-            // The paths are property KEYS from the baseline, and a key can
-            // carry a secret (the same fact that makes `redactDriftChanges`
-            // mask `change.path`), so they go through `maskSecretsInText`
-            // like every other reader on this path.
-            totalUnresolvable++;
-            logger.error(
-              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-                `refused to revert ` +
-                `${maskSecretsInText(intrinsicObjectPaths.join(', '), secrets)} — the recorded baseline ` +
-                `holds an unresolved CloudFormation intrinsic there (e.g. Fn::Join, Ref), which ` +
-                `cdkd cannot resolve outside a deploy; writing it would set the live property ` +
-                `to the raw intrinsic object instead of its value. Run 'cdkd deploy' for this ` +
-                `stack — the deploy resolves the template and records a resolvable baseline — ` +
-                `then re-run the revert if drift remains.`
-            );
-            return;
-          }
           // Issue #1914: a token cdkd could not resolve must never be WRITTEN
           // over whatever AWS holds — see the helper for why the "it is already
           // there" premise holds only for a record cdkd deployed. Skipped
@@ -4853,10 +4935,15 @@ async function runRevert(
             // absent per-attribute flag), so the message must offer both
             // remedies rather than assert one cause. The sibling messages in
             // `export.ts` and `rollback-executor.ts` KEEP their NoEcho
-            // attribution deliberately: both read `properties`, where the
-            // fail-closed mask never lands (#2852 masks only
-            // `observedProperties`), so for them NoEcho remains the only
-            // cause — issue #2881's audit, re-checked when this was written.
+            // attribution deliberately: both read `properties`, and their
+            // wording stays right exactly as long as NoEcho is the only
+            // writer of a mask into `properties` — #2852's fail-closed mask
+            // lands only in `observedProperties`, and issue #2759 (an
+            // `Fn::Base64`-encoded secret registering a mask-only needle) is
+            // OPEN, `resolveBase64` calling no `recordMaskOnlyValue` today.
+            // If #2759 ships, issue #2881's remaining checklist items own
+            // re-widening those messages; do not re-assert the conclusion
+            // here without re-checking that dependency.
             totalUnresolvable++;
             logger.error(
               `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
@@ -5279,9 +5366,10 @@ async function runRevert(
     throw new PartialFailureError(
       `Revert completed with ${totalFailed + totalUnsupported + totalUnresolvable} resource ` +
         `error(s) (${totalFailed} AWS update failure(s), ${totalUnsupported} ` +
-        `update-not-supported, ${totalUnresolvable} whose dynamic reference(s) could not be ` +
-        `resolved — those never reached provider.update; grant the caller ` +
-        `secretsmanager:GetSecretValue / ssm:GetParameter, or fix the reference). ` +
+        `update-not-supported, ${totalUnresolvable} refused or unresolvable — those never ` +
+        `reached provider.update; each per-resource message above names its cause and remedy, ` +
+        `e.g. missing secretsmanager:GetSecretValue / ssm:GetParameter grants for an ` +
+        `unresolvable reference). ` +
         `Re-run 'cdkd drift <stack>' to see the remaining drift, then 'cdkd drift <stack> --revert' to retry.`
     );
   }
