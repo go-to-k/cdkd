@@ -129,11 +129,12 @@ cd "$target_dir" 2>/dev/null || exit 0
 
 # Cross-cutting code paths whose modification can affect EVERY user's
 # deploy/destroy, not just the feature scenario the PR adds. Keep in
-# sync with the same list in .claude/skills/verify-pr/SKILL.md
-# (step 6, "CROSS-CUTTING CHECK"), .claude/skills/pick-integ/SKILL.md
-# (step 2's changed-path table), and the memory rule
-# feedback_cross_cutting_needs_broad_integ.md. The three
-# prose copies are fenced against this one by
+# sync with the same list in .claude/skills/verify-pr/SKILL.md step 6 --
+# BOTH its bullet list and the verbatim regex in its detection snippet --
+# and .claude/skills/pick-integ/SKILL.md step 2's changed-path table.
+# (feedback_cross_cutting_needs_broad_integ.md records why the gate
+# exists; it names no paths, so it is not one of the copies.) Those
+# three prose copies are fenced against this one by
 # tests/unit/scripts/cross-cutting-list-sync.test.ts, because the list
 # had already drifted between copies before that fence existed.
 #
@@ -295,9 +296,10 @@ became required for this scope.
 
 Required action — no exceptions:
   /run-integ bench-cdk-sample      # 39-resource VPC+NAT+CF+Lambda+SQS
-  # or one of (the canonical broad-set is duplicated in
-  # .claude/skills/run-integ/SKILL.md step 11 + .markgate.yml
-  # integ-broad gate's docs — keep all three in sync):
+  # or one of (this list has SIX copies — the header comment above,
+  # .claude/skills/{run-integ step 11,verify-pr step 6,pick-integ step 2}
+  # and .markgate.yml's integ-broad gate — all fenced against THIS
+  # message; changing one alone reds CI):
   /run-integ lambda
   /run-integ microservices
   /run-integ drift-revert

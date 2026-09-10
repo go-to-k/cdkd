@@ -119,9 +119,9 @@ const read = (p: string): string => readFileSync(p, 'utf8');
 /**
  * Floors, asserted INSIDE each extractor so no call site can forget one.
  *
- * The cross-cutting list holds 12 entries and the broad set 9. Both floors sit
- * a couple of entries below that so a genuine one- or two-entry shrink does not
- * need a test edit in the same PR, while a parser that has gone blind -- which
+ * The lists hold 12 (cross-cutting), 13 (integ-destroy scope) and 9 (broad
+ * set) entries, against floors of 8, 9 and 7 -- so up to four, four and two
+ * entries can go without a test edit in the same PR, while a parser that has gone blind -- which
  * loses the whole list at once rather than one entry -- cannot clear it. A
  * single dropped entry is caught by the sequence comparisons instead, which is
  * the tighter of the two guards.
@@ -386,9 +386,10 @@ function pathsFromVerifyPrRegex(): string[] {
  * (d) the `/pick-integ` changed-path table row.
  *
  * This copy additionally uses a per-directory brace spelling that stands for
- * several entries (`src/cli/commands/{deploy,destroy}.ts`). It is a second
+ * several entries (`src/cli/commands/{deploy,destroy,destroy-runner}.ts` and
+ * `src/provisioning/{provider-registry,register-providers}.ts`). It is a second
  * spelling of the same list, not a second list, so it is expanded rather than
- * skipped -- skipping it would drop three of the twelve entries and leave the
+ * skipped -- skipping it would drop five of the twelve entries and leave the
  * copy that names the most paths the least fenced.
  */
 function pathsFromPickInteg(): string[] {
