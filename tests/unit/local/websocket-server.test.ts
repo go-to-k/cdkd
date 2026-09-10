@@ -978,15 +978,24 @@ describe('graceful shutdown bounded drain (M3)', () => {
   // the fixture both of them needed: a `$disconnect` that is RELEASED ON A
   // SIGNAL rather than after a sleep.
   //
-  // The signal is `Promise.allSettled`. It is called exactly once in
-  // `websocket-server.ts`, inside the drain and one line AFTER
-  // `drainStartCount` is snapshotted (`Promise.all(closes)` above it is a
-  // different method), so a spy on it says "the drain has started, and the
-  // count it will report has already been taken". Ordering, not timing: the
-  // release below can never land before the snapshot, which is what a sleep
-  // could not promise. The case above rejects a `setTimeout` spy for the
-  // same job because the socket-close loop schedules a 5s timer of its own
-  // and the two are not separable by value; `allSettled` has no such twin.
+  // The signal is `Promise.allSettled`. In `websocket-server.ts` it is called
+  // exactly once, inside the drain and one line AFTER `drainStartCount` is
+  // snapshotted (`Promise.all(closes)` above it is a different method), which
+  // is the ORDERING argument: the release below can never land before the
+  // snapshot, where a sleep tuned near it could. The case above rejects a
+  // `setTimeout` spy for the same job because the socket-close loop schedules
+  // a 5s timer of its own and the two are not separable by value;
+  // `allSettled` has no such twin.
+  //
+  // That file-scoped count is NOT what makes the signal trustworthy, and
+  // saying so would be describing a mechanism this case does not stand on:
+  // the spy replaces the GLOBAL `Promise.allSettled`, so any other caller
+  // reaching it inside the spy window would resolve `started` first, with a
+  // foreign array. Two things close that, and both are deliberate — the spy
+  // is installed immediately before `attached.close()` and removed in
+  // `finally`, so the window is that one call; and `drain.calls()` is
+  // asserted to be exactly 1, which a foreign call turns into 2. The
+  // assertion is doing that job as much as the drain-skip one.
   //
   // It doubles as the vacuity guard the issue's plan asks for: if a case
   // never registered a `$disconnect`, `close()` takes the `size > 0` early
@@ -1105,14 +1114,23 @@ describe('graceful shutdown bounded drain (M3)', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as AddressInfo).port;
     const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn');
-    const drain = watchDrainStart();
-    const ceiling = watchCeilingFire();
+    // Assigned inside the `try` rather than here: both patch GLOBALS, so a
+    // throw between two bare installs would leave one of them in place for
+    // the rest of the file (`vite.config.ts` sets neither `restoreMocks` nor
+    // `clearMocks`, so nothing else puts it back). Installed as late as
+    // possible for the same reason — the narrower the window, the less any
+    // other caller can be mistaken for the drain.
+    let drain: ReturnType<typeof watchDrainStart> | undefined;
+    let ceiling: ReturnType<typeof watchCeilingFire> | undefined;
     try {
       const ws = await openWebSocket(port, '/prod');
       await waitFor(() => attached.registry.size() === 1, 1000);
       ws.close();
-      // NOT awaited: the drain has to be running for the release below to
-      // mean anything, and `close()` is what runs it.
+      // Same tick as `ws.close()` and as the spy installs: `close()` snapshots
+      // `wss.clients` synchronously, and NOT awaited here because the drain
+      // has to be running for the release below to mean anything.
+      drain = watchDrainStart();
+      ceiling = watchCeilingFire();
       const closing = attached.close();
       // Raced against `close()` RETURNING, not awaited bare: if the drain is
       // skipped — the `size > 0` early exit, which a case that registered no
@@ -1129,7 +1147,11 @@ describe('graceful shutdown bounded drain (M3)', () => {
       gate.release();
       await closing;
 
-      expect(drain.calls(), 'close() reached the drain rather than skipping it').toBe(1);
+      // TWO jobs, both load-bearing: `close()` reached the drain rather than
+      // taking the `size > 0` skip, AND nothing but the drain called
+      // `allSettled` inside the window — a foreign call would have resolved
+      // `started` above and would show up here as 2.
+      expect(drain.calls(), 'exactly one allSettled — the drain\'s').toBe(1);
       expect(disconnectSettled, 'the $disconnect ran to completion').toBe(true);
       // THE discriminator, and an ORDERING one. Dropping
       // `drainComplete.then(...)` from the race leaves only the ceiling, so
@@ -1150,8 +1172,8 @@ describe('graceful shutdown bounded drain (M3)', () => {
       );
       expect(drainWarns).toHaveLength(0);
     } finally {
-      ceiling.restore();
-      drain.restore();
+      ceiling?.restore();
+      drain?.restore();
       warnSpy.mockRestore();
       rieModule.invokeRie.mockReset();
       await new Promise<void>((resolve) => {
@@ -1197,13 +1219,19 @@ describe('graceful shutdown bounded drain (M3)', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as AddressInfo).port;
     const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn');
-    const drain = watchDrainStart();
+    // Installed inside the `try`, immediately before `close()` — see the
+    // completion case for why the window is kept that narrow and why a bare
+    // install outside the `try` can leak a global patch into the rest of the
+    // file.
+    let drain: ReturnType<typeof watchDrainStart> | undefined;
+    let hungTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const first = await openWebSocket(port, '/prod');
       const second = await openWebSocket(port, '/prod');
       await waitFor(() => attached.registry.size() === 2, 1000);
       first.close();
       second.close();
+      drain = watchDrainStart();
       const closing = attached.close();
       // Raced against `close()` returning for the reason the case above
       // spells out: a skipped drain never settles `drain.started`, and a
@@ -1231,13 +1259,19 @@ describe('graceful shutdown bounded drain (M3)', () => {
       // above it so this assertion is always the one that speaks.
       const returned = await Promise.race([
         closing.then(() => 'closed' as const),
-        new Promise<'hung'>((resolve) =>
-          setTimeout(() => resolve('hung'), CEILING_REPORT_MS).unref?.()
-        ),
+        new Promise<'hung'>((resolve) => {
+          // Handle kept so the winner can clear it: unref'd is enough to let
+          // the process exit, but a 15s timer left armed after this case has
+          // returned is still a timer the next case runs alongside.
+          hungTimer = setTimeout(() => resolve('hung'), CEILING_REPORT_MS);
+          hungTimer.unref?.();
+        }),
       ]);
       expect(returned, 'close() never returned — the drain waited past its ceiling').toBe('closed');
 
-      expect(drain.calls(), 'close() reached the drain rather than skipping it').toBe(1);
+      // Both jobs again: the drain was reached, and no foreign `allSettled`
+      // resolved `started` inside the window.
+      expect(drain.calls(), 'exactly one allSettled — the drain\'s').toBe(1);
       const drainWarns = warnSpy.mock.calls.filter(
         (c) => typeof c[0] === 'string' && c[0].includes('graceful shutdown drained for')
       );
@@ -1247,7 +1281,14 @@ describe('graceful shutdown bounded drain (M3)', () => {
       // `1/1`, where the case above passes under either.
       expect(drainWarns[0]![0]).toContain('1/2 $disconnect handlers');
     } finally {
-      drain.restore();
+      // The never-released handler is what makes the drain time out, and it
+      // would otherwise pend for the rest of the run: `inFlightDisconnects`
+      // holds it, and the dispatch chain's own `.finally` cleanup cannot run
+      // until it settles. Releasing here drains both — the assertions above
+      // are already done, so it changes nothing they saw.
+      gates[1]!.release();
+      if (hungTimer !== undefined) clearTimeout(hungTimer);
+      drain?.restore();
       warnSpy.mockRestore();
       rieModule.invokeRie.mockReset();
       await new Promise<void>((resolve) => {
