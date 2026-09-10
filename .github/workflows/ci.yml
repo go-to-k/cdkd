@@ -342,6 +342,18 @@ jobs:
       # rather than reporting a byte-identical green here.
       - run: vp run audit:template-keyed-bag-reads:check
 
+      # Issue #2827 — every interpolating `throw` / `logger.*` in the intrinsic
+      # resolver is masked or carries a deliberate-exclusion note. It exists
+      # because three hand enumerations of that population disagreed, each one
+      # asserting completeness and each refuted by the next round's grep. Like
+      # the critic above it does not judge whether a value is secret-bearing —
+      # it requires the judgement to be WRITTEN AT the site, so an unannotated
+      # bare site can no longer be mistaken for a reviewed one. Its unit suite
+      # carries the known-BAD inputs and the per-shape floors, so a degradation
+      # to "everything looks annotated" fails there rather than reporting a
+      # byte-identical green here.
+      - run: vp run audit:resolver-mask-coverage:check
+
       # Issue #2228 — cdkd's `src/local/**` is half its own code and half a
       # re-export surface over cdk-local, and the boundary between them has moved
       # several times. A module that moves out does not stop compiling and does

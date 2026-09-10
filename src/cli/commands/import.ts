@@ -1722,28 +1722,37 @@ export async function resolveImportedProperties(
       // cannot fix it and `cdkd import` has no flag to bind one with.
       //
       // MASKED (issue #2803). `cdkd import` sets no `skipDynamicReferences`, so
-      // the resolve above really does decrypt, and the resolver's own throws
-      // interpolate the values it was handed — `key '<jsonKey>' not found in
-      // secret '<id>'` carries a plaintext whenever a later reference's secret
-      // id or JSON key was ASSEMBLED from an earlier one through `Fn::Sub` /
-      // `Fn::Join`. This warn prints at default verbosity, in the command whose
-      // stated contract is to persist the `{{resolve:...}}` expression and
-      // never the value.
+      // the resolve above really does DECRYPT — that is what makes any error
+      // out of it a candidate for carrying a plaintext, and it is unchanged.
+      // This warn prints at default verbosity, in the command whose stated
+      // contract is to persist the `{{resolve:...}}` expression and never the
+      // value.
       //
-      // THE MASK IS BOUNDED, and this comment deliberately does NOT enumerate
-      // how. `maskSecretsInText` matches a needle LITERALLY, so a plaintext
-      // that reaches the message truncated or re-encoded is not masked here,
-      // and neither is one below `MIN_NEEDLE_LENGTH` (4) unless it is the
-      // ENTIRE string. (Embedding on its own is NOT a limit — the substring
-      // arm masks `key '<plaintext>' not found` fine; an earlier revision of
-      // this line said otherwise.) Which of those a fix elsewhere could
-      // close, and where such a fix would have to sit, is enumerated WITH ITS
-      // MEASUREMENTS on issue #2827 — five review rounds on this PR each
-      // rewrote a taxonomy in this spot and each was wrong in a NEW way
-      // (`no mask can fix it`, then `a raw-value mask closes it`, both refuted
-      // by measurement), because nothing here re-checks a claim about the
-      // masker's semantics. The issue is where the claims are acted on and
-      // where they are kept true; a pointer cannot go stale in the same way.
+      // SINCE ISSUE #2827 THE RESOLVER MASKS ITS OWN THROWS, so the paragraph
+      // that used to sit here — "the resolver's throws interpolate what it was
+      // handed, so this boundary is the only mask" — no longer describes the
+      // code. What this mask still OWNS is the population the resolver never
+      // built: an SDK rejection raised inside `client.send` and propagated
+      // through `resolveDynamicReferences` untouched, which is exactly the
+      // shape that carries a plaintext (an IAM AccessDenied names the RESOURCE
+      // it refused, and for an id an `Fn::Sub` assembled that is the decrypted
+      // value). Masking twice is idempotent, so nothing is lost on the errors
+      // the resolver already masked. `import-resolver-error-masking.test.ts`
+      // pins both halves and says which case discriminates which.
+      //
+      // THE MASK IS STILL BOUNDED, and this comment deliberately does NOT
+      // enumerate how. `maskSecretsInText` matches a needle LITERALLY, so a
+      // plaintext that reaches the message re-encoded is not masked here, and
+      // neither is one below `MIN_NEEDLE_LENGTH` (4) unless it is the ENTIRE
+      // string. (Embedding on its own is NOT a limit — the substring arm masks
+      // `key '<plaintext>' not found` fine; an earlier revision of this line
+      // said otherwise.) The enumeration lives where it is ACTED ON and kept
+      // true — `intrinsic-function-resolver.ts`'s `maskValueLeaves` and the
+      // residual note above `maskingContext` in `evaluateConditions` — because
+      // five review rounds on this PR each rewrote a taxonomy in THIS spot and
+      // each was wrong in a NEW way (`no mask can fix it`, then `a raw-value
+      // mask closes it`, both refuted by measurement); nothing here re-checks a
+      // claim about the masker's semantics.
       //
       // What this site owns, and what the test file pins: the bag is hoisted
       // so the `catch` can name it, and the message is masked against it.
