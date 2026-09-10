@@ -26,8 +26,9 @@ import { dirname, join } from 'node:path';
  * 2. The BROAD-SET TEST-NAME list -- which integ fixtures are broad enough to
  *    refresh the marker. SIX spellings: the hook's header comment, the hook's
  *    block message, `.markgate.yml`'s `integ-broad` comment, `/run-integ` step
- *    11, `/verify-pr` step 6, and `/pick-integ` step 2. `CLAUDE.md` carried a
- *    seventh and no longer does, for the same reason.
+ *    11, `/verify-pr` step 6, and `/pick-integ` step 2 -- plus `BROAD_SET_PIN`
+ *    below, which is a seventh written-out spelling this fence also compares.
+ *    `CLAUDE.md` carried one more and no longer does, for the same reason.
  *
  * Why a fence rather than the "keep in sync" comments the copies already carry:
  * both lists were measurably out of sync when this file was written. The
@@ -128,8 +129,10 @@ const read = (p: string): string => readFileSync(p, 'utf8');
  * pinned against a literal array below, so dropping an entry fails the pin
  * long before the floor notices. The floors earn their place in the
  * copy-vs-base comparisons: two extractors that BOTH stop parsing compare
- * [] to [] and agree, and the floor is what turns that into a failure that
- * names the file which went blind.
+ * [] to [] and agree. The pin fails on that input too -- its base is one of
+ * these extractors -- so what the floor adds is WHERE the failure lands: in
+ * the extractor, naming the file that went blind, rather than as an
+ * empty-vs-pin mismatch that names only the base.
  */
 const MIN_PATHS = 8;
 const MIN_TESTS = 7;

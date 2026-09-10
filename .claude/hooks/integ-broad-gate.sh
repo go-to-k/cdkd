@@ -32,11 +32,11 @@
 #      microservices, drift-revert, drift-revert-vpc, multi-stack-deps,
 #      multi-resource, remove-protection, export). Narrow integs don't
 #      touch the sentinel, so they don't refresh this marker.
-#      The set is written out in several places -- this comment, the
-#      block message below, .markgate.yml, and three skills. Do not keep
-#      a count here: tests/unit/scripts/cross-cutting-list-sync.test.ts
-#      holds the current population and compares every copy against the
-#      block message, which is the base.
+#      The set is written out in this comment, the block message below,
+#      .markgate.yml and several skills. Do not enumerate them here:
+#      tests/unit/scripts/cross-cutting-list-sync.test.ts holds the
+#      current population and compares every copy against the block
+#      message, which is the base.
 #   3. The marker also carries the 14d TTL of integ-destroy / integ-local
 #      so AWS-side drift forces a fresh broad run periodically.
 #

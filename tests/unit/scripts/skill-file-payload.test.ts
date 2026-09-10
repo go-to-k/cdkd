@@ -50,11 +50,13 @@ const MAX_SKILL_MD_BYTES = 23_000; // RE-DERIVED DOWNWARD 36_000 -> 23_000 by th
 // old cap would let regrowth silently erode most of the verify-pr /
 // run-integ compression gain -- the same fold-back erosion the
 // MAX_REFERENCE_FILE_BYTES re-derivation below exists to prevent. The 12%
-// headroom that figure implied is GONE: verify-pr has grown back to within
-// ~100 B of the cap, so the next addition to it has to be funded by a
-// compression in the same file. No CURRENT size is quoted here -- one
-// drifts on every edit; `wc -c .claude/skills/*/SKILL.md` is the live
-// value. Per retro.md section 10-c a retro never raises this to fit an
+// headroom that figure implied is GONE -- verify-pr and review-pr have both
+// grown back to the cap's doorstep, so an addition to either has to be
+// funded by a compression in the same file. No current size is quoted here,
+// deliberately: unlike MAX_ORCHESTRATOR_BYTES below, a non-split SKILL.md
+// has no MEASURED entry to keep such a figure honest, so it would drift
+// unbacked. `wc -c .claude/skills/*/SKILL.md` is the live value. Per
+// retro.md section 10-c a retro never raises this to fit an
 // addition.
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; its CURRENT size is asserted as MEASURED.orchestratorBytes below, never quoted here
 // That number is the point, not trivia: the orchestrator has repeatedly grown to
