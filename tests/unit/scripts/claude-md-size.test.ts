@@ -58,7 +58,7 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
 
-const MAX_CLAUDE_MD_BYTES = 46_980;
+const MAX_CLAUDE_MD_BYTES = 45_066;
 
 /**
  * `## Workflow Rules` is the section that grows: it took 62% of the file at
@@ -67,7 +67,7 @@ const MAX_CLAUDE_MD_BYTES = 46_980;
  * shrinking the reference sections, which are the parts a reader needs least
  * often but can least afford to lose.
  */
-const MAX_WORKFLOW_RULES_BYTES = 26_480;
+const MAX_WORKFLOW_RULES_BYTES = 26_452;
 
 /**
  * CLAUDE.md plus every rule file that loads ONLY with it (see
@@ -83,13 +83,19 @@ const MAX_WORKFLOW_RULES_BYTES = 26_480;
  * same shape as the ordering case's first cut: a guard whose comparand does not
  * test the property its comment asserts.
  *
- * What DOES bound the relocation is this band being the TIGHTEST of the three
- * (asserted below against live sizes), so a net addition trips it before the
- * file ceiling and cannot be laundered by moving the bytes sideways. Whether
- * the relocated text still LOADS is a different question, and the
+ * What DOES bound the relocation is this band being tighter than the WHOLE-FILE
+ * ceiling (asserted below against live sizes), so a net addition trips it
+ * before that one and cannot be laundered by moving the bytes sideways. That
+ * is the ONLY ordering asserted about this constant. An earlier revision said
+ * "TIGHTEST of the three" while the case below compared band-vs-file alone;
+ * band-vs-SECTION is uncalibrated, so whichever is tighter today can flip on
+ * a `session-report.md` edit with nothing reporting it. Do not record which
+ * one it is here -- that is the "now" figure the header refuses -- and if the
+ * ordering ever needs to hold, assert it instead of describing it.
+ * Whether the relocated text still LOADS is a different question, and the
  * injected-only sweep further down is what answers it.
  */
-const MAX_INJECTED_CONTEXT_BYTES = 65_180;
+const MAX_INJECTED_CONTEXT_BYTES = 63_200;
 
 /**
  * `## Workflow Rules` must keep at least this many top-level `- **` bullets.

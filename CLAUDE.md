@@ -28,9 +28,8 @@ vp run build
 vp run dev
 
 # Test (using Vitest)
-vp test run              # preferred over `vp run test`: the delegated command
-                         # invoked directly, with no task runner between the
-                         # caller and the verdict. See
+vp test run              # preferred over `vp run test`: no task runner between
+                         # the caller and the verdict. See
                          # .claude/skills/check/SKILL.md step 4.
 vp test --ui             # UI mode
 vp run test:coverage     # Coverage
@@ -53,7 +52,7 @@ vp run docs:preview
 
 ## State Schema
 
-State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v9). A transient `rollback-journal.json` sibling (issue [#1183](https://github.com/go-to-k/cdkd/issues/1183)) may exist between a failed / interrupted deploy and its `cdkd rollback` — it is deliberately NOT part of the state schema (own `journalVersion` field, no `StackState.version` bump; see [.claude/rules/state-schema.md](.claude/rules/state-schema.md)). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue [#459](https://github.com/go-to-k/cdkd/issues/459)) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue [#464](https://github.com/go-to-k/cdkd/issues/464)) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
+State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v9). A transient `rollback-journal.json` sibling (issue #1183) may exist between a failed / interrupted deploy and its `cdkd rollback` — it is deliberately NOT part of the state schema (own `journalVersion` field, no `StackState.version` bump; see [.claude/rules/state-schema.md](.claude/rules/state-schema.md)). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue #459) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue #464) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
 
 ```typescript
 interface StackState {
@@ -65,7 +64,7 @@ interface StackState {
   imports?: StateImportEntry[];
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational, NOT destroy-blocking)
   exportNames?: string[];      // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy)
-  skippedOutputs?: Record<string, string>; // informational, no bump (#2740): Outputs keys the last deploy could not resolve and SKIPPED → digest of their template inputs; `cdkd diff` previews such a key as absent (no row, siblings unaffected) while it is still absent from `outputs`, its digest holds, AND no resource it references is changing this run
+  skippedOutputs?: Record<string, string>; // informational, no bump (#2740): Outputs keys the last deploy could not resolve and SKIPPED → digest of their template inputs; `cdkd diff` previews such a key as absent only while its digest still holds (all three gates in docs/state-management.md)
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level stacks)
   parentLogicalId?: string;    // v6+: the AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -125,7 +124,7 @@ Custom Resources handling, the `assertRegionMatch()` region-check helper, and th
 
 ## Testing
 
-Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integration tests under `tests/integration/**` (real AWS account, `us-east-1`). UPDATE testing via `CDKD_TEST_UPDATE=true` and rollback failure injection via `CDKD_TEST_FAIL=true`. A `*Once` primer must be consumed by the test that primed it — `vi.clearAllMocks()` does NOT drain the queue (enforced by the `once-leak-detect` CI job, issue #1618). A stream fence in `tests/setup.ts` buffers raw stdout/stderr writes inside a test and replays them only when that test FAILS (`CDKD_TEST_STREAM_PASSTHROUGH=1` opts out while debugging a hang). Full guide in [.claude/rules/testing.md](.claude/rules/testing.md) and [docs/testing.md](docs/testing.md).
+Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integration tests under `tests/integration/**` (real AWS account, `us-east-1`). UPDATE testing via `CDKD_TEST_UPDATE=true` and rollback failure injection via `CDKD_TEST_FAIL=true`. A `*Once` primer must be consumed by the test that primed it — `vi.clearAllMocks()` does NOT drain the queue (enforced by the `once-leak-detect` CI job). A stream fence in `tests/setup.ts` buffers raw stdout/stderr writes inside a test and replays them only when that test FAILS (`CDKD_TEST_STREAM_PASSTHROUGH=1` opts out while debugging a hang). Full guide in [.claude/rules/testing.md](.claude/rules/testing.md) and [docs/testing.md](docs/testing.md).
 
 ## Debugging Deploy Flow
 
@@ -141,7 +140,7 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 - **[docs/architecture.md](docs/architecture.md)** - Detailed architecture, deploy flows, design principles, end-to-end pipeline walkthrough
 - **[docs/benchmarks.md](docs/benchmarks.md)** - Full benchmark suite (vs CloudFormation / Express mode / Terraform); the README keeps only the Express + Terraform summary tables
 - **[docs/state-management.md](docs/state-management.md)** - S3 state structure, locking mechanism, troubleshooting
-- **[docs/cli-reference.md](docs/cli-reference.md)** - CLI reference overview (output streams, `--region`, `--role-arn`, exit codes) + index of the per-command reference pages (`docs/cli-deploy.md`, `docs/cli-deploy-safety.md`, `docs/cli-deploy-tuning.md`, `docs/cli-bootstrap.md`, `docs/cli-gc.md`, `docs/cli-list.md`, `docs/cli-synth.md`, `docs/cli-force-unlock.md`, `docs/cli-diff.md`, `docs/cli-drift.md`, `docs/cli-destroy.md`, `docs/cli-rollback.md`, `docs/cli-export.md`, `docs/cli-scrub.md`, `docs/cli-publish-assets.md`, `docs/cli-events.md`, `docs/cli-state.md`). The per-resource-type **wait-semantics table** (`--no-wait` / default / `--full-wait` next to CloudFormation and Terraform) lives in [docs/cli-deploy.md](docs/cli-deploy.md) — cdkd is template-compatible with CloudFormation but NOT wait-semantics-identical; that table is the single source of truth for what "done" means per type
+- **[docs/cli-reference.md](docs/cli-reference.md)** - CLI reference overview (output streams, `--region`, `--role-arn`, exit codes) + index of the `cdkd` command reference pages it links. The per-resource-type **wait-semantics table** (`--no-wait` / default / `--full-wait` next to CloudFormation and Terraform) lives in [docs/cli-deploy.md](docs/cli-deploy.md) — cdkd is template-compatible with CloudFormation but NOT wait-semantics-identical; that table is the single source of truth for what "done" means per type
 - **[docs/supported-resources.md](docs/supported-resources.md)** - Full per-type SDK Provider / Cloud Control coverage table
 - **[docs/import.md](docs/import.md)** - `cdkd import` full guide (modes, flags, CFn migration, provider coverage)
 - **[docs/provider-development.md](docs/provider-development.md)** - Provider implementation guide: the interface, examples, registration, and the steps to add one. The rules each step implies (error handling, pre-flight refusal, removal semantics, drift read-back, property coverage) are in [docs/provider-rules.md](docs/provider-rules.md)
@@ -156,19 +155,18 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 
 **Recently Implemented**: per-PR shipped-feature notes are written as ONE
 FILE each under `changelog.d/entries/<YYYY-MM-DD>-<issue>-<slug>.md`, carrying
-the bullet and NO dated heading — the assembler emits one per date, which is
-why two lanes can no longer write the same heading (issue [#2779](https://github.com/go-to-k/cdkd/issues/2779)).
+the bullet and NO dated heading — the assembler emits one heading per date, so
+two lanes can no longer collide on one (issue #2779).
 `vp run gen:changelog` builds `docs/changelog-cdkd.md` from them; that file is
 GITIGNORED and never committed, because a committed assembly restores the one
 shared append anchor the layout removes. Entries never go
-back into this CLAUDE.md (per the official guidance that a CLAUDE.md should
-stay small so context-window usage and instruction adherence stay high).
+back into this CLAUDE.md, which stays small so instruction adherence stays high.
 **Only a change with a user-visible behavior delta writes one** — what the
 SHIPPED BINARY does — in practice `src/**` plus anything feeding data the runtime reads
 (a `scripts/**` generator whose output the deploy path consumes is IN, since a
 schema refresh can silently drop a property). Agent instructions, tests, CI,
 hooks and behavior-describing docs write NO entry; their reasoning goes to the
-commit message, `docs/design/`, or the implementing module's or test's doc comment (issue [#2779](https://github.com/go-to-k/cdkd/issues/2779)).
+commit message, `docs/design/`, or the implementing module's or test's doc comment.
 One entry is capped at **2000 characters** — behavior delta, changed files, issue /
 PR + residual numbers; a design decision goes to `docs/design/<issue>-<slug>.md`
 and a mechanism to the implementing module's or test's doc comment, linked from
@@ -176,7 +174,7 @@ the entry. Both contracts, the forward-only cutoff and the section-heading rules
 live in that file's header, enforced by
 `tests/unit/scripts/changelog-entry-size.test.ts`,
 `changelog-entry-uniqueness.test.ts` and `changelog-entry-policy-sync.test.ts`
-(issues [#2552](https://github.com/go-to-k/cdkd/issues/2552), [#1837](https://github.com/go-to-k/cdkd/issues/1837), [#2779](https://github.com/go-to-k/cdkd/issues/2779)).
+(issues #2552, #1837, #2779).
 
 ## Dependencies
 
@@ -196,8 +194,8 @@ live in that file's header, enforced by
 - `@ox-content/vite-plugin` - Ox Content SSG for the cdkd.dev documentation site (config in `vite.docs.config.ts`, brand assets in `docs-site/`, deployed by `.github/workflows/docs-deploy.yml`)
 - `typescript` - TypeScript 7 native compiler (`tsc`) for typecheck
 - `typescript-v6` - npm alias of typescript@6; provides the stable JS compiler API for the codegen scripts (TS7 ships it only under `typescript/unstable/*`)
-- `aws-cdk-lib` / `constructs` - dev-only, and **deliberately NOT `peerDependencies`** (issue [#2861](https://github.com/go-to-k/cdkd/issues/2861)). cdkd is a CLI, not a library, and must not constrain a user's CDK version: nothing it ships imports either package — the user's CDK app runs as a SUBPROCESS and resolves aws-cdk-lib from the USER's project, and cdkd only reads the Cloud Assembly JSON. They are dev deps because the unit suite reads `aws-cdk-lib/region-info` as the fact table cdkd's own S3-endpoint and region tables are compared against. **Do not restore the peer block**, and do not lower either floor: `aws-cdk-lib` `^2.260.0` is the highest GHSA floor it must clear, and `constructs` `^10.5.0` matches `aws-cdk-lib`'s own peer floor. Removing the peers changed NOTHING in a user's installed tree, because `cdk-local` (a runtime dependency) declares the SAME non-optional peers — the forced install goes away only when cdk-local's do. What it bought is a manifest that says what is true, and a direct specifier Dependabot can bump. **The per-file evidence deliberately does not live here** — two review rounds each found a false measured claim in an earlier, longer version of this bullet, so the counts, file lists and A/B numbers stay in go-to-k/cdkd#2861 where they are dated
-- `marked` - CommonMark renderer, used by `tests/unit/scripts/rule-file-payload.test.ts` alone to answer "is this pointer VISIBLE to a reader" by rendering and reading the anchors, rather than by pattern-matching the source. It replaced a hand-rolled scanner in which four review rounds found four silent passes (go-to-k/cdkd#2672); it is never bundled by `vp pack`, and it was already in the tree transitively via mermaid at this version, so declaring it installed nothing new
+- `aws-cdk-lib` / `constructs` - dev-only, and **deliberately NOT `peerDependencies`** (issue [#2861](https://github.com/go-to-k/cdkd/issues/2861), which holds the per-file evidence). cdkd is a CLI, not a library, and must not constrain a user's CDK version: nothing it ships imports either package — the user's CDK app runs as a SUBPROCESS and resolves aws-cdk-lib from the USER's project, and cdkd only reads the Cloud Assembly JSON. They are dev deps because the unit suite reads `aws-cdk-lib/region-info` as the fact table cdkd's own S3-endpoint and region tables are compared against. **Do not restore the peer block**, and do not lower either floor: `aws-cdk-lib` `^2.260.0` is the highest GHSA floor it must clear, and `constructs` `^10.5.0` matches `aws-cdk-lib`'s own peer floor. Removing the peers changed NOTHING in a user's installed tree, because `cdk-local` (a runtime dependency) declares the SAME non-optional peers — the forced install goes away only when cdk-local's do
+- `marked` - CommonMark renderer, used by `tests/unit/scripts/rule-file-payload.test.ts` alone to answer "is this pointer VISIBLE to a reader" by rendering and reading the anchors rather than by pattern-matching the source (go-to-k/cdkd#2672). Never bundled by `vp pack`
 
 ## Release Flow
 
@@ -210,18 +208,14 @@ not wait for a version bump after a merge, and never merge the release PR
 without the maintainer asking for a release. cdkd deliberately stays at major
 version 0: `bump-minor-pre-major: true` maps breaking changes to MINOR bumps,
 and the publish job in `.github/workflows/release.yml` hard-fails on any tag
-whose major is not 0. A `pull_request` CI run IS created for the release PR —
-the older note here said GitHub triggers none for a `GITHUB_TOKEN`-created PR.
-It starts at `action_required`, held for maintainer approval, and goes green
-once approved (measured 2026-09-05 on PRs
-[#2594](https://github.com/go-to-k/cdkd/pull/2594), #2585 and #2508: attempt 1
-`action_required`, attempt 2 green, all `event=pull_request`). So
-`ci-green-gate` stops blocking an agent-side merge the moment those runs are
-approved, leaving only `verify-pr-gate`'s generic marker requirement, which any
-lane already satisfies. **The rule above — never merge the release PR unless
-the maintainer asked for a release — is the real protection, not a gate.** The
-maintainer merges it via the web UI (its diff is only
-version/CHANGELOG/manifest, already CI-covered on main).
+whose major is not 0. A `pull_request` CI run IS created for the release PR. It
+starts at `action_required`, held for maintainer approval, and goes green once
+approved — so `ci-green-gate` stops blocking an agent-side merge the moment
+those runs are approved, leaving only `verify-pr-gate`'s generic marker
+requirement, which any lane already satisfies. **The rule above — never merge
+the release PR unless the maintainer asked for a release — is the real
+protection, not a gate.** The maintainer merges it via the web UI (its diff is
+only version/CHANGELOG/manifest, already CI-covered on main).
 
 **A standing release PR can go STALE, and it stays mergeable while it is.**
 release-please does not rebuild a release PR whose computed release is
@@ -229,13 +223,13 @@ unchanged — it logs `PR #N remained the same` and leaves the branch on the
 base it was cut from. So anything that later lands on `main` in a file
 release-please OWNS (`CHANGELOG.md`, `package.json`'s version,
 `.release-please-manifest.json`) is missing from that branch, and merging the
-PR takes the branch's stale copy and reverts it. Measured on #2503, whose
-branch predated the CHANGELOG normalization (#2504): GitHub reported it
-MERGEABLE while merging it would have undone 285 header conversions. The
-remedy is to close the release PR, delete its branch, and re-run the release
-workflow (`workflow_dispatch` exists for exactly this) — release-please
-recomputes the identical release from current `main`. So after any PR that
-edits one of those files, check whether a release PR is open and recreate it.
+PR takes the branch's stale copy and reverts it — GitHub reports MERGEABLE
+throughout (measured on #2503, which would have undone 285 CHANGELOG header
+conversions). The remedy is to close the release PR, delete its branch, and
+re-run the release workflow (`workflow_dispatch` exists for exactly this) —
+release-please recomputes the identical release from current `main`. So after
+any PR that edits one of those files, check whether a release PR is open and
+recreate it.
 
 ## Node.js Version
 
@@ -267,9 +261,9 @@ edits one of those files, check whether a release PR is open and recreate it.
 
 - **Before merging large / security-sensitive PRs**: A sixth markgate gate, `pr-review`, guards `gh pr merge` via `.claude/hooks/pr-review-gate.sh`. The hook re-applies `/review-pr`'s size + bias heuristic (`loc` excludes auto-generated files — `docs/_generated/**` and lockfiles): `loc < 300` OR `fc < 5` → `inline`, `300 ≤ loc < 1000` AND `5 ≤ fc < 10` → `1-reviewer`, `loc ≥ 1000` OR `fc ≥ 10` → `3-axis`; up-bias triggers (any path in the hook's `UP_PATH_REGEX` — the security / process-launch surface, enumerated there and in `/review-pr`; this file keeps no copy — OR > 1 distinct `fix:`-prefixed commit SUBJECT, counted across the PR's commits and the former HEADs its timeline recorded rather than the branch's current history, which a flatten rewrites) move the tier UP one step (clamped at `3-axis`); down-bias triggers (every path INERT-documentation — `README.md` / `docs/**` / `.gitignore` / `package.json` — OR every path under `tests/`) move it DOWN one step (clamped at `inline`); when both fire, up wins. Agent-instruction files (`CLAUDE.md`, `.claude/rules/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`, `.markgate.yml`) were REMOVED from the down-bias set: a wrong rule there propagates to every future session. For `1-reviewer` / `3-axis` PRs the marker must be fresh AND bound to the PR's current HEAD sha (via the gitignored `.markgate-pr-review-sha` sentinel — a new push invalidates it naturally); set ONLY by `/review-pr` after the reviewers complete and every blocker is addressed. `inline` PRs pass through; `gh pr create` is deliberately NOT gated.
 
-- **Before merging ANY PR: CI must be green**: The `ci-green-gate` hook blocks `gh pr merge` unless every GitHub Actions check reports `pass` / `skipping` — `fail`, `pending`, and "no checks reported" all block. A LIVE-query hook, not a marker (CI status changes on every push). Wait with `gh pr checks <N> --watch`, then merge; never chain the merge after a checks display. Born from the PR #1231 incident (merged with a failed check; main red until #1232). `gh` transport errors fail open; `CDKD_SKIP_CI_GREEN_GATE=1` bypasses only for repos with no CI. Details in [.claude/rules/hooks.md](.claude/rules/hooks.md).
+- **Before merging ANY PR: CI must be green**: The `ci-green-gate` hook blocks `gh pr merge` unless every GitHub Actions check reports `pass` / `skipping` — `fail`, `pending`, and "no checks reported" all block. A LIVE-query hook, not a marker (CI status changes on every push). Wait with `gh pr checks <N> --watch`, then merge; never chain the merge after a checks display (PR #1231 merged with a failed check and left main red). `gh` transport errors fail open; `CDKD_SKIP_CI_GREEN_GATE=1` bypasses only for repos with no CI. Details in [.claude/rules/hooks.md](.claude/rules/hooks.md).
 - **The bash-first experiment must stay OFF**: `.claude/settings.json` pins `env.CLAUDE_CODE_THRIFTY_SONIC: "0"`. With the flag on, the session is told to read and WRITE files through `cat` / `sed -i` / heredocs instead of Read / Edit / Write, and three surfaces keyed to those tools go inert with no error line: `worktree-owner-gate.sh` (matcher `Edit|Write|NotebookEdit`), the PostToolUse `Write|Edit` → `vp run lint:fix` entry, and **every `paths:`-scoped file under `.claude/rules/`** (a rule loads only when a matching file enters context through the file tools, so a `cat`-read subsystem gets none of its notes). An explicitly set value short-circuits the server-side cohort assignment, so the pin belongs in the REPO's settings, not a maintainer's `~/.claude/settings.json`. This bullet lives in CLAUDE.md rather than only in [.claude/rules/hooks.md](.claude/rules/hooks.md) because that file is itself `paths:`-scoped: when the flag is on, its explanation is invisible exactly when it is needed. Fenced by `tests/unit/scripts/settings-bash-first-optout.test.ts`.
-- **Other PreToolUse safety hooks**: A set of one-shot hooks block known foot-guns (`commit-msg-heredoc-gate` / `gated-command-preamble-gate` / `provider-docs-gate` / `pr-body-item-number-gate` / `cmd-parse-stub-gate` / `integ-coverage-matrix-gate` / `state-destroy-force-gate` / `ref-segment-audit-gate` / `flatten-before-rebase-gate` / `broad-process-kill-gate`), each with an actionable error naming the exact replacement command — so the rule arrives at the moment of the action and is not restated here. **A gate may BLOCK here only when the harm completes at the moment of the action AND lands on a THIRD PARTY's artifact — everything else belongs in CI, or nowhere** (both clauses matter: irreversibility alone would have blocked a duplicate issue, and correctly did not). Full per-hook details in [.claude/rules/hooks.md](.claude/rules/hooks.md), which also covers `branch-gate.sh` (commits/pushes on `main`/`master`, including a detached MAIN-checkout HEAD), `main-tree-branch-gate.sh` (feature-branch switches in the main worktree; full parse behavior in [.claude/rules/hooks-main-tree-branch.md](.claude/rules/hooks-main-tree-branch.md)), `post-merge-orphan-push-gate.sh`, `main-tree-edit-gate.sh` (editing a tracked file in the main worktree while on `main` — do feature work, including `/run-integ` ledger writes, in a worktree), and the two non-blocking PostToolUse companions `main-tree-dirty-detector.sh` / `main-tree-git-cwd-detector.sh` (a wrong-tree verification yields no error but a FALSE GREEN).
+- **Other PreToolUse safety hooks**: A set of one-shot hooks block known foot-guns (`commit-msg-heredoc-gate` / `gated-command-preamble-gate` / `provider-docs-gate` / `pr-body-item-number-gate` / `cmd-parse-stub-gate` / `integ-coverage-matrix-gate` / `state-destroy-force-gate` / `ref-segment-audit-gate` / `flatten-before-rebase-gate` / `broad-process-kill-gate`), each with an actionable error naming the exact replacement command — so the rule arrives at the moment of the action and is not restated here. **A gate may BLOCK here only when the harm completes at the moment of the action AND lands on a THIRD PARTY's artifact — everything else belongs in CI, or nowhere** (both clauses matter: by irreversibility alone a duplicate issue would block, and it correctly does not). Full per-hook details in [.claude/rules/hooks.md](.claude/rules/hooks.md), which also covers `branch-gate.sh` (commits/pushes on `main`/`master`, including a detached MAIN-checkout HEAD), `main-tree-branch-gate.sh` (feature-branch switches in the main worktree; full parse behavior in [.claude/rules/hooks-main-tree-branch.md](.claude/rules/hooks-main-tree-branch.md)), `post-merge-orphan-push-gate.sh`, `main-tree-edit-gate.sh` (editing a tracked file in the main worktree while on `main` — do feature work, including `/run-integ` ledger writes, in a worktree), and the two non-blocking PostToolUse companions `main-tree-dirty-detector.sh` / `main-tree-git-cwd-detector.sh` (the latter: a wrong-tree verification yields no error but a FALSE GREEN).
 
 - **Multi-session uncommitted-work safety**: `restore-backup.sh` (non-blocking) snapshots the working tree to `<git dir>/wipe-backups/<ts>-<verb>/` before `git checkout -- <path>` / `git restore` / `git reset --hard` / `git clean -f` / `git stash`; recover with `git apply --include=<path> <snap>/tracked.patch`. Its blocking complement `dirty-path-restore-gate.sh` refuses `git checkout -- <path>` / `git restore <path>` when the named path has uncommitted changes (`CDKD_ALLOW_DIRTY_RESTORE=1` bypasses). `worktree-owner-gate.sh` (blocking): the first session to write a file in a linked worktree claims it via `<git dir>/session-owner`; a different session's Edit/Write is refused (12h TTL, `CDKD_SKIP_WORKTREE_OWNER_GATE=1` for a deliberate hand-off; the sentinel itself is gated too). A claim younger than the TTL means the owner is **presumed LIVE** — never infer that an owning session is dead (a live and a dead session look identical from outside); ask the maintainer before any hand-off. **Markgate markers are per-worktree, not repo-global** (`git rev-parse --git-dir` resolves to `.git/worktrees/<name>` in a linked worktree), so parallel lanes CAN run `/check` / `/check-docs` / `/verify-pr` and commit concurrently; only the real-AWS integ runs and the merges need serializing. Full write-up in [.claude/rules/hooks.md](.claude/rules/hooks.md).
 - **Never commit or push directly to `main`**: All changes land via a feature branch + PR. Feature work lives in its OWN worktree under `.claude/worktrees/<branch>/` — DO NOT branch in the main worktree (`main-tree-branch-gate.sh` physically blocks it; the main tree is a shared resource across parallel agents). Correct invocation from the MAIN checkout: `git worktree add .claude/worktrees/<branch> -b <branch> origin/main && cd .claude/worktrees/<branch>`, work, then `git worktree remove .claude/worktrees/<branch>`. **That recipe is the MAIN-CHECKOUT case, and it is wrong from anywhere else**: when the session is ALREADY inside a linked worktree (an Orca/ADE workspace, a stray `cd` into a lane), `git worktree add` NESTS a worktree inside another, and deleting the outer workspace takes the inner directory and its uncommitted work with it. There, create no worktree and remove none — but still take a BRANCH in the tree you are standing in: never commit onto the branch it was handed to you on (`gh pr merge --delete-branch` would delete the outer tool's remote branch), and at the end switch back to that branch AS-IS (no pull, no rebase, no fast-forward), deleting only the branch you created. `/work-issues` computes which case applies (`.claude/skills/work-issues/references/launch-mode.md` holds the probe); do not re-implement it. See [.claude/rules/hooks.md](.claude/rules/hooks.md) for `branch-gate.sh` / `post-merge-orphan-push-gate.sh` details.
