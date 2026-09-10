@@ -93,7 +93,10 @@ it, then closes it from the PR (`Closes #<n>`). The body carries the real
 repro (the CDK app / commands / the exact deploy-update-destroy sequence).
 
 **Every issue carries the `Dup-check:` line and the four classification lines**
-(`CLAUDE.md` → "The four TODO fields"), with `Severity` / `Effort` ALSO as
+(`CLAUDE.md` → "The four TODO fields"; the full semantics and scales are in
+`.claude/rules/session-report.md`, whose `paths:` glob matches only `CLAUDE.md`
+— which the harness injects rather than reads — so it never auto-loads in an
+ordinary session and must be opened here), with `Severity` / `Effort` ALSO as
 labels (`--label severity:<v> --label effort:<v>`) — checked in CI since
 go-to-k/cdkd#2717 (which retired both hooks: the label workflow APPLIES a
 missing one, the dup-check workflow can only COMMENT once the issue exists, so
