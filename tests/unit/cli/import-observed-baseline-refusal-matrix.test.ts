@@ -96,6 +96,17 @@
  * derived needles of issue #2012 rewrite the extra key for free and the shape
  * reads as closed, which is why the measurement used two different secrets —
  * the same trap `SECRET_ID_2` below was introduced for.
+ *
+ * WHAT THIS TABLE DELIBERATELY DOES NOT ROW, because the MODULE suite already
+ * fences it and an import-path duplicate would only re-test the module: the
+ * remaining rows of `refuseUncertifiedReadbackPositions`' own doc table — a
+ * MIXED leaf inside a PAIRED element, an unpaired element with every source
+ * reference paired (needle-only), a `Date` kept by identity (#2869), and a
+ * PUBLIC ssm MIXED leaf under an EMPTY map (over-redacts, #2036) — plus the
+ * non-string arms of `refuseUncertifiedSubtree` this capture can now reach
+ * (`Uint8Array` masked, `''` kept, the DAG / cycle memoisation). All are
+ * covered in `tests/unit/deployment/`; none is a leak this capture is the only
+ * route to.
  */
 
 import { describe, it, expect, vi } from 'vite-plus/test';
@@ -623,7 +634,15 @@ async function classify(row: Row): Promise<{ refused: boolean; persisted: Record
  *
  * The provider double takes the FIVE arguments production passes
  * (`physicalId`, `logicalId`, `resourceType`, `properties`, `context`) and
- * records them, so the call shape is pinned too.
+ * records them. FOUR are asserted by the caller — `physicalId`,
+ * `resourceType`, `logicalId` and `properties`. `context` is recorded and
+ * deliberately NOT asserted: it is `buildReadCurrentStateContext`'s output,
+ * whose own shape is fenced by that function's suite, and pinning it here
+ * would couple this table to a sibling-map layout no row varies.
+ *
+ * An earlier revision of this paragraph said the call shape "is pinned too"
+ * while only TWO of the five were read — the recorded-but-unread arguments
+ * looked like coverage and were not. Say which are asserted.
  */
 async function captureVia(
   row: Row,
@@ -702,6 +721,19 @@ describe('cdkd import: which resources may take an observedProperties baseline (
           `${row.name}: production must pass the recorded physicalId`
         ).toBe('res-phys');
         expect((seen[0] as { resourceType: string }).resourceType).toBe('AWS::SQS::Queue');
+        expect(
+          (seen[0] as { logicalId: string }).logicalId,
+          `${row.name}: production must pass the record's own logical id`
+        ).toBe('Res');
+        // The bag the provider is READ WITH is the record's PERSISTED
+        // properties, not the row's template input — the same object the
+        // redaction below positions against. Pinning it is what stops a future
+        // edit reading AWS with one bag and positioning against another, which
+        // would make every certified position a coincidence.
+        expect(
+          (seen[0] as { properties: unknown }).properties,
+          `${row.name}: production must read with the record's persisted properties`
+        ).toEqual(persisted);
         expect(
           JSON.stringify(redacted),
           `${row.name}: captured a baseline that still holds the plaintext (${row.why})`

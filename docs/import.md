@@ -327,8 +327,9 @@ worth knowing before you read a report:
   properties for that resource, which can show as phantom drift.
 
 Both clear on a deploy that actually creates or updates the affected resource —
-not on any `cdkd deploy`, since cdkd fills in a *missing* baseline on every
-deploy but never overwrites one that is already there.
+not on any `cdkd deploy`. The **automatic refresh** cdkd runs at the start of a
+deploy only fills in a *missing* baseline, so it passes over a masked one; a
+create or update rewrites the baseline unconditionally.
 
 **Neither mechanism makes an imported `state.json` safe to treat as
 non-sensitive**, and the same caveat the

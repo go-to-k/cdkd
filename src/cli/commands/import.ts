@@ -1529,11 +1529,19 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  *  - a parameter binds to a placeholder `Default` while the DEPLOYED value was
  *    the reference, so no opener exists in any template this walk is handed --
  *    [#2854](https://github.com/go-to-k/cdkd/issues/2854);
- *  - `redactSecretsForState` cannot PAIR the readback against the source and
- *    returns the bag unchanged: a reshaped container, an identity key AWS
- *    normalised, a readback key the source lacks, an array whose anchors do not
- *    corroborate -- [#2852](https://github.com/go-to-k/cdkd/issues/2852), which
- *    carries the measured probe table;
+ *  - `redactSecretsForState` cannot PAIR the readback against the source at a
+ *    position the source carries NO leaf for -- an observed KEY beside a paired
+ *    one -- so there is nothing to refuse from and the value scan has no needle
+ *    naming it. The row `refuseUncertifiedReadbackPositions`' own table marks
+ *    deliberately open, with the cost argument for leaving it that way;
+ *    [#2868](https://github.com/go-to-k/cdkd/issues/2868) owns it.
+ *    The OTHER pairing failures this bullet used to list -- a reshaped
+ *    container, an identity key AWS normalised, an array whose anchors do not
+ *    corroborate -- no longer persist the plaintext: since
+ *    [#2885](https://github.com/go-to-k/cdkd/issues/2885) this capture declares
+ *    its bag a drift baseline, so an uncertified position is masked. They are
+ *    rows of `tests/unit/cli/import-observed-baseline-refusal-matrix.test.ts`
+ *    rather than entries here;
  *  - the readback holds a secret with NO counterpart in the source at all, set
  *    out of band -- [#2868](https://github.com/go-to-k/cdkd/issues/2868), filed
  *    as a remit question rather than a defect in this mechanism.
@@ -2116,8 +2124,18 @@ export async function captureObservedForImportedResources(
       // and `resolveImportedProperties` decides, per resource, whether they
       // still do; its doc block carries the rule and the two measured arms it
       // is drawn from. Where they do not, `redactSecretsForState` finds no
-      // reference to substitute, returns the readback UNCHANGED, and the
-      // DECRYPTED value is persisted in the clear.
+      // reference to substitute.
+      //
+      // WHAT HAPPENS NEXT DIFFERS BY ARM, and conflating them is what an
+      // earlier revision of this sentence did. On the LOST-OPENER arm the
+      // readback comes back UNCHANGED and the DECRYPTED value is persisted in
+      // the clear -- that is the disclosure this skip exists to stop. On the
+      // THROW arm the source leaf is typically a RAW intrinsic OBJECT against a
+      // STRING readback, which since #2885 is an uncertified position and is
+      // MASKED rather than persisted; the four `closedByMask` rows of the
+      // refusal matrix exist to prove exactly that. The skip is still right for
+      // both -- a masked baseline is a cost, not a fix -- but only the first
+      // arm is a leak.
       //
       // The COST is not nothing, and saying so matters because the cheaper
       // reading invites someone to widen the skip. A resource skipped here
@@ -2132,6 +2150,15 @@ export async function captureObservedForImportedResources(
       //
       // TWO MORE consumers, named rather than left to be discovered. This list
       // is the ones MEASURED, not a proof there are no others.
+      //
+      // BOTH ARE ABOUT THE SKIP, not about the mask #2885 introduced, and the
+      // mask case is strictly bounded for them: each reads a field the mask
+      // cannot occupy or cannot make worse -- `RetentionInDays` is NUMERIC and
+      // {@link refuseUncertifiedSubtree} masks STRING leaves only, and for the
+      // boolean-ish protection fields an ABSENT key (what the skip leaves) is
+      // already the degraded read these bullets describe, so a masked string in
+      // its place adds nothing. That is why they are stated once, here, rather
+      // than repeated against the mask.
       //
       //  - `countProtectedResources` in `destroy-runner.ts` reads
       //    `observedProperties` as its fallback for `DeletionProtection` /

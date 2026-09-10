@@ -367,9 +367,10 @@ may safely copy. So expect it to refuse the whole resource here more often than
 for a `NoEcho` value, rather than to leave the position as AWS has it. The fix
 is a deploy that actually creates or updates that resource, after which the
 baseline is captured from a template cdkd can position against. A plain
-`cdkd deploy` that finds nothing to change does **not** clear it: cdkd refreshes
-a missing baseline on every deploy, but never overwrites one it already has, and
-a mask is one it already has.
+`cdkd deploy` that finds nothing to change does **not** clear it: the
+**automatic refresh** cdkd runs at the start of a deploy only fills in a
+*missing* baseline, and a mask is not missing. A create or update rewrites the
+baseline unconditionally, which is why it is the remedy.
 
 The last shape in the list — a record whose properties hold a raw `Fn::Join` /
 `Fn::Sub` **object** — has a second consequence of its own: when such a record
