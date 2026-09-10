@@ -1007,6 +1007,15 @@ describe('isIamPropagationError', () => {
       'Failed to create CloudTrail Trail Trail: Access denied. Verify in IAM that the role has adequate trust relationships.',
       'CloudTrail CW Logs delivery role',
     ],
+    // Cognito UserPool racing the CDK `UserPool` L2's auto-created SMS role
+    // (issue #2901). Spelled the way the
+    // PROVIDER produces it -- `CognitoUserPoolProvider.create`'s catch wraps
+    // `error.message` in this sentence -- rather than as the bare AWS text, so
+    // the case exercises the string the classifier actually receives.
+    [
+      'Failed to create Cognito User Pool UserIdentityUserPoolA179CDAC: Role does not have a trust relationship allowing Cognito to assume the role',
+      'Cognito fresh SMS role',
+    ],
   ])('classifies %j as IAM propagation (%s)', (message) => {
     expect(isIamPropagationError(message)).toBe(true);
     // Cadence selection must never widen retryability.
@@ -1039,6 +1048,58 @@ describe('isIamPropagationError', () => {
     const message = 'EntityAlreadyExists: User with name cdkd-user already exists.';
     expect(isIamPropagationError(message)).toBe(false);
     expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+  });
+});
+
+describe('Cognito SMS-role trust propagation (#2901)', () => {
+  // The two strings the reporter captured, verbatim: the raw AWS text and the
+  // exception name beside it in the `cdkd events` JSON.
+  const AWS_TEXT = 'Role does not have a trust relationship allowing Cognito to assume the role';
+  const AWS_CODE = 'InvalidSmsRoleTrustRelationshipException';
+  const WRAPPED = `Failed to create Cognito User Pool UserIdentityUserPoolA179CDAC: ${AWS_TEXT}`;
+
+  // The discriminating assertion, and the reason it is spelled as an EXACT set
+  // rather than as a boolean. `isIamPropagationError(WRAPPED)` alone would stay
+  // green if some unrelated pattern started covering this message -- the table
+  // above already asserts the boolean, so a second boolean adds nothing. Naming
+  // the matching pattern proves the classification is carried by THIS entry, so
+  // deleting it goes red with an empty array rather than falling through to a
+  // neighbour.
+  it('is matched by exactly the tail-anchored trust-relationship pattern', () => {
+    const matching = IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.filter((p) => WRAPPED.includes(p));
+    expect(matching).toEqual(['does not have a trust relationship allowing']);
+  });
+
+  // The four near misses the issue reported as "none of the existing patterns
+  // match". Pinned as a NEGATIVE so a later edit that loosens any of them --
+  // 'trust policy' lower-cased into 'trust relationship', say -- shows up here
+  // as a second matcher rather than silently making the case above vacuous.
+  it.each(['trust policy', 'Trusted Entity', 'does not have required permissions', 'execution role'])(
+    'is NOT matched by the near-miss pattern %j',
+    (nearMiss) => {
+      expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS).toContain(nearMiss);
+      expect(WRAPPED.includes(nearMiss)).toBe(false);
+    }
+  );
+
+  // The anchor deliberately omits the service name so a sibling service
+  // rendering the same sentence is covered without a second wording having to
+  // be found in production. AWS spells it "allowing <Service> to assume the
+  // role", so this is the property that generalization rests on.
+  it('covers the same sentence rendered for another service', () => {
+    const sibling = 'Role does not have a trust relationship allowing Pinpoint to assume the role';
+    expect(isIamPropagationError(sibling)).toBe(true);
+    expect(isRetryableTransientError(new Error(sibling), sibling)).toBe(true);
+  });
+
+  // Pins the reason the fix does NOT key on the exception name, which is what
+  // the issue asked for. `CognitoUserPoolProvider` interpolates `error.message`
+  // only, so the code never reaches the classifier -- and this asserts the
+  // classifier's own half of that: a code-only string is not retryable, so an
+  // entry added for the code would be dead rather than redundant.
+  it('does not classify the bare exception name, which never reaches the classifier', () => {
+    expect(isIamPropagationError(AWS_CODE)).toBe(false);
+    expect(isRetryableTransientError(new Error(AWS_CODE), AWS_CODE)).toBe(false);
   });
 });
 

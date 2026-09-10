@@ -43,6 +43,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ResourceNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+// The engine's classifier, imported so the #2901 cases below can assert the
+// END of the chain rather than a substring of the provider's own message: what
+// matters is that the wrapped error is still routed to the dense IAM grid, and
+// only the real predicate answers that. `retryable-errors.ts` is a zero-import
+// graph leaf, so pulling it in here mocks nothing and reaches no AWS client.
+import {
+  isIamPropagationError,
+  isRetryableTransientError,
+} from '../../../src/deployment/retryable-errors.js';
 
 /**
  * Await a call that MUST reject, and return the Error it rejected with.
@@ -505,6 +514,147 @@ describe('CognitoUserPoolProvider', () => {
         provider.delete('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool')
       ).rejects.toThrow('Failed to delete Cognito User Pool MyUserPool');
     });
+  });
+
+  // The SMS-role trust-propagation race (issue #2901). These cases exist
+  // because `src/deployment/retryable-errors.ts`'s new pattern carries a
+  // comment ASSERTING how this file behaves -- that the inner control-plane
+  // retry rethrows this class immediately, so the engine's outer `withRetry`
+  // is the loop that rides the window out. Prose about another module's
+  // mechanism goes stale silently; this is the fence for it.
+  describe('SMS-role trust propagation reaches the engine classifier (#2901)', () => {
+    const smsRoleError = () => {
+      const error = new Error(
+        'Role does not have a trust relationship allowing Cognito to assume the role'
+      );
+      error.name = 'InvalidSmsRoleTrustRelationshipException';
+      return error;
+    };
+
+    const SMS_MFA_PROPS = {
+      MfaConfiguration: 'ON',
+      EnabledMfas: ['SMS_MFA'],
+      SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::1:role/UserPoolsmsRole' },
+    };
+
+    it('does NOT retry the SMS-role rejection in the inner control-plane loop', async () => {
+      mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
+      mockSend.mockRejectedValueOnce(smsRoleError()); // SetUserPoolMfaConfig
+      mockSend.mockResolvedValueOnce({}); // the catch's DeleteUserPool cleanup
+
+      const error = await rejectionOf(
+        provider.create('UserIdentityUserPool', 'AWS::Cognito::UserPool', SMS_MFA_PROPS)
+      );
+
+      // Exactly three calls: CreateUserPool, ONE SetUserPoolMfaConfig, and the
+      // partial-pool cleanup. `retryOnTransientControlPlane`'s budget is 3
+      // attempts, so an inner retry of this class would show up here as five.
+      // This is the count the outer dense grid depends on -- retried inside,
+      // the first 3s (two sleeps, 1s + 2s) would be spent on the wrong grid.
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[1][0].constructor.name).toBe('SetUserPoolMfaConfigCommand');
+      expect(mockSend.mock.calls[2][0].constructor.name).toBe('DeleteUserPoolCommand');
+      expect(error).toBeInstanceOf(ProvisioningError);
+    });
+
+    // The control WITHOUT which the case above is vacuous: an inner loop that
+    // retried nothing at all would also produce three calls. This proves the
+    // loop is alive and that the SMS-role message is specifically outside its
+    // classifier, rather than the classifier being dead.
+    it('DOES retry its own transient class through the same loop', async () => {
+      mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
+      mockSend.mockRejectedValueOnce(new Error('Please retry the request'));
+      mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig, second attempt
+
+      await provider.create('UserIdentityUserPool', 'AWS::Cognito::UserPool', SMS_MFA_PROPS);
+
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[1][0].constructor.name).toBe('SetUserPoolMfaConfigCommand');
+      expect(mockSend.mock.calls[2][0].constructor.name).toBe('SetUserPoolMfaConfigCommand');
+    }, 15_000);
+
+    // The end-to-end claim the fix rests on, at BOTH call sites: whatever this
+    // provider throws must still be classifiable by the engine. Asserting
+    // `isIamPropagationError` on the thrown message -- rather than on the raw
+    // AWS text -- is what makes this a test of the WRAPPING, which is the part
+    // that can silently change here (a redaction, a reworded prefix, dropping
+    // the cause).
+    it.each([
+      ['CreateUserPool', () => mockSend.mockRejectedValueOnce(smsRoleError())],
+      [
+        'SetUserPoolMfaConfig',
+        () => {
+          mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
+          mockSend.mockRejectedValueOnce(smsRoleError());
+          mockSend.mockResolvedValueOnce({});
+        },
+      ],
+    ])('a rejection from %s stays IAM-propagation-classifiable once wrapped', async (_site, prime) => {
+      prime();
+
+      const error = await rejectionOf(
+        provider.create('UserIdentityUserPool', 'AWS::Cognito::UserPool', SMS_MFA_PROPS)
+      );
+
+      expect(isIamPropagationError(error.message)).toBe(true);
+      expect(isRetryableTransientError(error, error.message)).toBe(true);
+    });
+
+    // The UPDATE path reaches the SAME `applyMfaConfig` ->
+    // `SetUserPoolMfaConfig`, so adding SMS MFA to an existing pool alongside a
+    // fresh role in one deploy races the identical role. `update()` has its OWN
+    // catch and its OWN wrapping sentence, so the create-path cases above say
+    // nothing about it -- a reword or a redaction there would silently make
+    // this path single-shot again with every other test green. The entry in
+    // `retryable-errors.ts` claims to cover EVERY call that validates the role;
+    // without this case that half of the claim rests on assumption.
+    it('a rejection on the UPDATE path stays classifiable too', async () => {
+      // `mockImplementation`, not `*Once` priming: `update()` reads live state
+      // first and its call sequence is not what is under test here -- the
+      // create-path case above already pins a count. What is under test is the
+      // CLASSIFICATION of whatever escapes `update()`'s own catch.
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'SetUserPoolMfaConfigCommand') {
+          return Promise.reject(smsRoleError());
+        }
+        return Promise.resolve({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
+      });
+
+      try {
+        const error = await rejectionOf(
+          provider.update(
+            'UserIdentityUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            SMS_MFA_PROPS,
+            { MfaConfiguration: 'OFF' }
+          )
+        );
+
+        expect(error.message).toContain('does not have a trust relationship allowing');
+        expect(isIamPropagationError(error.message)).toBe(true);
+        expect(isRetryableTransientError(error, error.message)).toBe(true);
+
+        // The rethrow itself, not just the classification. Without this the
+        // case is satisfied by an inner loop that RETRIED and then failed --
+        // widening `retryOnTransientControlPlane`'s classifier would leave it
+        // green while merely making it sleep, which is a flake rather than a
+        // red. Exactly ONE SetUserPoolMfaConfig means the loop declined it.
+        const mfaSends = mockSend.mock.calls.filter(
+          (c: unknown[]) =>
+            (c[0] as { constructor: { name: string } }).constructor.name ===
+            'SetUserPoolMfaConfigCommand'
+        );
+        expect(mfaSends).toHaveLength(1);
+      } finally {
+        // `vi.clearAllMocks()` does NOT drop an implementation, so leaving this
+        // one installed would answer every later test in the file.
+        mockSend.mockReset();
+      }
+      // Explicit, because the mutation this case exists to catch makes the
+      // inner loop SLEEP (1s + 2s) rather than return -- under vitest's 5s
+      // default that reads as a timeout flake instead of the assertion above.
+    }, 20_000);
   });
 
   // Issue #609 backfill: UserPoolTier (CreateUserPool/UpdateUserPool direct)

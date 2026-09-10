@@ -1815,7 +1815,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * Retry a Cognito control-plane call on transient "settling" errors. A
    * SetUserPoolMfaConfig issued immediately after CreateUserPool (or another
    * control-plane write) can briefly hit `ConcurrentModificationException` /
-   * "please retry". Backoff 1s -> 2s -> 4s, default 3 attempts.
+   * "please retry". Backoff is capped at 4s, but the DEFAULT 3 attempts means
+   * only TWO sleeps -- 1s then 2s, 3s total -- so the 4s step is unreachable
+   * unless a caller raises `maxAttempts`. (`retryable-errors.ts`'s Cognito
+   * SMS-role entry depends on that arithmetic; an earlier revision of it
+   * copied a 7s figure out of this comment's previous wording.)
    */
   private async retryOnTransientControlPlane<T>(
     fn: () => Promise<T>,

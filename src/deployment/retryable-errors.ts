@@ -167,6 +167,96 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // (Lambda + Alias + CodeDeploy canary); pinned by
   // tests/integration/codedeploy-lambda-deployment-group.
   'permissions required to assume the role',
+  // Cognito CreateUserPool / SetUserPoolMfaConfig validates that the
+  // cognito-idp.amazonaws.com service principal can assume the pool's
+  // `SmsConfiguration.SnsCallerArn` role at call time. CDK's `UserPool` L2
+  // auto-creates that SNS-publish role (`...UserPoolsmsRole...`) in the SAME
+  // stack whenever SMS MFA / SMS verification is configured, and cdkd's fast
+  // SDK path issues the pool create before IAM has propagated the trust policy
+  // to Cognito's assume layer. AWS rejects it with
+  // `InvalidSmsRoleTrustRelationshipException` / "Role does not have a trust
+  // relationship allowing Cognito to assume the role" (issue #2901).
+  //
+  // What the report's payload SUPPORTS is that the create failed in 336ms —
+  // that figure is the event's `durationMs`, the failing operation's own
+  // elapsed time, not the gap since the role's CREATE, which the payload does
+  // not carry. Read correctly it is still the decisive number: 336ms is far
+  // too short for any retry to have happened, which is the single-shot
+  // behaviour below. (The issue's prose reads it as the gap; that inference is
+  // not supported by the JSON beside it, and an earlier revision of this
+  // comment repeated it as MEASURED.) The gap IS measured, on cdkd's own
+  // fixture: `tests/integration/propagation-races-2` reports it per run and
+  // has recorded 0ms twice.
+  //
+  // NONE of the patterns above matched it — verified exhaustively against all
+  // three arrays rather than by eye, since several look like near misses:
+  // 'trust policy' is lower-case AND a different noun ("trust relationship"),
+  // 'Trusted Entity' is CodeBuild's wording, 'does not have required
+  // permissions' has the other word order, and every 'assume' entry above
+  // anchors on a phrasing AWS does not use here. So `isRetryableTransientError`
+  // returned false and the create was SINGLE-SHOT: not a mis-shaped budget, no
+  // retry at all. Neither escape applied either — the exception name is not in
+  // `THROTTLING_ERROR_NAMES`, and the failure is HTTP 400 (MEASURED against
+  // real AWS, 2026-09-10: the give-up line's classifier bracket reported
+  // `[name=InvalidSmsRoleTrustRelationshipException http=400 requestId=...]`.
+  // The issue's own payload could not have supplied it — a `cdkd events`
+  // record carries no status code).
+  //
+  // Anchored on the message TAIL rather than on the error CODE, which is not
+  // reachable from here: classification is deliberately message-only
+  // (`isIamPropagationError` below says so in its own doc comment) and
+  // `CognitoUserPoolProvider` interpolates `error.message` alone, never
+  // `error.name` — so a code-anchored entry would never fire.
+  //
+  // The service-name slot is left OUT of the anchor, and this is NOT the same
+  // trade 'is unable to assume the role' above makes: THERE the anchor is
+  // absent because AWS emits no service prefix at all, so there is no slot to
+  // keep. Here a prefix EXISTS and is dropped anyway, which is the trade the
+  // Firehose entry above argues AGAINST. It is taken deliberately: AWS renders
+  // this sentence as "allowing <Service> to assume the role", so dropping the
+  // slot covers a sibling service without a fourth wording having to be
+  // discovered in production, and the Firehose worry does not reach it — that
+  // entry guards against a PERMANENT explicit-deny sharing its phrasing,
+  // whereas the only condition that can produce THIS sentence is a missing
+  // trust relationship, i.e. either this propagation window or its permanent
+  // twin, and the twin only burns the bounded ~47.75s budget before surfacing.
+  //
+  // ONE entry covers EVERY call that validates the role, and the reason is
+  // worth knowing before adding a second. `SetUserPoolMfaConfig` — reached
+  // from `create()` AND from `update()` — re-sends the SAME `SmsConfiguration`
+  // (see `buildMfaConfigRequest`), so it races the same role. But it runs
+  // inside `CognitoUserPoolProvider.retryOnTransientControlPlane`, whose
+  // private classifier accepts only the exception NAME
+  // `ConcurrentModificationException` or a message matching
+  // /concurrent modification|please retry|try again|in progress/i. This message
+  // is neither, so that loop rethrows IMMEDIATELY; the surrounding catch
+  // re-throws a `ProvisioningError` embedding the AWS text (and, on the create
+  // path, deletes the partially-created pool first), and the engine's outer
+  // `withRetry` — which this provider does not disable — takes the dense grid.
+  // Do NOT also widen the inner loop: 3 attempts means TWO sleeps, 1s + 2s =
+  // 3s, spent on the wrong grid before the outer one starts. (Its own doc
+  // comment says "1s -> 2s -> 4s, default 3 attempts"; the 4s step is
+  // unreachable at that attempt count.)
+  //
+  // Live A/B against real AWS, 2026-09-10, one variable — a stack whose SMS
+  // role's trust policy deliberately omits Cognito, so AWS returns this
+  // rejection PERMANENTLY and the retry runs to exhaustion:
+  //
+  //   with this entry    -> 70s, "gave up after 26 IAM-propagation retries
+  //                         over 47.75s of propagation backoff"
+  //   with it removed    -> 13s, no retry line at all
+  //
+  // Same template, same AWS message. That is what establishes the DENSE grid
+  // is selected rather than merely that the create is retried at all.
+  //
+  // Fenced by `tests/unit/deployment/retryable-errors.test.ts` (this message is
+  // matched by EXACTLY this entry, plus the near misses named above asserted to
+  // keep missing it) and `tests/unit/provisioning/cognito-provider.test.ts`
+  // (the inner-loop rethrow, on both the create and update paths, with a
+  // control proving that loop still retries its own class). Live edge 5 of
+  // tests/integration/propagation-races-2, which also reports the measured
+  // producer→consumer gap so a green run cannot be mistaken for a raced one.
+  'does not have a trust relationship allowing',
   // Step Functions CreateStateMachine / UpdateStateMachine validates that the
   // states.amazonaws.com service principal can assume the same-stack IAM role
   // at create time. cdkd's fast SDK path issues the create only ~1s after the

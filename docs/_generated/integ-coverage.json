@@ -803,6 +803,7 @@
         "cognito-lambda-triggers",
         "cognito-resource-server",
         "cognito-userpool-user-ref",
+        "propagation-races-2",
         "remove-protection",
         "serverless-api"
       ],
@@ -833,6 +834,9 @@
         ],
         "cognito-userpool-user-ref": [
           "l2"
+        ],
+        "propagation-races-2": [
+          "l1"
         ],
         "remove-protection": [
           "l2",

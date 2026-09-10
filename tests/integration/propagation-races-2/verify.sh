@@ -78,6 +78,8 @@ FUNCTION_NAME=""
 NOTIFY_BUCKET=""
 POLICED_BUCKET=""
 KEY_ID=""
+USER_POOL_ID=""
+SMS_ROLE_NAME=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -120,6 +122,10 @@ cleanup() {
     aws kms schedule-key-deletion --key-id "${KEY_ID}" \
       --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1
   fi
+  if [ -n "${USER_POOL_ID}" ]; then
+    aws cognito-idp delete-user-pool --user-pool-id "${USER_POOL_ID}" \
+      --region "${REGION}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
@@ -133,23 +139,55 @@ trap '(exit 143); cleanup; exit 143' TERM
 
 # Triage helper: dump cdkd events RESOURCE_FAILED lines on a deploy failure so a
 # CI run shows exactly which race edge failed + the AWS error.
+# Fetch the newest run's FLAT event array, or print nothing.
+#
+# `cdkd events <stack> --format json` WITHOUT `--run` returns
+# `{stackName, region, runs: [DeploymentRunSummary]}`, and a run summary carries
+# `runId / command / cdkdVersion / startedAt / finishedAt / result / eventCount`
+# and NO events at all -- so a jq filtering event fields over that payload
+# matches nothing, whatever it asks for. Only `--run <id>` returns the array.
+# Never fatal: this feeds diagnostics, so a failure here must not mask the
+# failure being diagnosed.
+fetch_run_events() { # stdout: a JSON array of DeploymentEvent, or empty
+  ( set +eu
+    runs_json=$(node "${LOCAL_DIST}" events "${STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --format json 2>/dev/null) || return 0
+    [ -n "${runs_json}" ] || return 0
+    # Newest by startedAt; `// empty` so an unparseable payload yields nothing
+    # rather than the string "null" reaching --run.
+    run_id=$(printf '%s' "${runs_json}" \
+      | jq -r '(.runs // []) | sort_by(.startedAt) | last | .runId // empty' 2>/dev/null)
+    [ -n "${run_id}" ] || return 0
+    node "${LOCAL_DIST}" events "${STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --run "${run_id}" \
+      --format json 2>/dev/null
+  )
+}
+
 dump_failure_triage() {
-  echo "==> DEPLOY FAILED — triage via cdkd events --format json" >&2
+  echo "==> DEPLOY FAILED -- triage via cdkd events --format json" >&2
   set +e
-  EVENTS_JSON=$(node "${LOCAL_DIST}" events "${STACK}" \
-    --state-bucket "${STATE_BUCKET}" \
-    --region "${REGION}" \
-    --format json 2>/dev/null)
+  EVENTS_JSON=$(fetch_run_events)
   if [ -n "${EVENTS_JSON}" ]; then
-    echo "${EVENTS_JSON}" | jq -r '
-      (if type == "array" then . else (.events // .runs // []) end)
-      | (if (.[0] | type) == "object" and (.[0] | has("events")) then (.[] .events // []) | add else . end)
-      | map(select(.type == "RESOURCE_FAILED" or .type == "ROLLBACK_RESOURCE_FAILED"))
+    # `eventType`, NOT `type`: `DeploymentEvent` has no `type` field, so the
+    # previous filter matched nothing even when handed a real event stream.
+    FAILED=$(printf '%s' "${EVENTS_JSON}" | jq -r '
+      map(select(.eventType == "RESOURCE_FAILED" or .eventType == "ROLLBACK_RESOURCE_FAILED"))
       | .[]
-      | "  RESOURCE_FAILED: \(.logicalId // "?") (\(.resourceType // "?"))\n    \(.error.name // "?") \(if .error.awsErrorCode then "(\(.error.awsErrorCode))" else "" end): \(.error.message // "?")"
-    ' 2>/dev/null || echo "  (could not parse events JSON; raw below)" && echo "${EVENTS_JSON}" >&2
+      | "  \(.eventType): \(.logicalId // "?") (\(.resourceType // "?"))\n    \(.error.name // "?")\(if .error.awsErrorCode then " (\(.error.awsErrorCode))" else "" end): \(.error.message // "?")"
+    ' 2>/dev/null)
+    if [ -n "${FAILED}" ]; then
+      printf '%s\n' "${FAILED}" >&2
+    else
+      echo "  (event stream parsed but carried no RESOURCE_FAILED / ROLLBACK_RESOURCE_FAILED; raw below)" >&2
+      printf '%s\n' "${EVENTS_JSON}" >&2
+    fi
   else
-    echo "  (no events recorded — deploy may have failed before any resource started)" >&2
+    echo "  (no events recorded -- deploy may have failed before any resource started)" >&2
   fi
   set -e
 }
@@ -201,11 +239,16 @@ KEY_ID=$(resolve_id "AWS::KMS::Key")
 # Two buckets share a type; resolve by output name instead.
 NOTIFY_BUCKET=$(echo "${STATE}" | jq -r '.outputs.NotifyBucketName // ""')
 POLICED_BUCKET=$(echo "${STATE}" | jq -r '.outputs.PolicedBucketName // ""')
+USER_POOL_ID=$(resolve_id "AWS::Cognito::UserPool")
+# FOUR roles share AWS::IAM::Role, so resolve_id's `first` would pick an
+# arbitrary one; the stack publishes this name as an output for that reason.
+SMS_ROLE_NAME=$(echo "${STATE}" | jq -r '.outputs.SmsRoleName // ""')
 
 echo "    instance=${INSTANCE_ID} profile=${INSTANCE_PROFILE_NAME} fn=${FUNCTION_NAME}"
 echo "    notifyBucket=${NOTIFY_BUCKET} policedBucket=${POLICED_BUCKET} key=${KEY_ID}"
+echo "    userPool=${USER_POOL_ID} smsRole=${SMS_ROLE_NAME}"
 
-for v in "${INSTANCE_ID}" "${INSTANCE_PROFILE_NAME}" "${FUNCTION_NAME}" "${NOTIFY_BUCKET}" "${POLICED_BUCKET}" "${KEY_ID}"; do
+for v in "${INSTANCE_ID}" "${INSTANCE_PROFILE_NAME}" "${FUNCTION_NAME}" "${NOTIFY_BUCKET}" "${POLICED_BUCKET}" "${KEY_ID}" "${USER_POOL_ID}" "${SMS_ROLE_NAME}"; do
   if [ -z "${v}" ] || [ "${v}" = "null" ]; then
     echo "FAIL: could not resolve one or more physical ids from state" >&2
     echo "${STATE}" | jq '{resources: (.resources | keys), outputs}' >&2
@@ -286,6 +329,100 @@ if ! echo "${KEY_POLICY}" | grep -qF "AllowFreshRoleUse"; then
 fi
 echo "    OK: KMS key Enabled + usable + policy references the fresh role principal"
 
+# --- Edge 5 assertion: UserPool bound the fresh SMS role, at BOTH call sites
+echo "==> Edge 5: Cognito UserPool referencing the fresh SMS role"
+POOL=$(aws cognito-idp describe-user-pool --user-pool-id "${USER_POOL_ID}" \
+  --region "${REGION}" --query 'UserPool' --output json)
+POOL_SNS_ARN=$(echo "${POOL}" | jq -r '.SmsConfiguration.SnsCallerArn // ""')
+if [ -z "${POOL_SNS_ARN}" ]; then
+  echo "FAIL: user pool has no SmsConfiguration.SnsCallerArn — CreateUserPool dropped it" >&2
+  echo "${POOL}" | jq '{SmsConfiguration, MfaConfiguration}' >&2
+  exit 1
+fi
+case "${POOL_SNS_ARN}" in
+  *":role/${SMS_ROLE_NAME}") ;;
+  *)
+    echo "FAIL: pool SnsCallerArn '${POOL_SNS_ARN}' does not name the fresh role ${SMS_ROLE_NAME}" >&2
+    exit 1
+    ;;
+esac
+
+# The SECOND validating call. Asserting only the pool's own SmsConfiguration
+# would pass with SetUserPoolMfaConfig never having succeeded -- and that call
+# re-checks the SAME role, so it is half the race this edge exists to cover.
+MFA=$(aws cognito-idp get-user-pool-mfa-config --user-pool-id "${USER_POOL_ID}" \
+  --region "${REGION}" --output json)
+MFA_MODE=$(echo "${MFA}" | jq -r '.MfaConfiguration // ""')
+MFA_SNS_ARN=$(echo "${MFA}" | jq -r '.SmsMfaConfiguration.SmsConfiguration.SnsCallerArn // ""')
+if [ "${MFA_MODE}" != "ON" ]; then
+  echo "FAIL: pool MfaConfiguration is '${MFA_MODE}', expected ON — SetUserPoolMfaConfig did not land" >&2
+  echo "${MFA}" >&2
+  exit 1
+fi
+if [ "${MFA_SNS_ARN}" != "${POOL_SNS_ARN}" ]; then
+  echo "FAIL: SMS MFA SnsCallerArn '${MFA_SNS_ARN}' != the pool's '${POOL_SNS_ARN}'" >&2
+  echo "${MFA}" >&2
+  exit 1
+fi
+echo "    OK: pool + SMS MFA config both bound the fresh role (${POOL_SNS_ARN})"
+
+# --- Window report: how much propagation time each edge actually got ---
+# A green run of a RACE fixture does not prove the retry works -- it may simply
+# never have raced. #2018 makes the same point about its own fixture, and asks
+# for the window to be MEASURED rather than inferred. So record it: for each
+# producer/consumer pair, print the gap between the producer's CREATE finishing
+# and the consumer's starting. A small gap means this run exercised the window;
+# a large one means the DAG had unrelated work in between and the edge was
+# never under test, whatever the assertions above say.
+#
+# Informational ONLY -- a large gap is not a failure (it is not something the
+# fixture controls), and an unparseable events stream is not either. What it
+# buys is that "the retry is covered" stops being assumed from a green run.
+echo "==> Window report: producer -> consumer gaps (informational, never fatal)"
+set +e
+WINDOW_EVENTS=$(fetch_run_events)
+if [ -n "${WINDOW_EVENTS}" ]; then
+  echo "${WINDOW_EVENTS}" | jq -r '
+    # Millisecond precision is the whole point: these gaps are sub-second
+    # (0ms on both recorded runs of this edge), and `fromdateiso8601` alone
+    # truncates to whole SECONDS -- it would print 0ms for EVERY gap, including
+    # the large ones that mean the opposite of what 0ms means here.
+    def tms:
+      capture("(?<base>.*)\\.(?<ms>[0-9]{3})Z$")
+      | ((.base + "Z") | fromdateiso8601) * 1000 + (.ms | tonumber);
+    # `fetch_run_events` always yields a FLAT array, so no run-wrapper
+    # unwrapping is needed -- and the unwrapping this replaced was wrong
+    # anyway: `(.[] .events // []) | add` applies `add` to each stream element,
+    # merging event OBJECTS instead of concatenating the arrays.
+    (if type == "array" then . else [] end)
+    | map(select(.logicalId != null and (.timestamp | type) == "string"))
+    | map({logicalId, eventType, t: (.timestamp | tms)})
+    | group_by(.logicalId)
+    | map({
+        id: .[0].logicalId,
+        start: ([.[] | select(.eventType == "RESOURCE_STARTED") | .t] | min),
+        done:  ([.[] | select(.eventType == "RESOURCE_SUCCEEDED") | .t] | max)
+      })
+    | (reduce .[] as $r ({}; .[$r.id] = $r)) as $byId
+    | [
+        ["InstanceProfile", "Instance"],
+        ["UserPoolsmsRole1998E37F", "RacedUserPool"]
+      ]
+    | map(
+        ($byId[.[0]].done) as $p
+        | ($byId[.[1]].start) as $c
+        | if $p != null and $c != null
+          then "    \(.[1]) started \(($c - $p) | floor)ms after \(.[0]) completed"
+          else "    \(.[1]): gap unavailable (producer or consumer event missing)"
+          end
+      )
+    | .[]
+  ' 2>/dev/null || echo "    (could not parse the events stream for window timing)"
+else
+  echo "    (no events recorded — window timing unavailable)"
+fi
+set -e
+
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -330,6 +467,15 @@ for b in "${NOTIFY_BUCKET}" "${POLICED_BUCKET}"; do
 done
 echo "    OK: both S3 buckets gone"
 
+# User pool + its fresh SMS role gone. The pool is the resource issue #2902
+# reports SURVIVING a rollback under a RETAIN policy, and this fixture's pool
+# carries a deterministic name -- so a survivor here does not just leak, it
+# wedges the NEXT run of this fixture on an EntityAlreadyExists.
+assert_gone "user pool ${USER_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${USER_POOL_ID}" --region "${REGION}"
+echo "    OK: Cognito user pool gone"
+assert_gone "SMS role ${SMS_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${SMS_ROLE_NAME}"
+echo "    OK: fresh SMS role gone"
+
 # KMS key scheduled for deletion (KMS keys cannot be hard-deleted immediately).
 if gone_probe aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}"; then
   KEY_STATE_AFTER="gone"
@@ -358,13 +504,17 @@ if [ -n "${ORPHAN_INSTANCES}" ] && [ "${ORPHAN_INSTANCES}" != "None" ]; then
 fi
 echo "    OK: no tagged orphan instances remain"
 
-# Nothing left for the cleanup trap to delete.
+# Nothing left for the cleanup trap to delete. Every id resolved above must be
+# cleared here: an id left set makes the EXIT trap issue a delete for a resource
+# the assertions just proved gone, on every GREEN run.
 INSTANCE_ID=""
 INSTANCE_PROFILE_NAME=""
 FUNCTION_NAME=""
 NOTIFY_BUCKET=""
 POLICED_BUCKET=""
 KEY_ID=""
+USER_POOL_ID=""
+SMS_ROLE_NAME=""
 
 echo ""
-echo "=== PASS: propagation-races-2 integ (4 fresh-principal/consumer race edges deployed, asserted, destroyed clean) ==="
+echo "=== PASS: propagation-races-2 integ (5 fresh-principal/consumer race edges deployed, asserted, destroyed clean) ==="

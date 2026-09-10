@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
@@ -39,15 +40,41 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *      `MalformedPolicyDocumentException` / `... is not valid` until it
  *      propagates.
  *
- * Cost: one t3.micro in a single-AZ no-NAT VPC, one tiny inline Lambda, one
- * S3 bucket, one KMS key, three IAM roles, one instance profile. All cheap;
- * all destroyable. Every named resource carries the `cdkd:integ-fixture` tag
- * so verify.sh can assert it is gone post-destroy by a fixture-owned tag (NOT
- * the `aws:cdk:path` tag, which AWS reserves and cdkd cannot set).
+ *   5. Cognito UserPool referencing a FRESH SMS (SNS-caller) IAM role
+ *      `CreateUserPool` checks that cognito-idp.amazonaws.com can assume the
+ *      `SmsConfiguration.SnsCallerArn` role, and `SetUserPoolMfaConfig` — which
+ *      cdkd issues right after, to apply `EnabledMfas` — re-sends the SAME
+ *      block and checks it again. Reported as issue #2901 against a real app,
+ *      where AWS answered `InvalidSmsRoleTrustRelationshipException` / "Role
+ *      does not have a trust relationship allowing Cognito to assume the role".
+ *      That report's `336ms` is the failed operation's own `durationMs`, NOT
+ *      the gap since the role's CREATE — the payload carries no such gap. The
+ *      window report below is where this repo measures the gap for real.
  *
- * The instance / bucket / KMS key are authored as RAW L1 constructs so the
- * fixture controls the exact property set and the consumer-references-fresh-
- * producer wiring without L2 sugar inserting extra resources.
+ *      Authored as an L1 for this fixture's general reason — the exact
+ *      property set is chosen here — and NOT because the L2 would route
+ *      elsewhere. An
+ *      earlier revision of this comment claimed it would flip the resource to
+ *      Cloud Control; that is FALSE, and the issue itself disproves it: its
+ *      `RESOURCE_FAILED` event records `"provisionedBy": "sdk"`, and the
+ *      message it carries is `CognitoUserPoolProvider.create`'s own wrap. The
+ *      reported L2 pool ran on the SDK provider, which is the path this edge
+ *      exercises, so the two agree rather than diverging. What the L1 buys is
+ *      that the property set stays pinned HERE: every property below is in the
+ *      type's `handled` set, so a future L2 default cannot quietly introduce a
+ *      silent drop and move this resource off the path under test.
+ *
+ * Cost: one t3.micro in a single-AZ no-NAT VPC, one tiny inline Lambda, one
+ * S3 bucket, one KMS key, one Cognito user pool, four IAM roles, one instance
+ * profile. All cheap; all destroyable. Every named resource carries the
+ * `cdkd:integ-fixture` tag so verify.sh can assert it is gone post-destroy by a
+ * fixture-owned tag (NOT the `aws:cdk:path` tag, which AWS reserves and cdkd
+ * cannot set).
+ *
+ * The instance / bucket / KMS key / user pool are authored as RAW L1 constructs
+ * so the fixture controls the exact property set and the
+ * consumer-references-fresh-producer wiring without L2 sugar inserting extra
+ * resources.
  */
 export class PropagationRaces2Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -91,10 +118,16 @@ export class PropagationRaces2Stack extends cdk.Stack {
 
     const ami = ec2.MachineImage.latestAmazonLinux2023().getImage(this).imageId;
 
-    // RAW L1 instance. Emit only cdkd-handled top-level props so the instance
-    // stays on the SDK provider path (an L2 instance emits AvailabilityZone, a
-    // silent-drop that flips the whole resource onto Cloud Control). The
-    // IamInstanceProfile reference to the fresh profile is the race edge.
+    // RAW L1 instance, for this fixture's general reason: the exact property
+    // set is chosen HERE, so every property stays in the type's `handled` set
+    // and the resource cannot drift onto the Cloud Control route (which would
+    // take it off the SDK path these edges exercise). An earlier revision
+    // justified it by claiming an L2 instance emits `AvailabilityZone` as a
+    // SILENT DROP; that is false -- it is in this type's `handled` set. (The
+    // type string is deliberately not spelled out in this comment: the integ
+    // coverage generator scans fixture sources for type literals and would
+    // credit the fixture with `literal` coverage it does not have.) The
+    // `IamInstanceProfile` reference to the fresh profile is the race edge.
     const instance = new ec2.CfnInstance(this, 'Instance', {
       imageId: ami,
       instanceType: 't3.micro',
@@ -202,6 +235,55 @@ export class PropagationRaces2Stack extends cdk.Stack {
     key.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     key.node.addDependency(kmsRole);
 
+    // ---- Edge 5: Cognito UserPool -> fresh SMS (SNS-caller) role -----
+    // The shape CDK's `UserPool` L2 generates for `mfaSecondFactor: {sms:true}`,
+    // written out as L1s (see the header for why the L2 itself is unusable
+    // here). The trust policy carries the `sts:ExternalId` condition Cognito
+    // requires, and the ExternalId below must match `SmsConfiguration`'s.
+    const SMS_EXTERNAL_ID = 'cdkd-propagation-races-2-sms';
+
+    const smsRole = new iam.Role(this, 'UserPoolsmsRole', {
+      assumedBy: new iam.ServicePrincipal('cognito-idp.amazonaws.com', {
+        conditions: { StringEquals: { 'sts:ExternalId': SMS_EXTERNAL_ID } },
+      }),
+      description: 'Fresh SNS-caller role consumed by a same-deploy Cognito UserPool',
+      inlinePolicies: {
+        'sns-publish': new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              actions: ['sns:Publish'],
+              resources: ['*'],
+            }),
+          ],
+        }),
+      },
+    });
+
+    // RAW L1 pool. `EnabledMfas` is the property that makes cdkd issue the
+    // SECOND validating call (`SetUserPoolMfaConfig`), so BOTH sites of the
+    // race are on this one resource; without it only `CreateUserPool` runs.
+    // `MfaConfiguration: 'ON'` is required alongside it — AWS rejects an
+    // SMS_MFA factor on a pool whose MFA is OFF.
+    const userPool = new cognito.CfnUserPool(this, 'RacedUserPool', {
+      userPoolName: `${cdk.Stack.of(this).stackName}-raced-pool`,
+      mfaConfiguration: 'ON',
+      enabledMfas: ['SMS_MFA'],
+      smsConfiguration: {
+        snsCallerArn: smsRole.roleArn,
+        externalId: SMS_EXTERNAL_ID,
+      },
+      // Explicit, and load-bearing for THIS fixture: a deletion-protected pool
+      // is precisely what issue #2902 reports surviving a rollback, and a
+      // survivor here would collide with the next run's deterministic name.
+      deletionProtection: 'INACTIVE',
+      userPoolTags: { [FIXTURE_TAG_KEY]: FIXTURE_TAG_VALUE },
+    });
+    userPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // NOT strictly needed — `snsCallerArn` already carries the Fn::GetAtt edge
+    // cdkd's DAG builder reads — but stated so a later edit to the ARN
+    // expression cannot silently drop the ordering this edge is built on.
+    userPool.node.addDependency(smsRole);
+
     // ---- Outputs -----------------------------------------------------
     new cdk.CfnOutput(this, 'InstanceId', { value: instance.ref });
     new cdk.CfnOutput(this, 'InstanceProfileName', { value: instanceProfile.ref });
@@ -209,5 +291,7 @@ export class PropagationRaces2Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'NotifyBucketName', { value: notifyBucket.bucketName });
     new cdk.CfnOutput(this, 'PolicedBucketName', { value: policedBucket.bucketName });
     new cdk.CfnOutput(this, 'KeyId', { value: key.ref });
+    new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.ref });
+    new cdk.CfnOutput(this, 'SmsRoleName', { value: smsRole.roleName });
   }
 }
