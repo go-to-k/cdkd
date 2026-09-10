@@ -1596,6 +1596,18 @@ export class DeployEngine {
     // instructions that cannot apply and none that can. The record carries no
     // durable marker saying WHICH population a mask came from (issue #2449 is
     // that gap), so the message names both rather than guessing.
+    //
+    // ARM (2) NAMES ONE ACTION AND DOES NOT ENUMERATE CAUSES, and that shape is
+    // the point rather than brevity. Three successive review rounds each
+    // rewrote this arm as a cause list with a remedy per cause, and each list
+    // was wrong in a NEW way — a remedy that could not apply, then a cause that
+    // cannot produce this refusal, then a remedy that was necessary but not
+    // sufficient (granting the permission changes nothing until a re-import
+    // rewrites the record). The re-import is the action for EVERY cause, and
+    // the permission is a PRECONDITION of it, not an alternative to it. Do not
+    // re-expand this into a list: the causes are not enumerable from here —
+    // `getTopLevelReadOnlyProperties` answers `undefined` for any failure at
+    // all — so any list written here is a claim the code cannot support.
     throw new ProvisioningError(
       `Cannot resolve ${reads.join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
         `redaction mask there, and the value is not recoverable from state. There are two ways a ` +
@@ -1611,10 +1623,9 @@ export class DeployEngine {
         `Control fallback, which records only the attributes the type's CloudFormation schema ` +
         `declares read-only and masks the rest. Either the attribute named above is not one of ` +
         `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
-        `cdkd could not read that schema at all and masked the whole model, which the import ` +
-        `warned about when it happened. In that second case: grant cloudformation:DescribeType if ` +
-        `it is missing, or just re-run 'cdkd import' if the lookup was throttled; a type with no ` +
-        `CloudFormation registry entry cannot be narrowed at all and will keep masking. ` +
+        `cdkd could not read that schema and masked the whole model, which the import warned about ` +
+        `when it happened. Re-run 'cdkd import' for this stack to rewrite its attributes; if that ` +
+        `warning named a missing cloudformation:DescribeType permission, grant it first. ` +
         `See https://github.com/go-to-k/cdkd/issues/2449.`,
       resourceType,
       logicalId

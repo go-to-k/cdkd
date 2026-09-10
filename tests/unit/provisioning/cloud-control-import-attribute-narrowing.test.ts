@@ -261,10 +261,11 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
   // unreachable when the model does not parse to an object, so priming it
   // would be dead setup implying a dependency that does not exist.
   it.each([
-    ['["not","an","object"]', 'an array'],
+    ['["zz-lane2847-scalar","b"]', 'an array'],
     ['null', 'null'],
-    ['"a string"', 'string'],
+    ['"zz-lane2847-scalar"', 'string'],
     ['42', 'number'],
+    ['true', 'boolean'],
   ])('records no attributes and names the shape when the model parses to %s', async (raw, shape) => {
     mockCloudControlSend.mockImplementation(() =>
       Promise.resolve({ ResourceDescription: { Identifier: 'chan-1', Properties: raw } })
@@ -286,6 +287,15 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     expect(result?.attributes).toEqual({});
     const debugged = mockDebug.mock.calls.map((c) => String(c[0])).join('\n');
     expect(debugged).toContain(`parsed to ${shape}, not an object`);
+    // "The SHAPE is safe to name, unlike the value" — asserted, not merely
+    // claimed in a comment. The two rows carrying a needle prove the payload
+    // never reaches the log line or the record.
+    expect(debugged).not.toContain('zz-lane2847-scalar');
+    expect(JSON.stringify(result)).not.toContain('zz-lane2847-scalar');
+    // The schema lookup really is unreachable on this path — the comment above
+    // primes no CFn mock BECAUSE of that, and an unpinned "it is unreachable"
+    // is exactly the kind of claim this repo makes the test carry.
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
   });
 
   it('keeps a model key literally named __proto__ as an OWN property rather than dropping it', async () => {
