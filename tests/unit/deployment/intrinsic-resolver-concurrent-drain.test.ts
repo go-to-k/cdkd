@@ -1267,6 +1267,15 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
     // nothing reddening; that mutation is what this row now catches (measured:
     // it reports the added line).
     //
+    // The row is NAME-KEYED, and the claim is bounded to match (issue
+    // go-to-k/cdkd#2895's own "state the limit in the fix rather than discover
+    // it after"): it holds every call SPELLED `resolveCrossStackReads`. A
+    // differently named binding for the factory's return value --
+    // `const alias = resolveCrossStackReads; await alias(...)` above the wrap
+    // -- passes, measured. Tracking the binding needs symbol resolution, the
+    // same instrument the wrapper-shadow KNOWN LIMIT below declines, so the
+    // sentence is narrowed instead of the fence widened.
+    //
     // Syntactic, like the fences above, and with the same limits: it asks
     // whether the call sits lexically inside a `withSharedDrainBudget(...)`
     // argument, not whether it runs inside one.
@@ -1313,35 +1322,17 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
 });
 
 /**
- * The engine-level consequence, on the path the issue actually reports: an
- * `Export.Name` built by `Fn::Join` from a secret reference and a sibling that
- * THROWS. The engine resolves that name into a PRIVATE `nameSecrets` map and
- * copies it into the pass map in a `finally`; pre-drain the sibling's
- * recording landed after that copy and the pass map never learned the
- * plaintext.
- *
- * THE DISCRIMINATOR IS A LATER EXPORT NAME, not the failing one. A name whose
- * literal text carries a plaintext the pass knows is REFUSED and not keyed
- * (the exposure guard); one whose plaintext the pass does NOT know is
- * published, putting the secret in the export key space and in state. So the
- * drain is observable as "the later name was refused", which is exactly what
- * the missing needle would have allowed through.
- *
- * Uses the REAL resolver — `deploy-engine-outputs-export-name-collision.test.ts`
- * replaces it wholesale and so pins the copy's SEQUENTIAL shape only.
- */
-/**
  * The owner-keyed walk, extracted so its CLAUSES can be pinned against
  * synthetic sources as well as against the real `scrub.ts`.
  *
- * Both clauses issue go-to-k/cdkd#2894 added are invisible to a real-tree-only
- * case, which is the same shape as the hole they close: deleting
- * `ts.isFunctionLike` from the barrier, or stopping the barrier walk at the
- * owner's DECLARATION rather than at its function, left the whole repository
- * green while the cases below did not exist, because today's `scrubStack` is a
- * function declaration whose wrapper sits directly in its body. The three
- * cases below carry the shapes that tell the mutants apart, and the real-tree
- * case stays GREEN under every one of them — which is the point.
+ * Every clause here is invisible to a real-tree-only case, which is the same
+ * shape as the hole issue go-to-k/cdkd#2894 reports: today's `scrubStack` is a
+ * function declaration with no iteration or function boundary between the
+ * wrapper and itself, so deleting EITHER barrier clause, stopping the barrier
+ * walk at the owner's DECLARATION, or narrowing the receiver match left the
+ * whole repository green while the cases below did not exist. Those cases
+ * carry the shapes that tell the mutants apart, and the real-tree case stays
+ * GREEN under every one of them — which is the point.
  */
 function analyseSharedBudget(
   sourceText: string,
@@ -1362,24 +1353,39 @@ function analyseSharedBudget(
   // `scrubStack` walked straight past the first cut of this case
   // (measured). `makeCrossStackPrePass` is a separate top-level function,
   // so it stays out for free.
-  let ownerBody: ts.Node | undefined;
+  // The BODY test is what makes this find the IMPLEMENTATION: without it a
+  // `declare function scrubStack(...)`, or an overload signature sitting
+  // above its implementation, matches first, the walk covers an empty
+  // subtree, and the result reads "owner found, no resolve calls" (issue
+  // go-to-k/cdkd#2915 review, m1). For the `declare` shape the `>= 3` floor
+  // reds either way and only the report was a lie; for the OVERLOAD shape the
+  // floor reds a tree that is perfectly correct, which is the worse half.
+  //
+  // The name must be an IDENTIFIER: a `PropertyName` can be a string literal
+  // or computed, and `"scrubStack"() {}` carries `.text === 'scrubStack'`
+  // without being a declaration this fence understands.
+  let ownerDecl: ts.Node | undefined;
   const findOwner = (node: ts.Node): void => {
-    if (ownerBody !== undefined) return;
+    if (ownerDecl !== undefined) return;
     const named =
-      (ts.isFunctionDeclaration(node) && node.name?.text === owner) ||
+      ((ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
+        node.name !== undefined &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === owner &&
+        node.body !== undefined) ||
       ((ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) &&
         ts.isIdentifier(node.name) &&
         node.name.text === owner &&
         node.initializer !== undefined &&
         (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer)));
     if (named) {
-      ownerBody = node;
+      ownerDecl = node;
       return;
     }
     ts.forEachChild(node, findOwner);
   };
   findOwner(sf);
-  if (ownerBody === undefined) {
+  if (ownerDecl === undefined) {
     return {
       resolveCount: 0,
       unwrappedLines: [],
@@ -1396,7 +1402,6 @@ function analyseSharedBudget(
   // correct tree. Today `scrubStack` is a function declaration and the two
   // coincide; the `const` arm of the const-arrow case below is what keeps this
   // honest, because the real tree cannot exercise it.
-  const ownerDecl: ts.Node = ownerBody;
   const ownerFn: ts.Node =
     (ts.isVariableDeclaration(ownerDecl) || ts.isPropertyDeclaration(ownerDecl)) &&
     ownerDecl.initializer !== undefined
@@ -1444,19 +1449,33 @@ function analyseSharedBudget(
     }
     ts.forEachChild(node, walk);
   };
-  walk(ownerBody);
+  walk(ownerDecl);
 
   // An iteration statement is only ONE way to lose "opened once per call of
   // the owner". A wrapper inside a CALLBACK --
   // `await Promise.all(xs.map(async () => withSharedDrainBudget(...)))` --
   // opens one budget per element while matching no `ts.isIterationStatement`,
   // and the earlier version of this clause passed it (issue
-  // go-to-k/cdkd#2894). So the barrier is any function boundary too: in the
-  // shape this fence exists to hold, the wrapper sits directly in the owner's
-  // own body, and a function-like node between the two means the budget is
-  // opened once per call of THAT function rather than of the owner.
+  // go-to-k/cdkd#2894). Both clauses are needed and neither subsumes the
+  // other: a `for` written directly in the owner has the owner as its
+  // enclosing function, so the boundary test alone goes green on it.
+  //
+  // KNOWN LIMIT, and deliberate: this is an OVER-approximation. A wrapper
+  // inside a helper arrow the owner calls exactly once -- or an IIFE -- opens
+  // the budget once per owner call and is still reported, because from the
+  // syntax alone the fence can no longer tell how many times it is opened, so
+  // it reds. In the shape `scrub.ts` actually has, the wrapper reaches the
+  // owner with no iteration or function boundary between the two (a `try` is
+  // neither), and that is the property held here.
+  //
+  // Driven by the ONE shared wrapper rather than by `owned[0]`: with the
+  // distinct-wrapper count asserted at 1, source order is irrelevant, and an
+  // unwrapped FIRST call no longer makes this walk vacuous by starting it at
+  // `undefined` (issue go-to-k/cdkd#2915 review, m3).
+  const wrapperNodes = owned.map((c) => c.wrapper).filter((w): w is ts.Node => w !== undefined);
+  const sharedWrapper: ts.Node | undefined = wrapperNodes[0];
   const perCallBarriers: string[] = [];
-  for (let n: ts.Node | undefined = owned[0]?.wrapper?.parent; n && n !== ownerFn; n = n.parent) {
+  for (let n: ts.Node | undefined = sharedWrapper?.parent; n && n !== ownerFn; n = n.parent) {
     if (ts.isIterationStatement(n, false) || ts.isFunctionLike(n)) {
       perCallBarriers.push(ts.SyntaxKind[n.kind]);
     }
@@ -1465,7 +1484,11 @@ function analyseSharedBudget(
   return {
     resolveCount: owned.length,
     unwrappedLines: owned.filter((c) => !c.wrapped).map((c) => c.line),
-    distinctWrappers: new Set(owned.map((c) => c.wrapper?.getStart(sf))).size,
+    // UNWRAPPED calls do not contribute: counting `undefined` as a member
+    // reported `1` for an owner with no wrapper at all, which reads as "one
+    // shared wrapper" (issue go-to-k/cdkd#2915 review, m2). Masked today by
+    // `unwrappedLines` asserting first; a count should not need a bodyguard.
+    distinctWrappers: new Set(wrapperNodes.map((w) => w.getStart(sf))).size,
     perCallBarriers,
     ownerFound: true,
   };
@@ -1514,8 +1537,10 @@ describe('an INLINE budget is fenced by its OWNER, not by a callee (issue #2563)
     ).toBe(1);
     expect(
       found.perCallBarriers,
-      'the shared budget is opened inside a loop or a callback, so it is one budget per ' +
-        'iteration rather than one per call of the owner',
+      'a loop or a function boundary sits between the shared budget and the owner, so how ' +
+        'many times the budget is opened is no longer readable from the syntax — a loop ' +
+        'spelling opens one per iteration, and a helper called once does not, but this fence ' +
+        'refuses both rather than guessing',
     ).toEqual([]);
   });
 
@@ -1568,7 +1593,6 @@ describe('an INLINE budget is fenced by its OWNER, not by a callee (issue #2563)
     expect(found.ownerFound).toBe(true);
     expect(found.resolveCount).toBe(1);
     expect(found.unwrappedLines).toEqual([]);
-    expect(found.distinctWrappers).toBe(1);
     expect(found.perCallBarriers).toEqual([]);
   });
 
@@ -1594,11 +1618,258 @@ describe('an INLINE budget is fenced by its OWNER, not by a callee (issue #2563)
     expect(found.ownerFound).toBe(true);
     expect(found.resolveCount).toBe(1);
     expect(found.unwrappedLines).toEqual([]);
-    expect(found.distinctWrappers).toBe(1);
     expect(found.perCallBarriers).toEqual([]);
+  });
+
+  it('a method owner is accepted like the other three declaration shapes', () => {
+    // Symmetry, not a shape `scrub.ts` has: once a class-FIELD arrow owner is
+    // accepted, a method of the same name reporting `ownerFound: false` makes
+    // the finder's coverage look arbitrary (issue go-to-k/cdkd#2915 review,
+    // m6). It reds loudly on the first assertion either way, so this pins the
+    // report rather than closing a hole.
+    const source = `
+      class Scrubber {
+        async scrubStack(ids: string[]) {
+          await withSharedDrainBudget(async () => {
+            for (const id of ids) {
+              await resolver.resolve(id);
+            }
+          });
+        }
+      }
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.ownerFound).toBe(true);
+    expect(found.resolveCount).toBe(1);
+    expect(found.unwrappedLines).toEqual([]);
+    expect(found.perCallBarriers).toEqual([]);
+  });
+
+  it('a wrapper inside a LOOP written directly in the owner is still per-iteration', () => {
+    // The clause the boundary check does NOT subsume, and the probe issue
+    // go-to-k/cdkd#2894's Proposed fix asked for by name: here the wrapper's
+    // enclosing function IS the owner, so `ts.isFunctionLike` never fires on
+    // the upward path and only `ts.isIterationStatement` reports. Measured on
+    // the tree BEFORE this case existed, deleting
+    // `ts.isIterationStatement(n, false) ||` left all 30 cases green — the
+    // clause was unpinned entirely. With this case and the source-order one
+    // below, that mutant reds the two of them and nothing else.
+    const source = `
+      async function scrubStack(ids: string[]) {
+        for (const id of ids) {
+          await withSharedDrainBudget(async () => {
+            await resolver.resolve(id);
+          });
+        }
+      }
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.ownerFound).toBe(true);
+    expect(found.resolveCount).toBe(1);
+    expect(found.unwrappedLines).toEqual([]);
+    expect(found.perCallBarriers).toContain('ForOfStatement');
+  });
+
+  it('an unrelated `.resolve(` OUTSIDE the wrapper reds, and INSIDE it does not', () => {
+    // The any-receiver match is deliberate and the failure message now says
+    // so; both arms of that sentence are pinned here (issue go-to-k/cdkd#2894
+    // item 3, and its verification plan's fifth bullet). Measured: narrowing
+    // the matcher to `resolver.resolve` — which also drops the element-access
+    // arm — left every case green before this one and the element-access case
+    // below existed, since every other source under test spells it that way;
+    // with them, that mutant reds exactly those two.
+    const outside = `
+      async function scrubStack(ids: string[]) {
+        await Promise.resolve();
+        await withSharedDrainBudget(async () => {
+          for (const id of ids) {
+            await resolver.resolve(id);
+          }
+        });
+      }
+    `;
+    const outsideFound = analyseSharedBudget(outside, 'scrubStack');
+    expect(outsideFound.resolveCount).toBe(2);
+    expect(outsideFound.unwrappedLines).toHaveLength(1);
+
+    const inside = `
+      async function scrubStack(ids: string[]) {
+        await withSharedDrainBudget(async () => {
+          await Promise.resolve();
+          for (const id of ids) {
+            await resolver.resolve(id);
+          }
+        });
+      }
+    `;
+    const insideFound = analyseSharedBudget(inside, 'scrubStack');
+    expect(insideFound.resolveCount).toBe(2);
+    expect(insideFound.unwrappedLines).toEqual([]);
+  });
+
+  it('an ELEMENT-ACCESS resolve call outside the wrapper reds too', () => {
+    // The second half of the any-receiver match, and the arm a narrowing
+    // mutant removes wholesale: `resolver['resolve']()` escaped a
+    // receiver-name filter during go-to-k/cdkd#2797's review, and nothing
+    // pinned it until here.
+    const source = `
+      async function scrubStack(ids: string[]) {
+        await resolver['resolve'](ids[0]);
+        await withSharedDrainBudget(async () => {
+          for (const id of ids) {
+            await resolver.resolve(id);
+          }
+        });
+      }
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.resolveCount).toBe(2);
+    expect(found.unwrappedLines).toHaveLength(1);
+  });
+
+  it('a bodyless owner declaration is not reported as the owner', () => {
+    // `ownerFound` must describe what was found, not what was named (issue
+    // go-to-k/cdkd#2915 review, m1): an overload signature or a `declare`
+    // used to match, giving `{ownerFound: true, resolveCount: 0}` — the floor
+    // reds either way, but the report was a lie about which case it was.
+    const source = `
+      declare function scrubStack(ids: string[]): Promise<void>;
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.ownerFound).toBe(false);
+    expect(found.resolveCount).toBe(0);
+  });
+
+  it('an owner with no wrapper at all reports ZERO shared wrappers', () => {
+    // `distinctWrappers` counted `undefined` as a member, so "no wrapper
+    // anywhere" reported 1 — indistinguishable from "one shared wrapper"
+    // (issue go-to-k/cdkd#2915 review, m2).
+    const source = `
+      async function scrubStack(ids: string[]) {
+        for (const id of ids) {
+          await resolver.resolve(id);
+        }
+      }
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.resolveCount).toBe(1);
+    expect(found.distinctWrappers).toBe(0);
+    expect(found.unwrappedLines).toHaveLength(1);
+  });
+
+  it('an OVERLOAD signature does not capture the owner from its implementation', () => {
+    // The half of the body test that matters: a `declare` only made the report
+    // lie, but an overload sitting above its implementation makes the finder
+    // stop at the signature and red a tree that is entirely correct (issue
+    // go-to-k/cdkd#2915 review). Pinning "reject `declare`" alone would leave
+    // this shape broken, which is why the test is written against the
+    // invariant — the owner is the declaration that HAS a body.
+    const source = `
+      async function scrubStack(ids: string[]): Promise<void>;
+      async function scrubStack(ids: string[]) {
+        await withSharedDrainBudget(async () => {
+          for (const id of ids) {
+            await resolver.resolve(id);
+          }
+        });
+      }
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.ownerFound).toBe(true);
+    expect(found.resolveCount).toBe(1);
+    expect(found.unwrappedLines).toEqual([]);
+    expect(found.perCallBarriers).toEqual([]);
+  });
+
+  it('an ANONYMOUS function declaration in the same file does not break the walk', () => {
+    // The name-PRESENCE half of the guard, which the quoted-name case does not
+    // reach: `FunctionDeclaration.name` is optional, so `export default
+    // function () {}` gives `node.name === undefined` and an unguarded
+    // `ts.isIdentifier(node.name)` throws on it before the real owner is ever
+    // seen (issue go-to-k/cdkd#2915 review). A negative control: the owner
+    // below must still be found, with the anonymous declaration walked past.
+    const source = `
+      export default function () {
+        return 1;
+      }
+      async function scrubStack(ids: string[]) {
+        await withSharedDrainBudget(async () => {
+          for (const id of ids) {
+            await resolver.resolve(id);
+          }
+        });
+      }
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.ownerFound).toBe(true);
+    expect(found.resolveCount).toBe(1);
+    expect(found.unwrappedLines).toEqual([]);
+    expect(found.perCallBarriers).toEqual([]);
+  });
+
+  it('a QUOTED method name is not the owner', () => {
+    // `PropertyName` covers string literals and computed names, and
+    // `"scrubStack"() {}` carries `.text === 'scrubStack'`. Accepting it would
+    // widen the finder past the declaration shapes this fence understands, so
+    // the identifier test is what this pins (issue go-to-k/cdkd#2915 review).
+    const source = `
+      class Scrubber {
+        async "scrubStack"(ids: string[]) {
+          await withSharedDrainBudget(async () => {
+            for (const id of ids) {
+              await resolver.resolve(id);
+            }
+          });
+        }
+      }
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.ownerFound).toBe(false);
+    expect(found.resolveCount).toBe(0);
+  });
+
+  it('the barrier walk does not depend on which resolve comes FIRST in source order', () => {
+    // Driving the walk from `owned[0]` made it vacuous whenever the first
+    // `.resolve(` in source order was unwrapped: the start point is
+    // `undefined`, so no barrier is ever reported, and the loop below goes
+    // unseen (issue go-to-k/cdkd#2915 review, m3). Safe in practice only
+    // because `unwrappedLines` reds first — a check that needs a bodyguard is
+    // not a check.
+    const source = `
+      async function scrubStack(ids: string[]) {
+        await resolver.resolve(ids[0]);
+        for (const id of ids) {
+          await withSharedDrainBudget(async () => {
+            await resolver.resolve(id);
+          });
+        }
+      }
+    `;
+    const found = analyseSharedBudget(source, 'scrubStack');
+    expect(found.resolveCount).toBe(2);
+    expect(found.unwrappedLines).toHaveLength(1);
+    expect(found.perCallBarriers).toContain('ForOfStatement');
   });
 });
 
+/**
+ * The engine-level consequence, on the path the issue actually reports: an
+ * `Export.Name` built by `Fn::Join` from a secret reference and a sibling that
+ * THROWS. The engine resolves that name into a PRIVATE `nameSecrets` map and
+ * copies it into the pass map in a `finally`; pre-drain the sibling's
+ * recording landed after that copy and the pass map never learned the
+ * plaintext.
+ *
+ * THE DISCRIMINATOR IS A LATER EXPORT NAME, not the failing one. A name whose
+ * literal text carries a plaintext the pass knows is REFUSED and not keyed
+ * (the exposure guard); one whose plaintext the pass does NOT know is
+ * published, putting the secret in the export key space and in state. So the
+ * drain is observable as "the later name was refused", which is exactly what
+ * the missing needle would have allowed through.
+ *
+ * Uses the REAL resolver — `deploy-engine-outputs-export-name-collision.test.ts`
+ * replaces it wholesale and so pins the copy's SEQUENTIAL shape only.
+ */
 describe('the engine Export.Name copy sees a concurrent sibling record (issue #2563)', () => {
   const stackName = 'drain-export-name-stack';
 
