@@ -78,6 +78,8 @@ FUNCTION_NAME=""
 NOTIFY_BUCKET=""
 POLICED_BUCKET=""
 KEY_ID=""
+USER_POOL_ID=""
+SMS_ROLE_NAME=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -501,13 +503,17 @@ if [ -n "${ORPHAN_INSTANCES}" ] && [ "${ORPHAN_INSTANCES}" != "None" ]; then
 fi
 echo "    OK: no tagged orphan instances remain"
 
-# Nothing left for the cleanup trap to delete.
+# Nothing left for the cleanup trap to delete. Every id resolved above must be
+# cleared here: an id left set makes the EXIT trap issue a delete for a resource
+# the assertions just proved gone, on every GREEN run.
 INSTANCE_ID=""
 INSTANCE_PROFILE_NAME=""
 FUNCTION_NAME=""
 NOTIFY_BUCKET=""
 POLICED_BUCKET=""
 KEY_ID=""
+USER_POOL_ID=""
+SMS_ROLE_NAME=""
 
 echo ""
 echo "=== PASS: propagation-races-2 integ (5 fresh-principal/consumer race edges deployed, asserted, destroyed clean) ==="

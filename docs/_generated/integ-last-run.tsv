@@ -223,7 +223,7 @@ orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness r
 output-never-resolved-diff	2026-09-09T15:44:00Z	PASS	163	verify.sh	2740 merge-gate re-run on the merge head; all 6 phases, destroy 0 err 0 orph 0 versions
 outputs-only-export	2026-08-18T06:09:14Z	PASS	160	verify.sh	13 checks; #1921 preview + no-phantom arms; re-run after review round 3; destroy clean
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-propagation-races-2	2026-09-10T08:56:53Z	PASS	111	verify.sh	rc0, 22 deleted/0 err, orph clean; edge5 cognito sms-role window measured 0ms
+propagation-races-2	2026-09-10T09:21:32Z	PASS	116	verify.sh	rc0, 0 err/0 orph; post-review re-run; edge5 window 0ms (2nd measurement)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
 rds-aurora	2026-08-10T08:05:51Z	PASS	2299	verify.sh	0810 P2 sweep b13; cluster removal reset live-verified, 0 err 0 orph
 rds-dbinstance-backfill	2026-08-10T08:05:51Z	PASS	634	verify.sh	0810 P2 sweep b13; rds-provider re-verify, 0 err 0 orph

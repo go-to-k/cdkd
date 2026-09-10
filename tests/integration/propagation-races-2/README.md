@@ -44,9 +44,12 @@ issued `CreateUserPool` 336ms after the role's own CREATE.
 - **IAM Role + S3 bucket + BucketPolicy** referencing the role principal
 - **IAM Role + KMS Key** whose key policy references the role principal
 - **IAM Role (SNS caller) + Cognito User Pool** — RAW L1 (`CfnUserPool`) for
-  the same reason the instance is: CDK's `UserPool` L2 emits properties cdkd
-  treats as silent drops, which would route the pool to Cloud Control and skip
-  the SDK provider holding the retry this edge exercises
+  the same reason the instance is: control over the exact property set. Not
+  because the L2 routes elsewhere — the issue's own `RESOURCE_FAILED` event
+  records `"provisionedBy": "sdk"`, so the reported L2 pool ran on the same SDK
+  provider this edge exercises. What the L1 buys is that every property stays
+  in the type's `handled` set, so a future L2 default cannot introduce a silent
+  drop and move the resource off the path under test
 
 All resources carry the `cdkd:integ-fixture=propagation-races-2` tag so the
 verify script can assert each is gone post-destroy by a fixture-owned tag (NOT

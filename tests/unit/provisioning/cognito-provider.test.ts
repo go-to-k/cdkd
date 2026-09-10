@@ -599,6 +599,47 @@ describe('CognitoUserPoolProvider', () => {
       expect(isIamPropagationError(error.message)).toBe(true);
       expect(isRetryableTransientError(error, error.message)).toBe(true);
     });
+
+    // The UPDATE path reaches the SAME `applyMfaConfig` ->
+    // `SetUserPoolMfaConfig`, so adding SMS MFA to an existing pool alongside a
+    // fresh role in one deploy races the identical role. `update()` has its OWN
+    // catch and its OWN wrapping sentence, so the create-path cases above say
+    // nothing about it -- a reword or a redaction there would silently make
+    // this path single-shot again with every other test green. The entry in
+    // `retryable-errors.ts` claims to cover EVERY call that validates the role;
+    // without this case that half of the claim rests on assumption.
+    it('a rejection on the UPDATE path stays classifiable too', async () => {
+      // `mockImplementation`, not `*Once` priming: `update()` reads live state
+      // first and its call sequence is not what is under test here -- the
+      // create-path case above already pins a count. What is under test is the
+      // CLASSIFICATION of whatever escapes `update()`'s own catch.
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'SetUserPoolMfaConfigCommand') {
+          return Promise.reject(smsRoleError());
+        }
+        return Promise.resolve({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
+      });
+
+      try {
+        const error = await rejectionOf(
+          provider.update(
+            'UserIdentityUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            SMS_MFA_PROPS,
+            { MfaConfiguration: 'OFF' }
+          )
+        );
+
+        expect(error.message).toContain('does not have a trust relationship allowing');
+        expect(isIamPropagationError(error.message)).toBe(true);
+        expect(isRetryableTransientError(error, error.message)).toBe(true);
+      } finally {
+        // `vi.clearAllMocks()` does NOT drop an implementation, so leaving this
+        // one installed would answer every later test in the file.
+        mockSend.mockReset();
+      }
+    });
   });
 
   // Issue #609 backfill: UserPoolTier (CreateUserPool/UpdateUserPool direct)

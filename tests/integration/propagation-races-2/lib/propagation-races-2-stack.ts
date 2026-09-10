@@ -49,13 +49,17 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *      AWS answered `InvalidSmsRoleTrustRelationshipException` / "Role does not
  *      have a trust relationship allowing Cognito to assume the role".
  *
- *      Authored as an L1 for a reason beyond this fixture's usual one: CDK's
- *      `UserPool` L2 (the shape the issue was reported against, whose
- *      `mfa`/`mfaSecondFactor` sugar auto-creates exactly this role) also emits
- *      properties cdkd treats as silent drops, which routes the whole resource
- *      to Cloud Control — the SDK provider holding the retry this edge exists
- *      to exercise would then never run, and the fixture would pass while
- *      testing nothing.
+ *      Authored as an L1 for this fixture's usual reason — control over the
+ *      exact property set — and NOT because the L2 would route elsewhere. An
+ *      earlier revision of this comment claimed it would flip the resource to
+ *      Cloud Control; that is FALSE, and the issue itself disproves it: its
+ *      `RESOURCE_FAILED` event records `"provisionedBy": "sdk"`, and the
+ *      message it carries is `CognitoUserPoolProvider.create`'s own wrap. The
+ *      reported L2 pool ran on the SDK provider, which is the path this edge
+ *      exercises, so the two agree rather than diverging. What the L1 buys is
+ *      that the property set stays pinned HERE: every property below is in the
+ *      type's `handled` set, so a future L2 default cannot quietly introduce a
+ *      silent drop and move this resource off the path under test.
  *
  * Cost: one t3.micro in a single-AZ no-NAT VPC, one tiny inline Lambda, one
  * S3 bucket, one KMS key, one Cognito user pool, four IAM roles, one instance

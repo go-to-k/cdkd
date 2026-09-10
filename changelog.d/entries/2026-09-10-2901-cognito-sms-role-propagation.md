@@ -2,8 +2,8 @@
 
   cdkd now retries it on the dense IAM-propagation grid, like the Firehose / Glue / Step Functions / CloudTrail / KMS races already in that table.
 
-  **One entry covers both of the calls that validate the role.** `SetUserPoolMfaConfig`, which cdkd issues right after the create to apply `EnabledMfas`, re-sends the same `SmsConfiguration`; its provider-local retry does not recognize this class, so it rethrows and the engine's outer `withRetry` takes the dense grid.
+  **One entry covers every call that validates the role**, including `SetUserPoolMfaConfig` — reached from both `create()` and `update()` — which re-sends the same `SmsConfiguration`. Its provider-local retry does not recognize this class, so it rethrows and the engine's outer `withRetry` takes the dense grid.
 
-  The entry anchors on the message tail rather than on the exception name the issue asked for, and leaves the service name out; the reasoning for both is at the entry itself in `retryable-errors.ts`.
+  The entry keys on the message tail rather than the exception name the issue asked for, and drops the service name even though AWS supplies one; both reasons are at the entry in `retryable-errors.ts`.
 
-  Changed: `src/deployment/retryable-errors.ts`. Fences: `tests/unit/deployment/retryable-errors.test.ts` (pins that this message is matched by exactly the new pattern, plus the four near misses that must keep missing it) and `tests/unit/provisioning/cognito-provider.test.ts` (pins the inner-loop rethrow the entry's rationale depends on). Live coverage: a fifth edge in `tests/integration/propagation-races-2`.
+  Changed: `src/deployment/retryable-errors.ts`. Fences: `tests/unit/deployment/retryable-errors.test.ts` (this message is matched by exactly the new pattern; the near misses keep missing it) and `tests/unit/provisioning/cognito-provider.test.ts` (the inner-loop rethrow, on both paths). Live: edge 5 of `tests/integration/propagation-races-2`.
