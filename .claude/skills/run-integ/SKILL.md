@@ -236,7 +236,7 @@ verify, clean up.
     `multi-resource`. `lambda` is the cheap default — ~100 s, 9-resource DAG
     across SQS / IAM / Lambda / LayerVersion / DynamoDB Table + GlobalTable.
     Re-derive the split with `ls tests/integration/<name>/verify.sh` if a
-    fixture has since gained one. (All seven copies of this list are compared
+    fixture has since gained one. (All six copies of this list are compared
     by `tests/unit/scripts/cross-cutting-list-sync.test.ts`.)
 
     When the test name is in the broad set AND the destroy finished cleanly
