@@ -33,7 +33,7 @@ import {
 import {
   maskSecretsInText,
   redactSecretsForState,
-  STATE_SOURCED_READBACK_RULES,
+  STATE_SOURCED_BASELINE_RULES,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 import {
@@ -2219,17 +2219,37 @@ export async function captureObservedForImportedResources(
           // properties may hold a literal, or the walk may be unable to pair
           // the readback against them, with the skip never firing.
           //
-          // `STATE_SOURCED_READBACK_RULES` is the row this write site occupies
+          // `STATE_SOURCED_BASELINE_RULES` is the row this write site occupies
           // in `secret-redaction.ts`'s generation table ("observed walk,
-          // own-record source"). What that module does at positions it cannot
-          // certify is documented there and measured on issue
-          // [#2852](https://github.com/go-to-k/cdkd/issues/2852); nothing is
-          // claimed about it here.
+          // own-record source"). The BASELINE constant, not the plain readback
+          // one, because DESTINATION is what selects it and this writer has
+          // exactly one: `observedProperties`, which is a drift BASELINE and
+          // nothing else. `cdkd drift --accept` passes the other constant
+          // because it writes its result into `properties` for a record with no
+          // baseline, where a mask is a regression; that is not this site
+          // (issue [#2885](https://github.com/go-to-k/cdkd/issues/2885), the
+          // residue issue [#2852](https://github.com/go-to-k/cdkd/issues/2852)
+          // left). What the mask costs, what it spares and what it masks are
+          // `refuseUncertifiedSubtree`'s to document and are not repeated here.
+          //
+          // WHAT IS LOCAL is WHICH of this command's resources it can reach,
+          // and the answer is a population DISJOINT from the skip above: that
+          // one refuses a baseline outright, while this reaches a resource the
+          // classifier ADMITS whose readback the position walk then cannot
+          // pair. Such a resource keeps its record AND its baseline, with
+          // `SECRET_MASK` at the leaves that could not be certified. No count
+          // is given for either population, and the skip's own note one screen
+          // up says why.
+          //
+          // The remedy for a masked leaf is a deploy that actually CREATES or
+          // UPDATES that resource, not any `cdkd deploy`:
+          // `kickOffAutoRefreshObservedProperties` skips a record whose
+          // `observedProperties` is already defined, and a mask is defined.
           resource.observedProperties = redactSecretsForState(
             observed,
             NO_RECORDED_SECRETS,
             resource.properties ?? {},
-            STATE_SOURCED_READBACK_RULES
+            STATE_SOURCED_BASELINE_RULES
           );
         }
       } catch (err) {
