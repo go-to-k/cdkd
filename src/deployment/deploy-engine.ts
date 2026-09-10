@@ -1606,6 +1606,19 @@ export class DeployEngine {
     // `getTopLevelReadOnlyProperties` answers `undefined` for any failure at
     // all — so any list written here is a claim the code cannot support.
     //
+    // THE COMMAND'S `<LogicalId>` IS A PLACEHOLDER, NOT `logicalId`, and that
+    // is the correction of a real defect rather than a style choice. This
+    // method's `logicalId` is the resource being PROVISIONED — the consumer
+    // that read the attribute. The masked record belongs to the `Fn::GetAtt`
+    // TARGET, which is the name `noteAttributeSecrecy` puts to the LEFT of the
+    // dot in each `reads` entry (`Cr.Secret for Param`: `Cr` holds the mask,
+    // `Param` is this `logicalId`). Interpolating it told the user to re-import
+    // the wrong resource WITH `--force`, which overwrites that resource's row —
+    // attributes, properties and `provisionedBy` — while leaving the mask in
+    // place. Deriving it from `reads[0]` instead is also wrong: cross-stack
+    // entries are `Fn::ImportValue '…'` / `nested stack X Outputs.Y`, whose
+    // record lives in ANOTHER stack, where no `--resource` here can help.
+    //
     // THE COMMAND IS SELECTIVE AND CARRIES `--force`, and both halves were
     // traced through `cdkd import` rather than reasoned about. A BARE re-run is
     // actively destructive here: `CloudControlProvider.import` is
@@ -1641,8 +1654,9 @@ export class DeployEngine {
         `declares read-only and masks the rest. Either the attribute named above is not one of ` +
         `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
         `cdkd could not read that schema and masked the whole model, which the import warned about ` +
-        `when it happened. To rewrite this resource's attributes, re-import it by name: ` +
-        `'cdkd import <stack> --resource ${logicalId}=<physicalId> --force'. If that warning named ` +
+        `when it happened. Re-import the resource that HOLDS the mask — the name to the LEFT of ` +
+        `the dot above, not ${logicalId} — with ` +
+        `'cdkd import <stack> --resource <LogicalId>=<physicalId> --force'. If that warning named ` +
         `a missing cloudformation:DescribeType permission, grant it first. ` +
         `See https://github.com/go-to-k/cdkd/issues/2449.`,
       resourceType,
