@@ -2777,10 +2777,9 @@ export class CloudControlProvider implements ResourceProvider {
    * (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
    *
    * It lives HERE, on `import()`, rather than in a second block above the
-   * method: two consecutive block comments attach only the LAST one, so the
-   * round-1 fix that moved the method below `import()` left `import()`'s own
-   * doc orphaned and put THIS text on it — still opening with the whole-value
-   * wording the same commit had refuted. Merged rather than re-split.
+   * method, and that is deliberate: two consecutive block comments attach only
+   * the LAST one, so splitting this back out silently orphans whichever doc
+   * ends up first. Keep it as ONE block.
    *
    * ## What is being fixed
    *
@@ -2819,10 +2818,10 @@ export class CloudControlProvider implements ResourceProvider {
    * sentinel nothing downstream recognises.
    *
    * ONE SHAPE ESCAPES THAT, and it is stated rather than left to be discovered:
-   * an uncertified EMPTY container (`{}` / `[]`) has no leaf to mask, so the
-   * masked bag holds no `SECRET_MASK` anywhere under that key, `carriesSecretMask`
-   * answers false, and a dotted read through it dead-ends into the
-   * `constructAttribute` fallback with no refusal. It is not a DISCLOSURE — the
+   * an uncertified EMPTY container (`{}` / `[]`) has no leaf to mask, so no
+   * `SECRET_MASK` lands under that key and no refusal can fire for it. A DOTTED
+   * read through it breaks at `Object.hasOwn` and falls to `constructAttribute`;
+   * a FLAT read returns the empty container itself. It is not a DISCLOSURE — the
    * container was empty at AWS, so there was nothing to disclose — but the
    * refusal genuinely does not fire there.
    *
@@ -2895,10 +2894,14 @@ export class CloudControlProvider implements ResourceProvider {
             // NOTHING — the narrowed `try` walks straight past it. Same
             // outcome, so it gets the same diagnosable line; the SHAPE is safe
             // to name, unlike the value.
+            // `typeof null` is `'object'`, so a bare `typeof` renders the null
+            // shape as "parsed to object, not an object" — a self-contradiction
+            // in the one branch whose entire job is to be diagnosable.
+            const shape =
+              parsed === null ? 'null' : Array.isArray(parsed) ? 'an array' : typeof parsed;
             this.logger.debug(
               `CC API ResourceModel for ${input.resourceType}/${input.knownPhysicalId} parsed to ` +
-                `${Array.isArray(parsed) ? 'an array' : typeof parsed}, not an object — recording ` +
-                `no attributes for it.`
+                `${shape}, not an object — recording no attributes for it.`
             );
           }
         } catch (parseErr) {
@@ -2954,7 +2957,9 @@ export class CloudControlProvider implements ResourceProvider {
    * the silently-wrong-value outcome the mask exists to prevent, so
    * whole-value masking DEFEATED its own justification for every nested
    * attribute. Masking leaves keeps the containers walkable, so the walk lands
-   * on a `'***'` LEAF and notes it, and the refusal fires as designed.
+   * on a `'***'` LEAF and notes it, and the refusal fires — for any container
+   * that HAS a leaf. An EMPTY one has none, and `import()`'s doc carries that
+   * gap; do not read this sentence as covering it.
    *
    * Arrays keep their length and element positions for the same reason.
    *

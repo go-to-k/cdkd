@@ -1611,9 +1611,10 @@ export class DeployEngine {
         `Control fallback, which records only the attributes the type's CloudFormation schema ` +
         `declares read-only and masks the rest. Either the attribute named above is not one of ` +
         `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
-        `cdkd could not read that schema at all and masked the whole model, in which case grant ` +
-        `cloudformation:DescribeType and re-run 'cdkd import' for this stack. The import warned ` +
-        `about the second case when it happened. ` +
+        `cdkd could not read that schema at all and masked the whole model, which the import ` +
+        `warned about when it happened. In that second case: grant cloudformation:DescribeType if ` +
+        `it is missing, or just re-run 'cdkd import' if the lookup was throttled; a type with no ` +
+        `CloudFormation registry entry cannot be narrowed at all and will keep masking. ` +
         `See https://github.com/go-to-k/cdkd/issues/2449.`,
       resourceType,
       logicalId

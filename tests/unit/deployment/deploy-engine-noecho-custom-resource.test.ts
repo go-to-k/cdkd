@@ -506,8 +506,12 @@ describe('DeployEngine - a NoEcho custom resource Data never reaches state (#227
       // since a message naming only the second is inert for the first.
       const refusal = String((failure as Error & { cause?: Error }).cause?.message);
       expect(refusal).toContain('cdkd import');
+      // The unresolvable-schema half.
       expect(refusal).toContain('cloudformation:DescribeType');
-      expect(refusal).toContain('read-only');
+      // The certified-narrowing half. `read-only` alone would NOT discriminate:
+      // it also appears in the generic sentence that survives deleting this
+      // clause, so the assertion pins wording unique to the clause itself.
+      expect(refusal).toContain('stop reading it');
       // The AWS call never happened — the refusal is BEFORE the provider.
       expect(mockProvider.update).not.toHaveBeenCalled();
     });

@@ -253,14 +253,21 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     expect(JSON.stringify(result)).not.toContain('zz-lane2847-deep');
   });
 
-  it('records no attributes, with a diagnosable line, when the model parses to a non-object', async () => {
-    mockCloudFormationSend.mockResolvedValue({
-      Schema: JSON.stringify({ readOnlyProperties: ['/properties/Id'] }),
-    });
+  // Each non-object shape names ITSELF. `typeof null` is `'object'`, so a bare
+  // `typeof` renders the null row as "parsed to object, not an object" — the
+  // one branch whose whole job is diagnosis, contradicting itself.
+  //
+  // No `mockCloudFormationSend` priming here on purpose: the schema lookup is
+  // unreachable when the model does not parse to an object, so priming it
+  // would be dead setup implying a dependency that does not exist.
+  it.each([
+    ['["not","an","object"]', 'an array'],
+    ['null', 'null'],
+    ['"a string"', 'string'],
+    ['42', 'number'],
+  ])('records no attributes and names the shape when the model parses to %s', async (raw, shape) => {
     mockCloudControlSend.mockImplementation(() =>
-      Promise.resolve({
-        ResourceDescription: { Identifier: 'chan-1', Properties: '["not","an","object"]' },
-      })
+      Promise.resolve({ ResourceDescription: { Identifier: 'chan-1', Properties: raw } })
     );
 
     const result = await new CloudControlProvider().import({
@@ -278,7 +285,7 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     expect(result?.physicalId).toBe('chan-1');
     expect(result?.attributes).toEqual({});
     const debugged = mockDebug.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(debugged).toContain('parsed to an array');
+    expect(debugged).toContain(`parsed to ${shape}, not an object`);
   });
 
   it('keeps a model key literally named __proto__ as an OWN property rather than dropping it', async () => {
