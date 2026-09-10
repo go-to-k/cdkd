@@ -2835,6 +2835,21 @@ export class CloudControlProvider implements ResourceProvider {
    * here would make a missing IAM permission silently restore the exact
    * disclosure this method exists to close.
    *
+   * ## An UNREADABLE MODEL warns at the same volume as an unreadable schema
+   *
+   * The two arms below the `GetResource` — a `JSON.parse` failure, and a model
+   * that parsed to something other than an object — cannot mask anything (there
+   * is no bag to walk), so they yield `attributes: {}`. That is the DROP
+   * outcome this design rejects one section up: the key is absent,
+   * `resolveGetAtt` falls through to `constructAttribute`, and the physical id
+   * ships. "cdkd could not read the model" is the same epistemic state as "cdkd
+   * could not read the schema", so both report at DEFAULT verbosity. They used
+   * to differ — the schema arm warned while these logged at `debug` — which
+   * meant the one outcome that ships a wrong value silently was the one nobody
+   * was told about. Neither line prints any part of the model: the parse arm
+   * prints the error's NAME only (V8 embeds an input snippet in a
+   * `SyntaxError`'s message) and the non-object arm prints the SHAPE only.
+   *
    * ## What this does NOT close, stated as the danger direction
    *
    * A CREDENTIAL THAT IS ITSELF A READ-ONLY ATTRIBUTE IS STILL PERSISTED IN THE
@@ -2899,18 +2914,25 @@ export class CloudControlProvider implements ResourceProvider {
             // in the one branch whose entire job is to be diagnosable.
             const shape =
               parsed === null ? 'null' : Array.isArray(parsed) ? 'an array' : typeof parsed;
-            this.logger.debug(
+            this.logger.warn(
               `CC API ResourceModel for ${input.resourceType}/${input.knownPhysicalId} parsed to ` +
-                `${shape}, not an object — recording no attributes for it.`
+                `${shape}, not an object — recording no attributes for it. An Fn::GetAtt against ` +
+                `this resource will fall back to a value constructed from its physical id.`
             );
           }
         } catch (parseErr) {
           // NAME ONLY, never the message: V8 embeds an input snippet in a
-          // `SyntaxError`, and the input here is the resource model.
-          this.logger.debug(
+          // `SyntaxError`, and the input here is the resource model. Measured on
+          // Node 24.19.0: `JSON.parse('not-json{{{')` reports
+          // `Unexpected token 'o', "not-json{{{" is not valid JSON`, so a
+          // truncated model whose head is a credential echoes that credential
+          // into the log. Fenced by
+          // `tests/unit/provisioning/cloud-control-import-attribute-narrowing.test.ts`.
+          this.logger.warn(
             `Failed to parse CC API ResourceModel for ${input.resourceType}/${input.knownPhysicalId}: ${
               parseErr instanceof Error ? parseErr.name : typeof parseErr
-            }`
+            }. Recording no attributes for it; an Fn::GetAtt against this resource will fall ` +
+              `back to a value constructed from its physical id.`
           );
           // Fall through with empty attributes — physicalId is enough
           // to register the resource in state. Fn::GetAtt will

@@ -3,6 +3,7 @@ import {
   cfnRefValueFromPhysicalId,
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
+import { carriesSecretMask, SECRET_MASK } from '../deployment/secret-redaction.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 import type { ResourceState, StackState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
@@ -259,6 +260,40 @@ class AttributeFetcher {
           `written into the referring resource's state VERBATIM — cdkd cannot re-resolve it ` +
           `from here. Re-run without --force once the live attribute is readable, or fix the ` +
           `referring property by hand.`
+      );
+    }
+    // THE SECOND UNRESOLVABLE CLASS, and it is not the same as the one above:
+    // a `{{resolve:...}}` token still NAMES the value, while `SECRET_MASK` is
+    // all cdkd kept of it. Nothing can re-derive it — there is no durable
+    // `NoEcho` flag (issue #2449) and no expression to re-resolve — so the
+    // literal `***` is what gets spliced into the referring resource's
+    // persisted properties, from where the next deploy sends it to AWS (the
+    // #1498 / #1501 corrupted-write class).
+    //
+    // TWO POPULATIONS reach the mask here, and the second is why this arm was
+    // added at all. Long-standing: a custom resource whose handler declared its
+    // response `NoEcho`. New with issue
+    // [#2847](https://github.com/go-to-k/cdkd/issues/2847):
+    // `CloudControlProvider.import` masks every model key it cannot certify as
+    // a read-only attribute, and that class implements NO `getAttribute`, so a
+    // Cloud-Control-routed orphan ALWAYS lands in this fallback — widening the
+    // population from "a NoEcho custom resource" to "every uncertified key of
+    // every CC-imported resource".
+    //
+    // WARN RATHER THAN REFUSE, matching the arm above: `--force`'s whole
+    // contract is "use a possibly-stale cached value", and refusing would
+    // strand a `cdkd orphan --force` with no other way forward. Deploy-time is
+    // where the refusal lives (`DeployEngine.refuseRedactedAttributeReads`), so
+    // this value cannot reach AWS unannounced — it is the state file it
+    // corrupts, and the warning is what makes that diagnosable.
+    if (carriesSecretMask(cached)) {
+      this.logger.warn(
+        `--force: the cached value for '${orphanLogicalId}.${attribute}' is the REDACTION MASK ` +
+          `('${SECRET_MASK}'), not the attribute's value — cdkd redacted it into state and ` +
+          `cannot recover it. It is being written into the referring resource's state VERBATIM, ` +
+          `and a later 'cdkd deploy' will REFUSE that resource rather than send the mask to AWS. ` +
+          `Re-run without --force once the live attribute is readable, re-import the record that ` +
+          `holds the mask, or fix the referring property by hand.`
       );
     }
     const cacheKey = `${orphanLogicalId}\0${attribute}`;

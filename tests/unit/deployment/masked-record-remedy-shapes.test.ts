@@ -171,6 +171,58 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy).not.toContain('ANOTHER stack');
   });
 
+  // THE SIXTH SHAPE (issue #2847, independent review round): `Ref <LogicalId>
+  // (state key <Key>)`, pushed by `IntrinsicFunctionResolver.noteRefStateMask`
+  // when the value CloudFormation's `Ref` returns is recovered from a state key
+  // rather than from the physical id. The anchored `LOCAL_MASKED_READ` cannot
+  // see it (no dot follows the leading word), so without its own regex the
+  // partition would call it FOREIGN and withhold the one remedy that reaches
+  // the record.
+  it('routes the Ref state-key shape to the LOCAL arm and names the right resource', () => {
+    const remedy = remedyFor(['Ref MyTable (state key TableName)']);
+
+    expect(remedy).toContain("'cdkd import <stack> --resource MyTable=<physicalId> --force'");
+    expect(remedy).not.toContain('ANOTHER stack');
+    // The id must be the resource, never the leading literal.
+    expect(remedy).not.toContain('--resource Ref=');
+  });
+
+  it("corrects the refusal's own 'stop reading it' advice for a Ref entry", () => {
+    // The refusal prose ends its Cloud-Control arm telling the user to stop
+    // reading the attribute. That is right for an `Fn::GetAtt` naming a
+    // non-attribute and WRONG here: CloudFormation defines these types' `Ref`
+    // as a state key, so the read is cdkd's own and no template edit removes
+    // it. An arm that only re-stated the command would leave the message
+    // carrying advice that cannot be followed.
+    const remedy = remedyFor(['Ref MyTable (state key TableName)']);
+
+    expect(remedy).toContain("CDKD's own read");
+    expect(remedy).toContain('does not apply');
+  });
+
+  it('does NOT emit the Ref clause for the ordinary GetAtt shape', () => {
+    // The other direction: a clause that always fires says nothing.
+    expect(remedyFor(['Cr.Secret'])).not.toContain("CDKD's own read");
+  });
+
+  it('emits ONE command for a resource reached by BOTH a Ref and a GetAtt read', () => {
+    // De-duplication has to span the two spellings, or the message advises the
+    // same `--force` overwrite twice and reads as two separate repairs.
+    const remedy = remedyFor(['MyTable.TableARN', 'Ref MyTable (state key TableName)']);
+
+    expect(remedy.match(/cdkd import/g)?.length).toBe(1);
+    expect(remedy).toContain('--resource MyTable=<physicalId>');
+  });
+
+  it('does not advise a local re-import for a Ref whose target is a NESTED STACK', () => {
+    // The nested-stack exclusion is applied by resource TYPE, so it must reach
+    // the new spelling too rather than being wired to the dotted one.
+    const remedy = remedyFor(['Ref Child (state key TableName)'], nested('Child'));
+
+    expect(remedy).not.toContain('cdkd import');
+    expect(remedy).toContain('ANOTHER stack');
+  });
+
   it('treats an unrecognised shape as FOREIGN, which never emits a command', () => {
     // Fail-safe direction: a shape the partition does not recognise costs a
     // vaguer message rather than a destructive one. No claim is made that this

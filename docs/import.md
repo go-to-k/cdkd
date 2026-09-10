@@ -574,11 +574,17 @@ deploying the stack does not on its own heal a resource nothing changed. The
 direct remedy is to grant `cloudformation:DescribeType` and re-run
 `cdkd import`.
 
-This does not make an imported record safe to treat as non-sensitive: a
-credential that is itself a read-only attribute is still recorded in the clear.
-The CloudFormation registry schema has no general sensitivity marking to key on
-— `writeOnlyProperties` marks values a read never returns, so it says nothing
-about what `GetResource` hands back.
+This does not make an imported record safe to treat as non-sensitive, for three
+reasons. A credential that is itself a read-only attribute is still recorded in
+the clear — the CloudFormation registry schema has no general sensitivity
+marking to key on, and `writeOnlyProperties` marks values a read never returns,
+so it says nothing about what `GetResource` hands back. The narrowing applies to
+`attributes` only: the drift baseline in `observedProperties` is the whole model
+by design, since that is what drift compares against. And the narrowing is
+**undone by the next deploy that creates or updates the resource** — the Cloud
+Control create/update path writes the whole model back into `attributes`, so a
+plaintext this import kept out returns then. Treat `state.json` as sensitive
+regardless.
 
 ### Unsupported
 

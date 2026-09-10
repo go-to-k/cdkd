@@ -560,11 +560,11 @@ Index of every area: [code-layout.md](code-layout.md).
   `ResourceState` carries no durable `NoEcho` flag (#2449), so a later deploy
   reads `***` back.
   - `ResolverContext.redactedAttributeReads` is the bag the resolver pushes
-    such a read into — `noteAttributeSecrecy` for `Fn::GetAtt`,
-    `reresolveCrossStackValue` for `Fn::ImportValue` / `Fn::GetStackOutput` /
-    a nested stack's `Outputs.<Key>` — and
-    `DeployEngine.refuseRedactedAttributeReads` fails the resource rather than
-    sending the mask. It RECORDS rather than throws because the DIFF pass
+    such a read into; `maskedRecordRemedyFor`'s doc owns the shape list (#2847
+    grew it: `Ref`'s state-key recovery served `***` unrefused) and
+    `noteAttributeSecrecy`'s what a pusher owes.
+    `DeployEngine.refuseRedactedAttributeReads` then fails the resource rather
+    than sending the mask. It RECORDS rather than throws because the DIFF pass
     resolves the same leaf: a throw would fail every later deploy of such a
     stack, while recording leaves `***` against `***`, a clean NO_CHANGE.
   - Other consumers: `drift.ts` (`preserveLiveValuesAtMaskedLeaves` REGISTERS

@@ -402,12 +402,51 @@ export type RefStateLookup = (keys: readonly string[]) => string | undefined;
  * Only non-empty string values qualify — an intrinsic-shaped or empty value is
  * skipped so the caller falls back to the raw physical id rather than emitting
  * a broken `[object Object]` / `''`.
+ *
+ * A leaf carrying {@link SECRET_MASK} is skipped too, and that skip is a
+ * SECURITY property rather than a shape one (issue
+ * [#2847](https://github.com/go-to-k/cdkd/issues/2847) review). Both bags this
+ * reads can hold the mask: `attributes` because
+ * `CloudControlProvider.import` masks every model key it cannot certify is a
+ * read-only attribute, and `properties` because the mask-only channel (issue
+ * #2274) writes it there too. `SECRET_MASK` is a non-empty string, so without
+ * this arm the lookup HIT and `cfnRefValueFromPhysicalId` returned `'***'` as
+ * the resource's `Ref` value — which `resolveRefValue` hands back verbatim and
+ * a green deploy substitutes into the consumer's property and sends to AWS.
+ * That is the #1498 / #1501 corrupted-write class, reached through the ONE
+ * attribute reader that is not an `Fn::GetAtt`.
+ *
+ * SKIPPING ALONE WOULD ONLY MAKE IT QUIET: the fall-through emits the raw
+ * physical id, which for the `AWS::S3Tables::Table` case is an ARN ending in a
+ * UUID rather than the table name CFn `Ref` returns — a silently WRONG value,
+ * the outcome `maskUncertifiedModelValues` chose masking over dropping to
+ * avoid. So the skip is paired with `onMaskedValue`, which the resolver uses to
+ * record a redacted attribute read and FAIL the resource
+ * (`DeployEngine.refuseRedactedAttributeReads`). Callers with no refusal
+ * machinery — `src/analyzer/orphan-rewriter.ts`, an analyzer-layer pass over
+ * persisted state — pass nothing and get the fall-through, which is still
+ * strictly better there than splicing `'***'` into a sibling's persisted
+ * properties.
+ *
+ * `onMaskedValue` fires only when the WHOLE lookup came up empty, not at the
+ * masked leaf. The scan spans two bags and several alias keys, so a masked
+ * `properties.TableName` beside a live `attributes.TableName` is an ordinary,
+ * fully resolvable record — `cdkd import`'s own shape — and notifying there
+ * would fail a deploy that has the value it needs. The distinction is "cdkd
+ * could not answer, and the reason was a redaction", which is the only case
+ * that must refuse. An ABSENT key keeps degrading to the physical id exactly as
+ * before: the recovery branches document that graceful fall-through for a
+ * pre-#1045 / pre-#1681 record, and nothing about that case changed.
  */
-export function refStateLookupFromResource(resource: {
-  properties?: Record<string, unknown>;
-  attributes?: Record<string, unknown>;
-}): RefStateLookup {
+export function refStateLookupFromResource(
+  resource: {
+    properties?: Record<string, unknown>;
+    attributes?: Record<string, unknown>;
+  },
+  onMaskedValue?: (key: string) => void
+): RefStateLookup {
   return (keys) => {
+    let maskedKey: string | undefined;
     for (const source of [resource.properties, resource.attributes]) {
       if (!source) continue;
       for (const key of keys) {
@@ -415,10 +454,15 @@ export function refStateLookupFromResource(resource: {
         // `RefStateLookup`, not template text.
         const value = source[key];
         if (typeof value === 'string' && value.length > 0) {
+          if (carriesSecretMask(value)) {
+            maskedKey ??= key;
+            continue;
+          }
           return value;
         }
       }
     }
+    if (maskedKey !== undefined) onMaskedValue?.(maskedKey);
     return undefined;
   };
 }
@@ -3489,9 +3533,9 @@ export class IntrinsicFunctionResolver {
       ? context.resources[logicalId]
       : undefined;
     if (resource) {
-      const refValue = this.resolveRefValue(resource);
+      const refValue = this.resolveRefValue(logicalId, resource, context);
       // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
-      // not-in-class(refValue): a Ref result: a physical id from state, or a pseudo-parameter value. A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog.
+      // not-in-class(refValue): a Ref result, and the enumeration is THREE things, not two -- a physical id from state, a pseudo-parameter value, or a state-recovered Ref key (TableName / SelectionId / RepositoryId / an AppSync ARN) that refStateLookupFromResource read out of this record's own persisted properties / attributes. That third member used to be missing here, and it is the one that could be SECRET_MASK; the lookup now refuses to serve a masked leaf and notes it instead, so no branch of cfnRefValueFromPhysicalId can return one. A Ref to a NoEcho PARAMETER renders through stringifyParameterForLog.
       this.logger.debug(`Resolved Ref to resource: ${logicalId} -> ${refValue}`);
       return refValue;
     }
@@ -3630,12 +3674,55 @@ export class IntrinsicFunctionResolver {
    * children, whose `Ref` is an ARN recovered from the provider-recorded ARN
    * attribute through the same `stateLookup` seam.
    */
-  private resolveRefValue(resource: ResourceState): string {
+  private resolveRefValue(
+    logicalId: string,
+    resource: ResourceState,
+    context: ResolverContext
+  ): string {
     return cfnRefValueFromPhysicalId(
       resource.resourceType,
       resource.physicalId,
-      refStateLookupFromResource(resource)
+      refStateLookupFromResource(resource, (key) => this.noteRefStateMask(logicalId, key, context))
     );
+  }
+
+  /**
+   * The `Ref` twin of {@link noteAttributeSecrecy} (issue
+   * [#2847](https://github.com/go-to-k/cdkd/issues/2847) review).
+   *
+   * `noteAttributeSecrecy`'s own contract is "every branch serving a value out
+   * of a PERSISTED `attributes` bag must call this", and `Ref` was the branch
+   * that did not: {@link refStateLookupFromResource} reads `properties` then
+   * `attributes` to recover a `Ref` value the physical id cannot yield, and a
+   * masked leaf there travelled all the way to AWS with `redactedAttributeReads`
+   * left empty.
+   *
+   * It is a SEPARATE method rather than a call into `noteAttributeSecrecy` for
+   * two reasons, and both are about what the entry has to SAY. The refusal
+   * joins these entries into a user-facing sentence whose `Fn::GetAtt` arm ends
+   * "stop reading it" — advice that is wrong here, because this read is CDKD's
+   * own: CloudFormation defines these types' `Ref` as a state key rather than
+   * the physical id, so no template edit stops it. And `noteAttributeSecrecy`'s
+   * other half — recording a `NoEcho`-declared value as a mask-only needle — has
+   * nothing to do at this site: the value has ALREADY been masked in state, so
+   * there is no plaintext to register.
+   *
+   * The SPELLING (`Ref <LogicalId> (state key <Key>)`) is what
+   * `DeployEngine.maskedRecordRemedyFor` partitions on, so it is load-bearing
+   * rather than cosmetic — that helper reads the logical id out of it to emit
+   * the re-import command, and pins the shape in a test.
+   *
+   * `key` is never masked before interpolation because it is not template text:
+   * it comes from the fixed key lists `cfnRefValueFromPhysicalId` passes
+   * (`TableName` / `Name` / `SelectionId` / `RepositoryId` / the AppSync ARN
+   * attributes), all cdkd literals.
+   */
+  private noteRefStateMask(logicalId: string, key: string, context: ResolverContext): void {
+    if (context.redactedAttributeReads === undefined) return;
+    const read = `Ref ${logicalId} (state key ${key})`;
+    if (!context.redactedAttributeReads.includes(read)) {
+      context.redactedAttributeReads.push(read);
+    }
   }
 
   /**

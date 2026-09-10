@@ -9,7 +9,7 @@ paths:
 ## Intrinsic Function Resolution
 
 - Implemented in `IntrinsicFunctionResolver` class (`src/deployment/intrinsic-function-resolver.ts`)
-- Ref: References another resource. Resolves to the CFn `Ref` value — the physicalId for most types; see `cfnRefValueFromPhysicalId` in `src/deployment/intrinsic-function-resolver.ts` for the exceptions (compound `<parent>|<child>` CC ids, ARN-stored SDK ids like `AWS::Events::Rule` / `AWS::CloudTrail::Trail` whose `Ref` is the name)
+- Ref: References another resource. Resolves to the CFn `Ref` value — the physicalId for most types; see `cfnRefValueFromPhysicalId` in `src/deployment/intrinsic-function-resolver.ts` for the exceptions (compound `<parent>|<child>` CC ids, ARN-stored SDK ids like `AWS::Events::Rule` / `AWS::CloudTrail::Trail` whose `Ref` is the name). A few exceptions recover the value from a STATE KEY instead (`TableName` / `SelectionId` / `RepositoryId` / the AppSync ARNs) via `refStateLookupFromResource` — that lookup REFUSES a leaf carrying `SECRET_MASK` and reports it, so the deploy fails by name rather than sending `***`; the refusal machinery is `redactedAttributeReads` (see [layout-deployment-secrets.md](layout-deployment-secrets.md))
 - Fn::GetAtt: Gets resource attributes (from state.attributes)
 - Fn::Join: String concatenation
 - Fn::Sub: Template string substitution

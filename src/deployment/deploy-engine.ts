@@ -1556,31 +1556,6 @@ export class DeployEngine {
   }
 
   /**
-   * Refuse to provision a resource whose resolution served a REDACTED attribute
-   * out of a previous deploy's state (issue #2274).
-   *
-   * The unavoidable cost of masking a `NoEcho` custom resource's `Data`: state
-   * then holds `***`, and cdkd cannot get the value back without re-invoking
-   * the handler, which is a SIDE-EFFECTING operation it must not perform just
-   * to fill in a property. Since `ResourceState` carries no durable `NoEcho`
-   * flag (issue #2449), there is not even a way to tell the user which
-   * attribute it was without this record.
-   *
-   * REFUSING IS THE SAFE DIRECTION and the alternative is not "it works": the
-   * literal `***` would be written to the live resource by any provider that
-   * sends its desired bag wholesale (`PutParameter` and every
-   * `Put*Configuration`), which is the issue #1498 / #1501 data-corruption
-   * class. A loud failure naming the remedy is strictly better than a silent
-   * wrong write.
-   *
-   * NARROW BY CONSTRUCTION. The bag is only non-empty when a `Fn::GetAtt`
-   * actually served a masked attribute during THIS resource's resolution, so a
-   * resource whose properties merely happen to contain the string `***` is
-   * untouched — which is why the check is not "does `resolvedProps` hold the
-   * mask". And the diff pass does not consult the bag at all, so an untouched
-   * stack still reports NO_CHANGE and deploys.
-   */
-  /**
    * The remedy clause of {@link refuseRedactedAttributeReads}'s import arm,
    * derived from the `reads` entries rather than described in prose.
    *
@@ -1606,6 +1581,12 @@ export class DeployEngine {
    *  - `Fn::ImportValue '...' (producer ...)`, `Fn::GetStackOutput '...'
    *    (producer ...)`, `nested stack <Child> Outputs.<Key>` —
    *    `reresolveCrossStackValue`. FOREIGN.
+   *  - `Ref <LogicalId> (state key <Key>)` — `noteRefStateMask`, a resource in
+   *    this stack whose CFn `Ref` value is recovered from a state key rather
+   *    than from the physical id. LOCAL, and it needs its own regex because the
+   *    anchored `LOCAL_MASKED_READ` cannot match it (no dot follows the leading
+   *    word). It ALSO earns a sentence of its own: the read is cdkd's, not the
+   *    template's, so the `Fn::GetAtt` remedy "stop reading it" does not apply.
    *
    * Successive review rounds tried to express this as an instruction the reader
    * applies ("the name to the left of the dot"), and each phrasing was wrong
@@ -1641,6 +1622,13 @@ export class DeployEngine {
   ): string {
     /** `<LogicalId>.<Attribute>` — a record in THIS stack. */
     const LOCAL_MASKED_READ = /^([A-Za-z0-9]+)\.(?:.+)$/;
+    /**
+     * `Ref <LogicalId> (state key <Key>)` — also a record in THIS stack, from
+     * `IntrinsicFunctionResolver.noteRefStateMask`. Anchored on the literal
+     * prefix AND the `(state key ` opener so a logical id that merely begins
+     * with the letters `Ref` cannot be read out of the ordinary local spelling.
+     */
+    const REF_STATE_MASKED_READ = /^Ref ([A-Za-z0-9]+) \(state key /;
     // Spelled locally rather than imported: the only exported copy lives in
     // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
     // edge for one string literal is the wrong trade.
@@ -1650,7 +1638,8 @@ export class DeployEngine {
     // is function-local because this is its only reader.
     const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 
-    const targetOf = (read: string): string | undefined => LOCAL_MASKED_READ.exec(read)?.[1];
+    const targetOf = (read: string): string | undefined =>
+      (LOCAL_MASKED_READ.exec(read) ?? REF_STATE_MASKED_READ.exec(read))?.[1];
     const isLocal = (read: string): boolean => {
       const target = targetOf(read);
       if (target === undefined) return false;
@@ -1668,6 +1657,7 @@ export class DeployEngine {
       ),
     ];
     const foreignReads = reads.filter((read) => !isLocal(read));
+    const hasRefStateRead = reads.some((read) => REF_STATE_MASKED_READ.test(read) && isLocal(read));
 
     const parts: string[] = [];
     if (localTargets.length > 0) {
@@ -1700,9 +1690,62 @@ export class DeployEngine {
           `this stack cannot clear it; act on the producer stack instead.`
       );
     }
+    if (hasRefStateRead) {
+      // The one arm that CORRECTS an instruction the refusal's own prose gives.
+      // That prose ends its Cloud-Control arm with "stop reading it", which is
+      // right for an `Fn::GetAtt` naming a non-attribute and wrong for a
+      // `Ref`: CloudFormation defines these types' `Ref` as a state key rather
+      // than the physical id, so cdkd issues the read on the template's behalf
+      // and no template edit removes it.
+      parts.push(
+        `A 'Ref <LogicalId> (state key <Key>)' entry above is CDKD's own read, not one the ` +
+          `template can stop making: CloudFormation defines that resource type's Ref value as ` +
+          `that state key rather than the physical id, so the record must be repaired (re-import ` +
+          `it, or let a deploy create or update the resource) — the "stop reading it" remedy does ` +
+          `not apply to such an entry.`
+      );
+    }
     return parts.join(' ');
   }
 
+  /**
+   * Refuse to provision a resource whose resolution served a REDACTED attribute
+   * out of a previous deploy's state (issue #2274).
+   *
+   * The unavoidable cost of masking a `NoEcho` custom resource's `Data`: state
+   * then holds `***`, and cdkd cannot get the value back without re-invoking
+   * the handler, which is a SIDE-EFFECTING operation it must not perform just
+   * to fill in a property. Since `ResourceState` carries no durable `NoEcho`
+   * flag (issue #2449), there is not even a way to tell the user which
+   * attribute it was without this record.
+   *
+   * REFUSING IS THE SAFE DIRECTION and the alternative is not "it works": the
+   * literal `***` would be written to the live resource by any provider that
+   * sends its desired bag wholesale (`PutParameter` and every
+   * `Put*Configuration`), which is the issue #1498 / #1501 data-corruption
+   * class. A loud failure naming the remedy is strictly better than a silent
+   * wrong write.
+   *
+   * NARROW BY CONSTRUCTION. The bag is only non-empty when a resolution
+   * actually served a masked value during THIS resource's resolution, so a
+   * resource whose properties merely happen to contain the string `***` is
+   * untouched — which is why the check is not "does `resolvedProps` hold the
+   * mask". And the diff pass does not consult the bag at all, so an untouched
+   * stack still reports NO_CHANGE and deploys.
+   *
+   * "A resolution", not "an `Fn::GetAtt`": the pushers are
+   * `noteAttributeSecrecy`, `reresolveCrossStackValue` and — since the issue
+   * #2847 review — `noteRefStateMask`, the `Ref` branch that reads a recovery
+   * key out of the same persisted bags. {@link maskedRecordRemedyFor} is the
+   * authority on the full shape list.
+   *
+   * This block sits DIRECTLY above its subject, and the previous revision's did
+   * not: `maskedRecordRemedyFor` was inserted between the two, so JavaScript's
+   * "only the LAST of two consecutive block comments attaches" rule (the same
+   * one `cloud-control-provider.ts`'s `import()` doc warns about) silently
+   * re-pointed 25 lines of doc at the wrong function and left this one with
+   * none. Keep a new helper OUT of the gap.
+   */
   private refuseRedactedAttributeReads(
     logicalId: string,
     resourceType: string,

@@ -285,17 +285,114 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     // walked past it.
     expect(result?.physicalId).toBe('chan-1');
     expect(result?.attributes).toEqual({});
-    const debugged = mockDebug.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(debugged).toContain(`parsed to ${shape}, not an object`);
+    // DEFAULT VERBOSITY, not `debug`. This arm yields `attributes: {}` — the
+    // DROP outcome the design rejects, after which `resolveGetAtt` falls to
+    // `constructAttribute` and the physical id ships. It is the same epistemic
+    // state as the unresolvable-schema arm, which has always warned; logging it
+    // at `debug` made the one outcome that ships a wrong value the one nobody
+    // was told about.
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain(`parsed to ${shape}, not an object`);
+    expect(mockDebug.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'not an object'
+    );
     // "The SHAPE is safe to name, unlike the value" — asserted, not merely
     // claimed in a comment. The two rows carrying a needle prove the payload
     // never reaches the log line or the record.
-    expect(debugged).not.toContain('zz-lane2847-scalar');
+    expect(warned).not.toContain('zz-lane2847-scalar');
     expect(JSON.stringify(result)).not.toContain('zz-lane2847-scalar');
     // The schema lookup really is unreachable on this path — the comment above
     // primes no CFn mock BECAUSE of that, and an unpinned "it is unreachable"
     // is exactly the kind of claim this repo makes the test carry.
     expect(mockCloudFormationSend).not.toHaveBeenCalled();
+  });
+
+  it('logs the SyntaxError NAME only, so an unparseable model cannot echo its own head into the log', async () => {
+    // THE CLAIM THIS FENCES, which had none: the parse-failure line prints
+    // `parseErr.name` because V8 embeds an INPUT SNIPPET in a `SyntaxError`'s
+    // message, and the input here is the resource model. Measured on Node
+    // 24.19.0, `JSON.parse('zzSecret28...{{{')` reports
+    // `Unexpected token 'z', "zzSecret28"... is not valid JSON` — the first TEN
+    // characters of the payload, verbatim. Reverting `.name` to `.message`
+    // reds both negatives below.
+    const NEEDLE = 'zzSecret2847AKIAIOSFODNN7EXAMPLE';
+    // V8 truncates the echoed snippet at ten characters, so the mutation's
+    // observable is the HEAD, not the whole needle. Asserting only the whole
+    // needle would stay green under exactly the mutation this case exists for.
+    const SNIPPET = NEEDLE.slice(0, 10);
+    mockCloudControlSend.mockImplementation(() =>
+      Promise.resolve({
+        ResourceDescription: { Identifier: 'chan-1', Properties: `${NEEDLE}{{{` },
+      })
+    );
+
+    const result = await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    // POSITIVE FIRST: the line must EXIST and must name the failure class, or
+    // both negatives below are satisfied by a log nobody wrote.
+    expect(warned).toContain('Failed to parse CC API ResourceModel');
+    expect(warned).toContain('SyntaxError');
+    expect(warned).toContain(TYPE);
+    // The two halves of the message a `.message` mutation would restore.
+    expect(warned).not.toContain(SNIPPET);
+    expect(warned).not.toContain('is not valid JSON');
+    // Nothing else in the run may carry it either.
+    const everything = [...mockWarn.mock.calls, ...mockDebug.mock.calls]
+      .map((c) => String(c[0]))
+      .join('\n');
+    expect(everything).not.toContain(SNIPPET);
+    expect(result?.physicalId).toBe('chan-1');
+    expect(result?.attributes).toEqual({});
+    expect(JSON.stringify(result)).not.toContain(SNIPPET);
+  });
+
+  it('REJECTS when the masking step throws, rather than degrading to empty attributes', async () => {
+    // THE OTHER UNFENCED CLAIM: `import()`'s inner `try` wraps the `JSON.parse`
+    // and NOTHING ELSE. It used to span the masking call, whose `catch` turned
+    // any masking failure into `attributes = {}` under a "Failed to parse"
+    // message — the DROP outcome this design rejects, reached silently and
+    // mislabelled. Re-widening that `try` reds this case and nothing else in
+    // the suite, which is why it exists.
+    //
+    // The throw is REAL, not injected: `maskLeavesDeep` recurses per level and
+    // its own doc records a `RangeError` between 1,000 and 5,000 levels while
+    // `JSON.parse` survives ~100,000. Re-measured here at 20,000 (Node
+    // 24.19.0): the parse succeeds, the mask overflows the stack.
+    const DEPTH = 20_000;
+    const deepModel = `{"Id":"chan-1","Deep":${'{"A":'.repeat(DEPTH)}"x"${'}'.repeat(DEPTH)}}`;
+    mockCloudFormationSend.mockResolvedValue({ Schema: APNS_SCHEMA });
+    mockCloudControlSend.mockImplementation(() =>
+      Promise.resolve({
+        ResourceDescription: { Identifier: 'chan-1', Properties: deepModel },
+      })
+    );
+
+    await expect(
+      new CloudControlProvider().import({
+        logicalId: 'Chan',
+        resourceType: TYPE,
+        stackName: 'S',
+        region: 'us-east-1',
+        properties: {},
+        knownPhysicalId: 'chan-1',
+      })
+    ).rejects.toThrow(RangeError);
+
+    // The rejection must not be dressed up as a parse failure — that mislabel
+    // is half of what the narrowed `try` fixed, and a `rejects.toThrow` alone
+    // cannot see it.
+    const logged = [...mockWarn.mock.calls, ...mockDebug.mock.calls]
+      .map((c) => String(c[0]))
+      .join('\n');
+    expect(logged).not.toContain('Failed to parse CC API ResourceModel');
   });
 
   it('keeps a model key literally named __proto__ as an OWN property rather than dropping it', async () => {

@@ -13,6 +13,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { rewriteResourceReferences } from '../../../src/analyzer/orphan-rewriter.js';
+import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
@@ -390,6 +391,73 @@ describe('rewriteResourceReferences', () => {
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).toContain('UNRESOLVED');
     expect(warned).toContain('Outputs.DbPassword');
+  });
+
+  it('--force WARNS when the cached attribute is the REDACTION MASK (#2847)', async () => {
+    // THE SECOND UNRESOLVABLE CLASS at this seam, and not the same as the one
+    // above: a `{{resolve:...}}` token still NAMES the value, while
+    // `SECRET_MASK` is all cdkd kept of it. Pre-existing for a `NoEcho` custom
+    // resource, but issue #2847 WIDENED the population — `CloudControlProvider`
+    // implements no `getAttribute` at all, so every CC-routed orphan lands in
+    // this fallback, and `import` now masks every model key it cannot certify
+    // as a read-only attribute.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    // No `getAttribute` on the provider — the real CC shape, and the reason
+    // this fallback is now the DEFAULT path for such a resource rather than an
+    // error arm.
+    const state = baseState({
+      Chan: {
+        physicalId: 'chan-1',
+        resourceType: 'AWS::Pinpoint::APNSChannel',
+        properties: {},
+        attributes: { PrivateKey: SECRET_MASK },
+        provisionedBy: 'cc-api',
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Chan', 'PrivateKey'] } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Chan'], fakeRegistry(), {
+      force: true,
+    });
+
+    // Behaviour is deliberately unchanged — `--force` means "use the cached
+    // value" — so the POSITIVE is the warning, not a refusal.
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: SECRET_MASK });
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).toContain('REDACTION MASK');
+    expect(warned).toContain('PrivateKey');
+    // It must say what happens NEXT, which is what makes the state file's
+    // corruption diagnosable rather than a surprise at deploy time.
+    expect(warned).toContain('REFUSE');
+  });
+
+  it('--force does NOT emit the MASK warning for an ordinary cached value (scope control)', async () => {
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const state = baseState({
+      Bucket: {
+        physicalId: 'b',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: { Arn: 'arn:aws:s3:::b-cached' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::Lambda::Function',
+        properties: { Arn: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+      },
+    });
+
+    await rewriteResourceReferences(state, ['Bucket'], fakeRegistry(), { force: true });
+
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).toContain('falling back to cached value');
+    expect(warned).not.toContain('REDACTION MASK');
   });
 
   it('--force does NOT emit that warning for an ordinary cached value (scope control)', async () => {
