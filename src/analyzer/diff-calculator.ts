@@ -164,8 +164,8 @@ export class DiffCalculator {
     // in-place-referenceable resource has already been replaced by its resolved
     // current value. A PRECOMPUTATION rather than a rescue — that function also
     // receives `desiredTemplate` and could re-extract from it, since the raw
-    // template survives the loop (`resolveBestEffort` clones, and collects into
-    // a fresh bag).
+    // template survives the loop: the `try` arm clones, and the `catch` arm
+    // only aliases the leaf into a bag no consumer mutates.
     // (This note used to say the loop "mutates in place" the desired property
     // intrinsics. It has not since go-to-k/cdkd#939 added the clone in the same
     // change that wrote the note; BEFORE that commit the loop ran the real

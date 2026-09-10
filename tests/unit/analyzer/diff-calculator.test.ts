@@ -1541,13 +1541,13 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
       },
     };
 
-    // A MUTATING resolver, and deliberately a BLUNTER one than any real
-    // resolver: every object it descends into has each key written back in
-    // place (a node carrying `Fn::GetAtt` is terminal — replaced whole, its
-    // members never walked; arrays it rebuilds). So it stands for ANY
-    // `IntrinsicResolveFn`, not for the narrow `resolveSub` write-back
-    // go-to-k/cdkd#2764 retired — that generality is the comment's own
-    // argument, and it is what keeps this case discriminating.
+    // A MUTATING resolver, and deliberately not a faithful one: every object it
+    // descends into has each key written back in place (a node carrying
+    // `Fn::GetAtt` is terminal — replaced whole, its members never walked;
+    // arrays it rebuilds). That COVERS the narrow `resolveSub` write-back
+    // go-to-k/cdkd#2764 retired — the `Fn::Sub` variable map above is one of
+    // the objects it rewrites — and goes wider along the OBJECT axis. What it
+    // does NOT model is a resolver mutating array ELEMENTS in place.
     const mutatingResolver = async (value: unknown): Promise<unknown> => {
       const walk = (v: unknown): unknown => {
         if (v === null || typeof v !== 'object') return v;
