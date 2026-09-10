@@ -357,8 +357,8 @@ Index of every area: [code-layout.md](code-layout.md).
     baseline) but drops the generation claim, or the drift baseline would be
     rewritten onto a reference the stack may never have deployed and
     `cdkd drift --revert` would push it to AWS.
-  - **Every writer passes a position source but one** (issue #1910; #2847's
-    `attributes` readback walk is the exception): the rollback
+  - **Most writers pass a position source** (issue #1910; the `attributes`
+    walks do not — #2847's import readback is one): the rollback
     JOURNAL (`DeployEngine.redactOperationsForJournal`); the stack OUTPUTS
     (positioned by `DeployEngine.outputsTemplateSource`, consumed by all three
     outputs-redaction sites through one `redactOutputs` helper — which since

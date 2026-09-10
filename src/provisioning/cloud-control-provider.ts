@@ -372,6 +372,12 @@ export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
   private patchGenerator = new JsonPatchGenerator();
+  /**
+   * Types whose unresolvable-schema import warning has already been printed —
+   * see `maskUncertifiedModelValues`. Per-instance so a test cannot inherit
+   * another test's suppression.
+   */
+  private readonly warnedUnresolvableSchemaTypes = new Set<string>();
 
   // Maximum time to wait for operation completion (15 minutes)
   private readonly MAX_WAIT_TIME_MS = 15 * 60 * 1000;
@@ -1647,10 +1653,18 @@ export class CloudControlProvider implements ResourceProvider {
   /**
    * Enrich resource attributes with computed values
    *
-   * CC API GetResource returns property names that match CloudFormation
-   * Fn::GetAtt attribute names, so all properties are passed through as-is.
    * This method adds fallback attributes for edge cases where CC API
    * may not return certain values.
+   *
+   * It passes every other key through AS-IS, and on the CREATE / UPDATE path
+   * that bag is still the WHOLE resource model. This comment used to justify
+   * that by saying the model's property names match `Fn::GetAtt` attribute
+   * names; they do not — the model is every readable property, and
+   * CloudFormation rejects a `Fn::GetAtt` naming a writable one. Issue
+   * [#2847](https://github.com/go-to-k/cdkd/issues/2847) narrowed the IMPORT
+   * path for that reason; the deploy path is issue
+   * [#2925](https://github.com/go-to-k/cdkd/issues/2925), which also carries
+   * why the same narrowing cannot simply be copied here.
    */
   private async enrichResourceAttributes(
     resourceType: string,
@@ -2808,56 +2822,22 @@ export class CloudControlProvider implements ResourceProvider {
    * ## What this does NOT close, stated as the danger direction
    *
    * A CREDENTIAL THAT IS ITSELF A READ-ONLY ATTRIBUTE IS STILL PERSISTED IN THE
-   * CLEAR. `readOnlyProperties` is a structural test, not a sensitivity one —
-   * the CloudFormation registry schema carries NO sensitivity marking at all
-   * (measured across AWS's published bundle: the string `sensitive` occurs only
-   * inside `description` prose), which is why the "mask by the schema's own
-   * marking" shape the issue floated does not exist to be implemented. Known
-   * members of the surviving class include `AWS::IAM::AccessKey`'s
-   * `SecretAccessKey`, `AWS::Cognito::UserPoolClient`'s `ClientSecret` and
+   * CLEAR. `readOnlyProperties` is a structural test, not a sensitivity one, and
+   * the registry schema offers nothing better to key on: it has no general
+   * sensitivity marking. The nearest things it does have were both checked and
+   * neither serves — `"format": "password"` is declared by a single property in
+   * AWS's whole published bundle, and `writeOnlyProperties` (a real "cannot be
+   * returned by a read" marker, declared by a minority of types) describes
+   * values `GetResource` never returns, so masking them would be inert here. So
+   * the "mask by the schema's own marking" shape the issue floated is NARROWED
+   * to nothing usable rather than refuted outright. Known members of the
+   * surviving class include `AWS::IAM::AccessKey`'s `SecretAccessKey`,
+   * `AWS::Cognito::UserPoolClient`'s `ClientSecret` and
    * `AWS::EC2::IpamExternalResourceVerificationToken`'s `TokenValue`. The list
    * is not claimed to be exhaustive and no count is quoted here, because
    * nothing in the tree fences one; the derivation and its residual are
    * recorded on the issue.
    */
-  private async maskUncertifiedModelValues(
-    model: Record<string, unknown>,
-    resourceType: string,
-    physicalId: string
-  ): Promise<Record<string, unknown>> {
-    const attributeNames = await getTopLevelReadOnlyProperties(resourceType);
-    if (attributeNames === undefined) {
-      this.logger.warn(
-        `Could not resolve the CloudFormation schema for ${resourceType} ` +
-          `(${physicalId}), so cdkd cannot tell which of its Cloud Control model ` +
-          `keys are Fn::GetAtt attributes. Every imported attribute for this ` +
-          `resource is recorded as "${SECRET_MASK}" rather than risking a ` +
-          `credential in state.json; an Fn::GetAtt against it will fail with a ` +
-          `named refusal until the resource is deployed. Grant ` +
-          `cloudformation:DescribeType to record its attributes.`
-      );
-    }
-    const masked: Record<string, unknown> = {};
-    let maskedCount = 0;
-    for (const [key, value] of Object.entries(model)) {
-      if (attributeNames?.has(key)) {
-        masked[key] = value;
-      } else {
-        masked[key] = SECRET_MASK;
-        maskedCount++;
-      }
-    }
-    if (maskedCount > 0 && attributeNames !== undefined) {
-      this.logger.debug(
-        `Masked ${maskedCount} non-attribute key(s) out of the ${resourceType} ` +
-          `Cloud Control model for ${physicalId}: they are not in the type's ` +
-          `readOnlyProperties, so CloudFormation would reject an Fn::GetAtt ` +
-          `naming them and cdkd has no evidence they are safe to persist.`
-      );
-    }
-    return masked;
-  }
-
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (!input.knownPhysicalId) {
       // Explicit-override-only: no auto lookup via CC API.
@@ -2878,22 +2858,27 @@ export class CloudControlProvider implements ResourceProvider {
       // [#2847](https://github.com/go-to-k/cdkd/issues/2847) — so the parsed
       // model is filtered through `maskUncertifiedModelValues` before it
       // becomes state.
-      let attributes: Record<string, unknown> = {};
+      //
+      // The `try` wraps the `JSON.parse` and NOTHING ELSE. It used to span the
+      // masking call too, whose `catch` then turned any failure of the schema
+      // lookup into `attributes = {}` under a "Failed to parse" message — the
+      // DROP outcome this design explicitly rejects, reached silently and
+      // mislabelled. A masking failure must propagate to the outer catch and
+      // fail the import loudly.
+      let parsedModel: Record<string, unknown> | undefined;
       const raw = resp.ResourceDescription?.Properties;
       if (typeof raw === 'string' && raw.length > 0) {
         try {
           const parsed = JSON.parse(raw) as unknown;
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            attributes = await this.maskUncertifiedModelValues(
-              parsed as Record<string, unknown>,
-              input.resourceType,
-              input.knownPhysicalId
-            );
+            parsedModel = parsed as Record<string, unknown>;
           }
         } catch (parseErr) {
+          // NAME ONLY, never the message: V8 embeds an input snippet in a
+          // `SyntaxError`, and the input here is the resource model.
           this.logger.debug(
             `Failed to parse CC API ResourceModel for ${input.resourceType}/${input.knownPhysicalId}: ${
-              parseErr instanceof Error ? parseErr.message : String(parseErr)
+              parseErr instanceof Error ? parseErr.name : typeof parseErr
             }`
           );
           // Fall through with empty attributes — physicalId is enough
@@ -2901,6 +2886,15 @@ export class CloudControlProvider implements ResourceProvider {
           // reconstruct attributes via constructAttribute at deploy.
         }
       }
+
+      const attributes =
+        parsedModel === undefined
+          ? {}
+          : await this.maskUncertifiedModelValues(
+              parsedModel,
+              input.resourceType,
+              input.knownPhysicalId
+            );
 
       return { physicalId: input.knownPhysicalId, attributes };
     } catch (error) {
@@ -2914,4 +2908,102 @@ export class CloudControlProvider implements ResourceProvider {
       throw error;
     }
   }
+
+  /**
+   * Replace every LEAF cdkd cannot certify belongs to an ATTRIBUTE with
+   * {@link SECRET_MASK}, preserving container SHAPE, and leave the certified
+   * attributes untouched. The argument for masking rather than dropping, and
+   * for the fail-closed `undefined` arm, is on {@link import} above.
+   *
+   * ## Why the walk is RECURSIVE — this was a measured defect, not caution
+   *
+   * The first cut replaced the whole VALUE, so an uncertified `Endpoint`
+   * object became the string `'***'`. `IntrinsicFunctionResolver.resolveGetAtt`
+   * resolves `Endpoint.Address` by WALKING the dotted path: it tests
+   * `typeof cursor === 'object'`, which a string fails, so the walk breaks with
+   * `cursor === undefined`, `noteAttributeSecrecy` is NEVER called, and control
+   * reaches `constructAttribute` — the physical-id fallback. That is precisely
+   * the silently-wrong-value outcome the mask exists to prevent, so
+   * whole-value masking DEFEATED its own justification for every nested
+   * attribute. Masking leaves keeps the containers walkable, so the walk lands
+   * on a `'***'` LEAF and notes it, and the refusal fires as designed.
+   *
+   * Arrays keep their length and element positions for the same reason.
+   *
+   * ## The bag is null-prototype
+   *
+   * `JSON.parse` can yield a legal own key `__proto__`; assigning that on an
+   * ordinary object literal writes the PROTOTYPE instead of an own property and
+   * the key vanishes from the bag — a DROP, the one outcome this method must
+   * never produce. `Object.create(null)` makes the assignment ordinary.
+   */
+  private async maskUncertifiedModelValues(
+    model: Record<string, unknown>,
+    resourceType: string,
+    physicalId: string
+  ): Promise<Record<string, unknown>> {
+    const attributeNames = await getTopLevelReadOnlyProperties(resourceType);
+    if (attributeNames === undefined) {
+      // ONCE PER TYPE, not once per resource: a whole-stack import of N
+      // Cloud-Control-routed resources of one type would otherwise print N
+      // identical default-verbosity warnings. Per-INSTANCE rather than
+      // module-global so the set cannot leak between tests (the registry holds
+      // one provider instance per run, so production still dedupes).
+      if (!this.warnedUnresolvableSchemaTypes.has(resourceType)) {
+        this.warnedUnresolvableSchemaTypes.add(resourceType);
+        this.logger.warn(
+          `Could not resolve the CloudFormation schema for ${resourceType}, so ` +
+            `cdkd cannot tell which of its Cloud Control model keys are ` +
+            `Fn::GetAtt attributes. Every imported attribute for this type is ` +
+            `recorded as "${SECRET_MASK}" rather than risking a credential in ` +
+            `state.json; an Fn::GetAtt against such a resource fails with a ` +
+            `named refusal until that resource is next created or updated by a ` +
+            `deploy. Grant cloudformation:DescribeType and re-import to record ` +
+            `its attributes.`
+        );
+      }
+    }
+    const masked: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    let maskedCount = 0;
+    for (const [key, value] of Object.entries(model)) {
+      if (attributeNames?.has(key)) {
+        masked[key] = value;
+      } else {
+        masked[key] = maskLeavesDeep(value);
+        maskedCount++;
+      }
+    }
+    if (maskedCount > 0 && attributeNames !== undefined) {
+      this.logger.debug(
+        `Masked ${maskedCount} non-attribute key(s) out of the ${resourceType} ` +
+          `Cloud Control model for ${physicalId}: they are not in the type's ` +
+          `readOnlyProperties, so CloudFormation would reject an Fn::GetAtt ` +
+          `naming them and cdkd has no evidence they are safe to persist.`
+      );
+    }
+    return masked;
+  }
+}
+
+/**
+ * Every LEAF of `value` replaced by {@link SECRET_MASK}, with object and array
+ * CONTAINERS rebuilt at the same shape. See
+ * `CloudControlProvider.maskUncertifiedModelValues` for why the shape must
+ * survive.
+ *
+ * Depth is bounded by the parsed model's own nesting — a `JSON.parse` result is
+ * acyclic by construction, so no visited-set is needed.
+ */
+function maskLeavesDeep(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((element) => maskLeavesDeep(element));
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = maskLeavesDeep(nested);
+    }
+    return out;
+  }
+  return SECRET_MASK;
 }

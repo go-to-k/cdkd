@@ -32,11 +32,24 @@
  * keep working; reducing to the leaf instead would drop the object the walk
  * descends into.
  *
- * CACHING matches the sibling exactly and for the same reason: only SUCCESSFUL
- * lookups are cached for the process lifetime, so a transient throttle on the
- * first imported resource of a type cannot poison every later one. A schema-less
- * response is a SUCCESSFUL lookup of an empty set, not a failure — a type AWS
- * publishes with no `readOnlyProperties` genuinely has no attributes.
+ * CACHING matches the sibling exactly, including the part that is easy to get
+ * wrong: the promise stored in the cache is the ALREADY-RECOVERED one, and what
+ * keeps a failure from being cached is the handler DELETING its own entry, not
+ * the cache holding a raw promise. An earlier revision of this module cached
+ * the raw promise and recovered only the calling side — which meant a second
+ * caller arriving inside the failure window received a REJECTION out of a
+ * function whose contract says it never throws. Unreachable at the time (both
+ * `importOne` loops are sequential `for…await`), but the contract is what the
+ * caller's fail-closed arm is written against, so it is honoured here rather
+ * than left to the call graph.
+ *
+ * Only SUCCESSFUL lookups therefore survive in the cache for the process
+ * lifetime, so a transient throttle on the first imported resource of a type
+ * cannot poison every later one. A schema-less response is a SUCCESSFUL lookup
+ * of an empty set, not a failure — a type AWS publishes with no
+ * `readOnlyProperties` genuinely has no attributes, and answering `undefined`
+ * there would make the caller emit a missing-permission warning for a healthy
+ * type.
  */
 
 import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-type.js';
@@ -47,7 +60,7 @@ import { getLogger } from '../utils/logger.js';
  * concurrent imports of the same type share one `DescribeType` call. A failed
  * lookup removes its own entry so a later call retries.
  */
-const readOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string>>>();
+const readOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string> | undefined>>();
 
 /** Clear the per-type cache. Test-only helper. */
 export function clearReadOnlyPropertiesCache(): void {
@@ -83,14 +96,12 @@ export function getTopLevelReadOnlyProperties(
   if (cached) {
     return cached;
   }
-  const entry = fetchTopLevelReadOnlyProperties(resourceType);
-  readOnlyPropertiesCache.set(resourceType, entry);
-  return entry.catch((error) => {
-    // Drop the in-flight entry so a later call retries, then report the
-    // FAILURE as `undefined`. The `.catch` deliberately sits OUTSIDE what was
-    // stored in the cache: caching the recovered promise would cache the
-    // failure, which is the poisoning the sibling module's header argues
-    // against.
+  // The RECOVERED promise is what goes in the cache, and the handler deletes
+  // its own entry — that deletion, not the shape of what is stored, is what
+  // keeps a failure from being cached. Storing the raw promise instead would
+  // hand a REJECTION to any second caller that arrived inside the failure
+  // window, out of a function documented never to throw (see the header).
+  const entry = fetchTopLevelReadOnlyProperties(resourceType).catch((error) => {
     readOnlyPropertiesCache.delete(resourceType);
     const message = error instanceof Error ? error.message : String(error);
     getLogger()
@@ -101,6 +112,8 @@ export function getTopLevelReadOnlyProperties(
       );
     return undefined;
   });
+  readOnlyPropertiesCache.set(resourceType, entry);
+  return entry;
 }
 
 /**

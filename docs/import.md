@@ -567,14 +567,18 @@ would let a later `Fn::GetAtt` fall back to the physical id and resolve to
 something wrong; a masked one is refused by name instead. This needs
 `cloudformation:DescribeType` (one call per resource type, cached for the run).
 Without that permission cdkd cannot tell an attribute from a property, so it
-masks the whole model and warns — an `Fn::GetAtt` against such a resource then
-fails until the stack is deployed once. Grant `cloudformation:DescribeType` to
-avoid that.
+masks the whole model and warns. An `Fn::GetAtt` against such a resource then
+fails with a named refusal — and it keeps failing until **that resource** is
+next created or updated by a deploy, which is what rewrites its attributes;
+deploying the stack does not on its own heal a resource nothing changed. The
+direct remedy is to grant `cloudformation:DescribeType` and re-run
+`cdkd import`.
 
 This does not make an imported record safe to treat as non-sensitive: a
-credential that is itself a read-only attribute is still recorded in the clear,
-because the CloudFormation registry schema carries no sensitivity marking to
-key on.
+credential that is itself a read-only attribute is still recorded in the clear.
+The CloudFormation registry schema has no general sensitivity marking to key on
+— `writeOnlyProperties` marks values a read never returns, so it says nothing
+about what `GetResource` hands back.
 
 ### Unsupported
 

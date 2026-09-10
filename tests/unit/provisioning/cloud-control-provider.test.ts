@@ -105,6 +105,7 @@ import {
   handlerAuthFailureHint,
 } from '../../../src/provisioning/cloud-control-provider.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 
 describe('CloudControlProvider delete region verification', () => {
@@ -368,6 +369,13 @@ describe('CloudControlProvider import (CC API fallback)', () => {
   beforeEach(() => {
     mockCloudControlSend.mockReset();
     mockCloudControlConfigRegion.mockReset();
+    // Both added by issue #2847's review: the block above this one leaves a
+    // persistent `mockRejectedValue('AccessDenied')` on the CFn mock, and the
+    // read-only-property cache is MODULE-level, so without these a later
+    // import case inherits another block's schema answer — the shape that
+    // makes a case pass for the wrong reason.
+    mockCloudFormationSend.mockReset();
+    clearReadOnlyPropertiesCache();
     provider = new CloudControlProvider();
   });
 

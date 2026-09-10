@@ -168,6 +168,121 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     expect(warned).not.toContain('cloudformation:DescribeType');
   });
 
+  it('masks an UNCERTIFIED container LEAF-WISE, keeping the shape the resolver dot-path walk needs', async () => {
+    // THE CASE THE FIRST CUT GOT WRONG (issue #2847 security review). Replacing
+    // the whole VALUE made `Endpoint` the string `'***'`; `resolveGetAtt`'s
+    // dotted walk tests `typeof cursor === 'object'`, so it broke with
+    // `cursor === undefined`, never called `noteAttributeSecrecy`, and fell
+    // through to `constructAttribute`'s physical-id fallback — the silently
+    // wrong value the mask exists to prevent. Masking leaves keeps the walk
+    // alive so it lands on a masked LEAF and the refusal fires.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({ readOnlyProperties: ['/properties/Id'] }),
+    });
+    wireGetResource({
+      Id: 'chan-1',
+      Endpoint: { Address: 'db.example.com', Port: 5432 },
+      Hosts: [{ Name: 'a' }, { Name: 'b' }],
+    });
+
+    const result = await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+
+    // Shape preserved, every LEAF masked — asserted as the whole bag, so a
+    // regression back to whole-value masking (`Endpoint: '***'`) reds here.
+    expect(result?.attributes).toEqual({
+      Id: 'chan-1',
+      Endpoint: { Address: SECRET_MASK, Port: SECRET_MASK },
+      Hosts: [{ Name: SECRET_MASK }, { Name: SECRET_MASK }],
+    });
+    // The container must still BE a container for the resolver's walk.
+    expect(typeof result?.attributes?.['Endpoint']).toBe('object');
+    // Array length and element positions survive too.
+    expect(Array.isArray(result?.attributes?.['Hosts'])).toBe(true);
+    expect((result?.attributes?.['Hosts'] as unknown[]).length).toBe(2);
+  });
+
+  it('keeps a model key literally named __proto__ as an OWN property rather than dropping it', async () => {
+    // `JSON.parse` yields `__proto__` as a legal own key. Assigning it on an
+    // ordinary object literal writes the PROTOTYPE and the key vanishes — a
+    // DROP, the one outcome this method must never produce.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({ readOnlyProperties: ['/properties/Id'] }),
+    });
+    mockCloudControlSend.mockImplementation(() =>
+      Promise.resolve({
+        ResourceDescription: {
+          Identifier: 'chan-1',
+          // Built as raw JSON text so the key really arrives via JSON.parse.
+          Properties: '{"Id":"chan-1","__proto__":"zz-lane2847-proto"}',
+        },
+      })
+    );
+
+    const result = await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: TYPE,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+
+    const attrs = result?.attributes as Record<string, unknown>;
+    expect(Object.hasOwn(attrs, '__proto__')).toBe(true);
+    expect(attrs['__proto__']).toBe(SECRET_MASK);
+    expect(JSON.stringify(result)).not.toContain('zz-lane2847-proto');
+  });
+
+  it('warns ONCE PER TYPE, not once per resource, when the schema is unresolvable', async () => {
+    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+    wireGetResource({ Id: 'chan-1' });
+    const provider = new CloudControlProvider();
+
+    for (const id of ['chan-1', 'chan-2', 'chan-3']) {
+      await provider.import({
+        logicalId: 'Chan',
+        resourceType: TYPE,
+        stackName: 'S',
+        region: 'us-east-1',
+        properties: {},
+        knownPhysicalId: id,
+      });
+    }
+
+    const grantWarnings = mockWarn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('cloudformation:DescribeType'));
+    expect(grantWarnings).toHaveLength(1);
+  });
+
+  it('masks every key with NO warning when the schema resolves but declares no attributes', async () => {
+    // Distinct from the fail-closed arm and easy to conflate with it: here cdkd
+    // KNOWS the type has no attributes, so the outcome is the same bag but the
+    // missing-permission warning must NOT fire.
+    mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify({}) });
+    wireGetResource({ Id: 'chan-1', BundleId: 'com.example.app' });
+
+    const result = await new CloudControlProvider().import({
+      logicalId: 'Chan',
+      resourceType: 'AWS::Example::NoAttrs',
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'chan-1',
+    });
+
+    expect(result?.attributes).toEqual({ Id: SECRET_MASK, BundleId: SECRET_MASK });
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).not.toContain('cloudformation:DescribeType');
+  });
+
   it('keeps a nested attribute CONTAINER intact, so the resolver dot-path walk still resolves', async () => {
     mockCloudFormationSend.mockResolvedValue({
       Schema: JSON.stringify({ readOnlyProperties: ['/properties/Endpoint/Address'] }),

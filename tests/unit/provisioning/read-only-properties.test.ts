@@ -108,6 +108,66 @@ describe('getTopLevelReadOnlyProperties (issue #2847)', () => {
     expect(result).toEqual(new Set());
   });
 
+  it('answers an EMPTY SET when DescribeType returns no Schema at all — a successful lookup, not a failure', async () => {
+    // A still-registering / publisher type answers with no `Schema`. The module
+    // header calls that a SUCCESSFUL lookup of "no attributes"; nothing fenced
+    // it, so a mutation to the fail-closed reading stayed green while silently
+    // making every such type mask its whole model.
+    mockCloudFormationSend.mockResolvedValueOnce({});
+
+    expect(await getTopLevelReadOnlyProperties('AWS::Example::NoSchema')).toEqual(new Set());
+  });
+
+  it('unescapes RFC 6901 pointer segments (~1 -> /, ~0 -> ~)', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce({
+      Schema: JSON.stringify({
+        readOnlyProperties: ['/properties/a~1b', '/properties/c~0d'],
+      }),
+    });
+
+    expect(await getTopLevelReadOnlyProperties('AWS::Example::Escaped')).toEqual(
+      new Set(['a/b', 'c~d'])
+    );
+  });
+
+  it('ignores malformed readOnlyProperties entries rather than throwing or admitting them', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce({
+      Schema: JSON.stringify({
+        readOnlyProperties: [
+          '/properties/Good',
+          42, // not a string
+          '/definitions/NotAProperty', // not a /properties pointer
+          '/properties/', // empty segment
+        ],
+      }),
+    });
+
+    expect(await getTopLevelReadOnlyProperties('AWS::Example::Messy')).toEqual(new Set(['Good']));
+  });
+
+  it('treats a non-array readOnlyProperties as no attributes rather than failing', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce({
+      Schema: JSON.stringify({ readOnlyProperties: 'Arn' }),
+    });
+
+    expect(await getTopLevelReadOnlyProperties('AWS::Example::Weird')).toEqual(new Set());
+  });
+
+  it('hands a CONCURRENT second caller the safe answer, not a rejection, while a lookup is failing', async () => {
+    // The contract is "never throws". An earlier revision cached the RAW
+    // promise and recovered only the calling side, so a second caller arriving
+    // inside the failure window received a rejection out of that function.
+    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+
+    const [first, second] = await Promise.all([
+      getTopLevelReadOnlyProperties('AWS::Example::Concurrent'),
+      getTopLevelReadOnlyProperties('AWS::Example::Concurrent'),
+    ]);
+
+    expect(first).toBeUndefined();
+    expect(second).toBeUndefined();
+  });
+
   it('rides out a transient throttle rather than reporting an unresolvable schema', async () => {
     mockCloudFormationSend
       .mockRejectedValueOnce(throttlingError())
