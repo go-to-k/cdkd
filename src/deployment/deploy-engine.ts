@@ -1718,9 +1718,12 @@ export class DeployEngine {
     // THE ROUTING KEY IS THE FIELD, not a capture group. `resources` is read
     // with `Object.hasOwn` for the same reason `resolveRef` does (issue #2767):
     // `logicalId` is template-controlled, and a bare property read walks the
-    // prototype chain, so an id of `constructor` would answer with the `Object`
-    // function and `?.resourceType` on it is `undefined` — reading as an
-    // ordinary local resource whose type is unknown.
+    // prototype chain, so an id of `constructor` answers with the `Object`
+    // function rather than missing. It is HYGIENE here, not a fix — round-5
+    // review measured that `resources['constructor']?.resourceType` is
+    // `undefined` either way, so both spellings route the entry LOCAL and no
+    // test can tell them apart. The guard is kept because the next field read
+    // added here may not be so lucky.
     const typeOf = (read: RedactedAttributeRead): string | undefined =>
       read.logicalId !== undefined && Object.hasOwn(resources, read.logicalId)
         ? resources[read.logicalId]?.resourceType
@@ -1755,6 +1758,21 @@ export class DeployEngine {
     const foreignReads = reads.filter((read) => !isLocal(read));
     const hasRefStateRead = reads.some((read) => read.kind === 'ref-state-key' && isLocal(read));
 
+    /**
+     * A logical id rendered inside the single-quoted command below.
+     *
+     * cdkd validates no logical-id charset, so the id can contain a `'` — and
+     * the line it lands in is meant to be COPY-PASTED into a shell, where an
+     * unescaped one closes the quoting early and the rest of the command
+     * reparses as something else. POSIX single-quote escaping (`'` becomes
+     * `'\\''`) is the fix: close, emit an escaped quote, reopen.
+     *
+     * cdkd never EXECUTES this string — it is advice in an error message — so
+     * this is about the pasted command being correct, not about injection into
+     * cdkd itself (issue #2847 round-5 review).
+     */
+    const quoteSafe = (id: string): string => id.replaceAll("'", `'\\''`);
+
     const parts: string[] = [];
     if (localTargets.length > 0) {
       // ONE COMMAND PER TARGET: naming several ids beside a single command
@@ -1762,7 +1780,7 @@ export class DeployEngine {
       parts.push(
         `Re-import the record that HOLDS the mask: ` +
           localTargets
-            .map((id) => `'cdkd import <stack> --resource ${id}=<physicalId> --force'`)
+            .map((id) => `'cdkd import <stack> --resource ${quoteSafe(id)}=<physicalId> --force'`)
             .join(', ') +
           `.`
       );

@@ -29,6 +29,10 @@ Index of every area: [code-layout.md](code-layout.md).
   began reporting a spurious UPDATE and then hard-failing. Fenced in both
   directions by
   `tests/unit/deployment/deploy-engine-resolver-context-bag-scope.test.ts`.
+  The single writer `pushRedactedAttributeRead` de-dupes on the WHOLE TUPLE for
+  the same reason (#2847 round 5) — on `display` alone it gated entry
+  EXISTENCE while the Outputs guard filters by `kind`, so a colliding
+  rendering suppressed the refusal; it is also `key`'s only reader.
 
 - **`drain-budget.ts`** — the drain budget, REMAINING wait rather than a
   deadline (#2563). Its own module because the many unit files that mock the

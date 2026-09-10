@@ -2670,6 +2670,14 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     // CANONICAL `cdkd import` route to a masked property.
     expect(result.blocked[0]!.reason).toMatch(/Fn::GetAtt or a Ref/);
     // NEGATIVE, paired with the positives above so it cannot pass by absence.
+    // THE FENCE'S BOUND, measured rather than assumed (issue #2847 round-5
+    // review). It catches the RETIRED sentence and near variants -- proved by
+    // a probe that ADDS the wrong claim beside the right one, which reds -- but
+    // a PARAPHRASE evades it: `This row came from a Cloud Control import, so
+    // re-import THIS resource.` beside the correct arm is GREEN. That residual
+    // is inherent to any wording fence and is stated here so a reader does not
+    // take this negative for a total one; what makes the arm hard to get wrong
+    // again is the positive above, which pins the proposition.
     expect(result.blocked[0]!.reason).not.toMatch(
       /(record|baseline)[^.]{0,40}(written|adopted)[^.]{0,40}(Cloud Control|cdkd import)/i
     );

@@ -283,4 +283,82 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
       'Ref T (state key TableName)',
     ]);
   });
+
+  it('keeps BOTH entries when an attribute read RENDERS identically to a Ref one', async () => {
+    // THE LAST DECISION IN STRING SPACE, removed (issue #2847 round-5 review).
+    // `pushRedactedAttributeRead` de-duped on `display` alone, which gated
+    // entry EXISTENCE while `DeployEngine`'s Outputs guard filters the
+    // survivors by `kind` -- so an `attribute` entry rendering the same as a
+    // later `ref-state-key` one suppressed the refusal outright.
+    //
+    // THE COLLISION IS BUILT FROM TWO TEMPLATE-CONTROLLED NAMES, both of which
+    // cdkd accepts because it validates neither and never hands the template to
+    // CloudFormation. `Fn::GetAtt` on logical id `Ref Foo` and attribute
+    // `Bar (state key TableName)` renders `Ref Foo.Bar (state key TableName)`;
+    // so does a `Ref` to a resource whose logical id is `Foo.Bar` and whose
+    // `TableName` is masked. The state KEY cannot be the vehicle -- those come
+    // from cdkd's own fixed lists -- so the dot has to come from the id.
+    //
+    // ORDER IS LOAD-BEARING: the attribute read is recorded FIRST, so under the
+    // display-only dedup it is the `ref-state-key` entry that is dropped, which
+    // is the direction that costs a refusal.
+    const redactedAttributeReads: RedactedAttributeRead[] = [];
+    const template: CloudFormationTemplate = {
+      Resources: {
+        'Ref Foo': { Type: 'Custom::Thing', Properties: {} },
+        'Foo.Bar': { Type: TABLE_TYPE, Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        'Ref Foo': {
+          physicalId: 'cr-phys',
+          resourceType: 'Custom::Thing',
+          properties: {},
+          attributes: { 'Bar (state key TableName)': SECRET_MASK },
+          dependencies: [],
+        },
+        'Foo.Bar': {
+          physicalId: TABLE_ARN,
+          resourceType: TABLE_TYPE,
+          properties: { TableName: SECRET_MASK },
+          dependencies: [],
+        },
+      },
+      redactedAttributeReads,
+    };
+
+    await resolver.resolve({ 'Fn::GetAtt': ['Ref Foo', 'Bar (state key TableName)'] }, context);
+    await resolver.resolve({ Ref: 'Foo.Bar' }, context);
+
+    // The renderings really do collide -- without this the case would pass on
+    // two entries that were never in danger of being de-duped.
+    expect(redactedAttributeReads.map((read) => read.display)).toEqual([
+      'Ref Foo.Bar (state key TableName)',
+      'Ref Foo.Bar (state key TableName)',
+    ]);
+    // ...and the SURVIVING second entry is the one the Outputs guard selects on.
+    expect(redactedAttributeReads.map((read) => read.kind)).toEqual([
+      'attribute',
+      'ref-state-key',
+    ]);
+  });
+
+  it('still collapses a genuine repeat of the SAME structured entry', async () => {
+    // The other direction. A dedup widened to the tuple must not stop deduping
+    // what it always did: the case above would pass just as well against no
+    // dedup at all, and the message would then repeat a phrase per resolution.
+    // `key` is the ALREADY-MASKED attribute name for the `attribute` kind, so
+    // the documented "names differing only above the mask collapse" property
+    // is unaffected by comparing it.
+    const redactedAttributeReads: RedactedAttributeRead[] = [];
+    const context = contextFor({ properties: { TableName: SECRET_MASK } }, redactedAttributeReads);
+
+    await resolver.resolve({ Ref: 'T' }, context);
+    await resolver.resolve({ Ref: 'T' }, context);
+    await resolver.resolve({ Ref: 'T' }, context);
+
+    expect(redactedAttributeReads).toHaveLength(1);
+  });
 });

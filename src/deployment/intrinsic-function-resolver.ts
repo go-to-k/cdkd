@@ -3868,17 +3868,35 @@ export class IntrinsicFunctionResolver {
    * bag's absent-context check and its de-duplication rule live in one place
    * rather than being re-spelled at each of the three pushing branches.
    *
-   * De-dupes on `display` — deliberately, and not on the structured fields.
-   * `display` is what the deploy engine joins into its message, so two entries
-   * rendering identically would repeat a phrase for no reader benefit; and it
-   * preserves the pre-#2847-round-4 behaviour byte for byte, since `display` is
-   * exactly the string the bag used to hold. Two entries whose attribute names
-   * only DIFFER above the mask therefore still collapse, as they always did.
+   * DE-DUPES ON THE WHOLE TUPLE, not on `display` alone, and that is the last
+   * decision this file moved out of string space (issue #2847 round-5 review).
+   * An earlier revision compared renderings, which is where two of this PR's
+   * blockers came from: a decision keyed on a joined human-readable string.
+   * Here it gated entry EXISTENCE while `DeployEngine`'s Outputs guard filters
+   * the surviving entries by `kind`, so an `attribute` entry whose `display`
+   * collided with a later `ref-state-key` one suppressed the refusal outright.
+   * Reachable only through an adversarial logical id (`Ref Foo (state key Table`
+   * with an attribute named `Name)`) — `main`'s string bag is equally
+   * contrived, which is why review called it a cleanup rather than a defect —
+   * but the class is the point, not this instance.
+   *
+   * `key` carries its weight here: for the `attribute` kind it is the
+   * ALREADY-MASKED attribute name, so two names differing only ABOVE the mask
+   * still render and compare identically and still collapse, exactly as they
+   * did when the bag held strings. Nothing else reads it, and comparing it is
+   * what keeps it from being a field written by two producers and read by none.
    */
   private pushRedactedAttributeRead(context: ResolverContext, read: RedactedAttributeRead): void {
     const bag = context.redactedAttributeReads;
     if (bag === undefined) return;
-    if (bag.some((entry) => entry.display === read.display)) return;
+    const duplicate = bag.some(
+      (entry) =>
+        entry.kind === read.kind &&
+        entry.logicalId === read.logicalId &&
+        entry.key === read.key &&
+        entry.display === read.display
+    );
+    if (duplicate) return;
     bag.push(read);
   }
 

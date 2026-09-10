@@ -96,10 +96,15 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     const remedy = remedyFor([attr('Cr', 'Secret')]);
 
     expect(remedy).toContain("'cdkd import <stack> --resource Cr=<physicalId> --force'");
-    // The whole point of the round-6 fix: the consumer must not be advised.
-    expect(remedy).not.toContain('Param');
     // And no cross-stack clause when nothing cross-stack is present.
     expect(remedy).not.toContain('ANOTHER stack');
+    // A `not.toContain('Param')` stood here — the round-6 fix's "do not advise
+    // the CONSUMER" claim. It was UNFALSIFIABLE by construction and removed in
+    // round 5: this helper is not handed the consumer's logical id at all, so
+    // no mutation of it can print one. The live check is
+    // `deploy-engine-noecho-custom-resource.test.ts`'s end-to-end refusal,
+    // which drives the real engine and asserts the target id in the thrown
+    // message.
   });
 
   it('names the RESOURCE for a dotted attribute path, not a prefix of the path', () => {
@@ -152,8 +157,17 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     // here is executable rather than rejected.
     const remedy = remedyFor([NESTED_STACK]);
 
-    expect(remedy).not.toContain('--resource Child=');
-    expect(remedy).not.toContain('--resource Outputs=');
+    // ASSERTED ON THE ARM, not on two absent strings. The pair that stood here
+    // (`--resource Child=` / `--resource Outputs=`) was UNFALSIFIABLE and was
+    // removed in round 5: a `cross-stack` entry carries no `logicalId`, so no
+    // mutation of the partition can make this helper print a `--resource` for
+    // it — including flipping the missing-`logicalId` arm to LOCAL, since the
+    // target list then filters the `undefined` straight back out. What a
+    // mutation CAN change is which arm fires, so that is what is asserted.
+    // The falsifiable form of the `--resource Child=` claim lives one case
+    // down, where the entry is a local ATTRIBUTE read on a nested-stack type
+    // and the resource-TYPE check is the only thing withholding the command.
+    expect(remedy).toContain('ANOTHER stack');
   });
 
   it('emits BOTH arms when the reads mix local and cross-stack entries', () => {
@@ -357,6 +371,21 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
 
     expect(remedy).not.toContain('cdkd import');
     expect(remedy).toContain('ANOTHER stack');
+  });
+
+  it('escapes a single quote in the logical id, so the pasted command still parses', () => {
+    // cdkd validates no logical-id charset, and this line is meant to be
+    // copy-pasted into a shell: an unescaped `'` closes the display quoting
+    // early and the rest of the command reparses as something else. POSIX
+    // escaping is close-escape-reopen (issue #2847 round-5 review, nit).
+    const remedy = remedyFor([attr("Bob's-Table", 'Arn')], {
+      "Bob's-Table": { resourceType: 'AWS::SQS::Queue' },
+    });
+
+    expect(remedy).toContain(`--resource Bob'\\''s-Table=<physicalId>`);
+    // NEGATIVE, paired with the positive so it cannot pass by absence: the RAW
+    // id must not survive, since that is the spelling that breaks the paste.
+    expect(remedy).not.toContain(`--resource Bob's-Table=`);
   });
 
   it('routes a HYPHENATED logical id to the LOCAL arm — the round-4 blocker, remedy side', () => {
