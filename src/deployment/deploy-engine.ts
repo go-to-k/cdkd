@@ -6674,15 +6674,29 @@ export class DeployEngine {
     if (!isNameCollisionError(error.message)) return undefined;
     const stackName = getCurrentStackName();
     if (!looksLikeCdkdGeneratedName(physicalId, logicalId, stackName)) return undefined;
+    // Implied by the guard above — it returns `false` for a falsy stack name —
+    // but stated so the type system can see it, and so a future change to that
+    // helper cannot make this method read an undefined stack name silently.
+    if (!stackName) return undefined;
+
+    // EVERY interpolation of the name goes through this, the prose included --
+    // not only the pasteable command. An earlier revision sanitised the command
+    // alone while `diagnosis` and `deleteArm` printed the raw value, so a name
+    // carrying a control character (which `looksLikeCdkdGeneratedName` accepts,
+    // since its skeleton strips every non-alphanumeric) reached the terminal
+    // unchanged whichever branch was taken.
+    const safeId = displaySafe(physicalId, { asciiOnly: true });
+    const safeStack = displaySafe(stackName, { asciiOnly: true });
+    const safeLogicalId = displaySafe(logicalId, { asciiOnly: true });
 
     const diagnosis =
-      `${logicalId}: the name AWS reports as taken (${physicalId}) is one cdkd DERIVED from ` +
+      `${safeLogicalId}: the name AWS reports as taken (${safeId}) is one cdkd DERIVED from ` +
       `the logical id, and that derivation has no random component — so this is most likely a ` +
       `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
       `DeletionPolicy: Retain in AWS and drops it from state (CloudFormation does the same), ` +
       `and the next deploy then asks AWS for the name it still holds.`;
     const deleteArm =
-      `If it is not a resource you want to keep, delete ${physicalId} in AWS — after ` +
+      `If it is not a resource you want to keep, delete ${safeId} in AWS — after ` +
       `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`;
 
     // Only advise `cdkd import` for a type that can actually be imported.
@@ -6714,37 +6728,37 @@ export class DeployEngine {
     }
 
     // The command is meant to be PASTED, so it gets this repo's established
-    // sanitize / quote / SUPPRESS treatment (`replacement-protection-advice.ts`
-    // does the same, and `renderDisableCommand` is the shape). It is needed
-    // because `looksLikeCdkdGeneratedName` compares only the ALPHANUMERIC
-    // skeleton — it strips every other character before comparing — so a name
-    // whose extra characters are all shell metacharacters passes the guard.
+    // sanitize / quote / SUPPRESS treatment (`renderDisableCommand` in
+    // `replacement-protection-advice.ts` is the shape). The two halves answer
+    // DIFFERENT questions, and an earlier revision of this comment got the
+    // second one wrong:
     //
-    // The two halves do different jobs and both are required. `shellQuote`
-    // neutralises metacharacters: it single-quotes anything outside a
-    // conservative safe set and escapes embedded quotes, so a `$()` payload
-    // pastes as an inert literal. `displaySafe(asciiOnly)` + SUPPRESS covers
-    // what quoting cannot make safe to print at all — control characters and
-    // non-ASCII, which is also why the suppression compares the sanitised value
-    // against the original rather than trusting it.
-    const safeId = displaySafe(physicalId, { asciiOnly: true });
-    const safeStack = stackName ? displaySafe(stackName, { asciiOnly: true }) : '';
-    const commandIsSafe =
-      safeId === physicalId &&
-      Boolean(stackName) &&
-      safeStack === stackName &&
-      !stackName.includes('~');
+    // - `shellQuote` makes the command SAFE TO RUN. It single-quotes anything
+    //   outside a conservative safe set and escapes embedded quotes, so a `$()`
+    //   payload — which `looksLikeCdkdGeneratedName` admits, its skeleton
+    //   stripping every non-alphanumeric before comparing — pastes as an inert
+    //   literal. `=` is outside that set, so the argument is always quoted.
+    // - Comparing the SANITISED value against the original decides whether the
+    //   command would name the RIGHT RESOURCE. It is not about printing: the
+    //   prose above already prints the sanitised name in every branch. When
+    //   sanitising CHANGES the value, the command would carry a name AWS does
+    //   not hold, so it is withheld rather than shipped wrong — the same
+    //   reasoning `renderDisableCommand` records.
+    const commandNamesTheRightResource = safeId === physicalId && safeStack === stackName;
+    const importableTarget = !stackName.includes('~');
 
-    if (!canImport || !commandIsSafe) {
+    if (!canImport || !commandNamesTheRightResource || !importableTarget) {
       const why = !canImport
         ? `cdkd cannot adopt ${error.resourceType} back into state (its provider implements no import)`
-        : `cdkd is not printing an import command for this name`;
+        : !importableTarget
+          ? `this is a nested-stack child, whose stack name cdkd import cannot resolve`
+          : `cdkd cannot render an import command that provably names this resource`;
       return `${diagnosis} ${why}, so the way forward is to delete it. ${deleteArm}`;
     }
 
     return (
       `${diagnosis} To recover, adopt it back into state instead of re-creating it: ` +
-      `cdkd import ${shellQuote(safeStack)} --resource ${shellQuote(`${logicalId}=${safeId}`)} ` +
+      `cdkd import ${shellQuote(safeStack)} --resource ${shellQuote(`${safeLogicalId}=${safeId}`)} ` +
       `(a selective import merges into existing state and needs no --force while the resource ` +
       `is absent from it). CONFIRM IT IS YOURS FIRST — a name cdkd derives is predictable, so ` +
       `for a globally-namespaced type it can belong to another account, and the same stack ` +

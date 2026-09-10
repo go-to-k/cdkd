@@ -128,8 +128,10 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
    */
   async function attempt(
     changeType: ChangeType = 'CREATE',
-    stackName: string = STACK
+    stackName: string = STACK,
+    physicalIdOverride?: string
   ): Promise<string[]> {
+    if (physicalIdOverride !== undefined) createError = collisionError(physicalIdOverride);
     const engine = makeEngine();
     const change: ResourceChange = {
       logicalId: LOGICAL,
@@ -337,6 +339,39 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     expect(advice).not.toContain(`--resource ${LOGICAL}=${hostile}`);
   });
 
+  it('withholds the command when sanitising CHANGES the name', async () => {
+    // A control character survives `looksLikeCdkdGeneratedName` (its skeleton
+    // strips every non-alphanumeric), so the guard admits the name -- and a
+    // command carrying it would name a resource AWS does not hold. Both
+    // suppression comparisons were unfenced before this case: deleting either
+    // left the suite green.
+    createError = collisionError(`${STACK}-${LOGICAL}\u0007`);
+    const advice = adviceIn(await attempt());
+
+    expect(advice).toBeDefined();
+    // `--resource` and not `cdkd import`: the prose can NAME the command while
+    // withholding it, so only the flag distinguishes the two arms.
+    expect(advice).not.toContain('--resource');
+    // ...and the name is still printed, sanitised, in the prose.
+    expect(advice).not.toContain('\u0007');
+  });
+
+  it('withholds the command when sanitising changes the STACK name', async () => {
+    // The stack-name half of the same comparison, ISOLATED from the id half.
+    // The physical id is deliberately CLEAN: the guard's skeleton strips the
+    // control character out of the stack name before comparing, so a clean
+    // `MyStack-Pipe` still matches a dirty `MyStack\u0007` derivation -- which
+    // leaves the stack comparison as the only thing that can refuse. The first
+    // version dirtied BOTH, so the id comparison refused first and deleting the
+    // stack one left the suite green (measured).
+    const advice = adviceIn(await attempt('CREATE', `${STACK}\u0007`, `${STACK}-${LOGICAL}`));
+
+    expect(advice).toBeDefined();
+    // `--resource` and not `cdkd import`: the prose can NAME the command while
+    // withholding it, so only the flag distinguishes the two arms.
+    expect(advice).not.toContain('--resource');
+  });
+
   it('takes the delete-only arm inside a nested-stack child', async () => {
     // A child deploys as `<parent>~<logicalId>`, and CDK's stack-name rule bars
     // `~`, so no Cloud Assembly stack can carry that name -- `cdkd import`
@@ -347,7 +382,9 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const advice = adviceIn(await attempt('CREATE', nested));
 
     expect(advice).toBeDefined();
-    expect(advice).not.toContain('cdkd import');
+    // `--resource` and not `cdkd import`: the prose can NAME the command while
+    // withholding it, so only the flag distinguishes the two arms.
+    expect(advice).not.toContain('--resource');
   });
 
   it('tells the reader to confirm ownership before adopting', async () => {
@@ -370,6 +407,8 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // Naming a remedy whose precondition the code never checks is the #2610
     // class; `runImportForResource` would SKIP such a type with
     // `skipped-no-impl` and leave the user exactly where they started.
-    expect(advice).not.toContain('cdkd import');
+    // `--resource` and not `cdkd import`: the prose can NAME the command while
+    // withholding it, so only the flag distinguishes the two arms.
+    expect(advice).not.toContain('--resource');
   });
 });

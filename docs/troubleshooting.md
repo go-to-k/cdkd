@@ -2351,15 +2351,25 @@ failure is followed by a line saying so and giving the adoption command:
 ApiGatewayAccountCloudWatchRole: the name AWS reports as taken
 (mystack-apigatewayaccountcl-19184149) is one cdkd DERIVED from the logical id
 ... To recover, adopt it back into state instead of re-creating it:
-cdkd import MyStack --resource ApiGatewayAccountCloudWatchRole=mystack-apigatewayaccountcl-19184149
+cdkd import MyStack --resource 'ApiGatewayAccountCloudWatchRole=mystack-apigatewayaccountcl-19184149'
 ```
 
 A selective `--resource` import merges into existing state and needs no
-`--force` while the resource is absent from it. If the resource is not one you
-want to keep, delete it in AWS — after confirming it holds nothing you need,
-since `Retain` is what kept it — and re-deploy. For a type whose provider
-implements no import, deleting is the only route, and the message says so
-instead of offering the command.
+`--force` while the resource is absent from it.
+
+**Confirm the resource is yours before adopting it.** A name cdkd derives is
+predictable, so a collision is not proof the resource is this stack's: for a
+type whose names are globally unique it can belong to another account, and the
+same stack deployed in another region derives the same name — importing that
+would leave two stacks sharing one resource, and destroying either would delete
+it out from under the other.
+
+If the resource is not one you want to keep, delete it in AWS — after
+confirming it holds nothing you need, since `Retain` is what kept it — and
+re-deploy. cdkd says so instead of offering the command in three cases: the
+type's provider implements no import, the resource is in a nested stack (whose
+stack name `cdkd import` cannot resolve), or its name contains characters that
+would make the printed command name something else.
 
 > **Do not delete `state.json` and redeploy.** It is not a reset, and what
 > happens next is not uniform: most types fail the CREATE with an
