@@ -85,12 +85,13 @@ const MAX_WORKFLOW_RULES_BYTES = 26_452;
  *
  * What DOES bound the relocation is this band being tighter than the WHOLE-FILE
  * ceiling (asserted below against live sizes), so a net addition trips it
- * before that one and cannot be laundered by moving the bytes sideways. It is
- * NOT the tightest of the three -- `MAX_WORKFLOW_RULES_BYTES` is, deliberately,
- * and an earlier revision of this sentence said "TIGHTEST of the three" while
- * the case below compared only band-vs-file. Section-vs-band is not ordered
- * here and does not need to be: they bound different populations, and the
- * section ceiling's own ordering case pairs it against the file ceiling.
+ * before that one and cannot be laundered by moving the bytes sideways. That
+ * is the ONLY ordering asserted about this constant. An earlier revision said
+ * "TIGHTEST of the three" while the case below compared band-vs-file alone;
+ * band-vs-SECTION is uncalibrated, so whichever is tighter today can flip on
+ * a `session-report.md` edit with nothing reporting it. Do not record which
+ * one it is here -- that is the "now" figure the header refuses -- and if the
+ * ordering ever needs to hold, assert it instead of describing it.
  * Whether the relocated text still LOADS is a different question, and the
  * injected-only sweep further down is what answers it.
  */

@@ -64,7 +64,7 @@ interface StackState {
   imports?: StateImportEntry[];
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational, NOT destroy-blocking)
   exportNames?: string[];      // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy)
-  skippedOutputs?: Record<string, string>; // informational, no bump (#2740): Outputs keys the last deploy could not resolve and SKIPPED → digest of their template inputs; `cdkd diff` previews such a key as absent only while its digest still holds (full gate list in [docs/state-management.md](docs/state-management.md))
+  skippedOutputs?: Record<string, string>; // informational, no bump (#2740): Outputs keys the last deploy could not resolve and SKIPPED → digest of their template inputs; `cdkd diff` previews such a key as absent only while its digest still holds (all three gates in docs/state-management.md)
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level stacks)
   parentLogicalId?: string;    // v6+: the AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -140,7 +140,7 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 - **[docs/architecture.md](docs/architecture.md)** - Detailed architecture, deploy flows, design principles, end-to-end pipeline walkthrough
 - **[docs/benchmarks.md](docs/benchmarks.md)** - Full benchmark suite (vs CloudFormation / Express mode / Terraform); the README keeps only the Express + Terraform summary tables
 - **[docs/state-management.md](docs/state-management.md)** - S3 state structure, locking mechanism, troubleshooting
-- **[docs/cli-reference.md](docs/cli-reference.md)** - CLI reference overview (output streams, `--region`, `--role-arn`, exit codes) + index of the per-command reference pages under `docs/`. The per-resource-type **wait-semantics table** (`--no-wait` / default / `--full-wait` next to CloudFormation and Terraform) lives in [docs/cli-deploy.md](docs/cli-deploy.md) — cdkd is template-compatible with CloudFormation but NOT wait-semantics-identical; that table is the single source of truth for what "done" means per type
+- **[docs/cli-reference.md](docs/cli-reference.md)** - CLI reference overview (output streams, `--region`, `--role-arn`, exit codes) + index of the `cdkd` command reference pages it links. The per-resource-type **wait-semantics table** (`--no-wait` / default / `--full-wait` next to CloudFormation and Terraform) lives in [docs/cli-deploy.md](docs/cli-deploy.md) — cdkd is template-compatible with CloudFormation but NOT wait-semantics-identical; that table is the single source of truth for what "done" means per type
 - **[docs/supported-resources.md](docs/supported-resources.md)** - Full per-type SDK Provider / Cloud Control coverage table
 - **[docs/import.md](docs/import.md)** - `cdkd import` full guide (modes, flags, CFn migration, provider coverage)
 - **[docs/provider-development.md](docs/provider-development.md)** - Provider implementation guide: the interface, examples, registration, and the steps to add one. The rules each step implies (error handling, pre-flight refusal, removal semantics, drift read-back, property coverage) are in [docs/provider-rules.md](docs/provider-rules.md)
