@@ -80,7 +80,8 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     ['nested stack Outputs', NESTED_STACK],
   ])('refuses to advise a local re-import for the %s shape', (_name, read) => {
     const remedy = remedyFor([read]);
-    expect(remedy).toContain('One of the reads above resolves');
+    // Exactly one read in total, so the subject is singular and definite.
+    expect(remedy).toContain('The read above resolves');
 
     // No command at all — a `--resource` here cannot reach the other stack's
     // record, and advising one is what named a wrong-but-real id before.
@@ -89,13 +90,21 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
     expect(remedy).toContain('producer stack');
   });
 
-  it('numbers the cross-stack sentence by the FOREIGN count, not the local one', () => {
-    // Keyed to the local arm, two foreign reads rendered "The read above
-    // resolves" while the message had just listed both.
+  // THREE arms, because two of them were each exact for one case and wrong for
+  // another: keyed to the LOCAL arm, two foreign reads rendered "The read
+  // above resolves" while the message had just listed both; keyed only to the
+  // foreign count, a lone read rendered "One of the reads", which implies a set.
+  it('numbers the cross-stack sentence across all three arms', () => {
+    // One read in total -> definite singular.
+    expect(remedyFor([IMPORT_VALUE])).toContain('The read above resolves through');
+    // Several reads, one of them foreign -> partitive singular.
+    expect(remedyFor(['Cr.Secret', IMPORT_VALUE])).toContain(
+      'One of the reads above resolves through'
+    );
+    // Several foreign -> plural.
     expect(remedyFor([IMPORT_VALUE, GET_STACK_OUTPUT])).toContain(
       'Some of the reads above resolve through'
     );
-    expect(remedyFor([IMPORT_VALUE])).toContain('One of the reads above resolves through');
   });
 
   it('never advises the nested-stack shape as a local id, which the typo guard would ACCEPT', () => {

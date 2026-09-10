@@ -1629,8 +1629,11 @@ export class DeployEngine {
    *
    * An entry matching NEITHER is treated as foreign, which is the safe
    * direction: the foreign arm names no command, so an unrecognised shape
-   * (a hand-written template's non-alphanumeric logical id) costs a vaguer
-   * message rather than a destructive one.
+   * costs a vaguer message rather than a destructive one. (No example is given
+   * for that arm on purpose: an earlier revision named a non-alphanumeric
+   * logical id, which CloudFormation's own grammar forbids, so nothing reaching
+   * cdkd could be it. The arm is a fail-safe for a shape not yet enumerated,
+   * not for a case anyone has produced.)
    */
   private static maskedRecordRemedyFor(
     reads: readonly string[],
@@ -1641,8 +1644,10 @@ export class DeployEngine {
     // Spelled locally rather than imported: the only exported copy lives in
     // `src/cli/commands/retire-cfn-stack.ts`, and a CLI -> deployment import
     // edge for one string literal is the wrong trade.
-    // `intrinsic-function-resolver.ts` keeps its own module-local copy for the
-    // same reason.
+    // `intrinsic-function-resolver.ts`, `secret-redaction.ts` and
+    // `type-change-guard.ts` each keep their own copy for that same reason —
+    // theirs at module scope, this one function-local because this is its only
+    // reader.
     const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 
     const targetOf = (read: string): string | undefined => LOCAL_MASKED_READ.exec(read)?.[1];
@@ -1677,12 +1682,19 @@ export class DeployEngine {
       );
     }
     if (foreignReads.length > 0) {
-      // The number follows the FOREIGN count, which is what this sentence is
-      // about — keying it to the local arm rendered "The read above resolves"
-      // over two foreign entries.
-      const one = foreignReads.length === 1;
+      // THREE arms, because two of them were each exact for one case and wrong
+      // for another. The subject is the FOREIGN reads, so the number follows
+      // their count (keying it to the local arm rendered "The read above
+      // resolves" over two of them) — but "One of the reads" implies a set, so
+      // it is wrong when the message listed exactly one read in total.
+      const subject =
+        reads.length === 1
+          ? 'The read above resolves'
+          : foreignReads.length === 1
+            ? 'One of the reads above resolves'
+            : 'Some of the reads above resolve';
       parts.push(
-        `${one ? 'One of the reads above resolves' : 'Some of the reads above resolve'} through ` +
+        `${subject} through ` +
           `ANOTHER stack (an Fn::ImportValue, an Fn::GetStackOutput, or a nested stack's ` +
           `Outputs), whose masked record lives in that stack's state — re-importing anything in ` +
           `this stack cannot clear it; act on the producer stack instead.`
