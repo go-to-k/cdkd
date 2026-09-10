@@ -1744,6 +1744,11 @@
       "scenarios": []
     },
     {
+      "name": "retain-orphan-redeploy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rollback-command",
       "annotated": false,
       "scenarios": []
@@ -2892,6 +2897,7 @@
     "recreate-via-sdk-provider",
     "rename-refactor",
     "replacement-immutable-name",
+    "retain-orphan-redeploy",
     "rollback-command",
     "s3-analytics-inventory",
     "s3-event-notification",

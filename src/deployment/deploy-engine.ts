@@ -75,6 +75,7 @@ import {
   type StateOutputReadEntry,
   type ResourceState,
   type ResourceChange,
+  type ChangeType,
 } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import {
@@ -4009,6 +4010,16 @@ export class DeployEngine {
         )
       );
 
+      // Issue #2901's sibling, #2902: a plain CREATE colliding with a name
+      // cdkd itself derived. Emitted as its own line so the AWS sentence above
+      // stays verbatim, and masked like it — the id is template-derived, so a
+      // stack or logical id built from a resolved secret would otherwise reach
+      // a DEFAULT-level line the one above is masked for.
+      const orphanAdvice = this.orphanedNameCollisionAdvice(change.changeType, logicalId, error);
+      if (orphanAdvice) {
+        this.logger.error(this.maskForResource(logicalId, orphanAdvice));
+      }
+
       // #808 best-effort event: per-resource op failed. Error metadata
       // only — no resource properties.
       this.recordEvent({
@@ -6556,6 +6567,109 @@ export class DeployEngine {
    * {@link looksLikeCdkdGeneratedName}) and falls back to the pre-#1636
    * wording, which stays correct for the template-named resource.
    */
+  /**
+   * The plain-CREATE sibling of {@link replacementNameOrigin} (issue
+   * [#2902](https://github.com/go-to-k/cdkd/issues/2902)).
+   *
+   * A CREATE that collides on a name cdkd DERIVED is very likely a resource
+   * cdkd itself left behind: `DeletionPolicy: Retain` makes a rollback drop
+   * the state record while leaving the resource in AWS (CloudFormation
+   * semantics, and deliberate), and cdkd's generated names carry no random
+   * component (`generateResourceName`) — so the next deploy asks AWS for
+   * exactly the name the orphan still holds, fails, rolls back again, and
+   * repeats forever. Before this, the user saw only the bare AWS sentence:
+   * nothing named the collision's cause and nothing named a way out, so the
+   * reported recovery was hand-deleting resources through the AWS API.
+   *
+   * CloudFormation never shows this because its generated names carry a
+   * random suffix, so a retained orphan cannot collide with a later deploy.
+   * The breakage is that combination — CFn's retain semantics with cdkd's
+   * deterministic naming — rather than either half, which is why the fix here
+   * is a diagnosis and a remedy rather than a behaviour change. Whether cdkd
+   * should instead RE-ADOPT the retained resource is issue
+   * [#2914](https://github.com/go-to-k/cdkd/issues/2914).
+   *
+   * Returns `undefined` — leaving the pre-existing wording untouched — for
+   * every case it cannot vouch for:
+   *
+   * - not a CREATE. This one is DEFENCE IN DEPTH rather than a live
+   *   discriminator, and saying so is the point: a replacement collision is
+   *   refused UPSTREAM at the `NAMED_REPLACEMENT_COLLISION` sites and never
+   *   reaches this catch at all (measured — deleting this guard leaves the
+   *   suite green). The guard stands because those two messages must not be
+   *   confused if a future path does arrive here: their remedy is to RENAME,
+   *   which does not recover an orphan, while adopting a live resource that is
+   *   merely being replaced would be wrong in the other direction. What IS
+   *   fenced is that distinctness, in
+   *   `tests/unit/deployment/deploy-engine-orphaned-name-collision.test.ts`;
+   * - not a name collision;
+   * - no physical id on the error (a create that failed BEFORE the AWS call
+   *   never names one). At RUNTIME this is subsumed by the next guard --
+   *   `looksLikeCdkdGeneratedName` refuses a falsy id on its own first line,
+   *   measured: deleting this check leaves the suite green. It stays for the
+   *   TYPE narrowing the message interpolation needs, and so the refusal is
+   *   readable here rather than inferred from another module;
+   * - a name cdkd did not derive. That last one is the load-bearing refusal:
+   *   a user-supplied name may collide with a resource of someone else's
+   *   entirely, and telling that user to `cdkd import` it would be advice to
+   *   adopt a resource this stack does not own. `looksLikeCdkdGeneratedName`
+   *   answering `false` for an unresolvable case is the safe direction here
+   *   for the same reason it is at the replacement sites.
+   */
+  private orphanedNameCollisionAdvice(
+    changeType: ChangeType,
+    logicalId: string,
+    error: unknown
+  ): string | undefined {
+    if (changeType !== 'CREATE') return undefined;
+    if (!(error instanceof ProvisioningError)) return undefined;
+    const physicalId = error.physicalId;
+    if (!physicalId) return undefined;
+    if (!isNameCollisionError(error.message)) return undefined;
+    if (!looksLikeCdkdGeneratedName(physicalId, logicalId, getCurrentStackName())) return undefined;
+
+    const diagnosis =
+      `${logicalId}: the name AWS reports as taken (${physicalId}) is one cdkd DERIVED from ` +
+      `the logical id, and that derivation has no random component — so this is most likely a ` +
+      `resource an earlier cdkd run left behind. A rollback leaves a resource carrying ` +
+      `DeletionPolicy: Retain in AWS and drops it from state (CloudFormation does the same), ` +
+      `and the next deploy then asks AWS for the name it still holds.`;
+
+    // Only advise `cdkd import` for a type that can actually be imported.
+    // `runImportForResource` SKIPS a provider with no `import` implementation
+    // (`skipped-no-impl`) rather than failing, so a blanket recommendation
+    // would not break anything — it would just send the user through a command
+    // that reports "provider does not implement import (yet)" and leaves them
+    // where they started. Naming a remedy whose precondition the code never
+    // checks is the defect class issue
+    // [#2610](https://github.com/go-to-k/cdkd/issues/2610) swept, so the
+    // precondition is checked here. A registry lookup that throws (an
+    // unregistered type) takes the delete-only arm for the same reason.
+    let canImport = false;
+    try {
+      canImport =
+        typeof this.providerRegistry.getProvider(error.resourceType).import === 'function';
+    } catch {
+      canImport = false;
+    }
+
+    if (!canImport) {
+      return (
+        `${diagnosis} cdkd cannot adopt ${error.resourceType} back into state (its provider ` +
+        `implements no import), so the way forward is to delete ${physicalId} in AWS — after ` +
+        `confirming it holds nothing you need, since Retain is what kept it — and re-deploy.`
+      );
+    }
+
+    return (
+      `${diagnosis} To recover, adopt it back into state instead of re-creating it: ` +
+      `cdkd import ${getCurrentStackName() ?? '<stack>'} --resource ${logicalId}=${physicalId} ` +
+      `(a selective import merges into existing state and needs no --force while the resource ` +
+      `is absent from it). If it is NOT a resource you want to keep, delete it in AWS and ` +
+      `re-deploy instead.`
+    );
+  }
+
   private replacementNameOrigin(
     logicalId: string,
     physicalId: string

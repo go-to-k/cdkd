@@ -1,0 +1,9 @@
+- **A deploy that collides with a resource cdkd itself left behind now says so, and names the command that recovers it** (issue [#2902](https://github.com/go-to-k/cdkd/issues/2902)). A resource carrying `DeletionPolicy: Retain` stays in AWS when a deploy rolls back and its state record is dropped — CloudFormation semantics, and what `Retain` is for. But cdkd's generated physical names carry no random component, so the next `cdkd deploy` asks AWS for a name the orphan still holds, fails with an already-exists error, rolls back again, and repeats: the stack cannot be redeployed at all. The reporter's only way out was hand-deleting resources through the AWS API, because nothing named the collision or a remedy. CloudFormation never shows this — its names carry a random suffix.
+
+  On a plain CREATE whose colliding name is one cdkd DERIVED, the failure is now followed by a line naming the cause and giving the adoption command (`cdkd import <stack> --resource <id>=<name>`). This is a diagnosis, not a behaviour change. Whether a rollback should instead RE-ADOPT the retained resource is issue [#2914](https://github.com/go-to-k/cdkd/issues/2914).
+
+  **It stays silent for a name cdkd did not derive** — that resource may be someone else's, and advising `cdkd import` would be advising you to adopt it. It also checks the type can be imported before naming the command, and says so plainly when it cannot.
+
+  `docs/troubleshooting.md` gains this case, and its physical-name description is corrected: `<StackName>-<LogicalId>` holds only when it fits the type's length limit — otherwise cdkd truncates and appends 8 hex characters.
+
+  Changed: `src/deployment/deploy-engine.ts`, `docs/troubleshooting.md`. Fences: `deploy-engine-orphaned-name-collision.test.ts` (five of seven cases are the refusals). Live: the new `tests/integration/retain-orphan-redeploy`, which runs the command the message emitted and asserts the redeploy then succeeds.

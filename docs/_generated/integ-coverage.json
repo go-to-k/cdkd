@@ -3645,6 +3645,7 @@
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
+        "retain-orphan-redeploy",
         "rollback-failure-injection",
         "s3-replication-and-filter",
         "scheduler-custom-group",
@@ -3841,6 +3842,10 @@
         ],
         "recreate-via-sdk-provider": [
           "l2"
+        ],
+        "retain-orphan-redeploy": [
+          "l2",
+          "literal"
         ],
         "rollback-failure-injection": [
           "l2"
@@ -4651,6 +4656,7 @@
         "loggroup-never-expire-guard",
         "monitoring",
         "remove-protection",
+        "retain-orphan-redeploy",
         "route53",
         "scheduled-task",
         "stepfunctions-logging",
@@ -4716,6 +4722,9 @@
         ],
         "remove-protection": [
           "l1",
+          "literal"
+        ],
+        "retain-orphan-redeploy": [
           "literal"
         ],
         "route53": [
@@ -4891,6 +4900,7 @@
         "propagation-races-2",
         "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
+        "retain-orphan-redeploy",
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
         "s3-cloudfront",
@@ -5027,6 +5037,9 @@
         ],
         "recreate-via-cc-api": [
           "l1"
+        ],
+        "retain-orphan-redeploy": [
+          "literal"
         ],
         "rollback-replay-effective-props": [
           "literal"
@@ -5219,6 +5232,7 @@
         "monitoring",
         "nested-stack-3level",
         "replacement-fanout",
+        "retain-orphan-redeploy",
         "s3-lifecycle",
         "scheduled-task",
         "serverless-api",
@@ -5307,6 +5321,9 @@
         ],
         "replacement-fanout": [
           "l2",
+          "literal"
+        ],
+        "retain-orphan-redeploy": [
           "literal"
         ],
         "s3-lifecycle": [
