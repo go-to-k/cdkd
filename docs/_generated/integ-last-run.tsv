@@ -140,7 +140,7 @@ iam-role-prefixed-name-update	2026-07-26T16:45:28Z	PASS	71	verify.sh	#1160 iam-r
 import-attributes	2026-08-10T05:19:05Z	PASS	39	verify.sh	0810 P2 sweep b6; attr reconstruct + destroy clean, 1 del 0 err
 import-auto-mode	2026-08-12T05:44:00Z	PASS	269	verify.sh	final source incl. #1672 message; rc ok, orph clean
 import-nested-stack	2026-08-10T04:45:42Z	PASS	133	verify.sh	0810 sweep b3; 1st attempt failed on stale global cdk CLI 2.1120.0 (schema 54 needs >=2.1135.1, not a cdkd bug); PASS after vp update -g aws-cdk, 14 steps, 3 del 0 err
-import-secret-observed	2026-09-10T08:15:35Z	PASS	155	verify.sh	rc0, 14 assertions, 0 surviving versions
+import-secret-observed	2026-09-10T23:12:04Z	PASS	141	verify.sh	rc0, 14 assertions, 0 surviving versions; #2885 baseline-rules swap
 import-value-strong-ref	2026-08-20T11:02:34Z	PASS	118	verify.sh	#2057 lane: regression check on state.imports[] and the destroy-time strong-ref refusal, the pre-existing bug this lane's union fix repairs; all state files removed, 0 orphans
 importvalue-chain	2026-08-10T05:50:57Z	PASS	76	verify.sh	0810 P2 sweep b10; 3-stack A->B->C ImportValue chain, exports index purged, 0 orph
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
