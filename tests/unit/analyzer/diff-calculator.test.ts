@@ -1511,9 +1511,13 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
   });
 
   it('does NOT mutate the desired template (resolveBestEffort resolves a clone)', async () => {
-    // The intrinsic resolver mutates its input in place; resolveBestEffort must
-    // clone first so the raw Fn::GetAtt survives for the deploy phase to
-    // re-resolve against the in-flight (new) upstream value.
+    // resolveBestEffort is handed a leaf of the SHARED desired template, so it
+    // must clone before passing it to an `IntrinsicResolveFn` — whatever that
+    // function does with what it is given — and the raw Fn::GetAtt must survive
+    // for the deploy phase to re-resolve against the in-flight (new) upstream
+    // value. The resolver this case injects mutates in place; the real one no
+    // longer does (go-to-k/cdkd#2764 retired `resolveSub`'s write-back), which
+    // is why the mutation is injected rather than relied upon.
     const state = baseState();
     state.resources['Base'] = {
       physicalId: 'base',
@@ -1537,8 +1541,10 @@ describe('DiffCalculator - replacement propagation to dependents (issue #807)', 
       },
     };
 
-    // A MUTATING resolver: it rewrites the Fn::Sub variable map's GetAtt in place
-    // (as the real intrinsic resolver does).
+    // A MUTATING resolver: it rewrites the Fn::Sub variable map's GetAtt in
+    // place. NOT what the real resolver does — go-to-k/cdkd#2764 retired that
+    // write-back — and injected here precisely because the clone must hold
+    // against ANY resolver. It is what keeps this case discriminating.
     const mutatingResolver = async (value: unknown): Promise<unknown> => {
       const walk = (v: unknown): unknown => {
         if (v === null || typeof v !== 'object') return v;

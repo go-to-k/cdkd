@@ -158,11 +158,16 @@ export class DiffCalculator {
     const processedLogicalIds = new Set<string>();
 
     // Snapshot each resource's `Fn::GetAtt` / `Fn::Sub`-`${X.Attr}` references
-    // from the RAW template, BEFORE the comparison loop below resolves (and
-    // mutates in place) the desired property intrinsics. Used by
-    // promoteInPlaceAttributeDependents — once `resolveBestEffort` runs, a
-    // GetAtt to an in-place-referenceable resource has been replaced by its
-    // resolved current value and can no longer be detected.
+    // from the RAW template, in one pass, for promoteInPlaceAttributeDependents
+    // below: it needs the references a property declared, while the comparison
+    // loop reads the RESOLVED values, where a GetAtt to an
+    // in-place-referenceable resource has already been replaced by its resolved
+    // current value.
+    // (This said the loop "mutates in place" the desired property intrinsics
+    // and that a GetAtt "can no longer be detected" once `resolveBestEffort`
+    // runs. Both were false from the commit that wrote them — go-to-k/cdkd#939
+    // added the clone in the same change, so the template keeps its raw
+    // intrinsics.)
     const rawGetAttRefs = new Map<string, Map<string, Map<string, Set<string>>>>();
     for (const [logicalId, desiredResource] of Object.entries(desiredResources)) {
       if (desiredResource.Type === 'AWS::CDK::Metadata') continue;
@@ -784,14 +789,19 @@ export class DiffCalculator {
     const resolved: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(properties)) {
       try {
-        // Resolve a CLONE: the intrinsic resolver mutates its input in place
-        // (e.g. it rewrites an `Fn::Sub` variable map's `Fn::GetAtt` to the
-        // resolved current-state value). Mutating the shared desired template
-        // here would bake the OLD value into the template, so the deploy phase's
-        // later re-resolution (against the in-flight state, where an in-place-
-        // updated upstream now holds its NEW value) would still see the stale
-        // literal and skip a genuinely-changed dependent. Cloning keeps the raw
-        // intrinsics intact for the deploy phase.
+        // Resolve a CLONE. The reason is the OWNERSHIP contract, not any
+        // resolver's behaviour: this value is a leaf of the SHARED desired
+        // template, which the deploy phase re-resolves later against the
+        // in-flight state, so nothing here may let a resolver write through it.
+        // A resolved current-state value baked in here would still be read as a
+        // literal then, and a genuinely-changed dependent of an in-place-updated
+        // upstream would be skipped. Cloning makes that impossible whatever the
+        // resolver does.
+        // (It is not true that the resolver mutates its input today: `resolveSub`
+        // wrote back into the caller's `Fn::Sub` variable map until
+        // go-to-k/cdkd#2764 retired it, and this comment named that write-back.
+        // Kept as history so the clone is not deleted as dead weight, which is
+        // exactly what the contract forbids.)
         resolved[key] = await resolveFn(structuredClone(value));
       } catch {
         resolved[key] = value;
