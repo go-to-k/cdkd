@@ -24,11 +24,11 @@ import { dirname, join } from 'node:path';
  *    expensive of the copies and the least likely to be re-read.
  *
  * 2. The BROAD-SET TEST-NAME list -- which integ fixtures are broad enough to
- *    refresh the marker. SIX spellings: the hook's header comment, the hook's
- *    block message, `.markgate.yml`'s `integ-broad` comment, `/run-integ` step
- *    11, `/verify-pr` step 6, and `/pick-integ` step 2 -- plus `BROAD_SET_PIN`
- *    below, which is a seventh written-out spelling this fence also compares.
- *    `CLAUDE.md` carried one more and no longer does, for the same reason.
+ *    refresh the marker. Six spellings live in files: the hook's header
+ *    comment, the hook's block message, `.markgate.yml`'s `integ-broad`
+ *    comment, `/run-integ` step 11, `/verify-pr` step 6, and `/pick-integ`
+ *    step 2. The fence also compares `BROAD_SET_PIN` below. `CLAUDE.md`
+ *    carried one more and no longer does, for the same reason.
  *
  * Why a fence rather than the "keep in sync" comments the copies already carry:
  * both lists were measurably out of sync when this file was written. The

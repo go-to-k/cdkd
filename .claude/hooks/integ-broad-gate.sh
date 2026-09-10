@@ -33,7 +33,7 @@
 #      multi-resource, remove-protection, export). Narrow integs don't
 #      touch the sentinel, so they don't refresh this marker.
 #      The set is written out in this comment, the block message below,
-#      .markgate.yml and several skills. Do not enumerate them here:
+#      .markgate.yml and several skills. Do not list the copies here:
 #      tests/unit/scripts/cross-cutting-list-sync.test.ts holds the
 #      current population and compares every copy against the block
 #      message, which is the base.
