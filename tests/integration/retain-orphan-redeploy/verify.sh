@@ -76,6 +76,7 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Resolved post-deploy; used by assertions + cleanup.
 ROLE_NAME=""
 ROLE_LOGICAL_ID=""
+REDEPLOY_LOG=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -103,6 +104,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
+  rm -f "${REDEPLOY_LOG:-}"
   set -eu
 }
 
@@ -201,16 +203,36 @@ echo "    OK: redeploy failed AND named the cause"
 echo "==> Phase 4: follow cdkd's own remedy"
 # Parsed out of the message rather than hand-written: this is what makes the
 # assertion about the ADVICE and not about a command the author believed in.
-IMPORT_ARG=$(grep -o -- "--resource ${ROLE_LOGICAL_ID}=[A-Za-z0-9_+=,.@-]*" "${REDEPLOY_LOG}" | head -1)
+# The argument is SINGLE-QUOTED in the message (`shellQuote`, so a name
+# carrying shell metacharacters pastes inertly), and the quotes are part of what
+# the user would paste -- so the pattern accepts them and `eval` below re-parses
+# them exactly as a shell would. Matching the unquoted form is what the first
+# version did, and it broke the moment the quoting landed: the fixture caught
+# its own PR's change, which is the point of parsing the message rather than
+# rebuilding the command.
+#
+# `|| true` is load-bearing, not defensive: `grep -o` exits 1 on no match and
+# `pipefail` carries that past `head`, so errexit killed the script here and the
+# loud branch below -- the whole point of this phase -- never printed.
+IMPORT_ARG=$(grep -o -- "--resource '\?${ROLE_LOGICAL_ID}=[A-Za-z0-9_+=,.@-]*'\?" "${REDEPLOY_LOG}" | head -1 || true)
 if [ -z "${IMPORT_ARG}" ]; then
   echo "FAIL: the diagnosis carried no '--resource ${ROLE_LOGICAL_ID}=<name>' argument to run" >&2
   cat "${REDEPLOY_LOG}" >&2
   exit 1
 fi
 echo "    running: cdkd import ${STACK} ${IMPORT_ARG} --yes"
-# shellcheck disable=SC2086 # IMPORT_ARG is two shell words by construction
-node "${LOCAL_DIST}" import "${STACK}" ${IMPORT_ARG} \
-  --state-bucket "${STATE_BUCKET}" --yes
+# `eval` because the captured text carries the message's own single quotes, and
+# the command under test is what a user PASTES -- so the shell must re-parse
+# them the same way. The captured value is constrained by the grep pattern
+# above to `--resource` plus the IAM name charset plus the quotes, so nothing
+# else can reach the shell here.
+# shellcheck disable=SC2086,SC2294
+# NOTE: `cdkd import` declares no `--region`; it reads AWS_REGION / the profile.
+# Stated because every OTHER invocation here passes one, and the state key
+# asserted just below is region-scoped -- so the asymmetry is deliberate, not an
+# omission to "fix".
+eval node '"${LOCAL_DIST}"' import '"${STACK}"' "${IMPORT_ARG}" \
+  --state-bucket '"${STATE_BUCKET}"' --yes
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 REIMPORTED=$(echo "${STATE}" | jq -r --arg k "${ROLE_LOGICAL_ID}" '.resources[$k].physicalId // ""')

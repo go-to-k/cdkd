@@ -126,7 +126,10 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
    * without the scope takes the unresolvable branch and passes for the wrong
    * reason -- so every negative case here would be vacuous.
    */
-  async function attempt(changeType: ChangeType = 'CREATE'): Promise<string[]> {
+  async function attempt(
+    changeType: ChangeType = 'CREATE',
+    stackName: string = STACK
+  ): Promise<string[]> {
     const engine = makeEngine();
     const change: ResourceChange = {
       logicalId: LOGICAL,
@@ -151,8 +154,8 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
       }
     ).provisionResource.bind(engine);
 
-    await withStackName(STACK, () =>
-      provisionResource(LOGICAL, change, {}, STACK, template).then(
+    await withStackName(stackName, () =>
+      provisionResource(LOGICAL, change, {}, stackName, template).then(
         () => {
           throw new Error('expected the create to fail');
         },
@@ -173,7 +176,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // and WHAT to run. Asserted separately so a reword that drops one is red.
     expect(advice).toContain(`${STACK}-${LOGICAL}`);
     expect(advice).toContain('DeletionPolicy: Retain');
-    expect(advice).toContain(`cdkd import ${STACK} --resource ${LOGICAL}=${STACK}-${LOGICAL}`);
+    expect(advice).toContain(`cdkd import ${STACK} --resource '${LOGICAL}=${STACK}-${LOGICAL}'`);
   });
 
   it('leaves the raw AWS sentence intact on its own line', async () => {
@@ -231,11 +234,17 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // physicalId the create-first attempt then collides with. That matters:
     // the first version passed an EMPTY state map, which never reaches the
     // replacement branch at all, so it was green with the CREATE guard deleted
-    // (measured). The engine refuses upstream at `NAMED_REPLACEMENT_COLLISION`
-    // and never reaches the catch this issue's advice lives in, which is why
-    // the `changeType !== 'CREATE'` guard there is defence in depth rather than
-    // a live discriminator -- and why the assertion here is about the two
-    // messages staying DISTINCT rather than about that guard.
+    // (measured).
+    //
+    // The refusal DOES reach the catch the advice lives in -- the
+    // `NAMED_REPLACEMENT_COLLISION` throw happens inside `provisionResourceBody`,
+    // called inside the same `try`, and the `requires replacement` assertion
+    // below only passes BECAUSE it was logged there. What refuses it is the
+    // `ProvisioningError` check (the upstream throws `CdkdError`), so deleting
+    // either that guard or the CREATE guard alone leaves this green. The
+    // assertion is therefore about the two messages staying DISTINCT, which is
+    // the property that matters: one says RENAME, which does not recover an
+    // orphan.
     const engine = makeEngine();
     const change: ResourceChange = {
       logicalId: LOGICAL,
@@ -288,6 +297,68 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     // ...and this issue's advice stayed out of it.
     expect(adviceIn(lines)).toBeUndefined();
     expect(lines.some((l) => l.includes('cdkd import'))).toBe(false);
+  });
+
+  it('fires for the TRUNCATED name form the issue actually reported', async () => {
+    // `<prefix>-<8 hex>`, which `generateResourceName` produces once the plain
+    // derivation exceeds the type's length limit. This is the shape in issue
+    // #2902's own transcript (`...-ApiGatewayAccoun-19184149`), and it takes a
+    // DIFFERENT branch of `looksLikeCdkdGeneratedName` than the plain form
+    // every other case here uses -- deleting that branch left this file green
+    // before this case existed.
+    const truncated = `${STACK.slice(0, 12).toLowerCase()}-19184149`;
+    createError = collisionError(truncated);
+    const advice = adviceIn(await attempt());
+
+    expect(advice).toBeDefined();
+    expect(advice).toContain(truncated);
+  });
+
+  it('QUOTES a name carrying shell metacharacters into the pasteable command', async () => {
+    // `looksLikeCdkdGeneratedName` compares only the ALPHANUMERIC skeleton, so
+    // a name whose extra characters are all metacharacters passes the guard --
+    // and this line is built to be PASTED into a shell.
+    //
+    // `$()` and not `$(id)`: the skeleton strips only NON-alphanumerics, so a
+    // payload carrying letters changes it and the guard refuses first, which is
+    // what the first version of this case actually measured.
+    //
+    // The outcome is QUOTED, not suppressed. Suppression was the first
+    // expectation here and it was wrong: `shellQuote` single-quotes anything
+    // outside its safe set, so the payload pastes as an inert literal -- a
+    // better outcome than withholding the command.
+    const hostile = `${STACK}-${LOGICAL}$()`;
+    createError = collisionError(hostile);
+    const advice = adviceIn(await attempt());
+
+    expect(advice).toBeDefined();
+    expect(advice).toContain(`'${LOGICAL}=${hostile}'`);
+    // The metacharacters never appear OUTSIDE the quotes.
+    expect(advice).not.toContain(`--resource ${LOGICAL}=${hostile}`);
+  });
+
+  it('takes the delete-only arm inside a nested-stack child', async () => {
+    // A child deploys as `<parent>~<logicalId>`, and CDK's stack-name rule bars
+    // `~`, so no Cloud Assembly stack can carry that name -- `cdkd import`
+    // resolves its target from the assembly and would never find it. Printing
+    // the command there is the #2610 class one level down.
+    const nested = `Parent~${STACK}`;
+    createError = collisionError(`${nested}-${LOGICAL}`);
+    const advice = adviceIn(await attempt('CREATE', nested));
+
+    expect(advice).toBeDefined();
+    expect(advice).not.toContain('cdkd import');
+  });
+
+  it('tells the reader to confirm ownership before adopting', async () => {
+    // A cdkd-DERIVED name is predictable, so it is not proof the resource is
+    // this stack's: a globally-namespaced type can collide with another
+    // ACCOUNT's resource, and the same stack in another REGION derives the same
+    // name for one. The first revision asserted the orphan as certain.
+    const advice = adviceIn(await attempt());
+
+    expect(advice).toContain('CONFIRM IT IS YOURS FIRST');
+    expect(advice).toContain('another account');
   });
 
   it('does not offer import for a type whose provider cannot import', async () => {
