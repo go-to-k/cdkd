@@ -96,7 +96,7 @@ merging makes the PR title the release subject), `internal-pr-labels`,
 **One of the three deletions got a CI successor afterwards, and the correction is
 worth reading before applying the rule again.** `closes-paren-form` was deleted
 on the criterion and the criterion holds — but what the deletion LEFT was a
-prose row in `.claude/skills/verify-pr/SKILL.md`, and a skill step is exactly
+prose row in `/verify-pr` step 11 (`references/wrap-up.md`), and a skill step is exactly
 the instruction that gets skipped under time pressure, which is the argument the
 gate's own header made for existing. go-to-k/cdkd#2736 gave it
 `scripts/check-pr-closes-paren.ts`, which WARNS from `pr-content-checks.yml` and

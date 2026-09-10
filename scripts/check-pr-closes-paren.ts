@@ -27,7 +27,8 @@
  * NON-BLOCKING: it emits `::warning::` annotations and exits 0.
  *
  * That is weaker than the hook and stronger than what the retirement left
- * behind, which was a prose row in `.claude/skills/verify-pr/SKILL.md` step 11 --
+ * behind, which was a prose row in `/verify-pr` step 11
+ * (`.claude/skills/verify-pr/references/wrap-up.md`) --
  * exactly the kind of instruction that gets skipped under time pressure, which
  * is the argument the hook's own header made for existing (go-to-k/cdkd#2736).
  *

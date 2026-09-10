@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  cpSync,
+  existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -17,7 +25,33 @@ import {
  * green. Measured before this pin: removing `run-integ` left 705 pattern-scanned
  * lines, still over the aggregate floor.
  */
-const EXPECTED_TARGETS = ['review-pr', 'pick-integ', 'run-integ', 'verify-pr', 'CLAUDE.md'];
+// A SPLIT governed skill contributes its SKILL.md and every `references/*.md`
+// stage file, each as its own target. Listing them individually is the point:
+// go-to-k/cdkd#2930 moved `/verify-pr` step 8 -- the reviewer-tier text -- into
+// `references/code-review.md`, where the checker could not see it while still
+// reporting `verify-pr` as scanned. A rename or deletion of a stage file now
+// fails this equality instead of quietly shrinking the scanned set.
+const EXPECTED_TARGETS = [
+  'review-pr',
+  'pick-integ',
+  'run-integ',
+  'verify-pr',
+  'verify-pr/references/code-review.md',
+  'verify-pr/references/leftover-and-integ-gates.md',
+  'verify-pr/references/wrap-up.md',
+  'CLAUDE.md',
+];
+
+/**
+ * What the checker's own CONSTANTS must name — the governed skills, before the
+ * per-stage-file expansion above. Kept separate from EXPECTED_TARGETS because
+ * they answer different questions: this one fails when a skill is dropped from
+ * `GOVERNED_SKILLS`, that one when a stage file stops being scanned. Comparing
+ * the report against this list is what let the #2930 hole open in the first
+ * place — the constant was intact while the governed text had moved out of
+ * reach.
+ */
+const EXPECTED_CONSTANTS = ['review-pr', 'pick-integ', 'run-integ', 'verify-pr', 'CLAUDE.md'];
 
 // No per-target line floor: the report exposes only an aggregate, and the
 // LITERAL EXPECTED_TARGETS pin above is the real fence for a target silently
@@ -49,9 +83,13 @@ describe('verification-depth rule checker', () => {
 
   it('PATTERN-scans every governed target, pinned against a LITERAL list', () => {
     const report = checkVerificationDepthRule(REPO_ROOT);
-    // Literal, not `[...GOVERNED_SKILLS]` — see EXPECTED_TARGETS.
+    // Two DIFFERENT lists since the go-to-k/cdkd#2930 split, and conflating
+    // them is what would re-open the hole: the constants name the governed
+    // SKILLS, while the scanned targets expand each one over its stage files.
+    // Literal on both sides, never `[...GOVERNED_SKILLS]` — see the comments
+    // on the two constants.
     expect(report.patternScannedSkills).toEqual(EXPECTED_TARGETS);
-    expect([...GOVERNED_SKILLS, ...GOVERNED_ROOT_DOCS]).toEqual(EXPECTED_TARGETS);
+    expect([...GOVERNED_SKILLS, ...GOVERNED_ROOT_DOCS]).toEqual(EXPECTED_CONSTANTS);
   });
 
   // ─── real-code probes: prove the checker FAILS ────────────────────────
@@ -64,6 +102,14 @@ describe('verification-depth rule checker', () => {
         const dir = join(root, '.claude', 'skills', skill);
         mkdirSync(dir, { recursive: true });
         cpSync(join(REPO_ROOT, '.claude', 'skills', skill, 'SKILL.md'), join(dir, 'SKILL.md'));
+        // The `references/` dir too, or a probe mutating a stage file has
+        // nothing to mutate and passes for the wrong reason — which is exactly
+        // how the #2930 gap stayed invisible: these probes copied SKILL.md
+        // alone, so no probe COULD reach the governed text after it moved.
+        const refsSrc = join(REPO_ROOT, '.claude', 'skills', skill, 'references');
+        if (existsSync(refsSrc)) {
+          cpSync(refsSrc, join(dir, 'references'), { recursive: true });
+        }
       }
       mutate(root);
       return checkVerificationDepthRule(root);
@@ -131,6 +177,25 @@ describe('verification-depth rule checker', () => {
       writeFileSync(p, `${body}\n\nDrop the P2 rows to save a run.\n`);
     });
     expect(report.violations.some((v) => v.file.includes('pick-integ'))).toBe(true);
+  });
+
+  it('flags cost-based downscaling inside a SPLIT skill’s stage file', () => {
+    // The go-to-k/cdkd#2930 regression, pinned. Step 8's reviewer-tier text --
+    // the single thing this rule most exists to police -- moved out of
+    // `/verify-pr`'s SKILL.md into `references/code-review.md`. Measured on
+    // that branch before the fix: this exact sentence produced ZERO violations
+    // while `patternScannedSkills` still reported `verify-pr`, i.e. the target
+    // reported as scanned while its governed content was unreachable.
+    const report = withRepoCopy((root) => {
+      const p = join(root, '.claude', 'skills', 'verify-pr', 'references', 'code-review.md');
+      const body = readFileSync(p, 'utf8');
+      expect(body).toMatch(/pr-security-reviewer/);
+      writeFileSync(p, `${body}\n\nFor a small diff, skip the reviewers.\n`);
+    });
+    expect(
+      report.violations.some((v) => v.file.includes('code-review.md')),
+      'a stage file of a split governed skill must be pattern-scanned like its SKILL.md'
+    ).toBe(true);
   });
 
   it('honours a REASONED allow marker but rejects a bare one', () => {
