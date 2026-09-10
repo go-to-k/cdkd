@@ -1,0 +1,9 @@
+- **A Cognito user pool that consumes a same-deploy SMS (SNS-caller) IAM role no longer fails the deploy outright on IAM trust-policy propagation** (issue [#2901](https://github.com/go-to-k/cdkd/issues/2901)). CDK's `UserPool` L2 auto-creates that role for `mfaSecondFactor: {sms: true}`, and cdkd issued `CreateUserPool` 336ms after the role's own CREATE — measured in the reporter's `cdkd events` output — so AWS answered `InvalidSmsRoleTrustRelationshipException` / "Role does not have a trust relationship allowing Cognito to assume the role". No entry in `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS` matched it (verified against all three arrays: 0 of 49), so this was not a mis-shaped retry budget — `isRetryableTransientError` returned false and the create was **single-shot**. The same template deploys fine under `cdk deploy`, because CloudFormation's own latency lets IAM settle.
+
+  cdkd now retries it on the dense IAM-propagation grid, like the Firehose / Glue / Step Functions / CloudTrail / KMS races already in that table.
+
+  **One entry covers both of the calls that validate the role.** `SetUserPoolMfaConfig`, which cdkd issues right after the create to apply `EnabledMfas`, re-sends the same `SmsConfiguration`; its provider-local retry does not recognize this class, so it rethrows and the engine's outer `withRetry` takes the dense grid.
+
+  The entry anchors on the message tail rather than on the exception name the issue asked for, and leaves the service name out; the reasoning for both is at the entry itself in `retryable-errors.ts`.
+
+  Changed: `src/deployment/retryable-errors.ts`. Fences: `tests/unit/deployment/retryable-errors.test.ts` (pins that this message is matched by exactly the new pattern, plus the four near misses that must keep missing it) and `tests/unit/provisioning/cognito-provider.test.ts` (pins the inner-loop rethrow the entry's rationale depends on). Live coverage: a fifth edge in `tests/integration/propagation-races-2`.

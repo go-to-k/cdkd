@@ -120,6 +120,10 @@ cleanup() {
     aws kms schedule-key-deletion --key-id "${KEY_ID}" \
       --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1
   fi
+  if [ -n "${USER_POOL_ID}" ]; then
+    aws cognito-idp delete-user-pool --user-pool-id "${USER_POOL_ID}" \
+      --region "${REGION}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
@@ -201,11 +205,16 @@ KEY_ID=$(resolve_id "AWS::KMS::Key")
 # Two buckets share a type; resolve by output name instead.
 NOTIFY_BUCKET=$(echo "${STATE}" | jq -r '.outputs.NotifyBucketName // ""')
 POLICED_BUCKET=$(echo "${STATE}" | jq -r '.outputs.PolicedBucketName // ""')
+USER_POOL_ID=$(resolve_id "AWS::Cognito::UserPool")
+# FOUR roles share AWS::IAM::Role, so resolve_id's `first` would pick an
+# arbitrary one; the stack publishes this name as an output for that reason.
+SMS_ROLE_NAME=$(echo "${STATE}" | jq -r '.outputs.SmsRoleName // ""')
 
 echo "    instance=${INSTANCE_ID} profile=${INSTANCE_PROFILE_NAME} fn=${FUNCTION_NAME}"
 echo "    notifyBucket=${NOTIFY_BUCKET} policedBucket=${POLICED_BUCKET} key=${KEY_ID}"
+echo "    userPool=${USER_POOL_ID} smsRole=${SMS_ROLE_NAME}"
 
-for v in "${INSTANCE_ID}" "${INSTANCE_PROFILE_NAME}" "${FUNCTION_NAME}" "${NOTIFY_BUCKET}" "${POLICED_BUCKET}" "${KEY_ID}"; do
+for v in "${INSTANCE_ID}" "${INSTANCE_PROFILE_NAME}" "${FUNCTION_NAME}" "${NOTIFY_BUCKET}" "${POLICED_BUCKET}" "${KEY_ID}" "${USER_POOL_ID}" "${SMS_ROLE_NAME}"; do
   if [ -z "${v}" ] || [ "${v}" = "null" ]; then
     echo "FAIL: could not resolve one or more physical ids from state" >&2
     echo "${STATE}" | jq '{resources: (.resources | keys), outputs}' >&2
@@ -286,6 +295,43 @@ if ! echo "${KEY_POLICY}" | grep -qF "AllowFreshRoleUse"; then
 fi
 echo "    OK: KMS key Enabled + usable + policy references the fresh role principal"
 
+# --- Edge 5 assertion: UserPool bound the fresh SMS role, at BOTH call sites
+echo "==> Edge 5: Cognito UserPool referencing the fresh SMS role"
+POOL=$(aws cognito-idp describe-user-pool --user-pool-id "${USER_POOL_ID}" \
+  --region "${REGION}" --query 'UserPool' --output json)
+POOL_SNS_ARN=$(echo "${POOL}" | jq -r '.SmsConfiguration.SnsCallerArn // ""')
+if [ -z "${POOL_SNS_ARN}" ]; then
+  echo "FAIL: user pool has no SmsConfiguration.SnsCallerArn — CreateUserPool dropped it" >&2
+  echo "${POOL}" | jq '{SmsConfiguration, MfaConfiguration}' >&2
+  exit 1
+fi
+case "${POOL_SNS_ARN}" in
+  *":role/${SMS_ROLE_NAME}") ;;
+  *)
+    echo "FAIL: pool SnsCallerArn '${POOL_SNS_ARN}' does not name the fresh role ${SMS_ROLE_NAME}" >&2
+    exit 1
+    ;;
+esac
+
+# The SECOND validating call. Asserting only the pool's own SmsConfiguration
+# would pass with SetUserPoolMfaConfig never having succeeded -- and that call
+# re-checks the SAME role, so it is half the race this edge exists to cover.
+MFA=$(aws cognito-idp get-user-pool-mfa-config --user-pool-id "${USER_POOL_ID}" \
+  --region "${REGION}" --output json)
+MFA_MODE=$(echo "${MFA}" | jq -r '.MfaConfiguration // ""')
+MFA_SNS_ARN=$(echo "${MFA}" | jq -r '.SmsMfaConfiguration.SmsConfiguration.SnsCallerArn // ""')
+if [ "${MFA_MODE}" != "ON" ]; then
+  echo "FAIL: pool MfaConfiguration is '${MFA_MODE}', expected ON — SetUserPoolMfaConfig did not land" >&2
+  echo "${MFA}" >&2
+  exit 1
+fi
+if [ "${MFA_SNS_ARN}" != "${POOL_SNS_ARN}" ]; then
+  echo "FAIL: SMS MFA SnsCallerArn '${MFA_SNS_ARN}' != the pool's '${POOL_SNS_ARN}'" >&2
+  echo "${MFA}" >&2
+  exit 1
+fi
+echo "    OK: pool + SMS MFA config both bound the fresh role (${POOL_SNS_ARN})"
+
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -329,6 +375,15 @@ for b in "${NOTIFY_BUCKET}" "${POLICED_BUCKET}"; do
   assert_gone "bucket ${b} still exists after destroy" aws s3api head-bucket --bucket "${b}" --region "${REGION}"
 done
 echo "    OK: both S3 buckets gone"
+
+# User pool + its fresh SMS role gone. The pool is the resource issue #2902
+# reports SURVIVING a rollback under a RETAIN policy, and this fixture's pool
+# carries a deterministic name -- so a survivor here does not just leak, it
+# wedges the NEXT run of this fixture on an EntityAlreadyExists.
+assert_gone "user pool ${USER_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${USER_POOL_ID}" --region "${REGION}"
+echo "    OK: Cognito user pool gone"
+assert_gone "SMS role ${SMS_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${SMS_ROLE_NAME}"
+echo "    OK: fresh SMS role gone"
 
 # KMS key scheduled for deletion (KMS keys cannot be hard-deleted immediately).
 if gone_probe aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}"; then

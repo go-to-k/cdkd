@@ -167,6 +167,52 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // (Lambda + Alias + CodeDeploy canary); pinned by
   // tests/integration/codedeploy-lambda-deployment-group.
   'permissions required to assume the role',
+  // Cognito CreateUserPool / SetUserPoolMfaConfig validates that the
+  // cognito-idp.amazonaws.com service principal can assume the pool's
+  // `SmsConfiguration.SnsCallerArn` role at call time. CDK's `UserPool` L2
+  // auto-creates that SNS-publish role (`...UserPoolsmsRole...`) in the SAME
+  // stack whenever SMS MFA / SMS verification is configured, and cdkd's fast
+  // SDK path issues the pool create only ~336ms after the role's own CREATE
+  // (MEASURED, issue #2901 — from the reporter's `cdkd events` JSON), before
+  // IAM has propagated the trust policy to Cognito's assume layer. AWS rejects
+  // it with `InvalidSmsRoleTrustRelationshipException` / "Role does not have a
+  // trust relationship allowing Cognito to assume the role".
+  //
+  // NONE of the patterns above matched it — verified exhaustively against all
+  // three arrays rather than by eye, since several look like near misses:
+  // 'trust policy' is lower-case AND a different noun ("trust relationship"),
+  // 'Trusted Entity' is CodeBuild's wording, 'does not have required
+  // permissions' has the other word order, and every 'assume' entry above
+  // anchors on a phrasing AWS does not use here. So `isRetryableTransientError`
+  // returned false and the create was SINGLE-SHOT: not a mis-shaped budget, no
+  // retry at all. Neither escape applied either — the exception name is not in
+  // `THROTTLING_ERROR_NAMES` and the failure is HTTP 400.
+  //
+  // Anchored on the message TAIL rather than on the error CODE, which is not
+  // reachable from here: classification is deliberately message-only
+  // (`isIamPropagationError` below says so in its own doc comment) and
+  // `CognitoUserPoolProvider` interpolates `error.message` alone, never
+  // `error.name` — so a code-anchored entry would never fire. The service-name
+  // slot is left OUT of the anchor on the same reasoning as 'is unable to
+  // assume the role' above: AWS renders this sentence as "allowing <Service> to
+  // assume the role", so a sibling service reusing it is covered without a
+  // fourth wording having to be discovered in production. The only condition
+  // that can produce this sentence is a missing trust relationship, i.e. either
+  // this propagation window or its permanent twin, and the permanent twin only
+  // burns the bounded ~47.75s budget before surfacing.
+  //
+  // ONE entry covers BOTH call sites, and the reason is worth knowing before
+  // adding a second: `SetUserPoolMfaConfig` re-sends the SAME `SmsConfiguration`
+  // (see `buildMfaConfigRequest`), so it races the same role — but it runs
+  // inside `CognitoUserPoolProvider.retryOnTransientControlPlane`, whose private
+  // classifier matches only `ConcurrentModificationException` / "please retry" /
+  // "try again" / "in progress". This message is none of those, so that loop
+  // rethrows IMMEDIATELY, `create()`'s catch deletes the partially-created pool
+  // and re-throws a `ProvisioningError` embedding the AWS text, and the engine's
+  // outer `withRetry` — which this provider does not disable — takes the dense
+  // grid. Do NOT also widen the inner loop: it would spend its 3 attempts (7s)
+  // on the wrong grid before the outer one starts.
+  'does not have a trust relationship allowing',
   // Step Functions CreateStateMachine / UpdateStateMachine validates that the
   // states.amazonaws.com service principal can assume the same-stack IAM role
   // at create time. cdkd's fast SDK path issues the create only ~1s after the
