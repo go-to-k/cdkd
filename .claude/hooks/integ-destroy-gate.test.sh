@@ -275,6 +275,16 @@ run_msg_case "stale message says what --explain prints (#3010)" stale \
 run_msg_case "stale message rules out a bare peer merge as the cause (#3010)" stale \
   "$N_CAUSE" 'could not EVALUATE' "$payload_merge"
 
+# The third cause, fenced separately because a CLOSED enumeration is how this
+# paragraph was wrong the first time. Measured against markgate 0.4.1: widening
+# a `hash: diff` gate's `include:` while not one byte under the scope changes
+# flips `verify` 0 -> 1 with `(digest differs)` -- so it reaches THIS branch of
+# the message, and a reader told "an in-scope file moved on this branch" goes
+# hunting a file that did not. Trimming the clause back to two causes is the
+# regression this case exists to catch.
+run_msg_case "stale message names the include-list cause too (#3010)" stale \
+  'changes WHICH files are digested' 'could not EVALUATE' "$payload_merge"
+
 # --- ...and it must NOT be offered where it would be FALSE ---
 #
 # The causal paragraph explains a DIGEST mismatch. This gate also carries

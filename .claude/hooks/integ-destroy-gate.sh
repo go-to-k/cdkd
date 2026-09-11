@@ -359,10 +359,13 @@ case "$reason" in
   cat >&2 <<'EOF'
 `hash: diff` digests THIS branch's delta from merge-base(origin/main, HEAD), so
 a peer's merge landing on `origin/main` does not stale this marker by itself —
-it does not move that merge base. Two things do: an in-scope file changing ON
-THIS BRANCH, and merging or rebasing `origin/main` INTO this branch when the
-incoming change touches a file this branch also modified, which keeps that file
-in the delta while its base side moves under it.
+it does not move that merge base. What does: an in-scope file changing ON THIS
+BRANCH; merging or rebasing `origin/main` INTO this branch when the incoming
+change touches a file this branch also modified, which keeps that file in the
+delta while its base side moves under it; and editing this gate's `include:` /
+`exclude:` list, which changes WHICH files are digested with no file changing at
+all. The `--explain` output above tells them apart — it lists the delta the
+digest is taken over.
 
 Measured in issue #3010, where a hand-expanded include list missed an entry the
 branch really had changed and the gate looked broken.
