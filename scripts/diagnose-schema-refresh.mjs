@@ -82,8 +82,10 @@
  * parser (`parseSilentDropByType`), and differ only in shape:
  *
  *   - `--umbrella-checklist` renders every remaining property as a flat Markdown
- *     checklist. `.github/workflows/backfill-umbrella-sync.yml` splices it into
- *     the backfill umbrella's per-type INDEX.
+ *     checklist. NO workflow consumes it: go-to-k/cdkd#2949 moved the sync onto
+ *     `--umbrella-subissues`, and go-to-k/cdkd#2998 deleted the parent index it
+ *     had briefly fed. It survives as the offline, network-free answer to "what
+ *     remains", which `docs/schema-refresh-runbook.md` names.
  *   - `--umbrella-subissues` renders the same content grouped BY TYPE, as the
  *     JSON plan that workflow reconciles the per-type sub-issues against — one
  *     open issue per type with properties left, closed when the type empties and
@@ -2504,11 +2506,12 @@ export function subIssueEffort(count) {
  * One per-type sub-issue's BODY, rendered whole.
  *
  * EVERY line is generated, and the body says so in its own first screen. There
- * is no human-owned half here and deliberately no marker pair like the parent's:
- * the parent carries provenance that cannot be recomputed, while a per-type
- * issue carries only what the coverage map already knows. Anything a person
- * wants to add belongs in a COMMENT, which the reconciler never touches — and a
- * body with no protected region cannot be spliced wrongly.
+ * is no human-owned half and no protected region: a per-type issue carries only
+ * what the coverage map already knows, so there is nothing here a rewrite could
+ * destroy. Anything a person wants to add belongs in a COMMENT, which the
+ * reconciler never touches. (The PARENT is the opposite case — it carries
+ * provenance that cannot be recomputed — which is why nothing writes it at all
+ * since go-to-k/cdkd#2998.)
  *
  * That is also why the checkboxes are always rendered unchecked. A tick would be
  * overwritten on the next sync, so the box is a progress ILLUSION; what actually
@@ -2538,9 +2541,43 @@ export function renderSubIssueBody({ type, properties }) {
     '> empties, and REOPENED if the type regains a property.',
     '',
     `${count} writable ${count === 1 ? 'property' : 'properties'} of ${renderName(type)} ` +
-      `${count === 1 ? 'is' : 'are'} still dropped silently by its SDK provider. ` +
-      'Each one reaches AWS only once it is wired into the provider and lands in ' +
-      '`handledProperties`.',
+      `${count === 1 ? 'is' : 'are'} in the coverage map's \`silentDrop\` set: the SDK provider ` +
+      `does not wire ${count === 1 ? 'it' : 'them'}.`,
+    '',
+    '**A template using one does not lose it.** `ProviderRegistry.getProviderFor` sees the',
+    'unwired property and auto-routes the whole resource through Cloud Control, which',
+    'forwards the full property map to AWS (issue',
+    '[#614](https://github.com/go-to-k/cdkd/issues/614)). The value reaches AWS and works.',
+    'What the resource loses is the SDK fast path — and the route is STICKY, recorded as',
+    '`provisionedBy: "cc-api"` on its state record.',
+    '',
+    'So backfilling is a PERFORMANCE and coverage job, not a data-loss fix.',
+    '',
+    '**Wiring alone only helps resources deployed AFTER it.** The cc-api route is',
+    'recorded on the state record and is sticky, so an EXISTING resource stays on Cloud',
+    'Control however complete its provider becomes. Returning those needs the type',
+    'admitted to `STICKY_CC_MIGRATION_EXEMPT` in `src/provisioning/provider-registry.ts`',
+    'as `mode: "sdk-coverage"` — and that entry demands evidence, not assertion: a',
+    '`physicalIdForm` measured to be the SAME under both layers (false in general, for',
+    'composite ids and ARN-vs-name divergences) and an `integFixture` naming a real',
+    'directory with a row in the integ ledger. `sticky-exempt-registry.test.ts` fails the',
+    'unit suite for an entry whose parity arm was never run against real AWS. Budget that',
+    'separately from the wiring below; a pull request may reasonably do only the wiring',
+    'and say so.',
+    '',
+    'Two edges. A provider declaring `disableCcApiFallback` (or a non-provisionable type)',
+    'has no Cloud Control to fall back to, so cdkd refuses the deploy with an explicit',
+    'error instead.',
+    '',
+    'And `--allow-unsupported-properties` runs the OTHER way from what its name suggests:',
+    'it opts IN to the drop, keeping the resource on the SDK path and accepting that the',
+    'value is not written — the point being that the Cloud Control route is sticky. It is',
+    'not the flag that reaches Cloud Control — `--recreate-via-cc-api` is. (Nor is',
+    '`--allow-unsupported-types`: its route is only reachable when NO SDK provider is',
+    'registered, and every type in this campaign has one.) Routing is per RESOURCE',
+    'while the allow list is per `<Type>:<Prop>`, so the flag only keeps a resource on the',
+    'SDK path when EVERY drop on it is allow-listed: one un-allowed sibling sends the',
+    'whole resource to Cloud Control, and then the allow-listed properties reach AWS too.',
     '',
     '## Remaining',
     '',
@@ -2563,8 +2600,8 @@ export function renderSubIssueBody({ type, properties }) {
     '',
     'Session-fit: next (not this session) — a standing campaign, taken up when a',
     'lane chooses this type; nothing here is time-critical.',
-    `Severity: low — the properties are rejected at deploy-time pre-flight rather than applied wrongly, and \`--allow-unsupported-properties\` routes the resource through Cloud Control, so the user-visible cost is a narrower SDK path rather than silent data loss.`,
-    `Effort: ${subIssueEffort(count)} — ${count} ${count === 1 ? 'property' : 'properties'} to wire, each needing its SDK input shape, its drift read-back and an integration assertion that the value reached AWS.`,
+    `Severity: low — by default nothing is lost: the resource auto-routes through Cloud Control and the value is applied. The cost is the SDK fast path, plus the sticky cc-api route that follows it. The value IS dropped for anyone who opted in with \`--allow-unsupported-properties\`, which is the case this backfill removes the need for.`,
+    `Effort: ${subIssueEffort(count)} — ${count} ${count === 1 ? 'property' : 'properties'} to wire, each needing its SDK input shape, its drift read-back and an integration assertion that the value reached AWS. Returning ALREADY-DEPLOYED resources to the SDK path is separate and costs a measured physicalId-parity arm plus its own integ fixture; a pull request may do the wiring alone.`,
     'Estimate: ~1-2 h per property — the wire-side change is small; what eats the',
     'time is the integration fixture arm that reads the value back from AWS.',
     '',

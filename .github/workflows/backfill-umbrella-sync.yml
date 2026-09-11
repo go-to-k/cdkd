@@ -2,10 +2,21 @@
 # them from `main` whenever `main`'s coverage map moves.
 #
 # "Issues", plural, since go-to-k/cdkd#2949: the campaign is a PARENT issue
-# carrying prose, audit provenance and a per-type index, plus one generated
-# SUB-ISSUE per resource type that still has silently-dropped properties. This
-# job reconciles that set — creating, updating, reopening and closing — and then
-# splices the index into the parent.
+# carrying prose and audit provenance, plus one generated SUB-ISSUE per resource
+# type that still has silently-dropped properties. This job reconciles that set
+# — creating, updating, reopening and closing.
+#
+# It does NOT write the parent's body, and that is the whole of what
+# go-to-k/cdkd#2949 got wrong and go-to-k/cdkd#2998 removed. It used to splice a
+# per-type index between markers there; GitHub renders the sub-issue list and its
+# completion count natively, so the index duplicated title, number and state, and
+# its `- [ ]` rows offered a second place to record state that a reader could
+# hand-tick and the next sync would silently revert. The one thing the index did
+# not duplicate — a per-type remaining COUNT — turned out to have no reader: a
+# lane picks a type by the provider it is touching, and `/work-issues` excludes
+# these issues from triage entirely. Deleting the block deleted the marker
+# machinery with it, and with that the only write in this system that could
+# destroy human provenance.
 #
 # The shape changed because a single 288-row checklist could not be LINKED to
 # the work that advances it. A pull request wiring one type had nothing to
@@ -73,8 +84,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # The only write this job holds. The refresh job needed `issues: write`
-      # for this same splice; moving it here is what lets that job drop it.
+      # The only write this job holds, and it now reaches the sub-issues alone —
+      # the parent is READ, for its number. The refresh job needed `issues: write`
+      # for this same campaign; moving it here is what lets that job drop it.
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -135,7 +147,7 @@ jobs:
           # the same way accepting only rows once did for the flat checklist.
           jq -e '.types | type == "array"' /tmp/plan.json > /dev/null
 
-      - name: Reconcile the per-type sub-issues, then index them in the umbrella
+      - name: Reconcile the per-type sub-issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -155,34 +167,31 @@ jobs:
           # against the script's `SUBISSUE_LABEL` and against the skill's
           # exclusion by `tests/unit/scripts/sync-backfill-subissues.test.ts`.
           SUBISSUE_LABEL: backfill-type
-          # The block this workflow OWNS in the umbrella body. Everything
-          # outside it is human-written and never rewritten.
-          MARKER_BEGIN: "<!-- BEGIN generated: remaining silent-drop properties -->"
-          MARKER_END: "<!-- END generated -->"
         run: |
           set -euo pipefail
-          # REGENERATE the umbrella's checklist from the coverage map, rather
-          # than appending findings to it.
+          # REGENERATE the campaign's issues from the coverage map, rather than
+          # appending findings to them.
           #
           # Appending cannot express a type that was ticked off and later
           # regained a property: the `[x]` row stays checked and a second row
           # appears for the same type, so the reader sees one entry saying
           # "done" and another saying "not". Dedup does not fix that — the
-          # append model is what is wrong. The map is the umbrella's own stated
-          # completion criterion, so rendering FROM it means a type reappears
-          # when it regains a property and disappears when it is finished, with
-          # no hand-maintained state to go stale.
+          # append model is what is wrong. The map is the campaign's own stated
+          # completion criterion, so rendering FROM it means a type's issue
+          # reopens when it regains a property and closes when it is finished,
+          # with no hand-maintained state to go stale.
           #
           # Human provenance — which PR closed which slice — cannot be
-          # recomputed, so it lives OUTSIDE the markers and is never touched.
+          # recomputed, and it lives on the PARENT, which nothing here writes.
           #
           # The STATUS is captured separately from the value, because "GitHub
           # did not answer" and "no issue carries the label" are different
           # outcomes that must not share one exit. A `|| true` here collapses
           # them: a transport error renders as "found 0", warns, and exits
           # GREEN -- and since this workflow fires on a push, nothing re-runs
-          # it, so the umbrella silently stops tracking `main`. That is the
-          # same green-run-that-changed-nothing this file refuses at the write.
+          # it, so the campaign silently stops tracking `main`. That is the same
+          # green-run-that-changed-nothing this file refuses at the
+          # reconciliation below.
           if ! umbrella_json=$(gh issue list --state open --limit 100 \
                --label "${BACKFILL_UMBRELLA_LABEL}" --json number); then
             echo "::error::Could not ask GitHub which issue carries '${BACKFILL_UMBRELLA_LABEL}'. This is a transport or permission failure, not an empty result — re-run this workflow once it is resolved."
@@ -192,7 +201,7 @@ jobs:
           umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
 
           if [ "${umbrella_count}" != "1" ]; then
-            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). Refusing to guess which issue to write. Label exactly one and re-run this workflow."
+            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). Refusing to guess which issue the sub-issues belong under. Label exactly one and re-run this workflow."
             exit 0
           fi
 
@@ -205,112 +214,18 @@ jobs:
             --color BFD4F2 \
             --description "Generated per-resource-type slice of the backfill campaign; do not hand-edit the body."
 
-          # The reconciliation itself. Everything it refuses exits NON-ZERO and
-          # mutates nothing -- unlike the label / marker refusals above, which
-          # warn and exit 0. The asymmetry is deliberate and the script's header
-          # argues it: those are states a human fixes and a stale list is the
-          # cost, while every refusal inside the reconciler guards against
-          # WRITING the wrong thing across ~44 public issues, where a green run
-          # that changed nothing is not a notification.
+          # The reconciliation itself, and the only write this job makes. It is
+          # handed the umbrella's NUMBER and nothing else: the parent's body is
+          # not touched, because GitHub renders the sub-issue list and its
+          # progress natively and a second copy in the body is a surface that can
+          # disagree with it (issue
+          # https://github.com/go-to-k/cdkd/issues/2998).
           #
-          # INDEX_OUT is the per-type index the splice below writes into the
-          # parent. It is produced HERE, and not by the render step, because it
-          # carries the sub-issue NUMBERS -- which do not exist until the
-          # reconciliation has created them.
-          PARENT="${umbrella}" INDEX_OUT=/tmp/index.md \
-            node scripts/sync-backfill-subissues.ts /tmp/plan.json
-
-          # The SECOND shape fence, on the index this time rather than the plan.
-          # The first one (`jq -e` in the render step) attests to the reconciler's
-          # INPUT; this attests to its OUTPUT, which is the thing about to be
-          # written into a public issue. It is the flat checklist's old
-          # rows-or-sentinel guard, re-pointed: an earlier revision of this change
-          # dropped it on the reasoning that `jq` had replaced it, which was
-          # wrong -- the two guard different files at different stages, and
-          # `INDEX_OUT` is written by a code path `jq` never sees.
-          #
-          # Rows OR the finished-campaign sentinel, never rows alone: a genuinely
-          # finished campaign renders the sentinel, and accepting only rows would
-          # make that state unrepresentable -- the defect that once killed this
-          # step under `set -e` with no annotation and left the umbrella's stale
-          # rows standing permanently.
-          grep -qE '^- \[ \] |^_No remaining silent-drop properties' /tmp/index.md || {
-            echo "::error::The rendered index is neither rows nor the finished-campaign sentinel, so it was NOT spliced into umbrella #${umbrella}. The sub-issues are current; the parent is one run behind."
-            exit 1
-          }
-
-          U=$(mktemp)
-          # The chaining and the `-s` test are load-bearing, not style: the
-          # redirect truncates the file BEFORE gh runs, so an unchained recipe
-          # whose `view` fails would replace the umbrella's WHOLE body —
-          # destroying the provenance section this design exists to preserve.
-          # `tr -d '\r'` is not tidying. The markers are located with `grep -Fx`,
-          # which demands a byte-exact whole line, and a body edited in the
-          # GitHub WEB UI is stored with CRLF -- so the marker line is
-          # `<!-- BEGIN ... -->\r` and matches nothing. Measured on this repo, 3
-          # of the 100 most recent issue comments carry CR. Without the strip
-          # the count guard below reports 0 and 0 and asks a human to "fix the
-          # markers" that are already correct, forever -- and the recovery it
-          # names, hand-editing the issue, is what CREATES the CRLF. It also
-          # keeps the `cmp` idempotence test from seeing a phantom diff.
-          # FAILS the run, unlike the marker-shape refusals below it. Two things
-          # separate this case from those, and both point the same way. The
-          # umbrella's number was just resolved from a successful listing, so a
-          # read failure here is a transport or permission error by
-          # construction, not a state a human has misconfigured -- the same
-          # distinction the label lookup above draws, and collapsing it into one
-          # `exit 0` is exactly what that lookup's own comment refuses. And it
-          # lands AFTER the reconciler has already mutated the sub-issues, so a
-          # green exit leaves the parent's index describing the set as it was
-          # before this run, on a push-triggered workflow that nothing re-runs.
-          if ! { gh issue view "${umbrella}" --json body -q .body | tr -d '\r' > "${U}" && [ -s "${U}" ]; }; then
-            echo "::error::Could not read backfill umbrella #${umbrella}'s body after reconciling its sub-issues, so its index was NOT updated. The sub-issues are current; the parent is one run behind. Re-run this workflow once the issue is readable."
-            exit 1
-          fi
-
-          # Located by LINE NUMBER, and each marker must appear exactly once on
-          # a line of its own, with END after BEGIN. Presence alone is not
-          # enough to splice safely: two BEGIN/END pairs leave a second
-          # generated block that nothing ever updates, and END-before-BEGIN
-          # duplicates the body on every run. `-Fx` also means a marker quoted
-          # inside a human's prose is not mistaken for the real one.
-          begin_line=$(grep -Fxn -- "${MARKER_BEGIN}" "${U}" | cut -d: -f1 || true)
-          end_line=$(grep -Fxn -- "${MARKER_END}" "${U}" | cut -d: -f1 || true)
-          begin_count=$(printf '%s' "${begin_line}" | wc -w | tr -d ' ')
-          end_count=$(printf '%s' "${end_line}" | wc -w | tr -d ' ')
-          if [ "${begin_count}" != "1" ] || [ "${end_count}" != "1" ]; then
-            echo "::warning::Umbrella #${umbrella} must carry exactly one ${MARKER_BEGIN} line and one ${MARKER_END} line; found ${begin_count} and ${end_count}. There is nowhere to write the generated checklist without guessing which part of the body is generated. Fix the markers and re-run this workflow."
-            exit 0
-          fi
-          if [ "${end_line}" -le "${begin_line}" ]; then
-            echo "::warning::Umbrella #${umbrella} has ${MARKER_END} on line ${end_line}, at or before ${MARKER_BEGIN} on line ${begin_line}. Splicing that order would duplicate the body. Fix the markers and re-run this workflow."
-            exit 0
-          fi
-
-          N=$(mktemp)
-          # Everything up to and including BEGIN, the freshly rendered rows,
-          # then END onward. Splicing rather than rewriting is what keeps the
-          # human-owned half untouched.
-          #
-          # `head`/`tail` on the LINE NUMBERS above, not `sed` address ranges.
-          # `sed -n '1,/re/p'` starts searching for addr2 at line TWO, so a
-          # body whose first line is the BEGIN marker never closes the range:
-          # the head half printed the WHOLE body, and the result grew by one
-          # copy of the human provenance section on every push (measured). It
-          # also needed the marker text regex-escaped, a second way to get this
-          # wrong quietly.
-          head -n "${begin_line}" "${U}" > "${N}"
-          cat /tmp/index.md >> "${N}"
-          tail -n "+${end_line}" "${U}" >> "${N}"
-
-          if cmp -s "${U}" "${N}"; then
-            echo "::notice::Umbrella #${umbrella} checklist is already current."
-            exit 0
-          fi
-          # No `|| echo "::warning::"` on this one, unlike the refusals above.
-          # Those are states a human has to fix and the run reports honestly;
-          # this is the write itself, and a swallowed 403 here is the silent
-          # watch failure the refresh job's own `issues: write` comment was
-          # written about. A red run on `main` is a notification; a green run
-          # that changed nothing is not.
-          gh issue edit "${umbrella}" --body-file "${N}"
+          # Everything the reconciler refuses exits NON-ZERO and mutates nothing,
+          # unlike the label refusals above, which warn and exit 0. The asymmetry
+          # is deliberate and the script's header argues it: those are states a
+          # human fixes and a stale list is the cost, while every refusal inside
+          # the reconciler guards against WRITING the wrong thing across ~44
+          # public issues, where a green run that changed nothing is not a
+          # notification.
+          PARENT="${umbrella}" node scripts/sync-backfill-subissues.ts /tmp/plan.json
