@@ -804,7 +804,7 @@ export const CHECK_GUIDANCE = {
  * from — `renderDiagnosis` calls it rather than restating the condition — so
  * the count a PR is marked with and the prose inside that PR cannot disagree.
  * The pair had to be one function rather than two agreeing ones: the condition
- * has five terms and two of them (`nestedKeyUnparsed`, `unreadable`) are the
+ * has six terms and two of them (`nestedKeyUnparsed`, `unreadable`) are the
  * ones a second copy forgets, since neither renders a `### … a decision is
  * needed` heading of its own — an unparsed checker log and an unreadable
  * fixture are decisions with no section to remind a reader they exist.
@@ -819,7 +819,8 @@ export const CHECK_GUIDANCE = {
  * `property-coverage` rendered as clean, on the ordinary refresh shape.
  *
  * @param {Pick<DiagnosisInput, 'removed' | 'divergences'> &
- *   Partial<Pick<DiagnosisInput, 'nestedKeyUnparsed' | 'failedChecks' | 'unreadable'>>} input
+ *   Partial<Pick<DiagnosisInput,
+ *     'nestedKeyUnparsed' | 'failedChecks' | 'unreadable' | 'pendingSdkBump'>>} input
  * @returns {number}
  */
 export function countDecisions({
@@ -3117,14 +3118,25 @@ function main() {
   // from an earlier run — or one naming a property this cycle did not settle —
   // would otherwise hide a live decision behind a write that is not on the
   // branch.
-  const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
+  // Resolved through `fixturesDir` so this read and the `removed` it subtracts
+  // from name the same directory — `writeAutoTolerated` already takes that
+  // seam. The default path is byte-identical (`FIXTURES_DIR` IS that
+  // directory), and no behaviour changes today: measured 2026-09-12, a
+  // `--fixtures-dir` run reports all 134 fixtures "could not read", because
+  // `committedOf` follows the seam too and git cannot resolve a path outside
+  // the repository — so `removed` is empty there and the map is never
+  // consulted for a subtraction. The alignment is kept because this map became
+  // the whole subtraction oracle in go-to-k/cdkd#3005, and a caller that ever
+  // does reach both halves must not read one from a scratch tree and the other
+  // from the committed one.
+  const tolerancePath = join(fixturesDir, '_todo-backfill.json');
   /** @type {Record<string, Record<string, string>>} */
   let liveTolerance = {};
   if (existsSync(tolerancePath)) {
     // Wrapped, and the empty fallback is the SAFE direction: settling nothing
     // OVER-counts, while throwing here would kill the run before
     // `renderDiagnosis` writes anything — and the report going out is the
-    // priority this file argues for a few lines down, because the pull request
+    // priority this file argues for at the render call below, because the pull request
     // is how the human finds out at all. An unparseable tolerance file also
     // reds `property-coverage` on its own, so the state is reported rather than
     // swallowed.

@@ -273,7 +273,7 @@ const UNCOVERED_TERMS: Record<string, string> = {
   ].join(' '),
 };
 
-// TWO LINKS IN THE CHAIN ARE NOT ASSERTABLE HERE, named so they are not
+// THREE THINGS ARE NOT ASSERTABLE HERE, named so they are not
 // mistaken for things this file covers. An unassertable link left unstated is
 // worse than an uncovered term, because the header's argument then reads as
 // fully fenced.
@@ -302,14 +302,6 @@ const UNCOVERED_TERMS: Record<string, string> = {
 //    generator, not this relation.
 
 /**
- * The decision terms, read off the SHIPPED function rather than listed.
- *
- * `countDecisions` destructures its input, so the parameter names ARE the
- * terms. A seventh term added there lands in this set with no entry in
- * `CI_COVERAGE`'s `covers` and fails — which is the point: a decision class
- * nothing reddens is the exact defect #3005 reports.
- */
-/**
  * How many terms one destructuring LINE declares.
  *
  * Extracted, and fenced by a table below, because the line count alone only
@@ -331,12 +323,29 @@ const UNCOVERED_TERMS: Record<string, string> = {
  * So: strip bracketed, braced, parenthesised and quoted spans (a default must
  * not contribute a position), then count identifiers in declaration position
  * with the separator in a non-consuming alternation.
+ *
+ * BOUND, stated because a fence that over-claims is what this file exists to
+ * prevent: it is exact for PLAIN-IDENTIFIER lines with FLAT defaults, which is
+ * every line `countDecisions` has. The strip is regex, not a parser, so a
+ * NESTED brace default (`{ a: { b: 1 }, c: 2 }`) or a regex-literal default
+ * reads 2 — a FALSE RED, the safe direction, and neither shape exists here. In
+ * the other direction a second term that is a rest element, a computed key or a
+ * quoted key reads 1; those are caught by the `names.length === lines.length`
+ * arm instead, because none of them parses as a term name either.
  */
 const declarationCount = (line: string): number => {
-  const bare = line.replace(/\[[^\]]*\]|\{[^}]*\}|\([^)]*\)|'[^']*'|"[^"]*"/g, '');
+  const bare = line.replace(/\[[^\]]*\]|\{[^}]*\}|\([^)]*\)|'[^']*'|"[^"]*"|`[^`]*`/g, '');
   return (bare.match(/(?:^|,)\s*[A-Za-z_$][\w$]*/g) ?? []).length;
 };
 
+/**
+ * The decision terms, read off the SHIPPED function rather than listed.
+ *
+ * `countDecisions` destructures its input, so the parameter names ARE the
+ * terms. A seventh term added there lands in this set with no entry in
+ * `CI_COVERAGE`'s `covers` and fails — which is the point: a decision class
+ * nothing reddens is the exact defect #3005 reports.
+ */
 const decisionTerms = (): string[] => {
   const source = countDecisions.toString();
   const destructuring = source.match(/\(\s*\{([\s\S]*?)\}\s*\)/);
@@ -365,14 +374,8 @@ const decisionTerms = (): string[] => {
       `term name: ${JSON.stringify(lines)}. A term this pattern cannot read leaves the ` +
       'classification below with nothing to fail on.'
   ).toBe(lines.length);
-  // ...and the line count only bounds the name count while each line carries
-  // ONE term. `matchAll` with `/gm` yields at most one match per line, so
-  // `removed, divergences` on a single line parses as `removed` alone and the
-  // two counts still agree — a seventh term added beside a sixth would vanish
-  // with every floor and anchor still passing. Formatting makes that shape
-  // unreachable today; that is a property of the formatter, not of this fence,
-  // so it is asserted rather than relied upon.
-  //
+  // ...and the count above only bounds the names while each line carries ONE
+  // term, which is `declarationCount`'s subject — its docblock has the why.
   for (const line of lines) {
     expect(
       declarationCount(line),
@@ -435,6 +438,11 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       "  failedChecks = ['a', 'b'],",
       '  opts = { a: 1, b: 2 },',
       '  fn = (a, b) => a,',
+      // A template literal IS a quoted span; it was not in the strip and read
+      // as 2. The flat object row above passes only because it is flat — a
+      // NESTED one still reads 2, which the docblock's BOUND states rather
+      // than this table pretending otherwise.
+      '  tag = `a, b`,',
     ];
     const hidesATerm = [
       '  removed, divergences',
