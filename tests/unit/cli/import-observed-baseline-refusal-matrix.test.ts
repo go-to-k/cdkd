@@ -625,6 +625,54 @@ const ROWS: readonly Row[] = [
     },
   },
   {
+    name: 'Fn::Select with a NON-CANONICAL digit-string index over a list holding a reference',
+    properties: {
+      Detail: { pw: { 'Fn::Select': ['01', [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "THE DELTA ROUND'S MAJOR. resolvedList['01'] is a property read, not an " +
+      'index — it yields undefined — while CloudFormation integer-parses the ' +
+      "index to 1, so '01' diverges exactly like an intrinsic index and a " +
+      'digits-only static test admitted it',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::Select with a CANONICAL digit-string index over a list holding a reference',
+    properties: {
+      Detail: { pw: { 'Fn::Select': ['1', [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: 'x-element' } },
+    expected: { Detail: { pw: 'x-element' } },
+    refused: false,
+    why:
+      "the NEGATIVE control for the canonical-form tightening: '1' selects " +
+      'element 1 here AND at deploy, so the discarded element 0 was discarded ' +
+      'identically on both sides and AWS holds the public literal',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::FindInMap keyed by a DYNAMIC-REFERENCE string, balanced by a parameter-sourced sibling',
+    properties: {
+      A: { 'Fn::FindInMap': ['M', TOKEN, 'pw'] },
+      B: { Ref: 'SecretRef2' },
+    },
+    readback: { A: PLAINTEXT, B: PLAINTEXT_2 },
+    refused: true,
+    why:
+      "THE DELTA ROUND'S MINOR, measured leaking: the key string is DECRYPTED " +
+      'before the lookup, so the selected entry depends on the secret deploy-time ' +
+      "value; the sibling's added token BALANCES the key's consumed opener " +
+      '(raw 1 / persisted 1) and the un-taken entry holds a different secret',
+    template: {
+      Parameters: { SecretRef2: { Type: 'String', Default: TOKEN_2 } },
+      Mappings: {
+        M: { [PLAINTEXT]: { pw: 'dev-placeholder' }, prod: { pw: TOKEN } },
+      },
+    },
+  },
+  {
     name: 'Fn::Select with an INTRINSIC index over a pure-LITERAL list',
     properties: {
       Detail: { pw: { 'Fn::Select': [{ Ref: 'Idx' }, ['alpha', 'beta']] } },
@@ -955,9 +1003,9 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     // A floor on the POOL, written as literals from this file rather than
     // derived from the array: a table that quietly lost its refusing rows would
     // otherwise satisfy every assertion below by having nothing to check.
-    expect(ROWS).toHaveLength(45);
-    expect(ROWS.filter((r) => r.refused)).toHaveLength(20);
-    expect(ROWS.filter((r) => !r.refused)).toHaveLength(25);
+    expect(ROWS).toHaveLength(48);
+    expect(ROWS.filter((r) => r.refused)).toHaveLength(22);
+    expect(ROWS.filter((r) => !r.refused)).toHaveLength(26);
     // The deliberate over-refusals, counted so they cannot grow unnoticed: each
     // costs a real resource its drift baseline.
     expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(4);
@@ -1086,7 +1134,7 @@ describe('cdkd import: which resources may take an observedProperties baseline (
         provenByPlaintext++;
       }
     }
-    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(12);
+    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(14);
     expect(provenByMask, 'the loop ran over every refusal earned by a MASK').toBe(4);
   });
 });

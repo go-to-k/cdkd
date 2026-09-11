@@ -1953,19 +1953,32 @@ function isInertDiscardedSubtree(node: unknown): boolean {
 
 /**
  * Whether a scalar the resolver consumes RAW (an `Fn::Select` index) is a
- * template-constant literal: a number, or a string of digits. Anything else —
- * an intrinsic object, a non-numeric string — makes the selection depend on a
+ * template-constant literal that `resolveSelect`'s `resolvedList[index]` read
+ * actually honors: a number, or the CANONICAL digit-string of one. The
+ * canonical form is load-bearing, not pedantry — a delta review round
+ * measured `['a','b']['01']` as `undefined` (a non-canonical string is a
+ * property name, not an index) while CloudFormation integer-parses it to 1,
+ * so `'01'` is exactly as selection-divergent as an intrinsic index and must
+ * not count as static. Anything non-static makes the selection depend on a
  * value this import cannot reproduce.
  */
 function isStaticSelectIndex(value: unknown): boolean {
   if (typeof value === 'number') return Number.isInteger(value);
-  return typeof value === 'string' && /^\d+$/.test(value);
+  return typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
 }
 
-/** A `Fn::FindInMap` lookup-key argument the resolver can only have resolved
- * to the same key at deploy time: a plain scalar literal. */
+/**
+ * A `Fn::FindInMap` lookup-key argument the resolver can only have resolved
+ * to the same key at deploy time: a plain scalar literal CARRYING NO
+ * `{{resolve:` opener. The opener clause is the same delta-review finding one
+ * helper up: `resolveFindInMap` resolves each key through `resolveValue`, so
+ * a dynamic-reference STRING key is decrypted before the lookup and the
+ * selected entry depends on the secret's deploy-time value — not on the
+ * template text this walk reads.
+ */
 function isStaticLookupKey(value: unknown): boolean {
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+  if (typeof value === 'string') return !value.includes(DYNAMIC_REFERENCE_OPENER);
+  return typeof value === 'number' || typeof value === 'boolean';
 }
 
 /**
@@ -2075,7 +2088,10 @@ function resolveDiscardsNonInertSubtree(
   //    while the deployed stack may have MISSED (the keys were resolved from
   //    values this import does not hold) and AWS holds what the default
   //    resolved to. So a non-inert `DefaultValue` refuses regardless of which
-  //    way this import's lookup went, which is statically unknowable here.
+  //    way this import's lookup went. (With ALL-LITERAL keys the hit/miss IS
+  //    template-static and deploy-identical, so refusing there is a
+  //    deliberate over-refusal — the fail-closed form is kept rather than
+  //    re-deriving the lookup, a delta review round weighed and accepted it.)
   //  - a lookup KEY that is not a scalar literal makes WHICH mapping entry
   //    was selected depend on a value this import cannot reproduce, so the
   //    un-taken entries are discarded template content. That matters exactly
