@@ -96,8 +96,13 @@ Then split the filed count by what the §5-f window did with each finding:
 # Folded INTO an existing issue rather than filed as new. `updatedAt` alone
 # cannot answer this — §4's claim comments touch every taken issue — so count
 # the issues whose BODY gained a checklist row.
-gh issue list --state open --limit 200 --json number,title,updatedAt \
-  --jq '.[] | select(.updatedAt > "<this run start ISO>") | .number' \
+# The `backfill-type` exclusion matters MORE here than in triage: this counts
+# issues whose body gained a `- [ ]` row, and a coverage-map sync rewrites every
+# generated sub-issue with a body that is nothing but such rows. Without it a
+# run that touched none of them reports up to 44 findings folded.
+gh issue list --state open --limit 200 --json number,title,updatedAt,labels \
+  --jq '.[] | select(.updatedAt > "<this run start ISO>")
+        | select([.labels[].name] | index("backfill-type") | not) | .number' \
 | while read -r n; do
     gh issue view "$n" --json body -q '.body' \
       | grep -qE '^[[:space:]]*- \[ \]' && echo "$n"

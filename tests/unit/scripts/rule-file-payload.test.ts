@@ -290,6 +290,11 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // ten literal paths, no wildcard, so this is EXACT and a narrowed glob cannot
   // hide behind a floor (go-to-k/cdkd#2736).
   ['layout-ci-pr-content.md', 10],
+  // The refresh producer, its diagnosis and reconciler scripts and their two
+  // evidence helpers, the two workflows, and the six suites: fourteen literal
+  // paths, no wildcard, so this is EXACT for the same reason the entry above is
+  // — a narrowed glob cannot hide behind slack (go-to-k/cdkd#2949).
+  ['layout-schema-refresh.md', 14],
   ['layout-utils.md', 19],
   ['provider-aws-response-reads.md', 65],
   ['provider-custom-resources.md', 1], // literal list: EXACT, see below
@@ -357,6 +362,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/local/docker-runner.ts', 41_500, 67_000],
   ['src/analyzer/dag-builder.ts', 26_000, 35_000],
   ['scripts/gen-nested-key-coverage.ts', 52_000, 90_000],
+  // The representative path for layout-schema-refresh.md (go-to-k/cdkd#2949).
+  // It is a `scripts/**` file, so layout-scripts.md loads here too — which is
+  // the point of measuring it separately: the split moved 10 KB off EVERY OTHER
+  // `scripts/**` path, and left this one carrying both halves. Without its own
+  // budget the satellite's bytes would be bounded by nothing but the per-file
+  // cap, and the row above would go on reporting the pre-split figure.
+  ['scripts/refresh-cfn-schemas.mjs', 72_500, 90_000], // measured 82,644 = layout-scripts.md 71,193 + layout-schema-refresh.md 11,451
   // Review probe, 2026-08-25: with only the six rows above, 9 of the 28 rule
   // files (355,718 B -- 45% of the corpus) were matched by NO budgeted path,
   // and the four heaviest paths in the repo were all among them. A budget table
@@ -1190,7 +1202,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 53; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#2717, its gate retired). + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
+const CORPUS_FILE_COUNT = 54; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#2717, its gate retired). + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
                               //  auto-close-form entry, plus the review round that followed
                               //  it, took layout-ci-checks.md to 20,839 B against the 20,000 B
                               //  ceiling its `pr-title-check.yml` path band asserts. (The entry
@@ -1202,7 +1214,18 @@ const CORPUS_FILE_COUNT = 53; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#271
                               //  + layout-synthesis.md / layout-assets.md /
                               //  layout-state-types.md / layout-build.md, -1 layout-misc.md: the
                               //  grab-bag split four ways so an edit loads its own layer only.
-                              //  Net +3. That makes 53.
+                              //  Net +3. That made 53.
+                              //  + layout-schema-refresh.md (go-to-k/cdkd#2949): the SAME shape
+                              //  as the layout-ci-checks.md split above, and the second time
+                              //  layout-scripts.md has hit the cap. It stood at 28 B of headroom,
+                              //  so correcting the backfill-campaign entry — which go-to-k/cdkd#2949
+                              //  turned from one checklist into a parent plus generated per-type
+                              //  sub-issues — could not be paid for in place: the smallest ACCURATE
+                              //  rewrite of the two stale bullets still landed 238 B over, and
+                              //  compressing further would have deleted mechanism rather than
+                              //  moving it, which this fence's own message forbids. The whole
+                              //  refresh chain (10,024 B) moved instead, leaving a pointer. That
+                              //  makes 54.
                               //
                               //  + hooks-deferral-criteria.md (go-to-k/cdkd#2707): hooks.md
                               //  crossed the per-file cap AGAIN, and the tell was a CI-only

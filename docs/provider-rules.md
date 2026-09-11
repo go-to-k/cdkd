@@ -2055,7 +2055,7 @@ That PR is **allowed to land red**, and the red is the hand-off rather than a bu
 1. A **removed or renamed** property turns a matching `handledProperties` / `unhandledByDesign` declaration into a bogus entry — retire the declaration or add a `bogusTolerated` rationale (see below).
 2. `audit:nested-key-coverage:check` reports **divergences, not staleness** — a new nested key on a `NESTED_KEY_TARGETS` type needs a provider fix or a `NESTED_KEY_ALLOW_LIST` entry with a rationale.
 
-Newly unaccounted writable properties land in `_todo-backfill.json`; fold them into the standing backfill umbrella (issue [#609](https://github.com/go-to-k/cdkd/issues/609)) rather than filing one issue each. Types the public bundle does not carry are skipped with their fixtures left untouched and still need the authenticated path below.
+Newly unaccounted writable properties land in `_todo-backfill.json`; do not file an issue for any of them. `.github/workflows/backfill-umbrella-sync.yml` reconciles the standing backfill campaign from `main`'s coverage map once the refresh merges — a parent issue carrying the audit provenance and a per-type index, plus one generated sub-issue per resource type, which opens, updates, closes and reopens itself as the map moves (issue [#2949](https://github.com/go-to-k/cdkd/issues/2949), superseding the single checklist of [#609](https://github.com/go-to-k/cdkd/issues/609)). A pull request wiring a type writes `Closes` on its sub-issue only if it takes that type to zero, and `Refs` otherwise. Types the public bundle does not carry are skipped with their fixtures left untouched and still need the authenticated path below.
 
 **On demand, by hand** — to pull a refresh forward, or for a type the bundle lacks:
 

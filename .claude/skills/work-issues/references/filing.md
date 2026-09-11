@@ -43,6 +43,33 @@ cannot sit open while site 1's fix drifts away. Two boundaries:
   provider are two issues; one wrong assumption at five call sites is one. The
   test: a single sentence describes the fix at every site.
 
+**The rule is about what a HUMAN files into the triaged backlog, and the
+`backfill-type` issues are outside it — do not "consolidate" them back.**
+go-to-k/cdkd#2949 fanned the silent-drop backfill umbrella into ~44 generated
+per-resource-type sub-issues, which reads at a glance like the split this rule
+forbids. Three things make it a different object, and all three have to hold
+before any other set may be split this way:
+
+- **Nothing pays the fixed cost.** `.github/workflows/backfill-umbrella-sync.yml`
+  creates, updates, reopens and closes each one from `main`'s coverage map; no
+  triage, no claim, no filing. Every backlog listing in `triage.md` — §1's, §3-0's
+  cutoff query and §3-a's two signal queries — EXCLUDES the label for that
+  reason, and so does §10's folded-finding count in `retro.md`, where it matters
+  MOST: that one selects issues whose body gained a `- [ ] ` row, and a sync
+  rewrites every sub-issue with a body that is nothing else. A listing added to
+  either file must carry it, or the ~44 come straight back — onto the shortlist,
+  or into a retro's finding count.
+- **It is not one root cause.** A resource type is a provider with its own SDK
+  input shape, its own drift read-back and its own integration fixture — no
+  single sentence describes the fix at every site, which is this rule's own
+  test. The 2026-05 audit grouped by type for the same reason.
+- **The split is what makes a lane able to CLOSE one.** The umbrella had to stay
+  open for the other 43 types, so a pull request wiring one type had nothing to
+  `Closes` and the campaign was invisible to `pr-inherit-issue-labels.yml` and to
+  §4's claim flow. That is the exact failure this rule's own evidence names — the
+  four oldest open issues are umbrella-shaped because no lane can close one — and
+  here it is answered by generating the slices rather than by hand-filing them.
+
 **And whatever you do file, resolve it against the issues ALREADY OPEN first.**
 This looks for a sibling ISSUE, not a sibling site — the umbrella covering
 your finding was written from a DIFFERENT site, by a different lane, naming a

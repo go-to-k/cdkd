@@ -26,6 +26,7 @@ Per-area detail lives in the satellite files below. Each one is loaded only when
 | `src/version.ts`, `vite.config.ts` | [layout-build.md](layout-build.md) | version injection, Vite+ config |
 | `scripts/**`, `docs/_generated/**` | [layout-scripts.md](layout-scripts.md) | coverage generators, their generated docs, CI critics |
 | `scripts/check-{pr,issue}-*.ts` | [layout-ci-checks.md](layout-ci-checks.md) | CI checks replacing retired gates |
+| `scripts/refresh-cfn-schemas.mjs` + chain | [layout-schema-refresh.md](layout-schema-refresh.md) | CFn schema refresh, diagnosis, backfill campaign |
 | `.github/workflows/pr-content-checks.yml` | [layout-ci-pr-content.md](layout-ci-pr-content.md) | PR-content checks: diff scans + auto-close form |
 | `docs/**` | [docs-page-template.md](docs-page-template.md) | page shape and voice for the public cdkd.dev site |
 

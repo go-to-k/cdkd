@@ -27,6 +27,7 @@ not restate it. This stage adds WHO to check, and who decides:
 ```bash
 gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq '.[] | select(.pull_request | not)
+        | select([.labels[].name] | index("backfill-type") | not)
         | [.number, .author_association, .user.login, .created_at, .title] | @tsv'
 ```
 
@@ -35,6 +36,20 @@ required: the endpoint returns open PRs too and they fill the page, so
 `--paginate` is LOAD-BEARING (`per_page=100` is only the PER-PAGE maximum) —
 without it the call returned 79 of 180 open issues on 2026-09-06, hiding the
 OLD end rule 7 ranks FIRST. `created_at` feeds §3-0 and §3-a rule 7.)
+
+**The `backfill-type` exclusion is not noise-trimming — those issues are not
+backlog.** They are the ~44 per-resource-type slices of the silent-drop backfill
+campaign, and `.github/workflows/backfill-umbrella-sync.yml` CREATES, updates,
+reopens and closes every one of them from `main`'s coverage map
+(go-to-k/cdkd#2949). Nothing about them is a decision a triage pass can make: the
+backlog cannot close one, filing against one is a no-op, and their `created_at`
+is whenever the map last moved, so §3-0's freshness quarantine and rule 7's
+oldest-first ranking both read them wrong. Without the filter they would
+outnumber the real backlog's oldest cohort and dominate every shortlist.
+
+To WORK one, go to it deliberately — `gh issue list --label backfill-type` — and
+take the type whose provider you intend to wire. §4's claim comment still
+applies; the sync never touches comments.
 
 If everything is maintainer-authored, proceed; otherwise apply §0.
 
@@ -261,9 +276,13 @@ CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' 
 [ -n "$CUT" ] || { echo 'CUTOFF FAILED — do not treat the empty result as an empty backlog'; exit 1; }
 
 # §1's listing with the gate applied. DOUBLE quotes — `gh api --jq` takes no
-# `--arg`, so the cutoff expands into the filter.
+# `--arg`, so the cutoff expands into the filter. The `backfill-type` exclusion
+# is carried too: this is the listing that actually produces the eligible set,
+# so dropping it here puts all ~44 generated sub-issues back on the shortlist
+# however carefully §1 filtered them.
 gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq ".[] | select(.pull_request | not) | select(.created_at < \"$CUT\")
+        | select([.labels[].name] | index(\"backfill-type\") | not)
         | [.number, .created_at, .title] | @tsv"
 ```
 
@@ -318,12 +337,14 @@ Detecting the signals, from the listings §1 already fetched:
 # type + area from the conventional-commit title prefix: fix(deploy): ...
 gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq '.[] | select(.pull_request | not)
+        | select([.labels[].name] | index("backfill-type") | not)
         | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
         | @tsv'
 
 # rule 3's input is a LABEL too — no per-candidate view:
 gh issue list --state open --limit 200 --json number,title,labels \
-  --jq '.[] | [.number,
+  --jq '.[] | select([.labels[].name] | index("backfill-type") | not)
+        | [.number,
                ([.labels[].name | select(startswith("severity:"))] | first // "severity:?"),
                ([.labels[].name | select(startswith("effort:"))]   | first // "effort:?"),
                .title] | @tsv'

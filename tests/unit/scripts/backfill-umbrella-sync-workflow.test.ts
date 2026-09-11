@@ -35,6 +35,7 @@ import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { UMBRELLA_EMPTY_SENTINEL } from '../../../scripts/diagnose-schema-refresh.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const WORKFLOW_PATH = join(REPO_ROOT, '.github', 'workflows', 'backfill-umbrella-sync.yml');
@@ -79,8 +80,8 @@ const shellOf = (name: string) =>
     .join('\n');
 
 /** The two steps, named as literals so a rename must be made deliberately. */
-const RENDER_STEP = "Render the checklist from main's coverage map";
-const SPLICE_STEP = 'Splice it into the backfill umbrella';
+const RENDER_STEP = "Render the reconciliation plan from main's coverage map";
+const SPLICE_STEP = 'Reconcile the per-type sub-issues, then index them in the umbrella';
 
 /**
  * The single file `renderUmbrellaChecklist` reads, and therefore the whole of
@@ -175,11 +176,14 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       }
     });
 
-    it('keeps the token out of the step that spawns a subprocess', () => {
-      // The repo's standing split: the render step runs repository code that
-      // spawns node and reads repository files, and the step below it is the
-      // only one that can write. Merging them puts `GH_TOKEN` in the
-      // environment every subprocess inherits, for no gain.
+    it('keeps the RENDER out of the token-holding step', () => {
+      // The repo's standing split, restated for the shape go-to-k/cdkd#2949
+      // left behind. It is no longer "the token-holding step spawns nothing":
+      // the reconciler is a subprocess that must hold `GH_TOKEN`, because
+      // calling `gh` is its entire job. What survives — and is the half that
+      // was ever load-bearing — is that the step reading the REPOSITORY's own
+      // files to decide what the campaign says holds no token at all, so a
+      // defect in the parser cannot reach a write.
       const render = byName(RENDER_STEP);
       const splice = byName(SPLICE_STEP);
       expect(render.env, 'the render step must hold no token').toBeUndefined();
@@ -188,9 +192,12 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       const order = steps.map((s) => s.name);
       expect(order.indexOf(RENDER_STEP)).toBeGreaterThan(-1);
       expect(order.indexOf(RENDER_STEP)).toBeLessThan(order.indexOf(SPLICE_STEP));
-      expect(shellOf(SPLICE_STEP), 'a script spawn is back in the token-holding step').not.toContain(
+      expect(shellOf(SPLICE_STEP), 'the RENDER is back in the token-holding step').not.toContain(
         'diagnose-schema-refresh.mjs'
       );
+      // And the converse: the render step must not have grown a `gh` call,
+      // which is the other way the two halves merge.
+      expect(shellOf(RENDER_STEP), 'the render step now calls gh').not.toMatch(/(^|\s)gh\s/);
     });
   });
 
@@ -203,57 +210,126 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // wrong. The map is the umbrella's own stated completion criterion, so
       // rendering FROM it means a type reappears or disappears on its own.
       const render = shellOf(RENDER_STEP);
-      expect(render).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-checklist');
-      expect(render).toContain('/tmp/checklist.md');
+      expect(render).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-subissues');
+      expect(render).toContain('/tmp/plan.json');
       const splice = shellOf(SPLICE_STEP);
-      expect(splice).toContain('cat /tmp/checklist.md');
+      expect(splice).toContain('cat /tmp/index.md');
       expect(splice).toContain('gh issue edit');
+      // The index the splice writes is produced by the RECONCILER, not by the
+      // render step — it carries sub-issue numbers, which do not exist until
+      // the reconciliation has created them. A render-step `INDEX_OUT` would be
+      // writing numbers it cannot know.
+      expect(splice).toContain('INDEX_OUT=/tmp/index.md');
+      expect(splice).toContain('node scripts/sync-backfill-subissues.ts /tmp/plan.json');
+      expect(render, 'the index is being rendered before the numbers exist').not.toContain(
+        'INDEX_OUT'
+      );
       // The destination is the umbrella BODY, not a comment: a comment is
       // append-only by construction and reintroduces the model above.
       expect(splice, 'the split-destination comment is back').not.toContain('gh issue comment');
     });
 
-    it('refuses an empty render rather than splicing nothing in', () => {
-      // The redirect creates `/tmp/checklist.md` whatever happens, so a
-      // renderer that threw leaves an empty file — and the splice would then
-      // replace the umbrella's generated block with nothing, which reads as
-      // "the campaign is finished".
+    it('refuses a render that is not a plan, rather than reconciling against one', () => {
+      // The redirect creates `/tmp/plan.json` whatever happens, so a renderer
+      // that threw leaves a file the reconciler would then read as the
+      // campaign's state.
       const render = shellOf(RENDER_STEP);
       // SHAPE, not size, and the distinction is the whole case. A `-s` test
       // looked like it covered a broken render and did not:
       // `diagnose-schema-refresh.mjs` used to swallow every failure, writing
       // `_The automated diagnosis failed to run (…)_` to STDOUT at exit 0, so
       // the redirect produced a NON-EMPTY file holding one error sentence and
-      // `-s` passed — splicing that sentence into the umbrella in place of the
-      // entire checklist, on a green run. Rows or nothing.
+      // `-s` passed.
       expect(render, 'the render guard accepts a file that is merely non-empty').not.toMatch(
-        /\[ -s \/tmp\/checklist\.md \]/
+        /\[ -s \/tmp\/plan\.json \]/
       );
+      // On the TYPE of `.types`, never on its length. A finished campaign
+      // renders `{"types": []}` legally, and a length test here would make that
+      // state unrepresentable — the same defect that once made the flat
+      // checklist's rows-only guard kill the step under `set -e` with no
+      // annotation, leaving the umbrella's stale rows standing permanently.
+      // The empty-plan danger is caught in the RECONCILER, where the open
+      // sub-issue count makes "finished" and "broken parse" separable.
       expect(render, 'the shape guard is gone').toMatch(
-        /grep -qE '\^- \\\[ \\\] \|\^_No remaining silent-drop properties' \/tmp\/checklist\.md/
+        /jq -e '\.types \| type == "array"' \/tmp\/plan\.json/
+      );
+      expect(render, 'a length test makes a finished campaign unrepresentable').not.toMatch(
+        /\.types \| length/
       );
       // Under `set -e`, and AFTER the redirect it inspects.
       expect(render).toContain('set -euo pipefail');
-      expect(render.indexOf('> /tmp/checklist.md')).toBeLessThan(
-        render.indexOf("grep -qE '^- \\[ \\] |^_No remaining silent-drop properties'")
+      expect(render.indexOf('> /tmp/plan.json')).toBeLessThan(
+        render.indexOf('jq -e \'.types | type == "array"\'')
       );
+    });
+
+    it('shape-fences the INDEX too, not only the plan it was rendered from', () => {
+      // Two fences at two stages on two files. The `jq -e` above attests to the
+      // reconciler's INPUT; this attests to its OUTPUT, which is the thing about
+      // to be written into a public issue, and `INDEX_OUT` is produced by a code
+      // path `jq` never sees.
+      //
+      // This case exists because the first cut of go-to-k/cdkd#2949 DELETED the
+      // flat checklist's rows-or-sentinel guard on the reasoning that `jq` had
+      // replaced it, and left a source comment and a sibling test both asserting
+      // a fence that by then lived nowhere. Restoring it without a case left it
+      // equally unwatched: both mutations below — deleting the grep, and
+      // narrowing it to rows-only — survived the suite.
+      const splice = shellOf(SPLICE_STEP);
+      expect(splice, 'the index shape fence is gone').toMatch(
+        /grep -qE '\^- \\\[ \\\] \|\^_No remaining silent-drop properties' \/tmp\/index\.md/
+      );
+      // Rows OR the sentinel. Accepting only rows makes a genuinely finished
+      // campaign unrepresentable — the defect that once killed this step under
+      // `set -e` with no annotation and left the umbrella's stale rows standing
+      // permanently. Pinned against the CONSTANT so a reword on either side
+      // cannot drift past this.
+      const accepted = /grep -qE '\^- \\\[ \\\] \|\^(_No remaining silent-drop properties)'/.exec(
+        splice
+      );
+      expect(accepted, 'the splice no longer accepts the finished-campaign sentinel').not.toBeNull();
+      expect(UMBRELLA_EMPTY_SENTINEL.startsWith(accepted![1]!)).toBe(true);
+      // ANNOTATED, not bare. A bare `grep -q` under `set -euo pipefail` kills
+      // the step with no annotation — which is the very defect the comment
+      // beside it cites, reproduced by restoring the guard that documents it.
+      // It fires AFTER the reconciler has mutated ~44 issues, so an unexplained
+      // red is the worst moment to leave a maintainer without a message.
+      expect(
+        guardArm(splice, 'The rendered index is neither rows nor'),
+        'the index fence kills the step silently'
+      ).toContain('exit 1');
+      expect(splice, 'the index fence has no annotation').toMatch(
+        /::error::The rendered index is neither rows nor/
+      );
+      // Ordered: written by the reconciler, fenced, then spliced.
+      const wroteAt = splice.indexOf('INDEX_OUT=/tmp/index.md');
+      const fencedAt = splice.indexOf("grep -qE '^- \\[ \\] |^_No remaining");
+      const splicedAt = splice.indexOf('cat /tmp/index.md');
+      expect(wroteAt).toBeGreaterThan(-1);
+      expect(fencedAt, 'the index is fenced before it is written').toBeGreaterThan(wroteAt);
+      expect(splicedAt, 'the index is spliced before it is fenced').toBeGreaterThan(fencedAt);
     });
 
     it('is backed by the script exiting non-zero, not by the guard alone', () => {
       // The guard above is the SECOND of two independent stops, and the first
-      // one lives in the script: `--umbrella-checklist` re-throws instead of
+      // one lives in the script: a render-only mode re-throws instead of
       // printing the fallback sentence, because its reader is a workflow that
       // cannot read a sentence. Pinned here because the two files are the
       // producer and the consumer of one contract with nothing joining them.
       //
-      // Matched by the FLAG rather than by the exact token: the test used to pin
-      // `a === '--umbrella-checklist'`, and that spelling missed
-      // `--umbrella-checklist=x`, which therefore printed its refusal to STDOUT
-      // at exit 0 — into the very redirect this contract exists to protect
-      // (issue go-to-k/cdkd#2858).
+      // Matched by MEMBERSHIP rather than by an equality against one flag. The
+      // test used to pin `a === '--umbrella-checklist'`, which missed
+      // `--umbrella-checklist=x` (go-to-k/cdkd#2858); pinning the single
+      // successor flag would repeat the shape one level up, passing while a
+      // SECOND render-only mode printed its refusal to STDOUT at exit 0.
       const script = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
-      expect(script).toContain("knownFlagFor(a) === '--umbrella-checklist'");
+      expect(script).toContain('RENDER_ONLY_FLAGS.has(flag)');
       expect(script).toContain('process.exitCode = 1');
+      // And the mode this workflow actually consumes is IN that set — the
+      // membership test above is satisfied by a set that does not contain it.
+      expect(script).toMatch(
+        /RENDER_ONLY_FLAGS = new Set\(\[[^\]]*'--umbrella-subissues'[^\]]*\]\)/
+      );
     });
   });
 
@@ -289,7 +365,7 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       );
       // And the generated rows land BETWEEN the two halves, not appended after.
       const headAt = splice.indexOf('head -n "${begin_line}"');
-      const rowsAt = splice.indexOf('cat /tmp/checklist.md >> "${N}"');
+      const rowsAt = splice.indexOf('cat /tmp/index.md >> "${N}"');
       const tailAt = splice.indexOf('tail -n "+${end_line}"');
       expect(headAt).toBeGreaterThan(-1);
       expect(rowsAt, 'the rows are not spliced between the halves').toBeGreaterThan(headAt);
@@ -342,7 +418,30 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
         /gh issue view "\$\{umbrella\}" --json body -q \.body \| tr -d '\\r' > "\$\{U\}" && \[ -s "\$\{U\}" \]/
       );
       const arm = guardArm(splice, 'Could not read backfill umbrella');
-      expect(arm, 'the unreadable-body refusal falls through to the write').toContain('exit 0');
+      expect(
+        arm,
+        'the unreadable-body refusal exits 0, so a transport failure ends the run GREEN with the parent unwritten'
+      ).toContain('exit 1');
+      // `exit 1`, not the `exit 0` this asserted until go-to-k/cdkd#2949. Two
+      // things moved it, and they point the same way. The umbrella's number was
+      // just resolved from a SUCCESSFUL listing, so a read failure here is a
+      // transport or permission error by construction rather than a state a
+      // human has misconfigured — which is the distinction the label lookup's
+      // own comment twenty lines above refuses to collapse, and this arm was
+      // collapsing it. And since the reconciler now runs BEFORE this point, a
+      // green exit here leaves the sub-issues current and the parent's index a
+      // run behind, on a push-triggered workflow nothing re-runs.
+      // Asserted against the whole shell rather than the arm: `guardArm` slices
+      // FROM the needle, so the annotation level that precedes it on the same
+      // line is outside what it returns.
+      expect(
+        splice,
+        'the unreadable-body failure is annotated as a warning, which the run summary does not surface as a failure'
+      ).toMatch(/::error::Could not read backfill umbrella/);
+      // The marker-SHAPE refusals keep `exit 0` — those are human-fixable and
+      // reached before any mutation. Asserted here so the two classes cannot
+      // quietly converge on one exit.
+      expect(guardArm(splice, 'must carry exactly one')).toContain('exit 0');
     });
 
     it('does not rewrite an unchanged body', () => {
@@ -475,6 +574,9 @@ echo "gh $*" >> "$GH_LOG"
 case "$1 $2" in
   "issue list") cat "$GH_LIST" ;;
   "issue view") cat "$GH_BODY" ;;
+  # Idempotent by --force, and modelled so the step's first write does not take
+  # the fall-through below and abort before the splice this case is about.
+  "label create") ;;
   "issue edit")
     while [ $# -gt 0 ]; do
       if [ "$1" = "--body-file" ]; then cp "$2" "$GH_WRITTEN"; fi
@@ -497,11 +599,30 @@ esac
           bodyFile,
           `## How entries arrive here\r\n\r\n${begin}\r\n- [ ] \`AWS::Old::Type\`: \`Stale\`\r\n${end}\r\n\r\n## Where the history lives\r\n\r\n${PROVENANCE}\r\n`
         );
-        writeFileSync(join(dir, 'checklist.md'), '- [ ] `AWS::New::Type`: `Fresh`\n');
-        // `/tmp/checklist.md` is absolute in the shell, so the sandbox takes it
+        writeFileSync(join(dir, 'index-src.md'), '- [ ] #900 — `AWS::New::Type` (1 remaining)\n');
+        // The RECONCILER is stood in for by a stub `node` ON PATH rather than by
+        // editing it out of the shell, and the difference is what the case then
+        // covers. Substituting the command away would leave the step's
+        // `PARENT=` / `INDEX_OUT=` prefix unexercised — and worse, a stand-in
+        // spelled `cp src "$INDEX_OUT"` cannot even read it: the shell expands
+        // `$INDEX_OUT` BEFORE the assignment prefix takes effect, so under
+        // `set -u` it aborts on an unset variable. A stub binary receives the
+        // prefix as its ENVIRONMENT, which is how the real reconciler receives
+        // it, so a step that stopped passing either one fails here.
+        writeFileSync(
+          join(bin, 'node'),
+          `#!/bin/bash
+echo "node $*" >> "$GH_LOG"
+: "\${INDEX_OUT:?the step did not pass INDEX_OUT}"
+: "\${PARENT:?the step did not pass PARENT}"
+cp "$NODE_INDEX_SRC" "$INDEX_OUT"
+`,
+          { mode: 0o755 }
+        );
+        // `/tmp/index.md` is absolute in the shell, so the sandbox takes it
         // over via TMPDIR-independent substitution rather than by writing to a
         // path other suites share.
-        const shell = shellOf(SPLICE_STEP).split('/tmp/checklist.md').join(join(dir, 'checklist.md'));
+        const shell = shellOf(SPLICE_STEP).split('/tmp/index.md').join(join(dir, 'index.md'));
         writeFileSync(join(dir, 'splice.sh'), shell);
         const res = spawnSync('bash', [join(dir, 'splice.sh')], {
           encoding: 'utf8',
@@ -514,6 +635,8 @@ esac
             GH_BODY: bodyFile,
             GH_WRITTEN: written,
             BACKFILL_UMBRELLA_LABEL: byName(SPLICE_STEP).env!['BACKFILL_UMBRELLA_LABEL']!,
+            SUBISSUE_LABEL: byName(SPLICE_STEP).env!['SUBISSUE_LABEL']!,
+            NODE_INDEX_SRC: join(dir, 'index-src.md'),
             MARKER_BEGIN: begin,
             MARKER_END: end,
           },
@@ -528,6 +651,21 @@ esac
         expect(out, 'the stale row survived').not.toContain('Stale');
         expect(out, 'the fresh rows were not written').toContain('AWS::New::Type');
         expect(out, 'the human provenance was lost').toContain(PROVENANCE);
+        // The stub `node` and the stub `gh` each RAN. Without this the case
+        // would still pass if the step stopped reconciling altogether — the
+        // splice reads a file, and a file left over from a previous shape of
+        // the step is indistinguishable from one the reconciler just wrote.
+        const calls = readFileSync(log, 'utf8');
+        expect(calls, 'the reconciler was never invoked').toContain(
+          'node scripts/sync-backfill-subissues.ts /tmp/plan.json'
+        );
+        expect(calls, 'the sub-issue label is never ensured before a create').toContain(
+          `gh label create ${byName(SPLICE_STEP).env!['SUBISSUE_LABEL']!}`
+        );
+        // Ordered: the label must exist before the reconciler can attach it.
+        expect(calls.indexOf('gh label create')).toBeLessThan(
+          calls.indexOf('node scripts/sync-backfill-subissues.ts')
+        );
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

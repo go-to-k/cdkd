@@ -44,6 +44,8 @@
  *
  *   node scripts/diagnose-schema-refresh.mjs --umbrella-checklist > checklist.md
  *
+ *   node scripts/diagnose-schema-refresh.mjs --umbrella-subissues > plan.json
+ *
  *   node scripts/diagnose-schema-refresh.mjs --write-auto-tolerated <file>
  *
  * `--nested-key-log` is the captured output of
@@ -75,18 +77,26 @@
  * to the report and not to the count would mark a PR as needing nothing over a
  * report listing several.
  *
- * `--umbrella-checklist` is a SEPARATE MODE: it renders the remaining
- * silent-drop properties from the coverage module as a Markdown checklist and
- * exits, taking no other flag. `.github/workflows/backfill-umbrella-sync.yml`
- * splices that block into the backfill umbrella between its markers whenever
- * `main`'s coverage map moves — not the scheduled refresh job, which would be
- * describing its own unmerged workspace. It REGENERATES rather than appends: an
- * appended list cannot express a type that was ticked off and later regained a
- * property.
+ * `--umbrella-checklist` and `--umbrella-subissues` are SEPARATE MODES, taking
+ * no other flag. Both read the coverage module and nothing else, through one
+ * parser (`parseSilentDropByType`), and differ only in shape:
  *
- * A failure in this mode EXITS NON-ZERO rather than printing the fallback
- * sentence, because the consumer is a workflow that cannot read one — see the
- * catch at the bottom of this file.
+ *   - `--umbrella-checklist` renders every remaining property as a flat Markdown
+ *     checklist. `.github/workflows/backfill-umbrella-sync.yml` splices it into
+ *     the backfill umbrella's per-type INDEX.
+ *   - `--umbrella-subissues` renders the same content grouped BY TYPE, as the
+ *     JSON plan that workflow reconciles the per-type sub-issues against — one
+ *     open issue per type with properties left, closed when the type empties and
+ *     reopened if it regains one.
+ *
+ * Either way the sync runs from `main`, not from the scheduled refresh job,
+ * which would be describing its own unmerged workspace. Both REGENERATE rather
+ * than append: an appended list cannot express a type that was ticked off and
+ * later regained a property.
+ *
+ * A failure in EITHER mode exits non-zero rather than printing the fallback
+ * sentence, because the consumer is a workflow that cannot read one — see
+ * `RENDER_ONLY_FLAGS` and the catch at the bottom of this file.
  *
  * `--fixtures-dir` is a TEST SEAM — it points the comparison at a scratch
  * directory so the empty-listing refusal is reachable from a test, the same
@@ -2265,6 +2275,7 @@ export const KNOWN_FLAGS = [
   '--failed-checks',
   '--skipped-log',
   '--umbrella-checklist',
+  '--umbrella-subissues',
   '--decision-count-out',
   '--write-auto-tolerated',
   '--auto-tolerated',
@@ -2357,6 +2368,46 @@ export const UMBRELLA_EMPTY_SENTINEL =
  * @returns {string[]} one `- [ ] \`Type\`: \`Prop\`` row per remaining property
  */
 export function renderUmbrellaChecklist(generatedSource) {
+  return parseSilentDropByType(generatedSource).flatMap(({ type, properties }) =>
+    properties.map((property) => `- [ ] ${renderName(type)}: ${renderName(property)}`)
+  );
+}
+
+/**
+ * @typedef {object} SilentDropGroup
+ * @property {string} type       the CloudFormation resource type
+ * @property {string[]} properties  its remaining silent-drop property names
+ */
+
+/**
+ * The remaining silent-drop properties, GROUPED by the resource type that owns
+ * them, in the coverage map's own order.
+ *
+ * The single parse behind BOTH umbrella renderers. It is factored out rather
+ * than copied because the two consumers disagree about shape but must never
+ * disagree about CONTENT: the flat checklist and the per-type sub-issue plan
+ * describe the same campaign, and a reader comparing the parent's index against
+ * a sub-issue's rows is comparing two renders of one call. A second parser
+ * would make "44 types" and "288 rows" independently derivable, which is how
+ * they come to disagree by one.
+ *
+ * A type whose `silentDrop` map is present but EMPTY contributes no group, the
+ * same as a type with no map at all — `new Map<string, string>()` is a finished
+ * type. That matters more here than it did for the flat rows: a group with zero
+ * properties would mint a sub-issue for a type with nothing left to do, and the
+ * reconciler would then close it on the same run.
+ *
+ * The boundary pattern is what keeps a type name safe to use as a KEY. A group's
+ * type is written into an HTML-comment marker the reconciler greps for, and
+ * `[A-Z][\w:]+` admits only letters, digits, `_` and `:` — so a name cannot
+ * carry `-->`, a quote, a newline or a backtick, and cannot end the marker
+ * early. Property names are NOT so constrained (`[^']+`), which is why every one
+ * of them reaches the page through {@link renderName} instead.
+ *
+ * @param {string} generatedSource
+ * @returns {SilentDropGroup[]}
+ */
+export function parseSilentDropByType(generatedSource) {
   const boundaries = [...generatedSource.matchAll(/\[\s*'([A-Z][\w:]+)'\s*,\s*\{/g)];
   if (boundaries.length === 0) {
     throw new Error(
@@ -2364,8 +2415,8 @@ export function renderUmbrellaChecklist(generatedSource) {
         'checklist over a module the parser could not read.'
     );
   }
-  /** @type {string[]} */
-  const rows = [];
+  /** @type {SilentDropGroup[]} */
+  const groups = [];
   for (let i = 0; i < boundaries.length; i++) {
     const slice = generatedSource.slice(
       boundaries[i].index,
@@ -2376,11 +2427,11 @@ export function renderUmbrellaChecklist(generatedSource) {
     // finished type and contributes nothing.
     const drop = /silentDrop:\s*new Map<[^>]*>\(\s*\[([\s\S]*?)\]\s*\)/.exec(slice);
     if (!drop) continue;
-    for (const m of drop[1].matchAll(/\[\s*'([^']+)'\s*,/g)) {
-      rows.push(`- [ ] ${renderName(type)}: ${renderName(m[1])}`);
-    }
+    const properties = [...drop[1].matchAll(/\[\s*'([^']+)'\s*,/g)].map((m) => m[1]);
+    if (properties.length === 0) continue;
+    groups.push({ type, properties });
   }
-  return rows;
+  return groups;
 }
 
 /**
@@ -2402,6 +2453,162 @@ export function renderUmbrellaDocument(generatedSource) {
 }
 
 /**
+ * The HTML comment that makes a sub-issue findable BY TYPE.
+ *
+ * The reconciler has to answer "does `AWS::RDS::DBInstance` already have an
+ * issue" on every run, and the honest key is neither the title nor the number.
+ * A number needs state the workflow does not own; a title is human-editable and
+ * a one-character edit would mint a duplicate on the next run and leave the
+ * original open forever. A marker in the BODY is regenerated on every sync, so
+ * it self-heals, and it is invisible to a reader.
+ *
+ * Exported so the workflow's fence pins this spelling against the `grep` that
+ * reads it — the failure mode of a drifted marker is silent DUPLICATE issue
+ * creation, once per type per run, which is the worst thing this design can do.
+ */
+export const SUBISSUE_TYPE_MARKER_PREFIX = '<!-- backfill-type: ';
+
+/** The closing half of {@link SUBISSUE_TYPE_MARKER_PREFIX}. */
+export const SUBISSUE_TYPE_MARKER_SUFFIX = ' -->';
+
+/**
+ * The marker line identifying a per-type backfill sub-issue.
+ *
+ * @param {string} type
+ */
+export function subIssueTypeMarker(type) {
+  return `${SUBISSUE_TYPE_MARKER_PREFIX}${type}${SUBISSUE_TYPE_MARKER_SUFFIX}`;
+}
+
+/**
+ * The `Effort` band a type's remaining count implies.
+ *
+ * Derived rather than constant because the spread is two orders of magnitude —
+ * 25 of the 44 live types hold 1-3 properties and three hold 24, 40 and 62 — and
+ * a single band across that range makes the `effort:*` label (applied from this
+ * line by `scripts/check-issue-classification-labels.ts`) useless for exactly
+ * the filtering it exists for. The boundaries are the campaign's own shape, not
+ * a guess: `<= 3` is the one-pull-request majority, `<= 12` still fits a single
+ * review, and above that the type closes incrementally whatever anyone intends.
+ *
+ * @param {number} count
+ * @returns {'small (S)' | 'medium (M)' | 'large (L)'}
+ */
+export function subIssueEffort(count) {
+  if (count <= 3) return 'small (S)';
+  if (count <= 12) return 'medium (M)';
+  return 'large (L)';
+}
+
+/**
+ * One per-type sub-issue's BODY, rendered whole.
+ *
+ * EVERY line is generated, and the body says so in its own first screen. There
+ * is no human-owned half here and deliberately no marker pair like the parent's:
+ * the parent carries provenance that cannot be recomputed, while a per-type
+ * issue carries only what the coverage map already knows. Anything a person
+ * wants to add belongs in a COMMENT, which the reconciler never touches — and a
+ * body with no protected region cannot be spliced wrongly.
+ *
+ * That is also why the checkboxes are always rendered unchecked. A tick would be
+ * overwritten on the next sync, so the box is a progress ILLUSION; what actually
+ * closes a row is the property leaving `silentDrop`, at which point the row
+ * disappears on its own.
+ *
+ * The classification block is not decoration. `.github/workflows/issue-conventions.yml`
+ * runs `check-issue-dup-check.ts` on every `issues: opened` event with NO bot
+ * exclusion, so a body without a `Dup-check:` line earns a failing check and a
+ * posted comment on each of the forty-odd issues this mints. The line is true as
+ * written: the reconciler looks for an existing issue for this exact type, by
+ * marker, before creating one.
+ *
+ * @param {SilentDropGroup} group
+ * @returns {string}
+ */
+export function renderSubIssueBody({ type, properties }) {
+  const count = properties.length;
+  return [
+    subIssueTypeMarker(type),
+    '',
+    '> **Generated — every line of this body is rewritten by**',
+    '> **`.github/workflows/backfill-umbrella-sync.yml`** from `main`\'s copy of',
+    '> `src/provisioning/property-coverage.generated.ts`. Hand edits are',
+    '> overwritten on the next sync; comments are never touched, so discussion',
+    '> belongs there. This issue is CLOSED automatically when the list below',
+    '> empties, and REOPENED if the type regains a property.',
+    '',
+    `${count} writable ${count === 1 ? 'property' : 'properties'} of ${renderName(type)} ` +
+      `${count === 1 ? 'is' : 'are'} still dropped silently by its SDK provider. ` +
+      'Each one reaches AWS only once it is wired into the provider and lands in ' +
+      '`handledProperties`.',
+    '',
+    '## Remaining',
+    '',
+    ...properties.map((property) => `- [ ] ${renderName(property)}`),
+    '',
+    '## Procedure',
+    '',
+    'The per-pull-request steps, the audit history and the campaign-wide rationale',
+    'live in the parent issue — GitHub links it above as this issue\'s parent, and',
+    'it is also the single open issue carrying the `backfill-umbrella` label.',
+    '',
+    '**Write `Closes` only if the pull request takes this type to zero.** Otherwise',
+    'write `Refs` and let the sync close this issue when the coverage map says so.',
+    'A premature `Closes` is not lost work — the next sync reopens the issue with',
+    'what is left — but it does read, briefly, as a finished type.',
+    '',
+    '## Classification',
+    '',
+    `Dup-check: the sync reconciles by the \`backfill-type\` marker above, so this issue exists only because no open or closed issue carried the marker for ${renderName(type)}.`,
+    '',
+    'Session-fit: next (not this session) — a standing campaign, taken up when a',
+    'lane chooses this type; nothing here is time-critical.',
+    `Severity: low — the properties are rejected at deploy-time pre-flight rather than applied wrongly, and \`--allow-unsupported-properties\` routes the resource through Cloud Control, so the user-visible cost is a narrower SDK path rather than silent data loss.`,
+    `Effort: ${subIssueEffort(count)} — ${count} ${count === 1 ? 'property' : 'properties'} to wire, each needing its SDK input shape, its drift read-back and an integration assertion that the value reached AWS.`,
+    'Estimate: ~1-2 h per property — the wire-side change is small; what eats the',
+    'time is the integration fixture arm that reads the value back from AWS.',
+    '',
+  ].join('\n');
+}
+
+/**
+ * The reconciliation PLAN `--umbrella-subissues` emits: one entry per resource
+ * type that still has silent-drop properties, each carrying the title and body
+ * its sub-issue should hold.
+ *
+ * Rendered HERE rather than in the workflow because a body is multi-line
+ * attacker-adjacent text assembled from a generated file, and shell is the worst
+ * place to assemble one — the workflow reads each field with `jq -r` into a file
+ * and never interpolates it into a command. It is also the half that can be
+ * tested: a workflow's heredoc cannot.
+ *
+ * JSON rather than the parent's Markdown because the consumer is a loop, not a
+ * splice. The `types` wrapper is deliberate: a bare array's empty case and a
+ * failed parse both render as `[]`, and this mode has the same
+ * finished-versus-broken ambiguity `UMBRELLA_EMPTY_SENTINEL` exists to resolve
+ * for the flat checklist. An object makes "the key is present and empty"
+ * distinguishable from "there is no document".
+ *
+ * @param {string} generatedSource
+ * @returns {string}
+ */
+export function renderSubIssuePlan(generatedSource) {
+  const groups = parseSilentDropByType(generatedSource);
+  return JSON.stringify(
+    {
+      types: groups.map(({ type, properties }) => ({
+        type,
+        count: properties.length,
+        title: `Backfill silent-drop properties: ${type}`,
+        body: renderSubIssueBody({ type, properties }),
+      })),
+    },
+    null,
+    2
+  );
+}
+
+/**
  * Flags that take no value, so a following token is never theirs.
  *
  * EXPORTED for its fence: this is a second copy of a `KNOWN_FLAGS` fact, and
@@ -2410,7 +2617,28 @@ export function renderUmbrellaDocument(generatedSource) {
  * makes its value report as unrecognized. `tests/unit/scripts/umbrella-checklist-no-deps.test.ts`
  * pins the partition.
  */
-export const VALUELESS_FLAGS = new Set(['--umbrella-checklist']);
+export const VALUELESS_FLAGS = new Set(['--umbrella-checklist', '--umbrella-subissues']);
+
+/**
+ * The modes that render one committed file and exit — no dependency load, no
+ * fixture walk, no `git show`, and a failure that must reach the caller as a
+ * non-zero exit rather than as a sentence on stdout.
+ *
+ * ONE set, because the property it names was previously spelled out at THREE
+ * call sites as `args.includes('--umbrella-checklist')`: the early return in
+ * {@link main}, the entry point's skip-the-loader arm, and the `catch`'s
+ * `consumedByAWorkflow`. Those three have to agree — a mode in the first two but
+ * not the third renders its crash as `_The automated diagnosis failed to run_`
+ * at exit 0, which the consuming workflow writes into an issue as if it were the
+ * content — and three literals agreeing is a property nothing checked. Adding
+ * `--umbrella-subissues` would have had to be remembered three times.
+ *
+ * Membership implies both `KNOWN_FLAGS` (or the invocation is refused before the
+ * mode runs) and {@link VALUELESS_FLAGS} (the workflows pass these bare); both
+ * containments are fenced in `tests/unit/scripts/umbrella-checklist-no-deps.test.ts`
+ * rather than restated as a second literal here.
+ */
+export const RENDER_ONLY_FLAGS = new Set(['--umbrella-checklist', '--umbrella-subissues']);
 
 /**
  * Classify an argv list the way {@link main} does — ONE implementation, because
@@ -2541,6 +2769,14 @@ function main() {
   // render whose own input was sitting there readable.
   if (args.includes('--umbrella-checklist')) {
     process.stdout.write(renderUmbrellaDocument(loadDeclaredPropertiesSource()) + '\n');
+    return;
+  }
+  // The same early position, for the same reasons, and reading the same one
+  // file: this mode renders the PER-TYPE plan the sub-issue reconciler consumes.
+  // Both arms are in RENDER_ONLY_FLAGS, which is what keeps the entry point and
+  // the top-level `catch` treating them alike.
+  if (args.includes('--umbrella-subissues')) {
+    process.stdout.write(renderSubIssuePlan(loadDeclaredPropertiesSource()) + '\n');
     return;
   }
   // The third reader, and it was the last one still silent on both counts: a
@@ -2837,7 +3073,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
   const { unknown, repeated, valued } = classifyArgs(argv);
   const badInvocation = unknown.length > 0 || repeated.length > 0 || valued.length > 0;
-  if (!argv.includes('--umbrella-checklist') && !badInvocation) {
+  if (!argv.some((a) => RENDER_ONLY_FLAGS.has(a)) && !badInvocation) {
     try {
       await loadEvidenceDeps();
     } catch (err) {
@@ -2876,9 +3112,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // By the FLAG, not the exact token: `--umbrella-checklist=x` is refused, and
     // routing that refusal to stdout at exit 0 would hand the workflow's
     // redirect a file whose only content is an error sentence.
-    const consumedByAWorkflow = process.argv
-      .slice(2)
-      .some((a) => knownFlagFor(a) === '--umbrella-checklist');
+    const consumedByAWorkflow = process.argv.slice(2).some((a) => {
+      const flag = knownFlagFor(a);
+      return flag !== undefined && RENDER_ONLY_FLAGS.has(flag);
+    });
     if (consumedByAWorkflow) {
       // `process.exitCode`, and no `return`: this catch sits at MODULE top
       // level, not inside a function, so a `return` here is a SyntaxError that
