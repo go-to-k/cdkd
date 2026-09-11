@@ -1257,70 +1257,100 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     expect(new Set(ROWS.map((r) => r.name)).size, 'row names are unique').toBe(ROWS.length);
   });
 
-  it('a bag too deep for the discard walk is REFUSED, and the import survives (parent-review blocker)', async () => {
-    // The discard walk recurses SYNCHRONOUSLY while `countDynamicReferenceOpeners`
-    // guards its own JSON.stringify with a try — stringify's frames are lighter,
-    // so a depth window exists where both opener counts compute normally and the
-    // walk ALONE overflows the call stack. Unwrapped, that `RangeError` escaped
+  it('a bag too deep for the discard walk is REFUSED fail-closed, and the import survives (parent-review blocker)', async () => {
+    // The discard walk recurses SYNCHRONOUSLY. Its frames are the heaviest of
+    // the per-resource passes — measured through this very harness, it
+    // overflows at roughly a THIRD of the depth `JSON.stringify` handles and
+    // well below the resolver's own descent limit — so a window exists where
+    // the resolve completes, both opener counts compute normally, and the
+    // walk ALONE raises `RangeError`. Unwrapped, that error escaped
     // `resolveImportedProperties` and aborted the import AFTER the AWS-side
     // import had succeeded — the loss the function's own parameter-fallback
-    // comment forbids. The fix catches it at the ARM-3 call site and REFUSES.
+    // comment forbids. The ARM-3 call site now catches it and REFUSES.
     //
-    // The depth is DERIVED from this environment's own stringify limit rather
-    // than hard-coded, because both limits scale with the engine's stack size
-    // while their RATIO is set by relative frame weight (~0.5 measured); 70%
-    // of the stringify limit sits inside the window with margin on both sides.
-    // If an engine ever inverts the frame-weight ratio, this case fails LOUDLY
-    // (the bag is admitted, or the resolver itself throws and the refusal is
-    // ARM 1's) rather than leaving the window silently untested. The RESOLVER
-    // survives the depth because its recursion awaits per level, unwinding the
-    // native stack — which is exactly why ARM 1 does not fire first.
+    // No depth is hard-coded, because every limit here moves with the
+    // engine's stack size AND with the ambient call depth of the test worker
+    // (a fixed fraction of the stringify limit was measured landing on
+    // DIFFERENT arms in different workers). Instead this case BISECTS, through
+    // the real entry point, to the smallest depth the classifier refuses, and
+    // then asserts the refusal it measured there was NOT the resolver's (no
+    // ARM-1 warn): the walk has the lowest limit of the passes, so the first
+    // refusing depth is the fail-closed catch — and if an engine ever inverts
+    // the frame-weight ordering, the ARM-1 warn shows up at the boundary and
+    // this case fails LOUDLY rather than leaving the window silently
+    // untested.
     const nest = (depth: number): unknown => {
       let value: unknown = 'leaf';
       for (let i = 0; i < depth; i++) value = { a: value };
       return value;
     };
-    const stringifyLimit = (() => {
-      let lo = 1;
-      let hi = 1 << 20;
-      while (lo < hi) {
-        const mid = Math.ceil((lo + hi) / 2);
-        try {
-          JSON.stringify(nest(mid));
-          lo = mid;
-        } catch {
-          hi = mid - 1;
-        }
-      }
-      return lo;
-    })();
-    const depth = Math.floor(stringifyLimit * 0.7);
-    const state: StackState = {
-      version: STATE_SCHEMA_VERSION_CURRENT,
-      stackName: 'matrix-stack',
-      region: 'us-east-1',
-      resources: {
-        Res: {
-          physicalId: 'res-phys',
-          resourceType: 'AWS::SQS::Queue',
-          properties: { Deep: nest(depth) } as Record<string, unknown>,
+    const warnMock = (getLogger() as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
+    const probe = async (depth: number): Promise<{ refused: boolean; resolveThrew: boolean }> => {
+      warnMock.mockClear();
+      const state: StackState = {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        stackName: 'matrix-stack',
+        region: 'us-east-1',
+        resources: {
+          Res: {
+            physicalId: 'res-phys',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { Deep: nest(depth) } as Record<string, unknown>,
+          },
         },
-      },
-      outputs: {},
-      lastModified: 0,
+        outputs: {},
+        lastModified: 0,
+      };
+      const refusedIds = await resolveImportedProperties(
+        state,
+        {
+          Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: {} } },
+        } as CloudFormationTemplate,
+        'us-east-1',
+        undefined as never,
+        getLogger()
+      );
+      return {
+        refused: refusedIds.has('Res'),
+        resolveThrew: warnMock.mock.calls.some((call) =>
+          String(call[0]).includes('Failed to resolve intrinsics')
+        ),
+      };
     };
-    const refusedIds = await resolveImportedProperties(
-      state,
-      { Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: {} } } } as CloudFormationTemplate,
-      'us-east-1',
-      undefined as never,
-      getLogger()
-    );
+    // A shallow plain bag is ADMITTED — the anchor that makes the search's
+    // "first refusing depth" a real boundary rather than refusal-everywhere.
+    expect((await probe(64)).refused, 'a shallow plain bag must be admitted').toBe(false);
+    let lo = 64;
+    let hi = 128;
+    let refusingProbe = await probe(hi);
+    while (!refusingProbe.refused) {
+      lo = hi;
+      hi *= 2;
+      expect(hi, 'no refusing depth found below 2^21 — the walk stopped overflowing?').toBeLessThan(
+        1 << 21
+      );
+      refusingProbe = await probe(hi);
+    }
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      const result = await probe(mid);
+      if (result.refused) {
+        hi = mid;
+        refusingProbe = result;
+      } else {
+        lo = mid;
+      }
+    }
+    // The import SURVIVED every probe (each await resolved instead of
+    // rejecting), and the minimal refusing depth was refused with the resolve
+    // COMPLETED — i.e. by ARM 3's fail-closed catch, not by ARM 1.
+    expect(refusingProbe.refused).toBe(true);
     expect(
-      refusedIds.has('Res'),
-      'a bag the walk cannot traverse must be refused fail-closed, not admitted'
-    ).toBe(true);
-  }, 30_000);
+      refusingProbe.resolveThrew,
+      'at the minimal refusing depth the resolve completed, so the refusal must be the ' +
+        'walk-overflow catch — an ARM-1 warn here means the frame-weight ordering inverted'
+    ).toBe(false);
+  }, 60_000);
 
   for (const row of ROWS) {
     it(`SAFE: ${row.name}`, async () => {
