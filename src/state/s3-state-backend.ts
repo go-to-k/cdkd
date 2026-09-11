@@ -388,11 +388,19 @@ export class S3StateBackend {
         })
       );
 
+      // `region` is a raw `listStacks` key segment on the `state show` path and
+      // `stackName` reaches here the same way, so these three refusals take the
+      // same guard as the two in `parseStateBody` (issue #3003). The third one
+      // is the reachable one: a planted object whose storage class makes
+      // `GetObject` fail with something other than `NoSuchKey` lands the raw
+      // segment in the message.
+      const shownStack = this.displayName(stackName);
+      const shownRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
       if (!response.Body) {
-        throw new StateError(`State file for stack '${stackName}' (${region}) has no body`);
+        throw new StateError(`State file for stack '${shownStack}' (${shownRegion}) has no body`);
       }
       if (!response.ETag) {
-        throw new StateError(`State file for stack '${stackName}' (${region}) has no ETag`);
+        throw new StateError(`State file for stack '${shownStack}' (${shownRegion}) has no ETag`);
       }
 
       const bodyString = await response.Body.transformToString();
@@ -402,8 +410,15 @@ export class S3StateBackend {
     } catch (error) {
       if (!isNoSuchKey(error)) {
         if (error instanceof StateError) throw error;
+        // The detail is precomputed rather than written inline in the template.
+        // `scripts/check-docs-error-strings.ts` derives the producible message
+        // shapes from `src/`, and a sanitiser CALL inside the interpolation
+        // defeats that derivation — measured, and it is what un-anchored the
+        // `docs/troubleshooting.md` sample on the first cut of this change. The
+        // `+` concatenation is fine; the checker joins those.
+        const detail = displaySafe(error instanceof Error ? error.message : String(error));
         throw new StateError(
-          `Failed to get state for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
+          `Failed to get state for stack '${this.displayName(stackName)}' (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}): ${detail}`,
           error instanceof Error ? error : undefined
         );
       }
@@ -1312,8 +1327,12 @@ export class S3StateBackend {
       return { state, etag: response.ETag };
     } catch (error) {
       if (isNoSuchKey(error)) return null;
+      // Same guard as the new-key path above, and reachable from the same
+      // command: `getState` falls back here, so a `state show` on a legacy
+      // record takes this refusal (issue #3003).
+      const detail = displaySafe(error instanceof Error ? error.message : String(error));
       throw new StateError(
-        `Failed to get legacy state for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to get legacy state for stack '${this.displayName(stackName)}': ${detail}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -1336,12 +1355,20 @@ export class S3StateBackend {
       // `s3:PutObject` on the bucket can write. `state show` joins its rows
       // with newlines, so an unsanitized newline here forges a row in the very
       // diagnostic a reader trusts most (issue #3003).
+      // The DENYLIST class, not `asciiOnly`: this is a parser's own free-form
+      // message, not a value with a known charset, and the ascii allowlist
+      // would blank a legitimately non-ASCII diagnostic.
       const raw = error instanceof Error ? error.message : String(error);
-      const detail = displaySafe(raw, { asciiOnly: true }) || UNRENDERABLE;
-      // ONE template literal, not a concatenation: `check-docs-error-strings`
-      // derives the producible message shapes from `src/` and cannot join two
-      // fragments, so splitting this line silently un-anchors the sample in
-      // `docs/troubleshooting.md` that quotes it.
+      const detail = displaySafe(raw) || UNRENDERABLE;
+      // The sanitised `detail` is a VARIABLE, not an expression written inline
+      // in the template. `scripts/check-docs-error-strings.ts` derives the
+      // producible message shapes from `src/`, and a sanitiser CALL inside the
+      // interpolation defeats that derivation -- which un-anchors the sample in
+      // `docs/troubleshooting.md` that quotes this line. Measured one variable
+      // at a time: the `+` CONCATENATION is fine (the checker joins those, and
+      // the version refusal below is a three-part concatenation that anchors),
+      // so an earlier revision of this comment blaming the concatenation was
+      // wrong about its own mechanism.
       throw new StateError(
         `State file for stack '${this.displayName(stackName)}' is not valid JSON: ${detail}`,
         error instanceof Error ? error : undefined
@@ -1355,7 +1382,13 @@ export class S3StateBackend {
       // other half — `displaySafe` coerces with its own unguarded `String`, so
       // a `v` that throws on coercion still throws, one frame further in. That
       // is issue #2947's call, not this one's.
-      const shown = displaySafe(v, { asciiOnly: true }) || UNRENDERABLE;
+      // `String(v)` FIRST, then sanitize: `displaySafe` maps `null` and
+      // `undefined` to the empty string, so passing the value straight in turns
+      // a `version: null` record into the `UNRENDERABLE` stand-in and loses the
+      // one precise, already-safe word the refusal could have said. Coercing
+      // first also keeps issue go-to-k/cdkd#2947's boundary exactly where it
+      // was: a value that throws on coercion throws here, as it did before.
+      const shown = displaySafe(String(v), { asciiOnly: true }) || UNRENDERABLE;
       throw new StateError(
         `Unsupported state schema version ${shown} for stack '${this.displayName(stackName)}'. ` +
           `This cdkd binary supports versions ${STATE_SCHEMA_VERSIONS_READABLE.join(', ')}. ` +

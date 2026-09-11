@@ -449,6 +449,21 @@ describe('LockManager', () => {
       expect(message).toContain('PhysicalID');
     });
 
+    it('sanitizes the has-no-body refusal, which the catch rethrows UNCHANGED (issue #3003)', async () => {
+      // A `LockError` is rethrown as-is by the catch below, so it never reaches
+      // the guard there and needs its own -- the sibling the first cut missed.
+      s3Client.send.mockResolvedValueOnce({});
+
+      const caught = await lockManager
+        .getLockInfo('Ghost\n  PhysicalID: arn:forged', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('has no body');
+      expect(message).toContain('PhysicalID: arn:forged');
+    });
+
     it('sanitizes the STACK NAME in the lock-read failure (issue #3003)', async () => {
       // The name reaches here from an S3 key segment on the `state show` path,
       // so it is the same untrusted class as the body.

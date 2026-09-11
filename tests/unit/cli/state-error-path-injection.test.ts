@@ -90,6 +90,29 @@ describe('resolveSingleRegion refusals cannot forge a row (issue #3003)', () => 
     expect(message).toContain('Ghost');
   });
 
+  it('strips a character only the ASCII allowlist removes (issue #3003)', () => {
+    // Pins the MODE, not just the presence of a guard. `displaySafe`'s denylist
+    // form covers C0/DEL/C1, U+2028/9 and the bidi OVERRIDES, so every other
+    // case here stays green if `{ asciiOnly: true }` is dropped -- their
+    // hostile bytes are in both classes. A zero-width space is in neither
+    // denylist and only the allowlist removes it, so this is what tells the
+    // two apart. It matters because a zero-width character can hide the
+    // difference between two region names that read identically.
+    const message = messageOf(() =>
+      resolveSingleRegion(
+        'MyStack',
+        [
+          { stackName: 'MyStack', region: 'us-\u200beast-1' },
+          { stackName: 'MyStack', region: 'us-west-2' },
+        ],
+        undefined
+      )
+    );
+
+    expect(message).not.toContain('\u200b');
+    expect(message).toContain('us- east-1');
+  });
+
   it('keeps the legacy placeholder distinguishable from a sanitized segment', () => {
     // `(legacy)` is this function's OWN literal for a region-less record, not
     // a value from the record — so it must not be routed through the guard,
@@ -129,5 +152,9 @@ describe('resolveSingleRegion refusals cannot forge a row (issue #3003)', () => 
     expect(message).not.toMatch(CONTROL);
     expect(message).not.toContain('regions: ,');
     expect(message).toContain('us-west-2');
+    // The stand-in, not a dropped entry: both assertions above are satisfied by
+    // an implementation that FILTERS the unrenderable region out of the list,
+    // which would tell the reader one region exists when two do.
+    expect(message).toContain('<unrenderable>');
   });
 });

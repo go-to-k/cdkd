@@ -209,15 +209,17 @@ they print as untrusted text:
   it for a `null` too, so the two views differ on that one value. The marker is
   ordinary text, so a record whose dependency list literally contains `(none)`
   renders the same thing -- read `--json` when you need to tell them apart.
-- **A refusal cannot forge a row either.** When a record is malformed enough
-  that the view refuses instead of rendering, the message is where the record's
-  own text appears — an unreadable `state.json` or `lock.json` is quoted back by
+- **The refusals these views raise are held to the same rule.** When a record
+  is malformed enough that the view refuses instead of rendering, the message is
+  where the record's own text appears — an unreadable `state.json` or `lock.json` is quoted back by
   the JSON parser, an ambiguous stack has its regions listed, and a nested-stack
   walk names the child it could not find. Those views join their rows with
   newlines, so the same removal applies there: the diagnostic reports the bad
   value flattened onto one line rather than letting it invent a row. Anything
   that strips to nothing is reported as an explicit placeholder rather than an
-  empty slot.
+  empty slot, and the underlying cause a refusal reports is flattened the same
+  way. This covers the refusals these two commands raise; an error reaching you
+  from the AWS SDK itself is that service's own text.
 - **`--json` applies none of this**, and is the mode to reach for when you need
   the stored value rather than a readable one. It is not byte-for-byte in every
   mode: `cdkd state show` emits the record as parsed, while

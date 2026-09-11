@@ -1,4 +1,5 @@
 import { markNonRetryable } from '../deployment/retryable-errors.js';
+import { displaySafe } from './display-safe.js';
 import { getLogger } from './logger.js';
 
 /**
@@ -768,7 +769,28 @@ export function formatError(error: unknown): string {
   if (isCdkdError(error)) {
     let message = `${error.name}: ${error.message}`;
     if (error.cause) {
-      message += `\nCaused by: ${error.cause.message}`;
+      // Sanitized HERE, at the one place every cause is printed, rather than at
+      // each thrower (issue #3003). A cause is routinely an underlying
+      // `SyntaxError` from `JSON.parse`, and V8 quotes the offending INPUT in
+      // that message — so a `state.json` or `lock.json` anyone with
+      // `s3:PutObject` on the state bucket can write reaches the terminal
+      // through this line. `cdkd state show` joins its rows with newlines, so
+      // a newline here forges a row in the diagnostic, and it did so one line
+      // BELOW a message the thrower had already sanitized.
+      //
+      // The DENYLIST class, not `asciiOnly`: a cause is free-form text from an
+      // arbitrary error (AWS's own wording included), and the ascii allowlist
+      // is for values with a known charset — `display-safe.ts`'s header draws
+      // that line.
+      //
+      // A cause that sanitizes to NOTHING drops its whole line rather than
+      // printing a placeholder. It carried no readable information, and
+      // `Caused by:` with an empty tail reads as a formatting bug. The
+      // `UNRENDERABLE` stand-in the state layer uses is deliberately not
+      // imported here: `src/utils` sits BELOW `src/state`, and this one line
+      // does not justify moving the constant.
+      const cause = displaySafe(error.cause.message);
+      if (cause) message += `\nCaused by: ${cause}`;
     }
     return message;
   }

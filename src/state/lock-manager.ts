@@ -556,7 +556,11 @@ export class LockManager {
       );
 
       if (!response.Body) {
-        throw new LockError(`Lock file for stack '${stackName}' has no body`);
+        // A `LockError` is rethrown UNCHANGED by the catch below, so this one
+        // does not reach the guard there — it needs its own (issue #3003).
+        throw new LockError(
+          `Lock file for stack '${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' has no body`
+        );
       }
 
       const bodyString = await response.Body.transformToString();

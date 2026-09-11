@@ -2243,6 +2243,25 @@ describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', ()
     };
   }
 
+  it('sanitizes the ROOT-not-found refusal', async () => {
+    // Two lines above the walker's own refusals, and left raw by the first cut
+    // of issue #3003 -- the "guarded N of N+1 sites in one function" shape the
+    // issue itself is about.
+    const { backend } = buildStateBackend({});
+
+    const caught = await buildCdkdStateStackTree(
+      `Ghost\n  PhysicalID: arn:forged`,
+      'us-east-1',
+      backend
+    ).catch((e: unknown) => e);
+    const message = (caught as Error).message;
+
+    expect(message).not.toMatch(CONTROL);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    expect(message).toContain('No cdkd state found');
+    expect(message).toContain('PhysicalID: arn:forged');
+  });
+
   it('sanitizes the missing-child refusal', async () => {
     const { backend } = buildStateBackend({
       'Parent|us-east-1': stateWith({ resources: { [HOSTILE_ID]: nestedRow() } }),
@@ -2281,5 +2300,9 @@ describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', ()
     expect(message).not.toMatch(CONTROL);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     expect(message).toContain('region mismatch');
+    // Not vacuous: a message that DROPPED the offending region rather than
+    // flattening it would satisfy the two assertions above, since both are
+    // template words.
+    expect(message).toContain('PhysicalID: arn:forged');
   });
 });

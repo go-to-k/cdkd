@@ -124,10 +124,28 @@ function formatStackRef(ref: StackStateRef): string {
  * `()` would read as "no region" rather than "a region cdkd will not print".
  */
 function formatStackRefSafe(ref: StackStateRef): string {
-  const stack = displaySafe(ref.stackName, { asciiOnly: true }) || UNRENDERABLE;
-  return ref.region
-    ? `${stack} (${displaySafe(ref.region, { asciiOnly: true }) || UNRENDERABLE})`
-    : stack;
+  return ref.region ? `${safe(ref.stackName)} (${safe(ref.region)})` : safe(ref.stackName);
+}
+
+/**
+ * One spelling of "this value came from an S3 key or a state record, and is
+ * about to be interpolated into a message a terminal will render".
+ *
+ * Every refusal in this file that names a stack or a region goes through it
+ * (issue #3003). It exists as one function rather than the expression repeated
+ * per site because the failure this closes WAS the repeated form: issue #2772
+ * guarded the rendered rows and left the refusals, and the first cut of #3003
+ * guarded three refusals and left four more in these same two commands. A
+ * value reaching a message is the population, not a list of call sites.
+ *
+ * `asciiOnly` because the population has a known charset — CloudFormation
+ * constrains a stack name and AWS constrains a region, so the allowlist is a
+ * no-op on every legitimate input while an S3 key admits any UTF-8. Free-form
+ * text (a parser's own message, an AWS error) takes the denylist class
+ * instead; `display-safe.ts`'s header draws that line.
+ */
+function safe(value: string | undefined): string {
+  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
 }
 
 /**
@@ -148,8 +166,6 @@ export function resolveSingleRegion(
   // these messages. The rendered rows stopped forging lines in issue #2772;
   // the refusal a malformed record is most likely to reach had not (issue
   // #3003).
-  const safe = (value: string | undefined): string =>
-    displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
   const matches = refs.filter((r) => r.stackName === stackName);
   if (matches.length === 0) {
     throw new Error(
@@ -159,8 +175,10 @@ export function resolveSingleRegion(
   if (requestedRegion) {
     const ref = matches.find((r) => r.region === requestedRegion);
     if (!ref) {
-      // `(legacy)` is this function's own literal for a region-less record, so
-      // it is sanitized only where it stands in for a real segment.
+      // `(legacy)` is this function's own literal for a region-less record,
+      // never a value from a key, so it is not routed through the guard. It is
+      // all-ASCII, so passing it through would be a no-op rather than a
+      // hazard — the ternary exists for clarity about WHOSE text it is.
       const seen = matches.map((r) => (r.region === undefined ? '(legacy)' : safe(r.region)));
       throw new Error(
         `No state found for stack '${safe(stackName)}' in region '${safe(requestedRegion)}'. ` +
@@ -573,15 +591,15 @@ async function stateResourcesCommand(
     const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
     if (!ref.region) {
       throw new Error(
-        `Stack '${stackName}' has only a legacy state record without a region. ` +
-          `Run 'cdkd deploy ${stackName}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
+        `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
+          `Run 'cdkd deploy ${safe(stackName)}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
           `then re-run this command.`
       );
     }
     const stateResult = await setup.stateBackend.getState(stackName, ref.region);
     if (!stateResult) {
       throw new Error(
-        `No state found for stack '${stackName}' (${ref.region}) in s3://${setup.bucket}/${setup.prefix}/. ` +
+        `No state found for stack '${safe(stackName)}' (${safe(ref.region)}) in s3://${setup.bucket}/${setup.prefix}/. ` +
           `Run 'cdkd state list' to see available stacks.`
       );
     }
@@ -900,8 +918,8 @@ async function stateShowCommand(
     const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
     if (!ref.region) {
       throw new Error(
-        `Stack '${stackName}' has only a legacy state record without a region. ` +
-          `Run 'cdkd deploy ${stackName}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
+        `Stack '${safe(stackName)}' has only a legacy state record without a region. ` +
+          `Run 'cdkd deploy ${safe(stackName)}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
           `then re-run this command.`
       );
     }
@@ -913,7 +931,7 @@ async function stateShowCommand(
 
     if (!stateResult) {
       throw new Error(
-        `No state found for stack '${stackName}' (${ref.region}) in s3://${setup.bucket}/${setup.prefix}/. ` +
+        `No state found for stack '${safe(stackName)}' (${safe(ref.region)}) in s3://${setup.bucket}/${setup.prefix}/. ` +
           `Run 'cdkd state list' to see available stacks.`
       );
     }

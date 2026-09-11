@@ -9,6 +9,8 @@ import {
   IntrinsicResolutionRefusalError,
   CrossAccountSecretRefusalError,
   DynamicReferenceRegionAmbiguousError,
+  formatError,
+  StateError,
   withErrorHandling,
 } from '../../../src/utils/error-handler.js';
 
@@ -320,5 +322,45 @@ describe('DynamicReferenceRegionAmbiguousError classification (issue #2134)', ()
     const wrapped = new CdkdError('outer', 'OUTER', new DynamicReferenceRegionAmbiguousError('x'));
 
     expect(wrapped.cause).toBeInstanceOf(DynamicReferenceRegionAmbiguousError);
+  });
+});
+
+describe("formatError's `Caused by:` line (issue #3003)", () => {
+  // The line that undid the rest of that issue. Every site it fixed passes the
+  // ORIGINAL error as `cause`, and a cause is routinely a `SyntaxError` from
+  // `JSON.parse` -- which quotes the offending INPUT, so a state.json or
+  // lock.json anyone with `s3:PutObject` can write reached the terminal here,
+  // one line BELOW a message the thrower had already sanitized. Measured live
+  // before the fix: `cdkd state show` rendered four lines where two were
+  // owed, with a live ESC among them.
+  // `\n` is EXCLUDED: `formatError` joins the message and its cause with one,
+  // so a class containing it would fail on cdkd's own separator. An INJECTED
+  // newline is caught by the line-count assertion instead, which is the
+  // sharper pin anyway -- the defect showed up as an extra LINE.
+  const CONTROL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+
+  it('flattens a cause that would otherwise forge a row', () => {
+    const cause = new SyntaxError('Unexpected token, "[1,2,\u001b[31m\n  PhysicalID: arn-forged"');
+    const out = formatError(new StateError('State file for stack \'S\' is not valid JSON: x', cause));
+
+    expect(out).not.toMatch(CONTROL);
+    expect(out.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    // Exactly two lines: the message and its cause. The defect showed up as a
+    // THIRD, which a content assertion alone would not have named.
+    expect(out.split('\n')).toHaveLength(2);
+    // Not vacuous: the cause is still reported, flattened rather than dropped.
+    expect(out).toContain('Caused by:');
+    expect(out).toContain('PhysicalID: arn-forged');
+  });
+
+  it('drops the whole line when the cause sanitizes to nothing', () => {
+    const out = formatError(new StateError('outer', new SyntaxError('\u0007\u0007')));
+    expect(out).toBe('StateError: outer');
+    expect(out).not.toContain('Caused by:');
+  });
+
+  it('leaves an ordinary cause byte-identical', () => {
+    const out = formatError(new StateError('outer', new Error('AccessDenied: nope')));
+    expect(out).toBe('StateError: outer\nCaused by: AccessDenied: nope');
   });
 });

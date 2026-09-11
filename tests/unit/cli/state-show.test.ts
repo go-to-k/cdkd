@@ -1494,6 +1494,38 @@ describe('cdkd state show', () => {
     expect(out.split('The last deploy could not resolve the keys listed').length - 1).toBe(1);
   });
 
+  it('sanitizes the command\'s OWN refusals, not only resolveSingleRegion\'s (issue #3003)', async () => {
+    // `ref.region` is a raw `listStacks` key segment and reaches these two
+    // refusals ~430 lines from the ones the first cut of issue #3003 guarded,
+    // in the same file and on the same call path.
+    const hostile = 'us-east-1\n  PhysicalID: arn:forged';
+    mockListStacks.mockResolvedValue([{ stackName: 'GhostStack', region: hostile }]);
+    mockGetState.mockResolvedValue(null);
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const caught = await runStateShow(['show', 'GhostStack']).catch((e: unknown) => e);
+    const message = errorSpy.mock.calls.map(String).join('\n') + String(caught);
+
+    expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    expect(message).toContain('PhysicalID: arn:forged');
+  });
+
+  it('sanitizes the legacy-record refusal (issue #3003)', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Ghost\n  PhysicalID: arn:forged', region: undefined },
+    ]);
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const caught = await runStateShow(['show', 'Ghost\n  PhysicalID: arn:forged']).catch(
+      (e: unknown) => e
+    );
+    const message = errorSpy.mock.calls.map(String).join('\n') + String(caught);
+
+    expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(message).toContain('only a legacy state record');
+  });
+
   it('emits a `{state, lock}` JSON object with --json', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('JsonStack', 'us-west-2'));
     const stateRecord = makeState({
