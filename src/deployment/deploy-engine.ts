@@ -101,7 +101,10 @@ import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry, STICKY_CC_MIGRATION_EXEMPT } from '../provisioning/provider-registry.js';
 import { slowCcOperationTimeoutMs } from '../provisioning/slow-cc-operation-timeouts.js';
 import { makeCanonicalizePropertiesFn } from '../provisioning/canonicalize-properties.js';
-import { withoutSilentDropProperties } from '../provisioning/property-coverage.js';
+import {
+  withoutAcceptedSilentDropProperties,
+  withoutSilentDropProperties,
+} from '../provisioning/property-coverage.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -5396,14 +5399,60 @@ export class DeployEngine {
         // mark is permanent on its object and the provider call below has not
         // happened yet: `propertiesToRecord` decides, after it, whether the
         // object state holds earns the mark.
+        //
+        // Issue #2809: the DESIRED operand is narrowed too, so the two sides
+        // describe the same thing. `currentPropsAsWritten` removed the silent
+        // drops the SDK route cannot have written; left alone, the desired side
+        // still carried an allow-listed REMOVABLE drop, the strings could never
+        // be equal, and this skip — with the attribute-only branch nested inside
+        // it — was unreachable for such a resource. That cost a redundant
+        // `provider.update()`, and on a type whose `update()` re-creates
+        // (`AWS::SNS::Subscription`, where `Region` is such a drop) it turned a
+        // `DeletionPolicy`-only flip into a destroy-and-recreate.
+        //
+        // The ALLOW SET rather than every removable drop: the diff's own
+        // desired-side rule (`DiffCalculator`, issue #2750), deliberately NOT
+        // the record side's. An un-allowed drop auto-routes the resource to
+        // Cloud Control, which DOES write the key, so removing it here would
+        // hide a real difference and skip an update that must be sent; the
+        // helper removes nothing at all while any drop is un-allowed, since the
+        // route is per resource. Skipped for a RECORD on 'cc-api' -- the same
+        // recorded-marker test `currentPropsAsWritten` makes (an absent marker
+        // counts as SDK), so both operands are narrowed for the same records.
+        // `?.()` for the test doubles, as at the diff call: a double without
+        // the method compares the full bag.
+        //
+        // The recreate flags are read below this skip (the issue #2651 class),
+        // but for a resource whose TYPE is unchanged a `--recreate-via-*`
+        // target this narrowing could absorb is not reachable from the CLI:
+        // `--recreate-via-cc-api` with `--prefer-sdk-route` on the same
+        // resource is `ambiguousIntent` whenever the template carries the
+        // allow-listed drop (a check made against the RECORDED type), and
+        // `--recreate-via-sdk-provider` is `blockedAlreadySdk` for every record
+        // not on 'cc-api', a superset of the records narrowed here (which also
+        // need an allow set and a removable drop). Both refuse at pre-flight
+        // with `RECREATE_TARGETS_INVALID` -- see
+        // `src/deployment/recreate-targets.ts`. A TYPE change does reach this
+        // arm (the diff emits it as an UPDATE carrying `Type`), and this skip,
+        // which compares properties only, swallows one whose bags compare
+        // equal: issue #3036 (the old resource's delete on a type change
+        // routing on the NEW type is the separate issue #2668).
+        const desiredForSkipCheck = redactSecretsForState(
+          markSameGenerationBag({ ...resolvedProps }),
+          updateSecrets,
+          desiredProps
+        );
+        const allowedSilentDrops = this.providerRegistry.getAllowedUnsupportedProperties?.();
+        const desiredForSkipCheckAsWritten =
+          currentResource.provisionedBy !== 'cc-api' && allowedSilentDrops
+            ? withoutAcceptedSilentDropProperties(
+                resourceType,
+                desiredForSkipCheck,
+                allowedSilentDrops
+              )
+            : desiredForSkipCheck;
         if (
-          JSON.stringify(
-            redactSecretsForState(
-              markSameGenerationBag({ ...resolvedProps }),
-              updateSecrets,
-              desiredProps
-            )
-          ) === JSON.stringify(currentPropsAsWritten)
+          JSON.stringify(desiredForSkipCheckAsWritten) === JSON.stringify(currentPropsAsWritten)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
           // `UpdateReplacePolicy` may have flipped without any AWS-side

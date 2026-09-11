@@ -23,6 +23,12 @@
 #                  rather than importing that from the generated coverage map.
 #                  Also asserts the WRITE half of go-to-k/cdkd#2750: the record
 #                  must not claim a value AWS does not hold.
+#   4b allowmeta -- phase 4's properties plus UpdateReplacePolicy: Retain,
+#                  same flag. go-to-k/cdkd#2809: a policy-only flip must take
+#                  the state-only attribute refresh, not the provider's
+#                  update().
+#   4c allowdrop again -- the flip back, also state-only, restoring phase 4's
+#                  record so phase 5 still starts from it.
 #   5 dropagain -- the same property again with NO flag. Closes
 #                  go-to-k/cdkd#2750: the opt-out deploy used to RECORD the
 #                  property it never wrote, so the Cloud Control patch diffed it
@@ -70,6 +76,38 @@ record() { # usage: record <jq-expression-over-the-resource-object>
 alarm_arn() {
   aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
     --query 'MetricAlarms[0].AlarmArn' --output text
+}
+
+# When the alarm's configuration was last written. Phases 4b/4c read it before
+# and after, from AWS rather than from cdkd's output: the attribute-only branch
+# issues no AWS call, so it must not move.
+alarm_config_ts() {
+  aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+    --query 'MetricAlarms[0].AlarmConfigurationUpdatedTimestamp' --output text
+}
+
+# The alarm's EvaluationWindow as JSON (`null` when unset), read through the
+# SDK rather than `aws cloudwatch describe-alarms`. The CLI silently drops a
+# response field its bundled model does not know, and aws-cli 2.34.37's
+# CloudWatch model has no EvaluationWindow (measured 2026-09-11: Cloud
+# Control's own read showed the property set while the CLI printed null). A
+# CLI readback therefore reports the property absent whatever AWS holds -- a
+# false FAIL in phases 2b and 5, and a vacuous pass of phase 4's absence
+# control. Phase 2b's positive read goes through this same reader, which is
+# what makes phase 4's `null` evidence.
+REPO_ROOT="${PWD}/../../.."
+alarm_eval_window_json() {
+  ( cd "${REPO_ROOT}" && REGION="${REGION}" ALARM="${ALARM_NAME}" node --input-type=module -e "
+import { CloudWatchClient, DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
+const client = new CloudWatchClient({ region: process.env.REGION });
+const res = await client.send(new DescribeAlarmsCommand({ AlarmNames: [process.env.ALARM] }));
+const alarms = res.MetricAlarms ?? [];
+if (alarms.length !== 1) {
+  console.error('expected exactly one alarm named ' + process.env.ALARM + ', got ' + alarms.length);
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify(alarms[0].EvaluationWindow ?? null));
+" ) || return 1
 }
 
 cleanup() {
@@ -122,6 +160,35 @@ fi
 jq -e --arg k "${LOGICAL_ID}" '.Resources[$k].Properties.EvaluationWindow.WallClockWindow.Timezone == "UTC"' "${TEMPLATE}" >/dev/null 2>&1 || {
   echo "FAIL: the DROP phase template does not carry EvaluationWindow; addPropertyOverride did not land and the arm would test nothing" >&2; exit 1; }
 echo "    OK: the two phases really do differ by the silent-drop property"
+
+# Phase 4b's premise: `allowmeta` differs from `allowdrop` by the policy
+# attribute ALONE. A property difference would give the diff a real change to
+# send, and the provider call it then makes would be correct, not the defect.
+if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=allowdrop node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
+  printf '%s\n' "${SYNTH_OUT}" >&2
+  echo "FAIL: allowdrop-phase synth failed" >&2
+  exit 1
+fi
+# The WHOLE resource minus UpdateReplacePolicy, not just Properties: a
+# DeletionPolicy (or any other attribute) slipped into `allowmeta` alone would
+# otherwise pass, and a Retain DeletionPolicy is exactly the orphaning risk the
+# stack's phase doc chose UpdateReplacePolicy to avoid.
+ALLOW_REST=$(jq -cS --arg k "${LOGICAL_ID}" '.Resources[$k] | del(.UpdateReplacePolicy)' "${TEMPLATE}")
+ALLOW_URP=$(jq -r --arg k "${LOGICAL_ID}" '.Resources[$k].UpdateReplacePolicy // "ABSENT"' "${TEMPLATE}")
+if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=allowmeta node "${LOCAL_DIST}" synth --region "${REGION}" 2>&1); then
+  printf '%s\n' "${SYNTH_OUT}" >&2
+  echo "FAIL: allowmeta-phase synth failed" >&2
+  exit 1
+fi
+META_REST=$(jq -cS --arg k "${LOGICAL_ID}" '.Resources[$k] | del(.UpdateReplacePolicy)' "${TEMPLATE}")
+META_URP=$(jq -r --arg k "${LOGICAL_ID}" '.Resources[$k].UpdateReplacePolicy // "ABSENT"' "${TEMPLATE}")
+[ "${ALLOW_URP}" = "ABSENT" ] && [ "${META_URP}" = "Retain" ] || {
+  echo "FAIL: UpdateReplacePolicy is ${ALLOW_URP} in allowdrop and ${META_URP} in allowmeta, expected ABSENT and Retain; phase 4b would flip nothing" >&2; exit 1; }
+[ "${ALLOW_REST}" = "${META_REST}" ] || {
+  echo "FAIL: allowdrop and allowmeta differ in more than UpdateReplacePolicy (a property or another attribute); phase 4b would not be a policy-only flip" >&2; exit 1; }
+jq -e '.Properties.EvaluationWindow.WallClockWindow.Timezone == "UTC"' <<<"${META_REST}" >/dev/null || {
+  echo "FAIL: the allowmeta template does not carry EvaluationWindow; phase 4b would not exercise the allow-listed drop" >&2; exit 1; }
+echo "    OK: allowmeta differs from allowdrop by UpdateReplacePolicy alone"
 
 echo "==> Phase 1: Deploy with handled properties only (SDK route expected)"
 env CDKD_TEST_PHASE=base \
@@ -217,8 +284,8 @@ THRESHOLD=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --regio
 awk -v t="${THRESHOLD}" 'BEGIN { exit !(t + 0 == 2) }' || { echo "FAIL: the deploy did not reach AWS (Threshold=${THRESHOLD}, expected 2); every assertion here would be vacuous" >&2; exit 1; }
 
 # THE question. Read from AWS, not from cdkd's state record.
-WINDOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
-  --query 'MetricAlarms[0].EvaluationWindow.WallClockWindow.Timezone' --output text)
+EW_ARM=$(alarm_eval_window_json) || { echo "FAIL: could not read the alarm's EvaluationWindow after phase 2b" >&2; exit 1; }
+WINDOW=$(jq -r '.WallClockWindow.Timezone // "None"' <<<"${EW_ARM}")
 [ "${WINDOW}" = "UTC" ] || { echo "FAIL: EvaluationWindow did NOT reach AWS (Timezone=${WINDOW}). docs/cli-deploy-safety.md's recreate-via-cc-api section would be right and its --prefer-sdk-route section wrong: the auto-route does not apply the property to an existing SDK-created resource." >&2; exit 1; }
 
 # In place, not replaced.
@@ -277,9 +344,8 @@ LAYER_ALLOW=$(record '.provisionedBy')
 T_ALLOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
   --query 'MetricAlarms[0].Threshold' --output text)
 awk -v t="${T_ALLOW}" 'BEGIN { exit !(t + 0 == 4) }' || { echo "FAIL: the control deploy did not reach AWS (Threshold=${T_ALLOW}, expected 4); it proves nothing about the drop" >&2; exit 1; }
-W_ALLOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
-  --query 'MetricAlarms[0].EvaluationWindow' --output text)
-[ "${W_ALLOW}" = "None" ] || [ -z "${W_ALLOW}" ] || { echo "FAIL: EvaluationWindow reached AWS on the SDK route (${W_ALLOW}); it is not a silent drop for this type, so phase 2b measured nothing" >&2; exit 1; }
+W_ALLOW=$(alarm_eval_window_json) || { echo "FAIL: could not read the alarm's EvaluationWindow after phase 4" >&2; exit 1; }
+[ "${W_ALLOW}" = "null" ] || { echo "FAIL: EvaluationWindow reached AWS on the SDK route (${W_ALLOW}); it is not a silent drop for this type, so phase 2b measured nothing" >&2; exit 1; }
 # go-to-k/cdkd#2750, the WRITE half -- the record must describe what was SENT,
 # not what the template asked for. This is the assertion that fails against the
 # pre-fix binary, and the property whose presence used to make the flag-less
@@ -292,6 +358,72 @@ RECORDED_ALLOW=$(record '.properties.EvaluationWindow // "ABSENT"')
 RECORDED_THRESHOLD=$(record '.properties.Threshold')
 awk -v t="${RECORDED_THRESHOLD}" 'BEGIN { exit !(t + 0 == 4) }' || { echo "FAIL: the record lost a property the SDK route DID write (Threshold=${RECORDED_THRESHOLD}, expected 4); the #2750 narrowing must drop only the silent-drop keys" >&2; exit 1; }
 echo "    OK: stayed on SDK, other properties applied, EvaluationWindow dropped and NOT recorded"
+
+# Asserts one policy-attribute deploy took the STATE-ONLY branch. $1 = phase
+# label, $2 = the captured deploy output.
+#
+# The observable is the per-resource VERB. The attribute-only branch renders
+# `updated (metadata)`; a provider update renders a bare `updated`. The bare
+# verb is the SENTINEL: present without `(metadata)` means the provider was
+# called, absent altogether means the deploy saw no change and the phase
+# tested nothing. Anchored to the resource for the reason phase 2b gives.
+assert_metadata_only() {
+  local label="$1" plain
+  plain=$(printf '%s' "$2" | sed $'s/\033\[[0-9;]*m//g')
+  grep -qE "${LOGICAL_ID}.*\bupdated\b" <<<"${plain}" || {
+    echo "FAIL (${label}): the deploy reported no update of ${LOGICAL_ID}; the diff did not see the UpdateReplacePolicy flip and this phase tests nothing" >&2; exit 1; }
+  grep -qE "${LOGICAL_ID}.*updated \(metadata\)" <<<"${plain}" || {
+    echo "FAIL (${label}): the policy-only flip reached the provider's update() (verb 'updated', not 'updated (metadata)'). go-to-k/cdkd#2809 has regressed: the no-change re-check compared the allow-listed drop on the desired side against a record that never held it." >&2; exit 1; }
+}
+
+echo "==> Phase 4b: go-to-k/cdkd#2809 -- a policy-only flip under the flag skips the provider"
+# After phase 4 the record is narrowed (no EvaluationWindow) while the template
+# still carries it and the flag still allows the drop. The diff narrows its
+# desired side by the allow set, so it reports the UpdateReplacePolicy flip
+# and nothing else. The engine's no-change re-check must narrow the same way,
+# or the two bags never match and the flip costs a full provider update()
+# instead of the state-only refresh.
+CFG_TS_BEFORE=$(alarm_config_ts)
+[ -n "${CFG_TS_BEFORE}" ] && [ "${CFG_TS_BEFORE}" != "None" ] || { echo "FAIL: could not read the alarm's configuration timestamp before phase 4b" >&2; exit 1; }
+if ! META_OUT=$(env CDKD_TEST_PHASE=allowmeta \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --prefer-sdk-route "AWS::CloudWatch::Alarm:EvaluationWindow" --yes 2>&1); then
+  printf '%s\n' "${META_OUT}" >&2
+  echo "FAIL: the phase 4b deploy exited non-zero" >&2
+  exit 1
+fi
+printf '%s\n' "${META_OUT}" >&2
+assert_metadata_only "phase 4b" "${META_OUT}"
+URP_META=$(record '.updateReplacePolicy // "ABSENT"')
+[ "${URP_META}" = "Retain" ] || { echo "FAIL: the record's updateReplacePolicy is ${URP_META} after phase 4b, expected Retain; the state half of the attribute refresh did not land" >&2; exit 1; }
+LAYER_META=$(record '.provisionedBy')
+[ "${LAYER_META}" = "sdk" ] || { echo "FAIL: phase 4b moved the record off the SDK route (provisionedBy=${LAYER_META})" >&2; exit 1; }
+RECORDED_META=$(record '.properties.EvaluationWindow // "ABSENT"')
+[ "${RECORDED_META}" = "ABSENT" ] || { echo "FAIL: phase 4b recorded EvaluationWindow (${RECORDED_META}); the attribute refresh must leave the narrowed properties alone" >&2; exit 1; }
+T_META=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
+  --query 'MetricAlarms[0].Threshold' --output text)
+awk -v t="${T_META}" 'BEGIN { exit !(t + 0 == 4) }' || { echo "FAIL: the alarm's Threshold is ${T_META} after phase 4b, expected phase 4's 4" >&2; exit 1; }
+CFG_TS_META=$(alarm_config_ts)
+[ "${CFG_TS_META}" = "${CFG_TS_BEFORE}" ] || { echo "FAIL: the alarm's configuration was rewritten in AWS by phase 4b (${CFG_TS_BEFORE} -> ${CFG_TS_META}); a policy-only flip must issue no AWS call" >&2; exit 1; }
+echo "    OK: updated (metadata), record carries UpdateReplacePolicy Retain, AWS configuration untouched"
+
+echo "==> Phase 4c: the flip back is state-only too"
+# Deploys phase 4's template again, so the record phase 5 starts from is the
+# one phase 4 wrote -- phase 5's comparison with phase 2b depends on that.
+if ! BACK_OUT=$(env CDKD_TEST_PHASE=allowdrop \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --prefer-sdk-route "AWS::CloudWatch::Alarm:EvaluationWindow" --yes 2>&1); then
+  printf '%s\n' "${BACK_OUT}" >&2
+  echo "FAIL: the phase 4c deploy exited non-zero" >&2
+  exit 1
+fi
+printf '%s\n' "${BACK_OUT}" >&2
+assert_metadata_only "phase 4c" "${BACK_OUT}"
+URP_BACK=$(record '.updateReplacePolicy // "ABSENT"')
+[ "${URP_BACK}" = "ABSENT" ] || { echo "FAIL: the record's updateReplacePolicy is ${URP_BACK} after the flip back, expected it cleared" >&2; exit 1; }
+CFG_TS_BACK=$(alarm_config_ts)
+[ "${CFG_TS_BACK}" = "${CFG_TS_BEFORE}" ] || { echo "FAIL: the alarm's configuration was rewritten in AWS by the flip back (${CFG_TS_BEFORE} -> ${CFG_TS_BACK})" >&2; exit 1; }
+echo "    OK: flipped back through the attribute refresh; the record is phase 4's again"
 
 echo "==> Phase 5: go-to-k/cdkd#2750 -- the re-route applies the property the opt-out dropped"
 # Before go-to-k/cdkd#2750 the opt-out deploy persisted EvaluationWindow into the
@@ -329,8 +461,8 @@ LAYER_AGAIN=$(record '.provisionedBy')
 T_AGAIN=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
   --query 'MetricAlarms[0].Threshold' --output text)
 awk -v t="${T_AGAIN}" 'BEGIN { exit !(t + 0 == 5) }' || { echo "FAIL: the deploy did not reach AWS (Threshold=${T_AGAIN}, expected 5)" >&2; exit 1; }
-W_AGAIN=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
-  --query 'MetricAlarms[0].EvaluationWindow.WallClockWindow.Timezone' --output text)
+EW_AGAIN=$(alarm_eval_window_json) || { echo "FAIL: could not read the alarm's EvaluationWindow after phase 5" >&2; exit 1; }
+W_AGAIN=$(jq -r '.WallClockWindow.Timezone // "None"' <<<"${EW_AGAIN}")
 [ "${W_AGAIN}" = "UTC" ] || { echo "FAIL: EvaluationWindow did NOT reach AWS (Timezone=${W_AGAIN}, expected UTC). go-to-k/cdkd#2750 has regressed: the re-route fired but the Cloud Control patch still omitted the property the earlier opt-out deploy dropped." >&2; exit 1; }
 # The re-route must not have replaced the alarm to apply it -- the whole promise
 # of the auto-route is an in-place update, and phase 3 proved the witness dies on

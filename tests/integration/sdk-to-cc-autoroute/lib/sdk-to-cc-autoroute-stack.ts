@@ -53,9 +53,16 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
  *                out-of-band tag, or the tag surviving the arm witnesses
  *                nothing.
  *   allowdrop -- PLUS EvaluationWindow, deployed WITH
- *                `--allow-unsupported-properties`. Control for the PREMISE:
+ *                `--prefer-sdk-route`. Control for the PREMISE:
  *                proves the SDK route really does drop the property, which the
  *                arm otherwise imports from the generated coverage map.
+ *   allowmeta -- `allowdrop`'s properties byte for byte, plus
+ *                `UpdateReplacePolicy: Retain`, deployed with the same flag.
+ *                go-to-k/cdkd#2809: a policy-only flip must refresh state and
+ *                skip the provider. The flip back deploys `allowdrop` again.
+ *                UpdateReplacePolicy rather than DeletionPolicy, because a
+ *                run that dies between the flip and the flip back would leave
+ *                a Retain DeletionPolicy that orphans the alarm at destroy.
  *   dropagain -- the same property again with NO flag, after `allowdrop`.
  *                Closes go-to-k/cdkd#2750: the opt-out deploy used to RECORD
  *                the property it never wrote, so the Cloud Control patch
@@ -74,11 +81,14 @@ const THRESHOLD_BY_PHASE: Record<string, number> = {
   drop: 2,
   rebase: 3,
   allowdrop: 4,
+  // Same threshold as `allowdrop` on purpose: the phase must differ from it by
+  // the policy attribute ALONE, or the property diff it tests is not empty.
+  allowmeta: 4,
   dropagain: 5,
 };
 
 /** The phases whose template carries the silently-dropped property. */
-const PHASES_WITH_DROP = new Set(['drop', 'allowdrop', 'dropagain']);
+const PHASES_WITH_DROP = new Set(['drop', 'allowdrop', 'allowmeta', 'dropagain']);
 
 export class SdkToCcAutorouteStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -104,6 +114,10 @@ export class SdkToCcAutorouteStack extends cdk.Stack {
       // fixture was written, so a failure here is cdkd's routing, not a
       // malformed property.
       alarm.addPropertyOverride('EvaluationWindow', { WallClockWindow: { Timezone: 'UTC' } });
+    }
+
+    if (phase === 'allowmeta') {
+      alarm.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.RETAIN;
     }
 
     new cdk.CfnOutput(this, 'AlarmName', { value: alarm.ref });
