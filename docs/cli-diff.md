@@ -102,6 +102,46 @@ so the routing decision is auditable before you deploy. DELETE lines are never
 annotated: deletes route via the `provisionedBy` value recorded on each
 resource in state, not by inspecting the template.
 
+### Adopted rollback orphans
+
+```text
+  [~] Bucket (AWS::S3::Bucket) [adopted from a rollback orphan]
+```
+
+A previous deploy failed, rolled back, and left this resource in AWS because
+its `DeletionPolicy` is `Retain`. cdkd recorded what it left behind, and the
+next deploy re-adopts that resource instead of asking AWS for a name the
+resource still holds — so the row is an UPDATE rather than a create.
+
+When the adopted resource needs no property change at all, there is no row to
+annotate: it compares equal, like any unchanged resource. The summary names it
+instead, so an adoption is never silent:
+
+```text
+0 to create, 0 to update, 0 to delete
+1 resource(s) to adopt from a previous rollback: Bucket
+```
+
+A stack in that state is NOT "no changes detected", and `--fail` treats it as a
+change: the deploy still takes the resource back into state and rewrites the
+state file without the orphan record.
+
+`cdkd diff` runs the same verification the deploy runs before it draws this
+row: the resource must still exist, still answer to the recorded physical id,
+and be claimed by no other cdkd stack. A record that fails any of those is not
+adopted, and the row stays a create — which is what the deploy will attempt.
+A record that fails the ownership check is reported under `Blocking` instead;
+see [Exit codes](#exit-codes).
+
+The annotation is not cosmetic. Without it the row is indistinguishable from an
+ordinary update, and the last thing you saw this resource do was fail and drop
+out of state — so an unannotated `[~]` reads as cdkd having quietly kept
+managing it.
+
+This is the only part of `cdkd diff` that calls an AWS resource provider, and
+it runs only for a stack whose state holds orphan records. A stack that has
+never had a rollback orphan anything pays nothing for it.
+
 ## Outputs
 
 The diff also compares the template's `Outputs` against the outputs bag in
@@ -503,6 +543,7 @@ type names.
 | --- | --- |
 | `0` | The diff was computed. This is the exit code even when changes are present, unless `--fail` was passed. |
 | `1` | `--fail` was passed and something changed, or the command itself failed. |
+| `3` | The diff was computed AND `cdkd deploy` would refuse to start. |
 
 The failures behind the second meaning of `1` are a synth crash, an auth error,
 an unresolvable cross-stack reference, no stack matching the patterns you gave,
@@ -510,6 +551,29 @@ and more than one stack in the app with no selection given.
 
 `cdkd diff` never exits `2`. That code means partial failure, which is a
 property of commands that mutate AWS.
+
+### Exit `3` — the deploy would refuse
+
+The preview is complete when this fires: every resource row, every Outputs row
+and every nested stack is printed first, and the reasons follow under a
+`Blocking (cdkd deploy will refuse):` heading. `cdkd deploy` stops at the same
+condition — but it stops because there is nothing left for it to do, while a
+preview that died before printing would be a preview you could not use to
+decide anything.
+
+Today there is one such condition: a rollback left a `DeletionPolicy: Retain`
+resource behind, cdkd recorded it so the next deploy could re-adopt it, and the
+physical name in that record is one ANOTHER cdkd stack's state already claims.
+Adopting it would put one physical id in two state files, and either stack's
+`cdkd destroy` would then delete the other's live resource, so cdkd refuses.
+Resolve the ownership conflict — usually by removing the resource from
+whichever stack should not own it — and the next `cdkd diff` exits normally.
+
+It is deliberately NOT `1`. `--fail` uses `1` to mean "something changed", and
+a refusal is not a change: a CI job gating on drift must be able to tell "there
+is work to do" from "the work cannot begin". It is not `2` either — that code
+means re-running typically resolves it, and this one does not change until a
+person acts.
 
 Distinguish the two meanings of `1` by whether the diff report was printed
 first: `--fail` prints the full report and then exits `1`, while a command

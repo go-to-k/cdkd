@@ -185,6 +185,17 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'pattern cannot tell from a key and which is listed rather than excused by ' +
       'a cleverer regex.',
   },
+  'src/cli/commands/scrub.ts': {
+    sites: 1,
+    why:
+      'NOT a write: the READ that feeds a rollback-orphan record\'s third bag into ' +
+      "the needle-learning resolve (issue go-to-k/cdkd#2943). `scrubResourceRecord` " +
+      'scrubs `observedProperties` as well as `properties` and `attributes`, so a ' +
+      'secret living only in the observed bag — service-echoed, redacted at write ' +
+      "time by another resource's needle — would otherwise have no needle of its " +
+      'own. The rewrite that follows goes through `scrubResourceRecord`, which is ' +
+      'listed in its own entry.',
+  },
   'src/deployment/rollback-executor.ts': {
     sites: 1,
     why:
@@ -274,11 +285,13 @@ describe('observedProperties write population (issue #2828)', () => {
   it('holds LITERAL totals, so the table shrinking is visible on its own', () => {
     // Literals rather than sums over `EXPECTED`: a floor computed from the pool
     // it guards moves with the pool, so deleting rows would keep a derived
-    // comparison green. 11 across 7 files = the 2026-09-09 measurement in the
-    // header, taken identically on the pre-fix and post-fix trees.
+    // comparison green. 11 across 7 files was the 2026-09-09 measurement in the
+    // header; go-to-k/cdkd#2943 added one READ in `scrub.ts` — the orphan
+    // record's `observedProperties` reaching the needle-learning resolve — for
+    // 12 across 8.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(11);
-    expect(Object.keys(EXPECTED)).toHaveLength(7);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(12);
+    expect(Object.keys(EXPECTED)).toHaveLength(8);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

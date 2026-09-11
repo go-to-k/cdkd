@@ -2,7 +2,7 @@ import { stripControlChars } from '../../utils/regexp.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
-import type { ResourceChange, StackState } from '../../types/state.js';
+import type { ResourceChange, ResourceState, StackState } from '../../types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator, INTRINSIC_KEYS } from '../../analyzer/diff-calculator.js';
 import type { CanonicalizePropertiesFn } from '../../analyzer/diff-calculator.js';
@@ -148,6 +148,19 @@ export interface DiffTreeNode {
    * detected" while the apply republishes the exports index.
    */
   outputChanges: OutputChange[];
+  /**
+   * Logical ids this node's diff read out of a rollback-orphan record rather
+   * than out of `resources` (issue go-to-k/cdkd#2943). Their rows are ordinary
+   * UPDATE / NO_CHANGE rows and carry an annotation.
+   */
+  adoptedOrphans: string[];
+  /**
+   * Reasons `cdkd deploy` would refuse THIS node (issue go-to-k/cdkd#2943).
+   * Rendered after the rows, and non-empty anywhere in the tree makes
+   * `cdkd diff` exit non-zero — the preview is complete, but the deploy it
+   * describes cannot start.
+   */
+  blocking: string[];
   /** Direct nested-stack children, DFS order. Empty for leaves and for non-recursive runs. */
   children: DiffTreeNode[];
 }
@@ -253,6 +266,40 @@ export interface StackDiffResult {
   changes: Map<string, ResourceChange>;
   /** Per-key Outputs changes (issue #1921); empty when unchanged or unresolvable. */
   outputChanges: OutputChange[];
+  /**
+   * Logical ids this diff treated as ALREADY IN STATE because a rollback
+   * orphan record was verified and spliced in (issue go-to-k/cdkd#2943).
+   *
+   * The rows for these are ordinary UPDATE / NO_CHANGE rows — the splice is
+   * what makes them so — and carry an annotation, because a user who last saw
+   * this resource fail and drop out of state would otherwise read the update
+   * as cdkd having silently kept it.
+   */
+  adoptedOrphans: string[];
+  /**
+   * The adopted records themselves, keyed by logical id (issue
+   * go-to-k/cdkd#2943).
+   *
+   * Returned alongside the names because `buildDiffTree` has two consumers
+   * that read `resources` AFTER the diff and must see the same state the diff
+   * saw: `collectCcApiRoutes` reads `provisionedBy` for the sticky-CC
+   * annotation, and `resolveChildStackParameters` resolves a nested child's
+   * `Parameters` against the parent's records. Handing them the un-spliced
+   * state made an adopted `cc-api` row print without its routing annotation
+   * and made a child parameter referencing an adopted resource drop silently.
+   */
+  adoptedRecords: Record<string, ResourceState>;
+  /**
+   * Reasons `cdkd deploy` would REFUSE, in its own words (issue
+   * go-to-k/cdkd#2943). Non-empty means the deploy this preview describes
+   * cannot start at all.
+   *
+   * Carried rather than thrown: `deploy` stops at the refusal because there is
+   * nothing left to do, while a preview that dies before printing is a preview
+   * that cannot be used to decide anything. So `cdkd diff` renders everything
+   * it learned and reports these at the end.
+   */
+  blocking: string[];
 }
 
 /**
@@ -386,6 +433,28 @@ export async function computeStackDiff(
      * `buildDeletedSubtree` passes it down.
      */
     inheritSecretBearingTemplate?: boolean;
+    /**
+     * Runs the SAME rollback-orphan pre-pass `cdkd deploy` runs, so the
+     * preview predicts the deploy instead of reporting a CREATE the deploy
+     * will not perform (issue go-to-k/cdkd#2943).
+     *
+     * Optional because it is the only thing on this path that calls a
+     * PROVIDER: `cdkd diff` reaches AWS to resolve intrinsics, but until this
+     * it never asked a provider whether a resource exists. Callers that cannot
+     * afford that (or have no registry) omit it and get the pre-#2943
+     * behaviour. The cost is zero when the state holds no records, which is
+     * every stack that has not had a rollback orphan something.
+     *
+     * Receives the CONDITION-PRUNED template, matching
+     * `DeployEngine.executeDeployment` — reading the raw template would
+     * re-orphan a resource an `Fn::If` currently excludes.
+     */
+    previewOrphanAdoption?: (
+      state: StackState,
+      effectiveTemplate: CloudFormationTemplate,
+      stackName: string,
+      region: string
+    ) => Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }>;
   } = {}
 ): Promise<StackDiffResult> {
   const { parameters, canonicalizeProperties, cfnFallback, inheritSecretBearingTemplate } = options;
@@ -587,8 +656,44 @@ export async function computeStackDiff(
       // `WithDecryption: false`, so a `SecureString` never yields plaintext.
       skipDynamicReferences: true,
     });
+  // Rollback-orphan adoption, in the deploy's position: after condition
+  // pruning, before the diff. `DiffCalculator` decides CREATE by ABSENCE from
+  // state, so splicing a verified record in is the whole mechanism — there is
+  // no new change type on either side.
+  //
+  // COPIED, never mutated in place: `DeployEngine` writes through its own
+  // `currentState` because it goes on to deploy from it, while this function's
+  // doc promises it only reads.
+  //
+  // An earlier version of this comment cited `collectCcApiRoutes` and
+  // `resolveChildStackParameters` as the REASON for copying. That had the
+  // argument backwards — those two are exactly the consumers that need to see
+  // the spliced records, and handing them the un-spliced state starved them.
+  // They are served by `adoptedRecords` below, which the caller merges.
+  let adoptedOrphans: string[] = [];
+  let adoptedRecords: Record<string, ResourceState> = {};
+  let blocking: string[] = [];
+  let stateForDiff = currentState;
+  if (currentState.orphans?.length && options.previewOrphanAdoption) {
+    const plan = await options.previewOrphanAdoption(
+      currentState,
+      effectiveTemplate,
+      stackName,
+      region
+    );
+    adoptedOrphans = Object.keys(plan.adopted);
+    adoptedRecords = plan.adopted;
+    blocking = plan.refusals;
+    if (adoptedOrphans.length > 0) {
+      stateForDiff = {
+        ...currentState,
+        resources: { ...currentState.resources, ...plan.adopted },
+      };
+    }
+  }
+
   const changes = await diffCalculator.calculateDiff(
-    currentState,
+    stateForDiff,
     effectiveTemplate,
     resolveFn,
     canonicalizeProperties
@@ -689,7 +794,7 @@ export async function computeStackDiff(
     );
   }
 
-  return { changes, outputChanges };
+  return { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking };
 }
 
 /**
@@ -787,6 +892,19 @@ export async function buildDiffTree(args: {
   stackName: string;
   displayName: string;
   region: string;
+  /**
+   * Rollback-orphan pre-pass, applied at EVERY node including nested children
+   * (issue go-to-k/cdkd#2943) — `NestedStackProvider` runs a whole child
+   * `DeployEngine` on the deploy path, so a child adopts there too, and a
+   * preview that skipped children would diverge exactly where the deploy is
+   * hardest to reason about. See `computeStackDiff`'s option of the same name.
+   */
+  previewOrphanAdoption?: (
+    state: StackState,
+    effectiveTemplate: CloudFormationTemplate,
+    stackName: string,
+    region: string
+  ) => Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }>;
   template: CloudFormationTemplate;
   nestedTemplates: Record<string, string>;
   recursive: boolean;
@@ -850,29 +968,33 @@ export async function buildDiffTree(args: {
     canonicalizeProperties,
     assetRedirect,
     cfnFallback,
+    previewOrphanAdoption,
   } = args;
 
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
   // Accumulated, not replaced: see `parentHasSecretReference`'s doc.
   const secretBearingAbove =
     parentHasSecretReference === true || templateHasSecretDynamicReference(template);
-  const { changes, outputChanges } = await computeStackDiff(
-    state,
-    template,
-    region,
-    stackName,
-    stateBackend,
-    diffCalculator,
-    {
+  const { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking } =
+    await computeStackDiff(state, template, region, stackName, stateBackend, diffCalculator, {
       ...(parameters && { parameters }),
       ...(canonicalizeProperties && { canonicalizeProperties }),
       ...(cfnFallback !== undefined && { cfnFallback }),
+      ...(previewOrphanAdoption && { previewOrphanAdoption }),
       // A live template of its own, so this node decides for itself; the
       // inherited flag only matters for the DELETED children below.
       inheritSecretBearingTemplate: false,
-    }
-  );
-  const ccApiRoutes = collectCcApiRoutes(template, state);
+    });
+  // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
+  // off each record for the sticky-Cloud-Control annotation, and an adopted
+  // `cc-api` record is invisible in the un-spliced bag — the row would print
+  // without `[via CC API: ...]` while the deploy routes it that way, which is
+  // the inverse-of-truth annotation go-to-k/cdkd#2719 closed.
+  const stateAfterAdoption =
+    Object.keys(adoptedRecords).length > 0
+      ? { ...state, resources: { ...state.resources, ...adoptedRecords } }
+      : state;
+  const ccApiRoutes = collectCcApiRoutes(template, stateAfterAdoption);
   const node: DiffTreeNode = {
     stackName,
     displayName,
@@ -880,6 +1002,8 @@ export async function buildDiffTree(args: {
     changes,
     ccApiRoutes,
     outputChanges,
+    adoptedOrphans,
+    blocking,
     children: [],
   };
   if (!recursive) return node;
@@ -908,10 +1032,15 @@ export async function buildDiffTree(args: {
     // already-resolved parameters, so the child's diff resolver can resolve a
     // `Ref` to one of those parameters — mirroring the deploy engine's
     // parent->child `DeployEngineOptions.parameters` forwarding.
+    //
+    // `stateAfterAdoption`, not `state`: a child parameter whose value is a
+    // `Ref` / `Fn::GetAtt` to a resource this node just adopted resolves on
+    // the deploy path and would drop here, swallowed by the best-effort catch,
+    // leaving the child preview degraded for a reason nothing prints.
     const childParameters = await resolveChildStackParameters(
       resource,
       template,
-      state,
+      stateAfterAdoption,
       region,
       stackName,
       stateBackend,
@@ -932,6 +1061,7 @@ export async function buildDiffTree(args: {
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
+        ...(previewOrphanAdoption && { previewOrphanAdoption }),
         parentHasSecretReference: secretBearingAbove,
       })
     );
@@ -992,6 +1122,12 @@ async function buildDeletedSubtree(
     // already recorded on each resource's `provisionedBy`, and the diff line
     // only shows the type. No annotation surface.
     ccApiRoutes: new Map(),
+    // Adoption needs a template that still DECLARES the logical id, and this
+    // branch exists precisely because no template does. A record here is
+    // carried, never adopted, so there is nothing to annotate and nothing
+    // that could refuse.
+    adoptedOrphans: [],
+    blocking: [],
     // The empty template carries no `Outputs`, so every persisted key diffs as
     // REMOVE — which is accurate: destroying the child drops its whole state
     // record, and any export it published stops resolving for consumers.
@@ -1121,10 +1257,56 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
   // Issue #1921: an Outputs-only change has no resource change at all, so this
   // arm is the ONLY thing standing between it and "No changes detected" — and
   // it is what makes `--fail` exit 1 for it, matching `cdk diff --fail`.
-  return node.outputChanges.length > 0;
+  //
+  // go-to-k/cdkd#2943 adds the same arm for adoption, for the same reason and
+  // found the same way — by running it against real AWS. An adopted record
+  // whose properties already match the template diffs as NO_CHANGE, so a stack
+  // whose only pending work is the adoption had every count at zero and
+  // printed "No changes detected". The deploy does work there: it splices the
+  // record into `resources` and persists the state without the orphan. A
+  // preview that calls that nothing is wrong in the direction that matters —
+  // the user ran `cdkd diff` precisely to find out whether the next deploy
+  // will adopt or collide.
+  return node.outputChanges.length > 0 || node.adoptedOrphans.length > 0;
 }
 
 /** True when this node OR any descendant has a real change (tree-wide drift detector for `--fail`). */
+/**
+ * How many deploy refusals the whole tree carries (issue go-to-k/cdkd#2943).
+ *
+ * A COUNT rather than a boolean because the caller's message quotes it.
+ * {@link treeIsWorthRendering} below IS a boolean built on this, added when
+ * review found the render gate gated on changes alone — it derives from this
+ * count rather than walking the tree again, so there is still one recursion to
+ * keep in step.
+ *
+ * Deliberately SEPARATE from {@link treeHasChanges}: `--fail` answers "is
+ * there a delta", and a refusal is not a delta — a user who runs
+ * `cdkd diff --fail` in CI to detect drift must not have that signal merged
+ * with "the deploy cannot start", which is true whether or not anything
+ * changed.
+ */
+export function countBlocking(node: DiffTreeNode): number {
+  return node.blocking.length + node.children.reduce((n, c) => n + countBlocking(c), 0);
+}
+
+/**
+ * Whether `cdkd diff` should render this tree's block at all (issue
+ * go-to-k/cdkd#2943).
+ *
+ * A named predicate rather than an inline conjunction at the call site,
+ * because the two halves are easy to get wrong INDEPENDENTLY and were:
+ * {@link renderDiffTree} was written to print a `Blocking` section for a node
+ * with no changes, and the caller then skipped the render on
+ * `!treeHasChanges` alone — so a changeless refusal would print "No changes
+ * detected" and exit non-zero citing reasons that were never printed.
+ */
+export function treeIsWorthRendering(node: DiffTreeNode): boolean {
+  // `treeHasChanges` already covers adoption since go-to-k/cdkd#2943 taught
+  // `nodeHasChanges` about it, so this stays a two-term predicate.
+  return treeHasChanges(node) || countBlocking(node) > 0;
+}
+
 export function treeHasChanges(node: DiffTreeNode): boolean {
   if (nodeHasChanges(node)) return true;
   return node.children.some(treeHasChanges);
@@ -1172,6 +1354,18 @@ export interface DiffNodeJson {
    * for the same key-set stability reason as `children`.
    */
   outputChanges: DiffOutputChangeJson[];
+  /**
+   * Logical ids adopted from a rollback-orphan record (issue
+   * go-to-k/cdkd#2943). Always present — empty array when none — for the same
+   * key-set stability reason as `children`.
+   */
+  adoptedOrphans: string[];
+  /**
+   * Reasons `cdkd deploy` would refuse. Always present; non-empty means the
+   * run this payload describes would not start. Consumers gating on the diff
+   * must read this, not just `changes`.
+   */
+  blocking: string[];
   children: DiffNodeJson[];
 }
 
@@ -1219,6 +1413,8 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
       ...(change.changeType !== 'REMOVE' ? { newValue: change.newValue } : {}),
       export: change.isExport,
     })),
+    adoptedOrphans: node.adoptedOrphans,
+    blocking: node.blocking,
     children: node.children.map(diffTreeToJson),
   };
 }
@@ -1353,15 +1549,29 @@ function renderDiffValue(
  * #614's auto-fallback decision at plan time. DELETE lines are not annotated
  * — the delete routing is recorded on each resource's `provisionedBy` state
  * field rather than re-derived from the template.
+ *
+ * `adoptedOrphans` annotates the rows whose resource is in this diff only
+ * because a rollback-orphan record was verified and spliced in (issue
+ * go-to-k/cdkd#2943). Without it the row is indistinguishable from an ordinary
+ * update, and the user last saw that resource FAIL and leave state — so an
+ * unannotated `[~]` reads as cdkd having quietly kept managing it. Both
+ * annotations can apply to one row; adoption is printed first because it is
+ * why the row exists at all, where the routing describes how it will be
+ * carried out.
  */
 export function renderChangeLines(
   changes: Map<string, ResourceChange>,
   logFn: (msg: string) => void,
-  ccApiRoutes?: Map<string, string[]>
+  ccApiRoutes?: Map<string, string[]>,
+  adoptedOrphans?: readonly string[]
 ): { create: number; update: number; delete: number } {
   let createCount = 0;
   let updateCount = 0;
   let deleteCount = 0;
+
+  const adopted = new Set(adoptedOrphans ?? []);
+  const annotateAdoption = (logicalId: string): string =>
+    adopted.has(logicalId) ? ' [adopted from a rollback orphan]' : '';
 
   const annotateRouting = (logicalId: string): string => {
     const props = ccApiRoutes?.get(logicalId);
@@ -1381,11 +1591,17 @@ export function renderChangeLines(
     switch (change.changeType) {
       case 'CREATE':
         createCount++;
-        logFn(`  [+] ${logicalId} (${change.resourceType})${annotateRouting(logicalId)}`);
+        logFn(
+          `  [+] ${logicalId} (${change.resourceType})` +
+            `${annotateAdoption(logicalId)}${annotateRouting(logicalId)}`
+        );
         break;
       case 'UPDATE': {
         updateCount++;
-        logFn(`  [~] ${logicalId} (${change.resourceType})${annotateRouting(logicalId)}`);
+        logFn(
+          `  [~] ${logicalId} (${change.resourceType})` +
+            `${annotateAdoption(logicalId)}${annotateRouting(logicalId)}`
+        );
         if (change.propertyChanges && change.propertyChanges.length > 0) {
           for (const propChange of change.propertyChanges) {
             const requiresReplace = propChange.requiresReplacement ? ' [requires replacement]' : '';
@@ -1529,13 +1745,21 @@ export function renderDiffTree(
   isRoot: boolean,
   logFn: (msg: string) => void
 ): void {
-  if (nodeHasChanges(node)) {
+  // Either condition prints the block. A refusal today always arrives BESIDE a
+  // change — (d) fires only for a record the template still declares, which
+  // the diff reports as a create — but gating the header on `nodeHasChanges`
+  // alone would make that coincidence load-bearing, and a refusal nobody
+  // prints is the one outcome this section exists to prevent.
+  const hasChanges = nodeHasChanges(node);
+  if (hasChanges || node.blocking.length > 0) {
     logFn(isRoot ? `\nStack ${node.stackName}:` : `\nNested stack: ${node.displayName}`);
+  }
+  if (hasChanges) {
     const {
       create,
       update,
       delete: del,
-    } = renderChangeLines(node.changes, logFn, node.ccApiRoutes);
+    } = renderChangeLines(node.changes, logFn, node.ccApiRoutes, node.adoptedOrphans);
     const outputs = renderOutputChangeLines(node.outputChanges, logFn);
     logFn(`\n${create} to create, ${update} to update, ${del} to delete`);
     // A SECOND summary line rather than extra terms on the first: the resource
@@ -1547,6 +1771,27 @@ export function renderDiffTree(
       logFn(
         `${outputs.add} output(s) to add, ${outputs.change} to change, ${outputs.remove} to remove`
       );
+    }
+    // A THIRD summary line, and the only place an adoption is guaranteed to
+    // appear. The per-row annotation rides a CREATE or UPDATE row, and an
+    // adopted record that already matches the template produces neither — it
+    // is NO_CHANGE, which renders nothing. Measured against real AWS: the
+    // fixture's adopted role matched, so the preview named it nowhere.
+    if (node.adoptedOrphans.length > 0) {
+      logFn(
+        `${node.adoptedOrphans.length} resource(s) to adopt from a previous rollback: ` +
+          `${node.adoptedOrphans.map(stripControlChars).join(', ')}`
+      );
+    }
+  }
+  // AFTER the rows and the summaries, for the same reason `cdkd diff` renders
+  // at all when a deploy would refuse: the user came here to see what the
+  // deploy would do, and the refusal is one more thing it would do rather than
+  // a reason to withhold the rest.
+  if (node.blocking.length > 0) {
+    logFn('\n  Blocking (cdkd deploy will refuse):');
+    for (const reason of node.blocking) {
+      logFn(`    ! ${stripControlChars(reason)}`);
     }
   }
   for (const child of node.children) {

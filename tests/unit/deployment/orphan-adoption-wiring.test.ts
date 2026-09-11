@@ -9,14 +9,20 @@
  * a case that re-implements its subject proves the subject's SHAPE, never its
  * WIRING.
  *
- * Both methods are private and are called through a cast. That is deliberate:
- * reaching them through `deploy()` would need the entire synth / DAG / diff
- * pipeline stood up, and every normalisation on the way is a chance for the
- * case to pass for a reason that has nothing to do with what it names.
+ * `adoptRollbackOrphans` is private and is called through a cast. That is
+ * deliberate: reaching it through `deploy()` would need the entire synth / DAG
+ * / diff pipeline stood up, and every normalisation on the way is a chance for
+ * the case to pass for a reason that has nothing to do with what it names.
+ *
+ * The sibling scan used to be a second private method here. go-to-k/cdkd#2943
+ * moved it to `orphan-adoption.ts` so `cdkd diff` runs the SAME scan, and its
+ * cases now drive the exported factory — see `readSiblings` below for why that
+ * costs no coverage.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { explicitNamePropertyFor } from '../../../src/provisioning/resource-name.js';
+import { makeSiblingClaimReader } from '../../../src/deployment/orphan-adoption.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState, StackOrphanRecord } from '../../../src/types/state.js';
 
@@ -122,15 +128,30 @@ function adopt(
   ).adoptRollbackOrphans(state, template);
 }
 
+/**
+ * The sibling scan, as `DeployEngine` and `cdkd diff` both build it.
+ *
+ * It was a private method on the engine until go-to-k/cdkd#2943 needed the
+ * SAME scan for the diff preview. The cases below are unchanged by that move:
+ * they always exercised the scan's own rules, never the engine's plumbing, and
+ * the plumbing keeps its own proof in the refusal case above — which reaches
+ * this reader through `adoptRollbackOrphans` and fails if the engine stops
+ * wiring one.
+ *
+ * `engine` is no longer consulted; it stays in the signature so each case
+ * still reads as "what the engine's scan does", and so the mock backend the
+ * file already builds is the thing under test rather than a second fixture.
+ */
 function readSiblings(
-  engine: InstanceType<typeof DeployEngine>,
+  _engine: InstanceType<typeof DeployEngine>,
   self = 'MyStack'
 ): Promise<ReadonlySet<string>> {
-  return (
-    engine as unknown as {
-      readSiblingPhysicalIds: (s: string) => Promise<ReadonlySet<string>>;
-    }
-  ).readSiblingPhysicalIds(self);
+  return makeSiblingClaimReader({
+    stateBackend: backend as unknown as never,
+    selfStackName: self,
+    selfRegion: 'us-east-1',
+    logger: { debug: () => {} },
+  })();
 }
 
 describe('adoptRollbackOrphans MUTATES the state the diff will read (#2934)', () => {

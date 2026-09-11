@@ -71,6 +71,9 @@ import {
   nodeHasChanges,
   treeHasChanges,
   diffTreeToJson,
+  countBlocking,
+  treeIsWorthRendering,
+  renderChangeLines,
   renderDiffTree,
   type DiffTreeNode,
 } from '../../../src/cli/commands/diff-recursive.js';
@@ -167,6 +170,8 @@ describe('nodeHasChanges / treeHasChanges', () => {
     changes: changeMap(changes),
     ccApiRoutes: new Map(),
     outputChanges: [],
+    adoptedOrphans: [],
+    blocking: [],
     children: [],
   });
 
@@ -218,6 +223,8 @@ describe('diffTreeToJson', () => {
       ]),
       ccApiRoutes: new Map(),
       outputChanges: [],
+      adoptedOrphans: [],
+      blocking: [],
       children: [
         {
           stackName: 'P~C',
@@ -226,6 +233,8 @@ describe('diffTreeToJson', () => {
           changes: changeMap([{ logicalId: 'New', changeType: 'CREATE', resourceType: 'T' }]),
           ccApiRoutes: new Map(),
           outputChanges: [],
+          adoptedOrphans: [],
+          blocking: [],
           children: [],
         },
       ],
@@ -257,6 +266,8 @@ describe('diffTreeToJson', () => {
       ]),
       ccApiRoutes: new Map(),
       outputChanges: [],
+      adoptedOrphans: [],
+      blocking: [],
       children: [],
     };
     const json = diffTreeToJson(node);
@@ -280,6 +291,8 @@ describe('renderDiffTree', () => {
     changes: changeMap(changes),
     ccApiRoutes,
     outputChanges: [],
+    adoptedOrphans: [],
+    blocking: [],
     children: [],
   });
 
@@ -2079,6 +2092,8 @@ describe('Outputs-only change (issue #1921)', () => {
           oldValueRedacted: true,
         },
       ],
+      adoptedOrphans: [],
+      blocking: [],
       children: [],
     };
     const json = diffTreeToJson(node);
@@ -2418,5 +2433,260 @@ describe('Outputs-only change (issue #1921)', () => {
       diffCalculator: new DiffCalculator(),
     });
     expect(diffTreeToJson(node).outputChanges).toEqual([]);
+  });
+});
+
+describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
+  const ROLE = 'AWS::IAM::Role';
+  const orphanRecord = (logicalId = 'KeptRole', physicalId = 'S-KeptRole') => ({
+    logicalId,
+    orphanedAt: 1,
+    state: { ...res(ROLE, { Path: '/svc/' }), physicalId },
+  });
+  const declaring: CloudFormationTemplate = {
+    Resources: { KeptRole: { Type: ROLE, Properties: { Path: '/svc/' } } },
+  };
+  const stateWithRecord = (): StackState =>
+    ({ ...st('S', {}), orphans: [orphanRecord()] }) as StackState;
+
+  it('an ADOPTED record turns a CREATE into an UPDATE — the whole point of the preview', async () => {
+    const { changes, adoptedOrphans, blocking } = await computeStackDiff(
+      stateWithRecord(),
+      declaring,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      {
+        previewOrphanAdoption: async () => ({
+          adopted: { KeptRole: { ...res(ROLE, { Path: '/app/' }), physicalId: 'S-KeptRole' } },
+          refusals: [],
+        }),
+      }
+    );
+
+    // Without the splice the resource is ABSENT from state, and `DiffCalculator`
+    // decides CREATE by absence — which is the CREATE `cdkd deploy` will not
+    // perform, i.e. the defect. Deleting the splice reds exactly this line.
+    expect(changes.get('KeptRole')!.changeType).toBe('UPDATE');
+    expect(adoptedOrphans).toEqual(['KeptRole']);
+    expect(blocking).toEqual([]);
+  });
+
+  it('does NOT mutate the caller-supplied state — the deploy may, this may not', async () => {
+    const state = stateWithRecord();
+    await computeStackDiff(state, declaring, 'us-east-1', 'S', fakeBackend({}), new DiffCalculator(), {
+      previewOrphanAdoption: async () => ({
+        adopted: { KeptRole: { ...res(ROLE, { Path: '/app/' }), physicalId: 'S-KeptRole' } },
+        refusals: [],
+      }),
+    });
+
+    // `buildDiffTree` hands this same record to `resolveChildStackParameters`
+    // and `collectCcApiRoutes` after the diff, and this function's doc promises
+    // it only reads. `DeployEngine` writes through its own copy because it goes
+    // on to deploy from it; that is the asymmetry, and it is deliberate.
+    expect(state.resources['KeptRole']).toBeUndefined();
+    expect(state.orphans).toHaveLength(1);
+  });
+
+  it('a REFUSED record is carried as blocking and is NOT spliced', async () => {
+    const { changes, adoptedOrphans, blocking } = await computeStackDiff(
+      stateWithRecord(),
+      declaring,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      {
+        previewOrphanAdoption: async () => ({
+          adopted: {},
+          refusals: ['KeptRole: S-KeptRole is already recorded by another cdkd stack.'],
+        }),
+      }
+    );
+
+    // Reported, AND still a create: the deploy refuses, so nothing is adopted,
+    // and showing the row as an update would be the opposite lie to the one
+    // this feature fixes.
+    expect(blocking).toHaveLength(1);
+    expect(adoptedOrphans).toEqual([]);
+    expect(changes.get('KeptRole')!.changeType).toBe('CREATE');
+  });
+
+  it('returns the adopted RECORDS, not only their names', async () => {
+    const adopted = {
+      KeptRole: { ...res(ROLE, { Path: '/app/' }), physicalId: 'S-KeptRole', provisionedBy: 'cc-api' as const },
+    };
+    const { adoptedRecords } = await computeStackDiff(
+      stateWithRecord(),
+      declaring,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      { previewOrphanAdoption: async () => ({ adopted, refusals: [] }) }
+    );
+
+    // `buildDiffTree` merges these into the state it hands `collectCcApiRoutes`
+    // and `resolveChildStackParameters`. Names alone cannot serve either: the
+    // first reads `provisionedBy` off the record — an adopted `cc-api` row
+    // would print with no routing annotation while the deploy routes it via
+    // Cloud Control — and the second resolves a child's `Parameters` against
+    // the parent's records.
+    expect(adoptedRecords['KeptRole']?.provisionedBy).toBe('cc-api');
+  });
+
+  it('is not consulted at all when the state holds no records', async () => {
+    const preview = vi.fn();
+    const { adoptedOrphans, blocking } = await computeStackDiff(
+      st('S', {}),
+      declaring,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      { previewOrphanAdoption: preview as never }
+    );
+
+    // The cost argument for putting a PROVIDER call on the diff path rests on
+    // this: a stack that never had a rollback orphan something pays nothing.
+    expect(preview).not.toHaveBeenCalled();
+    expect(adoptedOrphans).toEqual([]);
+    expect(blocking).toEqual([]);
+  });
+
+  it('renders Blocking after the rows, and counts refusals across the tree', () => {
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      changes: changeMap([{ logicalId: 'New', changeType: 'CREATE', resourceType: 'T' }]),
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: [],
+      blocking: ['KeptRole: S-KeptRole is already recorded by another cdkd stack.'],
+      children: [
+        {
+          stackName: 'S~C',
+          displayName: 'S~C',
+          region: 'us-east-1',
+          changes: changeMap([]),
+          ccApiRoutes: new Map(),
+          outputChanges: [],
+          adoptedOrphans: [],
+          blocking: ['ChildRole: S~C-ChildRole is already recorded by another cdkd stack.'],
+          children: [],
+        },
+      ],
+    };
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const out = lines.join('\n');
+
+    expect(out).toContain('Blocking (cdkd deploy will refuse):');
+    expect(out).toContain('! KeptRole: S-KeptRole is already recorded');
+    // AFTER the summary, not before it: the user came for the preview.
+    expect(out.indexOf('to create,')).toBeLessThan(out.indexOf('Blocking'));
+    // The CHILD has no changes, so `nodeHasChanges` is false for it. Its
+    // refusal must still print — a refusal nobody prints is the one outcome
+    // the section exists to prevent.
+    expect(out).toContain('Nested stack: S~C');
+    expect(out).toContain('! ChildRole:');
+    expect(countBlocking(node)).toBe(2);
+  });
+
+  it('a changeless tree that BLOCKS is still worth rendering', () => {
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      changes: changeMap([]),
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: [],
+      blocking: ['KeptRole: conflict'],
+      children: [],
+    };
+
+    // The renderer prints a Blocking section for a changeless node, and the
+    // caller has to agree. Gating the CALL on changes alone put the
+    // coincidence back one level up: "No changes detected" followed by a
+    // non-zero exit citing reasons "reported above" that never printed.
+    expect(treeIsWorthRendering(node)).toBe(true);
+    expect(treeHasChanges(node)).toBe(false);
+    expect(treeIsWorthRendering({ ...node, blocking: [] })).toBe(false);
+  });
+
+  it('an adoption whose row is NO_CHANGE is still reported', () => {
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      // NO_CHANGE, which `renderChangeLines` has no case for — the adopted
+      // record's properties already match the template. This is the shape the
+      // real-AWS fixture hit: every count zero, the row unrendered, and the
+      // preview silent about the one thing the user ran it to learn.
+      changes: changeMap([
+        { logicalId: 'KeptRole', changeType: 'NO_CHANGE', resourceType: 'AWS::IAM::Role' },
+      ]),
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: ['KeptRole'],
+      blocking: [],
+      children: [],
+    };
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const out = lines.join('\n');
+
+    // The deploy DOES work here — it splices the record into `resources` and
+    // persists the state without the orphan — so "No changes detected" is
+    // wrong, and the per-row annotation cannot carry it.
+    expect(nodeHasChanges(node)).toBe(true);
+    expect(treeIsWorthRendering(node)).toBe(true);
+    expect(out).toContain('1 resource(s) to adopt from a previous rollback: KeptRole');
+    // Without an adoption the same node must stay quiet, or the arm would
+    // report every unchanged stack.
+    expect(nodeHasChanges({ ...node, adoptedOrphans: [] })).toBe(false);
+  });
+
+  it('--json carries both keys, so a CI consumer can gate on the refusal', () => {
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      changes: changeMap([]),
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: ['KeptRole'],
+      blocking: ['KeptRole: conflict'],
+      children: [],
+    };
+    const json = diffTreeToJson(node);
+
+    // `changes` alone cannot carry this: an adopted record produces an
+    // ordinary UPDATE row and a refused one an ordinary CREATE row, so a
+    // consumer reading only `changes` sees a runnable plan either way.
+    expect(json.adoptedOrphans).toEqual(['KeptRole']);
+    expect(json.blocking).toEqual(['KeptRole: conflict']);
+  });
+
+  it('annotates the adopted row, and keeps the CC-API annotation beside it', () => {
+    const lines: string[] = [];
+    renderChangeLines(
+      changeMap([{ logicalId: 'KeptRole', changeType: 'UPDATE', resourceType: ROLE }]),
+      (m: string) => lines.push(m),
+      new Map([['KeptRole', ['SomeProp']]]),
+      ['KeptRole']
+    );
+
+    // Both annotations, adoption first — it says why the row exists at all,
+    // where the routing says how it will be carried out. An unannotated `[~]`
+    // reads as cdkd having quietly kept managing a resource the user last saw
+    // FAIL and drop out of state.
+    expect(lines[0]).toContain('[adopted from a rollback orphan]');
+    expect(lines[0]).toContain('[via CC API: SomeProp]');
+    expect(lines[0]!.indexOf('adopted')).toBeLessThan(lines[0]!.indexOf('via CC API'));
   });
 });

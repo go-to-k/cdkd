@@ -65,7 +65,11 @@ import type {
   ResourceProvider,
   ResourceUpdateResult,
 } from '../types/resource.js';
-import { planOrphanAdoption, type OrphanAdoptionOutcome } from './orphan-adoption.js';
+import {
+  planOrphanAdoption,
+  type OrphanAdoptionOutcome,
+  makeSiblingClaimReader,
+} from './orphan-adoption.js';
 import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -4135,7 +4139,12 @@ export class DeployEngine {
         const property = explicitNamePropertyFor(type);
         return property === undefined ? [] : [property];
       },
-      readSiblingClaims: () => this.readSiblingPhysicalIds(currentState.stackName),
+      readSiblingClaims: makeSiblingClaimReader({
+        stateBackend: this.stateBackend,
+        selfStackName: currentState.stackName,
+        selfRegion: this.stackRegion,
+        logger: this.logger,
+      }),
       logger: { debug: (m) => this.logger.debug(m) },
     });
 
@@ -4161,73 +4170,6 @@ export class DeployEngine {
     if (records.length > 0) currentState.orphans = plan.remaining;
 
     return plan;
-  }
-
-  /**
-   * Every physical id recorded by a cdkd stack OTHER than this one
-   * (issue #2934).
-   *
-   * The orphan record proves cdkd created something under a name; it cannot
-   * prove no one has since taken that resource over. A `cdkd import` into a
-   * different stack during the rollback-to-redeploy window would leave one
-   * physical id in two state files, and either stack's `cdkd destroy` would
-   * then delete the other's live resource. This is the check that refuses it.
-   *
-   * Best-effort per sibling: a state file that fails to load is SKIPPED rather
-   * than failing the deploy, because the alternative is that one unreadable
-   * record in an unrelated stack blocks every adoption in the account. That
-   * makes the result a lower bound on what is claimed — stated here because it
-   * is the direction that can let a wrong adoption through, and the reason this
-   * check is one of several rather than the only one.
-   *
-   * Reachability is bounded by what this backend can see: another ACCOUNT's
-   * bucket, and a stack deployed against a different `--state-bucket`, are
-   * invisible here by construction.
-   */
-  private async readSiblingPhysicalIds(selfStackName: string): Promise<ReadonlySet<string>> {
-    const claimed = new Set<string>();
-    let refs;
-    try {
-      refs = await this.stateBackend.listStacks();
-    } catch (error) {
-      this.logger.debug(
-        `orphan adoption: could not list sibling stacks — ` +
-          `${error instanceof Error ? error.message : String(error)}`
-      );
-      return claimed;
-    }
-    for (const ref of refs) {
-      // Name AND region: the same stack name in another region is a DIFFERENT
-      // state file, and globally-namespaced ids — an IAM role, an S3 bucket —
-      // are exactly the ones it could be claiming.
-      if (ref.stackName === selfStackName && ref.region === this.stackRegion) continue;
-      // The REF carries no region — `listStacks` leaves it unset for a legacy
-      // `version: 1` key — and `getState` needs one. Note it is the REF, not
-      // necessarily the record: `readLegacyRegion` also answers `undefined`
-      // for a body it could not read. Skipping rather than substituting a
-      // region is the permissive arm of this method's best-effort contract,
-      // described in its doc above.
-      //
-      // It also catches a region-less ref for THIS stack, which the skip above
-      // cannot: that one requires the name AND the region to match, and
-      // `stackRegion` is always a string. Substituting would read our OWN
-      // record, and our own ids would become claims that (d) reports as
-      // belonging to "another cdkd stack". Pinned by the region-less-SELF case
-      // in `orphan-adoption-wiring.test.ts`.
-      if (ref.region === undefined) continue;
-      try {
-        const sibling = await this.stateBackend.getState(ref.stackName, ref.region);
-        for (const record of Object.values(sibling?.state.resources ?? {})) {
-          claimed.add(record.physicalId);
-        }
-      } catch (error) {
-        this.logger.debug(
-          `orphan adoption: skipping unreadable state for ${ref.stackName} — ` +
-            `${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-    return claimed;
   }
 
   private async performRollback(
