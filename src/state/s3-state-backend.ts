@@ -1262,8 +1262,8 @@ export class S3StateBackend {
       const { detail } = describeAwsFailure(error);
       // Sanitized, unlike the usual detail-at-debug site: debug is quieter
       // than warn, not a different terminal. (The `try` above spans
-      // `s3Client.send`, so this `detail` is AWS's own wording as often as it
-      // is a parse snippet -- an earlier revision claimed only the latter.)
+      // `s3Client.send`, so this `detail` is AWS's own wording as well as a
+      // parse snippet -- an earlier revision claimed only the latter.)
       this.logger.debug(
         `Could not read legacy state region for '${this.displayName(stackName)}': ` +
           `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`

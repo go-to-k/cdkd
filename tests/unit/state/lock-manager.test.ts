@@ -42,14 +42,20 @@ vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
 });
 
 // Mock logger to suppress output during tests
+// A STABLE child logger, not a fresh object per `child()` call: the manager
+// takes its child once at construction, and a per-call object makes every
+// debug line it writes uncapturable -- which is why four sanitised debug lines
+// here were fenced by nothing (issue #3003).
+const childLoggerMock = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    child: () => ({
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
+    child: () => childLoggerMock,
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
@@ -432,6 +438,27 @@ describe('LockManager', () => {
       expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
       expect(message).toContain('Denied');
       expect(message).toContain('at key');
+    });
+
+    it('sanitizes the STACK NAME in its DEBUG lines too (issue #3003)', async () => {
+      // Debug is quieter than warn, not a different terminal. These four lines
+      // were guarded by the same commit that added this case and fenced by
+      // nothing -- the shape the rest of that commit was closing.
+      childLoggerMock.debug.mockClear();
+      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+
+      expect(await lockManager.getLockInfo('Ghost\n  PhysicalID: arn:forged', 'us-east-1')).toBeNull();
+
+      const calls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(calls.some((c) => c.includes('Getting lock info'))).toBe(true);
+      expect(calls.some((c) => c.includes('No lock exists'))).toBe(true);
+      for (const call of calls) {
+        expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      }
+      // Not vacuous: both lines still name the stack, flattened.
+      expect(calls.find((c) => c.includes('Getting lock info'))).toContain('PhysicalID: arn:forged');
+      expect(calls.find((c) => c.includes('No lock exists'))).toContain('PhysicalID: arn:forged');
     });
 
     it('a malformed lock body cannot forge a row through the thrown message (issue #3003)', async () => {

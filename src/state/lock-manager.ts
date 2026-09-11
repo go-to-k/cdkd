@@ -558,8 +558,7 @@ export class LockManager {
 
     const key = this.getLockKey(stackName, region);
 
-    // Debug is quieter than warn, not a different terminal -- the same
-    // argument `getState` applies to its own debug lines (issue #3003).
+    // Debug is quieter than warn, not a different terminal (issue #3003).
     // Above the `try` because the catch logs it too.
     const shownStack = safeSegment(stackName);
 
@@ -577,7 +576,7 @@ export class LockManager {
       if (!response.Body) {
         // A `LockError` is rethrown UNCHANGED by the catch below, so this one
         // does not reach the guard there — it needs its own (issue #3003).
-        throw new LockError(`Lock file for stack '${safeSegment(stackName)}' has no body`);
+        throw new LockError(`Lock file for stack '${shownStack}' has no body`);
       }
 
       const bodyString = await response.Body.transformToString();
@@ -625,14 +624,14 @@ export class LockManager {
         throw error;
       }
 
-      // Sanitized like the display fields above. `cdkd state show` surfaces
-      // this message and its rows are joined by newlines (issue #3003).
+      // `cdkd state show` surfaces this message as its fatal error (issue
+      // #3003).
       const detail =
         displaySafe(error instanceof Error ? error.message : String(error), {
           asciiOnly: true,
         }) || UNRENDERABLE;
       throw new LockError(
-        `Failed to get lock info for stack '${safeSegment(stackName)}': ${detail}`,
+        `Failed to get lock info for stack '${shownStack}': ${detail}`,
         error instanceof Error ? error : undefined
       );
     }

@@ -660,6 +660,25 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       );
     });
 
+    it('uses the ASCII ALLOWLIST for the NAME and the REGION too (issue #3003)', async () => {
+      // The class was pinned at one site per file, so `displayName` and the
+      // region carried none: flipping `asciiOnly` off at either left every
+      // case green. A zero-width space and a bidi mark are what discriminate.
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('{}') },
+      });
+
+      const caught = await backend
+        .getState('Gho\u200bst', 'us-\u200eeast-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      // Not vacuous: both values are still reported, with the invisible gone.
+      expect(message).toContain('Gho st');
+      expect(message).toContain('us- east-1');
+    });
+
     it('uses the ASCII ALLOWLIST, not the denylist, for the error detail (issue #3003)', async () => {
       // The class itself, which nothing pinned: every hostile byte in the
       // cases around this one is in BOTH classes, so flipping `asciiOnly` off
@@ -796,7 +815,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKey);
       s3Client.send.mockRejectedValueOnce(
-        Object.assign(new Error('InvalidObjectState: storage class'), {
+        Object.assign(new Error('InvalidObjectState\n  DetailForged: yes'), {
           name: 'InvalidObjectState',
         })
       );
@@ -809,6 +828,9 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
       expect(message).toContain('legacy state');
       expect(message).toContain('PhysicalID: arn:forged');
+      // The DETAIL half, which was guarded and fenced by nothing: its twin in
+      // `Failed to get state` is covered, this one was not.
+      expect(message).toContain('DetailForged: yes');
     });
 
     it('sanitizes BOTH the stack name and the region in the has-no-body refusal (issue #3003)', async () => {
