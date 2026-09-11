@@ -24,13 +24,19 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
  * 0 on every run, which is indistinguishable from "nothing was stale". A suite
  * that pattern-matched the YAML would certify that state.
  *
- * The four cases below are the whole decision table:
+ * The decision table:
  *
  *   current + armed        -> leave alone
  *   stale   + armed        -> disable auto-merge, comment once
  *   stale   + NOT armed    -> no disable, no comment (nothing to disarm; the
  *                             auto_merge_enabled trigger catches it later)
  *   owned file has no history on main -> FAIL CLOSED, never a silent pass
+ *
+ * plus the failure modes that are NOT in the table and were each a live defect
+ * found in review: a fork PR decoying the lookup, 30+ PRs evicting the real one
+ * off `gh pr list`'s page, two same-repo matches, an unreadable auto-merge
+ * state, a head branch that cannot be read, and `--disable-auto` losing the
+ * race it polices.
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -63,9 +69,9 @@ function workflow(): StalenessWorkflow {
  * broken. Selected BY STEP NAME, so inserting a step ahead of it cannot
  * silently retarget the extractor.
  *
- * (The sibling repos read this as TEXT because they ship no YAML library, the
- * reason `release-please-v0.test.ts` records there. cdkd has `yaml`, and its
- * two other workflow fences already parse, so this one does too.)
+ * (The sibling repos slice this out of the TEXT instead, so one review covers
+ * both of their copies. cdkd has `yaml` and its two other workflow fences
+ * already parse, so this one does too.)
  */
 function disarmShell(): string {
   const step = workflow().jobs?.['disarm']?.steps?.find((s) => s.name === DISARM_STEP);
@@ -122,6 +128,17 @@ describe('release-pr-staleness', () => {
   });
 
   beforeAll(() => {
+    // The `gh` stub pipes through real `jq` so the workflow's OWN `--jq`
+    // expression is what runs. Without jq the stub exits 127 and every case
+    // fails as "expected 1 to be 0" — name the cause instead. CI's
+    // ubuntu-latest ships it; a dev machine may not.
+    try {
+      execFileSync('jq', ['--version'], { stdio: 'ignore' });
+    } catch {
+      throw new Error(
+        'this suite needs `jq` on PATH: the gh stub runs the workflow\'s own --jq filter through it'
+      );
+    }
     scratch = mkdtempSync(join(tmpdir(), 'cdkd-staleness-'));
   });
 
@@ -139,6 +156,10 @@ describe('release-pr-staleness', () => {
     lastFile?: string;
     seedManifest?: boolean;
     noReleasePr?: boolean;
+    /** Make `gh pr merge --disable-auto` exit non-zero — it races auto-merge firing. */
+    disarmFails?: boolean;
+    /** Drop the release branch from the clone AND its remote, so the head cannot be read. */
+    headRefMissing?: boolean;
     /**
      * Open PRs the stub reports, BEFORE the workflow's jq filter. Supplying
      * this is what lets a case exercise the filter itself — a fork decoy whose
@@ -185,6 +206,14 @@ describe('release-pr-staleness', () => {
     const cwd = join(scratch, `${id}-work`);
     execFileSync('git', ['clone', '-q', bare, cwd], { env: { ...process.env, ...GIT_ENV } });
 
+    // Delete the release branch from the BARE remote, so the clone's fetch of
+    // it fails the way a deleted head branch really does. Deleting only the
+    // clone's own ref would leave the fetch succeeding.
+    if (opts.headRefMissing) {
+      git(bare, 'branch', '-D', RELEASE_BRANCH);
+      git(cwd, 'update-ref', '-d', `refs/remotes/origin/${RELEASE_BRANCH}`);
+    }
+
     // `gh` stub: canned reads, recorded writes. Writing the log from the stub
     // (rather than inferring from stdout) is what lets a case assert that
     // `pr merge --disable-auto` was NOT called.
@@ -211,6 +240,10 @@ describe('release-pr-staleness', () => {
       head: { ref: o.headRef, repo: o.fork ? { full_name: 'attacker/cdkd' } : { full_name: 'go-to-k/cdkd' } },
       base: { repo: { full_name: 'go-to-k/cdkd' } },
     }));
+    // DELIBERATELY UNREACHABLE at HEAD: nothing in the workflow calls
+    // `gh pr list` any more. It exists so the eviction probe stays faithful —
+    // see the comment on the 40-fork case. Delete it only together with that
+    // case.
     // The stub ALSO answers the old `gh pr list` shape, truncated to 30 the
     // way real gh does. That is what makes the eviction probe faithful:
     // reverting the workflow to `gh pr list` reds the 40-fork case because the
@@ -228,13 +261,20 @@ for a in "$@"; do
   prev="$a"
 done
 case "$*" in
-  *"api repos/"*pulls*) printf '%s' ${JSON.stringify(JSON.stringify(restPrs))} | jq -r "$filter" ;;
-  *"pr list"*)          printf '%s' ${JSON.stringify(JSON.stringify(ghListPrs))} | jq -r "$filter" ;;
+  *"api repos/"*pulls*) jq -r "$filter" "$(dirname "$0")/rest.json" ;;
+  *"pr list"*)          jq -r "$filter" "$(dirname "$0")/ghlist.json" ;;
   *autoMergeRequest*) printf '%s' ${JSON.stringify(opts.armedAnswer ?? (opts.armed ? 'yes' : 'no'))} ;;
   *headRefName*)      printf '%s' ${JSON.stringify(RELEASE_BRANCH)} ;;
+  *"--disable-auto"*) exit ${opts.disarmFails ? 1 : 0} ;;
   *)                  : ;;
 esac
 `;
+    // The payloads go in FILES beside the stub, never interpolated into the
+    // script. Embedding them put JSON inside a bash double-quoted string, so a
+    // `$` or backtick in a head ref would EXPAND — in a suite whose whole point
+    // is modelling attacker-chosen branch names.
+    writeFileSync(join(binDir, 'rest.json'), JSON.stringify(restPrs));
+    writeFileSync(join(binDir, 'ghlist.json'), JSON.stringify(ghListPrs));
     const ghPath = join(binDir, 'gh');
     writeFileSync(ghPath, ghStub);
     chmodSync(ghPath, 0o755);
@@ -413,6 +453,26 @@ esac
     const r = run(fixture({ stale: true, armed: true, armedAnswer: '' }));
     expect(r.status).not.toBe(0);
     expect(r.output).toContain('could not read auto-merge state');
+    expect(disarmed(r)).toBe(false);
+  });
+
+  it('fails loudly when disarming loses the race it polices', () => {
+    // auto-merge can fire, or a human can disarm, between the read and the
+    // call. Unguarded, `set -e` aborted with gh's raw error BEFORE the comment
+    // that explains what happened.
+    const r = run(fixture({ stale: true, armed: true, disarmFails: true }));
+    expect(r.status).not.toBe(0);
+    expect(r.output).toContain('could not disable auto-merge');
+    expect(commented(r)).toBe(false);
+  });
+
+  it('fails closed when the head branch cannot be read', () => {
+    // A deleted head branch, or a private repo refusing the anonymous fetch
+    // (`persist-credentials: false` strips the token). Swallowed by `--quiet`,
+    // this was a bare git error with no context.
+    const r = run(fixture({ stale: true, armed: true, headRefMissing: true }));
+    expect(r.status).not.toBe(0);
+    expect(r.output).toContain('could not read the head branch');
     expect(disarmed(r)).toBe(false);
   });
 
