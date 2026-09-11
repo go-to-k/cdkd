@@ -600,16 +600,14 @@ async function stateResourcesCommand(
     if (options.long) {
       const lines: string[] = [];
       for (const detail of details) {
-        lines.push(detail.logicalId);
-        lines.push(`  Type: ${detail.resourceType}`);
-        // Stripped like every other value in this block (issue #1926 review):
-        // a physical id is often COMPOSITE, built from template-authored
-        // segments (a bucket name, a queue name, a rule name), so it is the one
-        // field here that passed no CloudFormation validator.
-        lines.push(`  PhysicalID: ${stripControlChars(detail.physicalId)}`);
-        lines.push(
-          `  Dependencies: ${detail.dependencies.length > 0 ? detail.dependencies.join(', ') : '(none)'}`
-        );
+        // Same rule and the same split as `renderStateBlock`: a KEY takes the
+        // bare strip, a record FIELD takes `formatAttributeValue`, which strips
+        // identically and survives a hand-edited non-string. These lines are
+        // joined with `\n` too, so an unstripped field forges rows here as well.
+        lines.push(stripControlChars(detail.logicalId));
+        lines.push(`  Type: ${formatAttributeValue(detail.resourceType)}`);
+        lines.push(`  PhysicalID: ${formatAttributeValue(detail.physicalId)}`);
+        lines.push(`  Dependencies: ${formatDependencyList(detail.dependencies)}`);
         const attrEntries = Object.entries(detail.attributes);
         if (attrEntries.length === 0) {
           lines.push('  Attributes: (none)');
@@ -629,12 +627,26 @@ async function stateResourcesCommand(
       return;
     }
 
-    // Default: aligned three-column output.
-    const idWidth = Math.max(...details.map((d) => d.logicalId.length));
-    const typeWidth = Math.max(...details.map((d) => d.resourceType.length));
-    for (const detail of details) {
+    // Default: aligned three-column output, under the same rule as `--long`
+    // above. Rendering happens BEFORE the widths are measured so that a width
+    // describes the string actually printed. Measuring the raw values instead
+    // does NOT misalign the columns — every row pads to the same width, so they
+    // still line up — it pads them all wider, by
+    // `max(raw lengths) - max(stripped lengths)`, with a gap that has nothing
+    // in it. `resourceType` and `physicalId` take the field guard here rather
+    // than raw interpolation, so a hand-edited non-string cannot make `.length`
+    // / `.padEnd` throw and lose the listing; `logicalId` is a map key, so the
+    // bare strip is right for it.
+    const rows = details.map((d) => ({
+      logicalId: stripControlChars(d.logicalId),
+      resourceType: formatAttributeValue(d.resourceType),
+      physicalId: formatAttributeValue(d.physicalId),
+    }));
+    const idWidth = Math.max(...rows.map((r) => r.logicalId.length));
+    const typeWidth = Math.max(...rows.map((r) => r.resourceType.length));
+    for (const row of rows) {
       process.stdout.write(
-        `${detail.logicalId.padEnd(idWidth)}  ${detail.resourceType.padEnd(typeWidth)}  ${detail.physicalId}\n`
+        `${row.logicalId.padEnd(idWidth)}  ${row.resourceType.padEnd(typeWidth)}  ${row.physicalId}\n`
       );
     }
   } finally {
@@ -643,7 +655,14 @@ async function stateResourcesCommand(
 }
 
 /**
- * Render a single attribute value for the `--long` human-readable form.
+ * Render one record-derived value into a human row.
+ *
+ * Named for its first caller and used well beyond an attribute now: a state or
+ * lock record is read as an unchecked cast, so a field declared `string` can
+ * hold anything, and the bare strip throws on it and empties the whole render.
+ * This survives that, and for an actual string it is byte-identical to the
+ * strip — which is why it is the default choice for a record FIELD, and the bare
+ * strip is kept only where the value is a string by construction.
  *
  * Scalar values render as-is; objects/arrays are JSON-encoded inline so a
  * resource block stays compact even when an attribute is structured.
@@ -669,20 +688,36 @@ async function stateResourcesCommand(
 function formatAttributeValue(value: unknown): string {
   if (value === null) return 'null';
   // `undefined` BEFORE the JSON branch: `JSON.stringify(undefined)` returns
-  // `undefined`, not a string, so the strip below would throw on it. A state
-  // record read from S3 cannot hold one (JSON has no `undefined`), but this is
-  // also called on hand-built records in tests and on `attributes` bags a
-  // provider populated in memory.
+  // `undefined`, not a string, so the strip below would throw on it. This arm is
+  // DEFENSIVE like the two below: JSON cannot encode `undefined`, and every
+  // OPTIONAL field a record may omit is either guarded by a conditional or given
+  // a default before it reaches here, so arriving through a parsed record takes a
+  // missing REQUIRED field. It is kept for the same reason — this function is the
+  // guard every row depends on, and `'undefined'` is a better row than a throw.
   if (value === undefined) return 'undefined';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return stripControlChars(String(value));
   }
   // `JSON.stringify` returns `undefined` — not a string — for a symbol or a
-  // function value, so stripping its result directly would throw. State read
-  // from S3 cannot hold either (JSON has neither), but this also renders
-  // in-memory `attributes` bags a provider populated, and a renderer that
-  // throws on an odd value is worse than one that names it.
-  const json = JSON.stringify(value);
+  // function value, so stripping its result directly would throw. No record read
+  // from S3 can hold either (JSON has neither), so THAT half is unreachable
+  // through both commands, and is kept because this function is the shared guard
+  // every row depends on: a total function is worth more here than one fewer
+  // branch, and naming an odd value beats throwing on it.
+  // The THROWING half is NOT unreachable, which is why it is a `try` and not a
+  // second `=== undefined` test. A BigInt and a circular reference cannot survive
+  // S3, but NESTING DEPTH can: `JSON.stringify` recurses and exhausts the stack
+  // with a RangeError, while `JSON.parse` does not recurse and handles depths far
+  // past that (measured on Node 24: 8_000, 100_000 and 1_000_000 nested arrays
+  // all parse, and all three refuse to stringify). So stored bytes really can
+  // reach here, and a case in the `state show` suite builds such a value through
+  // `JSON.parse` rather than hand-constructing an unstorable one.
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    json = undefined;
+  }
   return json === undefined ? '(unserializable)' : stripControlChars(json);
 }
 
@@ -698,7 +733,63 @@ function formatDuration(ms: number): string {
 }
 
 /**
+ * Render a whole `Dependencies` row from a list that is an unchecked cast.
+ *
+ * It owns the `(none)` case as well as the values, so that no caller touches
+ * `.length` on a value whose type it cannot trust — reading `.length` is itself
+ * a throw site, and `"A".length > 0` would pass an emptiness test and then
+ * throw inside `join`, which is a method of an ARRAY. So the test is
+ * array-ness. Elements are rendered ONE AT A TIME through the field guard
+ * rather than joined by it: an element that throws on STRING COERCION
+ * (`{"toString": null}` is valid JSON, and `JSON.stringify` handles it fine)
+ * throws INSIDE `join`, where no guard wrapping the result can catch it.
+ */
+function formatDependencyList(deps: unknown): string {
+  if (Array.isArray(deps)) {
+    return deps.length > 0 ? deps.map((dep) => formatAttributeValue(dep)).join(', ') : '(none)';
+  }
+  return deps === undefined ? '(none)' : formatAttributeValue(deps);
+}
+
+/**
+ * Render `Last Modified` from a record whose `lastModified` is an unchecked cast.
+ *
+ * `new Date(x).toISOString()` throws a RangeError on a value it cannot date —
+ * an out-of-range number, most non-numeric strings — and that empties the whole
+ * render, the failure `formatAttributeValue` exists to stop everywhere else in
+ * this block. `new Date` ITSELF throws a TypeError on an object whose
+ * `toString` is unusable (`{"toString": null}` is valid JSON), which is why the
+ * construction is inside the `try` and not only the formatting.
+ *
+ * Only the throw is guarded: the value still reaches `new Date` as-is, so every
+ * input the previous line already dated renders the same ISO string — an ISO or
+ * `YYYY-MM-DD` string, `null` and a boolean included. Anything else falls
+ * through to the guard the other fields take.
+ */
+function formatLastModified(value: unknown): string {
+  try {
+    // No `Number.isNaN(getTime())` check: an Invalid Date's `toISOString` throws
+    // into this same catch and reaches this same fallback, so the check would be
+    // a branch no test could tell from its absence.
+    return new Date(value as string | number).toISOString();
+  } catch {
+    return formatAttributeValue(value);
+  }
+}
+
+/**
  * Render lock metadata for the `state show` block.
+ *
+ * This row takes NO display guard — `Version` is the other, for its own reason —
+ * and here the reason is upstream: `LockManager.getLockRecord` already passes `owner` and `operation`
+ * through `displaySafe`, which absorbs a non-string and replaces the whole
+ * control class with spaces. They arrive here as control-free strings, so a
+ * guard would be redundant — and a test for one could only be written by mocking
+ * the read that sanitises them, which would pin nothing about the real path.
+ *
+ * `expiresAt` is declared a number and is not guaranteed to be one, but it
+ * reaches the row only through subtraction and `formatDuration`, so no character
+ * the record carries can survive into the output either.
  */
 function formatLockSummary(lockInfo: LockInfo | null): string {
   if (!lockInfo) return 'unlocked';
@@ -907,16 +998,46 @@ function renderStateBlock(
 ): string[] {
   const lines: string[] = [];
 
-  lines.push(`Stack: ${state.stackName}`);
-  if (state.region) lines.push(`  Region: ${state.region}`);
+  // Every RECORD-derived string interpolated into a row below is stripped —
+  // state here, and lock.json through `formatLockSummary`. The rule is flat on
+  // purpose: `renderStateBlock` returns lines that the caller joins with `\n`,
+  // and `stripControlChars` removes U+0000-U+001F — newline included — so any
+  // unstripped field can forge rows, not merely colour them. A per-field
+  // argument about which ones CloudFormation constrains is what left the
+  // resource logical id raw until issue #2772; the constraint is not enforced
+  // on a record read as an unchecked cast.
+  //
+  // Which guard a value takes follows from whether its runtime type is
+  // GUARANTEED, not from where it came from. A record FIELD's declared type is
+  // an unchecked cast, so the fields below take `formatAttributeValue`: that
+  // strips identically for a string and also survives a wrong type, where the
+  // bare strip throws and empties the whole render. `stripControlChars` is kept
+  // where the value is a string by construction — an `Object.entries` key.
+  // `dependencies` and `lastModified` take their own guards, each for a second
+  // reason named at its helper.
+  //
+  // `Version` takes none, and is the one field here whose type IS enforced:
+  // `S3StateBackend.parseStateBody` refuses any value but a readable schema
+  // number or `undefined` before a renderer sees the record, so a hand-edited
+  // one fails there with a message about the schema rather than reaching this
+  // row. A guard here would be unreachable by that route and could only be
+  // pinned by a test that mocks the read away.
+  lines.push(`Stack: ${formatAttributeValue(state.stackName)}`);
+  if (state.region) lines.push(`  Region: ${formatAttributeValue(state.region)}`);
   lines.push(`  Version: ${state.version}`);
-  lines.push(`  Last Modified: ${new Date(state.lastModified).toISOString()}`);
+  lines.push(`  Last Modified: ${formatLastModified(state.lastModified)}`);
   lines.push(`  Lock: ${formatLockSummary(lockInfo)}`);
   if (state.parentStack !== undefined) {
-    const parentRegionStr = state.parentRegion ? ` (${state.parentRegion})` : '';
+    const parentRegionStr = state.parentRegion
+      ? ` (${formatAttributeValue(state.parentRegion)})`
+      : '';
     const logicalIdStr =
-      state.parentLogicalId !== undefined ? `, logical id: ${state.parentLogicalId}` : '';
-    lines.push(`  Parent: ${state.parentStack}${parentRegionStr}${logicalIdStr}`);
+      state.parentLogicalId !== undefined
+        ? `, logical id: ${formatAttributeValue(state.parentLogicalId)}`
+        : '';
+    lines.push(
+      `  Parent: ${formatAttributeValue(state.parentStack)}${parentRegionStr}${logicalIdStr}`
+    );
   }
 
   const outputEntries = Object.entries(state.outputs ?? {});
@@ -1007,16 +1128,13 @@ function renderStateBlock(
     // logical id `Skipped outputs:` for a different reason and demonstrates
     // exactly that.
     lines.push(stripControlChars(logicalId));
-    lines.push(`  Type: ${resource.resourceType}`);
-    // `formatAttributeValue`, not the bare strip: behaviour-identical for every
-    // string and it also survives a hand-edited non-string, which the strip
-    // alone would throw on.
+    lines.push(`  Type: ${formatAttributeValue(resource.resourceType)}`);
     lines.push(`  PhysicalID: ${formatAttributeValue(resource.physicalId)}`);
     // v7+ (#614): show the provisioning layer so users can see which
     // resources took the Cloud Control auto-route. Absent on pre-v7
     // state — print "(sdk, legacy default)" so the absence is explicit.
     const provisionedBy = resource.provisionedBy ?? '(sdk, legacy default)';
-    lines.push(`  ProvisionedBy: ${provisionedBy}`);
+    lines.push(`  ProvisionedBy: ${formatAttributeValue(provisionedBy)}`);
     // v10+ (issue #2944): printed ONLY when set, unlike `ProvisionedBy` above,
     // whose absence is itself a fact worth naming. Here absence is the norm,
     // and a `(not refused)` row on every resource of every stack would bury the
@@ -1029,8 +1147,7 @@ function renderStateBlock(
           `(deploy a change to this resource to restore one)`
       );
     }
-    const deps = resource.dependencies ?? [];
-    lines.push(`  Dependencies: ${deps.length > 0 ? deps.join(', ') : '(none)'}`);
+    lines.push(`  Dependencies: ${formatDependencyList(resource.dependencies)}`);
 
     const attrEntries = Object.entries(resource.attributes ?? {});
     if (attrEntries.length === 0) {
@@ -1156,7 +1273,11 @@ function renderTreeWithChildren(root: CdkdStateStackTreeWithLock): string[] {
 function appendDescendants(children: readonly CdkdStateStackTreeWithLock[], out: string[]): void {
   for (const child of children) {
     out.push('');
-    out.push(`Nested stack: ${child.stackName}`);
+    // The bare strip, not the field guard: this name is not read from a record.
+    // `walkCdkdStateStackTree` builds it as `` `${parent}~${logicalId}` `` from a
+    // resources KEY, so it is always a string — and the logical id half is
+    // exactly why it still needs stripping.
+    out.push(`Nested stack: ${stripControlChars(child.stackName)}`);
     out.push(...renderStateBlock(child.state, child.lock, false));
     appendDescendants(child.children, out);
   }

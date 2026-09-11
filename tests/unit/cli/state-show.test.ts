@@ -133,6 +133,33 @@ function makeState(overrides: Partial<StackState> = {}): { state: StackState } {
   };
 }
 
+/**
+ * A value `JSON.parse` accepts and `JSON.stringify` then REFUSES.
+ *
+ * `JSON.stringify` recurses and exhausts the stack; `JSON.parse` does not recurse
+ * and handles far deeper input, so any depth past the stringify limit qualifies.
+ * That limit is the STACK's, so it is machine-specific and the depth is searched
+ * for rather than hardcoded; FAILING when nothing in the probed range qualifies
+ * keeps the case from passing vacuously if this stops being true.
+ */
+function unstringifiableFromParsedJson(): unknown {
+  for (const depth of [4_000, 8_000, 16_000, 32_000]) {
+    // No guard around the parse: the input is balanced and `JSON.parse` does not
+    // recurse, so a failure here is not a case this helper should paper over.
+    const parsed: unknown = JSON.parse('['.repeat(depth) + ']'.repeat(depth));
+    try {
+      JSON.stringify(parsed);
+    } catch {
+      return parsed;
+    }
+  }
+  throw new Error(
+    'premise broken: no nesting depth both parses and refuses to stringify, so this ' +
+      'suite can no longer reach `formatAttributeValue`\'s serialization catch from ' +
+      'stored bytes'
+  );
+}
+
 function defaultListResponse(stackName = 'TestStack', region = 'us-east-1') {
   return [{ stackName, region }];
 }
@@ -383,6 +410,284 @@ describe('cdkd state show', () => {
     const idRow = out.split('\n').find((l) => l.includes('MyTable'));
     expect(idRow).toBe('MyTable');
     expect(out).not.toContain('\u001b');
+  });
+
+  it('a NEWLINE in any state-derived row cannot forge a row', async () => {
+    // The strip removes U+0000-U+001F, newline included, and these lines are
+    // joined with a newline — so an unstripped field does not merely colour
+    // output, it invents rows. One per field of the stack header and the
+    // resource block; the Outputs, skipped-outputs, attribute and property rows
+    // carry keys and values of their own and have their own cases.
+    mockListStacks.mockResolvedValue(defaultListResponse('ForgeStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'Forge\nStack: Fake',
+        region: 'us-east-1\nFake: 1',
+        parentStack: 'Parent\nStack: Fake',
+        parentRegion: 'us-west-2\nFake: 1',
+        parentLogicalId: 'PL\nFake: 1',
+        resources: {
+          'Logical\nFake: 1': {
+            physicalId: 'phys\nFake: 1',
+            resourceType: 'AWS::SNS::Topic\nFake: 1',
+            properties: {},
+            provisionedBy: 'sdk\nFake: 1' as 'sdk',
+            dependencies: ['A\nFake: 1', 'B'],
+          },
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'ForgeStack']);
+
+    // The text survives — stripping removes the newline, not the characters
+    // after it — but it stays JOINED to its own row. A forged row would be a
+    // line that BEGINS with the injected text; there is none.
+    expect(out.split('\n').filter((l) => l.startsWith('Fake: 1'))).toEqual([]);
+    expect(out).toContain('Stack: ForgeStack: Fake');
+    expect(out).toContain('  Region: us-east-1Fake: 1');
+    expect(out).toContain('  Parent: ParentStack: Fake (us-west-2Fake: 1), logical id: PLFake: 1');
+    expect(out).toContain('  Type: AWS::SNS::TopicFake: 1');
+    expect(out).toContain('  ProvisionedBy: sdkFake: 1');
+    expect(out).toContain('  Dependencies: AFake: 1, B');
+    expect(out.split('\n')).toContain('LogicalFake: 1');
+  });
+
+  it('renders non-string name, region, parent trio, type and provisionedBy', async () => {
+    // Each of the five is declared `string` and read as an unchecked cast, so a
+    // hand-edited record can hold anything. Under the bare strip the first one
+    // throws and the user gets NO render at all — not the stack header, not the
+    // resources, not the lock. Reverting any ONE of the five to the bare STRIP
+    // fails this case. Reverting one to RAW interpolation does not — a number
+    // interpolates fine — and the row-forging case catches that direction
+    // instead; both are needed. The lock, `version`, `lastModified` and
+    // `dependencies` have their own cases.
+    mockListStacks.mockResolvedValue(defaultListResponse('OddFieldStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 7 as unknown as string,
+        region: 11 as unknown as string,
+        parentStack: 13 as unknown as string,
+        parentRegion: 17 as unknown as string,
+        parentLogicalId: 19 as unknown as string,
+        resources: {
+          R1: {
+            physicalId: 23 as unknown as string,
+            resourceType: 29 as unknown as string,
+            properties: {},
+            provisionedBy: 31 as unknown as 'sdk',
+          },
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'OddFieldStack']);
+
+    expect(out).toContain('Stack: 7');
+    expect(out).toContain('  Region: 11');
+    expect(out).toContain('  Parent: 13 (17), logical id: 19');
+    expect(out).toContain('  PhysicalID: 23');
+    expect(out).toContain('  Type: 29');
+    expect(out).toContain('  ProvisionedBy: 31');
+  });
+
+  it('still dates a `lastModified` that is not a number', async () => {
+    // The guard wraps only the THROW, so every value the previous line already
+    // dated keeps dating: a numeric-only conversion would send this to the
+    // fallback and print the string back instead of the instant.
+    mockListStacks.mockResolvedValue(defaultListResponse('IsoStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'IsoStack',
+        // Date-ONLY, so its ISO form differs from the input. An ISO string
+        // would round-trip to itself and the assertion would hold either way.
+        lastModified: '2026-04-29' as unknown as number,
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'IsoStack']);
+
+    expect(out).toContain('  Last Modified: 2026-04-29T00:00:00.000Z');
+  });
+
+  it('STRIPS an undatable `lastModified` on the way back out', async () => {
+    // The fallback is the shared guard, not a bare `String`: this value is not a
+    // time AND carries a newline, so returning it raw would forge a row.
+    mockListStacks.mockResolvedValue(defaultListResponse('BadDateStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'BadDateStack',
+        lastModified: 'not-a-date\nStack: Fake' as unknown as number,
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'BadDateStack']);
+
+    expect(out).toContain('  Last Modified: not-a-dateStack: Fake');
+    expect(out.split('\n').filter((l) => l.startsWith('Stack: Fake'))).toEqual([]);
+  });
+
+  it('distinguishes an ABSENT `dependencies` from one holding null', async () => {
+    // Absent means none. An explicit `null` is a record holding null, and saying
+    // `(none)` about it would claim something the record does not say — so the
+    // two must not collapse, and the value still goes through the guard.
+    mockListStacks.mockResolvedValue(defaultListResponse('DepShapeStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'DepShapeStack',
+        resources: {
+          ANull: {
+            physicalId: 'p-1',
+            resourceType: 'AWS::SNS::Topic',
+            properties: {},
+            dependencies: null as unknown as string[],
+          },
+          BAbsent: { physicalId: 'p-2', resourceType: 'AWS::SNS::Topic', properties: {} },
+          CNumber: {
+            physicalId: 'p-3',
+            resourceType: 'AWS::SNS::Topic',
+            properties: {},
+            dependencies: 42 as unknown as string[],
+          },
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'DepShapeStack']);
+    const rows = out.split('\n').filter((l) => l.startsWith('  Dependencies: '));
+
+    // Sorted by logical id, so: null, absent, number.
+    expect(rows).toEqual([
+      '  Dependencies: null',
+      '  Dependencies: (none)',
+      '  Dependencies: 42',
+    ]);
+  });
+
+  it('survives a `lastModified` that is not a time', async () => {
+    // `toISOString` THROWS on it, which empties the render entirely. `version`
+    // is deliberately NOT part of this case — the state backend refuses an
+    // unreadable one before a renderer sees the record.
+    mockListStacks.mockResolvedValue(defaultListResponse('OddMetaStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'OddMetaStack',
+        lastModified: 'yesterday' as unknown as number,
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'OddMetaStack']);
+
+    expect(out).toContain('  Last Modified: yesterday');
+    expect(out).toContain('Resources (0):');
+  });
+
+  it('renders an out-of-range numeric lastModified rather than dying', async () => {
+    // Finite but not a valid time: `new Date(1e20).getTime()` is NaN, so a
+    // `Number.isFinite` check alone would still let `toISOString` throw.
+    mockListStacks.mockResolvedValue(defaultListResponse('FarFutureStack'));
+    mockGetState.mockResolvedValue(
+      makeState({ stackName: 'FarFutureStack', lastModified: 1e20 })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'FarFutureStack']);
+
+    expect(out).toContain('  Last Modified: 100000000000000000000');
+  });
+
+  it('renders a `dependencies` that is a bare string rather than dying', async () => {
+    // `"A".length > 0` passes the caller's emptiness guard and then `.join`
+    // throws, so the guard has to test array-ness.
+    mockListStacks.mockResolvedValue(defaultListResponse('OddDepsStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'OddDepsStack',
+        resources: {
+          R1: {
+            physicalId: 'p-1',
+            resourceType: 'AWS::SNS::Topic',
+            properties: {},
+            dependencies: 'A\nFake: 1' as unknown as string[],
+          },
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'OddDepsStack']);
+
+    expect(out).toContain('  Dependencies: AFake: 1');
+    expect(out.split('\n').filter((l) => l.startsWith('Fake: 1'))).toEqual([]);
+  });
+
+  it('renders a record holding a value that throws on string coercion', async () => {
+    // `{"toString": null}` is valid JSON, so a hand-edited record can hold it
+    // anywhere, and `JSON.stringify` handles it fine — what throws is COERCION:
+    // inside `String(...)`, inside `Array.join` and inside `new Date`. So it
+    // reaches three different guards, and it is the shape that decides whether
+    // each one wraps the CONSTRUCTION or only the formatting.
+    const UNSTRINGIFIABLE = { toString: null } as unknown as string;
+    mockListStacks.mockResolvedValue(defaultListResponse('NoStringStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: UNSTRINGIFIABLE,
+        lastModified: UNSTRINGIFIABLE as unknown as number,
+        resources: {
+          R1: {
+            physicalId: UNSTRINGIFIABLE,
+            resourceType: 'AWS::SNS::Topic',
+            properties: {},
+            dependencies: [UNSTRINGIFIABLE],
+          },
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'NoStringStack']);
+
+    // JSON is what survives: the value is shown, and the render is whole.
+    expect(out).toContain('Stack: {"toString":null}');
+    expect(out).toContain('  Last Modified: {"toString":null}');
+    expect(out).toContain('  PhysicalID: {"toString":null}');
+    expect(out).toContain('  Dependencies: {"toString":null}');
+    expect(out).toContain('Resources (1):');
+  });
+
+  it('names a value `JSON.stringify` refuses, from bytes a record can hold', async () => {
+    // `JSON.stringify` exhausts the stack on a deeply nested value where
+    // `JSON.parse` does not, so a depth that parses and then refuses exists —
+    // which makes this arm reachable from STORED BYTES, not only from a
+    // hand-built BigInt. The depth is searched for at run time because the
+    // stringify limit is the stack's, so a hardcoded one would flake elsewhere.
+    const deep = unstringifiableFromParsedJson();
+    mockListStacks.mockResolvedValue(defaultListResponse('DeepStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'DeepStack',
+        resources: {
+          R1: {
+            physicalId: 'p-1',
+            resourceType: 'AWS::SNS::Topic',
+            properties: {},
+            attributes: { Deep: deep },
+          },
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'DeepStack']);
+
+    expect(out).toContain('    Deep: (unserializable)');
+    expect(out).toContain('  PhysicalID: p-1');
   });
 
   it('renders a non-string PhysicalID instead of throwing', async () => {
@@ -1227,6 +1532,45 @@ describe('cdkd state show', () => {
       expect(out).toContain('Stack: Parent');
       expect(out).toContain('  Region: us-east-1');
       expect(out).toContain('Nested stack: Parent~Child');
+    });
+
+    it('a NEWLINE in a child name cannot forge a row in its header', async () => {
+      // The header name is built as `<parent>~<logicalId>`, and the logical id
+      // is a KEY of the parent's hand-editable `resources` map — so the flat
+      // rule reaches this row too, and it is the only row this command renders
+      // from a name it derived rather than read.
+      const EVIL_ID = 'Child\nStack: Fake';
+      mockListStacks.mockResolvedValue([{ stackName: 'Parent', region: 'us-east-1' }]);
+      mockGetState.mockImplementation(async (name) => {
+        if (name === 'Parent') {
+          return makeState({
+            stackName: 'Parent',
+            resources: {
+              [EVIL_ID]: makeResource({
+                resourceType: 'AWS::CloudFormation::Stack',
+                physicalId: `cdkd-local::stack::Parent~${EVIL_ID}`,
+              }),
+            },
+          });
+        }
+        if (name === `Parent~${EVIL_ID}`) {
+          return makeState({
+            stackName: `Parent~${EVIL_ID}`,
+            parentStack: 'Parent',
+            parentLogicalId: EVIL_ID,
+            parentRegion: 'us-east-1',
+          });
+        }
+        return null;
+      });
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'Parent', '--show-nested']);
+
+      // Unstripped, the header's own newline ends the row and `Stack: Fake`
+      // begins a forged one that reads exactly like a top-level stack header.
+      expect(out).toContain('Nested stack: Parent~ChildStack: Fake');
+      expect(out.split('\n').filter((l) => l.startsWith('Stack: Fake'))).toEqual([]);
     });
 
     it('fails fast on a torn tree (parent lists nested-stack row but child state missing)', async () => {

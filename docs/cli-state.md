@@ -179,6 +179,47 @@ header row, which makes it pipe-friendly.
 | `--json` | off | Emit the resource array as JSON. Takes precedence over `--long`. |
 | `--stack-region <region>` | — | Region of the record to read. Omitting it on a name with records in several regions is an error. |
 
+### What the human views do to a malformed record
+
+A state record is read as JSON and used as typed data without a field-by-field
+shape check, so a hand-edited one can hold anything. Both human views of
+`cdkd state resources` and every row of `cdkd state show` therefore treat what
+they print as untrusted text:
+
+- **Control characters are removed from every name, type, id, dependency list
+  and nested-stack header.** The lock row is the exception and needs no removal:
+  its `owner` and `operation` are sanitized where the lock is read, before
+  `cdkd state show` sees them. The rows of these views are joined by
+  newlines, so a newline inside a field would not merely colour the output — it
+  would invent a row that reads exactly like a real one. The escape BYTE is
+  removed and the characters around it are kept, so a name carrying `ESC[31m`
+  prints as `[31m`: the sequence is broken, the name is not censored.
+- **A value whose type the record got wrong still prints, rather than ending the
+  output.** A number where a string belongs prints as that number, an object as
+  JSON, and a value nothing can serialize as `(unserializable)`. A few fields are
+  decided before any of that: a falsy `region` omits its whole row, a falsy
+  `parentRegion` drops only the parenthesized region from the `Parent:` row, and
+  an absent or null `provisionedBy` reports the legacy default. A `lastModified` that cannot be read as a
+  time prints as itself instead of an instant. In `cdkd state show`, a
+  `dependencies` that is not a list prints as itself, and `(none)` is supplied
+  only for an absent one or an empty list; `cdkd state resources --long` supplies
+  it for a `null` too, so the two views differ on that one value. The marker is
+  ordinary text, so a record whose dependency list literally contains `(none)`
+  renders the same thing -- read `--json` when you need to tell them apart.
+- **`--json` applies none of this**, and is the mode to reach for when you need
+  the stored value rather than a readable one. It is not byte-for-byte in every
+  mode: `cdkd state show` emits the record as parsed, while
+  `cdkd state resources --json` substitutes an empty list or object for an absent
+  `dependencies` or `attributes`, and the lock `cdkd state show` reports has already
+  had its `owner` and `operation` put through the shared display sanitizer
+  (`cdkd state resources` never reads a lock).
+
+This tolerance covers the VALUES these views render. A record can still be
+malformed in a way that fails earlier than that — a lock whose `expiresAt` is an
+object, or a `resources` entry holding `null` rather than a resource — and there
+the command reports an error and renders nothing. Reach for `--json`, which reads
+the stored bytes without rendering them.
+
 **Resource properties are deliberately excluded from every mode here** — use
 [`cdkd state show`](#cdkd-state-show) when you need them. A physical id may be
 a composite, pipe-delimited value for resource types AWS identifies by more
