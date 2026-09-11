@@ -223,10 +223,13 @@ Three exceptions:
   unchanged; with the flag the property is silently dropped at write time.
   Without the flag the resource takes the Cloud Control route and the property
   reaches AWS verbatim.
-- **NOT** free to undo. A deploy under this flag records the property in cdkd
-  state even though it was never written, and simply dropping the flag later
-  does not deliver it — see
-  [the caveat under `--recreate-via-cc-api`](#recreate-via-cc-api-deploy).
+- **NOT** free to undo for a **create-only** property. Such a property is
+  recorded in cdkd state even though it was never written — deliberately, since
+  narrowing it out would turn it into a replacement of an untouched resource —
+  so simply dropping the flag later does not deliver it. See
+  [the caveat under `--recreate-via-cc-api`](#recreate-via-cc-api-deploy). For
+  every other dropped property, dropping the flag IS enough: the record never
+  claimed it, so the next deploy re-routes and Cloud Control sends it.
 - **NOT** persisted in cdkd state. Every deploy must pass the flag if the
   override is still wanted. The resource's `provisionedBy` state field reflects
   the routing actually used at the last deploy, not the flag.
@@ -285,26 +288,41 @@ before the redeploy survived. A later phase deliberately recreates the alarm
 and checks that tag DIES, so its survival above means something. This section
 said the opposite until that run measured it.
 
-**One sequence defeats this, and it is a bug, not a reason to reach for the
-flag.** If an earlier deploy accepted the drop with
-[`--prefer-sdk-route`](#prefer-sdk-route-deploy), that
-deploy still RECORDED the property in cdkd state without writing it to AWS. The
-later flag-less deploy does re-route the resource to Cloud Control, but the
-update is computed as a patch against that record, the property is identical on
-both sides, and nothing is sent — the deploy reports success and AWS never gets
-the field. That is a defect with its own tracking issue, and the same fixture
-carries the failing sequence as a pinned arm — so anyone who fixes it and runs
-`sdk-to-cc-autoroute` gets a red run telling them to update this page too.
-Until then, a resource in that state needs the property removed
-from the template and re-added across two deploys, or the recreate this flag
-performs.
+**An earlier opt-out deploy no longer defeats this, with one exception.** cdkd
+records only what the SDK provider actually sent, so after a
+[`--prefer-sdk-route`](#prefer-sdk-route-deploy) deploy a removable drop is
+simply absent from the record: the later flag-less deploy sees a genuine
+addition, re-routes the resource, and Cloud Control sends the field. The same
+`sdk-to-cc-autoroute` fixture measures that pair — its `--prefer-sdk-route`
+phase asserts the record does NOT carry `EvaluationWindow`, and the flag-less
+phase after it reads the property back off the live alarm.
+
+**The exception is a create-only drop**, and there the old failure survives.
+cdkd deliberately leaves such a property IN the record, because removing it
+would make the key read as an addition against the template — and an added
+create-only property is a REPLACEMENT, so a plain upgrade deploy over an
+unchanged template would destroy and recreate a resource nobody touched. The
+cost of that choice is stated rather than hidden: the record keeps claiming a
+value AWS does not hold, the flag-less deploy diffs it as identical on both
+sides, nothing is sent, and the deploy reports success. That residual is a
+known defect with its own tracking issue, and it is still open because closing
+it means deciding what cdkd should DO when the flag is dropped — every
+candidate changes what a plain deploy does to a live resource.
 
 Reach for the flag when the auto-routed **update** cannot deliver the property,
 which is a narrower case:
 
 - **The property is create-only.** No update on either layer can set it, so the
   resource has to be created again with the property present. The CFn resource
-  schema's `createOnlyProperties` is what to check.
+  schema's `createOnlyProperties` is what to check. Whether you need this flag
+  depends on what the record holds. If it does NOT already claim the value —
+  the ordinary case, where you just added the property — the change reads as an
+  addition and cdkd classifies it as a
+  [property-driven replacement](#property-driven-replacement-and-stateful-replace-blocked)
+  off the same schema, so it recreates the resource for you with no flag, and a
+  stateful type is refused until `--force-stateful-recreation`. The flag is for
+  the case where the record DOES claim it — the `--prefer-sdk-route` sequence
+  above — because there the diff finds no difference to act on.
 - **The SDK-created resource's physical id is not a valid Cloud Control
   identifier.** Cloud Control addresses a resource by the `Identifier` its
   schema's `primaryIdentifier` defines, while an SDK provider stores whatever
@@ -315,11 +333,15 @@ which is a narrower case:
   update fails and the recreate is the way through.
 
 Both bullets are reasoned from the routing model, not measured — unlike the
-`sdk-to-cc-autoroute` paragraph that opens this section. If you hit one, the
-deploy fails loudly rather than silently dropping anything, so the flag is a
-remedy you reach for after a failure, not a precaution you take before one.
-That is what separates them from the caveat above, which fails silently; the
-two-deploy workaround named there is also reasoned rather than measured.
+`sdk-to-cc-autoroute` paragraph that opens this section. They do not fail the
+same way, so they are not reached for the same way. The second one fails
+loudly: the auto-routed update errors, and the flag is a remedy you reach for
+after a failure rather than a precaution you take before one. The first one
+fails loudly only when the record does not already claim the property — the
+replacement is planned and, for a stateful type, refused out loud. In the
+recorded create-only case above there is no failure at all: the deploy reports
+success, applies nothing, and prints nothing that points at this flag, so that
+one is a precaution you do have to take before the fact.
 
 ### When not to use it
 
