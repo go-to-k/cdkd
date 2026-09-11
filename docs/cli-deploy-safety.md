@@ -234,11 +234,12 @@ Three exceptions:
   [the caveat under `--recreate-via-cc-api`](#recreate-via-cc-api-deploy). For
   every other dropped property, dropping the flag usually delivers it: the
   record never claimed it, so the next deploy re-routes and Cloud Control sends
-  it. Usually, not always: the auto-routed update still has to be able to
-  ADDRESS the resource (the physical-id bullet in that same section), and the
-  Cloud Control route has to be able to serve the type at all — no Cloud
-  Control handlers, or a provider that declines the fallback, and dropping the
-  flag is refused at pre-flight rather than silently ineffective.
+  it. Usually, not always. The auto-routed update still has to be able to
+  ADDRESS the resource, and where it cannot it fails at update time — the
+  physical-id bullet in that same section. The Cloud Control route also has to
+  be able to serve the type at all: with no Cloud Control handlers, or a
+  provider that declines the fallback, dropping the flag is refused at
+  pre-flight rather than being silently ineffective.
 - **NOT** persisted in cdkd state. Every deploy must pass the flag if the
   override is still wanted. The resource's `provisionedBy` state field reflects
   the routing actually used at the last deploy, not the flag.
@@ -330,13 +331,12 @@ which is a narrower case:
   place it becomes a
   [property-driven replacement](#property-driven-replacement-and-stateful-replace-blocked),
   so cdkd recreates the resource for you with no flag. (Where cdkd has no rule
-  of its own, that verdict comes from the type's CFn schema, read through
-  `cloudformation:DescribeType`; without that permission cdkd warns and falls
-  back to treating the change as in-place. What happens then is type-dependent:
-  the provider may refuse it and point you at `--replace`, AWS may reject the
-  update, or — where nothing guards the property — it is quietly dropped and the
-  deploy reports success.) A stateful type is
-  refused until `--force-stateful-recreation`, **unless** it declares
+  of its own, that verdict is read from the type's CFn schema through
+  `cloudformation:DescribeType`; without that permission cdkd warns and
+  classifies the change as in-place instead, so that property-driven
+  replacement does not happen — and where nothing rejects the in-place update,
+  the deploy can report success with the property unapplied.) A stateful type
+  is refused until `--force-stateful-recreation`, **unless** it declares
   `UpdateReplacePolicy: Retain` — that is exempt from the consent flag, because
   the old resource is orphaned rather than deleted. The flag is for the case
   where the record DOES claim the value — the `--prefer-sdk-route` sequence
