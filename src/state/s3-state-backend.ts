@@ -421,9 +421,10 @@ export class S3StateBackend {
     } catch (error) {
       if (!isNoSuchKey(error)) {
         if (error instanceof StateError) throw error;
-        // The ASCII allowlist, like every other `detail` in this file. Only
-        // `formatError`'s cause line takes the denylist, because that one
-        // prints causes raised anywhere in cdkd rather than from these catches.
+        // The ASCII allowlist: this text can quote bytes of the object body,
+        // and the allowlist is the class with no residual. (Six revisions of
+        // this comment tried to say which OTHER sites take which class and
+        // each was wrong, so it no longer says.)
         const detail =
           displaySafe(error instanceof Error ? error.message : String(error), {
             asciiOnly: true,
@@ -444,8 +445,7 @@ export class S3StateBackend {
       // it names the stack twice, once inside a printed S3 key (issue #3003).
       // The KEY is built from the real name and sanitized AFTER. Building it
       // from the sanitized name substitutes a DIFFERENT name into the middle of
-      // the key; sanitizing after only blanks characters a terminal must not
-      // receive, the same trade every other row here makes.
+      // the key, which is a wrong key rather than a redacted one.
       const shownKey =
         displaySafe(this.getLegacyStateKey(stackName), { asciiOnly: true }) || UNRENDERABLE;
       this.logger.warn(

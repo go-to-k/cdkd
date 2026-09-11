@@ -147,11 +147,10 @@ interface HeldLock {
  * name and an AWS region both have a known charset, so the ASCII allowlist is
  * a no-op on every legitimate input while an S3 key admits any UTF-8.
  *
- * Call it for a stack name or a region. It is deliberately NOT the guard for
- * every value in this file -- a free-form error message takes a different
- * class -- and this comment does not try to enumerate which sites use it:
- * three revisions of that sentence carried a count or a scope claim and each
- * was wrong. `grep safeSegment` answers it exactly.
+ * Call it for a stack name or a region. Not every value in this file goes
+ * through it, and this comment does not say which do: three revisions of that
+ * sentence carried a count or a scope claim and each was wrong.
+ * `grep safeSegment` answers it exactly.
  */
 function safeSegment(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -500,7 +499,7 @@ export class LockManager {
           // back in through the third interpolation, into the terminal and into
           // `deployments/*.jsonl`. Two-of-three is the exact shape
           // `custom-resource-provider.ts`'s cleanup line argues against.
-          `${displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE}`,
+          `${displaySafe(error instanceof Error ? error.message : String(error), { asciiOnly: true }) || UNRENDERABLE}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -635,7 +634,9 @@ export class LockManager {
       // split -- the state backend applies it too, but saying so here would be
       // a claim about another module's private method that nothing fences.
       const detail =
-        displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE;
+        displaySafe(error instanceof Error ? error.message : String(error), {
+          asciiOnly: true,
+        }) || UNRENDERABLE;
       throw new LockError(
         `Failed to get lock info for stack '${safeSegment(stackName)}': ${detail}`,
         error instanceof Error ? error : undefined

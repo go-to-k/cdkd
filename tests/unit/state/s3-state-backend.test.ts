@@ -685,7 +685,12 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         ETag: '"e"',
       });
 
-      const result = await backend.getState('Ghost\n  StackForged: yes', 'us-east-1');
+      // The CALLER's region is hostile too: that line interpolates three
+      // values and a case driving only two left the third reddening nothing.
+      const result = await backend.getState(
+        'Ghost\n  StackForged: yes',
+        'us-east-1\n  CallerForged: yes'
+      );
       expect(result).toBeNull();
 
       // PER CALL, not over a joined blob: joining and then splitting on `\n`
@@ -703,6 +708,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const mismatch = debugCalls.find((c) => c.includes('skipping legacy fallback'));
       expect(mismatch).toContain('PhysicalID: arn:forged');
       expect(mismatch).toContain('StackForged: yes');
+      expect(mismatch).toContain('CallerForged: yes');
     });
 
     it('sanitizes the LEGACY-key read failure, on getState\'s own fallback (issue #3003)', async () => {
