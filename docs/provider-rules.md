@@ -1941,7 +1941,7 @@ See [tests/unit/provisioning/sqs-queue-provider-update.test.ts](https://github.c
 
 ## `handledProperties` against the CFn schema
 
-Every SDK Provider declares a `handledProperties: Map<string, ReadonlySet<string>>` field naming the CFn template properties it knows how to wire to its AWS API calls. The provider registry's `getProviderFor` consults that set at routing time — a template carrying a property NOT in the set is auto-routed via Cloud Control API (which forwards the full property map to AWS, closing the silent-drop bug — see #614). `--allow-unsupported-properties Type:Prop` is the per-property opt-out that forces the SDK Provider path and accepts the silent drop.
+Every SDK Provider declares a `handledProperties: Map<string, ReadonlySet<string>>` field naming the CFn template properties it knows how to wire to its AWS API calls. The provider registry's `getProviderFor` consults that set at routing time — a template carrying a property NOT in the set is auto-routed via Cloud Control API (which forwards the full property map to AWS, closing the silent-drop bug — see #614). `--prefer-sdk-route Type:Prop` is the per-property opt-out that forces the SDK Provider path and accepts the silent drop.
 
 That's a **runtime** safety net. It doesn't help during development. A provider author who simply forgets to list a property in `handledProperties` AND forgets to wire it in `create()` / `update()` ships a silent bug — exactly what PR #370 (ApiGateway::Method dropped 15+ fields) demonstrated.
 
@@ -2006,7 +2006,7 @@ Tier 3 set cannot catch it (it excludes SDK-covered types by design, so
 `isNonProvisionable()` returns false once your provider is registered).
 Declare `readonly disableCcApiFallback = true;` on the provider class: the
 `ProviderRegistry` then rejects such templates pre-flight with a clear
-error (property rationale + `--allow-unsupported-properties` escape hatch)
+error (property rationale + `--prefer-sdk-route` escape hatch)
 instead of failing at provisioning time with an opaque
 `UnsupportedActionException`. This only matters when the type has (or may
 gain) `unhandledByDesign` / not-yet-handled properties — a fully-handled
@@ -2066,7 +2066,7 @@ Newly unaccounted writable properties land in `_todo-backfill.json`; do not file
 
 There is deliberately **no CI staleness check** on `main`. It would go red whenever AWS publishes a property — noise on a schedule nobody controls, the same reasoning `gen:aws-cli-removals` carries in `vite.config.ts`. A scheduled job whose red is confined to its own PR is the shape that argument leaves open.
 
-**Between cycles**, a user is not unprotected: a top-level template property absent from the snapshot produces a deploy-time **warning** naming the property and saying it will not reach AWS. Because cdkd cannot tell the possible causes apart — and at deploy time has only the template and the baked-in table — the line names all four with a remedy each: a misspelling (fix the spelling), a read-only attribute, which is not settable on any engine (remove it), a property AWS published after the snapshot (report it, so cdkd routes it via Cloud Control), or a deliberate `addPropertyOverride` (suppress it). It stays a warning rather than an error or an auto-route — the drop may be intended, and routing on an unrecognized property would let a typo trigger the currently one-way `cc-api` state flip. Suppress a known-accepted one with `--allow-unsupported-properties <Type>:<Prop>`.
+**Between cycles**, a user is not unprotected: a top-level template property absent from the snapshot produces a deploy-time **warning** naming the property and saying it will not reach AWS. Because cdkd cannot tell the possible causes apart — and at deploy time has only the template and the baked-in table — the line names all four with a remedy each: a misspelling (fix the spelling), a read-only attribute, which is not settable on any engine (remove it), a property AWS published after the snapshot (report it, so cdkd routes it via Cloud Control), or a deliberate `addPropertyOverride` (suppress it). It stays a warning rather than an error or an auto-route — the drop may be intended, and routing on an unrecognized property would let a typo trigger the currently one-way `cc-api` state flip. Suppress a known-accepted one with `--prefer-sdk-route <Type>:<Prop>`.
 
 ### "Bogus" entries and the tolerance list
 

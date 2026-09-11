@@ -204,7 +204,7 @@ cdkd scrub MyStack --dry-run --fail # standing CI gate: exit 1 if plaintext rema
 
 See the **[CLI Reference](cli-reference.md)** for the full flag
 matrix (`--concurrency`, `--no-aggressive-vpc-parallel`,
-`--allow-unsupported-properties`, `--role-arn`, etc.), per-command details
+`--prefer-sdk-route`, `--role-arn`, etc.), per-command details
 including the synth-driven per-resource `cdkd orphan <constructPath>`
 variant, and stage / wildcard pattern matching.
 

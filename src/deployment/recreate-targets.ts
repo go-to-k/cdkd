@@ -550,7 +550,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `Ambiguous intent — ${validation.ambiguousIntent.length} resource(s) ` +
         `are named in BOTH --recreate-via-cc-api and ` +
-        `--allow-unsupported-properties with the same Type:Prop on a ` +
+        `--prefer-sdk-route with the same Type:Prop on a ` +
         `silent-drop property the template uses:`
     );
     for (const overlap of validation.ambiguousIntent) {
@@ -558,7 +558,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `  - ${overlap.logicalId} (${overlap.resourceType}) — both ` +
           `--recreate-via-cc-api ${overlap.logicalId} (would migrate to CC, ` +
           `honoring ${overlap.property}) AND ` +
-          `--allow-unsupported-properties ${overlap.resourceType}:${overlap.property} ` +
+          `--prefer-sdk-route ${overlap.resourceType}:${overlap.property} ` +
           `(would keep on SDK, accepting silent drop)`
       );
     }
@@ -704,7 +704,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
       `Inverse ambiguous intent — ${validation.ambiguousIntentSdk.length} ` +
         `--recreate-via-sdk-provider target(s) would IMMEDIATELY be re-routed ` +
         `back to Cloud Control after the recreate because their template uses ` +
-        `silent-drop properties NOT in --allow-unsupported-properties:`
+        `silent-drop properties NOT in --prefer-sdk-route:`
     );
     for (const overlap of validation.ambiguousIntentSdk) {
       lines.push(
@@ -714,7 +714,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
       );
     }
     lines.push(
-      `  Fix: pass --allow-unsupported-properties <Type>:<Prop> for each ` +
+      `  Fix: pass --prefer-sdk-route <Type>:<Prop> for each ` +
         `silent-drop property so the recreated resource stays on SDK with the ` +
         `property explicitly dropped. Or drop --recreate-via-sdk-provider — ` +
         `the resource already routes via CC and honors the property.`

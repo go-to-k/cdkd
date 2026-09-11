@@ -917,7 +917,7 @@ interface ResourceState {
 everything the template declared. A provider that deliberately narrows what
 it sends records the narrowed bag, and a top-level property the SDK provider
 has no wiring for is likewise absent whenever
-[`--allow-unsupported-properties`](cli-deploy-safety.md#the-override) kept the
+[`--prefer-sdk-route`](cli-deploy-safety.md#the-override) kept the
 resource on the SDK route (that flag is the opt-in to the property not being
 written at all) — unless the property is create-only, which cdkd keeps in the
 record because removing it would classify the next deploy as a replacement. `observedProperties` records what AWS actually has — captured
@@ -928,7 +928,7 @@ resources without it fall back to `properties` (the pre-`version: 3` behavior).
 
 One consequence worth knowing before you opt into a drop: `cdkd export`
 reconstructs a CloudFormation template from `properties`, so a property
-accepted via `--allow-unsupported-properties` is absent from the exported
+accepted via `--prefer-sdk-route` is absent from the exported
 template too. That matches what AWS actually holds — which is what makes the
 exported stack importable — but it means the export is not a round-trip of your
 CDK source for that field.

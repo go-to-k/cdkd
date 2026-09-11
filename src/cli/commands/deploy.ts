@@ -113,6 +113,8 @@ async function deployCommand(
     verbose: boolean;
     context?: string[];
     allowUnsupportedTypes?: string[];
+    preferSdkRoute?: string[];
+    /** Deprecated alias for `preferSdkRoute` (issue go-to-k/cdkd#3000). */
     allowUnsupportedProperties?: string[];
     recreateViaCcApi?: string[];
     recreateViaSdkProvider?: string[];
@@ -731,8 +733,16 @@ async function deployCommand(
       if (options.allowUnsupportedTypes?.length) {
         stackProviderRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
       }
-      if (options.allowUnsupportedProperties?.length) {
-        stackProviderRegistry.allowUnsupportedProperties(options.allowUnsupportedProperties);
+      // MERGED, not either-or. Commander derives the option name from the long
+      // flag, so `--prefer-sdk-route` and its deprecated alias land on two
+      // different properties — reading one would silently ignore the other, and
+      // the one silently ignored would be whichever the user actually typed.
+      const preferSdkRoute = [
+        ...(options.preferSdkRoute ?? []),
+        ...(options.allowUnsupportedProperties ?? []),
+      ];
+      if (preferSdkRoute.length) {
+        stackProviderRegistry.allowUnsupportedProperties(preferSdkRoute);
       }
 
       // Issue [#808] — best-effort structured deployment-event recorder.
@@ -806,7 +816,10 @@ async function deployCommand(
             },
             recreateViaCcApi: options.recreateViaCcApi ?? [],
             recreateViaSdkProvider: options.recreateViaSdkProvider ?? [],
-            allowUnsupportedProperties: new Set(options.allowUnsupportedProperties ?? []),
+            allowUnsupportedProperties: new Set([
+              ...(options.preferSdkRoute ?? []),
+              ...(options.allowUnsupportedProperties ?? []),
+            ]),
             forceStatefulRecreation: options.forceStatefulRecreation ?? false,
             // Reviewer caught: `hasProvider(rt)` returns true for ANY
             // routable type (SDK / Cloud Control / Custom Resource / escape-

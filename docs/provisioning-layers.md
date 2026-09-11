@@ -42,7 +42,7 @@ The layer is decided per resource, per deploy, in this order:
    physical id is also a valid Cloud Control identifier — true per type, not in
    general — that write is an update in place, with the physical id preserved
    and nothing recreated. It holds after an
-   [`--allow-unsupported-properties`](cli-deploy-safety.md#the-override) deploy
+   [`--prefer-sdk-route`](cli-deploy-safety.md#the-override) deploy
    too: cdkd records only what the SDK provider sent, so dropping the flag makes
    the property a genuine addition and the auto-route delivers it — except for a
    create-only property, which cdkd keeps in the record because applying one to
@@ -119,7 +119,7 @@ and recreates the resource — see the table below.
 | --- | --- | --- |
 | A property the SDK provider drops to reach AWS | The resource is not in cdkd state yet | Nothing — the fresh deploy auto-routes it through Cloud Control |
 | The same, on a resource already deployed | `ProvisionedBy: sdk` | Usually nothing — the routing decision is re-made every deploy, so the next one auto-routes the resource through Cloud Control, normally as an in-place update. [`--recreate-via-cc-api`](cli-deploy-safety.md#recreate-via-cc-api-deploy) is for the narrower case where that update cannot deliver the property |
-| To keep SDK semantics and accept the dropped property instead | Either | [`--allow-unsupported-properties <Type>:<Prop>`](cli-deploy-safety.md#allow-unsupported-properties-deploy) |
+| To keep SDK semantics and accept the dropped property instead | Either | [`--prefer-sdk-route <Type>:<Prop>`](cli-deploy-safety.md#prefer-sdk-route-deploy) |
 | To move a resource back to the SDK provider | `ProvisionedBy: cc-api`, type not exempt from the sticky rule | [`--recreate-via-sdk-provider <LogicalId>`](cli-deploy-safety.md#recreate-via-sdk-provider-deploy) — destroys and recreates |
 | The same, without destroying anything | `ProvisionedBy: cc-api`, type exempt because cdkd now covers it | Nothing — the next deploy that changes the resource moves it in place |
 | To decline that automatic move for one deploy | Same as above | [`--pin-cc-api <LogicalId>`](cli-deploy-safety.md#pin-cc-api-deploy) |

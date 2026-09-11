@@ -9,6 +9,7 @@
  * uses, so no fragile log-level wiring is needed here.
  */
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
+import { existsSync } from 'node:fs';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 
@@ -121,7 +122,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(msg).toContain(fx.resourceType);
     expect(msg).toContain('routing via Cloud Control API');
     expect(msg).toContain(fx.property);
-    expect(msg).toContain('--allow-unsupported-properties');
+    expect(msg).toContain('--prefer-sdk-route');
     expect(msg).toContain(`${fx.resourceType}:${fx.property}`);
   });
 
@@ -142,7 +143,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(msg).toContain(fx.resourceType);
     expect(msg).toContain(fx.property);
     expect(msg).toContain('silently dropped');
-    expect(msg).toContain('--allow-unsupported-properties');
+    expect(msg).toContain('--prefer-sdk-route');
   });
 
   /**
@@ -152,7 +153,22 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
    * property reaches AWS after all and the "will be silently dropped" line is
    * simply false. Only the auto-route line is true here.
    */
-  it('does NOT warn about an overridden drop when a SIBLING drop auto-routes the resource', () => {
+  it('does NOT warn that an overridden drop will be DROPPED when a sibling auto-routes', () => {
+    // Narrowed from `expect(warn).not.toHaveBeenCalled()` by issue
+    // go-to-k/cdkd#3000, and the narrowing is a deliberate revision of
+    // go-to-k/cdkd#2750's decision rather than an erosion of it.
+    //
+    // What #2750 retired was a FALSE warn: it told the user the property "will
+    // be silently dropped" while Cloud Control was writing it, and prescribed
+    // removing the override — a no-op. That sentence must stay gone, and the
+    // assertion below is what keeps it gone.
+    //
+    // What #3000 added is the opposite claim and a true one: the user's
+    // preference went INERT and the property IS written. It fires only for a
+    // user who actually passed the flag for a property on THIS resource, so it
+    // is not the broadcast warn #2750 removed — and without it an explicit
+    // instruction appears silently ignored, which is the confusion that drove
+    // the flag's rename.
     const pair = pickSilentDropPair();
     const { registry, info, warn } = makeRegistry();
     registry.allowUnsupportedProperties([`${pair.resourceType}:${pair.propA}`]);
@@ -163,7 +179,16 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
         properties: { [pair.propA]: 'x', [pair.propB]: 'y' },
       },
     ]);
-    expect(warn).not.toHaveBeenCalled();
+    const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned, "the FALSE 'will be dropped' warn is back").not.toMatch(
+      /silently dropped|will not be written|missing the field/
+    );
+    // And the true one IS present — otherwise this case would pass in the
+    // world where #3000's warning was never wired.
+    expect(warned, 'the inert-preference warning is gone').toContain('had no effect');
+    // See the sticky case below for why the COUNT is asserted and not just the
+    // phrases: it is the half the blanket `not.toHaveBeenCalled()` carried.
+    expect(warn, 'a second warning appeared on this path').toHaveBeenCalledTimes(1);
     expect(info).toHaveBeenCalledTimes(1);
     const msg = info.mock.calls[0]![0] as string;
     expect(msg).toContain('routing via Cloud Control API');
@@ -207,7 +232,59 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
         provisionedBy: 'cc-api',
       },
     ]);
-    expect(warn).not.toHaveBeenCalled();
+    // NARROWED by issue go-to-k/cdkd#3000, like its sibling above. #2750
+    // retired a FALSE warn here — it claimed the property would be dropped
+    // while Cloud Control was writing it — and that sentence must stay gone.
+    // What replaces the silence is the opposite claim and a true one: the
+    // preference is INERT and the value IS written. This is the case a user is
+    // most likely to report, and before #3000 cdkd said nothing about it at
+    // default verbosity.
+    const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned, "the FALSE 'will be dropped' warn is back").not.toMatch(
+      /silently dropped|will not be written|missing the field/
+    );
+    expect(warned, 'the inert-preference warning is gone').toContain('had no effect');
+    // EXACTLY one. The blanket `not.toHaveBeenCalled()` this replaced also
+    // caught a SECOND warn on the same path — including #2750's retired remedy
+    // sentence, whose wording none of the phrases above matches. Dropping the
+    // count would lose that half silently.
+    expect(warn, 'a second warning appeared on this path').toHaveBeenCalledTimes(1);
+    // The sticky record is the operative cause, so the remedy must be the one
+    // that can actually beat it. Widening the preference cannot.
+    // It must NOT prescribe a command. `--recreate-via-sdk-provider` looks like
+    // the remedy and is pre-flight REFUSED across most of this branch's
+    // population (an actionable drop outside the preference, a stateful type
+    // without `--force-stateful-recreation`, a nested-stack child) — and it is
+    // destructive. The module already made this call for the mirror flag; the
+    // first cut of this warning prescribed it anyway and the test pinned the
+    // incomplete string.
+    expect(warned, 'the sticky case prescribes a command that is usually refused').not.toContain(
+      '--recreate-via-sdk-provider'
+    );
+    expect(warned, 'the sticky remedy hides that it is destructive').toContain(
+      'destroy-and-recreate'
+    );
+    // The HAND-OFF, and the clause that makes "widening is not enough" actionable.
+    // Without these two the pair above is satisfied by an outcome with no remedy
+    // path at all ("Returning this resource to the SDK provider is a
+    // destroy-and-recreate.") — which is the failure this round exists to
+    // prevent, one step further along — and by a mis-subjected sentence.
+    expect(warned, 'the remedy has no hand-off — the outcome is stated and abandoned').toContain(
+      'docs/cli-deploy-safety.md'
+    );
+    expect(warned, 'the "widening alone is not enough" clause is gone').toMatch(
+      /Widening --prefer-sdk-route alone cannot/
+    );
+    // And the page it hands off to must EXIST. The message delegates its whole
+    // remedy there, so a rename dangles a user-facing pointer silently; this
+    // repo already fences the mirror case the same way.
+    expect(
+      existsSync(new URL('../../../docs/cli-deploy-safety.md', import.meta.url)),
+      'the warning points at a docs page that no longer exists'
+    ).toBe(true);
+    expect(warned, 'the sticky case prescribes a remedy that is a no-op').not.toMatch(
+      /add .* to --prefer-sdk-route as well/
+    );
     expect(info).not.toHaveBeenCalled();
   });
 
@@ -305,5 +382,86 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     ]);
     expect(info).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The INERT-preference warning (issue
+ * [#3000](https://github.com/go-to-k/cdkd/issues/3000)).
+ *
+ * The preference is per `<Type>:<Prop>` while ROUTING is per RESOURCE, so one
+ * uncovered sibling drop sends the whole resource to Cloud Control — which
+ * forwards the full map, writing the very properties the user asked to keep off
+ * the wire. Neither of the flag's purposes is served, and until this warning
+ * nothing named that: the user sees an explicit instruction apparently ignored.
+ * It is the concrete confusion that motivated the rename.
+ */
+describe('--prefer-sdk-route had no effect', () => {
+  /** A type with TWO silent drops, so one can be covered and one not. */
+  function twoDrops() {
+    const { resourceType, propA, propB } = pickSilentDropPair();
+    const { registry, warn } = makeRegistry();
+    return { registry, warn, resourceType, covered: propA, uncovered: propB };
+  }
+
+  it('warns, naming the covered property and the sibling that overrode it', () => {
+    const { registry, warn, resourceType, covered, uncovered } = twoDrops();
+    registry.allowUnsupportedProperties([`${resourceType}:${covered}`]);
+
+    registry.validateResourceProperties([
+      {
+        logicalId: 'Target',
+        resourceType,
+        properties: { [covered]: 'x', [uncovered]: 'y' },
+        provisionedBy: 'sdk',
+      },
+    ]);
+
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text, 'no warning names the inert preference').toContain('had no effect');
+    // BOTH halves: which property was ignored, and which one caused it. Naming
+    // only the first leaves the user with no action to take.
+    expect(text).toContain(covered);
+    expect(text).toContain(uncovered);
+    // And the remedy is to WIDEN the preference, not to drop it.
+    expect(text).toContain('--prefer-sdk-route');
+    // The two must appear in their OWN roles. `toContain(uncovered)` alone is
+    // satisfied by the sibling appearing anywhere in the sentence, so review
+    // measured the predicate `drops ∩ allowSet` reduced to plain `drops` and
+    // this case stayed green — the warning then tells a user that a property
+    // they NEVER named had no effect, which is the false-warn class #2750
+    // retired, re-spelled.
+    expect(
+      text,
+      'the warning names a property the user never passed — the allow-set filter is gone'
+    ).toMatch(new RegExp(`had no effect for [^—]*\\b${covered}\\b`));
+    expect(
+      text.slice(0, text.indexOf('—')),
+      'the uncovered sibling is being reported as the victim, not the cause'
+    ).not.toContain(uncovered);
+  });
+
+  it('stays silent when the preference COVERS every drop on the resource', () => {
+    // Then the resource really does stay on the SDK provider and the values
+    // really are unwritten — the flag worked, and this warning would be false.
+    const { registry, warn, resourceType, covered, uncovered } = twoDrops();
+    registry.allowUnsupportedProperties([
+      `${resourceType}:${covered}`,
+      `${resourceType}:${uncovered}`,
+    ]);
+
+    registry.validateResourceProperties([
+      {
+        logicalId: 'Target',
+        resourceType,
+        properties: { [covered]: 'x', [uncovered]: 'y' },
+        provisionedBy: 'sdk',
+      },
+    ]);
+
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text, 'warned that the preference was inert when it was honoured').not.toContain(
+      'had no effect'
+    );
   });
 });

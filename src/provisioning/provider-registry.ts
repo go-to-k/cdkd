@@ -565,7 +565,7 @@ export class ProviderRegistry {
       `this type cannot fall back to Cloud Control API (${reason}):\n` +
       `${details}\n` +
       `Remove the properties, or force the SDK provider path and accept the drop via ` +
-      `--allow-unsupported-properties ${overrideHint} ` +
+      `--prefer-sdk-route ${overrideHint} ` +
       `(the provider may still reject the resource if the property is required).`
     );
   }
@@ -854,7 +854,7 @@ export class ProviderRegistry {
           `${logicalId} (${resourceType}): routing via Cloud Control API ` +
           `(cdkd's SDK Provider does not yet wire ${propList} — CC API will ` +
           `forward the full property map. Override via ` +
-          `--allow-unsupported-properties ${overrideHint}.)`;
+          `--prefer-sdk-route ${overrideHint}.)`;
         if (provisionedBy === 'cc-api') {
           // Sticky continuation — already on CC from a prior deploy.
           // Debug-only to avoid repetitive noise on every redeploy.
@@ -862,6 +862,65 @@ export class ProviderRegistry {
         } else {
           this.logger.info(message);
         }
+      }
+
+      // Say when the user's preference went INERT, because from their side an
+      // explicit instruction looks ignored (issue
+      // [#3000](https://github.com/go-to-k/cdkd/issues/3000)).
+      //
+      // OUTSIDE the auto-route block, and with the cause chosen rather than
+      // assumed, because there are TWO ways to be inert and they have opposite
+      // remedies. A first cut lived inside that block and named the sibling
+      // unconditionally: on a sticky resource it then printed a cause that is
+      // false (rule 2 returns Cloud Control before any drop is consulted) and a
+      // remedy that is a no-op (widening the set cannot beat a sticky record) —
+      // the same shape issue [#2750](https://github.com/go-to-k/cdkd/issues/2750)
+      // retired, prescribing a route the resource is already on.
+      //
+      // It also stayed silent in the case most likely to be reported: sticky
+      // with EVERY drop covered, where `autoRouted` is empty, `overridden` is
+      // emptied by `stickyCc`, and Cloud Control writes the values anyway.
+      const named = drops
+        .map(({ property }) => property)
+        .filter((property) => this.allowedUnsupportedProperties.has(`${resourceType}:${property}`));
+      if (named.length > 0 && (stickyCc || autoRouted.length > 0)) {
+        const list = named.join(', ');
+        const isAre = named.length === 1 ? 'is' : 'are';
+        // STICKY wins when both hold: it is the earlier decision, so naming the
+        // sibling would name a cause that is not the operative one.
+        const [cause, remedy] = stickyCc
+          ? [
+              `this resource's state record already routes it to Cloud Control ` +
+                `(provisionedBy: cc-api), which is decided before any property is consulted`,
+              // NO COMMAND, deliberately — the same call the create-only
+              // sentence below makes, for the same reason and against the
+              // MIRROR flag. `--recreate-via-sdk-provider <LogicalId>` looks
+              // like the answer and is refused in most of this branch's own
+              // population: `ambiguousIntentSdk` refuses it while any drop
+              // outside the preference is still actionable (which is exactly
+              // the `stickyCc && autoRouted.length > 0` half), 17 of the types
+              // carrying silentDrop entries are STATEFUL and need
+              // `--force-stateful-recreation` on top, and neither flag can
+              // address a resource inside a nested-stack child. It is also
+              // DESTRUCTIVE, which a one-line remedy must not omit. A sentence
+              // that has to be right about four conditions is a sentence that
+              // will be wrong about one; the deploy-safety docs carry it with
+              // its conditions.
+              `Returning this resource to the SDK provider is a destroy-and-recreate, not a ` +
+                `flag change — see docs/cli-deploy-safety.md. Widening ` +
+                `--prefer-sdk-route alone cannot do it.`,
+            ]
+          : [
+              `${autoRouted.join(', ')} ${autoRouted.length === 1 ? 'is' : 'are'} not covered ` +
+                `by it, and one uncovered property routes the whole RESOURCE to Cloud Control`,
+              `To keep the resource on its SDK provider, add ` +
+                `${autoRouted.map((p) => `${resourceType}:${p}`).join(',')} to --prefer-sdk-route as well.`,
+            ];
+        this.logger.warn(
+          `${logicalId} (${resourceType}): --prefer-sdk-route had no effect for ${list} — ` +
+            `${cause}. Cloud Control forwards the full property map, so ${list} ${isAre} ` +
+            `written to AWS after all. ${remedy}`
+        );
       }
       if (overridden.length > 0) {
         // The REMEDY is per property, because "remove the override" is FALSE
@@ -907,7 +966,7 @@ export class ProviderRegistry {
         }
         this.logger.warn(
           `${logicalId} (${resourceType}): ${overridden.join(', ')} will be ` +
-            `silently dropped (--allow-unsupported-properties override ` +
+            `silently dropped (--prefer-sdk-route override ` +
             `accepted). ${remedies.join(' ')}`
         );
       }
@@ -1003,7 +1062,7 @@ export class ProviderRegistry {
         `${unsupportedPropertyIssueUrl(resourceType, unrecognized[0]!)}` +
         `${one ? '' : ` (link is for ${unrecognized[0]!})`}. ` +
         `If the drop is intended — an addPropertyOverride escape hatch — silence this via ` +
-        `--allow-unsupported-properties ${overrideHint}.`
+        `--prefer-sdk-route ${overrideHint}.`
     );
   }
 

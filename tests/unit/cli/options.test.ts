@@ -967,3 +967,143 @@ describe('parseStackRegion (issue #2556)', () => {
     });
   });
 });
+
+/**
+ * `--prefer-sdk-route` and the deprecated spelling it replaced (issue
+ * [#3000](https://github.com/go-to-k/cdkd/issues/3000)).
+ *
+ * The rename exists because the old name read as the OPPOSITE of its behaviour
+ * and rhymed with `--allow-unsupported-types`, which runs the other way — that
+ * one enables a Cloud Control attempt, this one declines the Cloud Control
+ * auto-route. Two independent readers took it backwards in one session.
+ *
+ * What has to be fenced is not the spelling but the three things a rename can
+ * silently break: that the old flag still WORKS, that both spellings reach the
+ * SAME set, and that the deprecation is visible without being repeated.
+ */
+describe('--prefer-sdk-route and its deprecated alias', () => {
+  it('accepts the same tokens under both spellings', async () => {
+    const { parsePreferSdkRouteToken, parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    const token = 'AWS::Lambda::Function:LoggingConfig';
+    expect(parsePreferSdkRouteToken(token, undefined)).toEqual([token]);
+    expect(parseAllowUnsupportedPropertiesToken(token, undefined)).toEqual([token]);
+  });
+
+  it('names the flag the USER typed in its error, not the canonical one', async () => {
+    // One parser serves both spellings, so without this the message quotes
+    // `--prefer-sdk-route` at someone who typed the alias and sends them
+    // looking for a flag they did not use.
+    const { parsePreferSdkRouteToken, parseAllowUnsupportedPropertiesToken } = await import(
+      '../../../src/cli/options.js'
+    );
+    expect(() => parsePreferSdkRouteToken('bogus', undefined)).toThrow(
+      /Invalid --prefer-sdk-route value/
+    );
+    expect(() => parseAllowUnsupportedPropertiesToken('bogus', undefined)).toThrow(
+      /Invalid --allow-unsupported-properties value/
+    );
+  });
+
+  it('warns ONCE per process on the deprecated spelling, never on the new one', async () => {
+    // Commander calls the parser once per OCCURRENCE and the flag is
+    // repeatable, so an unguarded warn prints three times for three uses and
+    // reads as three separate problems.
+    const { parseAllowUnsupportedPropertiesToken, parsePreferSdkRouteToken, resetDeprecatedAliasWarning } =
+      await import('../../../src/cli/options.js');
+    resetDeprecatedAliasWarning();
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      parseAllowUnsupportedPropertiesToken('AWS::Lambda::Function:A', undefined);
+      parseAllowUnsupportedPropertiesToken('AWS::S3::Bucket:B', ['AWS::Lambda::Function:A']);
+      parsePreferSdkRouteToken('AWS::SNS::Topic:C', undefined);
+    } finally {
+      spy.mockRestore();
+    }
+    const deprecations = written.filter((w) => w.includes('is deprecated'));
+    expect(deprecations, 'the deprecation warned more than once, or not at all').toHaveLength(1);
+    // It must name the SUCCESSOR — a deprecation with no replacement is a dead end.
+    expect(deprecations[0]).toContain('--prefer-sdk-route');
+    // And say which direction the flag runs, because the name it replaces is
+    // what misled two readers.
+    expect(deprecations[0]).toContain('NOT written');
+  });
+
+  it('hides the alias from --help but keeps the successor visible', async () => {
+    const { preferSdkRouteOption, allowUnsupportedPropertiesOption } = await import(
+      '../../../src/cli/options.js'
+    );
+    // A new user must meet only one spelling; an existing script must keep
+    // working. `hidden` is what separates those.
+    expect(allowUnsupportedPropertiesOption.hidden).toBe(true);
+    expect(preferSdkRouteOption.hidden).toBeFalsy();
+    // The help line carries what the NAME deliberately does not: that the values
+    // go unwritten, and that the preference is not a guarantee.
+    expect(preferSdkRouteOption.description).toContain('NOT written');
+    expect(preferSdkRouteOption.description).toMatch(/[Ii]gnored for a resource that routes/);
+  });
+
+  it('registers BOTH spellings on the deploy command', async () => {
+    // The alias is hidden, not removed. Dropping it from the registration list
+    // would make every existing script fail with `unknown option`, which is the
+    // breakage the deprecation shape exists to avoid.
+    const { buildProgram } = await import('../../../src/cli/program.js');
+    const deploy = buildProgram().commands.find((c) => c.name() === 'deploy');
+    expect(deploy, 'no deploy command').toBeDefined();
+    const flags = deploy!.options.map((o) => o.long);
+    expect(flags).toContain('--prefer-sdk-route');
+    expect(flags).toContain('--allow-unsupported-properties');
+  });
+});
+
+/**
+ * The MERGE in `deploy.ts` — the half a rename most easily gets wrong.
+ *
+ * Commander derives an option's property name from its long flag, so
+ * `--prefer-sdk-route` and `--allow-unsupported-properties` arrive on TWO
+ * different properties. Reading one drops the other silently, and the one
+ * dropped is whichever spelling the user actually typed.
+ *
+ * Asserted against the SOURCE because the wiring sits inside `deployCommand`'s
+ * action, behind a synth, a state read and an AWS client; driving it here would
+ * be a fixture for one `??`. What is pinned is that BOTH names are read at BOTH
+ * consumer sites, which is the shape of the defect.
+ */
+describe('deploy merges both route-preference spellings', () => {
+  it('reads both option names inside EACH merge expression', () => {
+    const raw = readFileSync(
+      new URL('../../../src/cli/commands/deploy.ts', import.meta.url),
+      'utf8'
+    );
+    // COMMENT-STRIPPED. The first version of this fence scanned raw source, and
+    // review measured it green while `--prefer-sdk-route` was completely inert
+    // in deploy.ts: the reads had been replaced by a comment MENTIONING the
+    // option name, which `/options\.preferSdkRoute/` matches happily.
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    // PER MERGE SITE, not a total. The first version compared two COUNTS and
+    // called that "paired" — review measured a balanced swap passing it: site 1
+    // reading `preferSdkRoute` twice and site 2 reading the alias twice keeps
+    // the counts equal at 2/2 while a user typing the alias has the registry
+    // preference silently dropped, which is the exact defect this describe is
+    // named for. A count is not a pairing.
+    const merges = [...src.matchAll(/\.\.\.\(options\.\w+ \?\? \[\]\),\s*\.\.\.\(options\.\w+ \?\? \[\]\),/g)].map(
+      (m) => m[0]
+    );
+    expect(
+      merges.length,
+      'deploy.ts has no two-spelling merge expression — the scan is looking at nothing'
+    ).toBe(2);
+    for (const merge of merges) {
+      expect(merge, 'a merge site reads only one spelling').toContain('options.preferSdkRoute');
+      expect(merge, 'a merge site reads only one spelling').toContain(
+        'options.allowUnsupportedProperties'
+      );
+    }
+  });
+});

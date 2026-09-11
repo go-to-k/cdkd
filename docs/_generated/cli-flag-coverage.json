@@ -22,6 +22,7 @@
     "--no-wait",
     "--output",
     "--pin-cc-api",
+    "--prefer-sdk-route",
     "--prefix-user-supplied-names",
     "--profile",
     "--recreate-via-cc-api",
@@ -54,8 +55,7 @@
     {
       "flag": "--allow-unsupported-properties",
       "integs": [
-        "cc-api-fallback-transitions",
-        "sdk-to-cc-autoroute"
+        "cc-api-fallback-transitions"
       ]
     },
     {
@@ -616,6 +616,13 @@
       "flag": "--pin-cc-api",
       "integs": [
         "cc-to-sdk-reroute"
+      ]
+    },
+    {
+      "flag": "--prefer-sdk-route",
+      "integs": [
+        "cc-api-fallback-transitions",
+        "sdk-to-cc-autoroute"
       ]
     },
     {
