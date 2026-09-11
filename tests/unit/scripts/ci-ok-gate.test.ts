@@ -39,6 +39,9 @@ import { describe, expect, it } from 'vite-plus/test';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const CI_YML = join(REPO_ROOT, '.github', 'workflows', 'ci.yml');
+const DOCS_DEPLOY_YML = join(REPO_ROOT, '.github', 'workflows', 'docs-deploy.yml');
+
+const GATE_STEP = 'every upstream job succeeded or was skipped';
 
 interface CiWorkflow {
   jobs: Record<
@@ -56,14 +59,18 @@ function workflow(): CiWorkflow {
   return parseYaml(readFileSync(CI_YML, 'utf8')) as CiWorkflow;
 }
 
-/** The `run:` body of `ci-ok`'s only step, as the runner would execute it. */
+/**
+ * The `run:` body of `ci-ok`'s gate step, as the runner would execute it.
+ * Selected BY NAME, not by index — inserting a step ahead of it would otherwise
+ * silently retarget this extractor at the new step.
+ */
 function gateShell(): string {
-  const step = workflow().jobs['ci-ok']?.steps?.[0];
+  const step = workflow().jobs['ci-ok']?.steps?.find((s) => s.name === GATE_STEP);
   expect(
     step?.run,
-    'ci-ok has no first step with a `run:` body in .github/workflows/ci.yml. If the ' +
-      'step was renamed or reordered, update this extractor; if it was REMOVED, restore ' +
-      'it — without it the sole required status check asserts nothing.'
+    `ci-ok has no \`${GATE_STEP}\` step with a \`run:\` body in .github/workflows/ci.yml. ` +
+      'If the step was renamed, update this extractor; if it was REMOVED, restore it — ' +
+      'without it the sole required status check asserts nothing.'
   ).toBeTruthy();
   return step?.run as string;
 }
@@ -168,5 +175,34 @@ describe('ci-ok — the single required status check', () => {
     it('fails when fewer results arrive than the needs list declares', () => {
       expect(gateStatus('success success', '4')).not.toBe(0);
     });
+  });
+});
+
+describe('the other required checks this workflow cannot reach', () => {
+  it('docs-deploy runs on every PR so its `build` can be a required check', () => {
+    // `build` is required by name, and a required check can only be required if
+    // it REPORTS on every PR: a `paths:`-filtered workflow does not start at all
+    // when nothing matches, leaving the check at "Expected" forever and blocking
+    // every PR permanently. The filter was removed for that reason, and the
+    // obvious tidy-up — "re-sync the pull_request paths with the push list" —
+    // is exactly what must not happen. Nothing else in the tree notices it.
+    const docs = parseYaml(readFileSync(DOCS_DEPLOY_YML, 'utf8')) as {
+      on?: Record<string, unknown>;
+      jobs?: Record<string, unknown>;
+    };
+    expect(docs.jobs?.['build'], 'docs-deploy.yml no longer has a `build` job to require').toBeTruthy();
+    expect(
+      docs.on,
+      'docs-deploy.yml no longer triggers on `pull_request`, so its required `build` check ' +
+        'never reports and every PR blocks at "Expected".'
+    ).toHaveProperty('pull_request');
+    const pr = docs.on?.['pull_request'] as { paths?: unknown } | null | undefined;
+    expect(
+      pr == null || pr.paths === undefined,
+      'docs-deploy.yml regained a `paths:` filter on `pull_request`. The workflow then does ' +
+        'not start on a PR that matches nothing, the required `build` check never reports, ' +
+        'and every such PR is blocked forever. Remove the filter, or drop `build` from the ' +
+        "ruleset's required checks."
+    ).toBe(true);
   });
 });

@@ -542,8 +542,11 @@ jobs:
           done
           [ "${stale}" -eq 0 ]
 
-  # The single check name the `main` branch ruleset requires. It exists instead
-  # of the ruleset naming the real jobs for two reasons:
+  # The only name THIS workflow contributes to the `main` branch ruleset's
+  # required checks — the ruleset also names `pr-content`, `check`,
+  # `prefix-scope`, `English-only (pull request)` and docs-deploy's `build`,
+  # which live in other workflows and cannot be reached from `needs:` here. It
+  # exists instead of the ruleset naming this file's real jobs for two reasons:
   #
   #   1. `runtime-compat` is a matrix. A required check has to match the
   #      EXPANDED name (`runtime-compat (20)`), but a matrix job that never
@@ -568,16 +571,21 @@ jobs:
   # first-time contributor's run needs maintainer approval, and a fork token is
   # read-only. Human review of a workflow diff remains the control.
   #
-  # Two checks are deliberately NOT reachable from here and NOT required, both
-  # because a `paths:`-filtered workflow does not START on every PR and a
-  # required check that never reports sits at "Expected" forever:
-  #   - `hooks.yml` / `hook-suites` — runs only on a `.claude/hooks/**` PR,
-  #     which is never a release or a dependabot PR, i.e. never one auto-merge
-  #     is armed on. Agent-side merges still require it via `ci-green-gate`.
-  #   - `docs-deploy.yml` / `build` — this one IS reachable by dependabot
-  #     (`package.json` / `pnpm-lock.yaml` are in its filter), so its
-  #     `pull_request` filter was REMOVED in the same change that added this
-  #     job: it now runs on every PR and is required by name. See that file.
+  # A `paths:`-filtered workflow does not START on every PR, and a required
+  # check that never reports sits at "Expected" forever — so such a check
+  # cannot be required, and is also unreachable from `needs:` here because
+  # `needs:` cannot cross workflows. Two were affected:
+  #   - `docs-deploy.yml` / `build` IS reachable by dependabot (`package.json`
+  #     and `pnpm-lock.yaml` were in its filter), so its `pull_request` filter
+  #     was REMOVED in the same change that added this job: it now runs on
+  #     every PR and is required by name. See that file.
+  #   - `hooks.yml` / `hook-suites` keeps its filter and stays unrequired. The
+  #     assumption that makes that acceptable is UNENFORCED and stated here so
+  #     it can be checked: auto-merge is only ever armed by hand, on a release
+  #     or a dependabot PR, and neither touches `.claude/hooks/**`. Arming it
+  #     on a hooks PR would merge over a red `hook-suites`. Agent-side merges
+  #     are unaffected — `ci-green-gate` requires every check, not just the
+  #     required ones.
   ci-ok:
     if: always()
     needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]

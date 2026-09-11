@@ -20,42 +20,65 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
  * A human reading the diff was the only thing catching that, and arming
  * auto-merge on the release PR removes the human.
  *
- * Why it needs a suite at all: the job is a CHECKER, and
- * `.claude/rules/testing.md` forbids a checker whose "found nothing" and "went
- * dead" produce the same green. Its whole body is three git invocations, each
- * of which rots silently — drop the `!` from the `merge-base` test, drop the
- * `--` from `rev-list`, misspell `FETCH_HEAD`, and the job passes on every
- * input including the stale one it exists to refuse. Both arms were probed by
- * hand once before the job was committed; nothing re-ran them, which is what
- * this file fixes.
+ * Why it needs a suite: the job is a CHECKER, and `.claude/rules/testing.md`
+ * forbids one whose "found nothing" and "went dead" produce the same green.
  *
- * The shell is EXTRACTED from the workflow and executed, never re-typed: a
- * copy in this file would keep passing after the workflow's copy was broken.
+ * Three properties are fenced, and the first two were review findings on this
+ * PR rather than hypotheticals:
+ *
+ *   1. The CHECKOUT, not just the shell. Deleting `ref: head.sha` from step 0
+ *      makes the runner use the default `refs/pull/N/merge`, which has the base
+ *      already merged in — so every `merge-base --is-ancestor` answers yes and
+ *      the job passes on a stale branch. An earlier revision of this file read
+ *      `steps[1]` only and stayed green through exactly that mutation.
+ *   2. EACH ARM of the loop separately. An earlier fixture only ever moved
+ *      `CHANGELOG.md` on main, so `.release-please-manifest.json` never
+ *      discriminated and gating the ancestry test on the filename survived
+ *      undetected. The remotes below are built so that each file, in turn, is
+ *      the only one that can fail.
+ *   3. The shell itself, EXTRACTED and EXECUTED, never re-typed — a copy here
+ *      would keep passing after the workflow's copy was broken — and selected
+ *      BY STEP NAME, so inserting a step ahead of it cannot silently retarget
+ *      the extractor.
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const CI_YML = join(REPO_ROOT, '.github', 'workflows', 'ci.yml');
+const RELEASE_YML = join(REPO_ROOT, '.github', 'workflows', 'release.yml');
 
-/** Files the job asserts main's tip for. Kept in step with the job below. */
-const OWNED_FILES = ['CHANGELOG.md', '.release-please-manifest.json'] as const;
+const JOB = 'release-pr-not-stale';
+const STEP = 'release-please-owned files on main must be ancestors of this branch';
+const CHANGELOG = 'CHANGELOG.md';
+const MANIFEST = '.release-please-manifest.json';
 
 interface CiWorkflow {
-  jobs: Record<string, { if?: string; steps?: { name?: string; run?: string }[] }>;
+  jobs: Record<
+    string,
+    {
+      if?: string;
+      steps?: { name?: string; uses?: string; run?: string; with?: Record<string, unknown> }[];
+    }
+  >;
 }
 
 function workflow(): CiWorkflow {
   return parseYaml(readFileSync(CI_YML, 'utf8')) as CiWorkflow;
 }
 
-/** The `run:` body of the job's ancestry step (step 0 is the checkout). */
+function jobSteps(): NonNullable<CiWorkflow['jobs'][string]['steps']> {
+  const steps = workflow().jobs[JOB]?.steps;
+  expect(steps, `job \`${JOB}\` is gone from .github/workflows/ci.yml`).toBeTruthy();
+  return steps as NonNullable<CiWorkflow['jobs'][string]['steps']>;
+}
+
+/** The ancestry step's `run:` body, selected by NAME rather than by index. */
 function guardShell(): string {
-  const step = workflow().jobs['release-pr-not-stale']?.steps?.[1];
+  const step = jobSteps().find((s) => s.name === STEP);
   expect(
     step?.run,
-    'release-pr-not-stale has no second step with a `run:` body in ' +
-      '.github/workflows/ci.yml. If the step was renamed or reordered, update this ' +
-      'extractor; if it was REMOVED, restore it — a release PR could then be merged ' +
-      'stale with nothing objecting.'
+    `the step \`${STEP}\` is gone from job \`${JOB}\` in .github/workflows/ci.yml. If it ` +
+      `was renamed, update this extractor; if it was REMOVED, restore it — a release PR ` +
+      `could then be merged stale with nothing objecting.`
   ).toBeTruthy();
   return step?.run as string;
 }
@@ -87,7 +110,7 @@ function commit(repo: string, file: string, body: string, subject: string): stri
 
 /**
  * Run the extracted guard with `cwd` as the checked-out release branch and
- * `origin` pointing at the fixture's bare remote. Returns exit status + output.
+ * `origin` pointing at the fixture's bare remote.
  */
 function guardRun(cwd: string): { status: number; output: string } {
   try {
@@ -106,123 +129,167 @@ function guardRun(cwd: string): { status: number; output: string } {
 
 describe('release-pr-not-stale', () => {
   let scratch: string;
-  let remote: string;
-  /** Commit on main that last touched CHANGELOG.md. */
-  let changelogTip: string;
-  /** The commit immediately before it — what a stale branch was cut from. */
-  let beforeChangelog: string;
+  let cloneSeq = 0;
 
-  beforeAll(() => {
-    scratch = mkdtempSync(join(tmpdir(), 'cdkd-release-stale-'));
-    const origin = join(scratch, 'origin');
+  interface Fixture {
+    /** Bare remote the guard's `git fetch origin main` will read. */
+    remote: string;
+    /** Commit that last touched the file this fixture is about. */
+    tip: string;
+    /** The commit before it — what a branch left behind would be cut from. */
+    base: string;
+  }
+
+  /**
+   * A main history ending in a commit that touches ONLY `lastFile`. A release
+   * branch cut at `base` is then stale by `lastFile` and by nothing else, which
+   * is what makes each arm of the production loop separately observable.
+   *
+   * `seedManifest: false` builds a history where the manifest NEVER existed, so
+   * `git rev-list -1 ... -- <manifest>` comes back empty and the fail-closed
+   * branch of the loop is reached with the CHANGELOG arm passing.
+   */
+  function makeRemote(name: string, lastFile: string, seedManifest = true): Fixture {
+    const origin = join(scratch, `${name}-origin`);
     mkdirSync(origin);
     git(origin, 'init', '-q', '-b', 'main');
-
-    // A main history shaped like this repo's: a release commit touching both
-    // owned files, then ordinary work, then a later edit to CHANGELOG.md that
-    // a standing release PR would NOT absorb.
-    writeFileSync(join(origin, 'CHANGELOG.md'), '# Changelog\n\n## 0.1.0\n');
-    writeFileSync(join(origin, '.release-please-manifest.json'), '{ ".": "0.1.0" }\n');
+    writeFileSync(join(origin, CHANGELOG), '# Changelog\n\n## 0.1.0\n');
+    if (seedManifest) writeFileSync(join(origin, MANIFEST), '{ ".": "0.1.0" }\n');
     git(origin, 'add', '.');
     git(origin, 'commit', '-q', '-m', 'chore(release): 0.1.0');
-    commit(origin, 'src.txt', 'work\n', 'feat: something');
-    beforeChangelog = git(origin, 'rev-parse', 'HEAD');
-    changelogTip = commit(
-      origin,
-      'CHANGELOG.md',
-      '# Changelog\n\n## 0.1.0 (normalized)\n',
-      'chore(docs): normalize changelog headers'
-    );
+    const base = commit(origin, 'src.txt', 'work\n', 'feat: something');
+    const tip =
+      lastFile === CHANGELOG
+        ? commit(origin, CHANGELOG, '# Changelog\n\n## 0.1.0 (normalized)\n', 'chore(docs): normalize')
+        : commit(origin, MANIFEST, '{ ".": "0.1.0-edited" }\n', 'chore: hand-edit the manifest');
 
-    remote = join(scratch, 'remote.git');
+    const remote = join(scratch, `${name}-remote.git`);
     execFileSync('git', ['clone', '-q', '--bare', origin, remote], {
       env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
     });
+    return { remote, tip, base };
+  }
+
+  /** A release branch cut from `at`, with release-please's own commit on top. */
+  function releaseBranchAt(fixture: Fixture, at: string): string {
+    const wt = join(scratch, `wt-${cloneSeq++}`);
+    execFileSync('git', ['clone', '-q', fixture.remote, wt], {
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    });
+    git(wt, 'checkout', '-q', '-b', 'release-please--branches--main', at);
+    commit(wt, 'RELEASE_NOTE.txt', 'release-please commit\n', 'chore(release): 0.1.1');
+    return wt;
+  }
+
+  let changelogFixture: Fixture;
+  let manifestFixture: Fixture;
+  let noManifestFixture: Fixture;
+
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'cdkd-release-stale-'));
+    changelogFixture = makeRemote('changelog', CHANGELOG);
+    manifestFixture = makeRemote('manifest', MANIFEST);
+    // Main never had the manifest at all — the "cannot answer" path, with the
+    // CHANGELOG arm deliberately able to pass so it cannot mask the verdict.
+    noManifestFixture = makeRemote('nomanifest', CHANGELOG, false);
   });
 
   afterAll(() => {
     rmSync(scratch, { recursive: true, force: true });
   });
 
-  /** A release branch cut from `base`, with release-please's own commit on top. */
-  function releaseBranchAt(base: string, name: string): string {
-    const wt = join(scratch, name);
-    execFileSync('git', ['clone', '-q', remote, wt], {
-      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+  describe('the checkout the guard depends on', () => {
+    it('takes the PR HEAD, not the default merge ref', () => {
+      // `refs/pull/N/merge` has the base already merged in, so every ancestry
+      // question answers "yes" no matter how stale the branch is. Losing this
+      // `ref:` is the one mutation that makes the whole job vacuous while its
+      // shell is still perfectly correct.
+      const checkout = jobSteps().find((s) => (s.uses ?? '').startsWith('actions/checkout@'));
+      expect(checkout, `job \`${JOB}\` no longer checks anything out`).toBeTruthy();
+      expect(checkout?.with?.['ref']).toBe('${{ github.event.pull_request.head.sha }}');
     });
-    git(wt, 'checkout', '-q', '-b', 'release-please--branches--main', base);
-    commit(wt, '.release-please-manifest.json', '{ ".": "0.1.1" }\n', 'chore(release): 0.1.1');
-    return wt;
-  }
 
-  it('passes on a release branch cut from current main', () => {
-    const { status, output } = guardRun(releaseBranchAt('origin/main', 'fresh'));
-    expect(output).not.toContain('::error::');
-    expect(status).toBe(0);
+    it('fetches the full history the ancestry test needs', () => {
+      const checkout = jobSteps().find((s) => (s.uses ?? '').startsWith('actions/checkout@'));
+      expect(checkout?.with?.['fetch-depth']).toBe(0);
+    });
   });
 
-  it('fails on a release branch cut before main moved CHANGELOG.md', () => {
-    // The go-to-k/cdkd#2503 shape: `chore(docs):` produced no changelog entry,
-    // so release-please left the branch behind, and merging it reverts the
-    // normalization.
-    const { status, output } = guardRun(releaseBranchAt(beforeChangelog, 'stale'));
-    expect(status).not.toBe(0);
-    expect(output).toContain('CHANGELOG.md');
-    expect(output).toContain(changelogTip);
-    expect(output).toContain('re-run release.yml');
+  describe('each owned file separately', () => {
+    it('passes on a release branch cut from current main', () => {
+      const { status, output } = guardRun(releaseBranchAt(changelogFixture, 'origin/main'));
+      expect(status).toBe(0);
+      expect(output).not.toContain('::error::');
+    });
+
+    it('fails when main moved CHANGELOG.md after the branch was cut', () => {
+      // The go-to-k/cdkd#2503 shape: `chore(docs):` produced no changelog entry,
+      // so release-please left the branch behind and merging it reverts the
+      // normalization.
+      const { status, output } = guardRun(
+        releaseBranchAt(changelogFixture, changelogFixture.base)
+      );
+      expect(status).not.toBe(0);
+      expect(output).toContain(CHANGELOG);
+      expect(output).toContain(changelogFixture.tip);
+      expect(output).toContain('re-run release.yml');
+      // Only this arm may fire here — otherwise the case cannot tell a
+      // per-file check from one that refuses everything.
+      expect(output).not.toContain(`${MANIFEST} was last changed`);
+    });
+
+    it('fails when main moved the manifest after the branch was cut', () => {
+      // Without this case the manifest arm never discriminates, and gating the
+      // ancestry test on `[ "${f}" = "CHANGELOG.md" ]` survives the suite.
+      const { status, output } = guardRun(releaseBranchAt(manifestFixture, manifestFixture.base));
+      expect(status).not.toBe(0);
+      expect(output).toContain(MANIFEST);
+      expect(output).toContain(manifestFixture.tip);
+      expect(output).not.toContain(`${CHANGELOG} was last changed`);
+    });
+
+    it('fails closed when an owned file has no history on main', () => {
+      // "The guard cannot answer" must not read as "the guard found nothing
+      // wrong". The CHANGELOG arm passes in this fixture, so the non-zero exit
+      // can only come from the empty-tip branch.
+      const { status, output } = guardRun(releaseBranchAt(noManifestFixture, 'origin/main'));
+      expect(status).not.toBe(0);
+      expect(output).toContain('cannot evaluate staleness');
+      expect(output).toContain(MANIFEST);
+      expect(output).not.toContain(`${CHANGELOG} has no commit history`);
+    });
   });
 
-  it('fails closed when an owned file has no history on main', () => {
-    // "The guard cannot answer" must not read as "the guard found nothing
-    // wrong" — a rename of either file would otherwise silence it forever.
-    const wt = releaseBranchAt('origin/main', 'renamed');
-    // Rewrite the remote's main so .release-please-manifest.json never existed.
-    const bare = join(scratch, 'empty-remote.git');
-    mkdirSync(bare);
-    git(bare, 'init', '-q', '--bare', '-b', 'main');
-    const seed = join(scratch, 'seed');
-    mkdirSync(seed);
-    git(seed, 'init', '-q', '-b', 'main');
-    commit(seed, 'CHANGELOG.md', '# Changelog\n', 'chore(release): 0.1.0');
-    git(seed, 'remote', 'add', 'origin', bare);
-    git(seed, 'push', '-q', 'origin', 'main');
-    git(wt, 'remote', 'set-url', 'origin', bare);
+  describe('the job stays wired to the thing it guards', () => {
+    it('checks exactly the files release-please owns', () => {
+      // Read the loop's actual subject list rather than asserting a substring
+      // is absent — `not.toContain('package.json')` passes over an empty
+      // string and over a shell that checks nothing at all.
+      const m = /^for f in (.+); do$/m.exec(guardShell());
+      expect(m, "the guard's `for f in ...; do` loop is gone").not.toBeNull();
+      expect((m as RegExpExecArray)[1]!.trim().split(/\s+/).sort()).toEqual(
+        [CHANGELOG, MANIFEST].sort()
+      );
+    });
 
-    const { status, output } = guardRun(wt);
-    expect(status).not.toBe(0);
-    expect(output).toContain('.release-please-manifest.json');
-    expect(output).toContain('cannot evaluate staleness');
-  });
-
-  it('checks every file release-please owns', () => {
-    // A shrunk list is the cheapest way for this job to go quiet: dropping
-    // CHANGELOG.md leaves the manifest check green on the exact #2503 shape.
-    const shell = guardShell();
-    for (const f of OWNED_FILES) {
-      expect(shell).toContain(f);
-    }
-    // package.json is deliberately EXCLUDED — `chore(deps)` PRs touch it
-    // constantly and release-please's own diff there is the `version` line
-    // alone, which a three-way merge cannot use to revert a dependency line.
-    expect(shell).not.toContain('package.json');
-  });
-
-  it('is guarded by the branch prefix release-please actually produces', () => {
-    // `release-please--` is the action's built-in prefix. It changes only if
-    // the config sets `branch-prefix`, and if it ever does, this job silently
-    // skips on every PR and ci-ok stays green — the vacuous pass the
-    // once-leak-detect canary exists to forbid for its own detector.
-    expect(workflow().jobs['release-pr-not-stale']?.if).toBe(
-      "startsWith(github.head_ref, 'release-please--')"
-    );
-    const config = JSON.parse(
-      readFileSync(join(REPO_ROOT, 'release-please-config.json'), 'utf8')
-    ) as Record<string, unknown> & { packages?: Record<string, Record<string, unknown>> };
-    expect(
-      'branch-prefix' in config || 'branch-prefix' in (config.packages?.['.'] ?? {}),
-      'release-please-config.json now sets `branch-prefix`, so the release branch no ' +
-        'longer starts with `release-please--` and the release-pr-not-stale job skips on ' +
-        'every PR. Update its `if:` to the new prefix.'
-    ).toBe(false);
+    it('is guarded by the branch prefix release-please actually produces', () => {
+      expect(workflow().jobs[JOB]?.if).toBe("startsWith(github.head_ref, 'release-please--')");
+      // What can actually move that prefix is a release-please MAJOR, not any
+      // config key — `branch-prefix` does not exist in release-please's config
+      // schema, so an earlier revision of this case asserted the absence of a
+      // key that can never appear. The action is SHA-pinned, so the pin's major
+      // is the real change vector: bumping it must force a re-check of the
+      // `if:` above, and dependabot's weekly patch bumps must not.
+      const pin = /googleapis\/release-please-action@[0-9a-f]{40} # v(\d+)/.exec(
+        readFileSync(RELEASE_YML, 'utf8')
+      );
+      expect(pin, 'release.yml no longer SHA-pins googleapis/release-please-action').not.toBeNull();
+      expect(
+        (pin as RegExpExecArray)[1],
+        'release-please was bumped to a new MAJOR. Its release branch prefix is a property ' +
+          `of that major — re-verify that a release PR's head still starts with ` +
+          "'release-please--' before updating this expectation."
+      ).toBe('5');
+    });
   });
 });

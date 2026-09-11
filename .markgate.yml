@@ -296,6 +296,14 @@ gates:
       - ".github/workflows/issue-conventions.yml"
       - ".github/workflows/pr-content-checks.yml"
       - ".github/workflows/pr-title-check.yml"
+      # ci-ok-gate.test.ts reads this one to assert its `pull_request` trigger
+      # carries NO `paths:` filter. That is not a style preference: docs-deploy's
+      # `build` is a REQUIRED status check, and a `paths:`-filtered workflow does
+      # not start at all when nothing matches, so the check would sit at
+      # "Expected" forever and block every PR. Listed for the same reason as the
+      # workflows above -- a checker INPUT outside this scope is a marker that
+      # reads fresh while the thing it certifies has changed.
+      - ".github/workflows/docs-deploy.yml"
       # release-please-v0.test.ts reads all three: the config's
       # bump-minor-pre-major, the manifest's 0.x version, and the release
       # workflow's publish-job guard (the two layers that keep an accidental
