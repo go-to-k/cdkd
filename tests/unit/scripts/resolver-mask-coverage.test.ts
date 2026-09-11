@@ -89,14 +89,15 @@ describe('check-resolver-mask-coverage', () => {
         markers: { min: 90, max: 140 },
       });
       // ...and the counts are pinned EXACTLY, from a separate measurement
-      // (2026-09-10). This subsumes the band check on the real tree and is meant
+      // (2026-09-10: 131 / 155 / 98; issue #2814's drain warning then added one
+      // log site and its two notes). This subsumes the band check on the real tree and is meant
       // to: a change to this file's throw/log population is a decision, and the
       // three numbers moving in a diff is how it gets read. The band still earns
       // its place — it is what the SHIPPED binary enforces in CI, where this
       // suite's assertions do not run.
-      expect(result.statements).toBe(131);
+      expect(result.statements).toBe(132);
       expect(result.maskedExprs).toBe(155);
-      expect(result.markers).toBe(98);
+      expect(result.markers).toBe(100);
     });
 
     it('a subject with no statements is not silently green', () => {

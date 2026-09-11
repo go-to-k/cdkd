@@ -1497,6 +1497,14 @@ const CAP_EXPIRED = Symbol('drain-cap-expired');
 export const concurrentDrainCap: { ms?: number } = {};
 
 /**
+ * The budgets whose drain has already reported abandoned inputs (issue
+ * [#2814](https://github.com/go-to-k/cdkd/issues/2814)). A `WeakSet` so a
+ * budget's entry dies with the budget, as the budget itself does with the
+ * async context that opened it.
+ */
+const abandonReported = new WeakSet<object>();
+
+/**
  * `Promise.all`'s RESULT and its choice of error, with `Promise.allSettled`'s
  * TIMING: every promise started here has settled before this returns, and
  * before it throws unless the cap below expires first (issue
@@ -1574,8 +1582,25 @@ export const concurrentDrainCap: { ms?: number } = {};
  * require the "healthy work slower than 60 s" shape the sizing paragraph
  * describes; that shape is the cheapest way to reach it with no nesting and
  * no wrapped loop, not the floor.
- * Residual: issue
- * [#2814](https://github.com/go-to-k/cdkd/issues/2814).
+ *
+ * WHAT HAPPENS TO A PART THE CAP STOPS WAITING FOR (issue
+ * [#2814](https://github.com/go-to-k/cdkd/issues/2814)). It keeps running, and
+ * its recording still lands in the context's map whenever it arrives -- the
+ * cap costs it ORDER, not the write. So the answer sits with the READERS: one
+ * that runs after the recording arrives must see it, which `DeployEngine`'s
+ * outputs pass arranges for its `Export.Name` block (a map that writes each
+ * recording through to the pass map at once, where a local copied in a
+ * `finally` used to drop it) and for the persisted outputs, the exports index
+ * and the deploy summary (each redacting against the pass map as it stands
+ * at the moment it is written). A reader that took its
+ * copy BEFORE the recording arrived -- a failure message already printed, a
+ * state save already sent -- cannot be helped without waiting, and the wait
+ * is what the cap bounds. Cancelling the
+ * part would not close that either: a cancelled part never records, so its
+ * plaintext would be missing for EVERY reader rather than for the early ones.
+ * What this helper adds is the report: releasing a rejection with inputs
+ * still running calls `onAbandoned` with how many, at most once per budget,
+ * and the resolver turns that into a warning.
  *
  * ONE REMAINING CONSEQUENCE, deliberate and pinned by a case rather than only
  * described: the earliest-in-time rule holds PER INVOCATION, not across
@@ -1593,7 +1618,10 @@ export const concurrentDrainCap: { ms?: number } = {};
  * failure where the old race was arbitrary. Residual: issue
  * [#2805](https://github.com/go-to-k/cdkd/issues/2805).
  */
-async function allSettledKeepingFirstRejection<T>(promises: readonly Promise<T>[]): Promise<T[]> {
+async function allSettledKeepingFirstRejection<T>(
+  promises: readonly Promise<T>[],
+  onAbandoned: (pending: number) => void
+): Promise<T[]> {
   let rejection: { readonly error: unknown } | undefined;
   // Unreachable through today's entry points: both public methods that reach
   // a drain open a store (`resolve`, `evaluateConditions`). A case in the
@@ -1614,17 +1642,27 @@ async function allSettledKeepingFirstRejection<T>(promises: readonly Promise<T>[
   // caused rather than the resolution's own runtime: a slow but successful
   // pass is not on a clock.
   let armCap: (() => void) | undefined;
+  // How many inputs have settled, so a release by the cap can say how many it
+  // stopped waiting for (issue #2814).
+  let settled = 0;
   const guarded = promises.map((promise) =>
-    promise.catch((error: unknown) => {
-      if (rejection === undefined) {
-        rejection = { error };
-        armCap?.();
+    promise.then(
+      (value) => {
+        settled += 1;
+        return value;
+      },
+      (error: unknown) => {
+        settled += 1;
+        if (rejection === undefined) {
+          rejection = { error };
+          armCap?.();
+        }
+        // The value is never read: the throw below happens first whenever any
+        // input rejected, and this cast keeps the settled-values type honest
+        // for the caller rather than widening it to `T | undefined`.
+        return undefined as unknown as T;
       }
-      // The value is never read: the throw below happens first whenever any
-      // input rejected, and this cast keeps the settled-values type honest
-      // for the caller rather than widening it to `T | undefined`.
-      return undefined as unknown as T;
-    })
+    )
   );
   let capTimer: ReturnType<typeof setTimeout> | undefined;
   // Whether this drain took a share of the budget, so the `finally` knows to
@@ -1686,7 +1724,23 @@ async function allSettledKeepingFirstRejection<T>(promises: readonly Promise<T>[
     // case is covered downstream, where a bag exists:
     // `DeployEngine.handleOutputResolutionFailure` and the `cdkd import`
     // boundary mask it (issues #2728 / #2803).
-    if (rejection !== undefined) throw rejection.error;
+    if (rejection !== undefined) {
+      // Inputs still running here means the CAP won the race: report them,
+      // once per budget (issue #2814), so a failure that releases several
+      // nested drains, or a wrapped loop whose later iterations find the
+      // budget spent, warns once rather than once per drain. Counted now, not
+      // when the timer fired: an input can settle in the turn between.
+      const pending = promises.length - settled;
+      // Keyed by the budget. A drain with no store -- the fallback above,
+      // which no public entry point reaches -- keys a fresh object, and so
+      // reports on its own.
+      const reportKey: object = shared ?? {};
+      if (pending > 0 && !abandonReported.has(reportKey)) {
+        abandonReported.add(reportKey);
+        onAbandoned(pending);
+      }
+      throw rejection.error;
+    }
     // Narrowed rather than cast: winning the race without a rejection is
     // unreachable today, since only a rejection arms the cap — and an edit
     // that armed it elsewhere would otherwise hand a Symbol to the caller's
@@ -3200,6 +3254,25 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Warn that a drain stopped waiting for `pending` inputs of a failed
+   * resolution (issue [#2814](https://github.com/go-to-k/cdkd/issues/2814)).
+   * The helper calls this at most once per budget. The text carries a count
+   * and the cap, nothing the template or AWS supplied, so it needs no masking.
+   */
+  private warnAbandonedParts(pending: number): void {
+    const capSeconds = (concurrentDrainCap.ms ?? DRAIN_AFTER_REJECTION_MS) / 1000;
+    const parts = pending === 1 ? '1 concurrent part was' : `${pending} concurrent parts were`;
+    // not-in-class(parts): a COUNT of the drain's still-pending inputs in fixed wording, never a resolved value.
+    // not-in-class(capSeconds): the drain cap in seconds -- a constant, or the `concurrentDrainCap` test seam.
+    this.logger.warn(
+      `A resolution failed while ${parts} still running, and cdkd stopped waiting ` +
+        `because the wait after a failure (capped at ${capSeconds}s) was used up. ` +
+        'A secret such a part resolves from now on is still recorded, but only what ' +
+        'runs after it arrives can mask it: output already printed or saved is not revisited.'
+    );
+  }
+
+  /**
    * Recursively resolve a value
    */
   private async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
@@ -3224,7 +3297,8 @@ export class IntrinsicFunctionResolver {
       // join-level drain alone would still let a late recording escape (issue
       // #2563).
       const resolved = await allSettledKeepingFirstRejection(
-        value.map((v) => this.resolveValue(v, context))
+        value.map((v) => this.resolveValue(v, context)),
+        (pending) => this.warnAbandonedParts(pending)
       );
       return resolved.filter((v) => v !== AWS_NO_VALUE);
     }
@@ -5571,7 +5645,8 @@ export class IntrinsicFunctionResolver {
       values.map(async (v) => {
         const resolved = await this.resolveValue(v, context);
         return String(resolved);
-      })
+      }),
+      (pending) => this.warnAbandonedParts(pending)
     );
 
     let result = resolvedValues.join(delimiter);

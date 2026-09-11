@@ -98,7 +98,7 @@ Index of every area: [code-layout.md](code-layout.md).
     residual above `maskingContext`), and five review rounds on #2803 each
     wrote a version of it here that measurement then refuted.
   - **Concurrent resolutions DRAIN before a rejection surfaces, BOUNDED by
-    one cap per resolution** (#2563, residual #2814; see
+    one cap per resolution** (#2563, #2814; see
     `allSettledKeepingFirstRejection`).
   - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
     mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
