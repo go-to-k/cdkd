@@ -157,12 +157,20 @@ export type Action =
  *     `"Mentioned in review AWS::S3::Bucket -->"`. Without the anchor that
  *     binds a live issue to a type it never mentioned.
  *   - **`endsWith`** is the one whose absence is worst, and its failure is
- *     silent rather than loud. A marker with a MANGLED suffix
- *     (`<!-- backfill-type: AWS::S3::BucketXXXX`) then yields the TRUNCATED
- *     `AWS::S3::Bucke` — a perfectly class-valid string that no plan can ever
- *     match. That issue is never updated and never closed, and the real type
- *     looks new and gets a duplicate: refusal 2's exact outcome, reached PAST
- *     refusal 2, which only sees types it could not read at all.
+ *     silent rather than loud. The slice ends at `length - MARKER_SUFFIX.length`
+ *     unconditionally, so for a line `PREFIX + type + tail` where `tail` is a
+ *     MANGLED suffix, a reader without this test returns `type + tail` with its
+ *     last four characters removed. With a short tail that eats into the type:
+ *     `<!-- backfill-type: AWS::S3::BucketX` yields `AWS::S3::Buc` — a perfectly
+ *     class-valid string that no plan can ever match, so that issue is never
+ *     updated and never closed while the real type looks new and gets a
+ *     duplicate. Refusal 2's exact outcome, reached PAST refusal 2, which only
+ *     sees types it could not read at all.
+ *
+ *     A tail of exactly four characters is the trap inside the trap: it chops to
+ *     the CORRECT type, so a worked example built on one shows no defect at all.
+ *     An earlier revision of this very paragraph used `…BucketXXXX` and was
+ *     wrong for that reason.
  *
  * So delete none of the three on the theory that another covers it. Same
  * reasoning as the parent splice's `grep -Fx` and the dup-check marker's line

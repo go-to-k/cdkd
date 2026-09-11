@@ -142,23 +142,23 @@ describe('readMarkerType', () => {
 
   it('needs the suffix test, whose absence TRUNCATES rather than rejects', () => {
     // The worst of the three to lose, because it fails silently instead of
-    // loudly. Without `endsWith`, a marker whose closing `-->` was mangled
-    // yields a truncated but perfectly CLASS-VALID type — `AWS::S3::Bucke` —
-    // which no plan can ever match. That issue is then never updated and never
-    // closed, and the real type looks new and gets a duplicate: the outcome
-    // refusal 2 exists to prevent, reached PAST refusal 2, which only sees
-    // types it could not read at all.
+    // loudly. The slice ends at `length - MARKER_SUFFIX.length` unconditionally,
+    // so a reader without `endsWith` returns the mangled line's type-plus-tail
+    // with its last four characters removed — here eating into the type itself
+    // and yielding a truncated but perfectly CLASS-VALID string that no plan can
+    // ever match. That issue is then never updated and never closed, and the
+    // real type looks new and gets a duplicate: the outcome refusal 2 exists to
+    // prevent, reached PAST refusal 2, which only sees types it could not read.
+    //
+    // The TAIL LENGTH is chosen, not incidental. A tail of exactly four
+    // characters chops to the CORRECT type, so it exhibits nothing — an earlier
+    // revision of this case and of the JSDoc both used one.
     const mangled = `${MARKER_PREFIX}AWS::S3::BucketX`;
     expect(readMarkerType(mangled)).toBeUndefined();
-    // The discriminator, DERIVED rather than hard-coded — a literal expectation
-    // here was wrong by one character on the first attempt, and a wrong literal
-    // in a case about truncation would have been a quiet joke at its own
-    // expense. What makes this dangerous is not that the value differs from the
-    // real type but that it is CLASS-VALID: the type-class test cannot catch it,
-    // so `endsWith` is the only thing standing between a mangled marker and an
-    // issue keyed to a string no plan will ever match.
     const truncated = mangled.slice(MARKER_PREFIX.length, mangled.length - MARKER_SUFFIX.length);
-    expect(truncated).not.toBe('AWS::S3::Bucket');
+    expect(truncated, 'the tail length makes this chop to the true type, exhibiting nothing').toBe(
+      'AWS::S3::Buc'
+    );
     expect(truncated, 'the truncation is not class-valid, so this case proves nothing').toMatch(
       /^[A-Z][\w:]+$/
     );
@@ -722,8 +722,13 @@ describe('cross-file fences', () => {
       // NEGATED, not merely mentioned. Dropping `| not` inverts every shortlist
       // to the bot issues and would otherwise pass — the filter naming the label
       // is the half that is easy to assert and the wrong half.
+      //
+      // Built FROM the constant. Hard-coding the label here while the failure
+      // message interpolated `SUBISSUE_LABEL` let a rename of the constant pass
+      // with the documents left stale — the two spellings have to be one.
+      const negated = new RegExp(`index\\((\\\\)?"${SUBISSUE_LABEL}(\\\\)?"\\)\\s*\\|\\s*not`);
       expect(
-        /index\((\\)?"backfill-type(\\)?"\)\s*\|\s*not/.test(listing),
+        negated.test(listing),
         `this backlog listing does not EXCLUDE '${SUBISSUE_LABEL}': ${first}`
       ).toBe(true);
     }
@@ -737,9 +742,22 @@ describe('cross-file fences', () => {
       join(REPO_ROOT, '.claude/skills/work-issues/references/filing.md'),
       'utf8'
     );
-    expect(filing).toMatch(/Every backlog listing in `triage\.md`/);
+    // ONE regex spanning head -> VERB, plus the anchors. The first attempt at
+    // de-vacuating this dropped the verb: `toMatch(/Every backlog listing in
+    // .triage\.md./)` with separate §-anchor assertions survives flipping
+    // EXCLUDES to INCLUDES, which is precisely the mutation the crude
+    // `toContain('EXCLUDES the label')` it replaced DID catch. Naming what a
+    // replacement can no longer see is the rule; here the answer was "the only
+    // thing that mattered", so both halves are asserted together.
+    expect(filing, 'the claim lost its verb, so it can be inverted and stay green').toMatch(
+      /Every backlog listing in `triage\.md`[\s\S]*?EXCLUDES the label/
+    );
     expect(filing).toContain('§3-0');
     expect(filing).toContain('§3-a');
+    // And round 2's own correction — the retro.md half — which nothing asserted:
+    // deleting that clause left the fence green while the listing it describes
+    // is the one where a missed exclusion inflates a retro's finding count.
+    expect(filing, 'the retro.md half of the claim is unasserted').toMatch(/`retro\.md`/);
   });
 
   it('keys on ONE marker spelling, aliased rather than re-typed', () => {
@@ -909,18 +927,51 @@ esac
     }
   }, 60_000);
 
-  it('writes the INDEX only when asked, and the index is the per-type one', () => {
+  it('writes the per-type INDEX on a real run, and not on a dry one', () => {
+    // BOTH halves, and the succeeded-check on each, because an absence
+    // assertion alone is satisfied by every early refusal there is — a bad env,
+    // a parse refusal, the stub `gh` failing. That is the defect the dry-run
+    // case above avoids by asserting what `gh` was ASKED for, and this case
+    // originally reproduced by discarding the spawn result entirely.
+    //
+    // The real-run half is also the only end-to-end exercise of `renderIndex`
+    // and the `numbers` map feeding it; everything else drives that function
+    // directly.
     const box = sandbox([]);
     try {
       const plan = planFile(box.dir, { types: [entry('AWS::S3::Bucket', ['A', 'B'])] });
-      const out = join(box.dir, 'index.md');
-      // A dry run must not write it either — it is a side effect like any other.
-      spawnCli(box, [plan, '--dry-run'], {
-        REPO: 'go-to-k/cdkd',
-        PARENT: '2762',
-        INDEX_OUT: out,
-      });
-      expect(existsSync(out), 'a dry run wrote the index file').toBe(false);
+      const env = { REPO: 'go-to-k/cdkd', PARENT: '2762' };
+
+      const dryOut = join(box.dir, 'dry-index.md');
+      const dry = spawnCli(box, [plan, '--dry-run'], { ...env, INDEX_OUT: dryOut });
+      expect(dry.status, `the dry run did not succeed: ${dry.stderr}`).toBe(0);
+      expect(existsSync(dryOut), 'a dry run wrote the index file').toBe(false);
+
+      // A real run, with the stub answering the create and the link calls.
+      const realOut = join(box.dir, 'index.md');
+      writeFileSync(
+        join(box.bin, 'gh'),
+        `#!/bin/bash
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list") cat "$GH_LISTING" ;;
+  "issue create") echo "https://github.com/go-to-k/cdkd/issues/900" ;;
+  "api --paginate") ;;
+  "api --method") ;;
+  "api repos/go-to-k/cdkd/issues/900") echo "123456" ;;
+  *) echo "stub gh: unmodelled subcommand: $*" >&2; exit 1 ;;
+esac
+`,
+        { mode: 0o755 }
+      );
+      const real = spawnCli(box, [plan], { ...env, INDEX_OUT: realOut });
+      expect(real.status, `the real run did not succeed: ${real.stderr}`).toBe(0);
+      expect(existsSync(realOut), 'a real run did not write the index file').toBe(true);
+      // The per-type index, carrying the number the create returned — not the
+      // flat property checklist the parent used to hold.
+      const index = readFileSync(realOut, 'utf8');
+      expect(index).toContain('- [ ] #900 — `AWS::S3::Bucket` (2 remaining)');
+      expect(index, 'the index regressed to a per-PROPERTY listing').not.toContain('- [ ] `A`');
     } finally {
       rmSync(box.dir, { recursive: true, force: true });
     }
