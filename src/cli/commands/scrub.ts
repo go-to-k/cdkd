@@ -1068,8 +1068,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
  * (issue #2005) — the outputs' own map plus every resource's, filtered to the
  * values long enough to be a safe needle.
  *
- * Used ONLY by {@link redactUnaccountedOutputs}, which is why the union is built
- * here rather than kept as the pass's input everywhere: `outputSecrets` and
+ * Built here rather than kept as each pass's input everywhere — `outputSecrets`
+ * and
  * `perResourceSecrets` are deliberately SEPARATE bags so one resource's secret
  * value cannot rewrite another resource's coinciding literal (the collision the
  * deploy engine's `perResourceSecrets` doc describes), and widening the bag the
@@ -1163,10 +1163,13 @@ function allRecordedSecrets(
   /**
    * Orphan-record needles (issue go-to-k/cdkd#2943).
    *
-   * REQUIRED, not optional. All three call sites run after the orphan loop has
-   * filled the map, so there is no site that could not supply it — and an
-   * optional parameter here invites a future call site that silently omits it.
-   * The one at the ERROR BOUNDARY is why that matters:
+   * REQUIRED, not optional. Every call site has the map in scope, holding
+   * whatever has been recorded so far — the error boundary can run on a throw
+   * raised DURING the orphan loop, with the map partly filled, which is the
+   * right amount: only a plaintext already recorded needs a needle. So no site
+   * could fail to supply it, and an optional parameter here would invite a
+   * future call site that silently omits it. The ERROR BOUNDARY is why that
+   * matters:
    * `pinCrossRegionSecrets` can throw AFTER recording a foreign plaintext —
    * the resource loop says so in its own comment — and the region-ambiguous
    * rethrow is deliberately unmasked at the site, so both reach the boundary.
@@ -1183,8 +1186,16 @@ function allRecordedSecrets(
   // value collision the OUTPUTS' expression wins "because it is written last",
   // and `redactUnaccountedOutputs`' subsumption argument leans on it. Folding
   // the orphan bags afterwards silently made the orphan's expression win and
-  // falsified both. Order is irrelevant at the masking sites, which read keys
-  // only; it decides precision for the unaccounted-outputs pass alone.
+  // falsified both.
+  //
+  // Which consumers the order reaches, since an earlier version of this
+  // comment got the list wrong: the error boundary reads KEYS only
+  // (`maskSecretsInText` matches on the plaintext and substitutes a fixed
+  // mask), so order cannot touch it. The other two write the map's EXPRESSION
+  // into a bag — `redactUnaccountedOutputs`, and the orphan-record rewrite,
+  // whose own bag overlays this union afterwards so only a plaintext shared
+  // with ANOTHER record is at stake. Neither documents an orphan-wins rule, so
+  // folding first leaves "outputs wins" the single collision rule.
   for (const recorded of orphanSecrets.values()) {
     for (const [value, expression] of recorded) union.set(value, expression);
   }
