@@ -80,9 +80,17 @@ jobs:
           # the two remaining reaches are:
           #   * DoS. One fork PR wedges every run into that refusal, turning a
           #     guard that should be quiet into a permanent red anyone can set.
-          #   * Acting on a fork PR. With no real release PR open, a lone decoy
-          #     is `count == 1`, and this job holds `pull-requests: write` -- it
-          #     would read, and could comment on and disarm, a fork's PR.
+          #   * Reading a fork PR. With no real release PR open, a lone decoy
+          #     is `count == 1`, so the run picks it up -- and then hard-fails,
+          #     because `git fetch origin "${head_ref}"` below resolves the
+          #     FORK's branch name against THIS repo, which does not carry it.
+          #     So the reach is a second DoS wearing a misleading cause ("may
+          #     have been deleted"), not a write. The comment/disarm this job's
+          #     `pull-requests: write` allows needs BOTH an identically named
+          #     branch still present here AND someone with write access having
+          #     armed auto-merge on that fork PR -- a fork author cannot arm it.
+          #     Stated at that length because two earlier drafts of this bullet
+          #     overstated the reach, each time describing a chain nobody ran.
           #
           # A deleted fork leaves `head.repo` null, which `// ""` turns into a
           # non-match rather than a jq error -- correct, since it was a fork.
@@ -97,9 +105,10 @@ jobs:
           # ~30 fork PRs -- attacker-chosen, no privilege -- evict the release
           # PR from the page, the filter returns nothing, and the run exits 0
           # saying "no standing release PR" while the real armed stale PR
-          # merges. Same suppression as the decoy below, reached by truncation
-          # instead of ordering, and it also fires benignly on a dependabot
-          # burst. Pagination enumerates EVERY open PR, so neither can happen.
+          # merges. This one is the SILENT failure of the two: the decoy above
+          # ends in the loud `count != 1` refusal, while truncation leaves
+          # nothing to count, and it also fires benignly on a dependabot burst.
+          # Pagination enumerates EVERY open PR, so neither can happen.
           prs=$(gh api "repos/${REPO}/pulls?state=open&per_page=100" --paginate \
                   --jq '.[] | select((.head.repo.full_name // "") == .base.repo.full_name)
                             | select(.head.ref | startswith("release-please--"))
@@ -133,6 +142,14 @@ jobs:
           esac
 
           head_ref=$(gh pr view "${pr}" --repo "${REPO}" --json headRefName --jq .headRefName)
+          # Same fail-closed rule as `armed` above. An empty answer would reach
+          # `git fetch origin ""`, whose failure is reported as "could not read
+          # the head branch ''" -- a misdiagnosis pointing at a deleted branch
+          # when the real fault was `gh`.
+          if [ -z "${head_ref}" ]; then
+            echo "::error::gh returned no head branch name for #${pr}. Refusing to guess which branch to compare."
+            exit 1
+          fi
           # ALWAYS fetch; do NOT prefer the `refs/remotes/origin/*` the checkout
           # already populated. release-please FORCE-PUSHES the release branch
           # when it rebuilds, so a rebuild landing between the checkout and this
@@ -146,7 +163,7 @@ jobs:
           # reported rather than swallowed by `--quiet` -- the likeliest cause
           # is the head branch having been deleted between the two calls.
           if ! git fetch --no-tags --quiet origin "${head_ref}"; then
-            echo "::error::could not read the head branch '${head_ref}' of #${pr}. It may have been deleted, or this repo is private and the anonymous fetch was refused."
+            echo "::error::could not read the head branch '${head_ref}' of #${pr}. Likeliest causes: the branch was deleted, a transient network failure (this fetch is not retried), or this repo is private and the anonymous fetch was refused."
             exit 1
           fi
           head=$(git rev-parse FETCH_HEAD)
