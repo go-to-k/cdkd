@@ -362,8 +362,65 @@ export interface StackState {
    */
   parentRegion?: string;
 
+  /**
+   * Resources a rollback left in AWS under `DeletionPolicy: Retain` and
+   * dropped from {@link resources} (issue #2934).
+   *
+   * cdkd's generated physical names are deterministic
+   * (`generateResourceName` — no random component), so an orphan of this kind
+   * holds the exact name the NEXT deploy will ask AWS for. Without this record
+   * that deploy collides, rolls back, and repeats forever; with it, the deploy
+   * re-adopts the resource instead of creating one.
+   *
+   * Each entry carries the `ResourceState` the rollback discarded, VERBATIM.
+   * That is load-bearing: its `properties` are the failed deploy's resolved
+   * TEMPLATE values, which is what {@link DiffCalculator} expects on the old
+   * side (`state.properties` holds template values; AWS-observed defaults live
+   * in `observedProperties`). Re-adopting from an AWS readback instead would
+   * put keys in the bag that the template omits — a generated `RoleName`,
+   * `BucketName`, `TableName` — and the next diff would read them as removals
+   * of create-only properties and REPLACE the resource, destroying the data
+   * the adoption exists to preserve.
+   *
+   * Informational to a reader that does not know the field, so NO schema bump
+   * (the `skippedOutputs` / rollback-journal precedent): absent means today's
+   * behaviour — the deploy collides and the go-to-k/cdkd#2916 diagnosis fires.
+   * An OLD binary drops the field on its next save, which degrades to that
+   * same behaviour rather than corrupting anything. Unlike `skippedOutputs`
+   * this field can drive a STOP, so that downgrade is a stated consequence
+   * rather than an assumed-harmless one.
+   *
+   * **Every writer must carry it forward through {@link orphansCarriedFrom}.**
+   * The `StackState` literals are field-enumerated, so a save that forgets it
+   * DELETES the record silently, and the resource becomes untrackable.
+   *
+   * **Secret-bearing.** The entry holds a whole `ResourceState`, so
+   * `redactStateForPersist` must scrub `orphans[*].state` exactly as it scrubs
+   * `resources` — a top-level field otherwise rides the `...state` spread
+   * untouched, and the automatic rollback captures from the in-memory map,
+   * which holds REAL resolved values by design.
+   */
+  orphans?: StackOrphanRecord[];
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
+}
+
+/**
+ * One resource a rollback left in AWS and dropped from state (issue #2934).
+ *
+ * See {@link StackState.orphans} for why the whole `ResourceState` is kept
+ * rather than a physical id alone.
+ */
+export interface StackOrphanRecord {
+  /** The logical id the resource had in the template that created it. */
+  logicalId: string;
+
+  /** When the rollback dropped it (Unix milliseconds). */
+  orphanedAt: number;
+
+  /** The `ResourceState` the rollback discarded, verbatim. */
+  state: ResourceState;
 }
 
 /**
@@ -628,6 +685,53 @@ export function skippedOutputsCarriedFrom(
   previous: Pick<StackState, 'skippedOutputs'>
 ): Pick<StackState, 'skippedOutputs'> {
   return previous.skippedOutputs === undefined ? {} : { skippedOutputs: previous.skippedOutputs };
+}
+
+/**
+ * Carry {@link StackState.orphans} across a rebuild that does not re-decide it
+ * (issue #2934): absent stays absent, present stays as it was.
+ *
+ * **Every** field-enumerating `StackState` literal must spread this. The field
+ * is the only record that a `Retain`-orphaned resource exists at all, so a save
+ * that omits it does not merely lose a hint — it makes a live, billing AWS
+ * resource untrackable and re-opens the deploy loop the record closes. That is
+ * a stronger duty than {@link skippedOutputsCarriedFrom}'s, whose loss costs a
+ * diff preview.
+ *
+ * Writers that re-DECIDE the set do not call this: the rollback arms append,
+ * and the deploy drops an entry once it has been adopted or found absent from
+ * AWS. Spread-form writers (`{ ...previous, ... }`) carry the field already and
+ * need nothing.
+ */
+export function orphansCarriedFrom(
+  previous: Pick<StackState, 'orphans'>
+): Pick<StackState, 'orphans'> {
+  return previous.orphans === undefined ? {} : { orphans: previous.orphans };
+}
+
+/**
+ * The `orphans` set a post-rollback save should persist (issue #2934): what the
+ * record already carried, plus what THIS rollback just left in AWS.
+ *
+ * A merge rather than a carry, because a rollback both inherits and produces.
+ * Keyed by `logicalId`, newest wins: a resource orphaned twice (deploy fails,
+ * user retries, it fails again) has one live AWS resource, and the later record
+ * describes the deploy that actually left it there. Keeping both would make the
+ * next adoption pick arbitrarily between two states of the same resource.
+ *
+ * Returns `{}` when there is nothing on either side, so a stack that has never
+ * orphaned anything keeps a byte-identical `state.json` and an old binary sees
+ * exactly what it saw before.
+ */
+export function orphansAfterRollback(
+  previous: Pick<StackState, 'orphans'>,
+  newlyOrphaned: readonly StackOrphanRecord[]
+): Pick<StackState, 'orphans'> {
+  if (previous.orphans === undefined && newlyOrphaned.length === 0) return {};
+  const byLogicalId = new Map<string, StackOrphanRecord>();
+  for (const entry of previous.orphans ?? []) byLogicalId.set(entry.logicalId, entry);
+  for (const entry of newlyOrphaned) byLogicalId.set(entry.logicalId, entry);
+  return { orphans: [...byLogicalId.values()] };
 }
 
 /**

@@ -65,11 +65,16 @@ import type {
   ResourceProvider,
   ResourceUpdateResult,
 } from '../types/resource.js';
+import { planOrphanAdoption, type OrphanAdoptionOutcome } from './orphan-adoption.js';
+import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   shouldRetainResource,
   exportNamesCarriedFrom,
   skippedOutputsCarriedFrom,
+  orphansCarriedFrom,
+  orphansAfterRollback,
+  type StackOrphanRecord,
   importableOutputKeys,
   importableOutputs,
   type StackState,
@@ -1047,6 +1052,21 @@ export class DeployEngine {
    * Reset per `deploy()`.
    */
   private perResourceTemplateProps = new Map<string, Record<string, unknown>>();
+
+  /**
+   * The resource TYPE each logical id was resolved as during THIS deploy
+   * (issue #2934), the sibling of {@link perResourceSecrets} and
+   * {@link perResourceTemplateProps}.
+   *
+   * Exists only so the orphan-record redaction can tell "these needles belong
+   * to this record" from "a CDK refactor reused this logical id for a different
+   * resource". Keying that on `state.resources` instead was tried and is WRONG
+   * in the direction that matters: an orphan is by definition NOT in
+   * `resources`, so the gate read false for the record being minted, the
+   * needles went empty, and the plaintext survived into `state.json`. The
+   * real-AWS secret fixture caught it.
+   */
+  private perResourceResolvedType = new Map<string, string>();
   /**
    * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
    * whose Value resolves a `{{resolve:...}}` reference). Separate from the
@@ -1207,6 +1227,11 @@ export class DeployEngine {
     this.perResourceSecrets = new Map();
     this.noEchoAttributeResources = new Map();
     this.perResourceTemplateProps = new Map();
+    // Reset with its siblings (issue #2934). Inert today — a stale TRUE pairs
+    // with cleared needle maps and reduces to the identity fallback — but this
+    // map's whole job is to answer "do those needles describe THIS record",
+    // and a reused engine carrying last deploy's answer is the #2516 class.
+    this.perResourceResolvedType = new Map();
     // Issue #2516: reset with the other per-deploy maps. A reused engine
     // whose next deploy fails before its own attempted bag is recorded would
     // otherwise journal the PREVIOUS run's bag against today's template and
@@ -2040,10 +2065,55 @@ export class DeployEngine {
     // state.json / the exports index / the deploy summary. Redact it with the
     // OUTPUTS' own secrets map (a literal output equal to a secret is not
     // recorded there, so it is not touched).
+    // `orphans` carries a whole `ResourceState` each (issue #2934), so it is
+    // secret-bearing in exactly the way `resources` is — and it is a TOP-LEVEL
+    // field, which means the `...state` spread below would otherwise carry it
+    // through this choke point UNTOUCHED. That matters most on the path that
+    // creates the records: the automatic rollback captures from the in-memory
+    // map, which holds REAL resolved values by design (see the create site's
+    // "The REAL attribute values, deliberately" note), so an unscrubbed entry
+    // writes secret plaintext into state.json — the GHSA-p5qg-v9gv-hc7w class.
+    //
+    // Keyed by the record's own logical id AND its resource TYPE. The id alone
+    // is not enough: a CDK refactor can reuse a logical id for an unrelated
+    // resource, and then this deploy's maps hold the NEW resource's needles and
+    // template bag. Scrubbing the old record with those splices a new secret's
+    // plaintext into the old record's literals wherever it coincides as a
+    // substring — the over-redaction / coinciding-literal class — and picks a
+    // position source that describes a different resource entirely.
+    //
+    // When the type matches, the maps describe the same resource and their
+    // needles are the right ones. When it does not (and in the ordinary case,
+    // where the orphan is not in this deploy's template at all), both miss and
+    // `scrubResourceRecord` takes the #1900 fall-back, treating the record's own
+    // already-redacted properties as the observed bag's source. That is correct
+    // rather than merely tolerable: a record minted by an earlier rollback was
+    // already scrubbed when it was written, so the identity return preserves it.
+    const orphans = state.orphans?.map((entry) => {
+      // Did THIS deploy resolve that logical id, as that same TYPE? Only then
+      // do the needles describe this record.
+      //
+      // Keyed on what the deploy RESOLVED, not on `state.resources`: an orphan
+      // is by definition absent from `resources`, so that spelling read false
+      // for the record being MINTED — the needles went empty and the plaintext
+      // survived. Measured by `tests/integration/retain-orphan-secret`.
+      const sameResource =
+        this.perResourceResolvedType.get(entry.logicalId) === entry.state.resourceType;
+      return {
+        ...entry,
+        state: scrubResourceRecord(
+          entry.state,
+          (sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined) ??
+            new Map<string, string>(),
+          sameResource ? this.perResourceTemplateProps.get(entry.logicalId) : undefined
+        ),
+      };
+    });
     return {
       ...state,
       resources,
       outputs: this.redactOutputs(state.outputs),
+      ...(orphans === undefined ? {} : { orphans }),
     };
   }
 
@@ -2652,6 +2722,39 @@ export class DeployEngine {
         conditions
       );
 
+      // 2b. Re-adopt anything a previous rollback left in AWS (issue #2934).
+      //
+      // Runs HERE — after condition pruning, before the diff — for two reasons
+      // that are each load-bearing. The diff decides CREATE by absence from
+      // state, so splicing a recorded resource back into `currentState`
+      // produces an ordinary UPDATE with no new change type and no branch in
+      // the create path. And it must read the PRUNED template: against the raw
+      // one a resource under a false `Fn::If` reads as declared, gets adopted,
+      // and is then seen by the diff as state-only — re-orphaning it WITHOUT
+      // re-issuing a record, which loses the record permanently and is worse
+      // than never adopting.
+      //
+      // `currentState.orphans` is mutated to the surviving set so every save
+      // below persists it; the carried-forward spreads read this same object.
+      const orphanCountBeforeAdoption = (currentState.orphans ?? []).length;
+      const orphanPlan = await this.adoptRollbackOrphans(currentState, effectiveTemplate);
+      // The no-change save below is gated on a fixed list of triggers, and
+      // adoption trips none of them (issue #2934). Without this, a deploy whose
+      // diff comes out entirely clean persists neither the resource the pre-pass
+      // spliced in nor the record it consumed — so the stack keeps paying an
+      // AWS existence read every run, forever, and `cdkd destroy` cannot delete
+      // a resource that never reached the persisted `resources`.
+      // Compared by COUNT, not by reference: `plan.remaining` is always a
+      // fresh array, so identity would report a change on every deploy of a
+      // stack that merely HOLDS a record — an S3 PUT and a `lastModified` bump
+      // per run, forever, for a set that never moved. A count suffices because
+      // the pre-pass only ADOPTS (which also lands in `plan.adopted`) or DROPS;
+      // it never edits a kept record in place, so the two disjuncts below cover
+      // every way the set can move.
+      const orphansChanged =
+        Object.keys(orphanPlan.adopted).length > 0 ||
+        (currentState.orphans ?? []).length !== orphanCountBeforeAdoption;
+
       // 3. Validate resource types (before deployment starts)
       // Skip metadata resources as they don't actually deploy
       const resourceTypes = new Set(
@@ -2916,13 +3019,20 @@ export class DeployEngine {
             this.skippedOutputs
           );
 
-          if (observedRefresh || outputsChanged || exportSetChanged || skippedOutputsChanged) {
+          if (
+            observedRefresh ||
+            outputsChanged ||
+            exportSetChanged ||
+            skippedOutputsChanged ||
+            orphansChanged
+          ) {
             try {
               const refreshedState: StackState = {
                 version: STATE_SCHEMA_VERSION_CURRENT,
                 region: this.stackRegion,
                 stackName: currentState.stackName,
                 resources: currentState.resources,
+                ...orphansCarriedFrom(currentState),
                 outputs: (outputsChanged ? resolvedOutputs : persistedOutputs) as Record<
                   string,
                   string
@@ -3276,6 +3386,7 @@ export class DeployEngine {
             outputs: currentState.outputs,
             ...exportNamesCarriedFrom(currentState),
             ...skippedOutputsCarriedFrom(currentState),
+            ...orphansCarriedFrom(currentState),
             // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
             // session resolved. See `crossStackReadsForPartialSave` — writing the
             // snapshot alone left a failed deploy's persisted record denying a
@@ -3542,6 +3653,7 @@ export class DeployEngine {
           outputs: currentState.outputs,
           ...exportNamesCarriedFrom(currentState),
           ...skippedOutputsCarriedFrom(currentState),
+          ...orphansCarriedFrom(currentState),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -3572,6 +3684,11 @@ export class DeployEngine {
       // Set true when an automatic rollback replayed with zero per-op
       // failures — gates the post-save journal deletion below.
       let autoRollbackClean = false;
+      // Resources this deploy's rollback left in AWS under `DeletionPolicy: Retain`
+      // (issue #2934). Stays empty when no rollback ran, so the saves below
+      // spread nothing and a stack that never orphaned keeps a byte-identical
+      // record.
+      let rollbackOrphans: StackOrphanRecord[] = [];
 
       // On SIGINT, skip rollback — just save partial state, record a rollback
       // journal segment so the interrupted deploy is REVERTIBLE (not just
@@ -3639,6 +3756,10 @@ export class DeployEngine {
           currentState
         );
         autoRollbackClean = rollbackResult.failures === 0;
+        // Hoisted out of this block because both saves below sit outside it
+        // (issue #2934) — the post-rollback save and its ETag-mismatch retry —
+        // and neither can see `rollbackResult`.
+        rollbackOrphans = rollbackResult.orphaned;
       }
 
       // Save state after rollback (reflects rolled-back resource state).
@@ -3653,6 +3774,7 @@ export class DeployEngine {
           outputs: currentState.outputs,
           ...exportNamesCarriedFrom(currentState),
           ...skippedOutputsCarriedFrom(currentState),
+          ...orphansAfterRollback(currentState, rollbackOrphans),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -3699,6 +3821,7 @@ export class DeployEngine {
             outputs: currentState.outputs,
             ...exportNamesCarriedFrom(currentState),
             ...skippedOutputsCarriedFrom(currentState),
+            ...orphansAfterRollback(currentState, rollbackOrphans),
             // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
             // session resolved. See `crossStackReadsForPartialSave` — writing the
             // snapshot alone left a failed deploy's persisted record denying a
@@ -3809,6 +3932,7 @@ export class DeployEngine {
         region: this.stackRegion,
         stackName: currentState.stackName,
         resources: newResources,
+        ...orphansCarriedFrom(currentState),
         outputs,
         // Always written, `[]` included: on this path the bag was re-resolved,
         // so the set is KNOWN (issue #2193). Absent would read as "not known".
@@ -3864,6 +3988,7 @@ export class DeployEngine {
       outputs: currentState.outputs,
       ...exportNamesCarriedFrom(currentState),
       ...skippedOutputsCarriedFrom(currentState),
+      ...orphansCarriedFrom(currentState),
       // Issue #2057: the UNION, like every other non-success save. This one
       // used to write `[...this.recordedImports]` WHOLESALE, copying the
       // SUCCESS path's shape onto a path that is not one — provisioning
@@ -3926,6 +4051,138 @@ export class DeployEngine {
    * command drives identical semantics). Thin wrapper that builds the
    * executor context from the engine's collaborators and delegates.
    */
+  /**
+   * Re-adopt what a previous rollback left in AWS, before the diff runs
+   * (issue #2934).
+   *
+   * MUTATES `currentState`: adopted records go into `resources` so the diff
+   * sees them, and `orphans` is replaced by the surviving set so every save
+   * on every path below persists the same object. Mutation rather than a
+   * returned copy because `currentState` is read by ~a dozen later sites and
+   * threading a second binding through all of them is how one gets missed.
+   *
+   * Refusals THROW. A record whose name this deploy is about to request, that
+   * cdkd cannot vouch for, is exactly the go-to-k/cdkd#2916 situation: letting
+   * the deploy run would collide and roll back anyway, adding another orphan
+   * on the way.
+   */
+  private async adoptRollbackOrphans(
+    currentState: StackState,
+    effectiveTemplate: CloudFormationTemplate
+  ): Promise<OrphanAdoptionOutcome> {
+    const records = currentState.orphans ?? [];
+    const plan = await planOrphanAdoption({
+      records,
+      // Read BEFORE the splice below, so a record whose resource this same
+      // pass adopts is not also read as "already managed".
+      managedLogicalIds: new Set(Object.keys(currentState.resources)),
+      template: effectiveTemplate,
+      stackName: currentState.stackName,
+      region: this.stackRegion,
+      getProvider: (type, provisionedBy) =>
+        this.providerRegistry.getProviderFor({
+          resourceType: type,
+          ...(provisionedBy !== undefined && { provisionedBy }),
+        }).provider,
+      nameProperties: (type) => {
+        const property = explicitNamePropertyFor(type);
+        return property === undefined ? [] : [property];
+      },
+      readSiblingClaims: () => this.readSiblingPhysicalIds(currentState.stackName),
+      logger: { debug: (m) => this.logger.debug(m) },
+    });
+
+    for (const notice of plan.notices) this.logger.info(notice);
+
+    if (plan.refusals.length > 0) {
+      throw new Error(
+        `Deploy refused — cdkd left ${plan.refusals.length} resource(s) in AWS that it cannot ` +
+          `safely re-adopt:\n  ${plan.refusals.join('\n  ')}`
+      );
+    }
+
+    for (const [logicalId, record] of Object.entries(plan.adopted)) {
+      currentState.resources[logicalId] = record;
+      this.logger.info(
+        `Adopting ${logicalId} (${record.resourceType}) left in AWS by an earlier rollback ` +
+          `as ${record.physicalId}`
+      );
+    }
+    // Assigned unconditionally when there WERE records, so an adopted or
+    // vanished one actually leaves the set. Left untouched when there were
+    // none, so a stack that never orphaned keeps a byte-identical state.json.
+    if (records.length > 0) currentState.orphans = plan.remaining;
+
+    return plan;
+  }
+
+  /**
+   * Every physical id recorded by a cdkd stack OTHER than this one
+   * (issue #2934).
+   *
+   * The orphan record proves cdkd created something under a name; it cannot
+   * prove no one has since taken that resource over. A `cdkd import` into a
+   * different stack during the rollback-to-redeploy window would leave one
+   * physical id in two state files, and either stack's `cdkd destroy` would
+   * then delete the other's live resource. This is the check that refuses it.
+   *
+   * Best-effort per sibling: a state file that fails to load is SKIPPED rather
+   * than failing the deploy, because the alternative is that one unreadable
+   * record in an unrelated stack blocks every adoption in the account. That
+   * makes the result a lower bound on what is claimed — stated here because it
+   * is the direction that can let a wrong adoption through, and the reason this
+   * check is one of several rather than the only one.
+   *
+   * Reachability is bounded by what this backend can see: another ACCOUNT's
+   * bucket, and a stack deployed against a different `--state-bucket`, are
+   * invisible here by construction.
+   */
+  private async readSiblingPhysicalIds(selfStackName: string): Promise<ReadonlySet<string>> {
+    const claimed = new Set<string>();
+    let refs;
+    try {
+      refs = await this.stateBackend.listStacks();
+    } catch (error) {
+      this.logger.debug(
+        `orphan adoption: could not list sibling stacks — ` +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
+      return claimed;
+    }
+    for (const ref of refs) {
+      // Name AND region: the same stack name in another region is a DIFFERENT
+      // state file, and globally-namespaced ids — an IAM role, an S3 bucket —
+      // are exactly the ones it could be claiming.
+      if (ref.stackName === selfStackName && ref.region === this.stackRegion) continue;
+      // The REF carries no region — `listStacks` leaves it unset for a legacy
+      // `version: 1` key — and `getState` needs one. Note it is the REF, not
+      // necessarily the record: `readLegacyRegion` also answers `undefined`
+      // for a body it could not read. Skipping rather than substituting a
+      // region is the permissive arm of this method's best-effort contract,
+      // described in its doc above.
+      //
+      // It also catches a region-less ref for THIS stack, which the skip above
+      // cannot: that one requires the name AND the region to match, and
+      // `stackRegion` is always a string. Substituting would read our OWN
+      // record, and our own ids would become claims that (d) reports as
+      // belonging to "another cdkd stack". Pinned by the region-less-SELF case
+      // in `orphan-adoption-wiring.test.ts`.
+      if (ref.region === undefined) continue;
+      try {
+        const sibling = await this.stateBackend.getState(ref.stackName, ref.region);
+        for (const record of Object.values(sibling?.state.resources ?? {})) {
+          claimed.add(record.physicalId);
+        }
+      } catch (error) {
+        this.logger.debug(
+          `orphan adoption: skipping unreadable state for ${ref.stackName} — ` +
+            `${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    return claimed;
+  }
+
   private async performRollback(
     completedOperations: CompletedOperation[],
     stateResources: Record<string, ResourceState>,
@@ -3937,14 +4194,19 @@ export class DeployEngine {
      * automatic-rollback arm is this method's only caller.
      */
     previousState: StackState
-  ): Promise<{ failures: number; warnings: number }> {
+  ): Promise<{ failures: number; warnings: number; orphaned: StackOrphanRecord[] }> {
     const result = await replayRollback(
       completedOperations,
       stateResources,
       stackName,
       this.rollbackExecutorContext(previousState)
     );
-    return { failures: result.failures, warnings: result.warnings };
+    // `orphaned` is relayed rather than persisted here: this method holds no
+    // state save. Its caller merges it into the post-rollback record (issue
+    // #2934), which is the ONLY save on this path — dropping it there makes a
+    // live, billing AWS resource untrackable and re-opens the deploy loop the
+    // record closes.
+    return { failures: result.failures, warnings: result.warnings, orphaned: result.orphaned };
   }
 
   /**
@@ -4901,6 +5163,7 @@ export class DeployEngine {
         this.refuseRedactedAttributeReads(logicalId, resourceType, context);
         // Capture the UNRESOLVED bag as the redaction position source (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
+        this.perResourceResolvedType.set(logicalId, resourceType);
         // Named so the provider call below can bind the SAME bag into its
         // masker (issue #1932 item 3), mirroring `updateSecrets` on the UPDATE
         // path. `?? new Map()` rather than a conditional: `buildResolverContext`
@@ -5091,6 +5354,7 @@ export class DeployEngine {
         this.refuseRedactedAttributeReads(logicalId, resourceType, context);
         // Same position source on the UPDATE path (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
+        this.perResourceResolvedType.set(logicalId, resourceType);
         // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
         // `{{resolve:...}}` expression each `Parameters` entry was resolved
         // FROM, keyed by the child's parameter NAME. The bag above is keyed by

@@ -33,6 +33,8 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   type ResourceState,
   type StackState,
+  orphansAfterRollback,
+  type StackOrphanRecord,
 } from '../../types/state.js';
 import type { StackStateRef } from '../../state/s3-state-backend.js';
 
@@ -350,6 +352,13 @@ export async function rollbackCommand(
       }
       const baseState = stateData.state;
       const stateResources: Record<string, ResourceState> = { ...baseState.resources };
+      // Resources THIS command's replays leave in AWS under
+      // `DeletionPolicy: Retain` (issue #2934). Declared beside
+      // `stateResources` and NOT inside `saveState`, because both replay call
+      // sites push into it and `saveState` runs repeatedly as they proceed —
+      // it is read inside the state literal rather than captured, so each save
+      // persists the set as it stands at that moment.
+      const mintedOrphans: StackOrphanRecord[] = [];
       const orphanLogicalIds = new Set(options.orphan ?? []);
 
       // Informational role-arn note (issue #1183): the newest segment recorded
@@ -457,6 +466,7 @@ export async function rollbackCommand(
           version: STATE_SCHEMA_VERSION_CURRENT,
           region,
           resources: { ...stateResources },
+          ...orphansAfterRollback(baseState, mintedOrphans),
           lastModified: Date.now(),
         });
         try {
@@ -533,10 +543,16 @@ export async function rollbackCommand(
                       // events stream is informational; the reader derives
                       // nothing from envelope position).
                       emitEnvelope: segment.operations.length === 0,
+                      // Same reason as the sibling replay below: `afterOp`
+                      // saves per op, so a record appended only after this
+                      // returns is absent from every intermediate save
+                      // (issue #2934).
+                      onOrphan: (record) => mintedOrphans.push(record),
                     }
                   );
                   failedOpFailures = failedResult.failures;
                   failedOpWarnings = failedResult.warnings;
+
                   // Idempotency: persist ONLY the still-pending failed ops
                   // (per-op strip). A handled op must never be re-issued on a
                   // re-run — replaying `attemptedProperties` as the previous
@@ -579,6 +595,11 @@ export async function rollbackCommand(
                     orphanLogicalIds,
                     afterOp: saveState,
                     isInterrupted: () => interrupted,
+                    // Pushed from INSIDE the replay, not after it returns: the
+                    // `afterOp` above saves per op, so a record appended only
+                    // on return would be missing from every intermediate save
+                    // — and a crash there loses it for good (issue #2934).
+                    onOrphan: (record) => mintedOrphans.push(record),
                   }
                 );
                 return {
@@ -608,10 +629,26 @@ export async function rollbackCommand(
 
       // 9. Terminal state: an initial-deploy rollback that emptied state
       // deletes state.json so `cdkd list` shows no ghost stack.
+      //
+      // ...UNLESS this rollback left something in AWS (issue #2934). A
+      // `DeletionPolicy: Retain` resource survives the rollback, and the record
+      // of it is the ONLY thing that lets the next deploy re-adopt it rather
+      // than collide with the deterministic name it still holds. Deleting
+      // state.json here would take that record with it — in exactly the
+      // first-deploy-fails flow the record exists for, since that flow is
+      // precisely where `resources` ends up empty.
+      //
+      // A stack with records is not a ghost: cdkd has left something in the
+      // account and can still say what. The automatic rollback never deletes
+      // state at all, so this also removes a disagreement between the two
+      // paths — though only in the orphan case; with no records this command
+      // still deletes and the automatic one still does not.
+      const survivingOrphans = orphansAfterRollback(baseState, mintedOrphans).orphans ?? [];
       if (
         journal.segments.length === 0 &&
         oldestInitialDeploy &&
-        Object.keys(stateResources).length === 0
+        Object.keys(stateResources).length === 0 &&
+        survivingOrphans.length === 0
       ) {
         await setup.stateBackend.deleteState(stackName, region);
         logger.info(`State for '${stackName}' (${region}) removed (stack fully rolled back).`);
