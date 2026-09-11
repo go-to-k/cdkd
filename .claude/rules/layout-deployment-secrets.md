@@ -400,21 +400,22 @@ Index of every area: [code-layout.md](code-layout.md).
     throw arm they are RAW intrinsics, which is why a refused resource
     phantom-drifts until its next deploy.
     The predicate is deliberately COARSE, and every attempt to sharpen it has
-    shipped a leak. TWO arms: the resolve THREW (refuse, FULL STOP -- no
-    inspection of the bag), or the resolve SUCCEEDED and LOST a `{{resolve:`
-    opener the raw template spelled. Two successively cleverer throw-arm tests
-    were written, reviewed and MEASURED LEAKING -- admitting when the openers
-    are already COMPLETE tokens let a token wrapped in a single-element
-    `Fn::Join` / `Fn::Sub` / `Fn::If` through; admitting when the raw bag
-    carries NO opener let a reference sourced from OUTSIDE the bag through --
-    which is why the arm now inspects nothing.
+    shipped a leak. THREE arms: the resolve THREW (refuse, FULL STOP -- no
+    inspection of the bag), it LOST a `{{resolve:` opener the raw template
+    spelled, or it DISCARDED a subtree not provably inert (issue #2850;
+    `resolveDiscardsNonInertSubtree` has the rules). Two successively
+    cleverer throw-arm
+    tests were written, reviewed and MEASURED LEAKING -- admitting when the
+    openers are already COMPLETE tokens let a token wrapped in a
+    single-element `Fn::Join` / `Fn::Sub` / `Fn::If` through; admitting when
+    the raw bag carries NO opener let a reference sourced from OUTSIDE the bag
+    through -- which is why the arm now inspects nothing.
     **NOTHING IS CLAIMED HERE ABOUT WHAT THIS CLOSES.** Successive review rounds
     falsified, in turn, a closure claim, a closed-set list and a "reduces"
     claim; the mechanism survived every round of measurement and the sentences
     about it did not. State only the DANGER direction, which can become false
     only once the residue is gone: **plaintext can still be persisted by this
-    capture**, by a dropped or traded reference
-    ([#2850](https://github.com/go-to-k/cdkd/issues/2850)), a parameter bound to
+    capture**, by a parameter bound to
     a placeholder `Default`
     ([#2854](https://github.com/go-to-k/cdkd/issues/2854)), an observed KEY the
     source does not carry (the row #2852 left open), or a secret with no

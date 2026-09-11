@@ -74,16 +74,42 @@
  * bag. That is the row, and the near-miss is why the count above is stated as
  * "all nine" rather than left to a reader to check.
  *
+ * THE #2850 SHAPES NOW HAVE ROWS TOO. Issue
+ * [#2850](https://github.com/go-to-k/cdkd/issues/2850) measured two ways past
+ * the opener-count arm on the success path — a downgraded `Fn::If` dropping
+ * one reference while a parameter-sourced one is ADDED elsewhere (the totals
+ * balance), and a reference sourced ENTIRELY outside the bag then dropped
+ * (both counts zero, no warn) — plus a sibling discarder found while fixing
+ * it: `resolveValue`'s dispatch order drops the sibling keys of a multi-key
+ * intrinsic object. Every one of those rows red the SAFETY invariant against
+ * the pre-fix tree (measured: 4 failed / 32 passed, each failure quoting the
+ * persisted plaintext); they are refused by the DISCARD-EVENT walk
+ * (`resolveDiscardsNonInertSubtree`), whose negative controls — an `Fn::If`
+ * discarding pure literals, a multi-key intrinsic whose dropped sibling is a
+ * literal — are rows here as well, because the walk's risk direction is
+ * over-refusal.
+ *
+ * THE REVIEW ROUND THEN RE-ENUMERATED THE DISCARDERS and found the first cut
+ * had missed two, each now a refusing row with its own negative control:
+ * `resolveFindInMap`'s 4-argument `DefaultValue` is resolved LAZILY (a lookup
+ * HIT discards it unresolved — the `resolveIf` pattern on a second
+ * intrinsic), and a non-literal lookup KEY makes the un-taken mapping entries
+ * discarded template content; `resolveSelect` consumes its INDEX raw, so an
+ * intrinsic index discards the eagerly-decrypted list wholesale. The same
+ * round bought the `{Ref: 'AWS::NoValue'}` carve-out row: the one intrinsic
+ * whose discard cannot correspond to a value AWS holds, and without the
+ * carve-out the walk refused the optional-property idiom — the over-refusal
+ * direction's live case, not a hypothetical.
+ *
  * WHAT IS STILL ABSENT, and it is recorded rather than left to read as
- * coverage. `plaintext can still be persisted by this capture` — by a dropped
- * or traded reference
- * ([#2850](https://github.com/go-to-k/cdkd/issues/2850), whose shape the
- * PARAMETER-DEFAULT negative control below points at), a parameter bound to a
- * placeholder `Default` ([#2854](https://github.com/go-to-k/cdkd/issues/2854)),
- * and a secret with no counterpart in the source at all
- * ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). A row for any of
- * those would red the SAFETY invariant, exactly as the #2852 rows did before
- * the swap.
+ * coverage. `plaintext can still be persisted by this capture` — by a
+ * parameter bound to a placeholder `Default` while the DEPLOYED value was the
+ * reference ([#2854](https://github.com/go-to-k/cdkd/issues/2854) — no
+ * discard occurs, the divergence is in the VALUE, so the discard walk cannot
+ * see it), and by a secret with no counterpart in the source at all
+ * ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). A row for either
+ * would red the SAFETY invariant, exactly as the #2852 and #2850 rows did
+ * before their fixes.
  *
  * #2868 IS WORTH STATING PRECISELY, because the note this paragraph replaced
  * listed "a readback key the source lacks" among the shapes #2852 closed and it
@@ -435,7 +461,628 @@ const ROWS: readonly Row[] = [
       'outside-the-bag class is throw-arm-only — an earlier revision of this ' +
       'line claimed that and a reviewer refuted it: drop the same reference ' +
       'with a downgraded Fn::If and BOTH counts read zero. That shape is issue ' +
-      '2850 and has no row here, because the SAFETY invariant would red on it',
+      '2850, whose rows follow below',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'BALANCED trade: one reference dropped by a downgraded Fn::If, another ADDED from a parameter Default',
+    properties: {
+      Prod: { 'Fn::If': ['IsProd', TOKEN, 'dev-placeholder'] },
+      Fallback: { Ref: 'SecretRef' },
+    },
+    readback: { Prod: PLAINTEXT, Fallback: PLAINTEXT_2 },
+    refused: true,
+    needle: PLAINTEXT,
+    why:
+      'ISSUE #2850 SHAPE A. The downgrade drops secret A (raw opener 1 -> persisted 0) ' +
+      'while the parameter-sourced reference ADDS one (raw 0 -> persisted 1), so the ' +
+      'TOTALS balance and a count comparison admits it. The secrets differ, so the ' +
+      'derived-needle pass cannot rescue the dropped leaf either',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN_2 },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'reference sourced from a PARAMETER DEFAULT, dropped by a downgraded Fn::If — both counts ZERO',
+    properties: {
+      Detail: { pw: { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev-placeholder'] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'ISSUE #2850 SHAPE B. The reference lives ENTIRELY outside the bag (a parameter ' +
+      'Default), so the raw count reads zero; the downgrade then drops it, so the ' +
+      'persisted count is zero too. 0 < 0 is false, nothing throws, and no warn fires',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'reference sourced from a MAPPINGS entry, dropped by a downgraded Fn::If — both counts ZERO',
+    properties: {
+      Detail: {
+        pw: { 'Fn::If': ['IsProd', { 'Fn::FindInMap': ['M', 's', 'pw'] }, 'dev-placeholder'] },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why: 'ISSUE #2850 SHAPE B, second source outside the bag — same zero counts, same silence',
+    template: {
+      Parameters: { Stage: { Type: 'String' } },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+      Mappings: { M: { s: { pw: TOKEN } } },
+    },
+  },
+  {
+    name: 'sibling subtree DROPPED by dispatch order: an intrinsic key beside other keys',
+    properties: { Detail: { pw: { Ref: 'PlainParam', nested: { Ref: 'SecretRef' } } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the SAME CLASS as Shape B, one discarder over: `resolveValue` dispatches on ' +
+      'the first matching intrinsic key, so `nested` — and the reference it sources ' +
+      'from the parameter Default — is silently dropped, with both counts zero',
+    template: {
+      Parameters: {
+        PlainParam: { Type: 'String', Default: 'public-value' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+    },
+  },
+  {
+    name: 'Fn::FindInMap 4-arg DefaultValue DISCARDED by a lookup HIT, reference in the default',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::FindInMap': ['M', { Ref: 'Stage' }, 'pw', { DefaultValue: { Ref: 'SecretRef' } }],
+        },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "THE REVIEW ROUND'S BLOCKER. resolveFindInMap resolves DefaultValue lazily, " +
+      'only on a lookup MISS — a HIT discards it UNRESOLVED, the resolveIf pattern ' +
+      'on a second intrinsic. Deployed with a parameter value that MISSED, AWS ' +
+      'holds the default reference decrypted; import binds the Default, hits, and ' +
+      'both counts read zero',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String', Default: 'dev' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Mappings: { M: { dev: { pw: 'dev-placeholder' } } },
+    },
+  },
+  {
+    name: 'Fn::FindInMap 4-arg with a pure-LITERAL DefaultValue, lookup hits',
+    properties: {
+      Detail: { pw: { 'Fn::FindInMap': ['M', 'dev', 'pw', { DefaultValue: 'fallback-literal' }] } },
+    },
+    readback: { Detail: { pw: 'from-map' } },
+    expected: { Detail: { pw: 'from-map' } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the DefaultValue arm: a literal default is inert ' +
+      'whichever way the deployed lookup went, and literal keys make the selection ' +
+      'template-constant',
+    template: { Mappings: { M: { dev: { pw: 'from-map' } } } },
+  },
+  {
+    name: 'Fn::FindInMap keyed by a PARAMETER, token in the un-taken mapping entry',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M', { Ref: 'Stage' }, 'pw'] } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'a non-literal key selects a mapping entry this import cannot prove is the ' +
+      'deployed one, so the un-taken entries are discarded template content — and ' +
+      'this map holds a reference in one of them, with both bag counts zero',
+    template: {
+      Parameters: { Stage: { Type: 'String', Default: 'dev' } },
+      Mappings: { M: { dev: { pw: 'dev-placeholder' }, prod: { pw: TOKEN } } },
+    },
+  },
+  {
+    name: 'Fn::FindInMap keyed by a PARAMETER over a pure-LITERAL map',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M', { Ref: 'Stage' }, 'pw'] } } },
+    readback: { Detail: { pw: 'prod-v' } },
+    expected: { Detail: { pw: 'prod-v' } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the keyed arm: whichever entry the deployed lookup ' +
+      'took, every value this map can supply is public template text — refusing ' +
+      'would cost the region-map idiom its baseline',
+    template: {
+      Parameters: { Stage: { Type: 'String', Default: 'dev' } },
+      Mappings: { M: { dev: { pw: 'dev-v' }, prod: { pw: 'prod-v' } } },
+    },
+  },
+  {
+    name: 'Fn::Select with an INTRINSIC index over a list holding a reference',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [{ Ref: 'Idx' }, [{ Ref: 'SecretRef' }, 'pub-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "THE REVIEW ROUND'S MAJOR. resolveSelect consumes the index RAW — an " +
+      'intrinsic index selects undefined here while CloudFormation resolved it at ' +
+      'deploy, so the eagerly-decrypted elements are all discarded and AWS holds ' +
+      'one of them',
+    template: {
+      Parameters: {
+        Idx: { Type: 'String', Default: '1' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+    },
+  },
+  {
+    name: 'Fn::Select with a NON-CANONICAL digit-string index over a list holding a reference',
+    properties: {
+      Detail: { pw: { 'Fn::Select': ['01', [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "THE DELTA ROUND'S MAJOR. resolvedList['01'] is a property read, not an " +
+      'index — it yields undefined — while CloudFormation integer-parses the ' +
+      "index to 1, so '01' diverges exactly like an intrinsic index and a " +
+      'digits-only static test admitted it',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::Select with a CANONICAL digit-string index over a list holding a reference',
+    properties: {
+      Detail: { pw: { 'Fn::Select': ['1', [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: 'x-element' } },
+    expected: { Detail: { pw: 'x-element' } },
+    refused: false,
+    why:
+      "the NEGATIVE control for the canonical-form tightening: '1' selects " +
+      'element 1 here AND at deploy, so the discarded element 0 was discarded ' +
+      'identically on both sides and AWS holds the public literal',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::FindInMap keyed by a DYNAMIC-REFERENCE string, balanced by a parameter-sourced sibling',
+    properties: {
+      A: { 'Fn::FindInMap': ['M', TOKEN, 'pw'] },
+      B: { Ref: 'SecretRef2' },
+    },
+    readback: { A: PLAINTEXT, B: PLAINTEXT_2 },
+    refused: true,
+    why:
+      "THE DELTA ROUND'S MINOR, measured leaking: the key string is DECRYPTED " +
+      'before the lookup, so the selected entry depends on the secret deploy-time ' +
+      "value; the sibling's added token BALANCES the key's consumed opener " +
+      '(raw 1 / persisted 1) and the un-taken entry holds a different secret',
+    template: {
+      Parameters: { SecretRef2: { Type: 'String', Default: TOKEN_2 } },
+      Mappings: {
+        M: { [PLAINTEXT]: { pw: 'dev-placeholder' }, prod: { pw: TOKEN } },
+      },
+    },
+  },
+  {
+    name: 'Fn::Select with an INTRINSIC index over a pure-LITERAL list',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [{ Ref: 'Idx' }, ['alpha', 'beta']] } },
+    },
+    readback: { Detail: { pw: 'beta' } },
+    expected: { Detail: { pw: 'beta' } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the Select arm: every element AWS could hold is ' +
+      'public template text, so the unknown selection discloses nothing',
+    template: { Parameters: { Idx: { Type: 'String', Default: '1' } } },
+  },
+  {
+    name: 'Fn::If inside an ARRAY element, reference in the untaken branch',
+    properties: {
+      Detail: {
+        Items: [{ 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev-placeholder'] }, 'anchor-lit'],
+      },
+    },
+    readback: { Detail: { Items: [PLAINTEXT, 'anchor-lit'] } },
+    refused: true,
+    why:
+      'the ARRAY recursion arm, fenced (parent review measured it unpinned): a ' +
+      'discarder inside a list property is the everyday cdk-synth shape ' +
+      '(SecurityGroupIds and friends). The sibling literal anchors the ' +
+      'positional pairing, so the replay leaks rather than masks',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::Select with a NUMERIC index selecting the reference itself',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [0, [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    expected: { Detail: { pw: TOKEN } },
+    refused: false,
+    why:
+      "the NUMBER arm of the static-index test, fenced (parent review: every " +
+      'earlier Select row spelled its index as a string or an intrinsic, while ' +
+      'the dominant cdk-synth spelling is the bare number). Index 0 selects the ' +
+      'same element at deploy, the secret resolves, and the token persists',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'nested Fn::If inside the TAKEN branch of an outer Fn::If',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::If': [
+            'IsTrue',
+            { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev-ph'] },
+            'other-literal',
+          ],
+        },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the SELECTED-branch recursion, fenced: the outer condition holds (its ' +
+      'parameter has a Default), so the walk must descend into the taken branch ' +
+      'to see the inner downgraded drop — both counts read zero',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String', Default: 'prod' },
+        Unbound: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: {
+        IsTrue: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] },
+        IsProd: { 'Fn::Equals': [{ Ref: 'Unbound' }, 'prod'] },
+      },
+    },
+  },
+  {
+    name: 'MALFORMED two-argument Fn::If, reference in the true branch',
+    properties: {
+      Detail: { pw: { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the malformed-args arm, fenced: resolveIf destructures the missing false ' +
+      'branch as undefined and resolves it without throwing, so the downgraded ' +
+      'condition persists an ABSENT leaf while the true branch — and whatever ' +
+      'AWS holds from it — was discarded unresolved',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::FindInMap keyed by a NUMERIC literal over a map with a token elsewhere',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M', 1, 'pw'] } } },
+    readback: { Detail: { pw: 'one-v' } },
+    expected: { Detail: { pw: 'one-v' } },
+    refused: false,
+    why:
+      "the NUMBER/boolean arm of the static-key test, fenced: resolveFindInMap " +
+      "String()s the key, so a numeric literal selects the same entry at deploy " +
+      'and the un-taken token-bearing entry was discarded identically on both sides',
+    template: { Mappings: { M: { '1': { pw: 'one-v' }, prod: { pw: TOKEN } } } },
+  },
+  {
+    name: 'Fn::FindInMap whose MAP NAME is an intrinsic, token in a SIBLING map',
+    properties: { Detail: { pw: { 'Fn::FindInMap': [{ Ref: 'MapName' }, 'dev', 'pw'] } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the whole-Mappings scope fallback, fenced: a dynamic map name means the ' +
+      'named-map narrowing cannot apply, and the sibling map holds a reference ' +
+      'the deployed lookup could have selected',
+    template: {
+      Parameters: { MapName: { Type: 'String', Default: 'M' } },
+      Mappings: {
+        M: { dev: { pw: 'm-dev-v' } },
+        S: { x: { y: TOKEN } },
+      },
+    },
+  },
+  {
+    name: 'downgraded Fn::If nested inside an Fn::Join argument',
+    properties: {
+      Detail: {
+        pw: { 'Fn::Join': ['-', ['pre', { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev'] }]] },
+      },
+    },
+    readback: { Detail: { pw: `pre-${PLAINTEXT}` } },
+    refused: true,
+    why:
+      "the generic-recursion tail, fenced: the walk doc claims a nested Fn::If " +
+      'inside an Fn::Join argument is still found, and no row exercised the ' +
+      'claim — the joined readback embeds the decrypted value mid-string',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'TWO intrinsic-shaped keys in one object, both values inert text',
+    properties: {
+      Detail: { pw: { Ref: 'PlainParam', 'Fn::Sub': '${SecretRef}' } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "the parent review's multi-key refinement: dispatch runs the Ref and drops " +
+      "the Fn::Sub as a WHOLE INTRINSIC, whose string VALUE is opener-free while " +
+      'its semantics pull the secret-bearing parameter — judging the dropped ' +
+      "values' text admits it",
+    template: {
+      Parameters: {
+        PlainParam: { Type: 'String', Default: 'plain-endpoint' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+    },
+  },
+  {
+    name: 'Fn::Select with a NEGATIVE numeric index over a list holding a reference',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [-1, [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the number arm must vouch only for a real index: resolveSelect answers a ' +
+      'negative with its OutOfBounds placeholder, discarding the whole ' +
+      'eagerly-decrypted list, so the persisted leaf is a placeholder literal ' +
+      'the readback pairs against',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'ONE-argument Fn::FindInMap resolved through the stringified-undefined keys',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M'] } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "the malformed-FindInMap arm, fenced on its one SUCCESS-arm route: " +
+      "resolveFindInMap String()s the missing keys to 'undefined', so a map " +
+      'carrying that literal key resolves cleanly and both counts read zero',
+    template: {
+      Mappings: { M: { undefined: { undefined: 'undef-v' } } },
+    },
+  },
+  {
+    name: 'THREE-argument-plus Fn::Select, numeric index, reference in the list',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [0, [{ Ref: 'SecretRef' }, 'x-element'], 'extra'] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    overRefusal: true,
+    why:
+      'the malformed-Select arm, fenced: resolveSelect destructures the first ' +
+      'two args and ignores the extra, so the reference resolves and the token ' +
+      'persists — nothing would have leaked, and the arm refuses the unmodelled ' +
+      'shape anyway, which is the fail-closed trade the label records',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::FindInMap options object with a NON-DefaultValue sibling carrying a Ref',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::FindInMap': ['M', 'dev', 'pw', { DefaultValue: 'fallback-lit', Other: { Ref: 'SecretRef' } }],
+        },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "the whole-options inertness check, fenced (parent review): resolveFindInMap " +
+      'reads ONLY DefaultValue, so the sibling subtree is discarded ' +
+      'unconditionally — extracting the one key and judging it alone admitted this',
+    template: {
+      Mappings: { M: { dev: { pw: 'm-dev-v' } } },
+      Parameters: { SecretRef: { Type: 'String', Default: TOKEN } },
+    },
+  },
+  {
+    name: 'FIVE-argument Fn::FindInMap, reference in the discarded fifth argument',
+    properties: {
+      Detail: {
+        pw: { 'Fn::FindInMap': ['M', 'dev', 'pw', { DefaultValue: 'x' }, { Ref: 'SecretRef' }] },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "PARENT ROUND 2's live admit: resolveFindInMap destructures exactly four " +
+      'args and IGNORES the rest, so the fifth is discarded WHOLE and unresolved ' +
+      '— and the args recursion alone merely descends into the bare Ref instead ' +
+      'of judging it inert, with both opener counts zero',
+    template: {
+      Mappings: { M: { dev: { pw: 'm-dev-v' } } },
+      Parameters: { SecretRef: { Type: 'String', Default: TOKEN } },
+    },
+  },
+  {
+    name: 'Fn::Select with a static index OUT OF BOUNDS of a literal list',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [999, [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the other half of the out-of-bounds class the negative-index row opened: ' +
+      'resolvedList[999] is undefined, resolveSelect answers its OutOfBounds ' +
+      'placeholder, and the whole eagerly-decrypted list is discarded — a ' +
+      "literal list's length is statically checkable, so vouch only in bounds",
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::FindInMap with a dynamic key over an INERT named map, token in a SIBLING map',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M', { Ref: 'Stage' }, 'pw'] } } },
+    readback: { Detail: { pw: 'm-dev-v' } },
+    expected: { Detail: { pw: 'm-dev-v' } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the named-map NARROWING: the literal map name ' +
+      'scopes the inertness question to map M alone, so a token in sibling map S ' +
+      '— which this lookup can never select — must not cost the baseline. ' +
+      'Collapsing the scope to the whole Mappings section reds exactly this row',
+    template: {
+      Parameters: { Stage: { Type: 'String', Default: 'dev' } },
+      Mappings: {
+        M: { dev: { pw: 'm-dev-v' } },
+        S: { x: { y: TOKEN } },
+      },
+    },
+  },
+  {
+    name: 'downgraded Fn::If nested inside a FindInMap KEY argument',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::FindInMap': ['M', { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev'] }, 'pw'],
+        },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "the FindInMap args-recursion tail, fenced: the key's nested Fn::If passes " +
+      'the keyed check (map M is inert) and only the recursion into the args ' +
+      'sees its discarded secret-bearing branch',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+      Mappings: { M: { dev: { pw: 'm-dev-v' } } },
+    },
+  },
+  {
+    name: 'downgraded Fn::If nested inside a Fn::Select LIST element, index static and in bounds',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::Select': [1, [{ 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev-el'] }, 'x-element']],
+        },
+      },
+    },
+    readback: { Detail: { pw: 'x-element' } },
+    refused: true,
+    overRefusal: true,
+    why:
+      'the Select args-recursion tail, fenced: index 1 selects the same element ' +
+      'at deploy, so the discarded element 0 — and the branch its Fn::If drops — ' +
+      'was discarded identically on both sides and nothing leaks; the recursion ' +
+      'refuses the nested discarder anyway, the fail-closed trade the label records',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::If discarding {Ref: AWS::NoValue} — the optional-property idiom',
+    properties: {
+      Detail: { opt: { 'Fn::If': ['HasOpt', 'real-value', { Ref: 'AWS::NoValue' }] } },
+    },
+    readback: { Detail: { opt: 'real-value' } },
+    expected: { Detail: { opt: 'real-value' } },
+    refused: false,
+    why:
+      'the NEGATIVE control a review round bought: AWS::NoValue is the one ' +
+      'intrinsic that cannot have produced a value at deploy either (it means ' +
+      'property REMOVAL), so discarding it discards nothing AWS could hold — ' +
+      'without the carve-out the most common Fn::If idiom lost its baseline',
+    template: {
+      Parameters: { Stage: { Type: 'String', Default: 'prod' } },
+      Conditions: { HasOpt: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::If whose condition is ABSENT from the evaluated map, reference in the true branch',
+    properties: {
+      Detail: { pw: { 'Fn::If': ['NoSuchCondition', { Ref: 'SecretRef' }, 'fallback-literal'] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the resolver WARNS and takes the false branch when the condition is not in ' +
+      'its context, so nothing throws and both counts read zero — the same silence ' +
+      'as Shape B, reached without any Conditions section at all',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::If under a DOWNGRADED condition discarding a BENIGN intrinsic',
+    properties: {
+      Detail: { endpoint: { 'Fn::If': ['IsProd', { Ref: 'PlainParam' }, 'dev-endpoint'] } },
+    },
+    readback: { Detail: { endpoint: 'prod-public-endpoint' } },
+    refused: true,
+    overRefusal: true,
+    why:
+      'the discarded branch is an intrinsic, so the walk cannot vouch for what the ' +
+      'deployed condition produced there — refused although this particular ' +
+      'parameter is public. The price of not enumerating reference sources',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        PlainParam: { Type: 'String', Default: 'public-endpoint-value' },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::If under a DOWNGRADED condition discarding a pure-LITERAL object',
+    properties: {
+      Detail: { cfg: { 'Fn::If': ['IsProd', { mode: 'prod', size: 3 }, { mode: 'dev' }] } },
+    },
+    readback: { Detail: { cfg: { mode: 'dev' } } },
+    expected: { Detail: { cfg: { mode: 'dev' } } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the discard walk: the discarded branch is pure ' +
+      'literals, whose deployed value is the same public template text the walk can ' +
+      'read — refusing it would cost the common placeholder pattern its baseline',
+    template: {
+      Parameters: { Stage: { Type: 'String' } },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'intrinsic key beside a LITERAL sibling key — dispatch drops only inert text',
+    properties: { Detail: { pw: { Ref: 'SecretRef', Extra: 'literal-note' } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    expected: { Detail: { pw: TOKEN } },
+    refused: false,
+    why:
+      "the NEGATIVE control for the dispatch-order rule: the dropped sibling is an " +
+      'inert literal, and the dispatched Ref resolves the reference into the ' +
+      'persisted bag as a token the walk can position on',
     template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
   },
   {
@@ -676,12 +1323,16 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     // A floor on the POOL, written as literals from this file rather than
     // derived from the array: a table that quietly lost its refusing rows would
     // otherwise satisfy every assertion below by having nothing to check.
-    expect(ROWS).toHaveLength(30);
-    expect(ROWS.filter((r) => r.refused)).toHaveLength(11);
-    expect(ROWS.filter((r) => !r.refused)).toHaveLength(19);
-    // The deliberate over-refusals, counted so they cannot grow unnoticed: each
-    // costs a real resource its drift baseline.
-    expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(3);
+    expect(ROWS).toHaveLength(65);
+    expect(ROWS.filter((r) => r.refused)).toHaveLength(36);
+    expect(ROWS.filter((r) => !r.refused)).toHaveLength(29);
+    // The deliberate over-refusals. This counts the rows' own LABEL, so it
+    // cannot catch production refusing more than it should — the widening
+    // fence is the ADMITTED rows above, which red when a refusal reaches
+    // them. What the label buys is premise-loop EXEMPTION: an overRefusal row
+    // skips the proves-it-really-leaked replay, so quietly silencing an
+    // unearned refusal has to flip this literal and show up in the diff.
+    expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(6);
     expect(
       ROWS.filter((r) => r.overRefusal && !r.refused),
       'an over-refusal that is not a refusal is a contradiction'
@@ -706,6 +1357,110 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     ).toHaveLength(0);
     expect(new Set(ROWS.map((r) => r.name)).size, 'row names are unique').toBe(ROWS.length);
   });
+
+  it('a bag too deep for the discard walk is REFUSED fail-closed, and the import survives (parent-review blocker)', async () => {
+    // The discard walk recurses SYNCHRONOUSLY. Its frames are the heaviest of
+    // the per-resource passes — measured through this very harness, it
+    // overflows at roughly a THIRD of the depth `JSON.stringify` handles and
+    // well below the resolver's own descent limit — so a window exists where
+    // the resolve completes, both opener counts compute normally, and the
+    // walk ALONE raises `RangeError`. Unwrapped, that error escaped
+    // `resolveImportedProperties` and aborted the import AFTER the AWS-side
+    // import had succeeded — the loss the function's own parameter-fallback
+    // comment forbids. The ARM-3 call site now catches it and REFUSES.
+    //
+    // No depth is hard-coded, because every limit here moves with the
+    // engine's stack size AND with the ambient call depth of the test worker
+    // (a fixed fraction of the stringify limit was measured landing on
+    // DIFFERENT arms in different workers). Instead this case BISECTS, through
+    // the real entry point, to the smallest depth the classifier refuses, and
+    // then asserts the refusal it measured there was NOT the resolver's (no
+    // ARM-1 warn): the walk has the lowest limit of the passes, so the first
+    // refusing depth is the fail-closed catch — and if an engine ever inverts
+    // the frame-weight ordering, the ARM-1 warn shows up at the boundary and
+    // this case fails LOUDLY rather than leaving the window silently
+    // untested.
+    const nest = (depth: number): unknown => {
+      let value: unknown = 'leaf';
+      for (let i = 0; i < depth; i++) value = { a: value };
+      return value;
+    };
+    const warnMock = (getLogger() as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
+    const probe = async (depth: number): Promise<{ refused: boolean; resolveThrew: boolean }> => {
+      warnMock.mockClear();
+      const state: StackState = {
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        stackName: 'matrix-stack',
+        region: 'us-east-1',
+        resources: {
+          Res: {
+            physicalId: 'res-phys',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { Deep: nest(depth) } as Record<string, unknown>,
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      };
+      const refusedIds = await resolveImportedProperties(
+        state,
+        {
+          Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: {} } },
+        } as CloudFormationTemplate,
+        'us-east-1',
+        undefined as never,
+        getLogger()
+      );
+      return {
+        refused: refusedIds.has('Res'),
+        resolveThrew: warnMock.mock.calls.some((call) =>
+          String(call[0]).includes('Failed to resolve intrinsics')
+        ),
+      };
+    };
+    // A shallow plain bag is ADMITTED — the anchor that makes the search's
+    // "first refusing depth" a real boundary rather than refusal-everywhere.
+    expect((await probe(64)).refused, 'a shallow plain bag must be admitted').toBe(false);
+    let lo = 64;
+    let hi = 128;
+    let refusingProbe = await probe(hi);
+    while (!refusingProbe.refused) {
+      lo = hi;
+      hi *= 2;
+      expect(hi, 'no refusing depth found below 2^21 — the walk stopped overflowing?').toBeLessThan(
+        1 << 21
+      );
+      refusingProbe = await probe(hi);
+    }
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      const result = await probe(mid);
+      if (result.refused) {
+        hi = mid;
+        refusingProbe = result;
+      } else {
+        lo = mid;
+      }
+    }
+    // The import SURVIVED every probe (each await resolved instead of
+    // rejecting), and the minimal refusing depth was refused with the resolve
+    // COMPLETED — i.e. by ARM 3's fail-closed catch, not by ARM 1.
+    expect(refusingProbe.refused).toBe(true);
+    expect(
+      refusingProbe.resolveThrew,
+      'at the minimal refusing depth the resolve completed, so the refusal must be the ' +
+        'walk-overflow catch — an ARM-1 warn here means the frame-weight ordering inverted'
+    ).toBe(false);
+    // Exclude the CLOSER competitor too (parent review round 2): an ARM-2
+    // refusal via `countDynamicReferenceOpeners` returning undefined ALSO
+    // carries no ARM-1 warn. Stringify surviving the boundary depth here —
+    // with frames measured ~2x lighter than the walk's, against an ambient
+    // call-depth offset of a few hundred frames — leaves the walk catch as
+    // the only plausible refusing arm, and turns a frame-weight inversion
+    // (one reviewer measured a 4.3x intra-process JIT swing on the walk)
+    // into a loud failure instead of a green test that pins nothing.
+    expect(() => JSON.stringify(nest(hi))).not.toThrow();
+  }, 60_000);
 
   for (const row of ROWS) {
     it(`SAFE: ${row.name}`, async () => {
@@ -807,7 +1562,7 @@ describe('cdkd import: which resources may take an observedProperties baseline (
         provenByPlaintext++;
       }
     }
-    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(4);
+    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(26);
     expect(provenByMask, 'the loop ran over every refusal earned by a MASK').toBe(4);
   });
 });
