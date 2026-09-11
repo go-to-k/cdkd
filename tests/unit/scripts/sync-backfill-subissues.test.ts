@@ -21,7 +21,10 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
-import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import {
+  ProviderRegistry,
+  STICKY_CC_MIGRATION_EXEMPT,
+} from '../../../src/provisioning/provider-registry.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 import {
   MARKER_PREFIX,
@@ -596,6 +599,35 @@ describe('the rendered sub-issue body', () => {
     // RESOURCE moves because of this property, and an empty list would leave
     // that half unbacked.
     expect(decision.ccRouteReason?.properties).toEqual([property]);
+  });
+
+  it('backs the sticky-exemption paragraph with the registry it describes', () => {
+    // The paragraph telling a lane that wiring alone does not return an
+    // ALREADY-DEPLOYED resource was added in review round 1 — and added
+    // UNFENCED, which is the same "prose claim about another module's
+    // mechanism" shape that round had just measured in the routing fence. It
+    // ships to 44 public issues and tells a reader what work to budget, so a
+    // rename or a retirement upstream must fail here rather than quietly leave
+    // the bodies prescribing a constant that no longer exists.
+    //
+    // Imported, not grepped: a rename then fails TYPECHECK, which no source
+    // scan can achieve.
+    const body = renderSubIssueBody({ type: 'AWS::S3::Bucket', properties: ['A'] });
+    expect(body).toContain('STICKY_CC_MIGRATION_EXEMPT');
+    expect(body).toContain("mode: \"sdk-coverage\"");
+
+    const entries = [...STICKY_CC_MIGRATION_EXEMPT.values()];
+    expect(entries.length, 'the exemption registry is empty — this case measures nothing').toBeGreaterThan(0);
+    const sdkCoverage = entries.filter((e) => e.mode === 'sdk-coverage');
+    expect(
+      sdkCoverage.length,
+      "no 'sdk-coverage' entry exists — the body prescribes a mode nothing uses"
+    ).toBeGreaterThan(0);
+    // The two pieces of evidence the body tells a lane to budget for.
+    for (const entry of sdkCoverage) {
+      expect(entry.physicalIdForm, 'an sdk-coverage entry carries no physicalIdForm').toBeTruthy();
+      expect(entry.integFixture, 'an sdk-coverage entry carries no integFixture').toBeTruthy();
+    }
   });
 
   it('renders every checkbox UNCHECKED, because a tick would be overwritten', () => {

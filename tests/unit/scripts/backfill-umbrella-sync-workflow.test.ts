@@ -435,6 +435,19 @@ echo "node $*" >> "$GH_LOG"
         step.slice(at),
         'the reconciler invocation swallows its own failure — every refusal would report green'
       ).not.toMatch(/\|\||\btrue\b/);
+      // The `if ! node …; then :; fi` shape sits BEFORE the anchor, so the tail
+      // scan above cannot see it.
+      expect(step, 'the reconciler is wrapped in an if that swallows its status').not.toMatch(
+        /if !\s*(\S+=\S+\s+)*node scripts\/sync-backfill-subissues\.ts/
+      );
+      // And `continue-on-error` is a YAML KEY — invisible to every text scan of
+      // `run:`, and it green-washes the same four refusals from outside the
+      // shell entirely. Read off the parsed step (review round 2).
+      expect(
+        byName(RECONCILE_STEP),
+        'the step continues on error — its refusals report green'
+      ).not.toHaveProperty('continue-on-error');
+      expect(parsed.jobs.sync, 'the JOB continues on error').not.toHaveProperty('continue-on-error');
     });
 
     it('ensures the sub-issue label BEFORE the reconciler can attach it', () => {
