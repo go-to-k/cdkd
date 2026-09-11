@@ -1328,6 +1328,113 @@ describe('cdkd drift', () => {
     expect(mockSaveState).not.toHaveBeenCalled();
   });
 
+  describe('detection gates an import-REFUSED record (issue #2952)', () => {
+    it('reports it notCompared and prints the live secret NOWHERE', async () => {
+      // THE DISCLOSURE. A refused record spells no `{{resolve:` anywhere, so
+      // `secretPaths` (filled by resolution) and its offline fallback (which
+      // scans for where the tokens simply ARE) are BOTH empty — nothing marks
+      // the path secret-bearing, `redactDriftChanges` has no needle and no
+      // position to mask, and the live decrypted value was rendered as the AWS
+      // side of an ordinary-looking drift row.
+      //
+      // The SIBLING is mandatory: every assertion here is an absence, and
+      // absence is equally satisfied by a run that compared nothing at all.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Refused: makeResource({
+            physicalId: 'refused',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'q', Password: WRONG_BRANCH_LITERAL },
+            observedBaselineRefused: true,
+          }),
+          Sibling: makeResource({
+            physicalId: 'sibling',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      const readMock = vi.fn(async (physicalId: string) =>
+        physicalId === 'refused'
+          ? { QueueName: 'q', Password: REFUSED_PLAINTEXT }
+          : { VersioningConfiguration: { Status: 'Suspended' } }
+      );
+      mockRegistryGetProvider.mockImplementation(() => ({ readCurrentState: readMock }));
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      // Not even READ: the gate sits before the provider lookup, so the
+      // plaintext is never pulled into the process for a resource we have
+      // already decided not to compare.
+      expect(readMock.mock.calls.map((c) => c[0])).toEqual(['sibling']);
+
+      const payload = JSON.parse(output) as Array<{
+        drifted: Array<{ logicalId: string }>;
+        notCompared: Array<{ logicalId: string; cause: string; referencesUnresolved: boolean }>;
+      }>;
+      const stack = payload[0]!;
+
+      // notCompared, NOT drifted and NOT clean. A silent `clean` would be the
+      // "report a resource cdkd never compared as a pass" failure the cause
+      // enumeration exists to prevent.
+      expect(stack.drifted.map((d) => d.logicalId)).toEqual(['Sibling']);
+      const refused = stack.notCompared.find((n) => n.logicalId === 'Refused');
+      expect(refused?.cause).toBe('baselineRefused');
+      // No reference is unresolved — the record spells none, which is exactly
+      // why nothing masked its readback.
+      expect(refused?.referencesUnresolved).toBe(false);
+
+      // THE POINT: the live secret reached no surface at all.
+      const everything =
+        output +
+        [...errorSpy.mock.calls, ...warnSpy.mock.calls].map((c) => String(c[0])).join('\n');
+      expect(everything).not.toContain(REFUSED_PLAINTEXT);
+    });
+
+    it('exits 2 and names the right cause when a refused record is the ONLY finding', async () => {
+      // Two claims nothing else pins.
+      //
+      // (1) THE EXIT CODE. `outcomeExitSignal` routes a new cause to the
+      // non-zero side by DEFAULT (its switch excludes `unresolvedToken` rather
+      // than listing the others), so without a case asserting it, the class this
+      // change relies on is inherited rather than chosen. A refusal is
+      // CLEARABLE — deploy a change to the resource — which is what exit 2
+      // means, so CI gating on "everything was actually compared" must fail.
+      //
+      // (2) THE HEADING. With `baselineRefused` folded into the not-compared-AT-ALL
+      // bucket, a stack containing ONLY that cause used to print
+      // `(the read or comparison failed)` — false, since nothing was read and
+      // nothing failed. The refused record is the only outcome here, so the
+      // heading has nowhere to borrow a true cause from.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Refused: makeResource({
+            physicalId: 'refused',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'q', Password: WRONG_BRANCH_LITERAL },
+            observedBaselineRefused: true,
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockImplementation(() => ({
+        readCurrentState: async () => ({ QueueName: 'q', Password: REFUSED_PLAINTEXT }),
+      }));
+
+      const { error, output } = await runDrift(['TestStack']);
+
+      expect((error as Error).message).toBe('__exit__');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+
+      expect(output).toContain('not compared AT ALL');
+      expect(output).toContain('an import refused their observed baseline');
+      // The wrong cause must NOT be borrowed for a population that has none.
+      expect(output).not.toContain('the read or comparison failed');
+      expect(output).not.toContain(REFUSED_PLAINTEXT);
+    });
+  });
+
   describe('--accept (state ← AWS)', () => {
     // Issue #2161: `acquireLock` reports contention by RESOLVING false (not
     // throwing). `--accept` / `--revert` must refuse rather than mutate state /
@@ -1572,7 +1679,7 @@ describe('cdkd drift', () => {
             }
       );
 
-      const { error } = await runDrift(['TestStack', '--accept', '--yes']);
+      const { error, output } = await runDrift(['TestStack', '--accept', '--yes']);
       expect(error).toBeUndefined();
 
       expect(mockSaveState).toHaveBeenCalledTimes(1);
@@ -1592,10 +1699,14 @@ describe('cdkd drift', () => {
       // The readback value reached the persisted blob by NO route — not
       // `properties`, not a baseline, not an attribute bag.
       expect(JSON.stringify(savedState)).not.toContain(REFUSED_PLAINTEXT);
-      // ...and the user was told, by name, which resource was declined.
-      const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warnings).toContain('TestStack/Refused (AWS::SQS::Queue)');
-      expect(warnings).toContain('NOT accepted');
+      // The user is told which resource was not compared. Since issue #2952
+      // DETECTION gates a marked record — it is reported `notCompared`, never
+      // `drifted` — so it no longer reaches the accept loop's own refusal at
+      // all. That refusal remains as a second layer; what this case pins is the
+      // END-TO-END contract, which holds whichever layer enforces it: the
+      // record is untouched, its readback is nowhere, and the user is told.
+      const said = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(said + output).toContain('Refused');
     });
 
     it('--accept --dry-run PLANS the refusal instead of promising the write', async () => {
@@ -1645,13 +1756,15 @@ describe('cdkd drift', () => {
       const plan = output.slice(output.indexOf('Plan (--accept):'));
       expect(plan).not.toBe('');
 
-      expect(plan).toContain('SKIPPED');
-      expect(plan).toContain('Refused');
+      // Since issue #2952 the marked resource never becomes `drifted`, so it is
+      // absent from the plan entirely rather than listed as SKIPPED — a
+      // stronger outcome than the one this case originally pinned, and the same
+      // end-to-end promise: the plan does not offer a write the run declines.
+      expect(plan).not.toContain('Refused');
       // THE CONTROL: the sibling's change really was planned in the same run,
       // so "no row for Refused" is not satisfied by a plan that printed nothing.
       expect(plan).toContain('Suspended');
-      // The plan never offers the refused resource's readback as an accepted
-      // value — the promise the run would then decline.
+      // And the readback never reaches the plan.
       expect(plan).not.toContain(REFUSED_PLAINTEXT);
     });
   });
@@ -1947,7 +2060,7 @@ describe('cdkd drift', () => {
       expect(updateMock).toHaveBeenCalledTimes(2);
     });
 
-    it('never reaches provider.update for an import-REFUSED record, counting it unresolvable (issue #2944)', async () => {
+    it('never reaches provider.update for an import-REFUSED record (issues #2944 / #2952)', async () => {
       // The only one of the four refused-baseline writers that writes to LIVE
       // AWS. A marked record has no `observedProperties`, so `revertBaseline`
       // falls to `properties` — where the import refusal left a wrong-branch
@@ -1993,31 +2106,31 @@ describe('cdkd drift', () => {
             }
       );
 
-      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+      const { error, output } = await runDrift(['TestStack', '--revert', '--yes']);
 
-      // A refusal is a partial outcome, so the command exits 2 the same way a
-      // per-resource failure does — the DISTINCTION is in the counts below.
-      expect((error as Error).message).toBe('__exit__');
-      expect(exitSpy).toHaveBeenCalledWith(2);
-
-      // The whole claim, read off the call list rather than off a count: the
-      // sibling reached AWS and the refused record did not.
+      // THE CLAIM, read off the call list rather than off a count: the sibling
+      // reached AWS and the refused record did not. That is the property this
+      // case exists for, and it is the one thing that must hold however the
+      // refusal is enforced.
       expect(updateMock.mock.calls.map((c) => c[0])).toEqual(['Sibling']);
 
-      // UNRESOLVABLE, not FAILED. The two are separate tallies because a failed
-      // resource was attempted at AWS and a refused one never left cdkd — a
-      // user sent to look at an update that never happened looks in the wrong
-      // place. Both numbers are asserted: counting it as a failure would print
-      // `1 AWS update failure(s), ... 0 refused or unresolvable` and still exit
-      // 2, so the exit code alone cannot tell the two apart.
-      const errors = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(errors).toContain('0 AWS update failure(s)');
-      expect(errors).toContain('1 refused or unresolvable');
+      // Since issue #2952 the enforcement moved EARLIER: DETECTION reports a
+      // marked record `notCompared`, so it never becomes `drifted` and never
+      // reaches the revert loop's own refusal (which remains as a second
+      // layer). The command therefore does not exit 2 on its account — the
+      // revert itself had nothing to fail at — and the resource is reported in
+      // the not-compared roll-up instead of the unresolvable tally.
+      expect(error).toBeUndefined();
+      expect(output + errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'Refused'
+      );
 
-      // ...and the user was told, by name, which resource was declined and why.
-      const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warnings).toContain('TestStack/Refused (AWS::SQS::Queue)');
-      expect(warnings).toContain('NOT reverted');
+      // The live plaintext reached NO surface: not the report, not the plan,
+      // not an error line. This is the assertion the whole issue is about.
+      const everything =
+        output +
+        [...errorSpy.mock.calls, ...warnSpy.mock.calls].map((c) => String(c[0])).join('\n');
+      expect(everything).not.toContain(REFUSED_PLAINTEXT);
     });
 
     /**

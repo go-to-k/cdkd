@@ -118,6 +118,13 @@ A **clean** verdict never means anything except compared-and-matched.
 | `refused` | cdkd declined to resolve a dynamic reference the resource's state records, because it could not attribute the reference to a region. Its secret-bearing properties were never looked at. | Yes — spell the reference as a full ARN, which names its region. |
 | `unresolvedToken` | State records a `{{resolve:...}}` spelling cdkd resolves for nobody. cdkd resolves all three CloudFormation services (`secretsmanager`, `ssm`, `ssm-secure`), so this is reserved for text that is not a dynamic reference at all, or a service AWS adds later. | No — a re-run cannot clear it, which is why it alone does not affect the exit code. |
 | `readFailed` | The read or the comparison threw, so NONE of that resource's properties were compared. Every other resource in the stack is still compared and reported. | Yes — usually a missing permission or a throttle; grant it or re-run. |
+| `baselineRefused` | A [`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to capture that resource's observed baseline, so the only baseline available is the recorded properties that refusal already found untrustworthy. NONE of its properties were compared, and cdkd does not read it back from AWS at all. | Yes — deploy a change to the resource, which rebuilds its record from your template and captures a real baseline. |
+
+The `baselineRefused` cause is recorded on the state record, which means it only
+covers a refusal made by a cdkd that knew how to record one (state schema v10 and
+later). A stack imported by an older release carries the same untrustworthy
+properties with nothing marking them, and `cdkd drift` still compares it — re-run
+`cdkd import`, or deploy a change to the resource, to put the record right.
 
 A **drifted** resource can be partially compared too: the changes it reports
 are real, but they are not the whole comparison, so it carries
@@ -217,12 +224,17 @@ dynamic reference(s) cdkd could not re-resolve. Grant the caller
 `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference.
 That last counter also covers a resource `--revert` refused because its
 recorded baseline holds only the redaction mask and AWS reports nothing to
-preserve there, one refused because its baseline holds a raw
+preserve there, and one refused because its baseline holds a raw
 CloudFormation intrinsic **object** (`Fn::Join` / `Ref`) cdkd cannot resolve
-outside a deploy, and one whose baseline a
-[`cdkd import`](import.md#the-drift-baseline-an-import-records) run REFUSED to
-capture at all — for all three, no AWS call is made and the message names the
+outside a deploy — for both, no AWS call is made and the message names the
 remedy.
+
+A resource whose baseline a
+[`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused is
+**not** in that tally: detection declines to compare it at all, so it never
+becomes drifted and `--revert` never considers it. It is reported under
+`notCompared` with the cause `baselineRefused`, which a detection-only run
+exits `2` for.
 
 **The import refusal is the one that also stops `--accept`**, and it is
 per-resource rather than per-property. Such a resource has no baseline, so
@@ -232,9 +244,12 @@ can persist a resolved secret in plaintext. `--revert` has the mirror problem:
 it would push those properties to AWS, overwriting whatever the resource really
 holds. Both decline, name the resource, and point at the same remedy: **deploy
 a change to it**, which rebuilds its record from your template and captures a
-real baseline. Note that such a resource is still *reported* as drifted —
-detection compares it against those same recorded properties — so you may see a
-drift you cannot act on through this command until you deploy. Successful resources are in sync; re-run `cdkd drift <stack>`
+real baseline. Such a resource is **not reported as drifted either**: detection declines to
+compare it at all and reports it under `notCompared` with the cause
+`baselineRefused`. Comparing it would have meant rendering the live AWS value —
+including a decrypted secret — as one side of a drift row that nothing could
+mask, because a refused record spells no `{{resolve:...}}` for the redaction to
+key on. Successful resources are in sync; re-run `cdkd drift <stack>`
 to see what is left, then either `cdkd drift <stack> --revert` for the
 recoverable failures or `cdkd deploy <stack> --replace` for the
 update-not-supported ones.
