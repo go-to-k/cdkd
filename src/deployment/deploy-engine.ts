@@ -5421,6 +5421,12 @@ export class DeployEngine {
         // counts as SDK), so both operands are narrowed for the same records.
         // `?.()` for the test doubles, as at the diff call: a double without
         // the method compares the full bag.
+        //
+        // A `--recreate-via-*` target this skip absorbs is silently ignored,
+        // since the recreate flags are read below it (the issue #2651 class).
+        // Here that needs `--prefer-sdk-route` and a recreate flag on the same
+        // resource -- contradictory input -- plus a change the skip absorbs (a
+        // policy-only flip, or an intrinsic resolving to the stored value).
         const desiredForSkipCheck = redactSecretsForState(
           markSameGenerationBag({ ...resolvedProps }),
           updateSecrets,

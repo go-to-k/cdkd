@@ -714,6 +714,9 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
           .resources['MySub']!;
         expect(saved.deletionPolicy).toBe('Retain');
         expect(saved.physicalId).toBe(SUB_ARN);
+        // The refresh keeps the narrowed record as written: it must not pick
+        // up the template's `Region`, which the SDK route never sent.
+        expect(saved.properties).toEqual(SUB_WRITTEN);
       });
     });
   });
