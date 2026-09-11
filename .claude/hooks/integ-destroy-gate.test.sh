@@ -232,8 +232,22 @@ run_msg_case "exit-2 names git fetch, not /run-integ" error \
 # The converse: a genuinely stale marker must still advise the integ run
 # and must NOT claim an evaluation error. Without this the case above
 # could pass while the hook printed the error text unconditionally.
+# Needles the COMMAND, not the `Required action` heading it sits under. Named
+# "advises /run-integ" while asserting the heading, it passed with the
+# `/run-integ <test-name>` line deleted -- the gate's one actionable command,
+# unfenced under a case named for it.
 run_msg_case "stale marker still advises /run-integ" stale \
-  'Required action' 'could not EVALUATE' \
+  '/run-integ <test-name>' 'could not EVALUATE' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+# The two conditions that make a marker legitimate. Deleting either bullet left
+# the suite green, and they are the whole reason the skill is the only setter.
+run_msg_case "stale message keeps the marker's preconditions" stale \
+  'destroy completed with 0 errors' 'could not EVALUATE' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+run_msg_case "stale message keeps the orphan precondition" stale \
+  '0 orphan resources after the post-destroy' 'could not EVALUATE' \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
 
 # --- The stale message must be SELF-DIAGNOSING (issue #3010) ---
@@ -267,12 +281,14 @@ run_msg_case "stale marker still advises /run-integ" stale \
 # re-statement: a case driving a predicate the suite declares stays green when
 # the text is reverted (.claude/rules/hooks-authoring.md).
 N_EXPLAIN='mise exec -- markgate status integ-destroy --explain'
-N_SCOPE='the exact file list markgate digests'
+N_SCOPE='writes the `scope:` block'
 N_CAUSE='does not stale this marker by itself'
 payload_merge="$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
 
-run_msg_case "stale message names markgate --explain (#3010)" stale \
-  "$N_EXPLAIN" 'could not EVALUATE' "$payload_merge"
+# NOTE: there is no separate "names the command" case. `$N_EXPLAIN` is a strict
+# substring of the resolved-tree case's needle further down, which asserts the
+# whole emitted line including the `cd <resolved>` prefix, so a standalone case
+# on the substring fences nothing the longer one does not.
 
 run_msg_case "stale message says what --explain prints (#3010)" stale \
   "$N_SCOPE" 'could not EVALUATE' "$payload_merge"
@@ -374,6 +390,16 @@ run_msg_case "empty scope beside digest-differs has a reading (#3010)" stale \
 run_msg_case "empty-scope reading includes the narrowing cause (#3010)" stale \
   'stopped matching the file' 'could not EVALUATE' "$payload_merge"
 
+# ONE CASE PER CAUSE applies to this list too, and did not at first: two of its
+# three were fenced, so deleting the first entry left the suite green.
+run_msg_case "empty-scope reading includes the revert cause (#3010)" stale \
+  'change was reverted' 'could not EVALUATE' "$payload_merge"
+
+# ...and the sentence that says WHY an emptied delta mismatches, without which
+# the three causes are a list with no conclusion.
+run_msg_case "empty-scope reading says why it mismatches (#3010)" stale \
+  'taken over a non-empty delta' 'could not EVALUATE' "$payload_merge"
+
 # ...and its "landed upstream" entry contradicted the peer-merge sentence six
 # lines above it, which says a peer's merge does not move the merge base.
 # Measured on the squash shape this repo allows: landing the identical content
@@ -400,17 +426,20 @@ else
   printf 'FAIL required action precedes the diagnostic (#3010)\n'
 fi
 
-# Markers are per-worktree and this hook may have resolved a `cd` / `-C` target
-# that is not the caller's cwd, so the advised command names where to run it.
 # The advised command is EMITTED, not hard-coded, so it names the tree this gate
 # actually checked -- a `cd` / `-C` in the blocked command can make that a
 # different worktree from the caller's cwd, and markgate's markers are
 # per-worktree, so a diagnostic run in the wrong tree answers about the wrong
-# marker. Asserting the resolved path is what distinguishes the emitted form
-# from the hard-coded one it replaced.
-run_msg_case "diagnostic names the tree this gate checked (#3010)" stale \
+# marker.
+#
+# Driven from a payload whose cwd is main_repo and whose command `cd`s to
+# side_repo, and it REJECTS main_repo. A payload where the two coincide fences
+# nothing: substituting the payload cwd for the resolved target left the suite
+# green, so the case asserted only that SOME path was printed.
+run_msg_case "diagnostic names the RESOLVED tree, not the cwd (#3010)" stale \
   "cd $side_repo && mise exec -- markgate status integ-destroy --explain" \
-  'could not EVALUATE' "$payload_merge"
+  "cd $main_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"cd %s && gh pr merge 42"}}' "$main_repo" "$side_repo")"
 
 # --- The remaining prose this PR added, one needle each ---
 #
@@ -422,16 +451,79 @@ run_msg_case "diagnostic names the tree this gate checked (#3010)" stale \
 # reword moved "build" onto the next line -- the second time that happened in
 # this file, so: keep every needle inside one rendered line.
 run_msg_case "diagnostic keeps the stale-binary warning (#3010)" stale \
-  'a bare `markgate` may be an older' 'could not EVALUATE' "$payload_merge"
+  'a bare `markgate` can pick up an older' 'could not EVALUATE' "$payload_merge"
+
+# markgate SPLITS `--explain` across streams: the `scope:` block goes to stderr
+# and everything else, `merge base:` included, to stdout (measured on 0.4.1).
+# A reader who pipes stdout -- the ordinary thing to do with a diagnostic --
+# loses exactly the half the message sent them for.
+run_msg_case "diagnostic says --explain splits its streams (#3010)" stale \
+  'to stderr, while `merge base:` goes to stdout' 'could not EVALUATE' "$payload_merge"
+
+# The include-list cause is CONDITIONAL and was stated flatly. Measured:
+# widening `include:` onto globs that match only files this branch has not
+# touched leaves `verify` at 0; only adding or removing a path that is IN the
+# delta moves the digest.
+run_msg_case "include-list cause is qualified, not flat (#3010)" stale \
+  'widening onto paths this branch has not touched' 'could not EVALUATE' "$payload_merge"
+
+# --- The emitted `cd` line must survive a PASTE ---
+#
+# `$target_dir` is interpolated into the advice, and this repo's worktrees can
+# sit under a directory with a space or an apostrophe. Unquoted, `cd` there
+# takes two arguments; with an apostrophe the pasted line leaves the reader at a
+# continuation prompt. Asserted by EXECUTING the `cd` half rather than by
+# matching the escape, so the case survives any future change of quoting style
+# and fails on a broken one. (go-to-k/cdkd#2027 is the 24-site precedent for
+# this class in these hooks.)
+# --- Without mise, the advice must still be the command that exists ---
+#
+# The hook resolves `mise exec -- markgate` when mise is on PATH and a bare
+# `markgate` otherwise (the `elif` in its resolver). The message used to say
+# "prefer the `mise exec --` form", which in the second environment both
+# misdescribes the line printed one paragraph above it and recommends a spelling
+# the reader cannot run. Asserted by RENDERING with mise removed from PATH,
+# because the prose alone cannot be told apart from the wrong prose.
+nomise_dir="$TMPDIR/bin-nomise"
+mkdir -p "$nomise_dir"
+cp "$SHIM_DIR/markgate" "$nomise_dir/markgate"
+nomise_out=$(printf '%s' "$payload_merge" \
+  | PATH="$nomise_dir:/usr/bin:/bin" MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+nomise_cd=$(printf '%s' "$nomise_out" | grep -m1 '^  cd ')
+if printf '%s' "$nomise_cd" | grep -q '&& markgate status integ-destroy --explain' \
+   && ! printf '%s' "$nomise_out" | grep -q 'mise exec'; then
+  pass=$((pass + 1)); printf 'OK   advice matches the resolved binary without mise (#3010)\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL advice matches the resolved binary without mise (#3010): emitted '$nomise_cd'; 'mise exec' still present: $(printf '%s' "$nomise_out" | grep -c 'mise exec')\n"
+  printf 'FAIL advice matches the resolved binary without mise (#3010)\n'
+fi
+
+space_repo="$TMPDIR/side repo"
+git init -q -b feature/x "$space_repo"
+declare_gate "$space_repo" integ-destroy
+git -C "$space_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+space_out=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$space_repo" \
+  | MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+space_cd=$(printf '%s' "$space_out" | grep -m1 '^  cd ' | sed 's/ && .*//; s/^  //')
+space_want=$(cd "$space_repo" && pwd -P)
+space_got=$( (eval "$space_cd" >/dev/null 2>&1 && pwd -P) 2>/dev/null )
+if [ -n "$space_cd" ] && [ "$space_got" = "$space_want" ]; then
+  pass=$((pass + 1)); printf 'OK   emitted cd survives a path with a space (#3010)\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL emitted cd survives a path with a space (#3010): line '$space_cd' landed in '${space_got:-nowhere}', want '$space_want'\n"
+  printf 'FAIL emitted cd survives a path with a space (#3010)\n'
+fi
 
 # Needle kept on ONE line: `grep` matches per line, so a needle spanning the
 # message's 80-column wrap matches nothing and the case fails for a reason that
 # has nothing to do with the hook. It did, on first writing.
 run_msg_case "diagnostic says merge base: is the SET-time value (#3010)" stale \
-  'printed only when a marker exists' 'could not EVALUATE' "$payload_merge"
+  'appears only when a marker exists' 'could not EVALUATE' "$payload_merge"
 
 run_msg_case "remedy says narrowing alone does not clear it (#3010)" stale \
-  'Narrowing does not clear this' 'could not EVALUATE' "$payload_merge"
+  'narrowing CAN turn this' 'could not EVALUATE' "$payload_merge"
 
 # The fourth heredoc. Its body carries `integ-destroy` in backticks; unquoted,
 # the header the reason-LESS path prints is mangled the same way as the others.

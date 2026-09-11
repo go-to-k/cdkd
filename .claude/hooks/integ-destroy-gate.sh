@@ -349,10 +349,14 @@ bypass this hook. The whole point of the gate is that an unverified
 destroy cannot reach main; setting the marker by hand defeats it. If
 you believe the file in scope is genuinely unrelated to deletion
 behavior, the right fix is to narrow `.markgate.yml` integ-destroy
-scope, not to bypass the marker. Narrowing does not clear this
-refusal by itself -- editing the include list is one of the things
-that MOVES the digest -- so the gate stays stale until the next
-`/run-integ` records it.
+scope, not to bypass the marker.
+
+Be honest with yourself about that one: narrowing CAN turn this
+refusal green with no integ run at all. Measured -- drop the only
+in-scope path the marker had not seen and `verify` goes back to 0.
+So narrowing is a decision about what counts as deletion logic,
+and a reviewable one; it is not a way to get a single merge
+through. The gate fires again the moment an in-scope file moves.
 
 EOF
 
@@ -366,14 +370,22 @@ EOF
 # different from the caller's cwd, and markers are per-worktree; and
 # `${markgate[*]}` is the same resolution this hook used, so the line stays
 # runnable where mise is absent and the hook fell back to a bare `markgate`.
-printf '  cd %s && %s status integ-destroy --explain\n\n' \
+# `%q` on the path: this tree can sit under a directory with a space or an
+# apostrophe, and an unquoted `cd` there either takes two arguments or leaves
+# the reader's shell at a continuation prompt. Same rendering on bash 3.2 and
+# 5.x, and a no-op for an ordinary path.
+printf '  cd %q && %s status integ-destroy --explain\n\n' \
   "$target_dir" "${markgate[*]}" >&2
 cat >&2 <<'EOF'
-The `scope:` block it prints is the exact file list markgate digests for this
-gate; `merge base:` — printed only when a marker exists — is the base that
-marker was set against, which is not necessarily the live one. Prefer the
-`mise exec --` form the line above uses: a bare `markgate` may be an older
-build on PATH that cannot parse this repo's `hash: diff` gates at all.
+Read BOTH streams. markgate writes the `scope:` block — the exact file list it
+digests for this gate — to stderr, while `merge base:` goes to stdout, so
+piping stdout alone loses the half you came for. (`state:` is printed on both.)
+`merge base:` appears only when a marker exists, and is the base that marker was
+SET against, which is not necessarily the live one.
+
+Run the command as printed. The binary in it is the one this gate resolved;
+retyping it as a bare `markgate` can pick up an older build on PATH that cannot
+parse this repo's `hash: diff` gates at all.
 
 EOF
 
@@ -400,8 +412,10 @@ What does: an in-scope file changing in THIS WORKING TREE; merging
 `origin/main` into this branch, or rebasing this branch onto it, when the
 incoming change touches an in-scope file this branch also modified, which keeps
 that file in the delta while its base side moves under it; and editing this
-gate's `include:` / `exclude:` list, which changes WHICH files are digested with
-no file changing at all. `--explain` narrows it to the files actually digested.
+gate's `include:` / `exclude:` list so that it starts or stops matching a path
+that is IN the delta, which changes WHICH files are digested with no file
+changing at all — widening onto paths this branch has not touched does nothing,
+measured. `--explain` narrows it to the files actually digested.
 Its `merge base:` is recorded at `set` time, so comparing it against
 `git merge-base origin/main HEAD` is a ONE-WAY test: equal rules the second
 cause out, unequal says only that the base moved at some point, not that the
