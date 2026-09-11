@@ -8,14 +8,11 @@ paths:
 # Key Files and Directories - state, types
 
 Split out of the former `layout-misc.md`, whose six globs made every
-`src/synthesis` / `src/state` / `src/assets` / `src/types` edit load all four
-areas' notes. Each file here carries a glob as narrow as its content.
+edit under any one of four src layers load all four.
+
+`src/cli/commands/events.ts` and its `src/state` / `src/types` siblings are documented in [layout-cli.md](layout-cli.md).
 
 Index of every area: [code-layout.md](code-layout.md).
-
-## Core Directory
-
-- **src/state/** - S3 state backend, lock manager
 
 ## Important Files
 

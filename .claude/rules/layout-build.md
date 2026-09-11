@@ -8,8 +8,7 @@ paths:
 # Key Files and Directories - build config and version
 
 Split out of the former `layout-misc.md`, whose six globs made every
-`src/synthesis` / `src/state` / `src/assets` / `src/types` edit load all four
-areas' notes. Each file here carries a glob as narrow as its content.
+edit under any one of four src layers load all four.
 
 Index of every area: [code-layout.md](code-layout.md).
 
