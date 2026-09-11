@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import { getPropertyCoverage } from '../../../src/provisioning/property-coverage.js';
+import {
+  getPropertyCoverage,
+  withoutSilentDropProperties,
+} from '../../../src/provisioning/property-coverage.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
@@ -472,6 +475,219 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
 
       expect(mockProvider.create).toHaveBeenCalled();
       expect(savedRecord().properties).not.toHaveProperty(DROPPED);
+    });
+  });
+
+  /**
+   * Issue [#2809](https://github.com/go-to-k/cdkd/issues/2809): the no-change
+   * re-check's DESIRED operand. Since #2750 its stored operand is the record
+   * minus the removable drops the SDK route cannot write, while the desired
+   * one was the full resolved bag, so for an SDK-routed resource carrying an
+   * allow-listed removable drop the two could never be equal and neither the
+   * skip nor the attribute-only branch nested inside it was reachable. (A
+   * create-only drop stays on both sides, so it never caused a mismatch.)
+   *
+   * The diff is mocked to REPORT an UPDATE. The real diff reaches this arm two
+   * ways: a property change the re-check exists to absorb (an intrinsic
+   * resolving to the value already stored), and a policy-only change carried
+   * in `attributeChanges`, which the SNS cases below use and
+   * `tests/integration/sdk-to-cc-autoroute` phases 4b/4c exercise live. What
+   * it never reports is a property change confined to the dropped key, since
+   * it narrows both of its own sides.
+   */
+  describe('the no-change re-check narrows its DESIRED side too (#2809)', () => {
+    function recordState(
+      logicalId: string,
+      resourceType: string,
+      physicalId: string,
+      properties: Record<string, unknown>,
+      // `undefined` = a pre-v7 record, which carries no marker at all.
+      provisionedBy: 'sdk' | 'cc-api' | undefined,
+      deletionPolicy?: 'Delete' | 'Retain'
+    ): StackState {
+      return {
+        version: 7,
+        region: 'us-east-1',
+        stackName,
+        resources: {
+          [logicalId]: {
+            physicalId,
+            resourceType,
+            properties,
+            attributes: {},
+            ...(provisionedBy !== undefined && { provisionedBy }),
+            ...(deletionPolicy !== undefined && { deletionPolicy }),
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      } as unknown as StackState;
+    }
+
+    function updateOf(
+      logicalId: string,
+      resourceType: string,
+      desiredProperties: Record<string, unknown>,
+      currentProperties: Record<string, unknown>,
+      extra: Record<string, unknown> = {}
+    ): Map<string, ResourceChange> {
+      return new Map<string, ResourceChange>([
+        [
+          logicalId,
+          {
+            logicalId,
+            changeType: 'UPDATE',
+            resourceType,
+            desiredProperties,
+            currentProperties,
+            ...extra,
+          } as unknown as ResourceChange,
+        ],
+      ]);
+    }
+
+    it('skips the provider when the ONLY difference is the allow-listed drop', async () => {
+      // What a post-#2750 binary records: the template bag minus the drop. The
+      // allow set (from `beforeEach`) names that drop, so this deploy stays on
+      // the SDK route and nothing it can send differs from what AWS holds.
+      mockStateBackend.getState.mockResolvedValue({
+        state: recordState('MyAlarm', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, 'sdk'),
+        etag: 'etag-old',
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        updateOf('MyAlarm', RESOURCE_TYPE, DESIRED, WRITTEN)
+      );
+
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockProvider.update).not.toHaveBeenCalled();
+    });
+
+    it('also skips for a record with NO provisionedBy marker, which counts as SDK', async () => {
+      // A pre-v7 record was SDK-managed, and `currentPropsAsWritten` narrows it
+      // (its test is `=== 'cc-api'`), so the desired side must narrow for it
+      // too. Keyed on `=== 'sdk'` instead, this record would compare an
+      // unnarrowed desired bag against a narrowed stored one -- the defect.
+      mockStateBackend.getState.mockResolvedValue({
+        state: recordState('MyAlarm', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, undefined),
+        etag: 'etag-old',
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        updateOf('MyAlarm', RESOURCE_TYPE, DESIRED, WRITTEN)
+      );
+
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockProvider.update).not.toHaveBeenCalled();
+    });
+
+    it('still skips on the Cloud Control route, where the record DOES hold the key', async () => {
+      // The route gate's control. Cloud Control forwards the full map, so a
+      // cc-api record holds the key and so does the template: nothing differs.
+      // Narrowing the desired side regardless of route would remove the key
+      // from ONE operand only and send an update for a resource nothing changed.
+      mockStateBackend.getState.mockResolvedValue({
+        state: recordState('MyAlarm', RESOURCE_TYPE, PHYSICAL_ID, DESIRED, 'cc-api'),
+        etag: 'etag-old',
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        updateOf('MyAlarm', RESOURCE_TYPE, DESIRED, DESIRED)
+      );
+
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockProvider.update).not.toHaveBeenCalled();
+    });
+
+    it('compares the FULL desired bag when the registry double has no allow-set method', async () => {
+      // `getAllowedUnsupportedProperties` is called `?.()` for the test doubles,
+      // as at the diff call. Without an allow set nothing is narrowed, so the
+      // drop stays on the desired side, the record lacks it, and the provider
+      // is called -- the pre-#2809 comparison, not a throw. Dropping the
+      // `allowedSilentDrops` guard hands the helper `undefined`, and the drop
+      // present here makes that throw.
+      delete (mockProviderRegistry as Partial<typeof mockProviderRegistry>)
+        .getAllowedUnsupportedProperties;
+      mockProvider.update.mockResolvedValue({
+        physicalId: PHYSICAL_ID,
+        wasReplaced: false,
+        attributes: {},
+      });
+      mockStateBackend.getState.mockResolvedValue({
+        state: recordState('MyAlarm', RESOURCE_TYPE, PHYSICAL_ID, WRITTEN, 'sdk'),
+        etag: 'etag-old',
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        updateOf('MyAlarm', RESOURCE_TYPE, DESIRED, WRITTEN)
+      );
+
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockProvider.update).toHaveBeenCalledTimes(1);
+    });
+
+    describe('an attribute-only flip on a type whose update() RE-CREATES', () => {
+      const SUB_TYPE = 'AWS::SNS::Subscription';
+      const SUB_DROPPED = 'Region';
+      const SUB_ARN = 'arn:aws:sns:us-east-1:123456789012:orders:5f2c0b44';
+      const SUB_WRITTEN = {
+        Protocol: 'sqs',
+        TopicArn: 'arn:aws:sns:us-east-1:123456789012:orders',
+        Endpoint: 'arn:aws:sqs:us-east-1:123456789012:orders-queue',
+      };
+      const SUB_DESIRED = { ...SUB_WRITTEN, [SUB_DROPPED]: 'us-west-2' };
+
+      it('PREMISE: Region is a REMOVABLE silent drop for this type', () => {
+        const coverage = getPropertyCoverage(SUB_TYPE);
+        if (!coverage) throw new Error(`${SUB_TYPE} lost its property-coverage record`);
+        expect(coverage.silentDrop.has(SUB_DROPPED)).toBe(true);
+        for (const key of Object.keys(SUB_WRITTEN)) {
+          expect(coverage.handled.has(key)).toBe(true);
+        }
+        // Removable, not merely a drop: a CREATE-ONLY drop is left on BOTH sides
+        // by the record-side helper, so the skip was reachable all along and
+        // this whole case would pass without the fix.
+        expect(withoutSilentDropProperties(SUB_TYPE, SUB_DESIRED)).toEqual(SUB_WRITTEN);
+      });
+
+      it('refreshes DeletionPolicy in state and never reaches the provider', async () => {
+        mockProviderRegistry.getAllowedUnsupportedProperties.mockReturnValue(
+          new Set([`${SUB_TYPE}:${SUB_DROPPED}`])
+        );
+        mockDagBuilder.getExecutionLevels.mockReturnValue([['MySub']]);
+        mockStateBackend.getState.mockResolvedValue({
+          state: recordState('MySub', SUB_TYPE, SUB_ARN, SUB_WRITTEN, 'sdk', 'Delete'),
+          etag: 'etag-old',
+        });
+        const subTemplate = {
+          Resources: {
+            MySub: { Type: SUB_TYPE, Properties: SUB_DESIRED, DeletionPolicy: 'Retain' },
+          },
+        } as unknown as CloudFormationTemplate;
+        mockDiffCalculator.calculateDiff.mockResolvedValue(
+          updateOf('MySub', SUB_TYPE, SUB_DESIRED, SUB_WRITTEN, {
+            attributeChanges: [
+              { attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' },
+            ],
+          })
+        );
+
+        await makeEngine().deploy(stackName, subTemplate);
+
+        // The provider is a mock, so what is pinned HERE is that no provider
+        // call happens for a flip no AWS property carries. That the real one
+        // would re-create is pinned beside the provider, by
+        // `tests/unit/provisioning/sns-subscription-provider.test.ts`'s
+        // "update() unsubscribes the old subscription before subscribing a new
+        // one": Unsubscribe first, then Subscribe, and a different ARN.
+        expect(mockProvider.update).not.toHaveBeenCalled();
+        expect(mockProvider.delete).not.toHaveBeenCalled();
+        expect(mockProvider.create).not.toHaveBeenCalled();
+        const saved = (mockStateBackend.saveState.mock.calls.at(-1)![2] as StackState)
+          .resources['MySub']!;
+        expect(saved.deletionPolicy).toBe('Retain');
+        expect(saved.physicalId).toBe(SUB_ARN);
+      });
     });
   });
 

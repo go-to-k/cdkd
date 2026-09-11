@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { InvalidParameterException, SubscribeCommand } from '@aws-sdk/client-sns';
+import {
+  InvalidParameterException,
+  SubscribeCommand,
+  UnsubscribeCommand,
+} from '@aws-sdk/client-sns';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
@@ -196,6 +200,38 @@ describe('SNSSubscriptionProvider', () => {
       await expect(provider.delete('Sub', 'garbage', 'AWS::SNS::Subscription')).rejects.toThrow(
         'Failed to delete SNS subscription'
       );
+    });
+  });
+
+  describe('update() re-creates the subscription', () => {
+    // Why a policy-only flip must never reach this method (issue #2809, pinned
+    // engine-side by tests/unit/deployment/deploy-engine-silent-drop-record.test.ts):
+    // there is no in-place update, so ANY call replaces the subscription.
+    it('update() unsubscribes the old subscription before subscribing a new one', async () => {
+      const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:orders';
+      const QUEUE_ARN = 'arn:aws:sqs:us-east-1:123456789012:orders-queue';
+      const OLD_ARN = `${TOPIC_ARN}:5f2c0b44-0000-4000-8000-000000000001`;
+      const NEW_ARN = `${TOPIC_ARN}:9a1d7e30-0000-4000-8000-000000000002`;
+      const properties = { TopicArn: TOPIC_ARN, Protocol: 'sqs', Endpoint: QUEUE_ARN };
+      mockSend.mockResolvedValueOnce({}); // Unsubscribe
+      mockSend.mockResolvedValueOnce({ SubscriptionArn: NEW_ARN }); // Subscribe
+
+      const result = await provider.update(
+        'L',
+        OLD_ARN,
+        'AWS::SNS::Subscription',
+        properties,
+        properties
+      );
+
+      const commands = mockSend.mock.calls.map((c) => c[0] as unknown);
+      const unsubscribeAt = commands.findIndex((c) => c instanceof UnsubscribeCommand);
+      const subscribeAt = commands.findIndex((c) => c instanceof SubscribeCommand);
+      expect(unsubscribeAt).toBeGreaterThanOrEqual(0);
+      expect(subscribeAt).toBeGreaterThan(unsubscribeAt);
+      expect((commands[unsubscribeAt] as UnsubscribeCommand).input.SubscriptionArn).toBe(OLD_ARN);
+      expect(result.physicalId).toBe(NEW_ARN);
+      expect(result.wasReplaced).toBe(true);
     });
   });
 
