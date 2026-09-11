@@ -217,10 +217,24 @@ dynamic reference(s) cdkd could not re-resolve. Grant the caller
 `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference.
 That last counter also covers a resource `--revert` refused because its
 recorded baseline holds only the redaction mask and AWS reports nothing to
-preserve there, and one refused because its baseline holds a raw
+preserve there, one refused because its baseline holds a raw
 CloudFormation intrinsic **object** (`Fn::Join` / `Ref`) cdkd cannot resolve
-outside a deploy — for both, no AWS call is made and the message names the
-remedy. Successful resources are in sync; re-run `cdkd drift <stack>`
+outside a deploy, and one whose baseline a
+[`cdkd import`](import.md#the-drift-baseline-an-import-records) run REFUSED to
+capture at all — for all three, no AWS call is made and the message names the
+remedy.
+
+**The import refusal is the one that also stops `--accept`**, and it is
+per-resource rather than per-property. Such a resource has no baseline, so
+`--accept` would write the AWS readback into its recorded *properties*,
+positioned against properties the import already found untrustworthy — which
+can persist a resolved secret in plaintext. `--revert` has the mirror problem:
+it would push those properties to AWS, overwriting whatever the resource really
+holds. Both decline, name the resource, and point at the same remedy: **deploy
+a change to it**, which rebuilds its record from your template and captures a
+real baseline. Note that such a resource is still *reported* as drifted —
+detection compares it against those same recorded properties — so you may see a
+drift you cannot act on through this command until you deploy. Successful resources are in sync; re-run `cdkd drift <stack>`
 to see what is left, then either `cdkd drift <stack> --revert` for the
 recoverable failures or `cdkd deploy <stack> --replace` for the
 update-not-supported ones.

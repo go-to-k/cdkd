@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
   redactSecretsForState,
-  scrubResourceRecord,
+  scrubResourceRecord as scrubResourceRecordRaw,
+  markSameGenerationBag,
   clearRecordedSecretExpressions,
   recordSecretExpression,
   STATE_DERIVED_RULES,
@@ -11,6 +12,41 @@ import {
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+
+/**
+ * Every `scrubResourceRecord` call in this file models the DEPLOY PERSIST choke
+ * point's `observedProperties` walk — the issue-1900 unchanged-resource path,
+ * whose bag is a readback `DeployEngine.drainObservedCaptures` just took and
+ * installed. That site installs it through `markSameGenerationBag`
+ * (`src/deployment/deploy-engine.ts`, the single `observedProperties` writer on
+ * the deploy path), and since issue
+ * [#2906](https://github.com/go-to-k/cdkd/issues/2906) the derivation's
+ * fail-closed arm requires the mark as well as an empty secrets map — so a bare
+ * object literal here would model a bag the persist path never produces in this
+ * configuration, and would take the NON-failing readback rules.
+ *
+ * Marking is done HERE, once, rather than at the twenty call sites: the premise
+ * belongs to the whole file, and a per-site spelling is how nineteen sites come
+ * to agree and one not to. The UNMARKED direction — a PRIOR generation's bag
+ * being re-written unchanged, which must NOT be masked — is #2906's own subject
+ * and is covered in `secret-redaction-uncertified-fail-closed.test.ts`.
+ */
+const scrubResourceRecord = <
+  T extends {
+    properties: Record<string, unknown>;
+    attributes?: Record<string, unknown>;
+    observedProperties?: Record<string, unknown>;
+  },
+>(
+  record: T,
+  ...rest: Parameters<typeof scrubResourceRecordRaw<T>> extends [T, ...infer R] ? R : never
+): T =>
+  scrubResourceRecordRaw(
+    record.observedProperties === undefined
+      ? record
+      : { ...record, observedProperties: markSameGenerationBag({ ...record.observedProperties }) },
+    ...rest
+  );
 
 const EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
 const PLAINTEXT = 'the-real-resolved-secret-value';
@@ -1001,10 +1037,15 @@ describe('secret-redaction - readback refusal (issue #1926)', () => {
   });
 
   it('EMPTY MAP: the same leaf through scrubResourceRecord, as the commands reach it', () => {
-    // The call the CLI actually makes (`cdkd state refresh-observed`, and the
-    // deploy persist choke point for an UNCHANGED resource). Pinned separately
-    // from the direct call above because the rules are DERIVED here rather than
-    // passed, and it is that derivation the integ exercised.
+    // The call the deploy persist choke point actually makes for an UNCHANGED
+    // resource. Pinned separately from the direct call above because the rules
+    // are DERIVED here rather than passed, and it is that derivation the integ
+    // exercised.
+    //
+    // NOT `cdkd state refresh-observed`, which this comment used to claim: that
+    // command passes `STATE_SOURCED_BASELINE_RULES` explicitly and never
+    // consults the derivation (the sibling correction in
+    // `secret-redaction-uncertified-fail-closed.test.ts` made the same fix).
     const token = '{{resolve:ssm:/app/secure-token}}';
     const expr = `postgres://u:${token}@host`;
 

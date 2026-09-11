@@ -38,6 +38,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
   redactSecretsForState,
   scrubResourceRecord,
+  markSameGenerationBag,
   clearRecordedSecretExpressions,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_BASELINE_RULES,
@@ -554,21 +555,86 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
   beforeEach(() => clearRecordedSecretExpressions());
   afterEach(() => clearRecordedSecretExpressions());
 
-  it('reaches the refusal through the call the commands actually make', () => {
-    // `cdkd state refresh-observed` and the deploy persist choke point both
-    // DERIVE the rules here rather than passing them, so the direct calls above
-    // do not prove this path. This is issue #2846's exact shape: `properties`
-    // hold the raw `Fn::Join` object `cdkd import`'s warn path writes.
+  it('reaches the refusal through the call the deploy persist path actually makes', () => {
+    // The deploy persist choke point DERIVES the rules here rather than passing
+    // them, so the direct calls above do not prove this path. This is issue
+    // #2846's exact shape: `properties` hold the raw `Fn::Join` object `cdkd
+    // import`'s warn path writes.
+    //
+    // The bag is MARKED, because that is what the site produces:
+    // `DeployEngine.drainObservedCaptures` installs every drained readback
+    // through `markSameGenerationBag`, and since issue #2906 the derivation's
+    // fail-closed arm requires that mark as well as the empty map. An UNMARKED
+    // bag here would be a PREVIOUS generation's `observedProperties` being
+    // re-written unchanged, which is the case immediately below.
+    //
+    // `cdkd state refresh-observed` is NOT proved by this case and never was:
+    // it passes `STATE_SOURCED_BASELINE_RULES` explicitly
+    // (`src/cli/commands/state.ts`), so it does not consult the derivation at
+    // all. The sentence naming it here said otherwise until #2906 measured it.
     const scrubbed = scrubResourceRecord(
       {
         properties: { Url: { 'Fn::Join': ['', ['postgres://u:', EXPR, '@h']] } },
-        observedProperties: { Url: `postgres://u:${PLAINTEXT}@h` },
+        observedProperties: markSameGenerationBag({ Url: `postgres://u:${PLAINTEXT}@h` }),
       },
       new Map<string, string>()
     );
 
     expect(scrubbed.observedProperties).toEqual({ Url: SECRET_MASK });
     expect(JSON.stringify(scrubbed)).not.toContain(PLAINTEXT);
+  });
+
+  it('does NOT mask a PRIOR-generation observed bag it is re-writing unchanged', () => {
+    // Issue #2906. `DeployEngine.redactStateForPersist` walks EVERY record on
+    // EVERY save, and a resource whose resolve threw before recording anything
+    // arrives with an empty secrets map AND no template bag — the same
+    // configuration as the case above. The difference is the BAG: here it is
+    // the previous generation's `observedProperties`, read out of `state.json`
+    // and being re-written unchanged, so it carries no mark (a bag revived by
+    // `JSON.parse` never can).
+    //
+    // Masking an unpairable position in THAT bag replaces a correct persisted
+    // baseline with `SECRET_MASK` and produces permanent phantom drift that no
+    // `cdkd drift` run clears — until the next SUCCESSFUL deploy overwrites the
+    // record. Nothing is protected in exchange: the value already sits in
+    // `state.json` verbatim, which is the same argument the journal's
+    // `previousState` (#2886) and the rollback replay's trailing scrub make.
+    //
+    // The array is the issue's own shape — unpairable because AWS reordered it,
+    // with no identity key to pair on.
+    const priorGeneration = { I: [PLAINTEXT, 'US-EAST-1'] };
+    const scrubbed = scrubResourceRecord(
+      { properties: { I: [EXPR, 'us-east-1'] }, observedProperties: priorGeneration },
+      new Map<string, string>()
+    );
+
+    expect(scrubbed.observedProperties).toEqual({ I: [PLAINTEXT, 'US-EAST-1'] });
+    expect(JSON.stringify(scrubbed)).not.toContain(SECRET_MASK);
+  });
+
+  it('the mark is the ONLY difference between the two verdicts', () => {
+    // The pair above differ in the bag's provenance and in nothing else, but
+    // they also differ in SHAPE, so neither alone shows the mark is what
+    // decides. Same record, same map, same source — one bag marked, one not.
+    //
+    // Written because the change #2906 makes is a NARROWING of a security
+    // refusal, and a narrowing needs a case that fails if the new conjunct is
+    // deleted (the bag would be masked) AND one that fails if the old arm is
+    // deleted (the marked bag would not be).
+    const bag = () => ({ I: [PLAINTEXT, 'US-EAST-1'] });
+    const record = (observedProperties: Record<string, unknown>) => ({
+      properties: { I: [EXPR, 'us-east-1'] },
+      observedProperties,
+    });
+
+    const fresh = scrubResourceRecord(
+      record(markSameGenerationBag(bag())),
+      new Map<string, string>()
+    );
+    expect(fresh.observedProperties).toEqual({ I: [SECRET_MASK, SECRET_MASK] });
+
+    const carried = scrubResourceRecord(record(bag()), new Map<string, string>());
+    expect(carried.observedProperties).toEqual({ I: [PLAINTEXT, 'US-EAST-1'] });
   });
 
   it('does NOT fail closed for a scrubResourceRecord caller that HAS a secrets map', () => {
@@ -593,9 +659,13 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
     // and the difference is what this pair pins: here the destination is
     // already settled (this branch redacts `observedProperties`), so the only
     // question left is evidence.
+    //
+    // Both halves hold the bag MARKED, so the secrets map is the only variable
+    // — since issue #2906 the fail-closed arm needs the mark as well, and an
+    // unmarked pair would have shown the MARK deciding rather than the map.
     const record = {
       properties: { I: [EXPR, 'us-east-1'] },
-      observedProperties: { I: [PLAINTEXT, 'US-EAST-1'] },
+      observedProperties: markSameGenerationBag({ I: [PLAINTEXT, 'US-EAST-1'] }),
     };
 
     const withMap = scrubResourceRecord(record, new Map([[PLAINTEXT_2, EXPR_2]]));
@@ -617,7 +687,7 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
     const scrubbed = scrubResourceRecord(
       {
         properties: { Config: { Password: EXPR } },
-        observedProperties: { Config: [{ Secret: PLAINTEXT }] },
+        observedProperties: markSameGenerationBag({ Config: [{ Secret: PLAINTEXT }] }),
       },
       new Map<string, string>()
     );

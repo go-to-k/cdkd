@@ -795,7 +795,12 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         stackState,
         providerRegistry,
         logger,
-        unsafeObservedBaselineLogicalIds
+        unsafeObservedBaselineLogicalIds,
+        // Issue #2944: the rows this run REBUILT from the template. Derived
+        // from the same `outcome === 'imported'` predicate `buildStackState`
+        // uses to decide which records it overwrites, so the two cannot
+        // disagree about which `properties` are this run's.
+        rebuiltLogicalIdsFrom(rows, stateTemplate)
       );
 
       // Forward the etag for optimistic locking when state already exists,
@@ -1289,6 +1294,53 @@ function collectImportableResources(
     out.push({ logicalId, resource });
   }
   return out;
+}
+
+/**
+ * The logical ids whose `ResourceState` a run REBUILT from the template — the
+ * discriminator `captureObservedForImportedResources` needs for schema v10's
+ * `observedBaselineRefused` (issue
+ * [#2944](https://github.com/go-to-k/cdkd/issues/2944)).
+ *
+ * It is a function, exported and tested, rather than an inline
+ * `rows.filter(...)` at each call site, because the predicate is the whole
+ * safety property: `buildStackState` overwrites exactly the `'imported'` rows
+ * and PRESERVES every other record in a selective merge, so a predicate that
+ * drifts wider (`rows.map(...)`, or admitting another outcome) silently
+ * re-opens the fifth-writer leak — a preserved record's stale, distrusted
+ * `properties` would be treated as this run's resolution, captured against,
+ * and its refusal cleared. Two inline copies could also drift apart from each
+ * other and from `buildStackState`'s own test.
+ *
+ * Every non-`'imported'` outcome is EXCLUDED, including the ones that sound
+ * harmless: `skipped-out-of-scope` is precisely the selective-merge case, and
+ * `failed` / `skipped-not-found` / `skipped-no-impl` leave whatever the record
+ * already held.
+ */
+export function rebuiltLogicalIdsFrom(
+  rows: readonly ImportRow[],
+  template: CloudFormationTemplate
+): ReadonlySet<string> {
+  return new Set(
+    rows
+      .filter(
+        (r) =>
+          r.outcome === 'imported' &&
+          // The SAME three conjuncts `buildStackState` applies before it
+          // overwrites a record. Filtering on the outcome alone was the first
+          // spelling and a review round caught it: a row that is `'imported'`
+          // but carries no physical id, or names a logical id the template
+          // does not declare, is SKIPPED there — so the record keeps whatever
+          // it already held, and calling it rebuilt would let a preserved
+          // refusal be cleared against a previous run's properties.
+          // Unreachable today (every `outcome: 'imported'` site sets a
+          // physical id), which is exactly why it must be spelled rather than
+          // argued.
+          r.physicalId !== undefined &&
+          template.Resources[r.logicalId] !== undefined
+      )
+      .map((r) => r.logicalId)
+  );
 }
 
 /**
@@ -2466,7 +2518,8 @@ export async function captureObservedForImportedResources(
   stackState: StackState,
   providerRegistry: ProviderRegistry,
   logger: ReturnType<typeof getLogger>,
-  unsafeObservedBaselineLogicalIds: ReadonlySet<string>
+  unsafeObservedBaselineLogicalIds: ReadonlySet<string>,
+  rebuiltLogicalIds: ReadonlySet<string>
 ): Promise<void> {
   const entries = Object.entries(stackState.resources);
   if (entries.length === 0) return;
@@ -2550,19 +2603,73 @@ export async function captureObservedForImportedResources(
       // [#2872](https://github.com/go-to-k/cdkd/issues/2872) records the
       // narrow case where that is WORSE than not refusing.
       //
-      // AND THE MISSING BASELINE ITSELF IS NOT PERMANENT: the deploy-start
-      // auto-refresh and `cdkd state refresh-observed` both fill a missing
-      // baseline against the record's `properties`, which after a refusal can
-      // hold the wrong-branch LITERAL the refusal distrusted — neither writer
-      // holds the template evidence this walk refused on. Issue
-      // [#2944](https://github.com/go-to-k/cdkd/issues/2944) owns that
-      // residue; nothing at this site can close it.
+      // THE MISSING BASELINE USED NOT TO BE PERMANENT, AND THAT WAS THE
+      // RESIDUE: the deploy-start auto-refresh and `cdkd state
+      // refresh-observed` both fill a missing baseline against the record's
+      // `properties`, which after a refusal can hold the wrong-branch LITERAL
+      // the refusal distrusted — and neither writer holds the template
+      // evidence this walk refused on, nor could it (issue
+      // [#2944](https://github.com/go-to-k/cdkd/issues/2944)). So the refusal
+      // is RECORDED on the state record below, in the only thing that survives
+      // between this process and theirs: `observedBaselineRefused` (schema
+      // v10+), whose type doc carries the full argument. Both writers skip a
+      // marked record; a deploy that CREATEs or UPDATEs the resource clears
+      // it, because that deploy holds the template evidence this walk lacked.
+      // Schema v10+ (issue #2944), and THIS ARM IS THE FIFTH REFILL WRITER —
+      // `cdkd import` itself, found by the adversarial review of the fix for
+      // the other four rather than by the issue.
+      //
+      // `unsafeObservedBaselineLogicalIds` describes only what THIS run's
+      // resolve could see. A record PRESERVED by a selective merge is seeded
+      // from `existingState.resources` by `buildStackState` and is overwritten
+      // only when a row re-imported it, so its `properties` are a PREVIOUS
+      // run's downgraded output — a plain `dev-placeholder` literal. Re-solving
+      // that literal trips no arm (no throw, openers 0 -> 0, nothing
+      // discarded), so the id is absent from this run's set, and without this
+      // gate the loop below would capture a readback positioned against it —
+      // persisting the decrypted value, the byte-identical configuration the
+      // `schema-v9-to-v10-migration` integ reproduces one command over — and
+      // the `delete` further down would then LAUNDER the marker, standing the
+      // other four writers down permanently.
+      //
+      // `rebuiltLogicalIds` is the discriminator the set cannot supply: the
+      // rows this run actually imported, whose `properties` were rebuilt from
+      // the template. A marked record OUTSIDE it keeps its marker and its
+      // refusal; only a rebuilt one can earn a clear.
+      const preservedRefusal =
+        resource.observedBaselineRefused === true && !rebuiltLogicalIds.has(logicalId);
+      if (preservedRefusal) {
+        logger.debug(
+          `observedProperties capture SKIPPED for preserved ${logicalId} (${resource.resourceType}): a previous 'cdkd import' run refused this record's baseline and this run did not re-import it, so its recorded properties are still the ones that refusal distrusted. Deploy a change to this resource to restore a baseline.`
+        );
+        return;
+      }
       if (unsafeObservedBaselineLogicalIds.has(logicalId)) {
+        // Set BEFORE the early return, and set on the record rather than
+        // returned to the caller, because the caller hands this same object to
+        // `saveState` — the set that drove the skip describes THIS run's
+        // resolution and is discarded with it.
+        resource.observedBaselineRefused = true;
         logger.debug(
           `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties no longer spell the template's dynamic reference, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until the next successful deploy.`
         );
         return;
       }
+      // Schema v10+ (issue #2944). CLEARED HERE, not on capture success, and the
+      // difference is a defect a review round found: reaching this line already
+      // means the record was REBUILT from the template this run AND this run's
+      // resolve did not refuse it, which is exactly the evidence the marker was
+      // waiting for. Gating the clear on the capture SUCCEEDING instead made it
+      // a permanent brand for any resource whose provider has no
+      // `readCurrentState`, whose readback came back `undefined`, or whose read
+      // threw — their `properties` are this run's trustworthy resolution, yet
+      // `drift --accept` / `--revert` would refuse them forever and only a
+      // CREATE / UPDATE deploy could clear it. That contradicts the field's own
+      // "refusal record, not a brand" contract.
+      //
+      // `delete` rather than `= undefined`: the field must be ABSENT from the
+      // persisted JSON, which is what a reader tests.
+      delete resource.observedBaselineRefused;
       try {
         const provider = providerRegistry.getProviderFor({
           resourceType: resource.resourceType,
@@ -2999,7 +3106,13 @@ async function importNestedStackChildrenRecursive(args: {
         childStackState,
         providerRegistry,
         logger,
-        childUnsafeObservedBaselineLogicalIds
+        childUnsafeObservedBaselineLogicalIds,
+        // Issue #2944, same derivation as the top-level call site. A nested
+        // child is built fresh on every recursive walk rather than merged, so
+        // in practice every row is rebuilt — passing the set anyway keeps the
+        // two call sites the same shape, so a future change to the child walk
+        // cannot quietly acquire the preserved-record hazard.
+        rebuiltLogicalIdsFrom(rows, childTemplate)
       );
 
       await stateBackend.saveState(childStackName, childRegion, childStackState);

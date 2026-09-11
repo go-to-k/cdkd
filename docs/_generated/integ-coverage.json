@@ -5670,6 +5670,7 @@
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
         "schema-v8-to-v9-migration",
+        "schema-v9-to-v10-migration",
         "sdk-ccapi-crossref",
         "secrets-dynamic-ref",
         "state-info-command",
@@ -5871,6 +5872,10 @@
         "schema-v8-to-v9-migration": [
           "l1",
           "l2"
+        ],
+        "schema-v9-to-v10-migration": [
+          "l1",
+          "literal"
         ],
         "sdk-ccapi-crossref": [
           "l1",

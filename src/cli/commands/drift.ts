@@ -3033,6 +3033,38 @@ async function runAccept(
       for (const outcome of driftedOutcomes) {
         const existing = resources[outcome.logicalId];
         if (!existing) continue;
+        // Schema v10+ (issue #2944). A THIRD writer of the refused-baseline
+        // class, found by that fix's sibling sweep rather than named in the
+        // issue -- the issue enumerates the deploy auto-refresh and `cdkd state
+        // refresh-observed`, and this is the same defect one command over.
+        //
+        // A marked record USUALLY has no `observedProperties`, and then the arm
+        // below takes the `properties` branch and writes the redacted readback
+        // INTO `properties` -- positioned against `existing.properties`, which after
+        // an import refusal can hold the WRONG-BRANCH LITERAL the refusal
+        // distrusted. A literal source leaf against a string readback PAIRS as
+        // an ordinary drifted literal, so nothing refuses and the DECRYPTED
+        // value lands in the record. Worse than the two writers the issue
+        // names: those write a baseline, this writes `properties`, the bag
+        // `--revert` later pushes to AWS.
+        //
+        // The marker is exactly the evidence this command lacks -- it has no
+        // template either -- so REFUSING is the only correct answer here, and
+        // the record is left untouched rather than partially accepted. The
+        // remedy is the same one the other two sites name: a deploy that
+        // actually CHANGES the resource rebuilds its record from the template
+        // and discharges the refusal.
+        if (existing.observedBaselineRefused === true) {
+          logger.warn(
+            `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `NOT accepted — a 'cdkd import' run refused to capture this resource's ` +
+              `observed-properties baseline, because its recorded properties can no longer ` +
+              `position the secret redaction. Accepting would write the AWS readback into ` +
+              `those properties, which can persist a resolved secret into state.json in ` +
+              `plaintext. Deploy a change to this resource to restore a baseline first.`
+          );
+          continue;
+        }
         const hasObserved = existing.observedProperties !== undefined;
         const baselineSource = hasObserved
           ? existing.observedProperties
@@ -4693,6 +4725,44 @@ async function runRevert(
           );
           return;
         }
+        // Schema v10+ (issue #2944), and the most consequential of the three
+        // refused-baseline sites because this one writes to AWS rather than to
+        // `state.json`. A marked record has no `observedProperties`, so
+        // `revertBaseline` below falls to `properties` — which after an import
+        // refusal can hold the WRONG-BRANCH LITERAL the refusal distrusted
+        // (`dev-placeholder` where AWS holds the secret the deployed branch
+        // resolved). Reverting would push that literal OVER the live secret.
+        //
+        // "A marked record has no baseline" is the COMMON shape, not an
+        // invariant: the import refusal fires regardless of an existing
+        // baseline, and a selective merge preserves one (the #2872 shape), so a
+        // record can carry both. The refusal is right either way -- the marker
+        // says this record's `properties` are untrustworthy, and a preserved
+        // baseline beside them was captured by the run that already could not
+        // vouch for them.
+        //
+        // Issue #2855 closed the neighbouring shape — an unresolved intrinsic
+        // OBJECT in the same raw bag — and its guard cannot see this one: a
+        // wrong-branch literal is an ordinary STRING, indistinguishable from a
+        // value the user really deployed, which is the same reason no in-walk
+        // remedy exists for the read side. The marker is the only evidence, and
+        // this command has no template of its own to re-derive it from.
+        //
+        // Counted `totalUnresolvable` rather than `totalFailed`, matching the
+        // mask and intrinsic-object refusals: nothing was attempted at AWS.
+        if (stateResource.observedBaselineRefused === true) {
+          totalUnresolvable++;
+          logger.warn(
+            `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `NOT reverted — a 'cdkd import' run refused to capture this resource's ` +
+              `observed-properties baseline, so the only baseline available is its recorded ` +
+              `properties, which the refusal already found untrustworthy. Reverting from them ` +
+              `could overwrite a live value (a resolved secret among them) with a placeholder ` +
+              `the deployed stack never used. Deploy a change to this resource to restore a ` +
+              `baseline first.`
+          );
+          return;
+        }
         // Schema v7+ (#614): route the revert update through the
         // state-recorded layer so a CC-managed resource is reverted via
         // Cloud Control.
@@ -5490,6 +5560,21 @@ function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void 
     const lines: string[] = [];
     let plannedWrites = 0;
     for (const o of drifted) {
+      // Issue #2944, and the same property issue #1914 established for the
+      // per-PATH refusals below: a `--dry-run` that promises a write the real
+      // run will refuse is worse than either behaviour alone. `runAccept`
+      // declines a resource carrying `observedBaselineRefused` OUTRIGHT, so the
+      // plan must not list its paths as `old -> new`. It is asked per RESOURCE
+      // rather than folded into `acceptRefusalReason`, which answers per path.
+      if (report.state.resources[o.logicalId]?.observedBaselineRefused === true) {
+        lines.push(
+          `  ~ ${o.logicalId} (${o.resourceType})\n` +
+            `    SKIPPED — a 'cdkd import' run refused this resource's observed-properties ` +
+            `baseline; accepting would write the AWS readback into properties it already ` +
+            `found untrustworthy. Deploy a change to this resource first.\n`
+        );
+        continue;
+      }
       lines.push(`  ~ ${o.logicalId} (${o.resourceType})\n`);
       for (const change of o.changes) {
         // Issue #1914: a `--dry-run` that promises a write the real run will
@@ -5554,6 +5639,19 @@ function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void 
       `\nPlan (--revert): push cdkd state values back into AWS for ${report.stackName} (${report.region}):\n`
     );
     for (const o of drifted) {
+      // Issue #2944. `runRevert` declines a marked resource before it reaches
+      // `provider.update`, so announcing an update here would put a write this
+      // run never makes in front of the CONFIRMATION PROMPT — the one place
+      // the user decides on what the plan says.
+      if (report.state.resources[o.logicalId]?.observedBaselineRefused === true) {
+        out.write(
+          `  ! ${o.logicalId} (${o.resourceType}): NOT reverted — a 'cdkd import' run refused ` +
+            `this resource's observed-properties baseline, so the only baseline available is ` +
+            `the one that refusal already found untrustworthy. Deploy a change to this ` +
+            `resource first.\n`
+        );
+        continue;
+      }
       const word = o.changes.length === 1 ? 'property path' : 'property paths';
       out.write(
         `  → provider.update on ${o.logicalId} (${o.resourceType}): revert ${o.changes.length} ${word}\n`

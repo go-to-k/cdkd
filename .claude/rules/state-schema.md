@@ -9,7 +9,7 @@ paths:
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614), 8 = +outputReads[] (Fn::GetStackOutput downstream-consumer enumeration, #668), 9 = +exportNames[] (which outputs keys are exports, #2193)
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614), 8 = +outputReads[] (Fn::GetStackOutput downstream-consumer enumeration, #668), 9 = +exportNames[] (which outputs keys are exports, #2193), 10 = +observedBaselineRefused on ResourceState (the import baseline refusal, carried so later writers honour it, #2944)
   stackName: string;
   region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
@@ -48,6 +48,7 @@ interface ResourceState {
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
   provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = pre-v7 record, SDK-managed then; NOT pinned — routing re-decides)
+  observedBaselineRefused?: true;           // v10+: `cdkd import` refused to capture a baseline here; no later writer may synthesize one from `properties` (absent = not refused)
 }
 ```
 
@@ -269,6 +270,25 @@ Pre-v8 state with `outputReads === undefined` is treated by v8 readers
 as "no GetStackOutput consumers known" — `findDownstreamConsumers`
 degrades to imports-only enumeration, matching the v4-shipped
 behavior. The next deploy under the v8 binary repopulates the field.
+
+**`observedBaselineRefused`** (schema v10+, issue
+[#2944](https://github.com/go-to-k/cdkd/issues/2944)) records that `cdkd
+import` DECLINED to capture an `observedProperties` baseline for this
+resource, so no later writer may synthesize one from its `properties`.
+`undefined` means NOT refused — every pre-v10 record, and what the four
+affected writers (`DeployEngine.kickOffAutoRefreshObservedProperties`, `cdkd
+state refresh-observed`, `cdkd drift --accept`, `cdkd drift --revert`)
+assumed before the field existed, which is what makes the v9 -> v10
+migration transparent with no per-field migration code.
+
+**The AUTHORITY is the field's own JSDoc in `src/types/state.ts`** — why the
+refusal has to be persisted rather than returned, what discharges it (an
+import capture that succeeds, and a deploy that CREATEs / UPDATEs / replaces
+the resource, whose record rebuild drops the field; a NO_CHANGE deploy does
+NOT), and why the bump is a TRADE rather than a free win. It is not repeated
+here: a second copy of an argument this long is the drift shape this corpus
+fences elsewhere, and every reader of this table is one `Go to definition`
+away from it.
 
 **`observedProperties`** is populated on each successful create / update by
 calling `provider.readCurrentState` fire-and-forget after the resource flips

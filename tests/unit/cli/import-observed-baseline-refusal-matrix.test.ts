@@ -137,7 +137,7 @@
 
 import { describe, it, expect, vi } from 'vite-plus/test';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
-import type { StackState } from '../../../src/types/state.js';
+import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 
 const SECRET_ID = 'cdkd-2828-matrix';
@@ -193,7 +193,8 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
   return { ...actual, SecretsManagerClient: FakeSecretsManagerClient };
 });
 
-const { resolveImportedProperties, captureObservedForImportedResources } = await import(
+const { resolveImportedProperties, captureObservedForImportedResources, rebuiltLogicalIdsFrom } =
+  await import(
   '../../../src/cli/commands/import.js'
 );
 const { SECRET_MASK } = await import('../../../src/deployment/secret-redaction.js');
@@ -1296,6 +1297,11 @@ async function captureVia(
   persisted: Record<string, unknown>,
   refusedIds: ReadonlySet<string>
 ): Promise<{ observed: unknown; seen: readonly unknown[] }> {
+  // Every row in the matrix models a FRESHLY imported `Res`, so this run
+  // rebuilt its properties from the template — which is what makes the table
+  // about the RESOLVE's three arms rather than about the preserved-record gate
+  // (issue #2944). The preserved case has its own cases further down.
+  const rebuiltIds: ReadonlySet<string> = new Set(['Res']);
   const seen: unknown[] = [];
   const state = stateFor(row);
   state.resources['Res']!.properties = persisted;
@@ -1314,7 +1320,7 @@ async function captureVia(
   const registry = {
     getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
   } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
-  await captureObservedForImportedResources(state, registry, getLogger(), refusedIds);
+  await captureObservedForImportedResources(state, registry, getLogger(), refusedIds, rebuiltIds);
   return { observed: state.resources['Res']!.observedProperties, seen };
 }
 
@@ -1564,5 +1570,322 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     }
     expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(26);
     expect(provenByMask, 'the loop ran over every refusal earned by a MASK').toBe(4);
+  });
+});
+
+/**
+ * Drives the capture with a state record the CALLER builds, rather than through
+ * {@link captureVia}: the two inputs these cases vary are ones that helper
+ * holds fixed — the refusal SET, and a marker the record ALREADY carries when
+ * the capture starts.
+ *
+ * The provider double records which logical ids it was consulted FOR, which is
+ * how the refusal is distinguished from a capture that merely produced nothing:
+ * the marker is written BEFORE the early return, so a mark with no read is the
+ * shape under test.
+ */
+async function captureInto(
+  resources: Record<string, ResourceState>,
+  refusedIds: ReadonlySet<string>,
+  readbacks: Record<string, Record<string, unknown> | undefined>,
+  /**
+   * The rows this run REBUILT from the template (issue #2944). Defaults to
+   * every id, which is what a whole-stack import produces; the cases about a
+   * record PRESERVED by a selective merge pass a narrower set, because that is
+   * the whole discriminator between "this run vouched for these properties"
+   * and "these are a previous run's downgraded output".
+   */
+  rebuiltIds: ReadonlySet<string> = new Set(Object.keys(resources))
+): Promise<{ resources: Record<string, ResourceState>; readFor: readonly string[] }> {
+  const readFor: string[] = [];
+  const state: StackState = {
+    version: STATE_SCHEMA_VERSION_CURRENT,
+    stackName: 'marker-stack',
+    region: 'us-east-1',
+    resources: structuredClone(resources),
+    outputs: {},
+    lastModified: 0,
+  } satisfies StackState;
+  const provider = {
+    readCurrentState: async (_physicalId: string, logicalId: string) => {
+      readFor.push(logicalId);
+      return readbacks[logicalId];
+    },
+  };
+  const registry = {
+    getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
+  } as unknown as Parameters<typeof captureObservedForImportedResources>[1];
+  await captureObservedForImportedResources(state, registry, getLogger(), refusedIds, rebuiltIds);
+  return { resources: state.resources, readFor };
+}
+
+/**
+ * The SETTER for schema v10's `observedBaselineRefused` (issue
+ * [#2944](https://github.com/go-to-k/cdkd/issues/2944)).
+ *
+ * The table above fences WHICH resources this capture refuses. These cases
+ * fence that the refusal is RECORDED on the state record, which is the only
+ * thing that survives out of the `cdkd import` process — the set that drove the
+ * skip (`unsafeObservedBaselineLogicalIds`) describes this run's resolution and
+ * dies with it.
+ *
+ * This is the case the other four sites rest on, and that is why it is worth
+ * its own block. Four later writers now SKIP a marked record (the deploy-start
+ * auto-refresh, `cdkd state refresh-observed`, `cdkd drift --accept` and
+ * `--revert`); every one of those skips is unreachable — passing while
+ * protecting nothing — if this write never lands, and no test of those four can
+ * see that, because each of them supplies the marker itself.
+ */
+describe('cdkd import records its baseline refusal on the state record (issue #2944)', () => {
+  it('MARKS a refused logical id, captures nothing for it, and still captures its sibling', async () => {
+    const { resources, readFor } = await captureInto(
+      {
+        Refused: {
+          physicalId: 'refused-phys',
+          resourceType: 'AWS::SQS::Queue',
+          // What an import refusal can leave behind: a wrong-branch LITERAL
+          // where the deployed stack resolved a reference. It is an ordinary
+          // string, so no later walk can tell it from a value the user really
+          // deployed — which is the whole reason the verdict has to be
+          // persisted rather than re-derived.
+          properties: { Password: 'dev-placeholder' },
+        },
+        Kept: {
+          physicalId: 'kept-phys',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'kept' },
+        },
+      },
+      new Set(['Refused']),
+      {
+        // The decrypted value AWS holds for the refused resource. Nothing may
+        // carry it into the record.
+        Refused: { Password: PLAINTEXT },
+        Kept: { BucketName: 'kept' },
+      }
+    );
+
+    expect(resources['Refused']!.observedBaselineRefused).toBe(true);
+    expect(resources['Refused']!.observedProperties).toBeUndefined();
+    // The provider was consulted for the SIBLING only: the mark is written
+    // before the early return, so this is a refusal rather than a read that
+    // happened to produce nothing.
+    expect(readFor).toEqual(['Kept']);
+    // THE SIBLING IS MANDATORY. Without it, every assertion above is equally
+    // satisfied by a capture that walked no resource at all — including one
+    // that threw on the first entry.
+    expect(resources['Kept']!.observedProperties).toEqual({ BucketName: 'kept' });
+    expect(
+      Object.hasOwn(resources['Kept']!, 'observedBaselineRefused'),
+      'an admitted resource must not be marked'
+    ).toBe(false);
+    // And by no route did the readback reach the refused record.
+    expect(JSON.stringify(resources['Refused'])).not.toContain(PLAINTEXT);
+  });
+
+  it('CLEARS a marker the record ARRIVED with once BOTH gates pass, whatever the readback does', async () => {
+    // A selective `cdkd import` merge carries `existingState.resources` through
+    // `buildStackState` wholesale, so a re-imported resource can arrive already
+    // marked by an EARLIER run. Left standing, the marker would be a permanent
+    // brand rather than a refusal record, and the resource would lose every
+    // later refresh for the life of the record.
+    //
+    // The clear fires once BOTH gates pass — the record was rebuilt this run AND
+    // this run's resolve did not refuse it — because passing them IS the
+    // evidence the marker was waiting for. Gating it on the capture SUCCEEDING
+    // was the first spelling and a review round caught it: `NoReadback` below
+    // is a provider that returns nothing, and under that spelling its record
+    // kept the marker forever even though its `properties` are this run's
+    // trustworthy resolution, making the field a permanent brand.
+    //
+    // `StillRefused` is the sibling that keeps the clear from reading as
+    // unconditional: it is refused by THIS run, so it discriminates the clear
+    // from one hoisted above the refusal arm.
+    const { resources, readFor } = await captureInto(
+      {
+        Cleared: {
+          physicalId: 'cleared-phys',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'cleared' },
+          observedBaselineRefused: true,
+        },
+        NoReadback: {
+          physicalId: 'no-readback-phys',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'q' },
+          observedBaselineRefused: true,
+        },
+        StillRefused: {
+          physicalId: 'still-refused-phys',
+          resourceType: 'AWS::SNS::Topic',
+          properties: { TopicName: 't' },
+        },
+      },
+      new Set(['StillRefused']),
+      {
+        Cleared: { BucketName: 'cleared', Tags: [] },
+        // A provider whose read produced nothing. Its marker is still CLEARED:
+        // the properties this run rebuilt are what the marker distrusted, and
+        // they are now trustworthy regardless of whether a baseline landed.
+        NoReadback: undefined,
+        StillRefused: { TopicName: 't' },
+      }
+    );
+
+    // PRESENCE, not value: production uses `delete`, and a reader tests
+    // `=== true`, so a surviving `observedBaselineRefused: false` would read as
+    // cleared while still serialising into `state.json`. Assert it is GONE.
+    expect(Object.hasOwn(resources['Cleared']!, 'observedBaselineRefused')).toBe(false);
+    expect(resources['Cleared']!.observedProperties).toEqual({
+      BucketName: 'cleared',
+      Tags: [],
+    });
+    // CLEARED even though no baseline landed — the fix for the "permanent
+    // brand" defect. Its `properties` are this run's resolution either way, so
+    // the refusal has nothing left to protect.
+    expect(Object.hasOwn(resources['NoReadback']!, 'observedBaselineRefused')).toBe(false);
+    expect(resources['NoReadback']!.observedProperties).toBeUndefined();
+    expect(resources['StillRefused']!.observedBaselineRefused).toBe(true);
+    // `StillRefused` was never read; the other two were. That is what makes the
+    // two exemptions above distinguishable from one another.
+    expect(readFor).toEqual(['Cleared', 'NoReadback']);
+  });
+
+  it('does NOT capture or clear for a marked record this run did not REBUILD', async () => {
+    // The fifth refill writer: `cdkd import` itself, found by the adversarial
+    // review of the fix for the other four.
+    //
+    // A selective merge seeds `buildStackState` from `existingState.resources`
+    // and overwrites only the rows a `outcome === 'imported'` row re-imported.
+    // A PRESERVED record therefore keeps a PREVIOUS run's downgraded
+    // `properties` — the `dev-placeholder` literal a refused `Fn::If` left —
+    // along with the marker. Re-resolving that literal trips no refusal arm
+    // (no throw, openers 0 -> 0, nothing discarded), so this run's refusal SET
+    // does not contain it, and before the `rebuiltLogicalIds` gate the capture
+    // read AWS and positioned the decrypted value against that literal. The
+    // `delete` then laundered the marker, standing all four other writers down
+    // permanently.
+    //
+    // `Preserved` is marked and OUTSIDE the rebuilt set; `Rebuilt` is marked
+    // and INSIDE it. The pair is the discriminator: without it, "Preserved was
+    // not read" is equally satisfied by a capture that read nothing at all.
+    const PLAINTEXT = 'THE-REAL-DECRYPTED-SECRET-2944';
+    const { resources, readFor } = await captureInto(
+      {
+        Preserved: {
+          physicalId: 'p-preserved',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Value: 'dev-placeholder' },
+          observedBaselineRefused: true,
+        },
+        Rebuilt: {
+          physicalId: 'p-rebuilt',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Value: 'rebuilt-from-template' },
+          observedBaselineRefused: true,
+        },
+      },
+      new Set<string>(),
+      {
+        Preserved: { Value: PLAINTEXT },
+        Rebuilt: { Value: 'rebuilt-live-value' },
+      },
+      // Only `Rebuilt` was re-imported this run.
+      new Set(['Rebuilt'])
+    );
+
+    // The preserved record is untouched: no read was issued for it, so no
+    // readback could have been positioned against its stale literal...
+    expect(readFor).toEqual(['Rebuilt']);
+    expect(resources['Preserved']!.observedProperties).toBeUndefined();
+    // ...and its refusal still stands, so the other four writers keep honouring
+    // it. Presence, not value — a reader tests `=== true`.
+    expect(resources['Preserved']!.observedBaselineRefused).toBe(true);
+
+    // The rebuilt record earns its clear, which is what keeps the marker a
+    // refusal record rather than a permanent brand.
+    expect(resources['Rebuilt']!.observedProperties).toEqual({
+      Value: 'rebuilt-live-value',
+    });
+    expect(Object.hasOwn(resources['Rebuilt']!, 'observedBaselineRefused')).toBe(false);
+
+    // The whole point, stated as the assertion that fails if any of the above
+    // regresses: the decrypted value never entered the record.
+    expect(JSON.stringify(resources)).not.toContain(PLAINTEXT);
+  });
+
+  it('rebuiltLogicalIdsFrom admits ONLY a row buildStackState would overwrite', () => {
+    // The WIRING, which no case above reaches: both call sites derive their set
+    // from this one function, so the predicate IS the safety property. One that
+    // drifts wider — `rows.map(...)`, or admitting another outcome — calls a
+    // PRESERVED record rebuilt, which clears its refusal against a previous
+    // run's distrusted properties and re-opens the fifth-writer leak.
+    //
+    // The three conjuncts are `buildStackState`'s own: outcome, a physical id,
+    // and a template entry. The last two are unreachable today (every
+    // `outcome: 'imported'` site sets a physical id), which is exactly why they
+    // are spelled rather than argued — an unreachable conjunct nobody wrote is
+    // one a later change silently needs and does not have.
+    const template = {
+      Resources: {
+        Imported: { Type: 'AWS::S3::Bucket', Properties: {} },
+        NoPhysicalId: { Type: 'AWS::S3::Bucket', Properties: {} },
+        OutOfScope: { Type: 'AWS::S3::Bucket', Properties: {} },
+        Failed: { Type: 'AWS::S3::Bucket', Properties: {} },
+      },
+    } as unknown as Parameters<typeof rebuiltLogicalIdsFrom>[1];
+    const rows = [
+      {
+        logicalId: 'Imported',
+        resourceType: 'AWS::S3::Bucket',
+        outcome: 'imported',
+        physicalId: 'b1',
+      },
+      { logicalId: 'NoPhysicalId', resourceType: 'AWS::S3::Bucket', outcome: 'imported' },
+      {
+        logicalId: 'NotInTemplate',
+        resourceType: 'AWS::S3::Bucket',
+        outcome: 'imported',
+        physicalId: 'b2',
+      },
+      // The selective-merge case this whole gate exists for.
+      { logicalId: 'OutOfScope', resourceType: 'AWS::S3::Bucket', outcome: 'skipped-out-of-scope' },
+      { logicalId: 'Failed', resourceType: 'AWS::S3::Bucket', outcome: 'failed', physicalId: 'b3' },
+    ] as unknown as Parameters<typeof rebuiltLogicalIdsFrom>[0];
+
+    const got = rebuiltLogicalIdsFrom(rows, template);
+    expect([...got]).toEqual(['Imported']);
+    // Stated per excluded row, so a widening says WHICH conjunct it dropped.
+    expect(got.has('NoPhysicalId')).toBe(false);
+    expect(got.has('NotInTemplate')).toBe(false);
+    expect(got.has('OutOfScope')).toBe(false);
+    expect(got.has('Failed')).toBe(false);
+  });
+
+  it('an UNMARKED record outside the rebuilt set is still captured normally', async () => {
+    // The other conjunct of `preservedRefusal`. Without this case, dropping
+    // `resource.observedBaselineRefused === true` from that predicate stays
+    // GREEN while silently skipping the baseline capture for EVERY record a
+    // selective merge preserved — a large, silent coverage regression whose
+    // only symptom is baselines that stop being written.
+    //
+    // `Preserved` here is unmarked and outside the rebuilt set: being outside
+    // that set is NOT on its own a reason to skip, because the set exists to
+    // qualify a REFUSAL, not to narrow the capture.
+    const { resources, readFor } = await captureInto(
+      {
+        Preserved: {
+          physicalId: 'p-preserved',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Value: 'ordinary' },
+        },
+      },
+      new Set<string>(),
+      { Preserved: { Value: 'live-value' } },
+      new Set<string>()
+    );
+
+    expect(readFor).toEqual(['Preserved']);
+    expect(resources['Preserved']!.observedProperties).toEqual({ Value: 'live-value' });
   });
 });

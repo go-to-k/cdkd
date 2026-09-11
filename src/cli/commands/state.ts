@@ -888,6 +888,18 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     // state — print "(sdk, legacy default)" so the absence is explicit.
     const provisionedBy = resource.provisionedBy ?? '(sdk, legacy default)';
     lines.push(`  ProvisionedBy: ${provisionedBy}`);
+    // v10+ (issue #2944): printed ONLY when set, unlike `ProvisionedBy` above,
+    // whose absence is itself a fact worth naming. Here absence is the norm,
+    // and a `(not refused)` row on every resource of every stack would bury the
+    // one that matters. This is the row a user needs when `cdkd state
+    // refresh-observed` starts declining a resource — `--json` carries the
+    // field for free, but the human view is where they will look first.
+    if (resource.observedBaselineRefused === true) {
+      lines.push(
+        `  ObservedBaseline: REFUSED by 'cdkd import' — no baseline will be captured ` +
+          `(deploy a change to this resource to restore one)`
+      );
+    }
     const deps = resource.dependencies ?? [];
     lines.push(`  Dependencies: ${deps.length > 0 ? deps.join(', ') : '(none)'}`);
 
@@ -2285,6 +2297,7 @@ async function stateRefreshObservedCommand(
     let totalRefreshed = 0;
     let totalUnsupported = 0;
     let totalFailed = 0;
+    let totalRefusedBaseline = 0;
 
     for (const target of targets) {
       if (!target.region) {
@@ -2316,12 +2329,32 @@ async function stateRefreshObservedCommand(
       totalRefreshed += counts.refreshed;
       totalUnsupported += counts.unsupported;
       totalFailed += counts.failed;
+      totalRefusedBaseline += counts.refusedBaseline;
     }
 
     const summary = options.dryRun
       ? `Plan: ${totalRefreshed} resource(s) would be refreshed, ${totalUnsupported} unsupported, ${totalFailed} would fail (--dry-run, no state was written)`
       : `Done: ${totalRefreshed} resource(s) refreshed, ${totalUnsupported} unsupported, ${totalFailed} failed`;
     logger.info(`\n${summary}`);
+
+    // Issue #2944. Its OWN line rather than a fourth count in the summary, and
+    // at `warn`: a refused resource is one the user asked to refresh and cdkd
+    // declined to, for a security reason they cannot see from the record, and
+    // it stays refused until that resource is deployed or updated. Folding it
+    // into the counts above would render it as routine attrition next to
+    // `unsupported`. Printed only when it happened, so an ordinary run's output
+    // is unchanged.
+    if (totalRefusedBaseline > 0) {
+      logger.warn(
+        `${totalRefusedBaseline} resource(s) ${options.dryRun ? 'would NOT be refreshed' : 'were NOT refreshed'}: ` +
+          `a 'cdkd import' run refused to capture their ` +
+          `observed-properties baseline, because their recorded properties can no longer position the secret ` +
+          `redaction — refreshing against those properties could persist a resolved secret into state.json in ` +
+          `plaintext. A deploy that actually CHANGES one of them restores its baseline — a NO_CHANGE deploy ` +
+          `does not, and re-running this command will refuse them again. Drift compares against their ` +
+          `recorded properties until then.`
+      );
+    }
 
     if (totalFailed > 0) {
       throw new PartialFailureError(
@@ -2430,7 +2463,7 @@ async function refreshObservedForStack(
     // from the ambient profile (issue #2170).
     lockRecovery?: LockRecoveryContext;
   }
-): Promise<{ refreshed: number; unsupported: number; failed: number }> {
+): Promise<{ refreshed: number; unsupported: number; failed: number; refusedBaseline: number }> {
   const { logger, lockRecovery } = opts;
 
   const result = await stateBackend.getState(stackName, region);
@@ -2445,13 +2478,23 @@ async function refreshObservedForStack(
 
   if (entries.length === 0) {
     logger.info(`✓ ${stackName} (${region}): no resources in state, skipping`);
-    return { refreshed: 0, unsupported: 0, failed: 0 };
+    return { refreshed: 0, unsupported: 0, failed: 0, refusedBaseline: 0 };
   }
 
   if (opts.dryRun) {
     let wouldRefresh = 0;
     let wouldUnsupported = 0;
+    let wouldRefuse = 0;
     for (const [, resource] of entries) {
+      // Issue #2944, and this arm is the reason the dry run has its own loop
+      // rather than sharing the real one: it must apply the SAME gate in the
+      // SAME order, or the plan promises a refresh the run then declines. It is
+      // first here for the same reason it is first there — a refused resource
+      // is supported and would otherwise be counted as one that WOULD refresh.
+      if (resource.observedBaselineRefused === true) {
+        wouldRefuse++;
+        continue;
+      }
       let provider;
       try {
         provider = providerRegistry.getProviderFor({
@@ -2466,9 +2509,15 @@ async function refreshObservedForStack(
       else wouldUnsupported++;
     }
     logger.info(
-      `Plan ${stackName} (${region}): ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported`
+      `Plan ${stackName} (${region}): ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported` +
+        (wouldRefuse > 0 ? `, ${wouldRefuse} refused (import baseline refusal)` : '')
     );
-    return { refreshed: wouldRefresh, unsupported: wouldUnsupported, failed: 0 };
+    return {
+      refreshed: wouldRefresh,
+      unsupported: wouldUnsupported,
+      failed: 0,
+      refusedBaseline: wouldRefuse,
+    };
   }
 
   const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
@@ -2496,12 +2545,36 @@ async function refreshObservedForStack(
     let refreshed = 0;
     let unsupported = 0;
     let failed = 0;
+    let refusedBaseline = 0;
 
     // Refresh in parallel under withStackName so any provider-internal
     // resource-name resolution sees the right stack (mirrors the deploy
     // engine's enclosing scope).
     await withStackName(stackName, async () => {
       const tasks = entries.map(async ([logicalId, resource]) => {
+        // Schema v10+ (issue #2944). A `cdkd import` run REFUSED to capture a
+        // baseline for this resource because its recorded `properties` can no
+        // longer position the redaction — and this command positions its
+        // readback against exactly those `properties` (the 4th argument to
+        // `readCurrentState`, and the source bag handed to
+        // `redactSecretsForState` below). After a refusal they can hold the
+        // WRONG-BRANCH LITERAL the import distrusted, and a literal source leaf
+        // against a string readback PAIRS as an ordinary drifted literal, so
+        // the walk refuses nothing and the decrypted value is persisted.
+        //
+        // This command has NO template in hand — by construction, it is the
+        // synth-free half of the CLI — so the discard evidence the refusal was
+        // based on is structurally unavailable to it. Reading the marker is the
+        // only thing it can do, which is why the refusal is persisted at all;
+        // see `ResourceState.observedBaselineRefused`'s doc.
+        //
+        // Counted apart from `unsupported`: a refused resource IS supported and
+        // WOULD have been refreshed, so folding it into that tally would report
+        // a security refusal as missing provider coverage.
+        if (resource.observedBaselineRefused === true) {
+          refusedBaseline++;
+          return;
+        }
         if (providerRegistry.shouldSkipResource(resource.resourceType)) {
           unsupported++;
           return;
@@ -2662,10 +2735,13 @@ async function refreshObservedForStack(
 
     logger.info(
       `✓ ${stackName} (${region}): ` +
-        `${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed`
+        `${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed` +
+        // Issue #2944: appended rather than always printed, so a stack with no
+        // refused record renders byte-identically to the pre-v10 line.
+        (refusedBaseline > 0 ? `, ${refusedBaseline} refused (import baseline refusal)` : '')
     );
 
-    return { refreshed, unsupported, failed };
+    return { refreshed, unsupported, failed, refusedBaseline };
   } finally {
     await lockManager.releaseLock(stackName, region).catch((err) => {
       logger.warn(

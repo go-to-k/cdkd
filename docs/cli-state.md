@@ -403,6 +403,17 @@ The baseline is what makes the comparison thorough. With one present,
 console-side edit to a key your template never mentions still surfaces;
 without one, it falls back to comparing only the keys in state.
 
+**One kind of resource this command deliberately declines.** If a
+[`cdkd import`](import.md#the-drift-baseline-an-import-records) run refused to
+capture a baseline — because that resource's recorded properties can no longer
+position the secret redaction — the refusal is recorded on the record, and this
+command skips it rather than reading a value back against those properties,
+which could persist a resolved secret into `state.json` in plaintext. Such
+resources are counted and reported separately from `unsupported` ones, and
+`cdkd state show` marks each with an `ObservedBaseline: REFUSED` line. Re-running
+this command will not clear it: **deploy a change to the resource**, which
+rebuilds its record from your template and captures a real baseline.
+
 Run [`cdkd scrub`](cli-scrub.md) first on state written by a pre-GHSA binary.
 The readback is redacted **by position** against the existing record: the
 record's own properties are expected to hold the unresolved

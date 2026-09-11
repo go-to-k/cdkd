@@ -112,7 +112,7 @@ version of the same collision — a plain output in one stack shadowing an
 export of the same name in another — is closed by schema v9's
 `exportNames`, which narrows what the index derives from the bag to the
 aliases the producer actually declared; see the v9 section in
-[State Management](state-management.md#version-9-adds-exportnames-current-writers).) Rename the export (or
+[State Management](state-management.md#version-9-adds-exportnames).) Rename the export (or
 the colliding output) and redeploy the producer — there is no
 configuration that restores the old behavior, and the old behavior was
 order-dependent anyway.

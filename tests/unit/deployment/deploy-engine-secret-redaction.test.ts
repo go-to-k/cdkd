@@ -3,6 +3,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
   scrubResourceRecord,
   redactSecretsForState,
+  markSameGenerationBag,
   SECRET_MASK,
   STATE_SOURCED_BASELINE_RULES,
 } from '../../../src/deployment/secret-redaction.js';
@@ -531,13 +532,33 @@ describe('the deploy journal previousState is a REPLAYED baseline, not a fresh o
     expect(JSON.stringify(redacted)).not.toContain(SECRET_MASK);
   });
 
-  it('...while the SAME record through the empty-map DERIVATION still masks (the baseline destination)', () => {
+  it('...while the same record with a FRESHLY DRAINED bag through the empty-map DERIVATION still masks (the baseline destination)', () => {
     // The other half of the pair: the deploy persist choke point (the
     // issue-1900 unchanged-resource walk) derives the fail-closed constant for
     // an empty map, and that must SURVIVE the journal fix — weakening the
     // derivation instead of passing the constant at the journal call site
     // would re-open GHSA-p5qg-v9gv-hc7w and reds this case.
-    const scrubbed = scrubResourceRecord(replayedRecord(), new Map<string, string>());
+    //
+    // The bag is MARKED, and that is not a fixture detail. Since issue
+    // [#2906](https://github.com/go-to-k/cdkd/issues/2906) the fail-closed arm
+    // asks TWO questions — empty map AND a bag THIS RUN produced — because the
+    // same empty-map configuration is also reached by a FAILURE-PATH save over
+    // a PRIOR generation's `observedProperties`, where a mask destroys an
+    // intact persisted baseline. `drainObservedCaptures` marks every bag it
+    // installs, so the #1900 walk this case is about still fails closed; the
+    // unmarked direction is covered in
+    // `secret-redaction-uncertified-fail-closed.test.ts`.
+    //
+    // So the pair is no longer "the SAME record, two destinations" — the
+    // journal half above is a prior generation and this half is not, which is
+    // exactly the distinction #2906 made load-bearing. The journal call site
+    // keeps passing `STATE_SOURCED_READBACK_RULES` explicitly regardless: it
+    // states what that site KNOWS rather than relying on a mark's absence.
+    const record = replayedRecord();
+    const scrubbed = scrubResourceRecord(
+      { ...record, observedProperties: markSameGenerationBag({ ...record.observedProperties }) },
+      new Map<string, string>()
+    );
 
     expect(scrubbed.observedProperties).toEqual({ A: [SECRET_MASK] });
     expect(JSON.stringify(scrubbed)).not.toContain(UNCERTIFIABLE_LIVE);

@@ -7,13 +7,16 @@ import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
+// Issue #2944: the import-refusal SUMMARY is a `logger.warn`, deliberately not a
+// fourth count on the `info` summary line, so reading it needs its own spy.
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: infoSpy,
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({
       debug: vi.fn(),
@@ -183,6 +186,12 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
     ...(overrides.observedProperties && { observedProperties: overrides.observedProperties }),
     ...(overrides.attributes && { attributes: overrides.attributes }),
     ...(overrides.dependencies && { dependencies: overrides.dependencies }),
+    // Schema v10 (issue #2944). Conditional like its siblings: the field must be
+    // ABSENT from an unmarked record, not present-and-undefined, because the
+    // reader tests `=== true` and the JSON a state file carries has no key.
+    ...(overrides.observedBaselineRefused && {
+      observedBaselineRefused: overrides.observedBaselineRefused,
+    }),
   };
 }
 
@@ -1018,5 +1027,208 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
         { Key: 'aws:cloudformation:stack-name', Value: 'added-by-aws' },
       ],
     });
+  });
+});
+
+/**
+ * Schema v10's `observedBaselineRefused` (issue
+ * [#2944](https://github.com/go-to-k/cdkd/issues/2944)), read side.
+ *
+ * This command is the SECOND of the two writers the issue names, and the reason
+ * it cannot decide for itself is structural: it positions its readback against
+ * the record's own `properties` (the 4th argument to `readCurrentState`, and
+ * the source bag handed to `redactSecretsForState`), and after an import
+ * refusal those `properties` can hold the WRONG-BRANCH LITERAL the refusal
+ * distrusted. A literal source leaf against a string readback PAIRS as an
+ * ordinary drifted literal, so the redaction walk has nothing to refuse on and
+ * the decrypted value is persisted — the `cdkd state refresh-observed` route
+ * back into GHSA-p5qg-v9gv-hc7w. And it is the SYNTH-FREE half of the CLI by
+ * construction, so the template evidence the refusal rested on is unavailable
+ * to it. Reading the marker is the only thing it can do.
+ *
+ * EVERY case here carries an UNMARKED sibling that IS refreshed in the same
+ * run. Without one, "the marked resource was not refreshed" is satisfied
+ * equally by a command that aborted, by a provider with no read handler, and by
+ * a fixture that never reached the task loop — so the assertion would pass with
+ * the guard deleted.
+ */
+describe('cdkd state refresh-observed — import-refused baselines (issue #2944)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  /** The decrypted value AWS holds. It must reach no persisted bag. */
+  const REFUSED_PLAINTEXT = 'THE-REAL-DECRYPTED-SECRET';
+  /** What the refusal left in `properties`: an ordinary, unsuspicious string. */
+  const WRONG_BRANCH_LITERAL = 'dev-placeholder';
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    errorSpy.mockReset();
+    infoSpy.mockReset();
+    warnSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  it('does NOT refresh a marked resource while an unmarked sibling IS refreshed', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Refused: makeResource({
+          physicalId: 'refused',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'q', Password: WRONG_BRANCH_LITERAL },
+          observedBaselineRefused: true,
+        }),
+        Sibling: makeResource({
+          physicalId: 'sibling',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+      })
+    );
+    // The sibling's provider HAS a `readCurrentState`, which is the half that
+    // makes "still absent" discriminating: were the marked record skipped for
+    // want of a read handler instead, this sibling would be skipped too.
+    const readFor: string[] = [];
+    mockRegistryGetProvider.mockImplementation((resourceType: string) => ({
+      readCurrentState: async (physicalId: string) => {
+        readFor.push(physicalId);
+        return resourceType === 'AWS::SQS::Queue'
+          ? { QueueName: 'q', Password: REFUSED_PLAINTEXT }
+          : { BucketName: 'b', Tags: [] };
+      },
+    }));
+
+    const { error } = await runRefresh(['TestStack']);
+    expect(error).toBeUndefined();
+
+    // AWS was never asked about the refused resource — the skip is ahead of the
+    // read, not a discard of one already taken.
+    expect(readFor).toEqual(['sibling']);
+    const saved = mockSaveState.mock.calls[0]?.[2] as StackState;
+    expect(saved.resources['Refused']?.observedProperties).toBeUndefined();
+    // The marker STANDS: this command holds no template, so it cannot discharge
+    // a refusal, only honour it. A deploy that changes the resource does that.
+    expect(saved.resources['Refused']?.observedBaselineRefused).toBe(true);
+    // The sibling is the control: the run really did refresh.
+    expect(saved.resources['Sibling']?.observedProperties).toEqual({
+      BucketName: 'b',
+      Tags: [],
+    });
+    // And the plaintext reached the persisted blob by no route at all — not the
+    // baseline, not `properties`, not an attribute bag.
+    expect(JSON.stringify(saved)).not.toContain(REFUSED_PLAINTEXT);
+  });
+
+  it('counts a refused resource in its OWN tally, not folded into `unsupported`', async () => {
+    // `unsupported` means cdkd has no way to read the resource. A refused one IS
+    // readable and WOULD have been refreshed, so reporting it there would render
+    // a security refusal as missing provider coverage — and would hide it from
+    // a user auditing why a resource stopped tracking drift.
+    //
+    // THE THIRD RESOURCE is what makes this a discrimination rather than a
+    // spelling check: `NoReader` is a genuine `unsupported`, so the counts can
+    // actually be confused with one another in this fixture.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Refused: makeResource({
+          physicalId: 'refused',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'q', Password: WRONG_BRANCH_LITERAL },
+          observedBaselineRefused: true,
+        }),
+        Sibling: makeResource({
+          physicalId: 'sibling',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+        NoReader: makeResource({
+          physicalId: 'no-reader',
+          resourceType: 'AWS::Foo::Bar',
+          properties: {},
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((resourceType: string) => {
+      if (resourceType === 'AWS::SQS::Queue') {
+        return { readCurrentState: async () => ({ Password: REFUSED_PLAINTEXT }) };
+      }
+      if (resourceType === 'AWS::S3::Bucket') {
+        return { readCurrentState: async () => ({ BucketName: 'b' }) };
+      }
+      // A provider with no read handler at all: the real `unsupported`.
+      return {};
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+    expect(error).toBeUndefined();
+
+    // ONE line carries all four counts, so a refusal folded into `unsupported`
+    // (`2 unsupported`, no refused segment) reds this assertion, and so does a
+    // refusal counted as a refresh.
+    const messages = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(messages).toContain(
+      '✓ TestStack (us-east-1): 1 refreshed, 1 unsupported, 0 failed, 1 refused (import baseline refusal)'
+    );
+    // The user-facing summary is a WARN on its own line, not a fourth count in
+    // the `Done:` summary — a declined refresh they cannot see from the record.
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).toContain('1 resource(s) were NOT refreshed');
+    // A refusal is not a failure: the command exits 0 and the state is saved.
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('--dry-run applies the SAME gate: a marked resource is not planned as a refresh', async () => {
+    // The dry run has its own loop over the same entries, so it can silently
+    // disagree with the real one — a plan that promises a refresh the run then
+    // declines. Same fixture, same expected split, read off the plan line.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Refused: makeResource({
+          physicalId: 'refused',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'q', Password: WRONG_BRANCH_LITERAL },
+          observedBaselineRefused: true,
+        }),
+        Sibling: makeResource({
+          physicalId: 'sibling',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+      })
+    );
+    // BOTH providers can read: the plan's `unsupported` column is 0, so the
+    // refused resource has nowhere to hide but its own segment.
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b' }),
+    });
+
+    const { error } = await runRefresh(['TestStack', '--dry-run']);
+    expect(error).toBeUndefined();
+
+    const messages = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(messages).toContain(
+      'Plan TestStack (us-east-1): 1 resource(s) would be refreshed, 0 unsupported, ' +
+        '1 refused (import baseline refusal)'
+    );
+    // The sibling's `1 would be refreshed` above is the control; these two pin
+    // that a dry run remains a dry run.
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 });
