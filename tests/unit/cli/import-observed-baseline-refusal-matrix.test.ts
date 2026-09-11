@@ -905,6 +905,107 @@ const ROWS: readonly Row[] = [
     },
   },
   {
+    name: 'FIVE-argument Fn::FindInMap, reference in the discarded fifth argument',
+    properties: {
+      Detail: {
+        pw: { 'Fn::FindInMap': ['M', 'dev', 'pw', { DefaultValue: 'x' }, { Ref: 'SecretRef' }] },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "PARENT ROUND 2's live admit: resolveFindInMap destructures exactly four " +
+      'args and IGNORES the rest, so the fifth is discarded WHOLE and unresolved ' +
+      '— and the args recursion alone merely descends into the bare Ref instead ' +
+      'of judging it inert, with both opener counts zero',
+    template: {
+      Mappings: { M: { dev: { pw: 'm-dev-v' } } },
+      Parameters: { SecretRef: { Type: 'String', Default: TOKEN } },
+    },
+  },
+  {
+    name: 'Fn::Select with a static index OUT OF BOUNDS of a literal list',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [999, [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the other half of the out-of-bounds class the negative-index row opened: ' +
+      'resolvedList[999] is undefined, resolveSelect answers its OutOfBounds ' +
+      'placeholder, and the whole eagerly-decrypted list is discarded — a ' +
+      "literal list's length is statically checkable, so vouch only in bounds",
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::FindInMap with a dynamic key over an INERT named map, token in a SIBLING map',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M', { Ref: 'Stage' }, 'pw'] } } },
+    readback: { Detail: { pw: 'm-dev-v' } },
+    expected: { Detail: { pw: 'm-dev-v' } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the named-map NARROWING: the literal map name ' +
+      'scopes the inertness question to map M alone, so a token in sibling map S ' +
+      '— which this lookup can never select — must not cost the baseline. ' +
+      'Collapsing the scope to the whole Mappings section reds exactly this row',
+    template: {
+      Parameters: { Stage: { Type: 'String', Default: 'dev' } },
+      Mappings: {
+        M: { dev: { pw: 'm-dev-v' } },
+        S: { x: { y: TOKEN } },
+      },
+    },
+  },
+  {
+    name: 'downgraded Fn::If nested inside a FindInMap KEY argument',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::FindInMap': ['M', { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev'] }, 'pw'],
+        },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "the FindInMap args-recursion tail, fenced: the key's nested Fn::If passes " +
+      'the keyed check (map M is inert) and only the recursion into the args ' +
+      'sees its discarded secret-bearing branch',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+      Mappings: { M: { dev: { pw: 'm-dev-v' } } },
+    },
+  },
+  {
+    name: 'downgraded Fn::If nested inside a Fn::Select LIST element, index static and in bounds',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::Select': [1, [{ 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev-el'] }, 'x-element']],
+        },
+      },
+    },
+    readback: { Detail: { pw: 'x-element' } },
+    refused: true,
+    overRefusal: true,
+    why:
+      'the Select args-recursion tail, fenced: index 1 selects the same element ' +
+      'at deploy, so the discarded element 0 — and the branch its Fn::If drops — ' +
+      'was discarded identically on both sides and nothing leaks; the recursion ' +
+      'refuses the nested discarder anyway, the fail-closed trade the label records',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
     name: 'Fn::If discarding {Ref: AWS::NoValue} — the optional-property idiom',
     properties: {
       Detail: { opt: { 'Fn::If': ['HasOpt', 'real-value', { Ref: 'AWS::NoValue' }] } },
@@ -1222,16 +1323,16 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     // A floor on the POOL, written as literals from this file rather than
     // derived from the array: a table that quietly lost its refusing rows would
     // otherwise satisfy every assertion below by having nothing to check.
-    expect(ROWS).toHaveLength(60);
-    expect(ROWS.filter((r) => r.refused)).toHaveLength(32);
-    expect(ROWS.filter((r) => !r.refused)).toHaveLength(28);
+    expect(ROWS).toHaveLength(65);
+    expect(ROWS.filter((r) => r.refused)).toHaveLength(36);
+    expect(ROWS.filter((r) => !r.refused)).toHaveLength(29);
     // The deliberate over-refusals. This counts the rows' own LABEL, so it
     // cannot catch production refusing more than it should — the widening
     // fence is the ADMITTED rows above, which red when a refusal reaches
     // them. What the label buys is premise-loop EXEMPTION: an overRefusal row
     // skips the proves-it-really-leaked replay, so quietly silencing an
     // unearned refusal has to flip this literal and show up in the diff.
-    expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(5);
+    expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(6);
     expect(
       ROWS.filter((r) => r.overRefusal && !r.refused),
       'an over-refusal that is not a refusal is a contradiction'
@@ -1350,6 +1451,15 @@ describe('cdkd import: which resources may take an observedProperties baseline (
       'at the minimal refusing depth the resolve completed, so the refusal must be the ' +
         'walk-overflow catch — an ARM-1 warn here means the frame-weight ordering inverted'
     ).toBe(false);
+    // Exclude the CLOSER competitor too (parent review round 2): an ARM-2
+    // refusal via `countDynamicReferenceOpeners` returning undefined ALSO
+    // carries no ARM-1 warn. Stringify surviving the boundary depth here —
+    // with frames measured ~2x lighter than the walk's, against an ambient
+    // call-depth offset of a few hundred frames — leaves the walk catch as
+    // the only plausible refusing arm, and turns a frame-weight inversion
+    // (one reviewer measured a 4.3x intra-process JIT swing on the walk)
+    // into a loud failure instead of a green test that pins nothing.
+    expect(() => JSON.stringify(nest(hi))).not.toThrow();
   }, 60_000);
 
   for (const row of ROWS) {
@@ -1452,7 +1562,7 @@ describe('cdkd import: which resources may take an observedProperties baseline (
         provenByPlaintext++;
       }
     }
-    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(23);
+    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(26);
     expect(provenByMask, 'the loop ran over every refusal earned by a MASK').toBe(4);
   });
 });

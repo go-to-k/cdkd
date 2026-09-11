@@ -1869,9 +1869,17 @@ export async function resolveImportedProperties(
     // cannot be undone"). A bag the walk cannot traverse is a bag it cannot
     // vouch for: refuse, the same direction as
     // `countDynamicReferenceOpeners`' serialization guard. Pinned by the
-    // deep-bag case in the refusal-matrix suite, whose depth is derived from
-    // the running environment's own stringify limit so the window is not a
-    // hard-coded guess.
+    // deep-bag case in the refusal-matrix suite, which BISECTS to the minimal
+    // refusing depth rather than guessing one, because every limit here moves
+    // with the ambient stack.
+    //
+    // THE TRADE THE CATCH MAKES, stated because the comment above names only
+    // the safe half: it swallows EVERY throw, so a future shape bug in the
+    // walk (a `TypeError`, not just the overflow) reads as "discards" and
+    // costs baselines silently instead of failing a test loudly. That is the
+    // right direction for a security refusal, and the debug line below is
+    // the compensation — name and shape only, like the capture's own catch,
+    // never the message (which could carry template text).
     let discardsNonInertSubtree: boolean;
     try {
       discardsNonInertSubtree = resolveDiscardsNonInertSubtree(
@@ -1879,7 +1887,10 @@ export async function resolveImportedProperties(
         conditions,
         template.Mappings
       );
-    } catch {
+    } catch (err) {
+      logger.debug(
+        `observed-baseline discard walk failed for imported ${logicalId} (${resource.resourceType}): ${err instanceof Error ? err.name : typeof err} — refusing the baseline fail-closed.`
+      );
       discardsNonInertSubtree = true;
     }
     if (
@@ -2156,7 +2167,12 @@ function resolveDiscardsNonInertSubtree(
   //    literal, the whole `Mappings` section when even that is dynamic.
   if (keys.length === 1 && keys[0] === 'Fn::FindInMap') {
     const args = record['Fn::FindInMap'];
-    if (!Array.isArray(args) || args.length < 3) return true;
+    // Malformed in BOTH directions, like the `Fn::Select` arm below (parent
+    // review round 2): `resolveFindInMap` destructures exactly four args and
+    // IGNORES the rest, so a fifth argument is discarded WHOLE and unresolved
+    // — the same class the 4th-argument check below closes — and judging it
+    // by recursion alone admits a `{Ref: ...}` there.
+    if (!Array.isArray(args) || args.length < 3 || args.length > 4) return true;
     if (args.length > 3) {
       // The WHOLE 4th argument must be inert, not just its `DefaultValue`
       // (parent review): `resolveFindInMap` reads ONLY that key, so a SIBLING
@@ -2192,7 +2208,15 @@ function resolveDiscardsNonInertSubtree(
   if (keys.length === 1 && keys[0] === 'Fn::Select') {
     const args = record['Fn::Select'];
     if (!Array.isArray(args) || args.length !== 2) return true;
-    if (!isStaticSelectIndex(args[0]) && !isInertDiscardedSubtree(args[1])) return true;
+    // A static index over a LITERAL list must also be IN BOUNDS (parent
+    // review round 2): `resolvedList[999]` on a two-element list is
+    // `undefined` — `resolveSelect` answers with its OutOfBounds placeholder
+    // and the whole eagerly-decrypted list is discarded, the same class as a
+    // negative index. Only a literal array's length is checkable statically;
+    // an intrinsic list argument keeps the index-only test.
+    const staticSelection =
+      isStaticSelectIndex(args[0]) && (!Array.isArray(args[1]) || Number(args[0]) < args[1].length);
+    if (!staticSelection && !isInertDiscardedSubtree(args[1])) return true;
     return args.some((arg) => resolveDiscardsNonInertSubtree(arg, conditions, mappings));
   }
   if (keys.length > 1 && keys.some((key) => isIntrinsicShapedKey(key))) {
