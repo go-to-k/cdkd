@@ -886,18 +886,31 @@ export function countDecisions({
  * could never fire for it. Trading a wrong decision for an invisible removal
  * is not a fix. The caller renders `settled` in its own section.
  *
+ * `settledThisCycle` is what keeps the report from saying two things about one
+ * property. The workflow runs `Settle the removals…` BEFORE `Diagnose`, and
+ * that step WRITES into the very file read here — so by diagnosis time the map
+ * already contains this cycle's own writes, and every auto-settled property
+ * would otherwise appear both in the job-settled section and in the standing
+ * one, whose prose says "written by an earlier cycle or by hand, not by this
+ * run". That is the designed happy path rather than a corner: the rule file
+ * measures 73% of declared properties as auto-settleable.
+ *
  * @param {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} removed
  * @param {Record<string, Record<string, string> | undefined>} bogusTolerated the
  *   tolerance file's `bogusTolerated` map; `{}` when the file is absent, which
  *   settles nothing and so over-counts — the safe direction.
+ * @param {ReadonlyArray<{resourceType: string, property: string}>} [settledThisCycle]
+ *   what THIS run wrote (the `written` record). Subtracted from `settled` only,
+ *   never from the count: it is settled either way, it simply belongs in the
+ *   other section.
  * @returns {{remaining: import('./diagnose-schema-refresh.d.mts').RemovedEntry[],
  *   settled: Array<{resourceType: string, property: string, rationale: string}>}}
  *   `remaining` is the entries minus settled properties, emptied ones dropped —
- *   what the count is taken over. `settled` carries each subtracted property
- *   with the rationale the file holds for it, so the report can show what was
- *   removed and why nobody has to look at it.
+ *   what the count is taken over. `settled` carries each property settled by a
+ *   STANDING entry, with the rationale the file holds for it, so the report can
+ *   show what was removed and why nobody has to look at it.
  */
-export function partitionSettledRemovals(removed, bogusTolerated) {
+export function partitionSettledRemovals(removed, bogusTolerated, settledThisCycle = []) {
   // Looked up two levels deep in the map rather than through a flattened
   // `type|property` key set: this is the same `?.[type]?.[property] !==
   // undefined` test `writeAutoTolerated` and `classifyCoverage` already use, so
@@ -911,7 +924,13 @@ export function partitionSettledRemovals(removed, bogusTolerated) {
       properties: e.properties.filter((p) => {
         const rationale = bogusTolerated?.[e.resourceType]?.[p];
         if (rationale === undefined) return true;
-        settled.push({ resourceType: e.resourceType, property: p, rationale });
+        // Settled either way — it leaves `remaining` and so leaves the count.
+        // It only stays OUT of `settled` when this run wrote the entry, because
+        // the job-settled section already renders it with its own rationale.
+        const byThisRun = settledThisCycle.some(
+          (w) => w.resourceType === e.resourceType && w.property === p
+        );
+        if (!byThisRun) settled.push({ resourceType: e.resourceType, property: p, rationale });
         return false;
       }),
     }))
@@ -3099,13 +3118,20 @@ function main() {
   /** @type {Record<string, Record<string, string>>} */
   let liveTolerance = {};
   if (existsSync(tolerancePath)) {
-    // Wrapped, and the empty fallback is the SAFE direction rather than
-    // laziness: settling nothing OVER-counts, while throwing here kills the
-    // Diagnose step before `renderDiagnosis` writes anything — and the report
-    // going out is the priority this file argues for a few lines down, because
-    // the pull request is how the human finds out at all. An unparseable
-    // tolerance file also reds `property-coverage` on its own, so the state is
-    // reported rather than swallowed.
+    // Wrapped, and the empty fallback is the SAFE direction: settling nothing
+    // OVER-counts, while throwing here would kill the run before
+    // `renderDiagnosis` writes anything — and the report going out is the
+    // priority this file argues for a few lines down, because the pull request
+    // is how the human finds out at all. An unparseable tolerance file also
+    // reds `property-coverage` on its own, so the state is reported rather than
+    // swallowed.
+    //
+    // On the WORKFLOW path this guard is inert and the comment should not
+    // pretend otherwise: `writeAutoTolerated` parses the same file UNWRAPPED in
+    // the Settle step, which runs first under the same `if:` and
+    // `set -euo pipefail`, so an unparseable file fails there and Diagnose is
+    // skipped. What this covers is the by-hand invocation and any future
+    // ordering where Diagnose reaches the file first.
     try {
       liveTolerance = JSON.parse(readFileSync(tolerancePath, 'utf8')).bogusTolerated ?? {};
     } catch (/** @type {any} */ error) {
@@ -3120,9 +3146,14 @@ function main() {
       (w) => liveTolerance[w.resourceType]?.[w.property] !== undefined
     );
   }
+  // `autoTolerated` is passed so the two sections cannot both claim a property:
+  // the Settle step wrote this cycle's entries into the file this map was read
+  // from, so without it every auto-settled property renders twice, the second
+  // time under prose saying an earlier cycle wrote it.
   const { remaining: removedForReport, settled: alreadyTolerated } = partitionSettledRemovals(
     removed,
-    liveTolerance
+    liveTolerance,
+    autoTolerated
   );
 
   const failedChecks = readArgValue('--failed-checks')

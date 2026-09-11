@@ -139,7 +139,13 @@ export declare function countDecisions(
  */
 export declare function partitionSettledRemovals(
   removed: readonly RemovedEntry[],
-  bogusTolerated: Record<string, Record<string, string> | undefined> | undefined
+  bogusTolerated: Record<string, Record<string, string> | undefined> | undefined,
+  /**
+   * What THIS run wrote. Kept out of `settled` only — the Settle step writes
+   * into the same file before the diagnosis reads it, so without this every
+   * auto-settled property renders in both sections.
+   */
+  settledThisCycle?: ReadonlyArray<{ resourceType: string; property: string }>
 ): {
   remaining: RemovedEntry[];
   settled: Array<{ resourceType: string; property: string; rationale: string }>;

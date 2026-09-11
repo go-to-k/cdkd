@@ -333,16 +333,25 @@ const decisionTerms = (): string[] => {
   ).toBe(lines.length);
   // ...and the line count only bounds the name count while each line carries
   // ONE term. `matchAll` with `/gm` yields at most one match per line, so
-  // `removed, divergences,` on a single line parses as `removed` alone and the
+  // `removed, divergences` on a single line parses as `removed` alone and the
   // two counts still agree — a seventh term added beside a sixth would vanish
   // with every floor and anchor still passing. Formatting makes that shape
   // unreachable today; that is a property of the formatter, not of this fence,
   // so it is asserted rather than relied upon.
+  //
+  // Counting DECLARATION POSITIONS, not commas. A bare comma count is wrong in
+  // both directions: `removed, divergences` without a trailing comma has one
+  // comma and still hides a term, while a default holding a comma
+  // (`failedChecks = ['a', 'b'],`) has two and is perfectly valid. Bracketed,
+  // braced, parenthesised and quoted spans are stripped first so a default
+  // cannot contribute a position.
   for (const line of lines) {
+    const bare = line.replace(/\[[^\]]*\]|\{[^}]*\}|\([^)]*\)|'[^']*'|"[^"]*"/g, '');
+    const declarations = (bare.match(/(^|,)\s*[A-Za-z_$][\w$]*\s*(?:=|,|$)/g) ?? []).length;
     expect(
-      (line.match(/,/g) ?? []).length,
-      `countDecisions destructures more than one term on the line ${JSON.stringify(line)}; the ` +
-        'per-line scan below reads only the first, so a term there would be silently dropped'
+      declarations,
+      `countDecisions declares more than one term on the line ${JSON.stringify(line)}; the ` +
+        'per-line scan reads only the first, so a term there would be silently dropped'
     ).toBeLessThanOrEqual(1);
   }
   return names;
@@ -491,7 +500,9 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // ordering nowhere.
     const step = stepsOf(ci, CI_CHECK_JOB).find((s) => /^\s*vp run test(\s|$)/m.test(s.run ?? ''));
     expect(step, `no step in ${CI_CHECK_JOB} runs the unit suite`).toBeDefined();
-    const body = step!.run!;
+    // Comment-stripped: a line such as `# we do not set -o pipefail here`
+    // satisfies both assertions below while arming nothing.
+    const body = stripComments(step!.run!);
     const pipefail = body.indexOf('set -o pipefail');
     const invocation = body.search(/^\s*vp run test(\s|$)/m);
     expect(pipefail, 'the tee’d unit-suite step no longer sets pipefail').toBeGreaterThan(-1);

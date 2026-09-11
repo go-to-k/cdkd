@@ -3621,6 +3621,17 @@ describe('the decision labels and the count cannot disagree', () => {
             rationale: 'settled by the job',
           },
         ],
+        // The standing-tolerance section is a non-decision section too, added
+        // here with the others: it was introduced without joining this list, so
+        // a stray label in it would not have broken the sequence (issue
+        // go-to-k/cdkd#3005).
+        alreadyTolerated: [
+          {
+            resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+            property: 'DefaultCooldown',
+            rationale: 'settled by a standing entry',
+          },
+        ],
         autoEscalated: [
           { resourceType: 'AWS::SQS::Queue', property: 'DelaySeconds', reason: 'could not tell' },
         ],
@@ -4745,5 +4756,76 @@ describe('partitionSettledRemovals (issue #3005)', () => {
     const md = renderDiagnosis({ removed: [], writableAdded: [], skipped: [], divergences: [] });
     expect(md).toContain('Nothing in this refresh needs a decision — additions only.');
     expect(md).not.toContain('a STANDING tolerance already settles');
+  });
+});
+
+describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () => {
+  // The Settle step runs BEFORE Diagnose and writes into the very file the
+  // diagnosis then reads, so `bogusTolerated` already carries this cycle's
+  // entries. Without `settledThisCycle` every auto-settled property lands in
+  // BOTH report sections, the second under prose asserting an earlier cycle
+  // wrote it — and that is the designed happy path, not a corner.
+  const TOLERANCE = {
+    'AWS::Route53::RecordSet': { GeoProximityLocation: 'written by THIS run' },
+    'AWS::AutoScaling::AutoScalingGroup': { DefaultCooldown: 'written long ago' },
+  };
+  const WRITTEN_THIS_CYCLE = [
+    { resourceType: 'AWS::Route53::RecordSet', property: 'GeoProximityLocation' },
+  ];
+  const removed = [
+    { resourceType: 'AWS::Route53::RecordSet', properties: ['GeoProximityLocation'], candidates: {} },
+    {
+      resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+      properties: ['DefaultCooldown'],
+      candidates: {},
+    },
+  ];
+
+  it('leaves this run’s OWN writes out of the standing-tolerance list', () => {
+    const { remaining, settled } = partitionSettledRemovals(
+      removed,
+      TOLERANCE,
+      WRITTEN_THIS_CYCLE
+    );
+    // Both are settled, so neither is counted...
+    expect(remaining).toEqual([]);
+    expect(countDecisions({ removed: remaining, divergences: [] })).toBe(0);
+    // ...but only the one nobody wrote this cycle is attributed to a STANDING
+    // entry. The other already has its own section.
+    expect(settled.map((s) => `${s.resourceType}.${s.property}`)).toEqual([
+      'AWS::AutoScaling::AutoScalingGroup.DefaultCooldown',
+    ]);
+  });
+
+  it('claims BOTH when nothing was written this cycle — the discriminating control', () => {
+    // Without this, dropping every property from `settled` would pass the case
+    // above and silently restore "the removal renders nowhere".
+    const { settled } = partitionSettledRemovals(removed, TOLERANCE);
+    expect(settled.map((s) => s.property)).toEqual(['GeoProximityLocation', 'DefaultCooldown']);
+  });
+
+  it('renders each settled property in exactly ONE section', () => {
+    const { settled } = partitionSettledRemovals(removed, TOLERANCE, WRITTEN_THIS_CYCLE);
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      skipped: [],
+      divergences: [],
+      autoTolerated: [
+        {
+          resourceType: 'AWS::Route53::RecordSet',
+          property: 'GeoProximityLocation',
+          rationale: 'written by THIS run',
+        },
+      ],
+      alreadyTolerated: settled,
+    });
+    // The section headings must not both count it, and the property name must
+    // appear once per section it legitimately belongs to — `GeoProximityLocation`
+    // only under the job-settled heading.
+    expect(md).toContain('the job SETTLED itself (1)');
+    expect(md).toContain('a STANDING tolerance already settles (1)');
+    expect((md.match(/GeoProximityLocation/g) ?? []).length).toBe(1);
+    expect((md.match(/DefaultCooldown/g) ?? []).length).toBe(1);
   });
 });

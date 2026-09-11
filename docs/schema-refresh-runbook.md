@@ -137,11 +137,9 @@ reason: nearly every decision the count can carry also reddens a check that
 rest of the count IS that family of checks). So the label and the title are
 there to tell you the work exists, not to hold the gate.
 
-**The exception is the unreadable-fixture class below, and there the marking IS
-the only signal** — approve the workflows on such a cycle and CI goes green with
-the count still non-zero. It means the run is broken rather than that AWS moved,
-and the body names the fixtures, so the label plus a look at the run log is the
-procedure.
+The exception is the unreadable-fixture class named at the end of this section,
+and it is narrower than it sounds — read it there rather than here, so there is
+only one description of it on the page.
 
 **Unsettled** is the load-bearing word in that sentence, and it was wrong until
 issue [#3005](https://github.com/go-to-k/cdkd/issues/3005). A property listed in
@@ -154,7 +152,12 @@ nothing to do. Both sides now read the tolerance FILE, so they cannot disagree.
 
 The one class still counted without reddening anything is a fixture the
 diagnosis itself could not read from `HEAD` — it names those in the PR body, and
-it means the run is broken rather than that AWS moved.
+it means the run is broken rather than that AWS moved. That is the exception to
+"you cannot merge one by mistake" above: approve the workflows on such a cycle
+and CI goes green with the count still non-zero, so there the marking is the
+only signal. The narrowness is the whole point — an unparseable fixture in the
+WORKING TREE is counted the same way but does redden CI, because every
+fixture-reading check fails to load it.
 
 The marking is **cleared by the next run** once you have committed the
 classifications: the job recomputes the count while the PR is open, even on a
