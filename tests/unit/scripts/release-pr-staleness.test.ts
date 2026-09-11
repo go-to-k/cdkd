@@ -144,7 +144,7 @@ describe('release-pr-staleness', () => {
      * this is what lets a case exercise the filter itself — a fork decoy whose
      * head branch carries the release prefix, or two same-repo matches.
      */
-    openPrs?: { number: number; headRefName: string; isCrossRepository: boolean }[];
+    openPrs?: { number: number; headRef: string; fork: boolean }[];
     /**
      * Raw stdout for the `autoMergeRequest` read, overriding `armed`. Lets a
      * case drive the answer the shell must FAIL CLOSED on — an empty string is
@@ -191,7 +191,7 @@ describe('release-pr-staleness', () => {
     const binDir = join(scratch, `${id}-bin`);
     mkdirSync(binDir);
     const ghLog = join(scratch, `${id}-gh.log`);
-    // `pr list` runs the WORKFLOW'S OWN `--jq` expression through real `jq`
+    // The PR lookup runs the WORKFLOW'S OWN `--jq` expression through real `jq`
     // against a canned PR list, rather than returning a canned answer. The
     // filter is the thing under test — restricting to same-repo PRs is what
     // stops a fork decoy named `release-please--…` becoming the `[0]` this
@@ -201,8 +201,23 @@ describe('release-pr-staleness', () => {
     const openPrs =
       opts.openPrs ??
       (opts.noReleasePr
-        ? [{ number: 9, headRefName: 'feat/unrelated', isCrossRepository: false }]
-        : [{ number: 42, headRefName: RELEASE_BRANCH, isCrossRepository: false }]);
+        ? [{ number: 9, headRef: 'feat/unrelated', fork: false }]
+        : [{ number: 42, headRef: RELEASE_BRANCH, fork: false }]);
+    // REST shape, because the shell now reads `gh api .../pulls` rather than
+    // `gh pr list` — the latter caps at `--limit 30` and filters that one page
+    // client-side, so ~30 fork PRs evict the release PR and the run exits 0.
+    const restPrs = openPrs.map((o) => ({
+      number: o.number,
+      head: { ref: o.headRef, repo: o.fork ? { full_name: 'attacker/cdkd' } : { full_name: 'go-to-k/cdkd' } },
+      base: { repo: { full_name: 'go-to-k/cdkd' } },
+    }));
+    // The stub ALSO answers the old `gh pr list` shape, truncated to 30 the
+    // way real gh does. That is what makes the eviction probe faithful:
+    // reverting the workflow to `gh pr list` reds the 40-fork case because the
+    // release PR falls off the page, not because the stub stopped matching.
+    const ghListPrs = openPrs
+      .slice(0, 30)
+      .map((o) => ({ number: o.number, headRefName: o.headRef, isCrossRepository: o.fork }));
     const ghStub = `#!/usr/bin/env bash
 echo "$*" >> ${JSON.stringify(ghLog)}
 # Pull the --jq expression out of argv the way real gh consumes it.
@@ -213,7 +228,8 @@ for a in "$@"; do
   prev="$a"
 done
 case "$*" in
-  *"pr list"*)        printf '%s' ${JSON.stringify(JSON.stringify(openPrs))} | jq -r "$filter" ;;
+  *"api repos/"*pulls*) printf '%s' ${JSON.stringify(JSON.stringify(restPrs))} | jq -r "$filter" ;;
+  *"pr list"*)          printf '%s' ${JSON.stringify(JSON.stringify(ghListPrs))} | jq -r "$filter" ;;
   *autoMergeRequest*) printf '%s' ${JSON.stringify(opts.armedAnswer ?? (opts.armed ? 'yes' : 'no'))} ;;
   *headRefName*)      printf '%s' ${JSON.stringify(RELEASE_BRANCH)} ;;
   *)                  : ;;
@@ -334,8 +350,8 @@ esac
       armed: true,
       openPrs: [
         // Newest first, as gh returns them.
-        { number: 99, headRefName: RELEASE_BRANCH, isCrossRepository: true },
-        { number: 42, headRefName: RELEASE_BRANCH, isCrossRepository: false },
+        { number: 99, headRef: RELEASE_BRANCH, fork: true },
+        { number: 42, headRef: RELEASE_BRANCH, fork: false },
       ],
     });
     const r = run(fx);
@@ -346,6 +362,31 @@ esac
     expect(targetedPrs(r)).not.toContain('99');
   });
 
+  it('still finds the release PR behind 40 unrelated fork PRs', () => {
+    // `gh pr list` defaults to `--limit 30` and applies `--jq` CLIENT-SIDE to
+    // that one page. So ~30 fork PRs — attacker-chosen, no privilege — evict
+    // the release PR from the page, the filter returns nothing, and the run
+    // exits 0 reporting "no standing release PR" while the real armed stale PR
+    // merges. Same suppression as the decoy above, reached by TRUNCATION
+    // instead of ordering, and it fires benignly on a dependabot burst too.
+    // The shell uses `gh api --paginate` for exactly this reason.
+    const noise = Array.from({ length: 40 }, (_, i) => ({
+      number: 1000 + i,
+      headRef: `feat/noise-${i}`,
+      fork: true,
+    }));
+    const fx = fixture({
+      stale: true,
+      armed: true,
+      openPrs: [...noise, { number: 42, headRef: RELEASE_BRANCH, fork: false }],
+    });
+    const r = run(fx);
+    expect(r.status).toBe(0);
+    expect(r.output).not.toContain('No standing release PR');
+    expect(disarmed(r)).toBe(true);
+    expect(targetedPrs(r)).toContain('42');
+  });
+
   it('refuses rather than guessing when two same-repo release PRs are open', () => {
     // Picking one would leave the other unchecked and still exit 0 — the
     // silent-pass shape this whole workflow exists to remove.
@@ -354,8 +395,8 @@ esac
         stale: true,
         armed: true,
         openPrs: [
-          { number: 43, headRefName: `${RELEASE_BRANCH}--components--x`, isCrossRepository: false },
-          { number: 42, headRefName: RELEASE_BRANCH, isCrossRepository: false },
+          { number: 43, headRef: `${RELEASE_BRANCH}--components--x`, fork: false },
+          { number: 42, headRef: RELEASE_BRANCH, fork: false },
         ],
       })
     );

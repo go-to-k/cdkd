@@ -70,23 +70,32 @@ jobs:
           # armed PR behaves identically to the arm-time run.
           #
           # SAME-REPO ONLY, and that filter is load-bearing. A fork's head branch
-          # NAME is attacker-chosen, `gh pr list` includes fork PRs, and it
-          # orders newest-first -- so anyone could open a fork PR from a branch
-          # called `release-please--branches--main` and become the `[0]` this
-          # picks. The run would then read `armed` off the DECOY, get `no`, and
-          # exit 0 saying "not armed" while the real, armed, stale release PR
-          # went unchecked and merged. Pushing a branch to THIS repo needs write
-          # access, so restricting to same-repo PRs removes that reach entirely.
+          # NAME is attacker-chosen and open PRs include fork PRs -- so anyone
+          # could open one from a branch called `release-please--branches--main`
+          # and be picked here. The run would then read `armed` off the DECOY,
+          # get `no`, and exit 0 saying "not armed" while the real, armed, stale
+          # release PR went unchecked and merged. Pushing a branch to THIS repo
+          # needs write access, so the same-repo test removes that reach.
+          #
+          # A deleted fork leaves `head.repo` null, which `// ""` turns into a
+          # non-match rather than a jq error -- correct, since it was a fork.
           #
           # Deliberately NOT also matched on author: release-please's PRs are
           # authored by `app/github-actions` today, but switching it to a PAT or
           # a GitHub App changes that silently, and the guard would go inert with
           # nothing saying so -- the same failure mode the `if:` conditions in
           # ci.yml were repeatedly wrong about.
-          prs=$(gh pr list --repo "${REPO}" --state open \
-                  --json number,headRefName,isCrossRepository \
-                  --jq '.[] | select(.isCrossRepository | not)
-                            | select(.headRefName | startswith("release-please--"))
+          # `gh api --paginate`, NOT `gh pr list`. `gh pr list` defaults to
+          # `--limit 30` and applies `--jq` CLIENT-SIDE to that one page, so
+          # ~30 fork PRs -- attacker-chosen, no privilege -- evict the release
+          # PR from the page, the filter returns nothing, and the run exits 0
+          # saying "no standing release PR" while the real armed stale PR
+          # merges. Same suppression as the decoy below, reached by truncation
+          # instead of ordering, and it also fires benignly on a dependabot
+          # burst. Pagination enumerates EVERY open PR, so neither can happen.
+          prs=$(gh api "repos/${REPO}/pulls?state=open&per_page=100" --paginate \
+                  --jq '.[] | select((.head.repo.full_name // "") == .base.repo.full_name)
+                            | select(.head.ref | startswith("release-please--"))
                             | .number')
           if [ -z "${prs}" ]; then
             echo "No standing release PR. Nothing to check."
