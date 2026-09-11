@@ -132,7 +132,7 @@ import type { ResourceState, StackState } from '../../types/state.js';
  * raised from a catch that ABANDONS the resource, so no outcome carrying it ever
  * reaches the code that computes the other two.
  */
-export type NotComparedCause = 'refused' | 'unresolvedToken' | 'readFailed';
+export type NotComparedCause = 'refused' | 'unresolvedToken' | 'readFailed' | 'baselineRefused';
 
 /**
  * Per-resource drift outcome surfaced by the drift command.
@@ -600,6 +600,12 @@ const UNCOMPARED_REASONS: Record<UncomparedReason, { kind: UncomparedKind; phras
   readFailed: {
     kind: 'unknown',
     phrase: 'not compared AT ALL: the read or comparison failed',
+  },
+  // `unknown`, beside `readFailed`, because NONE of the resource's properties
+  // were compared — it is not "partially" anything (issue #2952).
+  baselineRefused: {
+    kind: 'unknown',
+    phrase: 'not compared AT ALL: a `cdkd import` run refused to capture their observed baseline',
   },
   refused: {
     kind: 'unknown',
@@ -1412,6 +1418,10 @@ function notComparedReason(cause: NotComparedCause): string {
       'its state records a `{{resolve:...}}` spelling cdkd resolves for nobody ' +
       '(permanent; a re-run cannot clear it)',
     readFailed: 'the read or comparison threw, so NONE of its properties were compared',
+    baselineRefused:
+      'a `cdkd import` run refused to capture its observed baseline, so the only ' +
+      'baseline available is the recorded properties that refusal already found ' +
+      'untrustworthy (deploy a change to this resource to restore one)',
   };
   return REASONS[cause];
 }
@@ -2261,6 +2271,47 @@ async function runDriftForStack(
         continue;
       }
 
+      // Schema v10+ (issue #2952). A `cdkd import` run REFUSED to capture this
+      // record's observed baseline, so the only baseline available is its
+      // `properties` — which that refusal already found untrustworthy, and which
+      // after a downgraded `Fn::If` can hold the WRONG-BRANCH LITERAL while AWS
+      // holds the secret the deployed branch resolved.
+      //
+      // COMPARING THAT IS A DISCLOSURE, not merely a false positive. The record
+      // spells no `{{resolve:` anywhere, so `secretPaths` (filled by resolution)
+      // and its offline fallback (which scans for where the tokens simply ARE)
+      // are BOTH empty; nothing marks the path secret-bearing, `redactDriftChanges`
+      // has no needle and no position to mask, and the live decrypted value is
+      // rendered as the AWS side of an ordinary-looking drift row — in the human
+      // report, in `--json`, and in the plans. The write paths already refuse
+      // such a resource (issue #2944), so the row was also unactionable.
+      //
+      // Reported as `notCompared` rather than `clean`: it genuinely was not
+      // compared, and a silent `clean` is the "report a resource cdkd never
+      // compared as a pass" failure the cause enumeration exists to prevent. The
+      // cause is CLEARABLE — deploying a change to the resource rebuilds its
+      // record from the template and captures a real baseline — so it inherits
+      // `outcomeExitSignal`'s non-zero side, which that switch already defaults
+      // a new cause to.
+      //
+      // Placed after the provider LOOKUP but before any readback. Before the
+      // readback because there is nothing to learn from AWS about a resource we
+      // have already decided not to compare, and fetching it would pull the
+      // plaintext into this process for no reason — the lookup itself is local
+      // and issues no AWS call. After the lookup because a type whose provider
+      // cannot be resolved is `unsupported`, which exits 0; classifying it
+      // `baselineRefused` instead would make such a stack permanently non-zero
+      // for a reason that has nothing to do with the refusal.
+      if (resource.observedBaselineRefused === true) {
+        outcomes.push({
+          kind: 'notCompared',
+          logicalId,
+          resourceType: resource.resourceType,
+          notComparedCause: 'baselineRefused',
+        });
+        continue;
+      }
+
       // First try the SDK provider's first-class readCurrentState (PR G's
       // 4-arg signature). When the SDK Provider hasn't shipped its own
       // readCurrentState yet, fall back to the Cloud Control API provider
@@ -3048,6 +3099,15 @@ async function runAccept(
         // names: those write a baseline, this writes `properties`, the bag
         // `--revert` later pushes to AWS.
         //
+        //
+        // SECOND LAYER since issue #2952. Detection now reports a marked record
+        // `notCompared`, so it never becomes `drifted` and never reaches this
+        // loop — this arm is unreachable BY CONSTRUCTION today. It is kept
+        // rather than deleted because a write path to AWS (and to `state.json`)
+        // should not depend on a detection decision staying where it is, and
+        // the cost of keeping it is one branch. What fences it is the detection
+        // case in `drift.test.ts`: if the gate there is removed, that case reds
+        // and this arm starts carrying the refusal again.
         // The marker is exactly the evidence this command lacks -- it has no
         // template either -- so REFUSING is the only correct answer here, and
         // the record is left untouched rather than partially accepted. The
@@ -4748,6 +4808,15 @@ async function runRevert(
         // remedy exists for the read side. The marker is the only evidence, and
         // this command has no template of its own to re-derive it from.
         //
+        //
+        // SECOND LAYER since issue #2952. Detection now reports a marked record
+        // `notCompared`, so it never becomes `drifted` and never reaches this
+        // loop — this arm is unreachable BY CONSTRUCTION today. It is kept
+        // rather than deleted because a write path to AWS (and to `state.json`)
+        // should not depend on a detection decision staying where it is, and
+        // the cost of keeping it is one branch. What fences it is the detection
+        // case in `drift.test.ts`: if the gate there is removed, that case reds
+        // and this arm starts carrying the refusal again.
         // Counted `totalUnresolvable` rather than `totalFailed`, matching the
         // mask and intrinsic-object refusals: nothing was attempted at AWS.
         if (stateResource.observedBaselineRefused === true) {
@@ -5935,7 +6004,10 @@ function writeJsonReport(reports: StackDriftReport[]): void {
       ({ outcome, cause }) => ({
         logicalId: outcome.logicalId,
         type: outcome.resourceType,
-        referencesUnresolved: cause !== 'readFailed',
+        // `baselineRefused` joins `readFailed` here: neither is about a
+        // dynamic reference at all. The record spells none — that is precisely
+        // why nothing masked its readback (issue #2952).
+        referencesUnresolved: cause !== 'readFailed' && cause !== 'baselineRefused',
         cause,
       })
     );
@@ -6104,7 +6176,11 @@ function writeHumanReport(reports: StackDriftReport[]): void {
             // compared -- and this line sitting directly above a block that says
             // `not compared AT ALL` contradicted it in the reassuring direction.
             // Byte-identical to main when the new population is absent.
-            (notCompared.some((n) => n.cause === 'readFailed')
+            // `baselineRefused` joins `readFailed` (issue #2952): for both,
+            // NONE of the resource's properties were compared, so
+            // `only partially compared` understates it in the reassuring
+            // direction — the same argument #2151 made for `readFailed`.
+            (notCompared.some((n) => n.cause === 'readFailed' || n.cause === 'baselineRefused')
               ? `(${notCompared.length} not fully compared), `
               : `(${notCompared.length} only partially compared), `) +
             `${unsupported.length} unsupported\n`
@@ -6137,10 +6213,25 @@ function writeHumanReport(reports: StackDriftReport[]): void {
       // because it is not "partially" anything: none of that resource's
       // properties were compared, and a heading claiming otherwise understates
       // it in the one direction that matters.
-      const readFailed = notCompared.filter((n) => n.cause === 'readFailed').length;
-      const referenceCaused = notCompared.length - readFailed;
+      // Issue #2952 widened this bucket past `readFailed`, so the NAME had to
+      // move with it: `baselineRefused` is also "none of it was compared", but
+      // nothing was read and nothing failed. A variable still called
+      // `readFailed` is how the heading below came to assert a cause the
+      // population does not have.
+      const notComparedAtAll = notCompared.filter(
+        (n) => n.cause === 'readFailed' || n.cause === 'baselineRefused'
+      ).length;
+      const readFailedCount = notCompared.filter((n) => n.cause === 'readFailed').length;
+      const baselineRefusedCount = notCompared.filter((n) => n.cause === 'baselineRefused').length;
+      const referenceCaused = notCompared.length - notComparedAtAll;
+      // Names only the causes actually PRESENT, so a refused-baseline-only
+      // stack no longer reads `the read or comparison failed`.
+      const atAllCause = [
+        ...(readFailedCount > 0 ? ['the read or comparison failed'] : []),
+        ...(baselineRefusedCount > 0 ? ['an import refused their observed baseline'] : []),
+      ].join('; ');
       process.stdout.write(
-        readFailed === 0
+        notComparedAtAll === 0
           ? // BYTE-FOR-BYTE the pre-#2151 heading. The widened population is the
             // reason the wording had to become conditional, and leaving the old
             // one intact for the old population is not cosmetic: every existing
@@ -6157,8 +6248,8 @@ function writeHumanReport(reports: StackDriftReport[]): void {
             // the reassuring direction — the same failure #2154 fixes in the
             // glyph. The two populations are counted separately rather than
             // summed under one phrase.
-            `\n  ${notCompared.length} resource(s) NOT fully compared — ${readFailed} not ` +
-              `compared AT ALL (the read or comparison failed)` +
+            `\n  ${notCompared.length} resource(s) NOT fully compared — ${notComparedAtAll} not ` +
+              `compared AT ALL (${atAllCause})` +
               (referenceCaused > 0
                 ? `, ${referenceCaused} only PARTIALLY compared (a dynamic reference cdkd ` +
                   `could not, or refused to, resolve)`

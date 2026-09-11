@@ -675,13 +675,16 @@ refusal from a resource that simply never had one, and filled it anyway:
 | `cdkd state refresh-observed` | the same, for every resource in the stack |
 | `cdkd drift --accept` | wrote the readback INTO `properties` |
 | `cdkd drift --revert` | pushed `properties` to AWS, which can overwrite a live secret with a placeholder the stack never deployed |
+| `cdkd drift` (detection) | compared AWS against those properties and printed the live value — a decrypted secret among them — with nothing able to mask it |
 | `cdkd import` (a later run) | re-captured a baseline for a resource a SELECTIVE import left in place — its recorded properties are still the ones an earlier run refused |
 
-All five now skip a refused resource. The three you invoke to act on that
-resource — `cdkd state refresh-observed`, `cdkd drift --accept` and
-`--revert` — say so at normal verbosity. The deploy-start refresh and the
-import skip report only under `--verbose`, since neither is a command you ran
-to refresh that resource in the first place.
+All six now decline a refused resource. `cdkd drift` reports it under
+`notCompared` with the cause `baselineRefused` — it does not read the resource
+back from AWS at all, so the live value never enters the report. The three you
+invoke to act on that resource — `cdkd state refresh-observed`, `cdkd drift
+--accept` and `--revert` — say so at normal verbosity; the deploy-start refresh
+and the import skip report only under `--verbose`, since neither is a command
+you ran to refresh that resource in the first place.
 `cdkd state show` renders an `ObservedBaseline: REFUSED ...` line for one, `cdkd state refresh-observed`
 reports them in their own tally rather than as unsupported, and `cdkd export`
 lists them apart from the resources a refresh really can help.

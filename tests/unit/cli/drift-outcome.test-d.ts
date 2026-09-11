@@ -62,14 +62,17 @@ describe('DriftOutcome exhaustiveness (issue #2135)', () => {
     matchOutcome<void>({ kind: 'clean', logicalId: 'X', resourceType: 'AWS::SQS::Queue' }, {
       drifted: (d) => expectTypeOf(d.changes).toExtend<unknown[]>(),
       clean: (c) => expectTypeOf(c.logicalId).toEqualTypeOf<string>(),
-      // Issues #2151 / #1945 added `readFailed`. Kept as an EXACT union rather
-      // than widened to `string`: this line failing on a cause addition is the
-      // fence working -- `outcomeExitSignal` and `notComparedReason` both have
-      // to be revisited when one arrives, and a `string` here would let a new
-      // cause reach the exit code without anyone reading either.
+      // Issues #2151 / #1945 added `readFailed`; issue #2952 added
+      // `baselineRefused`. Kept as an EXACT union rather than widened to
+      // `string`: this line failing on a cause addition is the fence working --
+      // `outcomeExitSignal` and `notComparedReason` both have to be revisited
+      // when one arrives, and a `string` here would let a new cause reach the
+      // exit code without anyone reading either. It did its job for
+      // `baselineRefused`, which is why that cause's exit class was a decision
+      // rather than a default nobody looked at.
       notCompared: (n) =>
         expectTypeOf(n.notComparedCause).toEqualTypeOf<
-          'refused' | 'unresolvedToken' | 'readFailed'
+          'refused' | 'unresolvedToken' | 'readFailed' | 'baselineRefused'
         >(),
       unsupported: () => {},
       skipped: () => {},
