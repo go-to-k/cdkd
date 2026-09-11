@@ -567,7 +567,6 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
       const message = (caught as Error).message;
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
       // Not vacuous: the refusal still NAMES the offending value, flattened.
       expect(message).toContain('PhysicalID: arn:forged');
     });
@@ -589,7 +588,6 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const message = (caught as Error).message;
 
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
       expect(message).toContain('Failed to get state');
       expect(message).toContain('PhysicalID: arn:forged');
     });
@@ -607,6 +605,30 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
       expect(message).toContain('has no ETag');
       expect(message).toContain('PhysicalID: arn:forged');
+    });
+
+    it('sanitizes the REGION in every debug line of the success path (issue #3003)', async () => {
+      // The region holes of `Getting state for stack` / `Retrieved state` were
+      // guarded and fenced by nothing: the only case reaching them passed a
+      // benign `us-east-1`. This drives the SUCCESS path, which is the one
+      // that reaches `Retrieved state` at all.
+      childLoggerMock.debug.mockClear();
+      const good = { version: 2, stackName: 'S', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(good)) },
+        ETag: '"e"',
+      });
+
+      const result = await backend.getState('S', 'us-east-1\n  PhysicalID: arn:forged');
+      expect(result).not.toBeNull();
+
+      const calls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(calls.some((c) => c.includes('Retrieved state'))).toBe(true);
+      for (const call of calls) {
+        expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      }
+      // Not vacuous: the region is reported, flattened rather than dropped.
+      expect(calls.join('\n')).toContain('PhysicalID: arn:forged');
     });
 
     it('sanitizes the legacy region-mismatch DEBUG line (issue #3003)', async () => {
@@ -644,11 +666,6 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const debugCalls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
       const debugText = debugCalls.join('\n');
       expect(debugText).toContain('skipping legacy fallback');
-      // Asserted on the WHOLE captured text, not on one line pulled out of it:
-      // finding the line by `split('\n')` first is blind to the very newline
-      // under test, because the fragment it returns no longer contains one.
-      // Both hostile values are still reported, flattened, so neither
-      // assertion passes by the value being dropped.
       // Every captured call, so a sibling line on this same read path that
       // stayed raw fails here too -- which is how this case found two.
       for (const call of debugCalls) {
@@ -676,7 +693,6 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const message = (caught as Error).message;
 
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
       expect(message).toContain('legacy state');
       expect(message).toContain('PhysicalID: arn:forged');
     });
@@ -694,7 +710,6 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const message = (caught as Error).message;
 
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(message.split('\n').some((l) => l.startsWith('  '))).toBe(false);
       expect(message).toContain('has no body');
       expect(message).toContain('PhysicalID: arn:forged');
       expect(message).toContain('StackForged: yes');
@@ -718,7 +733,6 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const message = (caught as Error).message;
 
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
       expect(message).toContain('Unsupported state schema version 99');
       expect(message).toContain('Ghost');
     });
@@ -761,7 +775,6 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(caught).toBeInstanceOf(StateError);
       const message = (caught as Error).message;
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
       // Not vacuous, and specifically about the QUOTING form: `is not valid
       // JSON` is in the production template whether or not V8 quoted the body,
       // so asserting only that would let a Node upgrade flip this fixture back
@@ -786,7 +799,6 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const caught = await backend.getState(hostile, 'us-east-1').catch((e: unknown) => e);
       const message = (caught as Error).message;
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
       expect(message).toContain('Ghost');
     });
   });

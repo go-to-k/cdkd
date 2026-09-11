@@ -376,14 +376,16 @@ export class S3StateBackend {
     await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
 
+    // Every log line and refusal IN THIS METHOD takes the guard; the rest of
+    // the file's raw-`stackName` sites are deploy / destroy paths with their
+    // own reachability, tracked as issue #3027. Hoisted above the `try` because
+    // the catch and the legacy-fallback branch below need them too.
+    const shownStackName = this.displayName(stackName);
+    const shownRegionName = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
+
     // 1. Try new region-scoped key first.
     try {
-      // The three debug lines on THIS read path take the guard; the rest of
-      // the file's raw-`stackName` log sites are deploy / destroy paths with
-      // their own reachability, tracked separately.
-      this.logger.debug(
-        `Getting state for stack: ${this.displayName(stackName)} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE})`
-      );
+      this.logger.debug(`Getting state for stack: ${shownStackName} (${shownRegionName})`);
 
       const response = await this.s3Client.send(
         new GetObjectCommand({
@@ -399,40 +401,35 @@ export class S3StateBackend {
       // is the reachable one: a planted object whose storage class makes
       // `GetObject` fail with something other than `NoSuchKey` lands the raw
       // segment in the message.
-      const shownStack = this.displayName(stackName);
-      const shownRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
       if (!response.Body) {
-        throw new StateError(`State file for stack '${shownStack}' (${shownRegion}) has no body`);
+        throw new StateError(
+          `State file for stack '${shownStackName}' (${shownRegionName}) has no body`
+        );
       }
       if (!response.ETag) {
-        throw new StateError(`State file for stack '${shownStack}' (${shownRegion}) has no ETag`);
+        throw new StateError(
+          `State file for stack '${shownStackName}' (${shownRegionName}) has no ETag`
+        );
       }
 
       const bodyString = await response.Body.transformToString();
       const state = this.parseStateBody(bodyString, stackName);
       this.logger.debug(
-        `Retrieved state: ${this.displayName(stackName)} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}), ETag: ${response.ETag}`
+        `Retrieved state: ${shownStackName} (${shownRegionName}), ETag: ${response.ETag}`
       );
       return { state, etag: response.ETag };
     } catch (error) {
       if (!isNoSuchKey(error)) {
         if (error instanceof StateError) throw error;
-        // Both values are precomputed for the brace reason `parseStateBody`
-        // states below. Not load-bearing here -- this message is quoted in no
-        // doc -- but kept uniform so the one message that IS quoted is not the
-        // only place anyone remembers the rule.
+        // Precomputed like every other sanitised value in this method.
         const detail =
           displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE;
-        const shown = this.displayName(stackName);
-        const inRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
         throw new StateError(
-          `Failed to get state for stack '${shown}' (${inRegion}): ${detail}`,
+          `Failed to get state for stack '${shownStackName}' (${shownRegionName}): ${detail}`,
           error instanceof Error ? error : undefined
         );
       }
-      this.logger.debug(
-        `No state at new key for stack: ${this.displayName(stackName)} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE})`
-      );
+      this.logger.debug(`No state at new key for stack: ${shownStackName} (${shownRegionName})`);
     }
 
     // 2. Fall back to legacy key when it exists AND its region matches.
@@ -441,9 +438,14 @@ export class S3StateBackend {
       // A WARN, so it prints at default verbosity on the same `state show` /
       // `state resources` path the refusals around it were guarded for -- and
       // it names the stack twice, once inside a printed S3 key (issue #3003).
+      // The KEY is built from the real name and sanitized AFTER, not built from
+      // the sanitized name: the latter prints a key that is not the key read,
+      // which is worse than the raw text this guard removes.
       const shown = this.displayName(stackName);
+      const shownKey =
+        displaySafe(this.getLegacyStateKey(stackName), { asciiOnly: true }) || UNRENDERABLE;
       this.logger.warn(
-        `Loaded legacy state for stack '${shown}' from '${this.getLegacyStateKey(shown)}'. ` +
+        `Loaded legacy state for stack '${shown}' from '${shownKey}'. ` +
           `It will be migrated to the region-scoped layout on next save.`
       );
       return { ...legacy, migrationPending: true };
@@ -1260,12 +1262,16 @@ export class S3StateBackend {
       // reaches here is `JSON.parse` on the legacy body, so `detail` is a
       // snippet OF THAT BODY rather than AWS's own wording. Debug is quieter
       // than warn, not a different terminal.
-      // DENYLIST for the detail: it is a parser's own free-form message, the
-      // class the ascii allowlist would blank. `cls` below is a bounded error
-      // NAME, so the allowlist is right there.
+      // ASCII allowlist, deliberately, and this is the value that most needs
+      // it: `describeAwsFailure` returns the message verbatim, and the failure
+      // that reaches here is `JSON.parse` on the legacy BODY -- so the
+      // non-ASCII content is the attacker's bytes, not a service's own
+      // wording. The denylist leaves the invisibles `display-safe.ts` names as
+      // its residual (`U+200B`-`U+200D`, `U+FEFF`, the bidi marks); the
+      // allowlist has none. `cls` below is a bounded error NAME.
       this.logger.debug(
         `Could not read legacy state region for '${this.displayName(stackName)}': ` +
-          `${displaySafe(detail) || UNRENDERABLE}`
+          `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`
       );
       const cls = error instanceof Error && error.name ? error.name : 'an unknown error';
       return { kind: 'unreadable', reason: displaySafe(cls, { asciiOnly: true }) || UNRENDERABLE };
@@ -1377,19 +1383,20 @@ export class S3StateBackend {
       // `s3:PutObject` on the bucket can write. `state show` joins its rows
       // with newlines, so an unsanitized newline here forges a row in the very
       // diagnostic a reader trusts most (issue #3003).
-      // The DENYLIST class, not `asciiOnly`: this is a parser's own free-form
-      // message, not a value with a known charset, and the ascii allowlist
-      // would blank a legitimately non-ASCII diagnostic.
+      // ASCII allowlist. V8's `SyntaxError` says its own words in ASCII and
+      // QUOTES the offending input, so the non-ASCII content here is body
+      // bytes from a file anyone with `s3:PutObject` can write -- the value
+      // the allowlist exists for, not the "legitimately non-ASCII diagnostic"
+      // the denylist protects. `formatError`'s cause line is the opposite
+      // case and takes the denylist, because a cause can be AWS's own wording.
       const raw = error instanceof Error ? error.message : String(error);
-      const detail = displaySafe(raw) || UNRENDERABLE;
-      // `detail` is a VARIABLE because a `${...}` hole carrying BRACES stops
-      // `scripts/check-docs-error-strings.ts` deriving this template, and
-      // `docs/troubleshooting.md` quotes this message. Its hole splitter is
-      // `/\$\{[^{}]*\}/`, so the brace is the whole of it: a brace-free call
-      // is fine -- `${this.displayName(stackName)}` is one, three lines below,
-      // and anchors today -- and so is `+` concatenation, which the checker
-      // joins. Two earlier revisions of this comment blamed the concatenation
-      // and then the call; both were wrong, in that order.
+      const detail = displaySafe(raw, { asciiOnly: true }) || UNRENDERABLE;
+      // `docs/troubleshooting.md` quotes this message, and
+      // `scripts/check-docs-error-strings.ts` fails when it can no longer
+      // derive it from here. Three revisions of this comment tried to say
+      // WHICH edit breaks that and each named a different wrong cause, so it
+      // no longer tries: the checker is the authority, it runs in CI, and it
+      // says so when an edit here un-anchors the sample.
       throw new StateError(
         `State file for stack '${this.displayName(stackName)}' is not valid JSON: ${detail}`,
         error instanceof Error ? error : undefined

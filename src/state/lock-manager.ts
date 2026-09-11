@@ -147,10 +147,12 @@ interface HeldLock {
  * name and an AWS region both have a known charset, so the ASCII allowlist is
  * a no-op on every legitimate input while an S3 key admits any UTF-8.
  *
- * The expression was written out nine times across five statements before
- * issue #3003; eight of those now call this, and the ninth was a free-form
- * parser message, which takes the DENYLIST class and deliberately does NOT go
- * through here.
+ * It replaced the expression written out at every site in this file that
+ * names a stack or a region. Two sites deliberately do NOT call it: a
+ * free-form parser message takes the DENYLIST class instead, for the reason
+ * `display-safe.ts`'s header gives. A count used to stand here and was wrong
+ * twice, so it does not any more -- `grep safeSegment` is exact and this was
+ * not.
  */
 function safeSegment(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -499,7 +501,7 @@ export class LockManager {
           // back in through the third interpolation, into the terminal and into
           // `deployments/*.jsonl`. Two-of-three is the exact shape
           // `custom-resource-provider.ts`'s cleanup line argues against.
-          `${displaySafe(error instanceof Error ? error.message : String(error))}`,
+          `${displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE}`,
         error instanceof Error ? error : undefined
       );
     }
