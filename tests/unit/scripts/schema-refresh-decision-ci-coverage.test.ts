@@ -144,8 +144,9 @@ const allRefreshShells = (): string =>
  */
 const gradedChecks = (): string[] => {
   // EVERY step, not the one `run_check` lives in today. Scoping this to
-  // `Regenerate` made a `run_check` added in a NEW step invisible here, and the
-  // sibling suite scopes the same way, so neither would have reddened.
+  // `Regenerate` made a `run_check` added in a NEW step invisible here; the
+  // sibling cfn-schema-refresh-workflow.test.ts was widened with it, so the two
+  // cannot disagree about the population and blame each other's table.
   const shells = allRefreshShells();
   const fromRunCheck = [...shells.matchAll(/^\s*run_check (\S+)/gm)].map((m) => m[1]!);
   // The anchored pattern only sees a call that OPENS its line. A `run_check`
@@ -283,6 +284,16 @@ const UNCOVERED_TERMS: Record<string, string> = {
 //    make the refresh count LOWER than CI's redness), but the command-prefix
 //    match cannot see an env difference, so the two runs are not pinned to one
 //    predicate here.
+// 3. The two sides derive `handled` from different places. The count reads the
+//    GENERATED module, whose `handled` set `gen-property-coverage.ts` builds as
+//    a UNION across provider FILES, while `property-coverage.test.ts` reads the
+//    ONE registered provider's runtime map. A type declared in two provider
+//    files would therefore give the count a strict superset, and a removal of a
+//    property contributed by the UNREGISTERED file would be counted with CI
+//    green — the #3005 shape again, one layer down. Measured 2026-09-12: no
+//    type is declared in two files, so it is latent, not live. Left as a
+//    residual rather than fenced here because the right subject is the
+//    generator, not this relation.
 
 /**
  * The decision terms, read off the SHIPPED function rather than listed.
@@ -320,6 +331,20 @@ const decisionTerms = (): string[] => {
       `term name: ${JSON.stringify(lines)}. A term this pattern cannot read leaves the ` +
       'classification below with nothing to fail on.'
   ).toBe(lines.length);
+  // ...and the line count only bounds the name count while each line carries
+  // ONE term. `matchAll` with `/gm` yields at most one match per line, so
+  // `removed, divergences,` on a single line parses as `removed` alone and the
+  // two counts still agree — a seventh term added beside a sixth would vanish
+  // with every floor and anchor still passing. Formatting makes that shape
+  // unreachable today; that is a property of the formatter, not of this fence,
+  // so it is asserted rather than relied upon.
+  for (const line of lines) {
+    expect(
+      (line.match(/,/g) ?? []).length,
+      `countDecisions destructures more than one term on the line ${JSON.stringify(line)}; the ` +
+        'per-line scan below reads only the first, so a term there would be silently dropped'
+    ).toBeLessThanOrEqual(1);
+  }
   return names;
 };
 
@@ -378,15 +403,20 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
 
   it('runs every mapped command inside check-build-test', () => {
     const lines = ciCommandLines(CI_CHECK_JOB);
-    // A matched line must also be able to FAIL the job. `vp run x || true`,
-    // `vp run x || echo …`, a `;`-joined tail and a trailing `&` all satisfy a
-    // plain prefix match while the step exits 0 — the fence would then claim a
-    // redness the line cannot produce. Step-level `if:` and `continue-on-error`
-    // are the same lever one level up and are fenced by ci-ok-gate.test.ts; the
-    // shell tail is the half nothing else watches.
+    // A matched line must also be able to FAIL the job. `vp run x || true` and
+    // `vp run x || echo …` satisfy a plain prefix match while the step exits 0,
+    // as does backgrounding with a trailing `&`. Step-level `if:` and
+    // `continue-on-error` are the same lever one level up and are fenced by
+    // ci-ok-gate.test.ts; the shell tail is the half nothing else watches.
+    //
+    // `&&` and `;` are deliberately NOT here, and an earlier revision of this
+    // comment claimed they were neutralisers, which is false: under `bash -e`
+    // (the GitHub default) `a && b` propagates `a`'s status and `a; b` aborts
+    // at `a`. Rejecting them would fire on correct lines, and a fence that reds
+    // correct code teaches the next author to work around it.
     const neutralised = (line: string, command: string): boolean => {
       const tail = line.slice(command.length);
-      return /(\|\||&&|;|&\s*$)/.test(tail);
+      return /(\|\||&\s*$)/.test(tail);
     };
     for (const [check, { command }] of Object.entries(CI_COVERAGE)) {
       const matches = lines.filter((l) => l === command || l.startsWith(`${command} `));
@@ -445,6 +475,31 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       `every \`vp run test\` in ${CI_CHECK_JOB} must be the whole suite; a filtered one covers ` +
         'only what it names'
     ).toEqual(invocations.map(() => 'vp run test'));
+  });
+
+  it('arms pipefail BEFORE the piped unit-suite run, which is what makes it red', () => {
+    // The `vp run test` invocation is a PIPELINE (`… | tee`), and a `run:` with
+    // no `shell:` is `bash -e {0}`, which does NOT set pipefail — so without
+    // `set -o pipefail` the step reports `tee`'s status and a failing suite
+    // exits 0. Two CI_COVERAGE entries ride that one line (`property-coverage`
+    // and `fixture-consumer-tests`, i.e. the `removed` and `failedChecks`
+    // terms), so its redness is load-bearing for this file's whole claim.
+    //
+    // ORDER, not mere presence: `set -o pipefail` after the pipeline arms
+    // nothing. The sibling refresh-workflow suite asserts the same shape for
+    // its own tee'd step; the ci.yml side had presence asserted elsewhere and
+    // ordering nowhere.
+    const step = stepsOf(ci, CI_CHECK_JOB).find((s) => /^\s*vp run test(\s|$)/m.test(s.run ?? ''));
+    expect(step, `no step in ${CI_CHECK_JOB} runs the unit suite`).toBeDefined();
+    const body = step!.run!;
+    const pipefail = body.indexOf('set -o pipefail');
+    const invocation = body.search(/^\s*vp run test(\s|$)/m);
+    expect(pipefail, 'the tee’d unit-suite step no longer sets pipefail').toBeGreaterThan(-1);
+    expect(
+      pipefail,
+      'pipefail is set AFTER the piped `vp run test`, so a failing suite still exits 0 and every ' +
+        'check this file maps through the unit suite is unable to redden the job'
+    ).toBeLessThan(invocation);
   });
 
   it('classifies EVERY decision term as CI-covered or knowingly uncovered', () => {

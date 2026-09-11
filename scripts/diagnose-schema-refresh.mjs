@@ -877,25 +877,46 @@ export function countDecisions({
  * was added for rather than weakening it: a `written` claim the branch does not
  * carry is still excluded, because the file is what is consulted either way.
  *
+ * BOTH halves are returned, and that is not a convenience. Subtracting alone
+ * made the settled removal render NOWHERE: `writeAutoTolerated` skipped it, so
+ * it is in no `written` list and gets no "the job settled this" section, and
+ * with it gone from `removed` the report said "additions only" over a property
+ * AWS had actually removed — and the RENAME hint, which
+ * `classifyRemovedProperty` calls the most decisive signal in the report,
+ * could never fire for it. Trading a wrong decision for an invisible removal
+ * is not a fix. The caller renders `settled` in its own section.
+ *
  * @param {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} removed
  * @param {Record<string, Record<string, string> | undefined>} bogusTolerated the
  *   tolerance file's `bogusTolerated` map; `{}` when the file is absent, which
  *   settles nothing and so over-counts — the safe direction.
- * @returns {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} the same
- *   entries minus settled properties, with emptied entries dropped.
+ * @returns {{remaining: import('./diagnose-schema-refresh.d.mts').RemovedEntry[],
+ *   settled: Array<{resourceType: string, property: string, rationale: string}>}}
+ *   `remaining` is the entries minus settled properties, emptied ones dropped —
+ *   what the count is taken over. `settled` carries each subtracted property
+ *   with the rationale the file holds for it, so the report can show what was
+ *   removed and why nobody has to look at it.
  */
-export function subtractSettledRemovals(removed, bogusTolerated) {
+export function partitionSettledRemovals(removed, bogusTolerated) {
   // Looked up two levels deep in the map rather than through a flattened
   // `type|property` key set: this is the same `?.[type]?.[property] !==
   // undefined` test `writeAutoTolerated` and `classifyCoverage` already use, so
   // all three agree on what SETTLED means, and there is no separator that has
   // to be chosen not to collide with a name.
-  return removed
+  /** @type {Array<{resourceType: string, property: string, rationale: string}>} */
+  const settled = [];
+  const remaining = removed
     .map((e) => ({
       ...e,
-      properties: e.properties.filter((p) => bogusTolerated?.[e.resourceType]?.[p] === undefined),
+      properties: e.properties.filter((p) => {
+        const rationale = bogusTolerated?.[e.resourceType]?.[p];
+        if (rationale === undefined) return true;
+        settled.push({ resourceType: e.resourceType, property: p, rationale });
+        return false;
+      }),
     }))
     .filter((e) => e.properties.length > 0);
+  return { remaining, settled };
 }
 
 /**
@@ -1174,6 +1195,7 @@ export function renderDiagnosis(input) {
     failedChecks = [],
     unreadable = [],
     autoTolerated = [],
+    alreadyTolerated = [],
     autoEscalated = [],
     pendingSdkBump = [],
     unresolvedSdkLag = [],
@@ -1191,7 +1213,16 @@ export function renderDiagnosis(input) {
     pendingSdkBump,
   });
   if (decisionTotal === 0) {
-    lines.push('Nothing in this refresh needs a decision — additions only.', '');
+    // "additions only" is FALSE when a standing tolerance settled a removal —
+    // AWS did remove something, it just needs no judgement. The section below
+    // lists them; this sentence must not contradict it.
+    lines.push(
+      alreadyTolerated.length > 0
+        ? 'Nothing in this refresh needs a decision. AWS did remove a property the provider ' +
+            'declares, but a standing tolerance already settles it — see the section below.'
+        : 'Nothing in this refresh needs a decision — additions only.',
+      ''
+    );
   } else {
     lines.push(
       `**${decisionTotal} ${decisionTotal === 1 ? 'decision needs' : 'decisions need'} your ` +
@@ -1232,6 +1263,38 @@ export function renderDiagnosis(input) {
     for (const w of autoTolerated) {
       lines.push(`- ${renderName(w.resourceType)}: ${renderName(w.property)}`);
       lines.push(`  - ${renderDetail(w.rationale)}`);
+    }
+    lines.push('');
+  }
+
+  if (alreadyTolerated.length > 0) {
+    // A SEPARATE section from the one above, not an append to it. That one's
+    // prose says the job settled these itself, on two structural facts, in THIS
+    // cycle — none of which is true of an entry a human or an earlier cycle
+    // wrote, so folding them together would make a correct paragraph describe
+    // the wrong thing.
+    //
+    // It exists because subtracting these from the count (issue
+    // go-to-k/cdkd#3005) removed them from the report entirely: the removal
+    // rendered nowhere and the body said "additions only" over a property AWS
+    // really had removed. No decision is needed, but a removal a reader cannot
+    // see is how a wrong standing rationale survives forever.
+    lines.push(
+      `### Properties AWS removed that a STANDING tolerance already settles (${alreadyTolerated.length}) — no decision needed`,
+      '',
+      'Each was removed from the CFn schema while the provider still declares it, and',
+      '`_todo-backfill.json` already carries a rationale for that declaration — written by an',
+      'earlier cycle or by hand, not by this run. `property-coverage` is green for them, so',
+      'nothing here is outstanding.',
+      '',
+      'They are listed because the removal is real and the rationale is the only thing',
+      'standing in for a decision. If one no longer convinces you, delete the entry: the next',
+      'cycle reports the property as needing a decision again.',
+      ''
+    );
+    for (const t of alreadyTolerated) {
+      lines.push(`- ${renderName(t.resourceType)}: ${renderName(t.property)}`);
+      lines.push(`  - ${renderDetail(t.rationale)}`);
     }
     lines.push('');
   }
@@ -3036,14 +3099,31 @@ function main() {
   /** @type {Record<string, Record<string, string>>} */
   let liveTolerance = {};
   if (existsSync(tolerancePath)) {
-    liveTolerance = JSON.parse(readFileSync(tolerancePath, 'utf8')).bogusTolerated ?? {};
+    // Wrapped, and the empty fallback is the SAFE direction rather than
+    // laziness: settling nothing OVER-counts, while throwing here kills the
+    // Diagnose step before `renderDiagnosis` writes anything — and the report
+    // going out is the priority this file argues for a few lines down, because
+    // the pull request is how the human finds out at all. An unparseable
+    // tolerance file also reds `property-coverage` on its own, so the state is
+    // reported rather than swallowed.
+    try {
+      liveTolerance = JSON.parse(readFileSync(tolerancePath, 'utf8')).bogusTolerated ?? {};
+    } catch (/** @type {any} */ error) {
+      process.stderr.write(
+        `could not read ${tolerancePath} (${error?.message ?? error}) — no removal will be ` +
+          'treated as settled, so this report OVER-counts rather than hiding a decision\n'
+      );
+    }
   }
   if (autoTolerated.length > 0) {
     autoTolerated = autoTolerated.filter(
       (w) => liveTolerance[w.resourceType]?.[w.property] !== undefined
     );
   }
-  const removedForReport = subtractSettledRemovals(removed, liveTolerance);
+  const { remaining: removedForReport, settled: alreadyTolerated } = partitionSettledRemovals(
+    removed,
+    liveTolerance
+  );
 
   const failedChecks = readArgValue('--failed-checks')
     .split(',')
@@ -3108,6 +3188,7 @@ function main() {
     renderDiagnosis({
       removed: removedForReport,
       autoTolerated,
+      alreadyTolerated,
       autoEscalated,
       writableAdded,
       readOnlyAddedCount,

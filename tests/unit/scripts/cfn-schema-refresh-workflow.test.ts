@@ -1060,9 +1060,30 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // `enrichment-coverage` went unreported for eight rounds while
       // `property-coverage` was being fixed. A fourth check added to one side
       // and not the other fails here.
-      const regen = shellOf('Regenerate the derived artifacts');
-      const collected = [...regen.matchAll(/^\s*run_check (\S+)/gm)].map((m) => m[1]!);
+      // EVERY step, not the one `run_check` lives in today. Scoped to
+      // `Regenerate`, a check added in a NEW step failed here with a message
+      // blaming the guidance table — which is wrong about the cause and pushes
+      // the author to DELETE the guidance entry to go green. The sibling
+      // schema-refresh-decision-ci-coverage.test.ts scans the same way, so the
+      // two agree on the population (go-to-k/cdkd#3005).
+      const shells = steps
+        .map((s) =>
+          (s.run ?? '')
+            .split('\n')
+            .filter((l) => !/^\s*#/.test(l))
+            .join('\n')
+        )
+        .join('\n');
+      const collected = [...shells.matchAll(/^\s*run_check (\S+)/gm)].map((m) => m[1]!);
       expect(collected.length, 'no run_check invocations found').toBeGreaterThanOrEqual(3);
+      // An invocation that does not OPEN its line is invisible to the pattern
+      // above, and a NEW one going missing leaves this set equal to the
+      // guidance keys — the fence green over exactly the drift it watches.
+      expect(
+        collected.length,
+        `${(shells.match(/\brun_check\s+\S/g) ?? []).length} run_check invocation(s) in the ` +
+          `refresh shell, but only ${collected.length} parsed — put each on its own line`
+      ).toBe((shells.match(/\brun_check\s+\S/g) ?? []).length);
       expect(new Set(collected)).toEqual(new Set(Object.keys(CHECK_GUIDANCE)));
       // And each one really is fixture-driven — the property that makes a
       // schema refresh able to redden it.

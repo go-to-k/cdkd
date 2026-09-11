@@ -127,15 +127,21 @@ pull request does not change that. So a decision-carrying PR does not show a
 red check; it shows no check at all. Before this marking existed it was
 indistinguishable, in every list view, from a refresh that needed nothing.
 
-**You cannot merge one by mistake, and the marking is not what stops you.**
-`ci-ok` is a required status check on `main`, so the held state above already
-blocks the merge button — a required check that has not reported is not a pass.
-Approve the workflows and the same block holds for the opposite reason: every
-decision the count can carry also reddens a check that `ci-ok` waits on (a
-nested key leaves `audit:nested-key-coverage:check` at exit 1, an unsettled
-removal leaves a declaration `property-coverage` fails, and the rest of the
-count IS that family of checks). So the label and the title are there to tell
-you the work exists, not to hold the gate.
+**One class aside, you cannot merge one by mistake, and the marking is not what
+stops you.** `ci-ok` is a required status check on `main`, so the held state
+above already blocks the merge button — a required check that has not reported
+is not a pass. Approve the workflows and the block holds for the opposite
+reason: nearly every decision the count can carry also reddens a check that
+`ci-ok` waits on (a nested key leaves `audit:nested-key-coverage:check` at exit
+1, an unsettled removal leaves a declaration `property-coverage` fails, and the
+rest of the count IS that family of checks). So the label and the title are
+there to tell you the work exists, not to hold the gate.
+
+**The exception is the unreadable-fixture class below, and there the marking IS
+the only signal** — approve the workflows on such a cycle and CI goes green with
+the count still non-zero. It means the run is broken rather than that AWS moved,
+and the body names the fixtures, so the label plus a look at the run log is the
+procedure.
 
 **Unsettled** is the load-bearing word in that sentence, and it was wrong until
 issue [#3005](https://github.com/go-to-k/cdkd/issues/3005). A property listed in

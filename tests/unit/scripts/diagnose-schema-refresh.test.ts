@@ -52,7 +52,7 @@ import {
   buildSdkLag,
   classifyRemovedProperty,
   countDecisions,
-  subtractSettledRemovals,
+  partitionSettledRemovals,
   parseDefinitionMemberMissing,
   partitionPendingSdkBump,
   pendingBumpGroups,
@@ -4566,85 +4566,123 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
   });
 });
 
-describe('subtractSettledRemovals (issue #3005)', () => {
+describe('partitionSettledRemovals (issue #3005)', () => {
   /**
-   * The tolerance shape both sides read. One property settled, one not, so
-   * every case below has a control built into the same fixture — a subtraction
-   * that returned `[]` unconditionally would pass half of these.
+   * One tolerance map serving every case, holding a settled property and NOT
+   * holding a sibling. Every assertion therefore carries its own control: a
+   * partition that settled everything, or nothing, fails at least one arm of
+   * each case rather than passing half of them.
    */
   const TOLERANCE = {
     'AWS::SQS::Queue': { ContentBasedDeduplication: 'settled on an earlier cycle' },
+    'AWS::Logs::LogGroup': { LogGroupClass: 'a second type, to catch per-entry cross-talk' },
   };
-  const removalOf = (resourceType: string, properties: string[]) => [
-    { resourceType, properties, candidates: {} },
-  ];
+  const entry = (resourceType: string, properties: string[]) => ({
+    resourceType,
+    properties,
+    candidates: {},
+  });
 
-  it('drops a property the tolerance file ALREADY settles — the counted-but-green case', () => {
+  it('subtracts a property the tolerance file ALREADY settles — the counted-but-green case', () => {
     // The defect: `writeAutoTolerated` SKIPS an already-tolerated property, so
     // it reaches neither `written` nor `escalated`, and subtracting `written`
     // alone left it in the count while `property-coverage` stayed green. The PR
     // was titled "1 decision needed" with no check red and nothing to do.
-    const removed = removalOf('AWS::SQS::Queue', ['ContentBasedDeduplication']);
-    expect(subtractSettledRemovals(removed, TOLERANCE)).toEqual([]);
-    expect(
-      countDecisions({ removed: subtractSettledRemovals(removed, TOLERANCE), divergences: [] })
-    ).toBe(0);
+    const { remaining, settled } = partitionSettledRemovals(
+      [entry('AWS::SQS::Queue', ['ContentBasedDeduplication'])],
+      TOLERANCE
+    );
+    expect(remaining).toEqual([]);
+    expect(countDecisions({ removed: remaining, divergences: [] })).toBe(0);
+    // And it is still VISIBLE. Trading a wrong decision for an invisible
+    // removal is the regression the two-half return exists to prevent.
+    expect(settled).toEqual([
+      {
+        resourceType: 'AWS::SQS::Queue',
+        property: 'ContentBasedDeduplication',
+        rationale: 'settled on an earlier cycle',
+      },
+    ]);
   });
 
-  it('KEEPS a removal the tolerance file does not settle', () => {
-    // The discriminating control for the case above: without it, a subtraction
-    // that returned `[]` for everything would pass, and the count could never
-    // report a real removal again.
-    const removed = removalOf('AWS::SQS::Queue', ['CdkdNotToleratedName']);
-    expect(subtractSettledRemovals(removed, TOLERANCE)).toEqual(removed);
-    expect(
-      countDecisions({ removed: subtractSettledRemovals(removed, TOLERANCE), divergences: [] })
-    ).toBe(1);
+  it('KEEPS a removal the tolerance file does not settle, and reports it as settling nothing', () => {
+    // The discriminating control: without it, a partition that settled
+    // everything would pass the case above, and the count could never report a
+    // real removal again.
+    const removed = [entry('AWS::SQS::Queue', ['CdkdNotToleratedName'])];
+    const { remaining, settled } = partitionSettledRemovals(removed, TOLERANCE);
+    expect(remaining).toEqual(removed);
+    expect(settled).toEqual([]);
+    expect(countDecisions({ removed: remaining, divergences: [] })).toBe(1);
   });
 
   it('keeps only the unsettled properties of a mixed entry, and preserves its other fields', () => {
-    const removed = [
-      {
-        resourceType: 'AWS::SQS::Queue',
-        properties: ['ContentBasedDeduplication', 'CdkdNotToleratedName'],
-        candidates: { CdkdNotToleratedName: ['CdkdRenameCandidate'] },
-      },
-    ];
-    expect(subtractSettledRemovals(removed, TOLERANCE)).toEqual([
+    const { remaining, settled } = partitionSettledRemovals(
+      [
+        {
+          resourceType: 'AWS::SQS::Queue',
+          properties: ['ContentBasedDeduplication', 'CdkdNotToleratedName'],
+          candidates: { CdkdNotToleratedName: ['CdkdRenameCandidate'] },
+        },
+      ],
+      TOLERANCE
+    );
+    expect(remaining).toEqual([
       {
         resourceType: 'AWS::SQS::Queue',
         properties: ['CdkdNotToleratedName'],
         candidates: { CdkdNotToleratedName: ['CdkdRenameCandidate'] },
       },
     ]);
+    expect(settled.map((s) => s.property)).toEqual(['ContentBasedDeduplication']);
   });
 
-  it('DROPS an entry it emptied rather than leaving a zero-property row', () => {
-    // `countDecisions` counts ENTRIES (per type, one judgement), so an emptied
-    // row left in place would still count 1 — the defect surviving its own fix.
-    const removed = removalOf('AWS::SQS::Queue', ['ContentBasedDeduplication']);
-    const out = subtractSettledRemovals(removed, TOLERANCE);
-    expect(out).toHaveLength(0);
-    expect(countDecisions({ removed: out, divergences: [] })).toBe(0);
+  it('drops one entry and keeps its sibling, per TYPE, without cross-talk', () => {
+    // Two entries in one call: per-entry independence, order preservation, and
+    // the emptied-row drop, none of which a single-element array can show.
+    // `countDecisions` counts ENTRIES, so an emptied row left in place would
+    // still count 1 — the defect surviving its own fix.
+    const { remaining, settled } = partitionSettledRemovals(
+      [
+        entry('AWS::SQS::Queue', ['ContentBasedDeduplication']),
+        entry('AWS::Logs::LogGroup', ['CdkdNotToleratedName']),
+        entry('AWS::SNS::Topic', ['ContentBasedDeduplication']),
+      ],
+      TOLERANCE
+    );
+    // The SNS entry survives although its property name is settled under a
+    // DIFFERENT type — the lookup is per type, not per name.
+    expect(remaining.map((e) => e.resourceType)).toEqual(['AWS::Logs::LogGroup', 'AWS::SNS::Topic']);
+    expect(countDecisions({ removed: remaining, divergences: [] })).toBe(2);
+    expect(settled).toEqual([
+      {
+        resourceType: 'AWS::SQS::Queue',
+        property: 'ContentBasedDeduplication',
+        rationale: 'settled on an earlier cycle',
+      },
+    ]);
   });
 
   it('settles nothing when the tolerance map is absent or empty — the safe direction', () => {
     // An unreadable or missing tolerance file must OVER-count, never under: a
     // decision wrongly shown is a wasted read, a decision wrongly hidden is the
-    // silent merge this whole issue is about.
-    const removed = removalOf('AWS::SQS::Queue', ['ContentBasedDeduplication']);
+    // silent merge this whole issue is about. `main()` falls back to `{}` on an
+    // unparseable file for exactly this reason.
+    const removed = [entry('AWS::SQS::Queue', ['ContentBasedDeduplication'])];
     for (const empty of [undefined, {}, { 'AWS::SQS::Queue': {} }]) {
-      expect(subtractSettledRemovals(removed, empty)).toEqual(removed);
+      const { remaining, settled } = partitionSettledRemovals(removed, empty);
+      expect(remaining).toEqual(removed);
+      expect(settled).toEqual([]);
     }
   });
 
   it('agrees with classifyCoverage about what SETTLED means, both ways', () => {
     // The confluence the defect broke: `classifyCoverage` decides `bogus`
     // membership from `bogusTolerated`, and the count decided it from this
-    // cycle's `written` list. Two definitions of one word is what let a
-    // counted decision sit next to a green check, so this pins them to ONE
-    // input — and asserts BOTH polarities, since agreeing only on the settled
-    // side is also satisfied by a subtraction that removes everything.
+    // cycle's `written` list. Two definitions of one word is what let a counted
+    // decision sit next to a green check, so this pins them to ONE input — and
+    // asserts BOTH polarities, since agreeing only on the settled side is also
+    // satisfied by a partition that settles everything.
     const schemaProperties = ['QueueName']; // both names have LEFT the schema
     const handledProperties = new Set([
       'QueueName',
@@ -4663,7 +4701,8 @@ describe('subtractSettledRemovals (issue #3005)', () => {
       });
       const ciWouldBeRed = coverage.bogus.some((b) => b.endsWith(`:${property}`));
       const counted =
-        subtractSettledRemovals(removalOf('AWS::SQS::Queue', [property]), TOLERANCE).length > 0;
+        partitionSettledRemovals([entry('AWS::SQS::Queue', [property])], TOLERANCE).remaining
+          .length > 0;
       expect(
         counted,
         `${property}: the count says ${counted ? 'decision' : 'settled'} while property-coverage ` +
@@ -4671,5 +4710,40 @@ describe('subtractSettledRemovals (issue #3005)', () => {
           'merges on a green check (issue #3005)'
       ).toBe(ciWouldBeRed);
     }
+  });
+
+  it('renders a standing-tolerance removal instead of dropping it from the report', () => {
+    // The regression the two-half return closes. Subtracting alone made the
+    // removal render NOWHERE — `writeAutoTolerated` skipped it, so it earns no
+    // "the job settled this" entry either — and the body then said "additions
+    // only" over a property AWS had removed.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      skipped: [],
+      divergences: [],
+      alreadyTolerated: [
+        {
+          resourceType: 'AWS::SQS::Queue',
+          property: 'ContentBasedDeduplication',
+          rationale: 'settled on an earlier cycle',
+        },
+      ],
+    });
+    expect(md).toContain('a STANDING tolerance already settles (1)');
+    expect(md).toContain('ContentBasedDeduplication');
+    expect(md).toContain('settled on an earlier cycle');
+    // Still a zero-decision report, and the opening sentence must not claim
+    // something the section below contradicts.
+    expect(md).toContain('Nothing in this refresh needs a decision');
+    expect(md).not.toContain('additions only');
+  });
+
+  it('still says "additions only" when nothing was removed at all', () => {
+    // The control for the case above: without it, deleting the conditional and
+    // always using the longer sentence would pass.
+    const md = renderDiagnosis({ removed: [], writableAdded: [], skipped: [], divergences: [] });
+    expect(md).toContain('Nothing in this refresh needs a decision — additions only.');
+    expect(md).not.toContain('a STANDING tolerance already settles');
   });
 });
