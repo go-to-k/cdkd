@@ -46,7 +46,7 @@ const GATE_STEP = 'every upstream job succeeded or was skipped';
 interface CiWorkflow {
   on?: Record<
     string,
-    { paths?: unknown; 'paths-ignore'?: unknown; branches?: unknown } | null
+    { paths?: unknown; 'paths-ignore'?: unknown; branches?: unknown; types?: unknown } | null
   >;
   jobs: Record<
     string,
@@ -79,6 +79,36 @@ function gateShell(): string {
       'without it the sole required status check asserts nothing.'
   ).toBeTruthy();
   return step?.run as string;
+}
+
+function bareCondition(condition: string): string {
+  return condition
+    .trim()
+    .replace(/^\$\{\{\s*/, '')
+    .replace(/\s*\}\}$/, '')
+    .trim();
+}
+
+/**
+ * Whether a step `if:` is exempt from the unconditional-step rule.
+ *
+ * `always()` is exempt outright — the step runs on every path, so it can never
+ * be the reason a job reported success having done nothing.
+ *
+ * `failure()` / `cancelled()` are exempt ONLY when the job carries at least one
+ * UNCONDITIONAL step, and that qualifier is the whole point. A diagnostic dump
+ * gated on `failure()` beside real work is correct code, and banning it refuses
+ * a shape the sibling repos actually carry. But the SAME condition on a job's
+ * only work — `- name: unit tests / if: failure() / run: vp test` — skips on
+ * every green path while the job reports `success`, which is precisely the
+ * vacuity ci-ok cannot see. An earlier cut exempted the two conditions
+ * unconditionally and readmitted exactly that mutation.
+ */
+function isExemptStepCondition(condition: string, jobSteps: { if?: string }[]): boolean {
+  const bare = bareCondition(condition);
+  if (bare === 'always()') return true;
+  if (bare !== 'failure()' && bare !== 'cancelled()') return false;
+  return jobSteps.some((s) => s.if === undefined);
 }
 
 /**
@@ -185,8 +215,19 @@ describe('ci-ok — the single required status check', () => {
       }
       for (const s of j.steps ?? []) {
         const label = s.name ?? s.run?.split('\n')[0] ?? '<step>';
-        if (s.if !== undefined && !ALLOWED_CONDITIONAL.has(name)) {
+        if (
+          s.if !== undefined &&
+          !ALLOWED_CONDITIONAL.has(name) &&
+          !isExemptStepCondition(s.if, j.steps ?? [])
+        ) {
           offenders.push(`${name} > ${label} (step if:)`);
+        }
+        // NOT gated on ALLOWED_CONDITIONAL: a step-level `continue-on-error`
+        // is the same lever as the job-level one, one level down — the step
+        // fails, the job reports `success`, ci-ok counts it, and it reads green
+        // in the Checks UI so `ci-green-gate` passes too.
+        if ((s['continue-on-error'] ?? false) !== false) {
+          offenders.push(`${name} > ${label} (step continue-on-error)`);
         }
       }
     }
@@ -216,9 +257,15 @@ describe('ci-ok — the single required status check', () => {
     expect(pr, 'ci.yml no longer triggers on `pull_request`').not.toBeUndefined();
     expect(pr?.paths).toBeUndefined();
     expect(pr?.['paths-ignore']).toBeUndefined();
+    // `types:` is the same trap with a different key: narrowing it to
+    // `[opened]` means a later push creates a head sha with NO check run, and
+    // the required check sits at "Expected" on that sha forever. The default
+    // set (opened / synchronize / reopened) is what a required check needs.
+    expect(pr?.types).toBeUndefined();
     // `branches:` narrows the same way a `paths:` filter does — a PR whose base
     // is not listed never starts the workflow, so the required check sits at
-    // "Expected" forever. `main` is the only base this repo takes PRs against.
+    // "Expected" forever. `main` is the only base this repo takes PRs against,
+    // and pinning the value reds on REMOVAL too, which is the safer direction.
     expect(pr?.branches).toEqual(['main']);
   });
 

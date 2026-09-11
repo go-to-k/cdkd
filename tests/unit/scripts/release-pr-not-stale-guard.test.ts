@@ -136,16 +136,16 @@ function guardRun(cwd: string): { status: number; output: string } {
 }
 
 describe('release-pr-not-stale', () => {
-  // `| undefined` on purpose: the `if (scratch)` guard in afterAll exists
-  // because `mkdtempSync` can fail, and the non-nullable type said otherwise.
-  // Everything that USES it goes through `scratchDir()`, which turns a
-  // not-yet-created scratch into a named failure rather than a `join(undefined)`
-  // TypeError several frames away from the cause.
+  // `| undefined` on purpose: the `if (scratch)` guard in afterAll is the one
+  // that matters — `mkdtempSync` THROWS rather than returning undefined, and a
+  // thrown `beforeAll` means no test body runs, so `scratchDir()` below cannot
+  // actually fire. It exists to satisfy the type without an `as string` cast
+  // scattered through the fixture builders, not as a fence.
   let scratch: string | undefined;
 
   function scratchDir(): string {
-    expect(scratch, 'the scratch directory was never created (mkdtempSync failed)').toBeTruthy();
-    return scratch as string;
+    if (!scratch) throw new Error('scratch directory was never created');
+    return scratch;
   }
   let cloneSeq = 0;
 
