@@ -1075,26 +1075,35 @@ describe('--prefer-sdk-route and its deprecated alias', () => {
  * consumer sites, which is the shape of the defect.
  */
 describe('deploy merges both route-preference spellings', () => {
-  it('reads both option names wherever it reads either', () => {
-    const src = readFileSync(
+  it('reads both option names inside EACH merge expression', () => {
+    const raw = readFileSync(
       new URL('../../../src/cli/commands/deploy.ts', import.meta.url),
       'utf8'
     );
-    const preferReads = src.match(/options\.preferSdkRoute/g) ?? [];
-    const aliasReads = src.match(/options\.allowUnsupportedProperties/g) ?? [];
+    // COMMENT-STRIPPED. The first version of this fence scanned raw source, and
+    // review measured it green while `--prefer-sdk-route` was completely inert
+    // in deploy.ts: the reads had been replaced by a comment MENTIONING the
+    // option name, which `/options\.preferSdkRoute/` matches happily.
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    // PER MERGE SITE, not a total. The first version compared two COUNTS and
+    // called that "paired" — review measured a balanced swap passing it: site 1
+    // reading `preferSdkRoute` twice and site 2 reading the alias twice keeps
+    // the counts equal at 2/2 while a user typing the alias has the registry
+    // preference silently dropped, which is the exact defect this describe is
+    // named for. A count is not a pairing.
+    const merges = [...src.matchAll(/\.\.\.\(options\.\w+ \?\? \[\]\),\s*\.\.\.\(options\.\w+ \?\? \[\]\),/g)].map(
+      (m) => m[0]
+    );
     expect(
-      preferReads.length,
-      'deploy.ts never reads --prefer-sdk-route — the new flag is inert'
-    ).toBeGreaterThan(0);
-    expect(
-      aliasReads.length,
-      'deploy.ts never reads the deprecated alias — existing scripts silently stop working'
-    ).toBeGreaterThan(0);
-    // PAIRED, not merely both present: an unpaired read is a site that honours
-    // one spelling and ignores the other.
-    expect(
-      preferReads.length,
-      'the two spellings are read a different number of times — one consumer site honours only one of them'
-    ).toBe(aliasReads.length);
+      merges.length,
+      'deploy.ts has no two-spelling merge expression — the scan is looking at nothing'
+    ).toBe(2);
+    for (const merge of merges) {
+      expect(merge, 'a merge site reads only one spelling').toContain('options.preferSdkRoute');
+      expect(merge, 'a merge site reads only one spelling').toContain(
+        'options.allowUnsupportedProperties'
+      );
+    }
   });
 });

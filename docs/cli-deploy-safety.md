@@ -163,8 +163,10 @@ Three exceptions:
 
 - **A resource carrying a second silent-drop property you did not name.** One
   un-allowed drop routes the whole resource through Cloud Control, which
-  forwards the full map — so the property you opted out of reaches AWS anyway,
-  is recorded, and no drop warning is logged for it.
+  forwards the full map — so the property you opted out of reaches AWS anyway
+  and is recorded. cdkd warns that your preference had no effect, naming the
+  property that overrode it; widening `--prefer-sdk-route` to cover that one
+  too is what keeps the resource on its SDK provider.
 - **A resource already recorded `provisionedBy: cc-api`.** The routing is
   sticky, so the flag changes nothing: Cloud Control keeps writing the whole
   map.

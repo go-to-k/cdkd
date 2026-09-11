@@ -862,32 +862,50 @@ export class ProviderRegistry {
         } else {
           this.logger.info(message);
         }
+      }
 
-        // Say when the user's preference was INERT, because from their side it
-        // looks like cdkd ignored an explicit instruction (issue
-        // [#3000](https://github.com/go-to-k/cdkd/issues/3000)).
-        //
-        // The preference is per `<Type>:<Prop>` while ROUTING is per RESOURCE,
-        // so one un-allowed sibling sends the whole resource to Cloud Control —
-        // which then forwards the full map, writing the very properties the
-        // user asked to keep off the wire. NEITHER of the flag's two purposes
-        // is served: not the SDK route, and not the omission. That is the one
-        // outcome nothing named, and it is why the old flag name read as a lie.
-        const inert = drops
-          .map(({ property }) => property)
-          .filter((property) =>
-            this.allowedUnsupportedProperties.has(`${resourceType}:${property}`)
-          );
-        if (inert.length > 0) {
-          this.logger.warn(
-            `${logicalId} (${resourceType}): --prefer-sdk-route had no effect for ` +
-              `${inert.join(', ')} — ${propList} ${autoRouted.length === 1 ? 'is' : 'are'} not ` +
-              `covered by it, and one uncovered property routes the whole RESOURCE to Cloud ` +
-              `Control. Cloud Control forwards the full property map, so ${inert.join(', ')} ` +
-              `${inert.length === 1 ? 'is' : 'are'} written to AWS after all. To keep the ` +
-              `resource on its SDK provider, add ${overrideHint} to --prefer-sdk-route as well.`
-          );
-        }
+      // Say when the user's preference went INERT, because from their side an
+      // explicit instruction looks ignored (issue
+      // [#3000](https://github.com/go-to-k/cdkd/issues/3000)).
+      //
+      // OUTSIDE the auto-route block, and with the cause chosen rather than
+      // assumed, because there are TWO ways to be inert and they have opposite
+      // remedies. A first cut lived inside that block and named the sibling
+      // unconditionally: on a sticky resource it then printed a cause that is
+      // false (rule 2 returns Cloud Control before any drop is consulted) and a
+      // remedy that is a no-op (widening the set cannot beat a sticky record) —
+      // the same shape issue [#2750](https://github.com/go-to-k/cdkd/issues/2750)
+      // retired, prescribing a route the resource is already on.
+      //
+      // It also stayed silent in the case most likely to be reported: sticky
+      // with EVERY drop covered, where `autoRouted` is empty, `overridden` is
+      // emptied by `stickyCc`, and Cloud Control writes the values anyway.
+      const named = drops
+        .map(({ property }) => property)
+        .filter((property) => this.allowedUnsupportedProperties.has(`${resourceType}:${property}`));
+      if (named.length > 0 && (stickyCc || autoRouted.length > 0)) {
+        const list = named.join(', ');
+        const isAre = named.length === 1 ? 'is' : 'are';
+        // STICKY wins when both hold: it is the earlier decision, so naming the
+        // sibling would name a cause that is not the operative one.
+        const [cause, remedy] = stickyCc
+          ? [
+              `this resource's state record already routes it to Cloud Control ` +
+                `(provisionedBy: cc-api), which is decided before any property is consulted`,
+              `Widening --prefer-sdk-route cannot beat a sticky record — use ` +
+                `--recreate-via-sdk-provider ${logicalId} to return it to its SDK provider.`,
+            ]
+          : [
+              `${autoRouted.join(', ')} ${autoRouted.length === 1 ? 'is' : 'are'} not covered ` +
+                `by it, and one uncovered property routes the whole RESOURCE to Cloud Control`,
+              `To keep the resource on its SDK provider, add ` +
+                `${autoRouted.map((p) => `${resourceType}:${p}`).join(',')} to --prefer-sdk-route as well.`,
+            ];
+        this.logger.warn(
+          `${logicalId} (${resourceType}): --prefer-sdk-route had no effect for ${list} — ` +
+            `${cause}. Cloud Control forwards the full property map, so ${list} ${isAre} ` +
+            `written to AWS after all. ${remedy}`
+        );
       }
       if (overridden.length > 0) {
         // The REMEDY is per property, because "remove the override" is FALSE

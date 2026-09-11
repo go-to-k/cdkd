@@ -55,8 +55,7 @@
     {
       "flag": "--allow-unsupported-properties",
       "integs": [
-        "cc-api-fallback-transitions",
-        "sdk-to-cc-autoroute"
+        "cc-api-fallback-transitions"
       ]
     },
     {
@@ -615,6 +614,13 @@
       "flag": "--pin-cc-api",
       "integs": [
         "cc-to-sdk-reroute"
+      ]
+    },
+    {
+      "flag": "--prefer-sdk-route",
+      "integs": [
+        "cc-api-fallback-transitions",
+        "sdk-to-cc-autoroute"
       ]
     },
     {
@@ -1449,7 +1455,6 @@
     "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
-    "--prefer-sdk-route",
     "--prefix-user-supplied-names",
     "--role-arn",
     "--stack",

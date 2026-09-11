@@ -162,6 +162,13 @@ cleanup
 
 # --- Phase 1A: deploy OverrideStack with --allow-unsupported-properties ---
 #
+# DELIBERATELY the DEPRECATED spelling (issue
+# https://github.com/go-to-k/cdkd/issues/3000). The successor
+# `--prefer-sdk-route` is exercised by `sdk-to-cc-autoroute`; this fixture keeps
+# the alias so the COMPATIBILITY surface has live real-AWS coverage too. An
+# alias nothing runs is an alias that breaks silently, which is the one failure
+# the deprecation shape exists to prevent.
+#
 # Item 3: the template emits `RuntimeManagementConfig` but the CLI flag forces the
 # SDK route. Expect: state stamps `provisionedBy: 'sdk'`, AWS does NOT
 # receive the runtime-management config (stays at the Auto default).

@@ -805,8 +805,8 @@ export function parseAllowUnsupportedPropertiesToken(
     // STDERR, not the logger: option parsing runs before the logger's verbosity
     // is resolved, and a deprecation the user cannot see is not a deprecation.
     process.stderr.write(
-      '--allow-unsupported-properties is deprecated and will be removed in a ' +
-        'future release; use --prefer-sdk-route, which takes the same ' +
+      '--allow-unsupported-properties is deprecated and will be removed in the ' +
+        'first minor release after 2026-12-01; use --prefer-sdk-route, which takes the same ' +
         '<ResourceType>:<PropertyName> tokens and does the same thing. The old ' +
         'name reads as the opposite of its behaviour: it does not make the ' +
         'property reach AWS, it keeps the resource on the SDK provider and ' +

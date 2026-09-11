@@ -3,7 +3,7 @@
 # silently-dropped property (issue 2744).
 #
 # docs/cli-deploy-safety.md answered that twice, oppositely, ~70 lines apart:
-# the `--allow-unsupported-properties` section said the next deploy AUTO-ROUTES
+# the `--prefer-sdk-route` section said the next deploy AUTO-ROUTES
 # the resource through Cloud Control and that the flag exists to PREVENT that;
 # the recreate-via-cc-api section said the property "will not reach AWS, because the
 # SDK update path drops it silently" and a destroy-and-recreate is required.
@@ -18,7 +18,7 @@
 #                  property. CONTROL for the identity witness: a genuine
 #                  destroy-and-recreate must kill the out-of-band tag, or the
 #                  tag surviving phase 2 witnesses nothing.
-#   4 allowdrop -- the property WITH --allow-unsupported-properties. CONTROL
+#   4 allowdrop -- the property WITH --prefer-sdk-route. CONTROL
 #                  for the premise: proves the SDK route really does drop it,
 #                  rather than importing that from the generated coverage map.
 #                  Also asserts the WRITE half of go-to-k/cdkd#2750: the record
@@ -203,7 +203,7 @@ grep -qE '^[[:space:]]*Updated:[[:space:]]*1$' <<<"${ARM_PLAIN}" || { echo "FAIL
 
 P1=$(record '.physicalId')
 LAYER1=$(record '.provisionedBy')
-[ "${LAYER1}" = "cc-api" ] || { echo "FAIL: the record did not move to Cloud Control (provisionedBy=${LAYER1}). docs/cli-deploy-safety.md's --allow-unsupported-properties section claims this re-route happens with no flag." >&2; exit 1; }
+[ "${LAYER1}" = "cc-api" ] || { echo "FAIL: the record did not move to Cloud Control (provisionedBy=${LAYER1}). docs/cli-deploy-safety.md's --prefer-sdk-route section claims this re-route happens with no flag." >&2; exit 1; }
 [ "${P1}" = "${P0}" ] || { echo "FAIL: the auto-route changed the physical id (${P0} -> ${P1})" >&2; exit 1; }
 
 # Did the deploy actually provision anything? Without this, "the record says
@@ -270,10 +270,10 @@ echo "==> Phase 4: CONTROL -- the opt-in flag really does drop the property"
 # phase 3's recreate, which is the state this control needs.
 env CDKD_TEST_PHASE=allowdrop \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --allow-unsupported-properties "AWS::CloudWatch::Alarm:EvaluationWindow" --yes
+    --prefer-sdk-route "AWS::CloudWatch::Alarm:EvaluationWindow" --yes
 
 LAYER_ALLOW=$(record '.provisionedBy')
-[ "${LAYER_ALLOW}" = "sdk" ] || { echo "FAIL: --allow-unsupported-properties did not keep the resource on the SDK route (provisionedBy=${LAYER_ALLOW})" >&2; exit 1; }
+[ "${LAYER_ALLOW}" = "sdk" ] || { echo "FAIL: --prefer-sdk-route did not keep the resource on the SDK route (provisionedBy=${LAYER_ALLOW})" >&2; exit 1; }
 T_ALLOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
   --query 'MetricAlarms[0].Threshold' --output text)
 awk -v t="${T_ALLOW}" 'BEGIN { exit !(t + 0 == 4) }' || { echo "FAIL: the control deploy did not reach AWS (Threshold=${T_ALLOW}, expected 4); it proves nothing about the drop" >&2; exit 1; }

@@ -185,6 +185,9 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     // And the true one IS present — otherwise this case would pass in the
     // world where #3000's warning was never wired.
     expect(warned, 'the inert-preference warning is gone').toContain('had no effect');
+    // See the sticky case below for why the COUNT is asserted and not just the
+    // phrases: it is the half the blanket `not.toHaveBeenCalled()` carried.
+    expect(warn, 'a second warning appeared on this path').toHaveBeenCalledTimes(1);
     expect(info).toHaveBeenCalledTimes(1);
     const msg = info.mock.calls[0]![0] as string;
     expect(msg).toContain('routing via Cloud Control API');
@@ -228,7 +231,29 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
         provisionedBy: 'cc-api',
       },
     ]);
-    expect(warn).not.toHaveBeenCalled();
+    // NARROWED by issue go-to-k/cdkd#3000, like its sibling above. #2750
+    // retired a FALSE warn here — it claimed the property would be dropped
+    // while Cloud Control was writing it — and that sentence must stay gone.
+    // What replaces the silence is the opposite claim and a true one: the
+    // preference is INERT and the value IS written. This is the case a user is
+    // most likely to report, and before #3000 cdkd said nothing about it at
+    // default verbosity.
+    const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned, "the FALSE 'will be dropped' warn is back").not.toMatch(
+      /silently dropped|will not be written|missing the field/
+    );
+    expect(warned, 'the inert-preference warning is gone').toContain('had no effect');
+    // EXACTLY one. The blanket `not.toHaveBeenCalled()` this replaced also
+    // caught a SECOND warn on the same path — including #2750's retired remedy
+    // sentence, whose wording none of the phrases above matches. Dropping the
+    // count would lose that half silently.
+    expect(warn, 'a second warning appeared on this path').toHaveBeenCalledTimes(1);
+    // The sticky record is the operative cause, so the remedy must be the one
+    // that can actually beat it. Widening the preference cannot.
+    expect(warned).toContain('--recreate-via-sdk-provider');
+    expect(warned, 'the sticky case prescribes a remedy that is a no-op').not.toMatch(
+      /add .* to --prefer-sdk-route as well/
+    );
     expect(info).not.toHaveBeenCalled();
   });
 
@@ -369,6 +394,20 @@ describe('--prefer-sdk-route had no effect', () => {
     expect(text).toContain(uncovered);
     // And the remedy is to WIDEN the preference, not to drop it.
     expect(text).toContain('--prefer-sdk-route');
+    // The two must appear in their OWN roles. `toContain(uncovered)` alone is
+    // satisfied by the sibling appearing anywhere in the sentence, so review
+    // measured the predicate `drops ∩ allowSet` reduced to plain `drops` and
+    // this case stayed green — the warning then tells a user that a property
+    // they NEVER named had no effect, which is the false-warn class #2750
+    // retired, re-spelled.
+    expect(
+      text,
+      'the warning names a property the user never passed — the allow-set filter is gone'
+    ).toMatch(new RegExp(`had no effect for [^—]*\\b${covered}\\b`));
+    expect(
+      text.slice(0, text.indexOf('—')),
+      'the uncovered sibling is being reported as the victim, not the cause'
+    ).not.toContain(uncovered);
   });
 
   it('stays silent when the preference COVERS every drop on the resource', () => {
