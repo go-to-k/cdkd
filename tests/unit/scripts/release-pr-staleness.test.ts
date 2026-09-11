@@ -105,7 +105,11 @@ function commit(repo: string, file: string, body: string, subject: string): stri
 interface Run {
   status: number;
   output: string;
-  /** Every `gh` invocation the shell made, one per line, args space-joined. */
+  /**
+   * Every `gh` invocation's argv, space-joined. NOT one line per call — the
+   * multi-line `--body` puts a call's own newlines in here too, so these are
+   * safe to search with `.some(c => c.includes(...))` and unsafe to COUNT.
+   */
   ghCalls: string[];
 }
 
@@ -135,7 +139,19 @@ describe('release-pr-staleness', () => {
     lastFile?: string;
     seedManifest?: boolean;
     noReleasePr?: boolean;
-  }): { cwd: string; ghLog: string; tip: string } {
+    /**
+     * Open PRs the stub reports, BEFORE the workflow's jq filter. Supplying
+     * this is what lets a case exercise the filter itself — a fork decoy whose
+     * head branch carries the release prefix, or two same-repo matches.
+     */
+    openPrs?: { number: number; headRefName: string; isCrossRepository: boolean }[];
+    /**
+     * Raw stdout for the `autoMergeRequest` read, overriding `armed`. Lets a
+     * case drive the answer the shell must FAIL CLOSED on — an empty string is
+     * what a `gh` that exits 0 without the field would produce.
+     */
+    armedAnswer?: string;
+  }): { cwd: string; ghLog: string; tip: string; binDir: string } {
     const id = `f${seq++}`;
     const origin = join(scratch, `${id}-origin`);
     mkdirSync(origin);
@@ -175,17 +191,30 @@ describe('release-pr-staleness', () => {
     const binDir = join(scratch, `${id}-bin`);
     mkdirSync(binDir);
     const ghLog = join(scratch, `${id}-gh.log`);
-    // The stub emulates `--jq`, because the production shell reads the FILTERED
-    // value: `gh pr list --jq '[...][0].number // empty'` yields a bare number
-    // or nothing, never the array. Returning raw JSON here made `$pr` the whole
-    // document and every downstream call nonsense — a stub more permissive than
-    // real `gh` is how a suite certifies a check that cannot work.
-    const prNumber = opts.noReleasePr ? '' : '42';
+    // `pr list` runs the WORKFLOW'S OWN `--jq` expression through real `jq`
+    // against a canned PR list, rather than returning a canned answer. The
+    // filter is the thing under test — restricting to same-repo PRs is what
+    // stops a fork decoy named `release-please--…` becoming the `[0]` this
+    // picks — and a stub that answered `42` regardless would certify a filter
+    // that had been deleted. (An earlier cut returned the raw JSON array,
+    // ignoring `--jq` altogether; that is the same class one step further out.)
+    const openPrs =
+      opts.openPrs ??
+      (opts.noReleasePr
+        ? [{ number: 9, headRefName: 'feat/unrelated', isCrossRepository: false }]
+        : [{ number: 42, headRefName: RELEASE_BRANCH, isCrossRepository: false }]);
     const ghStub = `#!/usr/bin/env bash
 echo "$*" >> ${JSON.stringify(ghLog)}
+# Pull the --jq expression out of argv the way real gh consumes it.
+filter=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--jq" ]; then filter="$a"; fi
+  prev="$a"
+done
 case "$*" in
-  *"pr list"*)        printf '%s' ${JSON.stringify(prNumber)} ;;
-  *autoMergeRequest*) printf '%s' ${JSON.stringify(opts.armed ? 'yes' : 'no')} ;;
+  *"pr list"*)        printf '%s' ${JSON.stringify(JSON.stringify(openPrs))} | jq -r "$filter" ;;
+  *autoMergeRequest*) printf '%s' ${JSON.stringify(opts.armedAnswer ?? (opts.armed ? 'yes' : 'no'))} ;;
   *headRefName*)      printf '%s' ${JSON.stringify(RELEASE_BRANCH)} ;;
   *)                  : ;;
 esac
@@ -194,13 +223,11 @@ esac
     writeFileSync(ghPath, ghStub);
     chmodSync(ghPath, 0o755);
 
-    return { cwd, ghLog, tip };
+    return { cwd, ghLog, tip, binDir };
   }
 
   function run(fx: ReturnType<typeof fixture>): Run {
-    const binDir = dirname(join(fx.ghLog, '..')); // unused placeholder, see below
-    void binDir;
-    const stubDir = fx.ghLog.replace(/-gh\.log$/, '-bin');
+    const stubDir = fx.binDir;
     let status = 0;
     let output = '';
     try {
@@ -232,6 +259,22 @@ esac
 
   const disarmed = (r: Run) => r.ghCalls.some((c) => c.includes('--disable-auto'));
   const commented = (r: Run) => r.ghCalls.some((c) => c.includes('pr comment'));
+
+  /**
+   * PR numbers the shell actually addressed — the argv token right after a
+   * `pr view` / `pr merge` / `pr comment` verb.
+   *
+   * NOT a substring search over `ghCalls`. The comment's `--body` embeds commit
+   * SHAs, so `c.includes('99')` is satisfied by any run whose fixture happened
+   * to produce a SHA containing those digits — which passes in isolation and
+   * fails under the full suite, since the SHAs differ with the commit
+   * timestamps. Measured exactly that way.
+   */
+  const targetedPrs = (r: Run): string[] =>
+    r.ghCalls.flatMap((c) => {
+      const m = /^pr (?:view|merge|comment) (\d+)\b/.exec(c);
+      return m ? [m[1] as string] : [];
+    });
 
   it('leaves a current release PR alone', () => {
     const r = run(fixture({ stale: false, armed: true }));
@@ -278,6 +321,60 @@ esac
     expect(disarmed(r)).toBe(false);
   });
 
+  it('ignores a FORK PR whose head branch carries the release prefix', () => {
+    // `gh pr list` includes fork PRs and orders newest-first, and a fork's head
+    // branch NAME is attacker-chosen. Without the same-repo filter, a decoy
+    // named `release-please--branches--main` becomes the `[0]` the shell picks:
+    // `armed` is then read off the DECOY (not armed), the run exits 0 saying
+    // "not armed", and the real armed, stale release PR is never checked and
+    // merges. Pushing a branch to THIS repo needs write access, which is what
+    // the filter buys.
+    const fx = fixture({
+      stale: true,
+      armed: true,
+      openPrs: [
+        // Newest first, as gh returns them.
+        { number: 99, headRefName: RELEASE_BRANCH, isCrossRepository: true },
+        { number: 42, headRefName: RELEASE_BRANCH, isCrossRepository: false },
+      ],
+    });
+    const r = run(fx);
+    expect(r.status).toBe(0);
+    // The real PR is the one acted on — not the decoy.
+    expect(disarmed(r)).toBe(true);
+    expect(targetedPrs(r)).toContain('42');
+    expect(targetedPrs(r)).not.toContain('99');
+  });
+
+  it('refuses rather than guessing when two same-repo release PRs are open', () => {
+    // Picking one would leave the other unchecked and still exit 0 — the
+    // silent-pass shape this whole workflow exists to remove.
+    const r = run(
+      fixture({
+        stale: true,
+        armed: true,
+        openPrs: [
+          { number: 43, headRefName: `${RELEASE_BRANCH}--components--x`, isCrossRepository: false },
+          { number: 42, headRefName: RELEASE_BRANCH, isCrossRepository: false },
+        ],
+      })
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.output).toContain('found 2 open same-repo release PRs');
+    expect(disarmed(r)).toBe(false);
+  });
+
+  it('fails closed when the auto-merge state cannot be read', () => {
+    // A `gh` that exits 0 with empty stdout — a schema change dropping
+    // `autoMergeRequest`, or a build without the field — used to fall through
+    // to the no-op branch and exit 0, which is indistinguishable from a
+    // genuinely unarmed PR. That retires the whole check silently.
+    const r = run(fixture({ stale: true, armed: true, armedAnswer: '' }));
+    expect(r.status).not.toBe(0);
+    expect(r.output).toContain('could not read auto-merge state');
+    expect(disarmed(r)).toBe(false);
+  });
+
   it('fails closed when an owned file has no history on main', () => {
     // "Cannot answer" must not read as "found nothing wrong": a rename would
     // otherwise silence this check forever, and it is the last line of defence.
@@ -312,7 +409,12 @@ esac
       // and this workflow must never execute head-controlled content.
       expect(yml()).toContain('fetch-depth: 0');
       expect(yml()).toContain('persist-credentials: false');
-      expect(yml()).not.toContain('github.event.pull_request.head.sha');
+      // The realistic regression on a `pull_request_target` workflow is not the
+      // one exact expression — it is ANY head reference reaching the checkout
+      // or a shell, `github.head_ref` and `…head.ref` included. The PR number
+      // and head ref are read back through `gh` precisely so none of them
+      // appears here.
+      expect(yml()).not.toMatch(/github\.(event\.pull_request\.head|head_ref)/);
     });
 
     it('checks exactly the files release-please owns', () => {
