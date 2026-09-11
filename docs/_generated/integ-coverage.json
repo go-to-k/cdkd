@@ -5431,6 +5431,8 @@
         "migrate-from-cfn",
         "multi-resource",
         "rename-refactor",
+        "retain-orphan-redeploy",
+        "retain-orphan-secret",
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
@@ -5531,6 +5533,12 @@
         "rename-refactor": [
           "l2",
           "literal"
+        ],
+        "retain-orphan-redeploy": [
+          "l1"
+        ],
+        "retain-orphan-secret": [
+          "l1"
         ],
         "rollback-command": [
           "l1"
@@ -5652,6 +5660,7 @@
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
+        "retain-orphan-secret",
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-failure-injection",
@@ -5825,6 +5834,10 @@
           "literal"
         ],
         "replacement-immutable-name": [
+          "l2",
+          "literal"
+        ],
+        "retain-orphan-secret": [
           "l2",
           "literal"
         ],

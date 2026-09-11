@@ -495,3 +495,82 @@ export function applyDefaultNameForFallback(
     [rule.nameProperty]: generatedName,
   };
 }
+
+/**
+ * The template property that supplies an explicit physical name for
+ * `resourceType`, or `undefined` when cdkd knows of none (issue #2934).
+ *
+ * Read by the orphan-adoption pre-pass, where it decides TWO things. It
+ * answers whether THIS template hands the resource a name or lets cdkd generate
+ * one — and, because an unknown type answers `undefined`, it is also the
+ * pre-pass's ALLOW-LIST: a type absent from both tables is NOT adopted at all.
+ *
+ * That second role inverts what an earlier version of this doc described. It
+ * said an unknown type reads as "cdkd names this" and adoption proceeds, whose
+ * failure mode is a REPLACEMENT that destroys a resource `DeletionPolicy:
+ * Retain` preserved — three review rounds each found one more type reaching it.
+ * Now an absent type costs a missed adoption (go-to-k/cdkd#2916's diagnosis
+ * still prints) rather than a deletion, so the tables may be incomplete in the
+ * safe direction only.
+ *
+ * **An entry here ADMITS a type to adoption.** Before adding one, check the
+ * three tests in `ADOPTION_REFUSED_TYPES` (`src/deployment/orphan-adoption.ts`)
+ * — create mints a new resource instead of colliding, `update()` refuses, the
+ * resulting replacement destroys the retained copy. A type meeting all three
+ * belongs in THAT set even if it is named here; `AWS::Lambda::LayerVersion` is
+ * exactly that shape and `AWS::ECS::TaskDefinition` is kept there as a belt
+ * against a future `Family` entry.
+ */
+export function explicitNamePropertyFor(resourceType: string): string | undefined {
+  return (
+    FALLBACK_NAME_RULES[resourceType]?.nameProperty ?? ADOPTION_ONLY_NAME_PROPERTIES[resourceType]
+  );
+}
+
+/**
+ * Name properties known to the ADOPTION guard but not to
+ * {@link FALLBACK_NAME_RULES} (issue #2934).
+ *
+ * A separate table on purpose: `FALLBACK_NAME_RULES` decides what cdkd GENERATES
+ * when an SDK provider falls back to Cloud Control, so adding an entry there
+ * changes the name a resource is created under — a replacement for anyone
+ * already deployed. This table answers a strictly narrower question, "does the
+ * template hand this resource a name", and adding to it can only make the
+ * adoption guard MORE conservative.
+ *
+ * Found by review: the SDK providers for the entries below generate a name
+ * themselves. What that costs changed with the inversion described above, so
+ * both halves are worth stating. An ABSENT type is refused outright — the
+ * empty-`nameProperties` arm in `orphan-adoption.ts` runs BEFORE
+ * `templateStillDeclares` — costing a missed adoption, with
+ * go-to-k/cdkd#2916's diagnosis still printing. A WRONG entry is the live
+ * hazard: a non-empty list clears the empty-list arm, `templateStillDeclares` then
+ * looks for a property the template does not use, so an explicit name reads as
+ * "no explicit name", the record is adopted, and the diff turns the create-only
+ * name into a REPLACE that deletes the resource being rescued. Supplying a name
+ * is the natural user move after that diagnosis, so this is a reachable path,
+ * not a theoretical one.
+ *
+ * `AWS::Budgets::Budget` is deliberately absent rather than forgotten: its name
+ * is NESTED (`Budget.BudgetName`, create-only), which neither this flat table
+ * nor `templateStillDeclares`' top-level property read can express, so adoption
+ * of that type is unguarded today — go-to-k/cdkd#2943 carries it.
+ *
+ * `AWS::ECS::TaskDefinition` was added here and REMOVED again, which is worth
+ * recording: its physical id is the revision ARN rather than a
+ * `generateResourceName` output, so the by-construction premise this whole
+ * guard rests on is false for it and an entry here could never match. It is
+ * refused by the adoption pre-pass instead — and the ALLOW-LIST gate is what
+ * refuses it: absent from both tables here, it never reaches adoption at all.
+ * `ADOPTION_REFUSED_TYPES` in `src/deployment/orphan-adoption.ts` carries it as
+ * a BELT against a future entry here (named rather than `{@link}`-ed: this
+ * module does not import it, so the link would render as dead text).
+ */
+const ADOPTION_ONLY_NAME_PROPERTIES: Record<string, string> = {
+  'AWS::AutoScaling::AutoScalingGroup': 'AutoScalingGroupName',
+  'AWS::CodeCommit::Repository': 'RepositoryName',
+  'AWS::DynamoDB::GlobalTable': 'TableName',
+  'AWS::RDS::DBProxy': 'DBProxyName',
+  'AWS::RDS::DBProxyEndpoint': 'DBProxyEndpointName',
+  'AWS::Scheduler::Schedule': 'Name',
+};

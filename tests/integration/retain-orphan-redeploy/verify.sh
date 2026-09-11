@@ -77,6 +77,12 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 ROLE_NAME=""
 ROLE_LOGICAL_ID=""
 REDEPLOY_LOG=""
+# The adoption arm (issue #2934) — a SECOND stack, so its own names.
+ADOPT_STACK="CdkdRetainOrphanAdoptExample"
+ADOPT_STATE_KEY="cdkd/${ADOPT_STACK}/${REGION}/state.json"
+ADOPT_ROLE_NAME=""
+ADOPT_LOGICAL_ID=""
+ADOPT_LOG=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -100,11 +106,33 @@ cleanup() {
     done
     aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1
   fi
+  # The adoption arm's stack. Its role carries RETAIN, so `state destroy`
+  # deliberately leaves it standing — the by-name delete below is the only
+  # thing that stops this fixture leaking a role per run.
+  if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    node "${LOCAL_DIST}" state destroy "${ADOPT_STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --yes
+  fi
+  if [ -n "${ADOPT_ROLE_NAME}" ]; then
+    for p in $(aws iam list-role-policies --role-name "${ADOPT_ROLE_NAME}" \
+      --query 'PolicyNames[]' --output text 2>/dev/null); do
+      aws iam delete-role-policy --role-name "${ADOPT_ROLE_NAME}" --policy-name "${p}" >/dev/null 2>&1
+    done
+    for a in $(aws iam list-attached-role-policies --role-name "${ADOPT_ROLE_NAME}" \
+      --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+      aws iam detach-role-policy --role-name "${ADOPT_ROLE_NAME}" --policy-arn "${a}" >/dev/null 2>&1
+    done
+    aws iam delete-role --role-name "${ADOPT_ROLE_NAME}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${ADOPT_STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
-  rm -f "${REDEPLOY_LOG:-}"
+  rm -f "${REDEPLOY_LOG:-}" "${ADOPT_LOG:-}"
   set -eu
 }
 
@@ -264,8 +292,123 @@ echo "    OK: role gone"
 # Nothing left for the cleanup trap to delete.
 ROLE_NAME=""
 
+# ---------------------------------------------------------------------------
+# The ADOPTION arm (issue #2934).
+#
+# Everything above proves the go-to-k/cdkd#2916 DIAGNOSIS: an orphan cdkd holds
+# no record for still stops the deploy, with advice. This arm proves the thing
+# that record buys — that a real rollback's orphan is re-adopted automatically
+# and the redeploy just works.
+#
+# The difference between the two arms is the difference the feature rests on:
+# above, the orphan is manufactured with `cdkd state orphan`, which writes NO
+# record. Here it comes from an actual failed deploy, which does.
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "==> Phase 7: deploy the adoption stack with a resource that FAILS"
+ADOPT_LOG="$(mktemp)"
+# Expected to fail: the queue's MessageRetentionPeriod is out of range, and the
+# role it depends on is created first. `|| true` because the non-zero exit IS
+# the expected outcome; the assertions below decide pass/fail, not this line.
+CDKD_TEST_ADOPT=fail node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${ADOPT_LOG}" 2>&1 || true
+
+# Read the name from the RECORD the rollback just wrote, never construct it:
+# CDK appends a hash to the logical id (`AdoptedRole` becomes
+# `AdoptedRole72C57DEE`), so a hand-built name is wrong AND the mistake reads
+# as "the role is missing" — accusing the feature instead of the fixture.
+# Taking it from the record also means these phases exercise the record itself.
+ADOPT_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" - 2>/dev/null || echo '{}')"
+read -r ADOPT_LOGICAL_ID ADOPT_ROLE_NAME <<EOF
+$(printf '%s' "${ADOPT_STATE}" | node -e '
+let raw = ""; process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  let parsed = {};
+  try { parsed = JSON.parse(raw || "{}"); } catch { parsed = {}; }
+  const first = (parsed.orphans ?? [])[0];
+  process.stdout.write((first?.logicalId ?? "") + " " + (first?.state?.physicalId ?? ""));
+});')
+EOF
+if [ -z "${ADOPT_ROLE_NAME}" ]; then
+  echo "FAIL: the rollback wrote no orphan record to ${ADOPT_STATE_KEY}."
+  echo "      Without it the redeploy cannot adopt and would collide instead,"
+  echo "      so a missing record means the feature is not wired."
+  printf '%s\n' "${ADOPT_STATE}" | head -40
+  tail -40 "${ADOPT_LOG}"
+  exit 1
+fi
+if ! aws iam get-role --role-name "${ADOPT_ROLE_NAME}" >/dev/null 2>&1; then
+  echo "FAIL: the Retain role ${ADOPT_ROLE_NAME} is not in AWS after the failed deploy."
+  echo "      Either the role was never created (the queue failed first, so the"
+  echo "      dependsOn is not holding) or the rollback deleted it despite Retain."
+  echo "      Either way the rest of this arm would assert nothing."
+  tail -40 "${ADOPT_LOG}"
+  exit 1
+fi
+echo "    OK: ${ADOPT_ROLE_NAME} survived the rollback"
+
+echo "==> Phase 8: the rollback must have RECORDED exactly one orphan"
+ORPHAN_COUNT="$(printf '%s' "${ADOPT_STATE}" | node -e '
+let raw = ""; process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  let parsed = {};
+  try { parsed = JSON.parse(raw || "{}"); } catch { parsed = {}; }
+  process.stdout.write(String((parsed.orphans ?? []).length));
+});')"
+if [ "${ORPHAN_COUNT}" != "1" ]; then
+  echo "FAIL: expected exactly 1 orphan record in ${ADOPT_STATE_KEY}, got ${ORPHAN_COUNT}."
+  echo "      Without the record the redeploy below cannot adopt, and would"
+  echo "      collide instead — so a 0 here means the feature is not wired."
+  printf '%s\n' "${ADOPT_STATE}" | head -40
+  exit 1
+fi
+echo "    OK: state carries 1 orphan record"
+
+echo "==> Phase 9: redeploy with the failure repaired (must SUCCEED by adopting)"
+CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${ADOPT_LOG}" 2>&1 || {
+  echo "FAIL: the redeploy did not succeed. This is the loop the feature closes —"
+  echo "      an already-exists collision here means adoption never fired."
+  tail -40 "${ADOPT_LOG}"
+  exit 1
+}
+if ! grep -q "Adopting ${ADOPT_LOGICAL_ID}" "${ADOPT_LOG}"; then
+  echo "FAIL: the redeploy succeeded but never announced the adoption."
+  echo "      A green deploy alone does not discriminate: it also passes if the"
+  echo "      role had been deleted and simply re-created, which is the outcome"
+  echo "      this feature exists to avoid."
+  tail -40 "${ADOPT_LOG}"
+  exit 1
+fi
+echo "    OK: redeploy succeeded and announced the adoption"
+
+echo "==> Phase 10: the record is consumed and the role is managed again"
+ADOPT_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" - 2>/dev/null || echo '{}')"
+AFTER="$(printf '%s' "${ADOPT_STATE}" | node -e '
+let raw = ""; process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  let parsed = {};
+  try { parsed = JSON.parse(raw || "{}"); } catch { parsed = {}; }
+  const orphans = (parsed.orphans ?? []).length;
+  const adopted = parsed.resources?.[process.argv[1]] ? "yes" : "no";
+  process.stdout.write(orphans + " " + adopted);
+});' "${ADOPT_LOGICAL_ID}")"
+if [ "${AFTER}" != "0 yes" ]; then
+  echo "FAIL: expected '0 yes' (record consumed, role back under management), got '${AFTER}'."
+  printf '%s\n' "${ADOPT_STATE}" | head -40
+  exit 1
+fi
+echo "    OK: record consumed, AdoptedRole is in resources"
+
+echo "==> Phase 11: destroy the adoption stack"
+node "${LOCAL_DIST}" destroy "${ADOPT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+# The role carries RETAIN, so destroy leaves it: that is correct behaviour, not
+# a leak to assert against. The cleanup trap deletes it by name.
+assert_gone "state file s3://${STATE_BUCKET}/${ADOPT_STATE_KEY} still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ADOPT_STATE_KEY}"
+echo "    OK: adoption-arm state file is gone"
+
 cleanup
 trap - EXIT INT TERM
 
 echo ""
-echo "=== PASS: retain-orphan-redeploy integ (orphan diagnosed, advised remedy verified to recover) ==="
+echo "=== PASS: retain-orphan-redeploy integ (orphan diagnosed + advised remedy recovers; a recorded orphan is re-adopted automatically) ==="

@@ -17,14 +17,27 @@ import type { LockManager } from '../../../src/state/lock-manager.js';
 import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
 
-vi.mock('../../../src/utils/logger.js', () => ({
-  getLogger: () => ({
+vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
+  // PARTIAL. `child` is load-bearing beyond the empty fast path — the ordinary
+  // destroy path calls it, and a mock without it fails with
+  // `getLogger(...).child is not a function`, an error about the MOCK reported
+  // as if it were about the code (issue #2934's cases hit exactly that).
+  //
+  // Partial rather than a hand-written replacement, because the first cut was
+  // the latter: it invented a `logger` export this module does not have and
+  // omitted five it does. Nothing reachable used them, which is precisely why a
+  // full replacement rots silently.
+  const actual = await importOriginal<typeof import('../../../src/utils/logger.js')>();
+  const quiet = {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
-  }),
-}));
+    setLevel: vi.fn(),
+    child: (): unknown => quiet,
+  };
+  return { ...actual, getLogger: () => quiet };
+});
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
   registerAllProviders: vi.fn(),
 }));
@@ -310,5 +323,75 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
 
     await expect(runDestroyForStack('TestStack', emptyState(), h.ctx)).rejects.toThrow('S3 down');
     expect(h.releaseLock).toHaveBeenCalledWith('TestStack', REGION);
+  });
+});
+
+describe('a stack holding orphan records is NOT empty (issue #2934)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function withOrphan(): StackState {
+    return {
+      ...emptyState(),
+      orphans: [
+        {
+          logicalId: 'KeptRole',
+          orphanedAt: 1,
+          state: {
+            physicalId: 'TestStack-KeptRole',
+            resourceType: 'AWS::IAM::Role',
+            properties: {},
+          },
+        },
+      ],
+    } as StackState;
+  }
+
+  it('does NOT take the empty fast path, so state.json is not deleted unconfirmed', async () => {
+    const h = makeCtx({ acquired: true, recheck: null });
+
+    const result = await runDestroyForStack('TestStack', withOrphan(), h.ctx);
+
+    // `skippedEmpty` is the fast path's own marker, and the right
+    // discriminator: `deleteState` is called on BOTH paths (the ordinary one
+    // deletes state after the destroy completes, correctly), so asserting on it
+    // would pass whichever branch ran.
+    //
+    // The fast path deletes `state.json` with NO confirmation at all, and an
+    // orphan-only stack lands in it — exactly the shape a first deploy that
+    // fails and fully rolls back produces. Reverting the `orphanCount` conjunct
+    // silently destroys the only record of a live, billing resource.
+    expect(result.skippedEmpty).toBe(false);
+  });
+
+  it('a record-free stack still takes it — the guard is the records, not the change', async () => {
+    const h = makeCtx({ acquired: true, recheck: null });
+
+    const result = await runDestroyForStack('TestStack', emptyState(), h.ctx);
+
+    // The discriminator, kept DESPITE the `acquires the lock BEFORE deleting`
+    // case above already asserting `skippedEmpty === true`: that one is about
+    // lock ORDER and would survive a rewrite that drops the flag, and without a
+    // positive control here the orphan case above also passes when the fast
+    // path is broken for every stack.
+    expect(result.skippedEmpty).toBe(true);
+  });
+
+  it('the recheck under the lock ALSO counts records, not just resources', async () => {
+    // The race the widening closes: the caller's snapshot was empty, and a
+    // concurrent rollback minted a record before this run took the lock. With
+    // the recheck counting `resources` alone, this deletes `state.json` — and
+    // the record is the only trace of what is still standing in AWS.
+    const h = makeCtx({
+      acquired: true,
+      recheck: {
+        state: withOrphan(),
+        etag: '"e"',
+      } as Awaited<ReturnType<S3StateBackend['getState']>>,
+    });
+
+    await expect(runDestroyForStack('TestStack', emptyState(), h.ctx)).rejects.toThrow(
+      /rollback-orphaned/
+    );
+    expect(h.deleteState).not.toHaveBeenCalled();
   });
 });

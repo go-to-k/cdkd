@@ -478,11 +478,18 @@ export async function runDestroyForStack(
   const guardIndeterminateTargets = new Set<string>();
 
   const resourceCount = Object.keys(state.resources).length;
+  // A stack that still has `DeletionPolicy: Retain` resources standing in AWS
+  // is NOT empty (issue #2934), even with no rows in `resources`. The record of
+  // them is the only thing that lets a later deploy re-adopt them instead of
+  // colliding with the deterministic names they hold, and the fast path below
+  // deletes state.json with no confirmation at all — in exactly the
+  // first-deploy-fails flow that produces this shape.
+  const orphanCount = (state.orphans ?? []).length;
   // Region is load-bearing on the new state-key layout (PR 1). Fall back to
   // the caller's baseRegion only for legacy `version: 1` records that never
   // recorded one.
   const regionForState = state.region ?? ctx.baseRegion;
-  if (resourceCount === 0) {
+  if (resourceCount === 0 && orphanCount === 0) {
     // Issue #2171: this used to delete the state record with NO lock at all,
     // sitting well above the acquire further down. A record reads as empty for
     // exactly one interval that is not idle — the start of a concurrent
@@ -581,15 +588,25 @@ export async function runDestroyForStack(
     emptyLockHeld = true;
     try {
       const recheck = await ctx.stateBackend.getState(stackName, regionForState);
-      const stillEmpty = !recheck || Object.keys(recheck.state.resources).length === 0;
+      const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
+      const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;
+      // Same widening as the entry check (issue #2934): a record that gained
+      // ONLY orphan entries is still not empty, and deleting it would drop the
+      // only trace of live, billing AWS resources.
+      const stillEmpty = !recheck || (recheckResources === 0 && recheckOrphans === 0);
       if (!stillEmpty) {
         // A concurrent writer populated the record between the caller's read
         // and this lock. Deleting now would drop resources cdkd tracks, so
         // refuse and let the user re-run against the record as it now stands.
+        //
+        // The message names BOTH counts: a state that gained only orphan
+        // records would otherwise read `0 resource(s)`, which contradicts the
+        // refusal it is explaining.
         throw new Error(
           `Stack '${stackName}' (${regionForState}) was empty when this run started but ` +
-            `now has ${Object.keys(recheck.state.resources).length} resource(s) — another ` +
-            `cdkd process deployed into it. Re-run the destroy to act on the current state.`
+            `now has ${recheckResources} resource(s) and ${recheckOrphans} rollback-orphaned ` +
+            `resource(s) — another cdkd process wrote to it. Re-run the destroy to act on ` +
+            `the current state.`
         );
       }
       await ctx.stateBackend.deleteState(stackName, regionForState);
@@ -683,6 +700,36 @@ export async function runDestroyForStack(
   // (or where the recorded value is `false`) are still flipped via the
   // idempotent flip-off call inside each provider's `delete()`.
   const protectedCount = ctx.removeProtection ? countProtectedResources(state) : 0;
+
+  // Resources an earlier rollback left in AWS (issue #2934). Destroying this
+  // stack deletes the state file, and with it the ONLY record that those
+  // resources exist and were once cdkd's — after which nothing here can find
+  // them again. They are not deleted by the destroy (they are not in
+  // `resources`), so this is the last moment a user can be told.
+  //
+  // Listed BEFORE the prompt, and OUTSIDE the `skipConfirmation` guard, so it
+  // is part of what the `y/N` answers AND still reaches a `--yes` / `--force`
+  // run and a nested-stack child (which the parent invokes with
+  // `skipConfirmation: true`). A flagged run has declined to be ASKED, not to
+  // be told that live resources stop being tracked.
+  const orphansAtDestroy = state.orphans ?? [];
+  if (orphansAtDestroy.length > 0) {
+    logger.info(
+      `\n${orphansAtDestroy.length} resource(s) are still in AWS from an earlier failed deploy. ` +
+        `cdkd left them there because their DeletionPolicy is Retain (CDK's ` +
+        `RemovalPolicy.RETAIN), and has been tracking them so a later deploy of this stack ` +
+        `could adopt them back instead of colliding with their names.`
+    );
+    logger.info(
+      `Destroying this stack deletes that record. The resources stay in AWS, may continue to ` +
+        `incur charges, and cdkd will no longer know about them:`
+    );
+    for (const entry of orphansAtDestroy) {
+      logger.info(
+        `  - ${entry.logicalId} (${entry.state.resourceType})  ${entry.state.physicalId}`
+      );
+    }
+  }
 
   if (!ctx.skipConfirmation) {
     // Issue #2259: refuse a NON-INTERACTIVE run before the interface exists.

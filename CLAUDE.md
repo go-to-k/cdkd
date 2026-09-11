@@ -65,6 +65,7 @@ interface StackState {
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational, NOT destroy-blocking)
   exportNames?: string[];      // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy)
   skippedOutputs?: Record<string, string>; // informational, no bump (#2740): Outputs keys the last deploy could not resolve and SKIPPED → digest of their template inputs; `cdkd diff` previews such a key as absent only while its digest still holds (all three gates in docs/state-management.md)
+  orphans?: StackOrphanRecord[]; // no bump (#2934): rollback-orphaned `Retain` resources the next deploy re-adopts
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level stacks)
   parentLogicalId?: string;    // v6+: the AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)

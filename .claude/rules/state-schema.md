@@ -18,6 +18,7 @@ interface StackState {
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational; NO destroy-time refusal — weak reference by design)
   exportNames?: string[];         // v9+: the keys of `outputs` that are Export.Name aliases — the ONLY names Fn::ImportValue may bind to; undefined = pre-v9 record (every key importable until its next deploy), [] = exports nothing
   skippedOutputs?: Record<string, string>; // #2740
+  orphans?: StackOrphanRecord[];  // #2934: rollback-orphaned Retain resources, each carrying the discarded ResourceState verbatim; informational to a reader that does not know it, so NO schema bump
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string;    // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -285,6 +286,12 @@ behavior). Pass `--no-capture-observed-state` (or set `cdk.json
 context.cdkd.captureObservedState: false`) to disable the deploy-time
 capture and regain the pre-v3 deploy time at the cost of weaker drift
 detection.
+
+**`orphans`** (issue [#2934](https://github.com/go-to-k/cdkd/issues/2934), NO
+schema bump): rollback-orphaned `Retain` resources the next deploy re-adopts
+rather than colliding with. Why it carries the whole `ResourceState`, and the
+three duties that fail SILENTLY when skipped (redaction, carry-through,
+absent-means-today), are in the field's own doc comment in `src/types/state.ts`.
 
 ## Rollback journal (NOT part of the state schema)
 

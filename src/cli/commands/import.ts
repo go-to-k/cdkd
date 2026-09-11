@@ -63,6 +63,7 @@ import type {
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   exportNamesCarriedFrom,
+  orphansCarriedFrom,
   type ResourceState,
   type StackState,
 } from '../../types/state.js';
@@ -1380,6 +1381,12 @@ function buildStackState(
     // (issue #2193); a record built from nothing exports nothing, and that is
     // a KNOWN `[]`, not an unknown.
     ...(existingState ? exportNamesCarriedFrom(existingState) : { exportNames: [] }),
+    // Carried for the same reason (issue #2934), and it matters MORE here than
+    // the export set does: import into an existing state is a realistic
+    // recovery route after a failed deploy, and this literal enumerates its
+    // fields — so without this line the import would silently delete the only
+    // record that a live, billing `Retain` resource is still standing in AWS.
+    ...(existingState ? orphansCarriedFrom(existingState) : {}),
     // ...but the skipped-outputs record (issue #2740) is DROPPED, not carried,
     // even though it describes that same bag. It records what the last DEPLOY
     // could not resolve, and an import refreshes `attributes` for every

@@ -48,7 +48,7 @@
 
 import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
-import type { ResourceState } from '../types/state.js';
+import type { ResourceState, StackOrphanRecord } from '../types/state.js';
 import type {
   CreateContext,
   ResourceCreateResult,
@@ -686,6 +686,21 @@ export interface RollbackReplayResult {
    */
   warnings: number;
   interrupted: boolean;
+  /**
+   * Resources this replay left in AWS under `DeletionPolicy: Retain` and
+   * dropped from state (issue #2934), each carrying the `ResourceState` that
+   * was discarded.
+   *
+   * Returned rather than written here because this module owns no state
+   * backend: BOTH callers — the engine's automatic rollback and the standalone
+   * `cdkd rollback` — persist it onto {@link StackState.orphans} themselves.
+   * The next deploy re-adopts the resource instead of colliding with the
+   * deterministic name it still holds.
+   *
+   * Always an array, never `undefined`, so a caller cannot silently skip the
+   * persist by reading a missing field as "nothing to do".
+   */
+  orphaned: StackOrphanRecord[];
 }
 
 /**
@@ -958,10 +973,28 @@ export async function replayRollback(
     orphanLogicalIds?: Set<string>;
     afterOp?: (logicalId: string) => Promise<void> | void;
     isInterrupted?: () => boolean;
+    /**
+     * Called the moment a record is minted, BEFORE `afterOp` saves state
+     * (issue #2934).
+     *
+     * `result.orphaned` alone is not enough: a caller reads it only after this
+     * function RETURNS, while `afterOp` runs per op INSIDE the replay — so
+     * every intermediate save would persist a state with the resource gone
+     * from `resources` and no record of it. A crash in that window loses the
+     * only trace of a live, billing AWS resource permanently: the
+     * unrecoverable loop this feature closes, reached through its own
+     * implementation.
+     */
+    onOrphan?: (record: StackOrphanRecord) => void;
   } = {}
 ): Promise<RollbackReplayResult> {
   const orphanLogicalIds = options.orphanLogicalIds ?? new Set<string>();
-  const result: RollbackReplayResult = { failures: 0, warnings: 0, interrupted: false };
+  const result: RollbackReplayResult = {
+    failures: 0,
+    warnings: 0,
+    interrupted: false,
+    orphaned: [],
+  };
 
   if (operations.length === 0) {
     ctx.logger.info('No completed operations to roll back.');
@@ -1002,6 +1035,7 @@ export async function replayRollback(
       resolver,
       orphanLogicalIds,
       result,
+      options.onOrphan,
       options.afterOp,
       options.isInterrupted
     );
@@ -1023,6 +1057,7 @@ export async function replayRollback(
         resolver,
         orphanLogicalIds,
         result,
+        options.onOrphan,
         options.afterOp,
         options.isInterrupted
       );
@@ -1768,6 +1803,7 @@ async function replaySingle(
   resolver: ReplayResolvers,
   orphanLogicalIds: Set<string>,
   result: RollbackReplayResult,
+  onOrphan: ((record: StackOrphanRecord) => void) | undefined,
   afterOp?: (logicalId: string) => Promise<void> | void,
   isInterrupted?: () => boolean
 ): Promise<void> {
@@ -1856,6 +1892,12 @@ async function replaySingle(
           const record = stateResources[op.logicalId];
           const orphanFlagProvisionedBy = effectiveProvisionedBy(record, op.provisionedBy);
           createRollbackRoute = orphanFlagProvisionedBy;
+          // Drops a state row beside the `afterOp` save below and mints NO
+          // record, deliberately (issue #2934): `--orphan` is the user saying
+          // "leave this one alone" about a rollback stuck on it, not a
+          // `DeletionPolicy`, so re-adopting it on the next deploy would
+          // contradict the instruction. The two Retain arms are the only
+          // minters.
           delete stateResources[op.logicalId];
           logger.info(`  Rollback: Orphaning created resource ${op.logicalId} (--orphan)`);
           await afterOp?.(op.logicalId);
@@ -1907,6 +1949,30 @@ async function replaySingle(
         const record = stateResources[op.logicalId];
         const orphanProvisionedBy = effectiveProvisionedBy(record, op.provisionedBy);
         createRollbackRoute = orphanProvisionedBy;
+        // Keep what we are about to throw away (issue #2934). cdkd's generated
+        // physical names are deterministic, so this resource now holds the
+        // exact name the next deploy will ask AWS for — without the record
+        // that deploy collides, rolls back, and repeats forever.
+        //
+        // The RECORD, not a physical id: its `properties` are the failed
+        // deploy's resolved TEMPLATE values, which is the shape the diff
+        // expects on the old side. Re-adopting from an AWS readback instead
+        // would carry keys the template omits (a generated `RoleName`,
+        // `BucketName`, ...) and the next diff would read them as removals of
+        // create-only properties and REPLACE the resource — destroying the
+        // data the adoption exists to preserve.
+        //
+        // Guarded on `record` because `replayRollback` is idempotent: a replay
+        // over an already-reverted segment finds nothing here, and pushing an
+        // `undefined` state would mint a record no consumer can act on.
+        if (record) {
+          const orphaned = { logicalId: op.logicalId, orphanedAt: Date.now(), state: record };
+          result.orphaned.push(orphaned);
+          // BEFORE the `afterOp` below, which SAVES. Reading `result.orphaned`
+          // only after this function returns would let every intermediate save
+          // persist the resource's absence with no record of it.
+          onOrphan?.(orphaned);
+        }
         delete stateResources[op.logicalId];
         logger.info(
           `  Rollback: Leaving ${op.logicalId} (${op.resourceType}) in AWS ` +
@@ -2985,6 +3051,19 @@ export async function replayFailedOperations(
     afterOp?: (logicalId: string) => Promise<void> | void;
     isInterrupted?: () => boolean;
     /**
+     * Called the moment a record is minted, BEFORE `afterOp` saves state
+     * (issue #2934).
+     *
+     * `result.orphaned` alone is not enough: a caller reads it only after this
+     * function RETURNS, while `afterOp` runs per op INSIDE the replay — so
+     * every intermediate save would persist a state with the resource gone
+     * from `resources` and no record of it. A crash in that window loses the
+     * only trace of a live, billing AWS resource permanently: the
+     * unrecoverable loop this feature closes, reached through its own
+     * implementation.
+     */
+    onOrphan?: (record: StackOrphanRecord) => void;
+    /**
      * Emit the ROLLBACK_STARTED / ROLLBACK_FINISHED envelope around the
      * failed-op replay. The command passes true for a failed-only segment
      * (zero completed ops), where `replayRollback` returns early without
@@ -2998,6 +3077,7 @@ export async function replayFailedOperations(
     warnings: 0,
     interrupted: false,
     remainingFailedOps: [],
+    orphaned: [],
   };
   const { logger } = ctx;
   // Re-resolves redacted `{{resolve:secretsmanager:...}}` expressions to the
@@ -3072,11 +3152,27 @@ export async function replayFailedOperations(
           // Resolved BEFORE the record is dropped (issue #1366): the event
           // reports the resource's effective route, and the record — the
           // authoritative side — is about to go away.
-          const orphanProvisionedBy = effectiveProvisionedBy(
-            stateResources[op.logicalId],
-            op.provisionedBy
-          );
+          const failedCreateRecord = stateResources[op.logicalId];
+          const orphanProvisionedBy = effectiveProvisionedBy(failedCreateRecord, op.provisionedBy);
           createRollbackRoute = orphanProvisionedBy;
+          // The `orphan-retain` twin's record, for the same reason (issue
+          // #2934) — see that arm for why the whole `ResourceState` is kept.
+          //
+          // `classifyFailedOp` reaches this verdict only with a physical id
+          // AND a matching state record (an id-less failed CREATE goes to
+          // `skip-failed-unknown`), so the guard here is defence rather than a
+          // reachable branch. It stays because the classification and this
+          // arm are edited independently, and a silently-undefined `state`
+          // would mint a record no consumer can act on.
+          if (failedCreateRecord) {
+            const orphaned = {
+              logicalId: op.logicalId,
+              orphanedAt: Date.now(),
+              state: failedCreateRecord,
+            };
+            result.orphaned.push(orphaned);
+            options.onOrphan?.(orphaned);
+          }
           delete stateResources[op.logicalId];
           logger.info(
             `  Rollback: leaving partially-created ${op.logicalId} (${op.resourceType}) in AWS ` +

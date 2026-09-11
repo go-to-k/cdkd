@@ -797,7 +797,8 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
 
   function installFailedCreateStack(
     resourceType: string,
-    deletionPolicy: 'Snapshot' | 'Retain'
+    deletionPolicy: 'Snapshot' | 'Retain',
+    opts: { initialDeploy?: boolean } = {}
   ): FakeBackend {
     const failedOp = {
       logicalId: 'D',
@@ -838,7 +839,7 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
           {
             timestamp: 1,
             reason: 'auto-rollback-clean',
-            initialDeploy: false,
+            initialDeploy: opts.initialDeploy ?? false,
             operations: [],
             failedOperations: [failedOp],
           },
@@ -869,6 +870,42 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
     installFailedCreateStack('AWS::EC2::Volume', 'Retain');
     await rollbackCommand('S', { ...baseOpts, revertFailed: true });
     expect(replayProvider.delete).not.toHaveBeenCalled();
+  });
+
+  it('Retain: the resource left in AWS is RECORDED in the saved state (#2934)', async () => {
+    const backend = installFailedCreateStack('AWS::EC2::Volume', 'Retain');
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+
+    // The command's OWN wiring, which the executor's tests cannot reach: this
+    // is what proves `onOrphan: (record) => mintedOrphans.push(record)` is
+    // actually passed, and that the saved literal spreads the merged set.
+    // Delete either and the executor stays correct while cdkd persists a state
+    // that has forgotten a live, billing AWS resource.
+    const saved = backend.saveState.mock.calls.at(-1)![2] as { orphans?: unknown[] };
+    expect(saved.orphans).toHaveLength(1);
+    expect((saved.orphans![0] as { logicalId: string }).logicalId).toBe('D');
+    // And the resource really did leave `resources` — otherwise the record
+    // could be present for a resource still managed, which proves nothing.
+    expect((saved as unknown as { resources: Record<string, unknown> }).resources).not.toHaveProperty(
+      'D'
+    );
+  });
+
+  it('Retain on an INITIAL deploy: state.json survives because a record was minted (#2934)', async () => {
+    // `initialDeploy: true` is load-bearing and was the first version's bug:
+    // the delete guard only fires on an initial-deploy segment, so a case built
+    // on `false` asserted nothing — probing the guard away left it GREEN.
+    const backend = installFailedCreateStack('AWS::EC2::Volume', 'Retain', {
+      initialDeploy: true,
+    });
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+
+    // The twin of the `initialDeploy segment with empty ops` case above, which
+    // asserts the DELETE. Dropping `&& survivingOrphans.length === 0` deletes
+    // `state.json` in the same run that minted the record — the reported
+    // first-deploy-fails flow exactly, where `resources` ends up empty and the
+    // record is the only trace of what is still standing in AWS.
+    expect(backend.deleteState).not.toHaveBeenCalled();
   });
 
   it('the plan preview labels each policy, and says so when the flag skips the snapshot', async () => {
