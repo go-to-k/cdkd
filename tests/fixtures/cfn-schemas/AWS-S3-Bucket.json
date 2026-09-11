@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3::Bucket",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-09-11",
   "properties": [
     "AbacStatus",
     "AccelerateConfiguration",
@@ -112,6 +112,7 @@
     ],
     "ObjectLockConfiguration": [
       "Days",
+      "DefaultEventHold",
       "DefaultRetention",
       "Mode",
       "ObjectLockEnabled",
@@ -336,6 +337,9 @@
       "Rule",
       "Rule.DefaultRetention",
       "Rule.DefaultRetention.Days",
+      "Rule.DefaultRetention.DefaultEventHold",
+      "Rule.DefaultRetention.DefaultEventHold.Days",
+      "Rule.DefaultRetention.DefaultEventHold.Years",
       "Rule.DefaultRetention.Mode",
       "Rule.DefaultRetention.Years"
     ],
@@ -570,7 +574,8 @@
     "DefaultRetention": {
       "Years": "scalar",
       "Days": "scalar",
-      "Mode": "scalar"
+      "Mode": "scalar",
+      "DefaultEventHold": "object"
     },
     "S3TablesDestination": {
       "TableBucketArn": "scalar",
@@ -740,6 +745,10 @@
       "Filter": "object",
       "Event": "scalar",
       "Topic": "scalar"
+    },
+    "DefaultEventHold": {
+      "Years": "scalar",
+      "Days": "scalar"
     },
     "IntelligentTieringConfiguration": {
       "Status": "scalar",

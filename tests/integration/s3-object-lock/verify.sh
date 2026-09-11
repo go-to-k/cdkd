@@ -6,11 +6,14 @@
 # via GetObjectLockConfiguration. Regression coverage for:
 #   - CREATE with ObjectLockEnabled + default retention (GOVERNANCE, 1 day)
 #   - an in-place retention UPDATE (Days 1 -> 5) that must NOT replace the bucket
+#   - DefaultRetention.DefaultEventHold reaching AWS on both (PR #3002)
 #
 # Phases:
-#   1. Deploy; assert ObjectLockEnabled + GOVERNANCE retention Days=1.
-#   2. Re-deploy with CDKD_TEST_UPDATE=true (Days 1 -> 5). Assert the new value
-#      reached AWS and the bucket was not replaced (same CreationDate).
+#   1. Deploy; assert ObjectLockEnabled + GOVERNANCE retention Days=1 and
+#      DefaultEventHold.Days=1.
+#   2. Re-deploy with CDKD_TEST_UPDATE=true (Days 1 -> 5, hold 1 -> 3). Assert
+#      both new values reached AWS and the bucket was not replaced (same
+#      CreationDate).
 #   3. Destroy; assert the bucket is gone and the state file is removed.
 #
 # Required env vars:
@@ -52,6 +55,28 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+
+REPO_ROOT="${PWD}/../../.."
+
+# `DefaultRetention.DefaultEventHold` (PR #3002) is not in aws-cli 2.35.13's S3
+# model, so `aws s3api get-object-lock-configuration --query ...DefaultEventHold`
+# reports None for a member AWS really holds -- a vacuous pass. Read it through
+# the SDK instead (.claude/rules/testing.md, "call the SDK directly"); the repo
+# root depends on `@aws-sdk/client-s3` >= 3.1129.0, which does model it.
+# `|| return 1` is the canonical value-wrapper shape from
+# .claude/rules/testing.md, kept for uniformity; here it is belt-and-braces,
+# since the subshell is the body's LAST command so its status is already the
+# function's. An empty result is not a silent pass either -- it falls into the
+# `!= "1"` branch and FAILS the phase.
+event_hold_days() { # $1 = bucket -> the DefaultEventHold.Days AWS holds, or empty
+  ( cd "${REPO_ROOT}" && REGION="${REGION}" node --input-type=module -e "
+import { S3Client, GetObjectLockConfigurationCommand } from '@aws-sdk/client-s3';
+const client = new S3Client({ region: process.env.REGION });
+const res = await client.send(new GetObjectLockConfigurationCommand({ Bucket: process.argv[1] }));
+const hold = res.ObjectLockConfiguration?.Rule?.DefaultRetention?.DefaultEventHold;
+process.stdout.write(String(hold?.Days ?? ''));
+" "$1" ) || return 1
+}
 
 STACK="CdkdS3ObjectLockExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -115,6 +140,14 @@ if [ "${MODE_P1}" != "GOVERNANCE" ] || [ "${DAYS_P1}" != "1" ]; then
 fi
 echo "    Object Lock active: GOVERNANCE, ${DAYS_P1} day"
 
+HOLD_P1="$(event_hold_days "${BUCKET_NAME}")"
+if [ "${HOLD_P1}" != "1" ]; then
+  echo "FAIL: expected DefaultEventHold.Days=1 after Phase 1, got '${HOLD_P1}' — the template's" >&2
+  echo "      DefaultEventHold never reached AWS (PR #3002 silent-drop regression)" >&2
+  exit 1
+fi
+echo "    DefaultEventHold reached AWS: ${HOLD_P1} days"
+
 CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
 echo "    baseline bucket CreationDate=${CREATION_P1}"
@@ -131,6 +164,13 @@ if [ "${DAYS_P2}" != "5" ]; then
   exit 1
 fi
 echo "    retention raised to ${DAYS_P2} days"
+
+HOLD_P2="$(event_hold_days "${BUCKET_NAME}")"
+if [ "${HOLD_P2}" != "3" ]; then
+  echo "FAIL: expected DefaultEventHold.Days=3 after Phase 2, got '${HOLD_P2}'" >&2
+  exit 1
+fi
+echo "    DefaultEventHold raised in place to ${HOLD_P2} days"
 
 # The bucket must be the SAME bucket (no replacement): CreationDate unchanged.
 CREATION_P2="$(aws s3api list-buckets \

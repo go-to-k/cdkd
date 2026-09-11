@@ -230,11 +230,39 @@ regenerating never clears one.
 
 | Option | Meaning | Choose it when |
 | --- | --- | --- |
-| Fix the provider | cdkd starts sending the key | The SDK models it under a different spelling |
+| Fix the provider | cdkd starts sending the key | The SDK models the key — under a different spelling, or under the same one the provider never writes |
 | Add a `NESTED_KEY_ALLOW_LIST` entry | cdkd never sends it | The SDK genuinely has no such member |
 
 A `case-divergence` needs no judgement: the SDK models the key under a
 different capitalisation, so rename it in the provider.
+
+A **`no-write-evidence` is not an SDK question at all**: the SDK models the
+member and this provider builds fresh SDK objects, so the finding says the
+write pass could not see cdkd assemble the field at that path.
+
+That is usually because it genuinely never does — but not always, and the
+difference is a judgement. The pass has documented false-positive classes (a
+RENAMED intermediate segment, a member delivered one wrapper level below the
+CFn chain, a request-HOISTED member), enumerated in
+[.claude/rules/provider-nested-key-divergence.md](https://github.com/go-to-k/cdkd/blob/main/.claude/rules/provider-nested-key-divergence.md);
+`AWS::S3::Bucket` alone already carries reviewed `passes: ['write']`
+allow-list entries settling findings that way. So confirm the member is not
+already delivered by one of those shapes BEFORE writing a second forward for
+it — a duplicate write is the failure mode of following this section too
+literally.
+
+When it really is never assembled, write it, per member. Two things go with
+that, and neither is optional: a member the
+provider SENDS but its `readCurrentState` does not READ is permanent phantom
+drift that `cdkd drift --revert` re-applies forever, so the readback lands in
+the same change; and an OBJECT-valued member is forwarded only when the
+template declares one, or every resource of that type starts sending an empty
+block it never sent before. A bump can also MOVE a finding here — a
+`no-sdk-member` whose newer client models the member becomes a
+`no-write-evidence`, which reads like no progress and is the diagnosis
+changing from "AWS may not have this" to "cdkd does not send it". PR
+[#3002](https://github.com/go-to-k/cdkd/pull/3002) is the worked example
+(`AWS::S3::Bucket`'s `DefaultRetention.DefaultEventHold`).
 
 For `no-sdk-member` / `definition-member-missing`, rule out the installed SDK
 simply lagging the service before allow-listing anything — an entry added over

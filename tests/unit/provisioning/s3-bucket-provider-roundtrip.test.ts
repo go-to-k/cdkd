@@ -20,6 +20,7 @@ import {
   PutBucketReplicationCommand,
   DeleteBucketReplicationCommand,
   PutObjectLockConfigurationCommand,
+  GetObjectLockConfigurationCommand,
   PutBucketAccelerateConfigurationCommand,
   PutBucketMetricsConfigurationCommand,
   DeleteBucketMetricsConfigurationCommand,
@@ -1330,6 +1331,235 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
     expect(calls).toHaveLength(1);
     expect((calls[0] as { input: { ObjectLockConfiguration: object } }).input
       .ObjectLockConfiguration).toEqual({ ObjectLockEnabled: 'Enabled' });
+  });
+
+  it('ObjectLockConfiguration: DefaultEventHold reaches PutObjectLockConfiguration', async () => {
+    // `DefaultRetention.DefaultEventHold` arrived in the 2026-09-11 CFn schema
+    // capture (PR #3002) and needs `@aws-sdk/client-s3` >= 3.1129.0 to reach
+    // the wire at all -- the serializer drops a member the model does not
+    // declare, so before the wiring a templated event hold was silently lost
+    // while the deploy reported success. Assert the PAYLOAD, not the call
+    // count: a Put fires either way.
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: {
+            DefaultRetention: { Mode: 'COMPLIANCE', Years: 1, DefaultEventHold: { Days: 7 } },
+          },
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const calls = callsOf(PutObjectLockConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect(
+      (calls[0] as { input: { ObjectLockConfiguration: { Rule: { DefaultRetention: object } } } })
+        .input.ObjectLockConfiguration.Rule.DefaultRetention
+    ).toEqual({
+      Mode: 'COMPLIANCE',
+      Days: undefined,
+      Years: 1,
+      DefaultEventHold: { Days: 7, Years: undefined },
+    });
+  });
+
+  it('ObjectLockConfiguration: no DefaultEventHold member when the template declares none', async () => {
+    // The inverse of the case above. `DefaultEventHold` is an OBJECT, not a
+    // scalar like its siblings, so an unconditional `{ Days, Years }` literal
+    // would send an empty block on every Object-Lock bucket -- a member the
+    // Put never received before, on a live retention rule.
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30 } },
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const calls = callsOf(PutObjectLockConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect(
+      (calls[0] as { input: { ObjectLockConfiguration: { Rule: { DefaultRetention: object } } } })
+        .input.ObjectLockConfiguration.Rule.DefaultRetention
+    ).toEqual({
+      Mode: 'GOVERNANCE',
+      Days: 30,
+      Years: undefined,
+      DefaultEventHold: undefined,
+    });
+  });
+
+  it('ObjectLockConfiguration: DefaultEventHold round-trips through readCurrentState', async () => {
+    // The ROUND-TRIP fence (.claude/rules/provider-property-fidelity.md): the
+    // recorded bag is asserted against what `readCurrentState` ACTUALLY EMITS
+    // for the configuration just SENT, never against a hand-written literal.
+    // Two literal-based cases would both pass while the applier and the
+    // readback disagreed -- which is exactly how a sent-but-unread member
+    // becomes permanent phantom drift.
+    const declared = {
+      ObjectLockEnabled: 'Enabled',
+      Rule: {
+        DefaultRetention: { Mode: 'COMPLIANCE', Years: 2, DefaultEventHold: { Years: 1 } },
+      },
+    };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, ObjectLockConfiguration: declared },
+      { BucketName: BUCKET_NAME }
+    );
+    const put = callsOf(PutObjectLockConfigurationCommand)[0] as {
+      input: { ObjectLockConfiguration: unknown };
+    };
+
+    // Feed the SENT SDK shape back as AWS's own answer, then read it.
+    vi.clearAllMocks();
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetObjectLockConfigurationCommand) {
+        return Promise.resolve({ ObjectLockConfiguration: put.input.ObjectLockConfiguration });
+      }
+      return Promise.resolve({});
+    });
+    const read = await provider.readCurrentState(BUCKET_NAME, 'L', 'AWS::S3::Bucket');
+
+    expect(read?.ObjectLockConfiguration).toEqual(declared);
+  });
+
+  it('ObjectLockConfiguration: an UPDATE changing only DefaultEventHold fires a Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: { Days: 5 } } },
+        },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: { Days: 3 } } },
+        },
+      }
+    );
+    const calls = callsOf(PutObjectLockConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect(
+      (calls[0] as { input: { ObjectLockConfiguration: { Rule: { DefaultRetention: object } } } })
+        .input.ObjectLockConfiguration.Rule.DefaultRetention
+    ).toMatchObject({ DefaultEventHold: { Days: 5 } });
+  });
+
+  it.each([
+    ['a string', 'yes'],
+    ['an array', ['3']],
+    ['a number', 3],
+    ['a boolean', true],
+  ])(
+    'ObjectLockConfiguration: a malformed DefaultEventHold (%s) SKIPS the whole Put',
+    async (_label, malformed) => {
+      // The #1581 silent-DROP class. Every one of these is TRUTHY and indexes
+      // to `undefined` on both members, so before the guard they reached AWS
+      // as an empty `DefaultEventHold: {}` -- the declared WORM protection
+      // gone from a Put that otherwise succeeds. The skip unit is the whole
+      // Put because `PutObjectLockConfiguration` replaces the entire rule, so
+      // sending retention MINUS the hold applies a weaker configuration than
+      // the template declared.
+      await provider.update(
+        'L',
+        BUCKET_NAME,
+        'AWS::S3::Bucket',
+        {
+          BucketName: BUCKET_NAME,
+          ObjectLockConfiguration: {
+            ObjectLockEnabled: 'Enabled',
+            Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: malformed } },
+          },
+        },
+        { BucketName: BUCKET_NAME }
+      );
+      expect(callsOf(PutObjectLockConfigurationCommand)).toHaveLength(0);
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'ObjectLockConfiguration.Rule.DefaultRetention.DefaultEventHold must be an object'
+        )
+      );
+    }
+  );
+
+  it('ObjectLockConfiguration: an UNRESOLVED intrinsic still sends an empty hold (known residual)', async () => {
+    // MEASURED, not aspirational. `requireConfigObject` tests `isPlainObject`,
+    // and `{ Ref: 'X' }` IS one -- so an intrinsic that reached the provider
+    // unresolved passes the guard and sends `DefaultEventHold: {}`. That is
+    // the blind spot every `requireConfigObject` site in this file shares, and
+    // sniffing for intrinsic KEYS here alone would diverge from all of them.
+    // Pinned so the limitation is a recorded fact rather than something a
+    // later reader assumes the guard covers.
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: {
+            DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: { Ref: 'X' } },
+          },
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const calls = callsOf(PutObjectLockConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect(
+      (calls[0] as { input: { ObjectLockConfiguration: { Rule: { DefaultRetention: object } } } })
+        .input.ObjectLockConfiguration.Rule.DefaultRetention
+    ).toMatchObject({ DefaultEventHold: { Days: undefined, Years: undefined } });
+  });
+
+  it('ObjectLockConfiguration: an explicitly null DefaultEventHold is an ABSENT hold, not a refusal', async () => {
+    // `!= null` keeps the ABSENT case defaulting. Without it the guard would
+    // refuse a shape most templates produce by omission, and the negative
+    // matters: a refusal here would skip the retention rule too.
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: null } },
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const calls = callsOf(PutObjectLockConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect(
+      (calls[0] as { input: { ObjectLockConfiguration: { Rule: { DefaultRetention: object } } } })
+        .input.ObjectLockConfiguration.Rule.DefaultRetention
+    ).toEqual({
+      Mode: 'GOVERNANCE',
+      Days: 30,
+      Years: undefined,
+      DefaultEventHold: undefined,
+    });
   });
 
   it('ObjectLockConfiguration: unchanged fires no SDK call', async () => {

@@ -1,8 +1,8 @@
 {
   "summary": {
     "targetCount": 24,
-    "nestedKeyCount": 1215,
-    "sameSpelling": 1124,
+    "nestedKeyCount": 1218,
+    "sameSpelling": 1127,
     "providerHandled": 70,
     "allowListed": 21,
     "caseDivergence": 0,
@@ -7519,7 +7519,7 @@
       "sdkClientPackage": "@aws-sdk/client-s3",
       "keyStyle": "exact",
       "freshObjectMapper": true,
-      "nestedKeyCount": 190,
+      "nestedKeyCount": 193,
       "entries": [
         {
           "resourceType": "AWS::S3::Bucket",
@@ -8414,6 +8414,27 @@
         },
         {
           "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ObjectLockConfiguration.Rule.DefaultRetention.DefaultEventHold",
+          "topLevelProperty": "ObjectLockConfiguration",
+          "terminalKey": "DefaultEventHold",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ObjectLockConfiguration.Rule.DefaultRetention.DefaultEventHold.Days",
+          "topLevelProperty": "ObjectLockConfiguration",
+          "terminalKey": "Days",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ObjectLockConfiguration.Rule.DefaultRetention.DefaultEventHold.Years",
+          "topLevelProperty": "ObjectLockConfiguration",
+          "terminalKey": "Years",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
           "nestedKey": "ObjectLockConfiguration.Rule.DefaultRetention.Mode",
           "topLevelProperty": "ObjectLockConfiguration",
           "terminalKey": "Mode",
@@ -9067,6 +9088,7 @@
         "CorsConfiguration",
         "CorsRule",
         "DataExport",
+        "DefaultEventHold",
         "LambdaConfiguration",
         "LifecycleConfiguration",
         "LoggingConfiguration",

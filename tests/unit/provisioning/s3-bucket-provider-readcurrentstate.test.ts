@@ -7,6 +7,7 @@ import {
   GetPublicAccessBlockCommand,
   GetBucketTaggingCommand,
   GetBucketReplicationCommand,
+  GetObjectLockConfigurationCommand,
   NoSuchBucket,
 } from '@aws-sdk/client-s3';
 
@@ -285,6 +286,73 @@ describe('S3BucketProvider.readCurrentState', () => {
         ],
       },
     });
+  });
+
+  it('reads DefaultEventHold back, and emits no key when AWS reports none', async () => {
+    // `DefaultRetention.DefaultEventHold` arrived in the 2026-09-11 CFn schema
+    // capture (PR #3002). The applier sends it, so the readback must report it
+    // in the same CFn spelling -- a recorded key this read can never emit is
+    // permanent phantom drift (`cdkd drift` reports it forever and `--revert`
+    // re-issues the Put). The second half is the inverse: a bucket whose
+    // retention carries no event hold must yield NO `DefaultEventHold` key,
+    // or every plain Object Lock bucket gains a phantom empty block.
+    let call = 0;
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetObjectLockConfigurationCommand) {
+        call++;
+        return Promise.resolve({
+          ObjectLockConfiguration: {
+            ObjectLockEnabled: 'Enabled',
+            Rule: {
+              DefaultRetention:
+                call === 1
+                  ? { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: { Days: 7 } }
+                  : { Mode: 'GOVERNANCE', Days: 30 },
+            },
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const withHold = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    expect(
+      (withHold?.ObjectLockConfiguration as { Rule: { DefaultRetention: unknown } }).Rule
+        .DefaultRetention
+    ).toEqual({ Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: { Days: 7 } });
+
+    const withoutHold = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    expect(
+      (withoutHold?.ObjectLockConfiguration as { Rule: { DefaultRetention: object } }).Rule
+        .DefaultRetention
+    ).not.toHaveProperty('DefaultEventHold');
+  });
+
+  it('reads a Years-valued DefaultEventHold back', async () => {
+    // `Years` needs its OWN case: the applier sends both members, so a
+    // readback that emits only `Days` leaves a `Years`-valued hold sent and
+    // never read -- permanent phantom drift, with the whole unit suite AND
+    // `audit:nested-key-coverage:check` green (measured: deleting the `Years`
+    // readback line alone reddened nothing until this case existed). The
+    // members are mutually exclusive in a real template, so a `Days`-only
+    // fixture cannot exercise it.
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetObjectLockConfigurationCommand) {
+        return Promise.resolve({
+          ObjectLockConfiguration: {
+            ObjectLockEnabled: 'Enabled',
+            Rule: { DefaultRetention: { Mode: 'COMPLIANCE', Years: 2, DefaultEventHold: { Years: 1 } } },
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+    expect(
+      (result?.ObjectLockConfiguration as { Rule: { DefaultRetention: unknown } }).Rule
+        .DefaultRetention
+    ).toEqual({ Mode: 'COMPLIANCE', Years: 2, DefaultEventHold: { Years: 1 } });
   });
 
   it('reads standalone replication Prefix and Tag filters back into their CFn shapes', async () => {
