@@ -410,15 +410,20 @@ export class S3StateBackend {
     } catch (error) {
       if (!isNoSuchKey(error)) {
         if (error instanceof StateError) throw error;
-        // The detail is precomputed rather than written inline in the template.
-        // `scripts/check-docs-error-strings.ts` derives the producible message
-        // shapes from `src/`, and a sanitiser CALL inside the interpolation
-        // defeats that derivation — measured, and it is what un-anchored the
-        // `docs/troubleshooting.md` sample on the first cut of this change. The
-        // `+` concatenation is fine; the checker joins those.
+        // Both values are precomputed rather than written inline. It is not
+        // load-bearing HERE — this message is quoted in no doc — but the rule
+        // is uniform so the one message that IS quoted cannot be the only
+        // place anyone remembers it: `check-docs-error-strings` splits holes
+        // on `/\$\{[^{}]*\}/`, so a hole carrying BRACES (an options object,
+        // a `||` with one) is not a wildcard and the whole template stops
+        // being derivable. An earlier revision precomputed one value and
+        // inlined a brace-bearing call on the same line, which made its own
+        // stated reason untrue.
         const detail = displaySafe(error instanceof Error ? error.message : String(error));
+        const shown = this.displayName(stackName);
+        const inRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
         throw new StateError(
-          `Failed to get state for stack '${this.displayName(stackName)}' (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}): ${detail}`,
+          `Failed to get state for stack '${shown}' (${inRegion}): ${detail}`,
           error instanceof Error ? error : undefined
         );
       }
@@ -428,8 +433,12 @@ export class S3StateBackend {
     // 2. Fall back to legacy key when it exists AND its region matches.
     const legacy = await this.tryGetLegacy(stackName, region);
     if (legacy) {
+      // A WARN, so it prints at default verbosity on the same `state show` /
+      // `state resources` path the refusals around it were guarded for -- and
+      // it names the stack twice, once inside a printed S3 key (issue #3003).
+      const shown = this.displayName(stackName);
       this.logger.warn(
-        `Loaded legacy state for stack '${stackName}' from '${this.getLegacyStateKey(stackName)}'. ` +
+        `Loaded legacy state for stack '${shown}' from '${this.getLegacyStateKey(shown)}'. ` +
           `It will be migrated to the region-scoped layout on next save.`
       );
       return { ...legacy, migrationPending: true };

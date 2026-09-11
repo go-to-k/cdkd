@@ -431,6 +431,39 @@ describe('cdkd state resources', () => {
     expect(out).toContain('    Tags: [{"Key":"env","Value":"dev"}]');
   });
 
+  it('sanitizes its OWN refusals, which are separate templates from state show\'s (issue #3003)', async () => {
+    // `stateResourcesCommand` carries its own copies of the two refusals
+    // `stateShowCommand` has. Driving only the `show` copies left these
+    // untested -- the "N of N+1 sites" shape issue #3003 exists to close,
+    // reappearing inside its own fix.
+    const hostile = 'us-east-1\n  PhysicalID: arn:forged';
+    mockListStacks.mockResolvedValue([{ stackName: 'GhostStack', region: hostile }]);
+    mockGetState.mockResolvedValue(null);
+
+    await runStateResources(['resources', 'GhostStack']).catch(() => undefined);
+    const message = errorSpy.mock.calls.map(String).join('\n');
+
+    expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    expect(message).toContain('PhysicalID: arn:forged');
+  });
+
+  it('sanitizes its OWN legacy-record refusal (issue #3003)', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Ghost\n  PhysicalID: arn:forged', region: undefined },
+    ]);
+
+    await runStateResources(['resources', 'Ghost\n  PhysicalID: arn:forged']).catch(
+      () => undefined
+    );
+    const message = errorSpy.mock.calls.map(String).join('\n');
+
+    expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    expect(message).toContain('only a legacy state record');
+    expect(message).toContain('PhysicalID: arn:forged');
+  });
+
   it('emits a JSON array of full resource details with --json', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(

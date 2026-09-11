@@ -142,6 +142,20 @@ interface HeldLock {
 }
 
 /**
+ * One spelling of "this value came from an S3 key or a lock record, and is
+ * about to be interpolated into a message a terminal will render". A stack
+ * name and an AWS region both have a known charset, so the ASCII allowlist is
+ * a no-op on every legitimate input while an S3 key admits any UTF-8.
+ *
+ * The expression was written out at six sites before issue #3003; free-form
+ * text (a parser's own message) deliberately takes the DENYLIST class instead
+ * and does NOT go through here.
+ */
+function safeSegment(value: string | undefined): string {
+  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
  * S3-based lock manager using conditional writes (If-None-Match)
  *
  * Implements distributed locking using S3's If-None-Match: "*" condition
@@ -475,8 +489,8 @@ export class LockManager {
       // which of the two threw.
       throw new LockError(
         `Failed to acquire lock for stack ` +
-          `'${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' ` +
-          `(${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}): ` +
+          `'${safeSegment(stackName)}' ` +
+          `(${safeSegment(region)}): ` +
           // The DENYLIST form for the SDK's own text (the allowlist would mangle
           // a legitimate non-ASCII message). Sanitized rather than left raw
           // because S3 error text echoes the KEY, which embeds the stack name --
@@ -558,9 +572,7 @@ export class LockManager {
       if (!response.Body) {
         // A `LockError` is rethrown UNCHANGED by the catch below, so this one
         // does not reach the guard there — it needs its own (issue #3003).
-        throw new LockError(
-          `Lock file for stack '${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' has no body`
-        );
+        throw new LockError(`Lock file for stack '${safeSegment(stackName)}' has no body`);
       }
 
       const bodyString = await response.Body.transformToString();
@@ -614,10 +626,13 @@ export class LockManager {
       // bytes of a file anyone with `s3:PutObject` on the bucket can write.
       // `cdkd state show` surfaces it, and its rows are joined by newlines
       // (issue #3003).
-      const detail = error instanceof Error ? error.message : String(error);
+      // DENYLIST for the detail, ASCII allowlist for the name: the detail is a
+      // parser's own free-form message (the allowlist would blank a
+      // legitimately non-ASCII diagnostic), while a stack name has a known
+      // charset. `parseStateBody` draws the same line for the same two values.
+      const detail = displaySafe(error instanceof Error ? error.message : String(error));
       throw new LockError(
-        `Failed to get lock info for stack '${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}': ` +
-          `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`,
+        `Failed to get lock info for stack '${safeSegment(stackName)}': ${detail || UNRENDERABLE}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -1423,8 +1438,8 @@ export class LockManager {
           // nothing anywhere, being sanitized at their single source,
           // `getLockRecord`.
           this.logger.info(
-            `Stack '${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' ` +
-              `(${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}) is locked by ${lockInfo.owner}` +
+            `Stack '${safeSegment(stackName)}' ` +
+              `(${safeSegment(region)}) is locked by ${lockInfo.owner}` +
               `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
               `. Lock expires in ${this.formatDuration(remainingMs)}.` +
               ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
@@ -1476,8 +1491,8 @@ export class LockManager {
     // persisted `deployments/*.jsonl`. `buildLockContentionMessage` already
     // renders its own head this way; this site had adopted only the
     // suppression half of that precedent.
-    const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
-    const safeRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
+    const safeStack = safeSegment(stackName);
+    const safeRegion = safeSegment(region);
     throw new LockError(
       `Failed to acquire lock for stack '${safeStack}' (${safeRegion}) after ${maxRetries + 1} attempts. ` +
         (lockInfo

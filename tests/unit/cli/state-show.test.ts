@@ -1504,7 +1504,10 @@ describe('cdkd state show', () => {
     mockGetLockInfo.mockResolvedValue(null);
 
     const caught = await runStateShow(['show', 'GhostStack']).catch((e: unknown) => e);
-    const message = errorSpy.mock.calls.map(String).join('\n') + String(caught);
+    // `errorSpy` alone: `process.exit` is mocked to throw, so `String(caught)`
+    // is always the exit-mock noise, and concatenating it glued that noise to
+    // the last logged line where a line-oriented assertion reads it.
+    const message = errorSpy.mock.calls.map(String).join('\n');
 
     expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
     expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
@@ -1520,10 +1523,18 @@ describe('cdkd state show', () => {
     const caught = await runStateShow(['show', 'Ghost\n  PhysicalID: arn:forged']).catch(
       (e: unknown) => e
     );
-    const message = errorSpy.mock.calls.map(String).join('\n') + String(caught);
+    const message = errorSpy.mock.calls.map(String).join('\n');
 
+    // The forged-LINE assertion is what carries this case. Its sibling above
+    // has one; a first cut of this case did not, and its control class
+    // excludes `\n` (the separator `formatError` owns), so with the guard
+    // neutered both of its assertions still passed -- the round-1 finding
+    // ("an anti-vacuity guard asserting template words present either way")
+    // reintroduced at a new site.
     expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
     expect(message).toContain('only a legacy state record');
+    expect(message).toContain('PhysicalID: arn:forged');
   });
 
   it('emits a `{state, lock}` JSON object with --json', async () => {

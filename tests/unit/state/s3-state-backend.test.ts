@@ -594,6 +594,43 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(message).toContain('PhysicalID: arn:forged');
     });
 
+    it('sanitizes the has-no-ETag refusal (issue #3003)', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('{}') },
+      });
+
+      const caught = await backend
+        .getState('X', 'us-east-1\n  PhysicalID: arn:forged')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('has no ETag');
+      expect(message).toContain('PhysicalID: arn:forged');
+    });
+
+    it('sanitizes the LEGACY-key read failure, on getState\'s own fallback (issue #3003)', async () => {
+      // `getState` falls back to the legacy key when the region-scoped one is
+      // absent, so `tryGetLegacy`'s refusal is on the `state show` path too.
+      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('InvalidObjectState: storage class'), {
+          name: 'InvalidObjectState',
+        })
+      );
+
+      const caught = await backend
+        .getState('Ghost\n  PhysicalID: arn:forged', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+      expect(message).toContain('legacy state');
+      expect(message).toContain('PhysicalID: arn:forged');
+    });
+
     it('sanitizes the REGION in the has-no-body refusal (issue #3003)', async () => {
       s3Client.send.mockResolvedValueOnce({ ETag: '"e"' });
 

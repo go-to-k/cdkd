@@ -3317,6 +3317,23 @@ export interface CdkdStateStackTree {
 }
 
 /**
+ * One spelling of "this value came from an S3 key or a state record, and is
+ * about to be interpolated into a message a terminal will render" (issue
+ * #3003). `cdkd state show --show-nested` reaches the walker's refusals below,
+ * and its rows are joined by newlines, so an unsanitized value forges a row in
+ * the diagnostic. A `logicalId` is a KEY of the record body -- CloudFormation
+ * constrains a logical id, but nothing enforces that on a record read back
+ * from S3, and it is half of the child stack name derived from it.
+ *
+ * Module-scoped rather than local to the walker: the first cut of this change
+ * guarded the walker's two refusals and left the root one, which is the shape
+ * the issue is about.
+ */
+function safeSegment(value: string | undefined): string {
+  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
  * Recursively load the cdkd-state tree rooted at `(rootStackName, region)`.
  * For every `AWS::CloudFormation::Stack` row in each level's
  * `state.resources`, derives the child's v6 state key
@@ -3347,23 +3364,6 @@ export interface CdkdStateStackTree {
  * Otherwise the walker fetches it itself, matching the standalone-use
  * signature.
  */
-/**
- * One spelling of "this value came from an S3 key or a state record, and is
- * about to be interpolated into a message a terminal will render" (issue
- * #3003). `state show --show-nested` reaches every refusal in this file, and
- * its rows are joined by newlines, so an unsanitized value forges a row in the
- * diagnostic. A `logicalId` is a KEY of the record body -- CloudFormation
- * constrains a logical id, but nothing enforces that on a record read back
- * from S3, and it is half of the child stack name derived from it.
- *
- * Module-scoped rather than local to the walker: the first cut of this change
- * guarded the walker's two refusals and left the root one two lines above,
- * which is the shape the issue is about.
- */
-function safeSegment(value: string | undefined): string {
-  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
-}
-
 export async function buildCdkdStateStackTree(
   rootStackName: string,
   region: string,
@@ -3376,9 +3376,11 @@ export async function buildCdkdStateStackTree(
   } else {
     const rootResult = await stateBackend.getState(rootStackName, region);
     if (!rootResult) {
-      // Same guard as the walker's two refusals below, and the same reason:
-      // reached by `state show --show-nested`, whose rows are joined by
-      // newlines (issue #3003).
+      // Guarded like the walker's refusals below, but DEFENSIVE rather than
+      // reached: both production callers pass `prefetchedRootState`
+      // (`state.ts`'s `--show-nested` branch and this file's own orchestrator),
+      // so nothing today takes this arm. A caller that stops prefetching
+      // inherits the guard instead of having to remember it (issue #3003).
       throw new Error(
         `No cdkd state found for stack '${safeSegment(rootStackName)}' ` +
           `(${safeSegment(region)}). ` +

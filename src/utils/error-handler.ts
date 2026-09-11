@@ -783,6 +783,19 @@ export function formatError(error: unknown): string {
       // is for values with a known charset — `display-safe.ts`'s header draws
       // that line.
       //
+      // FLATTENED, and the cost is accepted deliberately. Some causes are
+      // multi-line on purpose — `CloudControlProvider`'s unsupported-type
+      // diagnostic is three lines, re-wrapped as a `cause` by the deploy
+      // engine — and they now print as one long line. No character is lost,
+      // only the shape.
+      //
+      // The obvious repair is to split on `\n`, sanitize each line and rejoin.
+      // It was considered and REFUSED: it cannot tell cdkd's own newline from
+      // an injected one, so it preserves exactly the newline this guard exists
+      // to remove and reopens the row forging. A structure-preserving version
+      // would need the thrower to say which newlines are its own, which is a
+      // wider change than this line.
+      //
       // A cause that sanitizes to NOTHING drops its whole line rather than
       // printing a placeholder. It carried no readable information, and
       // `Caused by:` with an empty tail reads as a formatting bug. The
