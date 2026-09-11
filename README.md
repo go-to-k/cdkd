@@ -9,6 +9,12 @@
   <a href="./LICENSE">
     <img src="https://img.shields.io/npm/l/@go-to-k/cdkd.svg" alt="License: Apache-2.0" />
   </a>
+  <p>
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs-site/public/brand/logo-dark.svg">
+      <img alt="cdkd logo" src="https://raw.githubusercontent.com/go-to-k/cdkd/main/docs-site/public/brand/logo-light.svg" width="96" height="96">
+    </picture>
+  </p>
   <h3>Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation.</h3>
   <p>
     📚 Documentation: <a href="https://cdkd.dev"><b>cdkd.dev</b></a>
