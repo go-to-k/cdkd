@@ -152,7 +152,11 @@ consequences worth knowing:
   resource through Cloud Control and the value reaches AWS in place. (Older cdkd
   versions recorded the property anyway, and the re-routed update — computed as
   a patch against a record that already claimed the value — sent nothing.) The
-  exception is a create-only property; see below.
+  main exception is a create-only property; see below. The narrower one is
+  where the re-route happens but cannot land — the physical-id bullet under
+  [`--recreate-via-cc-api`](#recreate-via-cc-api-deploy). A type the Cloud
+  Control route cannot serve — no Cloud Control handlers, or a provider that
+  declines the fallback — is refused at pre-flight instead.
 - **`cdkd diff` and `cdkd deploy` disagree about the property, on purpose.**
   `diff` registers no `--prefer-sdk-route`, so it previews the
   flag-less deploy and shows the property as a pending change with the
@@ -228,8 +232,13 @@ Three exceptions:
   narrowing it out would turn it into a replacement of an untouched resource —
   so simply dropping the flag later does not deliver it. See
   [the caveat under `--recreate-via-cc-api`](#recreate-via-cc-api-deploy). For
-  every other dropped property, dropping the flag IS enough: the record never
-  claimed it, so the next deploy re-routes and Cloud Control sends it.
+  every other dropped property, dropping the flag usually delivers it: the
+  record never claimed it, so the next deploy re-routes and Cloud Control sends
+  it. Usually, not always: the auto-routed update still has to be able to
+  ADDRESS the resource (the physical-id bullet in that same section), and the
+  Cloud Control route has to be able to serve the type at all — no Cloud
+  Control handlers, or a provider that declines the fallback, and dropping the
+  flag is refused at pre-flight rather than silently ineffective.
 - **NOT** persisted in cdkd state. Every deploy must pass the flag if the
   override is still wanted. The resource's `provisionedBy` state field reflects
   the routing actually used at the last deploy, not the flag.
@@ -305,9 +314,9 @@ unchanged template would destroy and recreate a resource nobody touched. The
 cost of that choice is stated rather than hidden: the record keeps claiming a
 value AWS does not hold, the flag-less deploy diffs it as identical on both
 sides, nothing is sent, and the deploy reports success. That residual is a
-known defect with its own tracking issue, and it is still open because closing
-it means deciding what cdkd should DO when the flag is dropped — every
-candidate changes what a plain deploy does to a live resource.
+known defect with its own tracking issue. It is still open because the
+alternatives to today's behaviour — refuse the deploy, or classify it as a
+replacement — both change what a plain deploy does to a live resource.
 
 Reach for the flag when the auto-routed **update** cannot deliver the property,
 which is a narrower case:
@@ -317,11 +326,20 @@ which is a narrower case:
   schema's `createOnlyProperties` is what to check. Whether you need this flag
   depends on what the record holds. If it does NOT already claim the value —
   the ordinary case, where you just added the property — the change reads as an
-  addition and cdkd classifies it as a
-  [property-driven replacement](#property-driven-replacement-and-stateful-replace-blocked)
-  off the same schema, so it recreates the resource for you with no flag, and a
-  stateful type is refused until `--force-stateful-recreation`. The flag is for
-  the case where the record DOES claim it — the `--prefer-sdk-route` sequence
+  addition, and unless one of cdkd's own rules says that property can change in
+  place it becomes a
+  [property-driven replacement](#property-driven-replacement-and-stateful-replace-blocked),
+  so cdkd recreates the resource for you with no flag. (Where cdkd has no rule
+  of its own, that verdict comes from the type's CFn schema, read through
+  `cloudformation:DescribeType`; without that permission cdkd warns and falls
+  back to treating the change as in-place. What happens then is type-dependent:
+  the provider may refuse it and point you at `--replace`, AWS may reject the
+  update, or — where nothing guards the property — it is quietly dropped and the
+  deploy reports success.) A stateful type is
+  refused until `--force-stateful-recreation`, **unless** it declares
+  `UpdateReplacePolicy: Retain` — that is exempt from the consent flag, because
+  the old resource is orphaned rather than deleted. The flag is for the case
+  where the record DOES claim the value — the `--prefer-sdk-route` sequence
   above — because there the diff finds no difference to act on.
 - **The SDK-created resource's physical id is not a valid Cloud Control
   identifier.** Cloud Control addresses a resource by the `Identifier` its
@@ -338,10 +356,13 @@ same way, so they are not reached for the same way. The second one fails
 loudly: the auto-routed update errors, and the flag is a remedy you reach for
 after a failure rather than a precaution you take before one. The first one
 fails loudly only when the record does not already claim the property — the
-replacement is planned and, for a stateful type, refused out loud. In the
-recorded create-only case above there is no failure at all: the deploy reports
-success, applies nothing, and prints nothing that points at this flag, so that
-one is a precaution you do have to take before the fact.
+replacement is planned, and for a stateful type without
+`UpdateReplacePolicy: Retain` it is refused out loud. In the recorded
+create-only case above there is no failure at all, and the output is worse than
+silent: pre-flight still prints the routing line promising Cloud Control will
+forward the full property map, the diff then finds no change, nothing retracts
+the promise, and nothing points at this flag. So that one is a precaution you
+do have to take before the fact.
 
 ### When not to use it
 
