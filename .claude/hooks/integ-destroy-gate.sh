@@ -357,15 +357,20 @@ EOF
 case "$reason" in
 *"digest differs"*)
   cat >&2 <<'EOF'
-`hash: diff` digests THIS branch's delta from merge-base(origin/main, HEAD), so
-a peer's merge landing on `origin/main` does not stale this marker by itself —
-it does not move that merge base. What does: an in-scope file changing ON THIS
-BRANCH; merging or rebasing `origin/main` INTO this branch when the incoming
-change touches a file this branch also modified, which keeps that file in the
-delta while its base side moves under it; and editing this gate's `include:` /
-`exclude:` list, which changes WHICH files are digested with no file changing at
-all. The `--explain` output above tells them apart — it lists the delta the
-digest is taken over.
+`hash: diff` digests this branch's WORKING-TREE delta from
+merge-base(origin/main, HEAD) — uncommitted edits, mode changes and untracked
+non-ignored files all count, so `git diff origin/main...HEAD` can show nothing
+in scope while the digest has moved. A peer's merge landing on `origin/main`
+does not stale this marker by itself: it does not move that merge base.
+
+What does: an in-scope file changing in THIS WORKING TREE; merging
+`origin/main` into this branch, or rebasing this branch onto it, when the
+incoming change touches an in-scope file this branch also modified, which keeps
+that file in the delta while its base side moves under it; and editing this
+gate's `include:` / `exclude:` list, which changes WHICH files are digested with
+no file changing at all. `--explain` narrows it to the files actually digested,
+and comparing its `merge base:` against `git merge-base origin/main HEAD`
+separates the second cause from the other two.
 
 Measured in issue #3010, where a hand-expanded include list missed an entry the
 branch really had changed and the gate looked broken.
@@ -389,6 +394,9 @@ bypass this hook. The whole point of the gate is that an unverified
 destroy cannot reach main; setting the marker by hand defeats it. If
 you believe the file in scope is genuinely unrelated to deletion
 behavior, the right fix is to narrow `.markgate.yml` integ-destroy
-scope, not to bypass the marker.
+scope, not to bypass the marker. Narrowing does not clear this
+refusal by itself -- editing the include list is one of the things
+that MOVES the digest -- so the gate stays stale until the next
+`/run-integ` records it.
 EOF
 exit 2

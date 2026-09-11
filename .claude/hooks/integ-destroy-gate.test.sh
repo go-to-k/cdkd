@@ -275,15 +275,56 @@ run_msg_case "stale message says what --explain prints (#3010)" stale \
 run_msg_case "stale message rules out a bare peer merge as the cause (#3010)" stale \
   "$N_CAUSE" 'could not EVALUATE' "$payload_merge"
 
-# The third cause, fenced separately because a CLOSED enumeration is how this
-# paragraph was wrong the first time. Measured against markgate 0.4.1: widening
-# a `hash: diff` gate's `include:` while not one byte under the scope changes
-# flips `verify` 0 -> 1 with `(digest differs)` -- so it reaches THIS branch of
-# the message, and a reader told "an in-scope file moved on this branch" goes
-# hunting a file that did not. Trimming the clause back to two causes is the
-# regression this case exists to catch.
-run_msg_case "stale message names the include-list cause too (#3010)" stale \
+# ONE CASE PER CAUSE. The paragraph names three, and the regression to guard
+# against is a TRIM -- which leaves grammatical prose and satisfies every needle
+# aimed at a different clause. Measured: with only the include-list cause
+# fenced, deleting EITHER of the other two left the suite at 35/0, in a PR whose
+# whole subject is that the list must not close early.
+#
+# Each cause is also a measurement against markgate 0.4.1, not a reading of the
+# code:
+#   worktree   an untracked non-ignored in-scope file, a chmod +x with zero
+#              content change, and an uncommitted edit each flip `verify` 0 -> 1,
+#              while `git diff origin/main...HEAD -- <scope>` shows none of them.
+#              That gap IS the #3010 failure mode, so the message says
+#              WORKING-TREE rather than "on this branch".
+#   include    widening `include:` while not one byte under the scope changes
+#              flips `verify` 0 -> 1 with `(digest differs)`, reaching this very
+#              branch of the message.
+# Control for both: the same mutation on an out-of-scope path leaves it fresh.
+run_msg_case "stale message says the delta is the WORKING TREE (#3010)" stale \
+  'uncommitted edits, mode changes and untracked' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "stale message names the worktree cause (#3010)" stale \
+  'in-scope file changing in THIS WORKING TREE' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "stale message names the merge-base cause (#3010)" stale \
+  'rebasing this branch onto it' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "stale message names the include-list cause (#3010)" stale \
   'changes WHICH files are digested' 'could not EVALUATE' "$payload_merge"
+
+# The sentence that joins the three causes back to the command at the top. It
+# was unanchored, and deleting it left the suite green.
+run_msg_case "stale message says what --explain can and cannot settle (#3010)" stale \
+  'narrows it to the files actually digested' 'could not EVALUATE' "$payload_merge"
+
+# --- An UNQUOTED heredoc is invisible to every needle above ---
+#
+# `.claude/rules/hooks-authoring.md`: `cat >&2 <<EOF` (no quotes) expands
+# `$( )` and backticks in the BODY at refusal time, so every backtick span is
+# executed and deleted and the reader gets `command not found` lines instead of
+# the advice. This PR adds two backtick-dense heredocs, and measured, swapping
+# both to the unquoted form left the suite at 35/0: the needles above are all
+# backtick-free, so they survive the mangling verbatim.
+#
+# One needle per heredoc, each spanning a backtick pair, because the two blocks
+# are quoted independently and a needle in one cannot see the other.
+run_msg_case "scope heredoc stays QUOTED (#3010)" stale \
+  '`include:` globs in `.markgate.yml`' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "causes heredoc stays QUOTED (#3010)" stale \
+  '`hash: diff` digests this branch' 'could not EVALUATE' "$payload_merge"
 
 # --- ...and it must NOT be offered where it would be FALSE ---
 #
