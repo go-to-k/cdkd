@@ -169,28 +169,29 @@ jobs:
           SUBISSUE_LABEL: backfill-type
         run: |
           set -euo pipefail
-          # REGENERATE the umbrella's checklist from the coverage map, rather
-          # than appending findings to it.
+          # REGENERATE the campaign's issues from the coverage map, rather than
+          # appending findings to them.
           #
           # Appending cannot express a type that was ticked off and later
           # regained a property: the `[x]` row stays checked and a second row
           # appears for the same type, so the reader sees one entry saying
           # "done" and another saying "not". Dedup does not fix that — the
-          # append model is what is wrong. The map is the umbrella's own stated
-          # completion criterion, so rendering FROM it means a type reappears
-          # when it regains a property and disappears when it is finished, with
-          # no hand-maintained state to go stale.
+          # append model is what is wrong. The map is the campaign's own stated
+          # completion criterion, so rendering FROM it means a type's issue
+          # reopens when it regains a property and closes when it is finished,
+          # with no hand-maintained state to go stale.
           #
           # Human provenance — which PR closed which slice — cannot be
-          # recomputed, so it lives OUTSIDE the markers and is never touched.
+          # recomputed, and it lives on the PARENT, which nothing here writes.
           #
           # The STATUS is captured separately from the value, because "GitHub
           # did not answer" and "no issue carries the label" are different
           # outcomes that must not share one exit. A `|| true` here collapses
           # them: a transport error renders as "found 0", warns, and exits
           # GREEN -- and since this workflow fires on a push, nothing re-runs
-          # it, so the umbrella silently stops tracking `main`. That is the
-          # same green-run-that-changed-nothing this file refuses at the write.
+          # it, so the campaign silently stops tracking `main`. That is the same
+          # green-run-that-changed-nothing this file refuses at the
+          # reconciliation below.
           if ! umbrella_json=$(gh issue list --state open --limit 100 \
                --label "${BACKFILL_UMBRELLA_LABEL}" --json number); then
             echo "::error::Could not ask GitHub which issue carries '${BACKFILL_UMBRELLA_LABEL}'. This is a transport or permission failure, not an empty result — re-run this workflow once it is resolved."
@@ -200,7 +201,7 @@ jobs:
           umbrella_count=$(printf '%s' "${umbrella}" | wc -w | tr -d ' ')
 
           if [ "${umbrella_count}" != "1" ]; then
-            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). Refusing to guess which issue to write. Label exactly one and re-run this workflow."
+            echo "::warning::Expected exactly one OPEN issue labelled '${BACKFILL_UMBRELLA_LABEL}', found ${umbrella_count} (${umbrella:-none}). Refusing to guess which issue the sub-issues belong under. Label exactly one and re-run this workflow."
             exit 0
           fi
 

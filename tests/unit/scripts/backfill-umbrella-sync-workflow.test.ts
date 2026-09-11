@@ -36,7 +36,6 @@ import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { UMBRELLA_EMPTY_SENTINEL } from '../../../scripts/diagnose-schema-refresh.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const WORKFLOW_PATH = join(REPO_ROOT, '.github', 'workflows', 'backfill-umbrella-sync.yml');
@@ -417,6 +416,39 @@ echo "node $*" >> "$GH_LOG"
   });
 
   describe('failure reporting', () => {
+    it('lets the RECONCILER fail the run — it is the only write left', () => {
+      // The deleted `lets the WRITE fail the run` case pinned this against the
+      // old `gh issue edit`. That write is gone and the reconciler invocation
+      // inherited its job, and for one round NOTHING pinned it: review measured
+      // that appending `|| true` to the node call left the whole suite green —
+      // including the executed case, whose stub `node` exits 0 either way —
+      // while this workflow AND `sync-backfill-subissues.ts`'s header both go
+      // on claiming every refusal exits non-zero. That would green-wash all
+      // four refusals across ~44 public issues.
+      const step = shellOf(RECONCILE_STEP);
+      const at = step.lastIndexOf('node scripts/sync-backfill-subissues.ts');
+      expect(at, 'there is no reconciler invocation left to guard').toBeGreaterThan(-1);
+      // UNSCOPED over the tail, unlike the lookup's scan. That one is sliced to
+      // one statement because the marker `grep`s legitimately carried `|| true`
+      // — and those greps are gone, so nothing after this point may swallow.
+      expect(
+        step.slice(at),
+        'the reconciler invocation swallows its own failure — every refusal would report green'
+      ).not.toMatch(/\|\||\btrue\b/);
+    });
+
+    it('ensures the sub-issue label BEFORE the reconciler can attach it', () => {
+      // Re-pinned after the deletion removed the ordering assertion that rode
+      // on the old live case. `gh issue create --label` fails outright on an
+      // unknown label, which on a first run is every creation.
+      const step = shellOf(RECONCILE_STEP);
+      const labelAt = step.indexOf('gh label create');
+      const nodeAt = step.indexOf('node scripts/sync-backfill-subissues.ts');
+      expect(labelAt, 'the label is never ensured').toBeGreaterThan(-1);
+      expect(nodeAt).toBeGreaterThan(-1);
+      expect(labelAt, 'the reconciler runs before the label it needs exists').toBeLessThan(nodeAt);
+    });
+
     it('gives every step that runs a pipeline a pipefail before it', () => {
       // `run:` with no `shell:` is `bash -e {0}` — NOT pipefail, so a pipeline
       // reports its LAST stage's status and a `gh` failure upstream of a `jq`

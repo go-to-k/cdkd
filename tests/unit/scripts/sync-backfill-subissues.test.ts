@@ -21,6 +21,8 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
+import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 import {
   MARKER_PREFIX,
   MARKER_SUFFIX,
@@ -40,7 +42,6 @@ import {
 import {
   KNOWN_FLAGS,
   RENDER_ONLY_FLAGS,
-  UMBRELLA_EMPTY_SENTINEL,
   VALUELESS_FLAGS,
   renderSubIssueBody,
   renderSubIssuePlan,
@@ -96,7 +97,7 @@ describe('readMarkerType', () => {
     // no marker", which through the all-unmarked refusal either stops the run
     // or — with other issues matching — mints a duplicate for this one type.
     // Measured on this repository: 3 of the 100 most recent issue comments
-    // carry CR. The parent splice's own `tr -d '\r'` exists for the same reason.
+    // carry CR.
     const body = renderSubIssueBody({ type: 'AWS::S3::Bucket', properties: ['A'] }).replace(
       /\n/g,
       '\r\n'
@@ -413,9 +414,8 @@ describe('the gh calls', () => {
   });
 
   it('refuses a create whose output carries no issue number', () => {
-    // The number is what the link step and the parent index both consume.
-    // Reading `NaN` out of an unexpected output and carrying on would link
-    // nothing and index `#NaN`.
+    // The number is what the link step consumes. Reading `NaN` out of an
+    // unexpected output and carrying on would link nothing.
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-subissue-'));
     try {
       const { run } = recorder(['some unexpected gh output']);
@@ -556,32 +556,46 @@ describe('the rendered sub-issue body', () => {
     // The body shipped to 44 public issues saying these properties were "still
     // dropped silently by its SDK provider", and contradicted itself two
     // screens down where its own `Severity` line described a Cloud Control
-    // route. `ProviderRegistry.getProviderFor` auto-routes the whole resource
-    // through Cloud Control, which forwards the full property map — the value
-    // reaches AWS and works. The campaign is a fast-path restoration, not a
-    // data-loss fix, and a body claiming otherwise misstates the severity of
-    // every type in it.
+    // route. The campaign is a fast-path restoration, not a data-loss fix, and
+    // a body claiming otherwise misstates the severity of every type in it.
     const body = renderSubIssueBody({ type: 'AWS::S3::Bucket', properties: ['A'] });
-    expect(body, 'the body claims a silent drop again').not.toMatch(/dropped silently|silently dropped/);
+    expect(body, 'the body claims a silent drop again').not.toMatch(
+      /dropped silently|silently dropped/
+    );
     expect(body).toContain('auto-routes the whole resource through Cloud Control');
 
-    // Pinned against the REGISTRY rather than asserted as prose. This is a
-    // claim about another module's mechanism, which is exactly the shape that
-    // goes stale unfenced — and did.
-    const registry = readFileSync(
-      join(REPO_ROOT, 'src/provisioning/provider-registry.ts'),
-      'utf8'
-    );
+    // Backed by DRIVING the registry, not by grepping it. The first version of
+    // this fence matched `provider-registry.ts` source text, and review
+    // measured it satisfied by COMMENTS alone: replacing the auto-route return
+    // with a `throw` left all four assertions green, so the message "the
+    // registry no longer auto-routes" could not fire for the failure it named.
+    // That is the source-text-fence-is-satisfiable-by-a-comment shape, and a
+    // prose claim about another module's mechanism is exactly where it bites.
+    const registry = new ProviderRegistry();
+    const [resourceType, coverage] = [...PROPERTY_COVERAGE_BY_TYPE].find(
+      ([, c]) => c.silentDrop.size > 0
+    )!;
+    const property = [...coverage.silentDrop.keys()][0]!;
+    registry.register(resourceType, {
+      create: async () => ({ physicalId: 'x' }),
+      update: async () => ({ physicalId: 'x', wasReplaced: false }),
+      delete: async () => {},
+      getAttribute: async () => undefined,
+    });
+
+    const decision = registry.getProviderFor({
+      resourceType,
+      properties: { [property]: 'x' },
+      provisionedBy: 'sdk',
+    });
     expect(
-      registry,
+      decision.provisionedBy,
       'the registry no longer auto-routes on a silent drop — the generated bodies now misdescribe it'
-    ).toMatch(/auto-route through Cloud Control[\s\S]{0,200}closing the silent-drop bug/);
-    expect(registry).toContain("provisionedBy: 'cc-api'");
-    // The two edges the body names, each read off the same file.
-    expect(registry, 'the no-fallback refusal is gone').toContain('disableCcApiFallback');
-    expect(registry, 'the override no longer opts INTO the drop').toContain(
-      'allowedUnsupportedProperties'
-    );
+    ).toBe('cc-api');
+    // The reason list, not merely the layer: the body tells a reader the whole
+    // RESOURCE moves because of this property, and an empty list would leave
+    // that half unbacked.
+    expect(decision.ccRouteReason?.properties).toEqual([property]);
   });
 
   it('renders every checkbox UNCHECKED, because a tick would be overwritten', () => {
@@ -948,24 +962,39 @@ esac
     }
   }, 60_000);
 
-  it('a dry run writes no file and reaches no write verb, even when asked to', () => {
-    // The INDEX_OUT contract went away with the parent-body splice
-    // (go-to-k/cdkd#2998), so what survives here is the half that was always
-    // load-bearing: a dry run must produce NO side effect. Asserted by what the
-    // stub `gh` was asked for and by the run succeeding — an absence check
-    // alone is satisfied by every early refusal there is.
+  it('honours no INDEX_OUT on a REAL run — the index write is gone, not skipped', () => {
+    // The first version of this case asserted the absence on a DRY run and was
+    // decorative: `main()` returns at the dry-run branch before the old
+    // `if (indexOut) writeFileSync(...)` ever ran, so review measured
+    // `origin/main`'s script — the version that fully honours `INDEX_OUT` —
+    // passing every assertion, message included. Only a REAL run discriminates.
     const box = sandbox([]);
     try {
-      const plan = planFile(box.dir, { types: [entry('AWS::S3::Bucket', ['A', 'B'])] });
+      const plan = planFile(box.dir, { types: [entry('AWS::S3::Bucket', ['A'])] });
       const stray = join(box.dir, 'index.md');
-      const res = spawnCli(box, [plan, '--dry-run'], {
+      // The stub answers a create and the link calls, so the run reaches the
+      // point where the index would have been written.
+      writeFileSync(
+        join(box.bin, 'gh'),
+        `#!/bin/bash
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list") cat "$GH_LISTING" ;;
+  "issue create") echo "https://github.com/go-to-k/cdkd/issues/900" ;;
+  "api --paginate") ;;
+  "api --method") ;;
+  "api repos/go-to-k/cdkd/issues/900") echo "123456" ;;
+  *) echo "stub gh: unmodelled subcommand: $*" >&2; exit 1 ;;
+esac
+`,
+        { mode: 0o755 }
+      );
+      const res = spawnCli(box, [plan], {
         REPO: 'go-to-k/cdkd',
         PARENT: '2762',
-        // Passed deliberately: a reintroduced index write would find it.
         INDEX_OUT: stray,
       });
-      expect(res.status, `the dry run did not succeed: ${res.stderr}`).toBe(0);
-      expect(res.stdout).toContain('create AWS::S3::Bucket');
+      expect(res.status, `the real run did not succeed: ${res.stderr}`).toBe(0);
       expect(existsSync(stray), 'INDEX_OUT is honoured again — the index write is back').toBe(false);
     } finally {
       rmSync(box.dir, { recursive: true, force: true });

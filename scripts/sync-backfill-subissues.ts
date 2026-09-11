@@ -37,9 +37,10 @@
  * ## WHAT IT REFUSES, AND WHY EACH REFUSAL IS NOT A WARNING
  *
  * Every refusal below exits NON-ZERO and mutates nothing. A green run that
- * changed nothing is not a notification — the same rule the splice step's own
- * comment states — and here the alternative to refusing is not a stale list but
- * a wrong one, publicly, at ~44 issues per run:
+ * changed nothing is not a notification, and here the alternative to refusing is
+ * not a stale list but a wrong one, publicly, at ~44 issues per run. The
+ * workflow fences this from its side too: nothing after the invocation of this
+ * script may swallow its status.
  *
  *   1. **A plan with no types, while open sub-issues exist.** "The campaign is
  *      finished" and "the parser stopped recognising `silentDrop`" render
