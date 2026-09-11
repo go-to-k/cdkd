@@ -48,11 +48,16 @@
  *      0 groups without erroring. Reading that as finished mass-closes the whole
  *      campaign on a green run. Genuine completion happens once, ever, and
  *      passes `--allow-empty-plan` to say so.
- *   2. **Existing sub-issues of which NONE carries a readable marker.** The
- *      marker is how a type finds its issue; if the spelling drifts, every type
- *      looks new and the run mints a second full set of ~44 duplicates while
- *      leaving the originals open. Zero existing issues is the FIRST RUN and is
- *      fine — it is the combination that is impossible by construction.
+ *   2. **ANY open labelled issue with no readable marker.** The marker is how a
+ *      type finds its issue; if one goes missing, that type looks new and the
+ *      run mints a DUPLICATE while the original stays open forever — never
+ *      updated, never closed, invisible to every later run, and unreachable by
+ *      the self-healing rewrite because nothing can find it. The condition is
+ *      per-issue and not "none of them are readable": the all-or-nothing
+ *      spelling passes the PARTIAL case, which is the likelier one (one body
+ *      hand-edited, not a spelling change across the set) and is equally
+ *      unrecoverable. Zero existing issues is the FIRST RUN and is fine; a
+ *      CLOSED unmarked issue is inert and ignored.
  *   3. **Two issues carrying the same type marker.** Ambiguous, and guessing
  *      which to update leaves the other to rot.
  *   4. **More types than GitHub will accept as sub-issues of one parent.**
@@ -200,7 +205,10 @@ export function planReconciliation(
   for (const issue of existing) {
     const type = readMarkerType(issue.body);
     if (type === undefined) {
-      unmarked.push(issue.number);
+      // OPEN only. A CLOSED labelled issue with no marker is inert — nothing
+      // reads it and nothing would act on it — while an OPEN one is a live
+      // issue this run cannot match to a type, which is the dangerous half.
+      if (issue.state === 'OPEN') unmarked.push(issue.number);
       continue;
     }
     const seen = byType.get(type);
@@ -213,11 +221,13 @@ export function planReconciliation(
     byType.set(type, issue);
   }
 
-  if (existing.length > 0 && byType.size === 0) {
+  if (unmarked.length > 0) {
     throw new ReconcileRefusal(
-      `${existing.length} issue(s) carry the '${SUBISSUE_LABEL}' label and NONE carries a ` +
-        `readable '${MARKER_PREFIX.trim()}' marker (#${unmarked.join(', #')}). Creating one ` +
-        'issue per type from here would duplicate every one of them. Refusing.'
+      `open issue(s) #${unmarked.join(', #')} carry the '${SUBISSUE_LABEL}' label with no ` +
+        `readable '${MARKER_PREFIX.trim()}' marker. Each is a live sub-issue this run cannot ` +
+        'match to a resource type, so the type would look new and get a DUPLICATE while the ' +
+        'original stayed open forever. Restore the marker, or remove the label from an issue ' +
+        'that is not a generated sub-issue, then re-run.'
     );
   }
 
@@ -281,22 +291,37 @@ const ghRunner: Runner = (args) =>
  * found: without it, a type that regains a property looks new and a SECOND issue
  * is minted beside the closed original.
  */
-export function fetchExisting(run: Runner): ExistingIssue[] {
+export function fetchExisting(run: Runner, repo: string): ExistingIssue[] {
+  const limit = MAX_SUB_ISSUES * 2;
   const raw = run([
     'issue',
     'list',
+    '--repo',
+    repo,
     '--state',
     'all',
     '--label',
     SUBISSUE_LABEL,
     '--limit',
-    String(MAX_SUB_ISSUES * 2),
+    String(limit),
     '--json',
     'number,state,title,body',
   ]);
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) {
     throw new ReconcileRefusal(`gh issue list returned ${typeof parsed}, not an array.`);
+  }
+  if (parsed.length === limit) {
+    // A FULL page is indistinguishable from a truncated one, and truncation here
+    // is not a cosmetic loss: `gh` returns newest-first, so the issues that fall
+    // off are the OLDEST — which then look new and get duplicated, the same
+    // unrecoverable outcome refusal 2 guards. The limit is twice the sub-issue
+    // cap, so reaching it means something else is wearing the label.
+    throw new ReconcileRefusal(
+      `gh issue list returned exactly ${limit} issues, the requested limit — the result may be ` +
+        'truncated, and a dropped issue looks new and gets duplicated. Refusing to reconcile ' +
+        'against a listing that may be partial.'
+    );
   }
   return parsed as ExistingIssue[];
 }
@@ -307,8 +332,14 @@ export function fetchExisting(run: Runner): ExistingIssue[] {
  * Bodies travel by `--body-file`, never as an argument: an issue body is
  * multi-line generated text, and the argv path keeps it out of any shell and out
  * of the process listing.
+ *
+ * EVERY call passes `--repo`, including the ones `gh` could resolve from the git
+ * remote. Two resolution rules in one script is a way for the read half and the
+ * write half to disagree about which repository they are reconciling — the
+ * checkout's remote and `GITHUB_REPOSITORY` are the same thing in this workflow
+ * and need not be anywhere else.
  */
-export function applyAction(run: Runner, action: Action, scratch: string): number {
+export function applyAction(run: Runner, repo: string, action: Action, scratch: string): number {
   switch (action.kind) {
     case 'create': {
       const file = join(scratch, 'body.md');
@@ -316,6 +347,8 @@ export function applyAction(run: Runner, action: Action, scratch: string): numbe
       const url = run([
         'issue',
         'create',
+        '--repo',
+        repo,
         '--title',
         action.title,
         '--body-file',
@@ -335,17 +368,29 @@ export function applyAction(run: Runner, action: Action, scratch: string): numbe
     case 'update': {
       const file = join(scratch, 'body.md');
       writeFileSync(file, action.body);
-      run(['issue', 'edit', String(action.number), '--title', action.title, '--body-file', file]);
+      run([
+        'issue',
+        'edit',
+        String(action.number),
+        '--repo',
+        repo,
+        '--title',
+        action.title,
+        '--body-file',
+        file,
+      ]);
       return action.number;
     }
     case 'reopen':
-      run(['issue', 'reopen', String(action.number)]);
+      run(['issue', 'reopen', String(action.number), '--repo', repo]);
       return action.number;
     case 'close':
       run([
         'issue',
         'close',
         String(action.number),
+        '--repo',
+        repo,
         '--reason',
         'completed',
         '--comment',
@@ -407,10 +452,12 @@ export function fetchLinked(run: Runner, repo: string, parent: number): Set<numb
  * It is rendered HERE rather than by `--umbrella-subissues` because it needs the
  * issue numbers, which exist only after the reconciliation has run.
  *
- * The rows keep the `- [ ] ` shape the workflow's own render fence greps for, so
- * that fence keeps working unchanged — and the box is honest at this level in a
- * way it is not inside a sub-issue: a type is either done (its row is gone) or
- * not.
+ * The rows keep the `- [ ] ` shape, and the workflow greps the written file for
+ * it before splicing — rows, or {@link UMBRELLA_EMPTY_SENTINEL}, and nothing
+ * else. That is the OUTPUT-side twin of the `jq` shape fence on the plan: one
+ * attests to what the reconciler read, this one to what it is about to publish.
+ * The box is also honest at this level in a way it is not inside a sub-issue: a
+ * type is either done (its row is gone) or not.
  */
 export function renderIndex(plan: Plan, numbers: Map<string, number>): string {
   if (plan.types.length === 0) return UMBRELLA_EMPTY_SENTINEL;
@@ -436,7 +483,18 @@ function isMain(): boolean {
   }
 }
 
-if (isMain()) {
+/**
+ * The CLI, as a function rather than a top-level block.
+ *
+ * `process.exit()` is deliberately absent from every path. On POSIX a `stderr`
+ * connected to a PIPE — which is what a GitHub Actions runner gives it — is
+ * ASYNCHRONOUS, and `process.exit` drops whatever has not flushed. The line it
+ * would drop is the only thing naming WHICH of the refusals fired, and the
+ * runbook's recovery keys on that exact sentence; a refusal that exits 1 with no
+ * message is a red run nobody can act on. Setting `exitCode` and returning lets
+ * Node drain first.
+ */
+function run(): void {
   const args = process.argv.slice(2);
   const planPath = args.find((a) => !a.startsWith('-'));
   const allowEmptyPlan = args.includes('--allow-empty-plan');
@@ -450,7 +508,8 @@ if (isMain()) {
       'usage: REPO=<owner/repo> PARENT=<n> [INDEX_OUT=<file>] ' +
         'sync-backfill-subissues.ts <plan.json> [--dry-run] [--allow-empty-plan]'
     );
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   try {
@@ -460,7 +519,7 @@ if (isMain()) {
       // "empty campaign" from "not the document we asked for".
       throw new ReconcileRefusal(`${planPath} has no 'types' array; this is not a rendered plan.`);
     }
-    const existing = fetchExisting(ghRunner);
+    const existing = fetchExisting(ghRunner, repo);
     const actions = planReconciliation(plan, existing, allowEmptyPlan);
 
     const numbers = new Map<string, number>();
@@ -474,12 +533,12 @@ if (isMain()) {
     }
     if (dryRun) {
       console.log(`${actions.length} action(s) planned; nothing written.`);
-      process.exit(0);
+      return;
     }
 
     const scratch = mkdtempSync(join(tmpdir(), 'backfill-subissues-'));
     for (const action of actions) {
-      numbers.set(action.type, applyAction(ghRunner, action, scratch));
+      numbers.set(action.type, applyAction(ghRunner, repo, action, scratch));
     }
 
     // After the mutations, so a freshly created issue is linked in the same run.
@@ -496,6 +555,8 @@ if (isMain()) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`sync-backfill-subissues: ${message}`);
-    process.exit(err instanceof ReconcileRefusal ? 1 : 2);
+    process.exitCode = err instanceof ReconcileRefusal ? 1 : 2;
   }
 }
+
+if (isMain()) run();

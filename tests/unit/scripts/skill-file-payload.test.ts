@@ -291,8 +291,12 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // sees ~44 issues of one campaign, and consolidates them back. Neither
     // touched file is near its cap (triage.md and filing.md are the 3rd and 6th
     // largest), so the LEADERS did not move and neither did either per-file
-    // bound; only the corpus and, with it, the floor below.
-    corpusBytes: 183_720,
+    // bound; only the corpus and, with it, the floor below. The review round
+    // grew it again: the exclusion had landed in section 1 alone while sections
+    // 3-0 and 3-a carry their own backlog listings, so all four now filter and
+    // filing.md's claim about them was corrected from a false universal to the
+    // enumerated one it now fences.
+    corpusBytes: 184_327,
     largest: { file: 'verify.md', bytes: 29_928 },
     runnerUp: { file: 'implement.md', bytes: 29_915 },
   },
@@ -718,15 +722,15 @@ const MIN_REFERENCE_FILES = 6;
 // addition may move it — the downward re-derivation stays reserved for a
 // deliberate compression pass, per the entries above.
 //
-// Inputs at this date: corpus 183,720, largest verify.md 29,928, runner-up
-// implement.md 29,915, so the two thresholds are 153,792 (largest-side) and
-// 153,805 (runner-up side, binding); 154,180 clears the binding one by 375 B,
+// Inputs at this date: corpus 184,327, largest verify.md 29,928, runner-up
+// implement.md 29,915, so the two thresholds are 154,399 (largest-side) and
+// 154,412 (runner-up side, binding); 154,790 clears the binding one by 378 B,
 // the same slack the previous derivation carried. The binding constraint for
 // the next retro is MAX_REFERENCE_FILE_BYTES rather than this floor. No leader
 // headroom is quoted here: the caps' own failure messages print it live, and
 // the figure an earlier draft stated went stale in the very next retro (the
 // go-to-k/cdkd#2911 one, which moved a leader without moving either bound).
-const MIN_REFERENCE_CORPUS_BYTES = 154_180;
+const MIN_REFERENCE_CORPUS_BYTES = 154_790;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

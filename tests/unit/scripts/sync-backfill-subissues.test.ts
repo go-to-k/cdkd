@@ -245,19 +245,47 @@ describe('planReconciliation', () => {
       ).toEqual([]);
     });
 
-    it('refuses when labelled issues exist and NONE carries a readable marker', () => {
-      // The duplicate-minting case. If the marker spelling drifts, every type
-      // looks new: the run creates a second full set of ~44 issues and leaves
-      // the originals open, which no later run can undo.
-      const unmarked: ExistingIssue = {
-        number: 10,
-        state: 'OPEN',
-        title: 'Backfill silent-drop properties: AWS::S3::Bucket',
-        body: 'a body whose marker the reader no longer understands',
-      };
-      expect(() => planReconciliation(planOf(entry('AWS::S3::Bucket', ['A'])), [unmarked])).toThrow(
-        /Creating one issue per type from here would duplicate/
+    const unmarked = (number: number, state: 'OPEN' | 'CLOSED' = 'OPEN'): ExistingIssue => ({
+      number,
+      state,
+      title: 'Backfill silent-drop properties: AWS::S3::Bucket',
+      body: 'a body whose marker the reader no longer understands',
+    });
+
+    it('refuses when an open labelled issue carries no readable marker', () => {
+      // The duplicate-minting case. If a marker goes missing, that type looks
+      // new: the run creates a second issue for it and leaves the original
+      // open, which no later run can undo — the rewrite that would heal the
+      // body cannot find the issue it needs to rewrite.
+      expect(() => planReconciliation(planOf(entry('AWS::S3::Bucket', ['A'])), [unmarked(10)])).toThrow(
+        /no\s+readable/
       );
+    });
+
+    it('refuses a PARTIALLY stripped set, where some markers still read', () => {
+      // The likelier shape and the one an all-or-nothing condition passes: one
+      // body hand-edited, not a spelling change across the set. With
+      // `byType.size === 0` as the test, a set of [marked S3, unmarked Lambda]
+      // sails through, Lambda gets a duplicate, and the unmarked issue stays
+      // open forever — invisible to every later run. Found in review; the
+      // all-unmarked case above cannot exhibit it.
+      expect(() =>
+        planReconciliation(
+          planOf(entry('AWS::S3::Bucket', ['A']), entry('AWS::Lambda::Function', ['B'])),
+          [existing(10, 'AWS::S3::Bucket', ['A']), unmarked(11)]
+        )
+      ).toThrow(/#11/);
+    });
+
+    it('ignores a CLOSED unmarked issue, which is inert', () => {
+      // Nothing reads it and nothing would act on it, so refusing would block
+      // the campaign over a finished issue somebody once hand-edited.
+      expect(
+        planReconciliation(planOf(entry('AWS::S3::Bucket', ['A'])), [
+          existing(10, 'AWS::S3::Bucket', ['A']),
+          unmarked(11, 'CLOSED'),
+        ])
+      ).toEqual([]);
     });
 
     it('does NOT refuse on a first run, where there is nothing to duplicate', () => {
@@ -300,7 +328,7 @@ describe('the gh calls', () => {
     // without it a type that regains a property looks new — so a SECOND issue is
     // minted beside the closed original and the campaign shows the type twice.
     const { run, calls } = recorder(['[]']);
-    fetchExisting(run);
+    fetchExisting(run, 'go-to-k/cdkd');
     expect(calls[0]).toContain('--state');
     expect(calls[0]![calls[0]!.indexOf('--state') + 1]).toBe('all');
     expect(calls[0]).toContain(SUBISSUE_LABEL);
@@ -313,7 +341,7 @@ describe('the gh calls', () => {
     // issues", which is the first-run state — and the first-run state creates
     // everything.
     const { run } = recorder(['{"message":"Not Found"}']);
-    expect(() => fetchExisting(run)).toThrow(ReconcileRefusal);
+    expect(() => fetchExisting(run, 'go-to-k/cdkd')).toThrow(ReconcileRefusal);
   });
 
   it('passes an issue body by FILE, never as an argument', () => {
@@ -329,7 +357,7 @@ describe('the gh calls', () => {
         title: 'T',
         body: 'line one\nline two\n',
       };
-      expect(applyAction(run, action, dir)).toBe(900);
+      expect(applyAction(run, 'go-to-k/cdkd', action, dir)).toBe(900);
       expect(calls[0]).toContain('--body-file');
       expect(calls[0]!.some((a) => a.includes('line two'))).toBe(false);
       const file = calls[0]![calls[0]!.indexOf('--body-file') + 1]!;
@@ -348,7 +376,7 @@ describe('the gh calls', () => {
     try {
       const { run } = recorder(['some unexpected gh output']);
       expect(() =>
-        applyAction(run, { kind: 'create', type: 'T', title: 'T', body: 'b' }, dir)
+        applyAction(run, 'go-to-k/cdkd', { kind: 'create', type: 'T', title: 'T', body: 'b' }, dir)
       ).toThrow(/carries no issue number/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -357,7 +385,7 @@ describe('the gh calls', () => {
 
   it('closes with a reason and says why, rather than silently', () => {
     const { run, calls } = recorder(['']);
-    applyAction(run, { kind: 'close', number: 10, type: 'AWS::S3::Bucket' }, '/unused');
+    applyAction(run, 'go-to-k/cdkd', { kind: 'close', number: 10, type: 'AWS::S3::Bucket' }, '/unused');
     expect(calls[0]!.slice(0, 3)).toEqual(['issue', 'close', '10']);
     expect(calls[0]).toContain('--comment');
   });
@@ -525,19 +553,52 @@ describe('cross-file fences', () => {
     expect(step.env['BACKFILL_UMBRELLA_LABEL']).not.toBe(SUBISSUE_LABEL);
   });
 
-  it('agrees with /work-issues about which label the backlog excludes', () => {
-    // Without the exclusion, §1 lists every open non-pull-request issue and the
-    // ~44 generated ones land in the shortlist of every future session. The
-    // exclusion is also what reconciles this design with
+  it('excludes the label from EVERY backlog listing in /work-issues, not just the first', () => {
+    // Without the exclusion the ~44 generated issues land in the shortlist of
+    // every future session. It is also what reconciles this design with
     // `check-issue-dup-check.ts`'s "N sites of one root cause is ONE issue"
     // rationale — these are bot-filed and bot-closed, and never triaged.
+    //
+    // DERIVED, not spot-checked, because the first cut of this fence was a bare
+    // `toContain(SUBISSUE_LABEL)` over the whole file and passed while THREE of
+    // the four listings had no filter — including §3-0's, which is the one that
+    // actually produces the eligible set, and which is labelled in the file as
+    // "§1's listing with the gate applied". `filing.md` asserted the exclusion
+    // was universal, so the corpus carried a false statement about its own
+    // mechanism with a green test beside it. A listing added later must fail
+    // here rather than be remembered.
     const triage = readFileSync(
       join(REPO_ROOT, '.claude/skills/work-issues/references/triage.md'),
       'utf8'
     );
-    expect(triage, 'the backlog listing no longer excludes the generated issues').toContain(
-      SUBISSUE_LABEL
+    // Per COMMAND, not per fenced block: §3-a carries TWO listings in one
+    // block, so a block-granular scan found 3 where there are 4 and would have
+    // passed with one of them unfiltered. Commands are separated by blank lines
+    // inside a block.
+    const blocks = triage.split('```').filter((_, i) => i % 2 === 1);
+    const listings = blocks
+      .flatMap((b) => b.split(/\n\s*\n/))
+      .filter(
+        (c) =>
+          c.includes('repos/{owner}/{repo}/issues?state=open') ||
+          c.includes('gh issue list --state open')
+      );
+    expect(listings.length, 'no backlog listing was found — this fence is scanning nothing').toBe(4);
+    for (const listing of listings) {
+      const first = listing.trim().split('\n').find((l) => l.trim().startsWith('gh')) ?? listing.slice(0, 60);
+      expect(
+        listing.includes(`index("${SUBISSUE_LABEL}")`) ||
+          listing.includes(`index(\\"${SUBISSUE_LABEL}\\")`),
+        `this backlog listing does not exclude '${SUBISSUE_LABEL}': ${first}`
+      ).toBe(true);
+    }
+    // And `filing.md`'s claim ABOUT that exclusion, which is the sentence a
+    // future session reads before deciding whether to consolidate the set back.
+    const filing = readFileSync(
+      join(REPO_ROOT, '.claude/skills/work-issues/references/filing.md'),
+      'utf8'
     );
+    expect(filing).toContain('EXCLUDES the label');
   });
 
   it('keys on ONE marker spelling, aliased rather than re-typed', () => {

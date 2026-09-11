@@ -220,6 +220,22 @@ jobs:
           PARENT="${umbrella}" INDEX_OUT=/tmp/index.md \
             node scripts/sync-backfill-subissues.ts /tmp/plan.json
 
+          # The SECOND shape fence, on the index this time rather than the plan.
+          # The first one (`jq -e` in the render step) attests to the reconciler's
+          # INPUT; this attests to its OUTPUT, which is the thing about to be
+          # written into a public issue. It is the flat checklist's old
+          # rows-or-sentinel guard, re-pointed: an earlier revision of this change
+          # dropped it on the reasoning that `jq` had replaced it, which was
+          # wrong -- the two guard different files at different stages, and
+          # `INDEX_OUT` is written by a code path `jq` never sees.
+          #
+          # Rows OR the finished-campaign sentinel, never rows alone: a genuinely
+          # finished campaign renders the sentinel, and accepting only rows would
+          # make that state unrepresentable -- the defect that once killed this
+          # step under `set -e` with no annotation and left the umbrella's stale
+          # rows standing permanently.
+          grep -qE '^- \[ \] |^_No remaining silent-drop properties' /tmp/index.md
+
           U=$(mktemp)
           # The chaining and the `-s` test are load-bearing, not style: the
           # redirect truncates the file BEFORE gh runs, so an unchained recipe
@@ -234,9 +250,19 @@ jobs:
           # markers" that are already correct, forever -- and the recovery it
           # names, hand-editing the issue, is what CREATES the CRLF. It also
           # keeps the `cmp` idempotence test from seeing a phantom diff.
+          # FAILS the run, unlike the marker-shape refusals below it. Two things
+          # separate this case from those, and both point the same way. The
+          # umbrella's number was just resolved from a successful listing, so a
+          # read failure here is a transport or permission error by
+          # construction, not a state a human has misconfigured -- the same
+          # distinction the label lookup above draws, and collapsing it into one
+          # `exit 0` is exactly what that lookup's own comment refuses. And it
+          # lands AFTER the reconciler has already mutated the sub-issues, so a
+          # green exit leaves the parent's index describing the set as it was
+          # before this run, on a push-triggered workflow that nothing re-runs.
           if ! { gh issue view "${umbrella}" --json body -q .body | tr -d '\r' > "${U}" && [ -s "${U}" ]; }; then
-            echo "::warning::Could not read backfill umbrella #${umbrella}'s body; refusing to write one. Re-run this workflow once the issue is readable."
-            exit 0
+            echo "::error::Could not read backfill umbrella #${umbrella}'s body after reconciling its sub-issues, so its index was NOT updated. The sub-issues are current; the parent is one run behind. Re-run this workflow once the issue is readable."
+            exit 1
           fi
 
           # Located by LINE NUMBER, and each marker must appear exactly once on

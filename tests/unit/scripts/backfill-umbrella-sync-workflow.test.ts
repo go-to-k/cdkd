@@ -35,6 +35,7 @@ import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { UMBRELLA_EMPTY_SENTINEL } from '../../../scripts/diagnose-schema-refresh.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const WORKFLOW_PATH = join(REPO_ROOT, '.github', 'workflows', 'backfill-umbrella-sync.yml');
@@ -262,6 +263,41 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       );
     });
 
+    it('shape-fences the INDEX too, not only the plan it was rendered from', () => {
+      // Two fences at two stages on two files. The `jq -e` above attests to the
+      // reconciler's INPUT; this attests to its OUTPUT, which is the thing about
+      // to be written into a public issue, and `INDEX_OUT` is produced by a code
+      // path `jq` never sees.
+      //
+      // This case exists because the first cut of go-to-k/cdkd#2949 DELETED the
+      // flat checklist's rows-or-sentinel guard on the reasoning that `jq` had
+      // replaced it, and left a source comment and a sibling test both asserting
+      // a fence that by then lived nowhere. Restoring it without a case left it
+      // equally unwatched: both mutations below — deleting the grep, and
+      // narrowing it to rows-only — survived the suite.
+      const splice = shellOf(SPLICE_STEP);
+      expect(splice, 'the index shape fence is gone').toMatch(
+        /grep -qE '\^- \\\[ \\\] \|\^_No remaining silent-drop properties' \/tmp\/index\.md/
+      );
+      // Rows OR the sentinel. Accepting only rows makes a genuinely finished
+      // campaign unrepresentable — the defect that once killed this step under
+      // `set -e` with no annotation and left the umbrella's stale rows standing
+      // permanently. Pinned against the CONSTANT so a reword on either side
+      // cannot drift past this.
+      const accepted = /grep -qE '\^- \\\[ \\\] \|\^(_No remaining silent-drop properties)'/.exec(
+        splice
+      );
+      expect(accepted, 'the splice no longer accepts the finished-campaign sentinel').not.toBeNull();
+      expect(UMBRELLA_EMPTY_SENTINEL.startsWith(accepted![1]!)).toBe(true);
+      // Ordered: written by the reconciler, fenced, then spliced.
+      const wroteAt = splice.indexOf('INDEX_OUT=/tmp/index.md');
+      const fencedAt = splice.indexOf("grep -qE '^- \\[ \\] |^_No remaining");
+      const splicedAt = splice.indexOf('cat /tmp/index.md');
+      expect(wroteAt).toBeGreaterThan(-1);
+      expect(fencedAt, 'the index is fenced before it is written').toBeGreaterThan(wroteAt);
+      expect(splicedAt, 'the index is spliced before it is fenced').toBeGreaterThan(fencedAt);
+    });
+
     it('is backed by the script exiting non-zero, not by the guard alone', () => {
       // The guard above is the SECOND of two independent stops, and the first
       // one lives in the script: a render-only mode re-throws instead of
@@ -370,7 +406,26 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
         /gh issue view "\$\{umbrella\}" --json body -q \.body \| tr -d '\\r' > "\$\{U\}" && \[ -s "\$\{U\}" \]/
       );
       const arm = guardArm(splice, 'Could not read backfill umbrella');
-      expect(arm, 'the unreadable-body refusal falls through to the write').toContain('exit 0');
+      expect(arm, 'the unreadable-body refusal falls through to the write').toContain('exit 1');
+      // `exit 1`, not the `exit 0` this asserted until go-to-k/cdkd#2949. Two
+      // things moved it, and they point the same way. The umbrella's number was
+      // just resolved from a SUCCESSFUL listing, so a read failure here is a
+      // transport or permission error by construction rather than a state a
+      // human has misconfigured — which is the distinction the label lookup's
+      // own comment twenty lines above refuses to collapse, and this arm was
+      // collapsing it. And since the reconciler now runs BEFORE this point, a
+      // green exit here leaves the sub-issues current and the parent's index a
+      // run behind, on a push-triggered workflow nothing re-runs.
+      // Asserted against the whole shell rather than the arm: `guardArm` slices
+      // FROM the needle, so the annotation level that precedes it on the same
+      // line is outside what it returns.
+      expect(splice, 'a transport failure is still reported as a warning').toMatch(
+        /::error::Could not read backfill umbrella/
+      );
+      // The marker-SHAPE refusals keep `exit 0` — those are human-fixable and
+      // reached before any mutation. Asserted here so the two classes cannot
+      // quietly converge on one exit.
+      expect(guardArm(splice, 'must carry exactly one')).toContain('exit 0');
     });
 
     it('does not rewrite an unchanged body', () => {

@@ -276,9 +276,13 @@ CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' 
 [ -n "$CUT" ] || { echo 'CUTOFF FAILED — do not treat the empty result as an empty backlog'; exit 1; }
 
 # §1's listing with the gate applied. DOUBLE quotes — `gh api --jq` takes no
-# `--arg`, so the cutoff expands into the filter.
+# `--arg`, so the cutoff expands into the filter. The `backfill-type` exclusion
+# is carried too: this is the listing that actually produces the eligible set,
+# so dropping it here puts all ~44 generated sub-issues back on the shortlist
+# however carefully §1 filtered them.
 gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq ".[] | select(.pull_request | not) | select(.created_at < \"$CUT\")
+        | select([.labels[].name] | index(\"backfill-type\") | not)
         | [.number, .created_at, .title] | @tsv"
 ```
 
@@ -333,12 +337,14 @@ Detecting the signals, from the listings §1 already fetched:
 # type + area from the conventional-commit title prefix: fix(deploy): ...
 gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq '.[] | select(.pull_request | not)
+        | select([.labels[].name] | index("backfill-type") | not)
         | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
         | @tsv'
 
 # rule 3's input is a LABEL too — no per-candidate view:
 gh issue list --state open --limit 200 --json number,title,labels \
-  --jq '.[] | [.number,
+  --jq '.[] | select([.labels[].name] | index("backfill-type") | not)
+        | [.number,
                ([.labels[].name | select(startswith("severity:"))] | first // "severity:?"),
                ([.labels[].name | select(startswith("effort:"))]   | first // "effort:?"),
                .title] | @tsv'

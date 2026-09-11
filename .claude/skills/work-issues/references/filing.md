@@ -52,8 +52,10 @@ before any other set may be split this way:
 
 - **Nothing pays the fixed cost.** `.github/workflows/backfill-umbrella-sync.yml`
   creates, updates, reopens and closes each one from `main`'s coverage map; no
-  triage, no claim, no filing. §3's backlog listing EXCLUDES the label for that
-  reason.
+  triage, no claim, no filing. Every backlog listing in `triage.md` — §1's, §3-0's
+  cutoff query and §3-a's two signal queries — EXCLUDES the label for that
+  reason; a listing that grows here must carry it too, or the ~44 come straight
+  back onto the shortlist.
 - **It is not one root cause.** A resource type is a provider with its own SDK
   input shape, its own drift read-back and its own integration fixture — no
   single sentence describes the fix at every site, which is this rule's own
