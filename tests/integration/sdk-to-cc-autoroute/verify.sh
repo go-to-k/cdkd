@@ -219,7 +219,7 @@ awk -v t="${THRESHOLD}" 'BEGIN { exit !(t + 0 == 2) }' || { echo "FAIL: the depl
 # THE question. Read from AWS, not from cdkd's state record.
 WINDOW=$(aws cloudwatch describe-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" \
   --query 'MetricAlarms[0].EvaluationWindow.WallClockWindow.Timezone' --output text)
-[ "${WINDOW}" = "UTC" ] || { echo "FAIL: EvaluationWindow did NOT reach AWS (Timezone=${WINDOW}). docs/cli-deploy-safety.md's recreate-via-cc-api section would be right and its allow-unsupported-properties section wrong: the auto-route does not apply the property to an existing SDK-created resource." >&2; exit 1; }
+[ "${WINDOW}" = "UTC" ] || { echo "FAIL: EvaluationWindow did NOT reach AWS (Timezone=${WINDOW}). docs/cli-deploy-safety.md's recreate-via-cc-api section would be right and its --prefer-sdk-route section wrong: the auto-route does not apply the property to an existing SDK-created resource." >&2; exit 1; }
 
 # In place, not replaced.
 ARN1=$(alarm_arn)

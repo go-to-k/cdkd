@@ -892,8 +892,23 @@ export class ProviderRegistry {
           ? [
               `this resource's state record already routes it to Cloud Control ` +
                 `(provisionedBy: cc-api), which is decided before any property is consulted`,
-              `Widening --prefer-sdk-route cannot beat a sticky record — use ` +
-                `--recreate-via-sdk-provider ${logicalId} to return it to its SDK provider.`,
+              // NO COMMAND, deliberately — the same call the create-only
+              // sentence below makes, for the same reason and against the
+              // MIRROR flag. `--recreate-via-sdk-provider <LogicalId>` looks
+              // like the answer and is refused in most of this branch's own
+              // population: `ambiguousIntentSdk` refuses it while any drop
+              // outside the preference is still actionable (which is exactly
+              // the `stickyCc && autoRouted.length > 0` half), 17 of the types
+              // carrying silentDrop entries are STATEFUL and need
+              // `--force-stateful-recreation` on top, and neither flag can
+              // address a resource inside a nested-stack child. It is also
+              // DESTRUCTIVE, which a one-line remedy must not omit. A sentence
+              // that has to be right about four conditions is a sentence that
+              // will be wrong about one; the deploy-safety docs carry it with
+              // its conditions.
+              `Returning it to the SDK provider is a destroy-and-recreate, not a ` +
+                `flag change — see docs/cli-deploy-safety.md. Widening ` +
+                `--prefer-sdk-route alone cannot do it.`,
             ]
           : [
               `${autoRouted.join(', ')} ${autoRouted.length === 1 ? 'is' : 'are'} not covered ` +

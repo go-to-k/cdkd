@@ -250,7 +250,19 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(warn, 'a second warning appeared on this path').toHaveBeenCalledTimes(1);
     // The sticky record is the operative cause, so the remedy must be the one
     // that can actually beat it. Widening the preference cannot.
-    expect(warned).toContain('--recreate-via-sdk-provider');
+    // It must NOT prescribe a command. `--recreate-via-sdk-provider` looks like
+    // the remedy and is pre-flight REFUSED across most of this branch's
+    // population (an actionable drop outside the preference, a stateful type
+    // without `--force-stateful-recreation`, a nested-stack child) — and it is
+    // destructive. The module already made this call for the mirror flag; the
+    // first cut of this warning prescribed it anyway and the test pinned the
+    // incomplete string.
+    expect(warned, 'the sticky case prescribes a command that is usually refused').not.toContain(
+      '--recreate-via-sdk-provider'
+    );
+    expect(warned, 'the sticky remedy hides that it is destructive').toContain(
+      'destroy-and-recreate'
+    );
     expect(warned, 'the sticky case prescribes a remedy that is a no-op').not.toMatch(
       /add .* to --prefer-sdk-route as well/
     );
