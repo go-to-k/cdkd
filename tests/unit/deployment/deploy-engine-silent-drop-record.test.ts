@@ -500,9 +500,11 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
    * HOLDS the allow-listed key, and a flag-ful policy-only deploy now takes the
    * attribute-only branch, which keeps the recorded properties as they are, so
    * the leftover key stays. The redundant `update()` used to rewrite it away.
-   * That is harmless, because every reader narrows the record first (the
-   * diff's stored side, `currentPropsAsWritten`); a deploy without the flag
-   * narrows nothing on the desired side and is the healing path.
+   * The deploy's comparisons are not misled by it: the diff's stored side and
+   * `currentPropsAsWritten` narrow the record first. `cdkd drift` compares
+   * against the recorded properties only for a record with no observed
+   * baseline. A deploy without the flag narrows nothing on the desired side
+   * and is the healing path.
    */
   describe('the no-change re-check narrows its DESIRED side too (#2809)', () => {
     function recordState(
@@ -717,6 +719,13 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
         // The refresh keeps the narrowed record as written: it must not pick
         // up the template's `Region`, which the SDK route never sent.
         expect(saved.properties).toEqual(SUB_WRITTEN);
+        // `toEqual` ignores an own key whose value is `undefined`, so a
+        // `Region: undefined` regression would pass it; the own-key list does
+        // not. Not `toStrictEqual`: the persisted bag is a null-prototype
+        // copy, which that matcher rejects on the prototype alone.
+        expect(Reflect.ownKeys(saved.properties).map(String).sort()).toEqual(
+          Object.keys(SUB_WRITTEN).sort()
+        );
       });
     });
   });

@@ -5422,11 +5422,21 @@ export class DeployEngine {
         // `?.()` for the test doubles, as at the diff call: a double without
         // the method compares the full bag.
         //
-        // A `--recreate-via-*` target this skip absorbs is silently ignored,
-        // since the recreate flags are read below it (the issue #2651 class).
-        // Here that needs `--prefer-sdk-route` and a recreate flag on the same
-        // resource -- contradictory input -- plus a change the skip absorbs (a
-        // policy-only flip, or an intrinsic resolving to the stored value).
+        // The recreate flags are read below this skip (the issue #2651 class),
+        // but for a resource whose TYPE is unchanged a `--recreate-via-*`
+        // target this narrowing could absorb is not reachable from the CLI:
+        // `--recreate-via-cc-api` with `--prefer-sdk-route` on the same
+        // resource is `ambiguousIntent` whenever the template carries the
+        // allow-listed drop (a check made against the RECORDED type), and
+        // `--recreate-via-sdk-provider` is `blockedAlreadySdk` for every record
+        // not on 'cc-api', a superset of the records narrowed here (which also
+        // need an allow set and a removable drop). Both refuse at pre-flight
+        // with `RECREATE_TARGETS_INVALID` -- see
+        // `src/deployment/recreate-targets.ts`. A TYPE change does reach this
+        // arm (the diff emits it as an UPDATE carrying `Type`), and this skip,
+        // which compares properties only, swallows one whose bags compare
+        // equal: issue #3036 (the old resource's delete on a type change
+        // routing on the NEW type is the separate issue #2668).
         const desiredForSkipCheck = redactSecretsForState(
           markSameGenerationBag({ ...resolvedProps }),
           updateSecrets,
