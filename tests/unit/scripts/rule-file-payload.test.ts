@@ -268,7 +268,12 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['layout-deployment.md', 12],
   ['layout-drift.md', 5],
   ['layout-local.md', 45],
-  ['layout-misc.md', 30],
+  // layout-misc.md (floor 30, reach 41) split four ways: its six globs made every
+  // synthesis / state / assets / types edit load all four areas' notes.
+  ['layout-assets.md', 5], // measured 7
+  ['layout-build.md', 2], // literal list: EXACT, see below
+  ['layout-state-types.md', 12], // measured 15
+  ['layout-synthesis.md', 13], // measured 17
   ['layout-provisioning.md', 92],
   ['layout-scrub.md', 1], // literal list: EXACT, see below
   ['layout-scripts.md', 38],
@@ -359,8 +364,8 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // a sample. These rows put every rule file under at least one budget -- which
   // is asserted below rather than left as a claim -- and the number beside each
   // is its measured payload rounded out by roughly a tenth in each direction.
-  ['src/deployment/secret-redaction.ts', 70_000, 101_000],   // 101,842 when the row was written; the cap was re-derived to 101,000 by go-to-k/cdkd#2310 after the payload had shrunk below it
-  ['src/cli/commands/scrub.ts', 88_000, 118_000],            // measured 112,141 (see below)
+  ['src/deployment/secret-redaction.ts', 70_000, 102_000],   // measured 101,095; 101_000 -> 102_000 at the layout-misc split: +256 B on every `src/**/*.ts` path from code-layout.md's three new index rows. (101,842 when the row was written; 101_000 was go-to-k/cdkd#2310's re-derivation after the payload shrank below it)
+  ['src/cli/commands/scrub.ts', 88_000, 119_000],            // measured 118,249; 118_000 -> 119_000 at the layout-misc split: +256 B on every `src/**/*.ts` path from code-layout.md's three new index rows (see below)
   // 110,000 -> 118,000 (issue go-to-k/cdkd#2274). This path loads BOTH
   // `layout-deployment-secrets.md` and the new `layout-scrub.md` satellite, so the
   // split that satellite performed did not reduce THIS path -- it reduced every
@@ -399,7 +404,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // this PR removes.
   ['src/provisioning/providers/custom-resource-provider.ts', 225_000, 287_000],
   ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured 104,268
-  ['src/cli/commands/import.ts', 63_000, 80_000],            // measured  72,035
+  ['src/cli/commands/import.ts', 63_000, 81_000],            // measured 80,013; 80_000 -> 81_000 at the layout-misc split: +256 B on every `src/**/*.ts` path from code-layout.md's three new index rows
   ['src/utils/ip-protocol.ts', 83_000, 103_000],             // measured  95,005
   ['src/provisioning/cloud-control-provider.ts', 67_500, 105_000], // measured 94,925
   // The representative path for provisioning-sticky-routing.md, whose single
@@ -415,33 +420,38 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `layout-deployment-secrets.md` and the new `code-layout.md` index row moved
   // several of them, and a `measured` comment that no longer matches the tree
   // reads as evidence while being none.
-  // Ceiling 57_000 -> 58_000 by go-to-k/cdkd#2717. The growth is ONE TABLE ROW
-  // in `code-layout.md`, the family index, for the `layout-ci-checks.md`
-  // satellite. That is structural rather than incidental: the satellite
-  // convention requires every area to be reachable from the index, so this
-  // payload gains a row every time a rule file is split -- and a split is what
-  // this fence ASKS FOR when a per-file cap is hit. Left at 57_000 the two
-  // caps pull against each other: go-to-k/cdkd#2719 split `state-schema.md` to
-  // get UNDER this one and left 96 B of headroom, which a single index row then
-  // consumed. The FLOOR is what still catches a glob narrowing.
-  ['src/state/s3-state-backend.ts', 43_000, 58_000],         // measured  57,019 on 2026-09-07 (55,319 before go-to-k/cdkd#2719's satellite and go-to-k/cdkd#2717's index row)
+  // Ceiling was 57_000 -> 58_000 by go-to-k/cdkd#2717, calibrated against a
+  // 57,019 B payload with 96 B of headroom, where a single `code-layout.md`
+  // index row was enough to breach it. That reasoning stands and is why the
+  // cap is not merely tightened to the measurement: this payload gains an
+  // index row every time a rule file is SPLIT, and a split is what this fence
+  // asks for. What changed at the layout-misc split is the base -- the payload
+  // fell 13 KB, so 58_000 left 14,105 B of slack, room for two satellites the
+  // size of `layout-state-types.md` to land unseen. 48_000 keeps ~4 KB, which
+  // is ~16 index rows at the 256 B this branch's four rows cost, and still
+  // binds. The FLOOR is what catches a glob narrowing.
+  // RE-DERIVED at the layout-misc split: 57,323 -> 43,895. The old band was
+  // calibrated with the grab-bag's synthesis and assets notes counted in, so
+  // its floor was satisfied by 13 KB describing other layers.
+  ['src/state/s3-state-backend.ts', 38_000, 48_000],         // measured 43,895
   // The representative path for state-version-purge.md, whose two-file glob
   // (the purge and its replication-gap detector, issue
   // go-to-k/cdkd#2447) matches nothing else. Without this row the satellite
   // sits under no budget at all: the `src/state/s3-state-backend.ts` row above
   // does NOT match it, which is the whole reason it was split out.
-  ['src/state/s3-noncurrent-version-purge.ts', 53_000, 64_000], // measured 61,168
-  // Ceiling 57_000 -> 58_000 by go-to-k/cdkd#2717. The growth is ONE TABLE ROW
-  // in `code-layout.md`, the family index, for the `layout-ci-checks.md`
-  // satellite. That is structural rather than incidental: the satellite
-  // convention requires every area to be reachable from the index, so this
-  // payload gains a row every time a rule file is split -- and a split is what
-  // this fence ASKS FOR when a per-file cap is hit. Left at 57_000 the two
-  // caps pull against each other: go-to-k/cdkd#2719 split `state-schema.md` to
-  // get UNDER this one and left 96 B of headroom, which a single index row then
-  // consumed. The FLOOR is what still catches a glob narrowing.
-  ['src/types/state.ts', 43_000, 58_000],                    // measured  57,019 on 2026-09-07 (55,319 before go-to-k/cdkd#2719's satellite and go-to-k/cdkd#2717's index row)
-  ['src/synthesis/synthesizer.ts', 30_000, 40_000], // measured 39_197 on 2026-09-07 (803 B under the cap, not the 2,152 an earlier figure implied)
+  ['src/state/s3-noncurrent-version-purge.ts', 43_000, 56_000], // measured 49,744; RE-DERIVED at the layout-misc split (was 53_000/64_000 at 61,168; the old CAP left 14 KB of slack, enough for a whole satellite to land unseen)
+  // Ceiling was 57_000 -> 58_000 by go-to-k/cdkd#2717, calibrated against a
+  // 57,019 B payload with 96 B of headroom, where a single `code-layout.md`
+  // index row was enough to breach it. That reasoning stands and is why the
+  // cap is not merely tightened to the measurement: this payload gains an
+  // index row every time a rule file is SPLIT, and a split is what this fence
+  // asks for. What changed at the layout-misc split is the base -- the payload
+  // fell 13 KB, so 58_000 left 14,105 B of slack, room for two satellites the
+  // size of `layout-state-types.md` to land unseen. 48_000 keeps ~4 KB, which
+  // is ~16 index rows at the 256 B this branch's four rows cost, and still
+  // binds. The FLOOR is what catches a glob narrowing.
+  ['src/types/state.ts', 38_000, 48_000],                    // measured 43,895; RE-DERIVED at the layout-misc split, see the s3-state-backend row
+  ['src/synthesis/synthesizer.ts', 21_000, 28_000], // measured 24,121; RE-DERIVED at the layout-misc split (was 30_000/40_000; the 39,197 beside it was stale, the real figure 39,346)
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
   // failed this row for a reason unrelated to itself -- the same argument that
@@ -619,7 +629,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // is 52,459 B lighter.
   ['src/provisioning/masked-retry-logger.ts', 94_500, 148_000], // measured 126,979
   ['src/analyzer/drift-protocol-normalize.ts', 71_000, 85_000],  // measured  81,242
-  ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  40,238 (was 37,183 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
+  ['src/assets/asset-publisher.ts', 24_000, 32_000],             // measured 28,142; RE-DERIVED at the layout-misc split (was 32_000/42_000 at 40,238, a floor 13 KB of which described synthesis / state / types)
   // Ceiling 48_000 -> 49_000 by go-to-k/cdkd#2717. The growth is in
   // `code-layout.md`, the family INDEX, which gained one table row because the
   // repo gained an area (the CI checks that replaced retired PreToolUse gates,
@@ -627,13 +637,16 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // what the satellite convention rests on, so this path's payload grows by a
   // row every time a satellite is added -- the ceiling tracks that, and the
   // FLOOR is what still catches a glob narrowing.
-  ['src/assets/asset-storage.ts', 34_000, 49_000],               // measured  48,113 on 2026-09-07 (asset-bucket-region.md, issue #2240; was 43,787 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md, and 46,764 before go-to-k/cdkd#2717's index row)
+  ['src/assets/asset-storage.ts', 30_000, 39_000],               // measured 34,668 (asset-bucket-region.md, issue #2240); RE-DERIVED at the layout-misc split
   // proxy-support.md's glob names three literal files (issue #2388); without a
   // row here the satellite would sit under no budget, which is the state the
   // 2026-08-25 review probe showed a rule file can reach unnoticed.
   ['src/utils/aws-client-defaults.ts', 46_000, 58_000],  // measured  52,845
   ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
-  ['vite.config.ts', 14_000, 21_000],                            // measured  19,581 (was 16,712 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
+  // The row the split changes most, and the clearest illustration of what the
+  // grab-bag was doing: editing `vite.config.ts` used to load 19,581 B of rule
+  // text, all but its own 84 B bullet describing src layers it is not part of.
+  ['vite.config.ts', 2_500, 3_300],                              // measured 2,864
   // The representative path for `test-stream-fence.md`: the only paths its
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
@@ -1177,7 +1190,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 50; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#2717, its gate retired). + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
+const CORPUS_FILE_COUNT = 53; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#2717, its gate retired). + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
                               //  auto-close-form entry, plus the review round that followed
                               //  it, took layout-ci-checks.md to 20,839 B against the 20,000 B
                               //  ceiling its `pr-title-check.yml` path band asserts. (The entry
@@ -1186,6 +1199,10 @@ const CORPUS_FILE_COUNT = 50; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#271
                               //  they share one job and one subject (a pull request's diff or
                               //  body); the parent keeps the PR-TITLE check and the ISSUE checks,
                               //  which have different subjects and different workflows.
+                              //  + layout-synthesis.md / layout-assets.md /
+                              //  layout-state-types.md / layout-build.md, -1 layout-misc.md: the
+                              //  grab-bag split four ways so an edit loads its own layer only.
+                              //  Net +3. That makes 53.
                               //
                               //  + hooks-deferral-criteria.md (go-to-k/cdkd#2707): hooks.md
                               //  crossed the per-file cap AGAIN, and the tell was a CI-only
@@ -1333,7 +1350,9 @@ const CORPUS_FILE_COUNT = 50; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#271
                               //  rows and `vite.config.ts` over with it. Moved out under a
                               //  two-path glob (the purge and its detector) so that only a session
                               //  touching those two files pays for it -- the #2236 / #2240 / #2363
-                              //  shape again -- leaving a one-line pointer in layout-misc.md.
+                              //  shape again -- leaving a one-line pointer in layout-misc.md
+                              //  (split up in a later branch; that pointer now lives in
+                              //  layout-state-types.md).
                               //  That file GREW, 19,290 -> 19,581 B: neither module had an entry
                               //  before, so the split is against an intermediate draft rather
                               //  than against main, and a pointer always costs the index file
@@ -2093,7 +2112,7 @@ describe('.claude/rules payload fence', () => {
     // restored through the very helper that closed it, with nothing observing
     // the collapse. The failure modes are NOT symmetric: always-TRUE only
     // enlarges the denominator (safe), always-FALSE empties it.
-    const addedFileTolerance = 3;
+    const addedFileTolerance = 4; // the layout-misc split adds four satellites in one branch. It does NOT ratchet back down on its own -- lower it to 3 in a later branch.
     // Bounded so widening it is a visible decision rather than a quiet one: at
     // 51 it disarms both this arm and (c), which review demonstrated.
     expect(
@@ -2872,7 +2891,7 @@ describe('.claude/rules payload fence', () => {
     // Reachability asks a different question from the index-SHAPE case below,
     // so it reads every rule file rather than the three indexes: `assets.md`
     // points at `asset-bucket-region.md`, `testing.md` at
-    // `test-stream-fence.md`, `layout-misc.md` at `state-version-purge.md`.
+    // `test-stream-fence.md`, `layout-state-types.md` at `state-version-purge.md`.
     // Those are real pointers and a human following them finds the file.
     //
     // It is a WALK from the roots, not an inbound-link count. "Something links
