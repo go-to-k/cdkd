@@ -2711,23 +2711,19 @@ describe('the finished-campaign sentinel', () => {
     // rows-or-nothing guard kill the step under `set -e` with no annotation,
     // and the umbrella kept its last stale rows permanently.
     expect(UMBRELLA_EMPTY_SENTINEL).toMatch(/^_No remaining silent-drop properties/);
-    // The SECOND renderer of this sentence is the per-type index
-    // (go-to-k/cdkd#2949), and it must not re-type it: two literals of one
-    // string is how a reader comes to see two different descriptions of a
-    // finished campaign depending on which artifact they opened. Pinned as an
-    // IMPORT rather than as a matching literal, because a matching literal is
-    // exactly the state this forbids.
+    // ONE renderer emits this sentence again. go-to-k/cdkd#2949 briefly gave it
+    // a second — the parent's per-type index — and go-to-k/cdkd#2998 deleted
+    // that along with the whole parent-body splice, so the reconciler must not
+    // carry a copy of the text OR an unused import of it.
     const reconciler = readFileSync(join(REPO_ROOT, 'scripts/sync-backfill-subissues.ts'), 'utf8');
-    expect(reconciler, 'the index no longer emits the sentinel').toContain(
-      'return UMBRELLA_EMPTY_SENTINEL'
-    );
-    expect(reconciler, 'the sentinel is imported, not re-typed').toContain(
-      'UMBRELLA_EMPTY_SENTINEL,'
-    );
     expect(
       reconciler.includes(UMBRELLA_EMPTY_SENTINEL),
-      'the sentinel text was copied into the reconciler instead of imported'
+      'the sentinel text was copied into the reconciler'
     ).toBe(false);
+    expect(
+      reconciler,
+      'the reconciler imports the sentinel again — it renders no campaign-level text'
+    ).not.toContain('UMBRELLA_EMPTY_SENTINEL');
   });
 
   it('renders rows on the real map, so the sentinel arm is not the live one', () => {

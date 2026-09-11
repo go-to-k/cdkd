@@ -72,8 +72,8 @@ Nothing that encodes a judgement is touched: no `unhandledByDesign`, no
 `bogusTolerated`, no `NESTED_KEY_ALLOW_LIST`, no provider code.
 
 The **standing backfill issues are not written by this job**. A separate
-workflow, `backfill-umbrella-sync.yml`, reconciles them — the parent's per-type
-index and one sub-issue per resource type — whenever
+workflow, `backfill-umbrella-sync.yml`, reconciles them — one sub-issue per
+resource type — whenever
 `src/provisioning/property-coverage.generated.ts` changes on `main`: a refresh
 merge, a hand-written backfill, a revert. Driving it from `main` is what keeps
 them describing something that actually exists: written during the refresh
@@ -391,9 +391,9 @@ What it reconciles, since go-to-k/cdkd#2949, is a SET of issues rather than one
 block:
 
 - the **parent** — the single open issue carrying the `backfill-umbrella` label.
-  Only the block between its `BEGIN generated` / `END generated` markers is
-  rewritten, and it now holds a per-type index rather than a flat property list.
-  The human-written provenance outside the markers is never touched.
+  It is READ, for its number, and never written. GitHub renders the sub-issue
+  list and its completion count natively, so the job publishes no second copy in
+  the body; everything on that page is human-written.
 - one **sub-issue per resource type**, labelled `backfill-type`. Every line of
   those bodies is generated: hand edits are overwritten on the next sync, and
   COMMENTS are never touched, so anything a person wants to keep goes in a

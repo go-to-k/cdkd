@@ -69,16 +69,13 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// The finished-campaign sentence, IMPORTED rather than re-typed. It is the one
-// string two different renderers both emit — the flat checklist and this index —
-// and a second literal is how the two come to disagree about what "finished"
-// looks like to a reader. The module it comes from loads its heavy helpers on
-// demand (go-to-k/cdkd#2858), so this import reaches only `node:` builtins and
-// the no-`node_modules` guarantee this script needs survives it.
+// The marker halves the renderer writes, imported rather than re-typed. The
+// module they come from loads its heavy helpers on demand (go-to-k/cdkd#2858),
+// so this import reaches only `node:` builtins and the no-`node_modules`
+// guarantee this script needs survives it.
 import {
   SUBISSUE_TYPE_MARKER_PREFIX,
   SUBISSUE_TYPE_MARKER_SUFFIX,
-  UMBRELLA_EMPTY_SENTINEL,
 } from './diagnose-schema-refresh.mjs';
 
 /**
@@ -173,8 +170,7 @@ export type Action =
  *     wrong for that reason.
  *
  * So delete none of the three on the theory that another covers it. Same
- * reasoning as the parent splice's `grep -Fx` and the dup-check marker's line
- * anchor.
+ * reasoning as the dup-check marker's line anchor.
  *
  * `\r` is stripped first. A body edited in the GitHub WEB UI is stored with
  * CRLF, so the marker line ends `-->\r` and a suffix test against `' -->'`
@@ -470,34 +466,6 @@ export function fetchLinked(run: Runner, repo: string, parent: number): Set<numb
   );
 }
 
-/**
- * The parent's generated INDEX — one row per type, not one per property.
- *
- * This is what replaces the 288-row flat checklist inside the parent's markers.
- * It is rendered HERE rather than by `--umbrella-subissues` because it needs the
- * issue numbers, which exist only after the reconciliation has run.
- *
- * The rows keep the `- [ ] ` shape, and the workflow greps the written file for
- * it before splicing — rows, or {@link UMBRELLA_EMPTY_SENTINEL}, and nothing
- * else. That is the OUTPUT-side twin of the `jq` shape fence on the plan: one
- * attests to what the reconciler read, this one to what it is about to publish.
- * The box is also honest at this level in a way it is not inside a sub-issue: a
- * type is either done (its row is gone) or not.
- */
-export function renderIndex(plan: Plan, numbers: Map<string, number>): string {
-  if (plan.types.length === 0) return UMBRELLA_EMPTY_SENTINEL;
-  const total = plan.types.reduce((sum, t) => sum + t.count, 0);
-  return [
-    `${total} properties across ${plan.types.length} resource types, one sub-issue each:`,
-    '',
-    ...plan.types.map((t) => {
-      const number = numbers.get(t.type);
-      const link = number === undefined ? '(no issue)' : `#${number}`;
-      return `- [ ] ${link} — \`${t.type}\` (${t.count} remaining)`;
-    }),
-  ].join('\n');
-}
-
 function isMain(): boolean {
   const entry = process.argv[1];
   if (!entry) return false;
@@ -531,11 +499,10 @@ function main(): void {
   const dryRun = args.includes('--dry-run');
   const repo = process.env['REPO'];
   const parent = Number(process.env['PARENT']);
-  const indexOut = process.env['INDEX_OUT'];
 
   if (!planPath || !repo || !Number.isInteger(parent) || parent <= 0) {
     console.error(
-      'usage: REPO=<owner/repo> PARENT=<n> [INDEX_OUT=<file>] ' +
+      'usage: REPO=<owner/repo> PARENT=<n> ' +
         'sync-backfill-subissues.ts <plan.json> [--dry-run] [--allow-empty-plan]'
     );
     process.exitCode = 2;
@@ -580,7 +547,6 @@ function main(): void {
       console.log(`link ${entry.type} (#${number})`);
     }
 
-    if (indexOut) writeFileSync(indexOut, renderIndex(plan, numbers) + '\n');
     console.log(`sync-backfill-subissues: ${actions.length} action(s) applied.`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

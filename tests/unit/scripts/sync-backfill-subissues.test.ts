@@ -33,7 +33,6 @@ import {
   linkSubIssue,
   planReconciliation,
   readMarkerType,
-  renderIndex,
   type Action,
   type ExistingIssue,
   type Plan,
@@ -530,42 +529,6 @@ describe('the gh calls', () => {
   });
 });
 
-describe('renderIndex', () => {
-  it('renders one row per TYPE, not one per property', () => {
-    // The whole point of the restructure: the parent carried 288 property rows
-    // and now carries 44 type rows, each linking to where the properties live.
-    const index = renderIndex(
-      planOf(entry('AWS::S3::Bucket', ['A', 'B']), entry('AWS::SNS::Topic', ['C'])),
-      new Map([
-        ['AWS::S3::Bucket', 900],
-        ['AWS::SNS::Topic', 901],
-      ])
-    );
-    expect(index).toContain('- [ ] #900 — `AWS::S3::Bucket` (2 remaining)');
-    expect(index).toContain('- [ ] #901 — `AWS::SNS::Topic` (1 remaining)');
-    expect(index).toContain('3 properties across 2 resource types');
-    expect(index.split('\n').filter((l) => l.startsWith('- [ ]'))).toHaveLength(2);
-  });
-
-  it('keeps the `- [ ] ` shape the workflow\'s render fence greps for', () => {
-    // The splice step accepts rows or the sentinel and nothing else. A row shape
-    // that stopped matching would kill the step under `set -e` with no
-    // annotation — the failure that once left the umbrella's stale rows
-    // standing permanently.
-    const workflow = readFileSync(
-      join(REPO_ROOT, '.github/workflows/backfill-umbrella-sync.yml'),
-      'utf8'
-    );
-    expect(workflow).toContain('/tmp/index.md');
-    const index = renderIndex(planOf(entry('AWS::S3::Bucket', ['A'])), new Map());
-    expect(index).toMatch(/^- \[ \] /m);
-  });
-
-  it('says so when the campaign is finished, in the SAME words the checklist uses', () => {
-    expect(renderIndex(planOf(), new Map())).toBe(UMBRELLA_EMPTY_SENTINEL);
-  });
-});
-
 describe('the rendered sub-issue body', () => {
   it('carries the marker the reconciler keys on', () => {
     const body = renderSubIssueBody({ type: 'AWS::S3::Bucket', properties: ['A'] });
@@ -587,6 +550,38 @@ describe('the rendered sub-issue body', () => {
     expect(body).toMatch(/^Severity: low /m);
     expect(body).toMatch(/^Effort: (small \(S\)|medium \(M\)|large \(L\)) /m);
     expect(body).toMatch(/^Estimate: /m);
+  });
+
+  it('describes the ROUTING the registry actually performs, not a silent drop', () => {
+    // The body shipped to 44 public issues saying these properties were "still
+    // dropped silently by its SDK provider", and contradicted itself two
+    // screens down where its own `Severity` line described a Cloud Control
+    // route. `ProviderRegistry.getProviderFor` auto-routes the whole resource
+    // through Cloud Control, which forwards the full property map — the value
+    // reaches AWS and works. The campaign is a fast-path restoration, not a
+    // data-loss fix, and a body claiming otherwise misstates the severity of
+    // every type in it.
+    const body = renderSubIssueBody({ type: 'AWS::S3::Bucket', properties: ['A'] });
+    expect(body, 'the body claims a silent drop again').not.toMatch(/dropped silently|silently dropped/);
+    expect(body).toContain('auto-routes the whole resource through Cloud Control');
+
+    // Pinned against the REGISTRY rather than asserted as prose. This is a
+    // claim about another module's mechanism, which is exactly the shape that
+    // goes stale unfenced — and did.
+    const registry = readFileSync(
+      join(REPO_ROOT, 'src/provisioning/provider-registry.ts'),
+      'utf8'
+    );
+    expect(
+      registry,
+      'the registry no longer auto-routes on a silent drop — the generated bodies now misdescribe it'
+    ).toMatch(/auto-route through Cloud Control[\s\S]{0,200}closing the silent-drop bug/);
+    expect(registry).toContain("provisionedBy: 'cc-api'");
+    // The two edges the body names, each read off the same file.
+    expect(registry, 'the no-fallback refusal is gone').toContain('disableCcApiFallback');
+    expect(registry, 'the override no longer opts INTO the drop').toContain(
+      'allowedUnsupportedProperties'
+    );
   });
 
   it('renders every checkbox UNCHECKED, because a tick would be overwritten', () => {
@@ -812,7 +807,7 @@ describe('cross-file fences', () => {
  *
  * Everything above drives exported functions; `main()` and `isMain()` were
  * reached by nothing, and the live workflow case stubs `node` away entirely —
- * so the argv parsing, the `REPO` / `PARENT` / `INDEX_OUT` contract, the
+ * so the argv parsing, the `REPO` / `PARENT` contract, the
  * usage exit, the not-a-plan refusal, the exit-1-vs-2 split the file's header
  * argues at length, and both operator recovery flags the runbook documents
  * (`--dry-run`, `--allow-empty-plan`) were untested. That is the half that
@@ -953,59 +948,25 @@ esac
     }
   }, 60_000);
 
-  it('writes the per-type INDEX on a real run, and not on a dry one', () => {
-    // BOTH halves, and the succeeded-check on each, because an absence
-    // assertion alone is satisfied by every early refusal there is — a bad env,
-    // a parse refusal, the stub `gh` failing. That is the defect the dry-run
-    // case above avoids by asserting what `gh` was ASKED for, and this case
-    // originally reproduced by discarding the spawn result entirely.
-    //
-    // The real-run half is also the only end-to-end exercise of `renderIndex`
-    // and the `numbers` map feeding it; everything else drives that function
-    // directly.
+  it('a dry run writes no file and reaches no write verb, even when asked to', () => {
+    // The INDEX_OUT contract went away with the parent-body splice
+    // (go-to-k/cdkd#2998), so what survives here is the half that was always
+    // load-bearing: a dry run must produce NO side effect. Asserted by what the
+    // stub `gh` was asked for and by the run succeeding — an absence check
+    // alone is satisfied by every early refusal there is.
     const box = sandbox([]);
     try {
       const plan = planFile(box.dir, { types: [entry('AWS::S3::Bucket', ['A', 'B'])] });
-      const env = { REPO: 'go-to-k/cdkd', PARENT: '2762' };
-
-      const dryOut = join(box.dir, 'dry-index.md');
-      const dry = spawnCli(box, [plan, '--dry-run'], { ...env, INDEX_OUT: dryOut });
-      expect(dry.status, `the dry run did not succeed: ${dry.stderr}`).toBe(0);
-      expect(existsSync(dryOut), 'a dry run wrote the index file').toBe(false);
-
-      // A real run, with the stub answering the create and the link calls.
-      const realOut = join(box.dir, 'index.md');
-      writeFileSync(
-        join(box.bin, 'gh'),
-        `#!/bin/bash
-echo "gh $*" >> "$GH_LOG"
-case "$1 $2" in
-  "issue list") cat "$GH_LISTING" ;;
-  "issue create") echo "https://github.com/go-to-k/cdkd/issues/900" ;;
-  "api --paginate") ;;
-  "api --method") ;;
-  "api repos/go-to-k/cdkd/issues/900") echo "123456" ;;
-  *) echo "stub gh: unmodelled subcommand: $*" >&2; exit 1 ;;
-esac
-`,
-        { mode: 0o755 }
-      );
-      const real = spawnCli(box, [plan], { ...env, INDEX_OUT: realOut });
-      expect(real.status, `the real run did not succeed: ${real.stderr}`).toBe(0);
-      expect(existsSync(realOut), 'a real run did not write the index file').toBe(true);
-      // The per-type index, carrying the number the create returned — not the
-      // flat property checklist the parent used to hold.
-      const index = readFileSync(realOut, 'utf8');
-      expect(index).toContain('- [ ] #900 — `AWS::S3::Bucket` (2 remaining)');
-      // The negative names the shape the parent ACTUALLY used to hold — the
-      // flat checklist `renderUmbrellaChecklist` emits, `- [ ] \`Type\`: \`Prop\``.
-      // A first version spelled it `- [ ] \`A\``, which that renderer never
-      // produces, so the assertion could not have fired for the regression it
-      // named: a negative needs an input where the wrong value would actually
-      // be EMITTED (.claude/rules/testing.md).
-      expect(index, 'the index regressed to the flat per-property checklist').not.toContain(
-        '`AWS::S3::Bucket`: `A`'
-      );
+      const stray = join(box.dir, 'index.md');
+      const res = spawnCli(box, [plan, '--dry-run'], {
+        REPO: 'go-to-k/cdkd',
+        PARENT: '2762',
+        // Passed deliberately: a reintroduced index write would find it.
+        INDEX_OUT: stray,
+      });
+      expect(res.status, `the dry run did not succeed: ${res.stderr}`).toBe(0);
+      expect(res.stdout).toContain('create AWS::S3::Bucket');
+      expect(existsSync(stray), 'INDEX_OUT is honoured again — the index write is back').toBe(false);
     } finally {
       rmSync(box.dir, { recursive: true, force: true });
     }
