@@ -906,7 +906,7 @@ export class ProviderRegistry {
               // that has to be right about four conditions is a sentence that
               // will be wrong about one; the deploy-safety docs carry it with
               // its conditions.
-              `Returning it to the SDK provider is a destroy-and-recreate, not a ` +
+              `Returning this resource to the SDK provider is a destroy-and-recreate, not a ` +
                 `flag change — see docs/cli-deploy-safety.md. Widening ` +
                 `--prefer-sdk-route alone cannot do it.`,
             ]
