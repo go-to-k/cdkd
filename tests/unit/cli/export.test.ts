@@ -2321,6 +2321,63 @@ describe('reportDriftBaselineGaps', () => {
     expect(calls).toMatch(/1 of 2 resource\(s\)/);
     expect(calls).toMatch(/R2/);
   });
+
+  it('reports a REFUSED baseline APART from a refreshable one (issue #2944)', () => {
+    // Both halves lack `observedProperties`, but only ONE of them can be fixed
+    // by the command this report tells the user to run. Since schema v10 a
+    // `cdkd import` run can REFUSE a baseline, and `cdkd state refresh-observed`
+    // now declines a refused resource — so tallying the two together sends the
+    // user to a command that will do nothing for half the list and gives them
+    // no way to tell which half.
+    //
+    // The assertions are per-SEGMENT rather than over the joined text, because
+    // the joined form passes when both names land in ONE message — which is the
+    // defect. `1 of 3` twice over is the discriminator: a single combined warn
+    // would say `2 of 3`.
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 10,
+        stackName: 'S',
+        region: 'r',
+        resources: {
+          Baselined: {
+            physicalId: 'p1',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            observedProperties: {},
+          },
+          Refreshable: { physicalId: 'p2', resourceType: 'AWS::SQS::Queue', properties: {} },
+          Refused: {
+            physicalId: 'p3',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: {},
+            observedBaselineRefused: true,
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+
+    const messages = logger.warn.mock.calls.map((c) => String(c[0]));
+    const refreshAdvice = messages.find((m) => m.includes('refresh-observed'));
+    const refusalAdvice = messages.find((m) => m.includes('REFUSED'));
+    expect(refreshAdvice).toBeDefined();
+    expect(refusalAdvice).toBeDefined();
+
+    // The refresh advice counts and names ONLY the refreshable one.
+    expect(refreshAdvice).toMatch(/1 of 3 resource\(s\)/);
+    expect(messages.some((m) => m.trim() === 'Refreshable')).toBe(true);
+
+    // The refusal segment counts and names ONLY the refused one, and says the
+    // refresh command will decline it — the sentence that stops the user
+    // running it and concluding cdkd is broken.
+    expect(refusalAdvice).toMatch(/1 of 3 resource\(s\)/);
+    expect(refusalAdvice).toMatch(/will decline them/);
+    expect(messages.some((m) => m.trim() === 'Refused')).toBe(true);
+  });
 });
 
 // -----------------------------------------------------------------------------

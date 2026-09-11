@@ -453,6 +453,13 @@ Index of every area: [code-layout.md](code-layout.md).
     `properties` — and `import`'s capture moved onto it in #2885.
     `refuseUncertifiedSubtree`'s doc comment is the authority for
     what it masks, spares and costs; do not restate it here.
+    **`scrubResourceRecord` DERIVES it on TWO conditions** (#2906): empty
+    secrets map AND an observed bag carrying `markSameGenerationBag`'s mark.
+    An empty map alone also describes a FAILURE-PATH `redactStateForPersist`
+    save over a PRIOR generation's `observedProperties` re-written unchanged,
+    where a mask destroys an intact baseline and protects no reader already
+    exposed — #2886's argument for the journal's `previousState`. A caller
+    passing the constant EXPLICITLY is unaffected.
   - A MIXED leaf embedding a plain `{{resolve:ssm:` token splits on whether a
     SECRETS MAP exists (forced by the `secrets-dynamic-ref` integ after every
     unit assertion passed without it): with a map, absence from the verdict

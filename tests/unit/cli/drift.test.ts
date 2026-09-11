@@ -184,8 +184,28 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
     ...(overrides.observedProperties && { observedProperties: overrides.observedProperties }),
     ...(overrides.attributes && { attributes: overrides.attributes }),
     ...(overrides.dependencies && { dependencies: overrides.dependencies }),
+    // Schema v10 (issue #2944). Conditional like its siblings: production tests
+    // `=== true`, and an unmarked record must carry no such key at all.
+    ...(overrides.observedBaselineRefused && {
+      observedBaselineRefused: overrides.observedBaselineRefused,
+    }),
   };
 }
+
+/**
+ * Issue [#2944](https://github.com/go-to-k/cdkd/issues/2944), shared by the
+ * `--accept` and `--revert` cases below.
+ *
+ * `THE-REAL-DECRYPTED-SECRET` is what AWS holds; `dev-placeholder` is what the
+ * record holds after a `cdkd import` run refused to vouch for its `properties`
+ * — the WRONG-BRANCH LITERAL of a downgraded `Fn::If`. Neither side carries a
+ * `{{resolve:...}}` token or a mask, which is the point: the pair is
+ * indistinguishable from an ordinary drifted literal, so no redaction, mask or
+ * intrinsic-object guard in this file fires on it. The persisted marker is the
+ * only evidence either command has.
+ */
+const REFUSED_PLAINTEXT = 'THE-REAL-DECRYPTED-SECRET';
+const WRONG_BRANCH_LITERAL = 'dev-placeholder';
 
 function makeState(
   resources: Record<string, ResourceState>
@@ -1510,6 +1530,130 @@ describe('cdkd drift', () => {
         },
       });
     });
+
+    it('leaves an import-REFUSED record ENTIRELY untouched, while accepting its sibling (issue #2944)', async () => {
+      // A marked record has NO `observedProperties`, so `--accept` takes the
+      // `properties` branch and writes the AWS readback straight into
+      // `properties` — the bag `--revert` later pushes BACK to AWS, which makes
+      // this the worst of the four refused-baseline writers rather than the
+      // mildest. It positions that write against `existing.properties`, which
+      // after an import refusal hold the wrong-branch literal; a literal source
+      // leaf against a string readback pairs as ordinary drift, so nothing
+      // refuses and the decrypted value lands in `state.json`.
+      //
+      // THE SIBLING IS MANDATORY. Every assertion below is an absence, and
+      // absence is satisfied by a run that accepted nothing at all — a clean
+      // stack, an aborted command, a lock refusal. `Sibling` drifts and IS
+      // accepted in the same save, so the run demonstrably reached the loop.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      const refusedProperties = { QueueName: 'q', Password: WRONG_BRANCH_LITERAL };
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Refused: makeResource({
+            physicalId: 'refused',
+            resourceType: 'AWS::SQS::Queue',
+            properties: refusedProperties,
+            observedBaselineRefused: true,
+          }),
+          Sibling: makeResource({
+            physicalId: 'sibling',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockImplementation((resourceType: string) =>
+        resourceType === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => ({ QueueName: 'q', Password: REFUSED_PLAINTEXT }) }
+          : {
+              readCurrentState: async () => ({
+                VersioningConfiguration: { Status: 'Suspended' },
+              }),
+            }
+      );
+
+      const { error } = await runDrift(['TestStack', '--accept', '--yes']);
+      expect(error).toBeUndefined();
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , savedState] = mockSaveState.mock.calls[0]!;
+      // BYTE-IDENTICAL to what the record held: not partially accepted, not
+      // re-redacted, not reshaped.
+      expect(savedState.resources['Refused']!.properties).toEqual(refusedProperties);
+      // No baseline was invented for it either — the other arm of the same `if`.
+      expect(savedState.resources['Refused']!.observedProperties).toBeUndefined();
+      // The marker STANDS: `--accept` holds no template, so it cannot discharge
+      // the refusal, only honour it.
+      expect(savedState.resources['Refused']!.observedBaselineRefused).toBe(true);
+      // THE CONTROL: the sibling's drift really was accepted in this same save.
+      expect(savedState.resources['Sibling']!.properties).toEqual({
+        VersioningConfiguration: { Status: 'Suspended' },
+      });
+      // The readback value reached the persisted blob by NO route — not
+      // `properties`, not a baseline, not an attribute bag.
+      expect(JSON.stringify(savedState)).not.toContain(REFUSED_PLAINTEXT);
+      // ...and the user was told, by name, which resource was declined.
+      const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnings).toContain('TestStack/Refused (AWS::SQS::Queue)');
+      expect(warnings).toContain('NOT accepted');
+    });
+
+    it('--accept --dry-run PLANS the refusal instead of promising the write', async () => {
+      // A `--dry-run` that promises a write the real run refuses is worse than
+      // either behaviour alone — the property issue #1914 established for the
+      // per-PATH refusals, applied to the per-RESOURCE one (issue #2944). The
+      // plan loop is SEPARATE code from `runAccept`, so it can silently
+      // disagree with it; before this it printed `old -> new` rows for a
+      // resource the run then declined.
+      //
+      // The sibling is the control: its paths must still be planned, or
+      // "no `old -> new` row for Refused" is satisfied by a plan that printed
+      // nothing at all.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Refused: makeResource({
+            physicalId: 'refused',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'q', Password: WRONG_BRANCH_LITERAL },
+            observedBaselineRefused: true,
+          }),
+          Sibling: makeResource({
+            physicalId: 'sibling',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockImplementation((resourceType: string) =>
+        resourceType === 'AWS::SQS::Queue'
+          ? { readCurrentState: async () => ({ QueueName: 'q', Password: REFUSED_PLAINTEXT }) }
+          : {
+              readCurrentState: async () => ({
+                VersioningConfiguration: { Status: 'Suspended' },
+              }),
+            }
+      );
+
+      const { output } = await runDrift(['TestStack', '--accept', '--dry-run', '--yes']);
+
+      // Scoped to the PLAN block. The DETECTION report above it still prints
+      // the readback for a refused resource — that is issue #2952, a read-side
+      // residual this change deliberately does not close, and asserting over
+      // the whole output would make this case fail for that reason instead of
+      // for the one it is about.
+      const plan = output.slice(output.indexOf('Plan (--accept):'));
+      expect(plan).not.toBe('');
+
+      expect(plan).toContain('SKIPPED');
+      expect(plan).toContain('Refused');
+      // THE CONTROL: the sibling's change really was planned in the same run,
+      // so "no row for Refused" is not satisfied by a plan that printed nothing.
+      expect(plan).toContain('Suspended');
+      // The plan never offers the refused resource's readback as an accepted
+      // value — the promise the run would then decline.
+      expect(plan).not.toContain(REFUSED_PLAINTEXT);
+    });
   });
 
   describe('--revert (AWS ← state)', () => {
@@ -1801,6 +1945,79 @@ describe('cdkd drift', () => {
 
       // Both updates were attempted; the second succeeded.
       expect(updateMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('never reaches provider.update for an import-REFUSED record, counting it unresolvable (issue #2944)', async () => {
+      // The only one of the four refused-baseline writers that writes to LIVE
+      // AWS. A marked record has no `observedProperties`, so `revertBaseline`
+      // falls to `properties` — where the import refusal left a wrong-branch
+      // literal — and the revert would push that placeholder OVER the secret
+      // the deployed branch actually resolved. Issue #2855's guard cannot see
+      // it: that one refuses an unresolved intrinsic OBJECT, and this is an
+      // ordinary STRING.
+      //
+      // THE SIBLING IS MANDATORY for the negative on the call list: "update was
+      // not called for Refused" is satisfied by a run in which update was
+      // called for nothing at all. `Sibling` drifts and IS reverted.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Refused: makeResource({
+            physicalId: 'refused',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'q', Password: WRONG_BRANCH_LITERAL },
+            observedBaselineRefused: true,
+          }),
+          Sibling: makeResource({
+            physicalId: 'sibling',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      const updateMock = vi.fn(async (logicalId: string, physicalId: string) => ({
+        physicalId,
+        wasReplaced: false,
+      }));
+      mockRegistryGetProvider.mockImplementation((resourceType: string) =>
+        resourceType === 'AWS::SQS::Queue'
+          ? {
+              readCurrentState: async () => ({ QueueName: 'q', Password: REFUSED_PLAINTEXT }),
+              update: updateMock,
+            }
+          : {
+              readCurrentState: async () => ({
+                VersioningConfiguration: { Status: 'Suspended' },
+              }),
+              update: updateMock,
+            }
+      );
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      // A refusal is a partial outcome, so the command exits 2 the same way a
+      // per-resource failure does — the DISTINCTION is in the counts below.
+      expect((error as Error).message).toBe('__exit__');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+
+      // The whole claim, read off the call list rather than off a count: the
+      // sibling reached AWS and the refused record did not.
+      expect(updateMock.mock.calls.map((c) => c[0])).toEqual(['Sibling']);
+
+      // UNRESOLVABLE, not FAILED. The two are separate tallies because a failed
+      // resource was attempted at AWS and a refused one never left cdkd — a
+      // user sent to look at an update that never happened looks in the wrong
+      // place. Both numbers are asserted: counting it as a failure would print
+      // `1 AWS update failure(s), ... 0 refused or unresolvable` and still exit
+      // 2, so the exit code alone cannot tell the two apart.
+      const errors = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(errors).toContain('0 AWS update failure(s)');
+      expect(errors).toContain('1 refused or unresolvable');
+
+      // ...and the user was told, by name, which resource was declined and why.
+      const warnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnings).toContain('TestStack/Refused (AWS::SQS::Queue)');
+      expect(warnings).toContain('NOT reverted');
     });
 
     /**

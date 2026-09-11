@@ -97,6 +97,13 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
     properties: overrides.properties ?? {},
     ...(overrides.attributes && { attributes: overrides.attributes }),
     ...(overrides.dependencies && { dependencies: overrides.dependencies }),
+    // Schema v10 (issue #2944). Spread CONDITIONALLY like its neighbours: the
+    // renderer tests presence, so an unconditional `observedBaselineRefused:
+    // undefined` would put the key on every record and make the "unmarked
+    // renders nothing" half of that case unfalsifiable.
+    ...(overrides.observedBaselineRefused && {
+      observedBaselineRefused: overrides.observedBaselineRefused,
+    }),
   };
 }
 
@@ -696,6 +703,75 @@ describe('cdkd state show', () => {
 
       const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
       expect(message).toMatch(/missing nested-child 'Parent~GhostChild'/);
+    });
+  });
+
+  // --- issue #2944: the refused-baseline row -------------------------------
+
+  describe('ObservedBaseline row (schema v10, issue #2944)', () => {
+    it('renders REFUSED for a marked resource and NOTHING for an unmarked one', () => {
+      // This row is the affordance a user reaches for when `cdkd state
+      // refresh-observed` starts declining a resource: the command tells them a
+      // refusal happened, and this is where they find out WHICH resource and
+      // that a plain re-run will not clear it. `--json` carries the field for
+      // free, so without this case the human row could be deleted and nothing
+      // would red.
+      //
+      // Both polarities in one case, because the row is conditional: it is
+      // printed ONLY when set, unlike the `ProvisionedBy` row above, whose
+      // absence is itself a fact worth naming. A `(not refused)` row on every
+      // resource of every stack would bury the one that matters — so the
+      // unmarked half is the half that pins that decision.
+      mockListStacks.mockResolvedValue(defaultListResponse('MyStack'));
+      mockGetState.mockResolvedValue(
+        makeState({
+          stackName: 'MyStack',
+          resources: {
+            Refused: makeResource({
+              resourceType: 'AWS::SSM::Parameter',
+              physicalId: 'refused-param',
+              observedBaselineRefused: true,
+            }),
+            Ordinary: makeResource({
+              resourceType: 'AWS::S3::Bucket',
+              physicalId: 'ordinary-bucket',
+            }),
+          },
+        })
+      );
+      mockGetLockInfo.mockResolvedValue(null);
+
+      return runStateShow(['show', 'MyStack']).then((out) => {
+        expect(out).toContain('ObservedBaseline: REFUSED');
+        // The remedy has to be ON the row: a user who reads only "REFUSED"
+        // re-runs `refresh-observed`, which declines it again with no new
+        // information.
+        expect(out).toMatch(/deploy a change to this resource/i);
+
+        // Exactly ONE row, for exactly the marked resource — a row rendered
+        // unconditionally would also satisfy `toContain` above.
+        const rows = out.split('\n').filter((l) => l.includes('ObservedBaseline'));
+        expect(rows).toHaveLength(1);
+
+        // ...and it sits under `Refused`, not under `Ordinary`. Both resources
+        // render, so a row attached to the wrong record would still count one.
+        //
+        // Asserted as "the nearest PhysicalID line above the row" rather than
+        // by comparing the two resources' positions: the render order of the
+        // resources bag is not this case's subject, and an ordering assumption
+        // here failed once already (the bag renders `Ordinary` first).
+        const lines = out.split('\n');
+        const rowAt = lines.findIndex((l) => l.includes('ObservedBaseline'));
+        expect(rowAt).toBeGreaterThan(0);
+        const owner = lines
+          .slice(0, rowAt)
+          .reverse()
+          .find((l) => l.includes('PhysicalID:'));
+        expect(owner).toContain('refused-param');
+        // Both resources really did render — otherwise "the row's owner is the
+        // refused one" is satisfied by a report that dropped the other.
+        expect(out).toContain('ordinary-bucket');
+      });
     });
   });
 });

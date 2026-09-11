@@ -476,4 +476,149 @@ describe('DeployEngine - auto-refresh observed-properties on v2 state load', () 
       readBy: 'cc-api',
     });
   });
+
+  // --- issue #2944: a REFUSED baseline must not be refilled by this site -----
+
+  it('SKIPS a record whose baseline a `cdkd import` run refused, and refreshes its sibling', async () => {
+    // `observedProperties === undefined` is OVERLOADED. For `Legacy` it means
+    // "never captured" and refilling is this site's whole job; for `Refused` a
+    // `cdkd import` run DECLINED to capture, because that record's `properties`
+    // can no longer position the secret redaction. This site would position the
+    // readback against those same `properties` (it passes them as the 4th
+    // argument), and after a refusal they can hold the WRONG-BRANCH LITERAL --
+    // here `dev-placeholder` -- which pairs with the live plaintext as an
+    // ordinary drifted literal, so the walk refuses nothing and the decrypted
+    // value is persisted. Schema v10 carries the refusal so this site can tell
+    // the two apart.
+    //
+    // The SIBLING is what keeps the assertion from passing vacuously: without
+    // it, "readCurrentState was not called for Refused" is equally satisfied by
+    // an auto-refresh that never ran at all.
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: 'us-east-1',
+      stackName,
+      resources: {
+        Refused: {
+          physicalId: 'phys-refused',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'q', Password: 'dev-placeholder' },
+          observedBaselineRefused: true,
+        },
+        Legacy: {
+          physicalId: 'phys-legacy',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'legacy' },
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    mockStateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    mockProvider.readCurrentState.mockImplementation(async (physicalId: string) =>
+      physicalId === 'phys-refused'
+        ? { Password: 'THE-REAL-DECRYPTED-SECRET' }
+        : { readBack: physicalId }
+    );
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Refused',
+          { logicalId: 'Refused', changeType: 'NO_CHANGE', resourceType: 'AWS::SQS::Queue' },
+        ],
+        [
+          'Legacy',
+          { logicalId: 'Legacy', changeType: 'NO_CHANGE', resourceType: 'AWS::S3::Bucket' },
+        ],
+      ])
+    );
+    mockDiffCalculator.hasChanges.mockReturnValue(false);
+
+    await makeEngine().deploy(stackName, {
+      Resources: {
+        Refused: { Type: 'AWS::SQS::Queue', Properties: {} },
+        Legacy: { Type: 'AWS::S3::Bucket', Properties: {} },
+      },
+    });
+
+    expect(mockProvider.readCurrentState).toHaveBeenCalledTimes(1);
+    expect(mockProvider.readCurrentState).toHaveBeenCalledWith(
+      'phys-legacy',
+      'Legacy',
+      'AWS::S3::Bucket',
+      { BucketName: 'legacy' },
+      expect.anything()
+    );
+
+    const saved = mockStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Refused']!.observedProperties).toBeUndefined();
+    // The refusal is still standing -- this site does not discharge it.
+    expect(saved.resources['Refused']!.observedBaselineRefused).toBe(true);
+    // The sibling proves the auto-refresh ran at all.
+    expect(saved.resources['Legacy']!.observedProperties).toEqual({ readBack: 'phys-legacy' });
+    // The plaintext never entered the persisted record by any route.
+    expect(JSON.stringify(saved)).not.toContain('THE-REAL-DECRYPTED-SECRET');
+  });
+
+  it('a real UPDATE CLEARS the refusal and lands a fresh baseline', async () => {
+    // The marker is a refusal RECORD, not a permanent brand, and this is the
+    // contract that keeps it one. A deploy that UPDATEs the resource resolved
+    // it from the template -- the evidence the import lacked -- so the record
+    // `provisionResource` REBUILDS from that resolution no longer carries the
+    // refusal, and the capture it kicks off is a trustworthy baseline.
+    //
+    // The mechanism is the rebuild rather than an explicit clear, which is
+    // exactly why this case is worth having: an edit that "simplified" the
+    // rebuild into `{ ...currentResource, ... }` would silently preserve the
+    // marker and cost this resource every later refresh, with no other signal.
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: 'us-east-1',
+      stackName,
+      resources: {
+        Refused: {
+          physicalId: 'phys-refused',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: 'q', Password: 'dev-placeholder' },
+          observedBaselineRefused: true,
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    mockStateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    mockProvider.readCurrentState.mockResolvedValue({ readBack: 'after-update' });
+    mockProvider.update.mockResolvedValue({ physicalId: 'phys-refused', wasReplaced: false });
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Refused',
+          {
+            logicalId: 'Refused',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::SQS::Queue',
+            desiredProperties: { QueueName: 'q', Password: 'changed' },
+            currentProperties: { QueueName: 'q', Password: 'dev-placeholder' },
+          } as unknown as ResourceChange,
+        ],
+      ])
+    );
+    mockDiffCalculator.hasChanges.mockReturnValue(true);
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['Refused']]);
+
+    await makeEngine().deploy(stackName, {
+      Resources: {
+        Refused: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q', Password: 'changed' } },
+      },
+    });
+
+    // The update really ran -- without this the two assertions below are both
+    // satisfied by a deploy that skipped the resource entirely.
+    expect(mockProvider.update).toHaveBeenCalledTimes(1);
+    const saved = mockStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Refused']!.observedProperties).toEqual({ readBack: 'after-update' });
+    // Presence, not value: a reader tests `=== true`, so a surviving `false`
+    // would read as cleared while still serializing -- assert it is GONE.
+    expect(Object.hasOwn(saved.resources['Refused']!, 'observedBaselineRefused')).toBe(false);
+  });
 });

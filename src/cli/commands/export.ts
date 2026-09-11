@@ -4919,18 +4919,44 @@ export function reportDriftBaselineGaps(
     );
     return;
   }
-  logger.warn(
-    `${missing.length} of ${entries.length} resource(s) in cdkd state lack an ` +
-      `AWS-current baseline (observedProperties). cdkd drift may produce false positives ` +
-      `for them; the next \`cdk deploy\` after migration may surface unexpected changes. ` +
-      `Run \`cdkd state refresh-observed ${state.stackName}\` to capture a baseline before ` +
-      `export, then \`cdkd drift\` to verify the stack matches AWS.`
-  );
-  for (const [logicalId] of missing.slice(0, 10)) {
-    logger.warn(`  ${logicalId}`);
+  // Schema v10+ (issue #2944): a REFUSED record also has no
+  // `observedProperties`, but `cdkd state refresh-observed` will decline it —
+  // so tallying it with the rest would send the user to a command that cannot
+  // help and then leave them unable to tell why it did nothing. Split so the
+  // advice is true for each half.
+  const refused = missing.filter(([, r]) => r.observedBaselineRefused === true);
+  const refreshable = missing.filter(([, r]) => r.observedBaselineRefused !== true);
+
+  if (refreshable.length > 0) {
+    logger.warn(
+      `${refreshable.length} of ${entries.length} resource(s) in cdkd state lack an ` +
+        `AWS-current baseline (observedProperties). cdkd drift may produce false positives ` +
+        `for them; the next \`cdk deploy\` after migration may surface unexpected changes. ` +
+        `Run \`cdkd state refresh-observed ${state.stackName}\` to capture a baseline before ` +
+        `export, then \`cdkd drift\` to verify the stack matches AWS.`
+    );
+    for (const [logicalId] of refreshable.slice(0, 10)) {
+      logger.warn(`  ${logicalId}`);
+    }
+    if (refreshable.length > 10) {
+      logger.warn(`  ... and ${refreshable.length - 10} more`);
+    }
   }
-  if (missing.length > 10) {
-    logger.warn(`  ... and ${missing.length - 10} more`);
+
+  if (refused.length > 0) {
+    logger.warn(
+      `${refused.length} of ${entries.length} resource(s) had their baseline REFUSED by a ` +
+        `\`cdkd import\` run, because their recorded properties can no longer position the ` +
+        `secret redaction. \`cdkd state refresh-observed\` will decline them too — capturing ` +
+        `a readback against those properties could persist a resolved secret into state.json ` +
+        `in plaintext. Deploy a change to each one to restore its baseline.`
+    );
+    for (const [logicalId] of refused.slice(0, 10)) {
+      logger.warn(`  ${logicalId}`);
+    }
+    if (refused.length > 10) {
+      logger.warn(`  ... and ${refused.length - 10} more`);
+    }
   }
 }
 

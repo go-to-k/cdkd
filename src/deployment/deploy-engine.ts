@@ -2240,6 +2240,21 @@ export class DeployEngine {
         // that constant claims the generation itself -- which is why the
         // test does not reuse the persist path's own rules.
         target.observedProperties = markSameGenerationBag({ ...observed });
+        // NOTHING CLEARS `observedBaselineRefused` HERE, and that is a finding
+        // rather than an omission (issue #2944). An explicit `delete` was
+        // written at this line first and is UNREACHABLE: the only two ways a
+        // bag reaches it are the deploy-start auto-refresh, which never
+        // enqueues a MARKED record (`kickOffAutoRefreshObservedProperties`
+        // skips them), and a post-CREATE / post-UPDATE / post-replacement
+        // capture, whose record `provisionResource` has already REBUILT from
+        // the template — dropping the field with it. So the clearing mechanism
+        // is the rebuild, and the contract a test can hold is "a real CREATE /
+        // UPDATE clears the refusal", not "this line does".
+        //
+        // The one arm that deliberately KEEPS a marked record marked is the
+        // metadata-only update (`{ ...currentResource, ...templateAttributes }`
+        // in `provisionResource`): it issues no provider call and takes no
+        // readback, so nothing there earns a baseline the import declined.
       }
     }
   }
@@ -2385,13 +2400,45 @@ export class DeployEngine {
     // guarantee that no AWS side-effect runs).
     if (this.options.dryRun === true) return;
     let toRefresh = 0;
+    let refused = 0;
     const candidates: Array<{
       logicalId: string;
       resource: ResourceState;
     }> = [];
     for (const [logicalId, resource] of Object.entries(stateResources)) {
       if (resource.observedProperties !== undefined) continue;
+      // Schema v10+ (issue #2944). `observedProperties === undefined` is
+      // OVERLOADED: it means "never captured" for a pre-v3 record or a provider
+      // with no `readCurrentState` — where refilling is exactly this method's
+      // job — and it ALSO means "a `cdkd import` run REFUSED to capture one",
+      // where refilling is the leak. The two are indistinguishable from the
+      // field alone, which is why the refusal is recorded on the record; see
+      // `ResourceState.observedBaselineRefused`'s doc for why nothing else can
+      // carry it here.
+      //
+      // What makes the refill a leak rather than a wasted call: this site
+      // positions the readback against `resource.properties` (the 5th argument
+      // below), and after a refusal those can hold the WRONG-BRANCH LITERAL the
+      // import distrusted. A literal source leaf against a string readback
+      // PAIRS as an ordinary drifted literal, so `redactSecretsForState` has
+      // nothing to refuse on and the decrypted value is persisted.
+      //
+      // NOT cleared here. The clearing writer is a real CREATE / UPDATE, which
+      // resolved the resource from the template and whose own
+      // `kickOffObservedCapture` overwrites the baseline anyway (latest-wins on
+      // the `observedCaptureTasks` key) — so a deploy that actually changes the
+      // resource heals it, while a deploy that leaves it NO_CHANGE holds no
+      // more evidence than this site does.
+      if (resource.observedBaselineRefused === true) {
+        refused++;
+        continue;
+      }
       candidates.push({ logicalId, resource });
+    }
+    if (refused > 0) {
+      this.logger.debug(
+        `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused (issue #2944): their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline; a NO_CHANGE deploy does not.`
+      );
     }
     if (candidates.length === 0) return;
 

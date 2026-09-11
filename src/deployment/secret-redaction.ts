@@ -1841,12 +1841,20 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  * answers the shapes that question does not reach — a MIXED leaf, an array
  * that cannot pair, an unpaired element. See that function's own table.
  *
- * THE STARRED SPELLINGS are one derivation, split by the SECRETS MAP (issue
- * [#2852](https://github.com/go-to-k/cdkd/issues/2852)).
+ * THE STARRED SPELLINGS are one derivation, split by TWO tests (issue
+ * [#2852](https://github.com/go-to-k/cdkd/issues/2852), narrowed by issue
+ * [#2906](https://github.com/go-to-k/cdkd/issues/2906)).
  * `scrubResourceRecord` redacts `observedProperties` specifically, so the
- * DESTINATION is settled there and the fail-closed refusal may apply: `*` is
- * the EMPTY-map case, `**` the populated one, where the value scan had needles
- * and masking a leaf it left alone would buy little.
+ * DESTINATION is settled there and the fail-closed refusal MAY apply — but it
+ * applies only where BOTH hold: the secrets map is EMPTY, and the observed bag
+ * carries {@link markSameGenerationBag}'s mark, i.e. THIS RUN produced it.
+ * `**` is everything else — the populated map, where the value scan had needles
+ * and masking a leaf it left alone would buy little; and the UNMARKED bag,
+ * which is a previous generation's `observedProperties` being re-written
+ * unchanged, where a mask destroys an intact persisted baseline and protects no
+ * reader who is not already exposed. The second test is what stops a
+ * FAILURE-PATH `redactStateForPersist` save — a resource whose resolve threw
+ * before recording anything — from taking `*` over a bag it did not produce.
  *
  * WHICH ROW A CALL TAKES IS PER-CALL, not per-site, and two of the labels above
  * are therefore the COMMON case rather than the only one — a distinction a
@@ -1872,7 +1880,15 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   passes a template `sourceProperties` and the row is TEMPLATE_SOURCED, whose
  *   `trustAnyExpression: false` makes {@link isReadbackProjectedFromState}
  *   false. An earlier revision here said "every `drainObservedCaptures`
- *   baseline", which is a strictly larger set than the one that arms.
+ *   baseline", which is a strictly larger set than the one that arms. It stays
+ *   `*` under #2906's second test because `drainObservedCaptures` MARKS every
+ *   bag it installs, the auto-refresh's included.
+ * - `redactStateForPersist` ALSO reaches the derivation for a resource this
+ *   deploy never resolved — every failure-path and intermediate save, and each
+ *   `orphans` entry since (#2948) — with an empty map, no template bag,
+ *   and the PRIOR generation's `observedProperties` still installed. That is
+ *   `**`, by the mark's absence. Before #2906 it took `*` and masked a baseline
+ *   `state.json` already held intact.
  *
  * `cdkd state refresh-observed` and `cdkd import`'s observed capture both pass
  * `STATE_SOURCED_BASELINE_RULES` themselves and need no derivation — import
@@ -5573,6 +5589,15 @@ export function redactSecretsForState<T>(
  * GENERATION as the observed bag beside them (issue #1917 review). Left
  * unspecified, the derivation below is right for every other caller, whose
  * `properties` reach this function untouched.
+ *
+ * That derivation's fail-closed arm asks TWO questions, not one — the secrets
+ * map must be EMPTY and the observed bag must be one THIS RUN produced (issue
+ * [#2906](https://github.com/go-to-k/cdkd/issues/2906)). A caller re-writing a
+ * PRIOR generation's `observedProperties` unchanged therefore keeps it intact
+ * rather than masking positions it cannot pair. A caller whose bag IS fresh but
+ * which does not route it through {@link markSameGenerationBag} should pass
+ * {@link STATE_SOURCED_BASELINE_RULES} through `observedRules` rather than lean
+ * on the derivation.
  */
 export function scrubResourceRecord<
   T extends {
@@ -5641,9 +5666,42 @@ export function scrubResourceRecord<
         // carried the resulting masks into the persisted record. Both are
         // REPLAYED baselines: the bag is a previous generation's readback, and
         // masking a position there poisons the record a rollback then persists,
-        // for a leaf the scan had every chance to name. What is left on this
-        // empty-map arm is exactly the deploy persist choke point's #1900
-        // walk — the fresh drained readback the refusal exists for.
+        // for a leaf the scan had every chance to name.
+        //
+        // `secrets.size === 0` is NOT SUFFICIENT ON ITS OWN, and the sentence
+        // that used to end this paragraph — "what is left on this empty-map arm
+        // is exactly the deploy persist choke point's #1900 walk, the fresh
+        // drained readback the refusal exists for" — was FALSE (issue
+        // [#2906](https://github.com/go-to-k/cdkd/issues/2906)). The same
+        // empty-map arm is also taken by `redactStateForPersist` on every
+        // FAILURE-PATH and intermediate save, for a resource whose resolve
+        // threw before recording anything: there the observed bag is the PRIOR
+        // generation's `observedProperties`, read out of `state.json` and being
+        // RE-WRITTEN UNCHANGED. Masking an unpairable position in THAT bag —
+        // an array AWS reordered, an identity key AWS normalised — replaces a
+        // correct persisted baseline with {@link SECRET_MASK} and produces
+        // permanent phantom drift no `cdkd drift` run clears, until the next
+        // SUCCESSFUL deploy's `drainObservedCaptures` overwrites the record.
+        // Exactly the two REPLAYED-baseline cases above, one writer over.
+        //
+        // So the arm asks the question those two answer by construction: is
+        // this bag one THIS RUN PRODUCED? {@link markSameGenerationBag} already
+        // answers it, and the mark is put on precisely the bag the refusal
+        // exists for — `DeployEngine.drainObservedCaptures` marks EVERY drained
+        // capture, and it is the only writer of `observedProperties` on the
+        // deploy path, so a bag arriving here UNMARKED is a previous
+        // generation's by elimination. The record spread below and
+        // `redactStateForPersist`'s preserve the object identity the mark is
+        // carried on.
+        //
+        // Failing OPEN on an unmarked bag is safe for the reason the two
+        // replayed cases give and for no other: the bag ALREADY SITS in
+        // `state.json` verbatim, so a mask protects no reader who is not
+        // already exposed, while it destroys a baseline that was intact. A
+        // caller whose bag is fresh but which cannot mark it should pass
+        // {@link STATE_SOURCED_BASELINE_RULES} through `observedRules`, the way
+        // `cdkd state refresh-observed` and `cdkd import`'s observed capture
+        // already do — neither reaches this derivation at all.
         //
         // The evidence is per-VALUE, not per-map, and this comment said
         // otherwise until a review measured it: a rotated secret, or a
@@ -5661,7 +5719,7 @@ export function scrubResourceRecord<
         // A caller that supplied `observedRules` keeps its own choice.
         (sourceProperties !== undefined
           ? TEMPLATE_SOURCED_RULES
-          : secrets.size === 0
+          : secrets.size === 0 && isSameGenerationBag(record.observedProperties)
             ? STATE_SOURCED_BASELINE_RULES
             : STATE_SOURCED_READBACK_RULES)
     );

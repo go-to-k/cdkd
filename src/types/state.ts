@@ -96,14 +96,56 @@
  *       bump rather than a bare optional field: v8 readers see `version: 9`
  *       and fail clearly instead.
  *
+ * - 10 — adds `ResourceState.observedBaselineRefused` (issue
+ *       [#2944](https://github.com/go-to-k/cdkd/issues/2944)). `cdkd import`'s
+ *       observed-baseline refusal (issues
+ *       [#2828](https://github.com/go-to-k/cdkd/issues/2828) /
+ *       [#2850](https://github.com/go-to-k/cdkd/issues/2850)) leaves the record
+ *       with `observedProperties: undefined` and `properties` that can hold a
+ *       WRONG-BRANCH LITERAL — a downgraded `Fn::If` persisting
+ *       `"dev-placeholder"` where AWS holds the secret the deployed branch
+ *       resolved. TWO other writers then refill exactly such a missing
+ *       baseline against those same `properties`:
+ *       `DeployEngine.kickOffAutoRefreshObservedProperties` at deploy start,
+ *       and `cdkd state refresh-observed`. Neither holds the template the
+ *       refusal was based on, and a literal source leaf against a string
+ *       readback PAIRS as an ordinary drifted literal, so the redaction walk
+ *       has nothing to refuse on and the decrypted value is persisted — the
+ *       GHSA-p5qg-v9gv-hc7w direction, re-opened by a later run.
+ *       The field is the refusal's PROVENANCE, carried in the only thing that
+ *       survives between those processes. `undefined` means "not refused",
+ *       which is what every pre-v10 record means and what the two writers
+ *       already assume; `true` means the import declined to capture and no
+ *       later writer may synthesize one from `properties`. It is CLEARED by
+ *       any writer that produces a trustworthy baseline — a deploy that
+ *       resolved the resource from the template, or an import capture that
+ *       succeeded — so it is a refusal record, never a permanent brand.
+ *       Layout superset of v9; only the resource-level shape grew.
+ *       **This is a version bump rather than a bare optional field, and the
+ *       reason is the opposite of v9's**: there a v8 writer DROPPING the field
+ *       regressed the stack, here a pre-v10 binary would simply IGNORE the
+ *       marker and refill the refused baseline — which is the disclosure
+ *       itself. Making such a binary fail with the existing "Upgrade cdkd"
+ *       error is the correct behaviour, and the bump is how it is expressed.
+ *       **State it as a TRADE, not a free win.** `saveState` stamps
+ *       `STATE_SCHEMA_VERSION_CURRENT` unconditionally, so the bump does not
+ *       fence the MARKER — it fences every state file a v10 binary writes.
+ *       After one v10 deploy of any stack, every older binary hard-fails on
+ *       that stack, including the great majority carrying no refused record at
+ *       all. What it buys is a guaranteed fail-closed for a narrow leak; what
+ *       it costs is that fleet-wide refusal. The trade is taken because it is
+ *       this repo's standing policy for every bump since v2 and the failure is
+ *       loud with a named remedy — but the cost is real and is not the
+ *       marker's own scope.
+ *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 9;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 10;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -112,7 +154,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 9;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 ];
 
 /**
@@ -525,6 +567,62 @@ export interface ResourceState {
    * counterpart"; it shipped in #651, and (1) has since shipped too.
    */
   provisionedBy?: 'sdk' | 'cc-api' | undefined;
+
+  /**
+   * Schema v10+. `true` when `cdkd import` DECLINED to capture an
+   * `observedProperties` baseline for this resource, and therefore that no
+   * later writer may synthesize one from `properties` either (issue
+   * [#2944](https://github.com/go-to-k/cdkd/issues/2944)).
+   *
+   * WHAT IT RECORDS is a fact about `properties`, not about the resource: the
+   * import's resolve could not vouch that this record's `properties` still
+   * SPELL the dynamic reference the template had
+   * (`resolveImportedProperties`' three arms — the resolve threw, it lost a
+   * `{{resolve:` opener, or it discarded a subtree that is not provably inert).
+   * `captureObservedForImportedResources` skips the capture on that verdict,
+   * because the redaction it would apply is POSITION-based and an unvouched
+   * bag gives it no evidence.
+   *
+   * WHY IT HAS TO BE PERSISTED, when the skip alone was thought sufficient:
+   * the refusal leaves `observedProperties: undefined`, and that is ALSO what
+   * a pre-v3 record and a provider without `readCurrentState` leave — so the
+   * two writers whose job is to fill a missing baseline cannot tell the cases
+   * apart. `DeployEngine.kickOffAutoRefreshObservedProperties` selects exactly
+   * `observedProperties === undefined` at deploy start, and
+   * `cdkd state refresh-observed` refreshes every resource unconditionally.
+   * Both position the readback against this record's `properties`, which after
+   * a refusal can hold the WRONG-BRANCH LITERAL the refusal distrusted; a
+   * literal source leaf against a string readback PAIRS as an ordinary drifted
+   * literal, so the redaction walk refuses nothing and persists the decrypted
+   * value. The evidence the refusal was based on — the imported template and
+   * its downgraded conditions — exists only inside that `cdkd import` process,
+   * so nothing but the record can carry it to them.
+   *
+   * IT IS A REFUSAL RECORD, NOT A BRAND. Any writer that produces a
+   * trustworthy baseline clears it: an import capture that SUCCEEDS FOR A
+   * RESOURCE THAT RUN RE-IMPORTED, and a deploy that CREATEs or UPDATEs the
+   * resource from the template (which holds the evidence the import lacked,
+   * and whose own capture overwrites the baseline anyway). Left uncleared it
+   * would cost the resource its drift baseline for the life of the record.
+   *
+   * THE "RE-IMPORTED" QUALIFIER IS LOAD-BEARING, and `cdkd import` is itself
+   * the FIFTH writer the marker has to be honoured by. A selective merge seeds
+   * `buildStackState` from `existingState.resources` and overwrites only the
+   * rows that run re-imported, so a PRESERVED record keeps a previous run's
+   * downgraded `properties` — the wrong-branch literal — along with the marker.
+   * Re-resolving a plain literal trips none of the three refusal arms, so that
+   * run's refusal set does not name it; capturing against it would persist the
+   * decrypted value, and clearing the marker would stand the other four writers
+   * down permanently. `captureObservedForImportedResources` therefore skips
+   * such a record without clearing it, keyed on the ids that run actually
+   * rebuilt.
+   *
+   * `undefined` — the only other value, and the one every pre-v10 record
+   * carries — means "not refused", which is the behaviour both writers had
+   * before this field existed. Only `true` is ever written; there is no
+   * `false`, so a reader tests presence.
+   */
+  observedBaselineRefused?: true | undefined;
 }
 
 /**

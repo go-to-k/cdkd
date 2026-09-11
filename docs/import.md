@@ -328,6 +328,27 @@ worth knowing before you read a report:
   decrypted value (it says so at `--verbose`). Drift then compares against the
   recorded properties for that resource, which can show as phantom drift.
 
+  **That refusal is RECORDED on the resource**, as
+  `observedBaselineRefused` (state schema v10+), and every later command that
+  would otherwise fill the missing baseline honours it rather than repeating
+  the capture the import declined: the deploy-start baseline refresh,
+  [`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed),
+  both `cdkd drift --accept` and `--revert`, and a later `cdkd import` that
+  leaves the resource in place rather than re-importing it. Without the record they could
+  not tell a refused resource from one that simply never had a baseline, and
+  each would position an AWS readback against the very properties the refusal
+  found untrustworthy.
+
+  **To clear it, deploy a change to the resource.** A create, update or
+  replacement rebuilds the record from your template — the evidence the import
+  did not have — and captures a real baseline. A no-change deploy does not
+  clear it, and neither does re-running `cdkd state refresh-observed`.
+  Re-importing the resource clears it too, since that also rebuilds its
+  recorded properties from the template; an import that merely leaves the
+  resource in place does not.
+  `cdkd state show` marks such a resource with an `ObservedBaseline: REFUSED`
+  line.
+
 Both clear on a deploy that actually creates or updates the affected resource —
 not on any `cdkd deploy`. The **automatic refresh** cdkd runs at the start of a
 deploy only fills in a *missing* baseline, so it passes over a masked one; a

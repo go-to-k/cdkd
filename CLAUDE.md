@@ -52,11 +52,11 @@ vp run docs:preview
 
 ## State Schema
 
-State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v9). A transient `rollback-journal.json` sibling (issue #1183) may exist between a failed / interrupted deploy and its `cdkd rollback` — it is deliberately NOT part of the state schema (own `journalVersion` field, no `StackState.version` bump; see [.claude/rules/state-schema.md](.claude/rules/state-schema.md)). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue #459) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue #464) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
+State files live at `s3://bucket/cdkd/{stackName}/{region}/state.json` (v2+ region-prefixed key layout, current schema is v10). A transient `rollback-journal.json` sibling (issue #1183) may exist between a failed / interrupted deploy and its `cdkd rollback` — it is deliberately NOT part of the state schema (own `journalVersion` field, no `StackState.version` bump; see [.claude/rules/state-schema.md](.claude/rules/state-schema.md)). Nested-stack children land at `s3://bucket/cdkd/{parent}~{NestedStackLogicalId}/{region}/state.json` — written by `NestedStackProvider.create` during `cdkd deploy` (issue #459) AND by the recursive `cdkd import --migrate-from-cloudformation` walk (issue #464) — both populate `parentStack` / `parentLogicalId` / `parentRegion` on the child state record per the v6 schema.
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
   stackName: string;
   region?: string;
   resources: Record<string, ResourceState>;
@@ -85,7 +85,7 @@ interface ResourceState {
 }
 ```
 
-Full per-field semantics (v1-v9 migration story, `observedProperties` / `deletionPolicy` / `parentStack` / `provisionedBy` / `outputReads` / `exportNames` notes) in [.claude/rules/state-schema.md](.claude/rules/state-schema.md). End-user docs in [docs/state-management.md](docs/state-management.md).
+Full per-field semantics (v1-v10 migration story, `observedProperties` / `provisionedBy` / `exportNames` / v10's `observedBaselineRefused` notes) in [.claude/rules/state-schema.md](.claude/rules/state-schema.md). End-user docs in [docs/state-management.md](docs/state-management.md).
 
 ## Provider Pattern
 

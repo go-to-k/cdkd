@@ -600,7 +600,7 @@ under a v8 binary repopulates the field and persists `version: 8` silently. The
 [`tests/integration/schema-v7-to-v8-migration/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/schema-v7-to-v8-migration/)
 integ test proves the round-trip against real AWS.
 
-### `version: 9` adds `exportNames` (current writers)
+### `version: 9` adds `exportNames`
 
 Schema `version: 9` adds a stack-level `exportNames` array: the keys of
 `outputs` that are `Export.Name` aliases, i.e. the ONLY names an
@@ -650,6 +650,62 @@ becomes importable (and a newly-unexported one stops being served). The
 integ test proves the round-trip against real AWS — and first reproduces the
 shadowing under the v8 binary (a consumer bound to a decoy stack's plain
 output) before the v9 binary rebinds it to the real export.
+
+### `version: 10` adds `observedBaselineRefused` (current writers)
+
+Schema `version: 10` adds a per-resource `observedBaselineRefused` flag, set
+by `cdkd import` when it DECLINES to capture an `observedProperties` baseline
+for a resource.
+
+`cdkd import` refuses that capture when it cannot vouch that the resource's
+recorded `properties` still spell the dynamic reference the template had — a
+resolve that threw, one that lost a `{{resolve:` opener, or one that discarded
+a subtree it could not prove inert. The redaction protecting a captured
+readback is POSITION-based, so an unvouched bag gives it no evidence and the
+decrypted value would be written to `state.json` in the clear.
+
+Before v10 the refusal left only `observedProperties: undefined` behind — the
+same thing a pre-v3 record and a provider without `readCurrentState` leave —
+so the commands whose job is to FILL a missing baseline could not tell a
+refusal from a resource that simply never had one, and filled it anyway:
+
+| command | what it did |
+| --- | --- |
+| `cdkd deploy` (the deploy-start baseline auto-refresh) | captured a readback positioned against the untrusted `properties` |
+| `cdkd state refresh-observed` | the same, for every resource in the stack |
+| `cdkd drift --accept` | wrote the readback INTO `properties` |
+| `cdkd drift --revert` | pushed `properties` to AWS, which can overwrite a live secret with a placeholder the stack never deployed |
+| `cdkd import` (a later run) | re-captured a baseline for a resource a SELECTIVE import left in place — its recorded properties are still the ones an earlier run refused |
+
+All five now skip a refused resource. The three you invoke to act on that
+resource — `cdkd state refresh-observed`, `cdkd drift --accept` and
+`--revert` — say so at normal verbosity. The deploy-start refresh and the
+import skip report only under `--verbose`, since neither is a command you ran
+to refresh that resource in the first place.
+`cdkd state show` renders an `ObservedBaseline: REFUSED ...` line for one, `cdkd state refresh-observed`
+reports them in their own tally rather than as unsupported, and `cdkd export`
+lists them apart from the resources a refresh really can help.
+
+**How to clear it**: deploy a change to the resource. A CREATE, UPDATE or
+replacement rebuilds its state record from the template — the evidence the
+import lacked — and captures a trustworthy baseline. A NO_CHANGE deploy does
+NOT clear it, and neither does re-running `cdkd state refresh-observed`. Until
+then `cdkd drift` compares that resource against its recorded properties, as
+it did for any resource without a baseline before schema v3.
+
+**Migration** is transparent in both directions a user can observe: a `version:
+9` record has the field absent, absence means "not refused", and that is
+exactly how those commands behaved before the field existed. The next write
+persists `version: 10` silently.
+
+As with every bump since v2, an OLDER cdkd binary refuses a `version: 10` blob
+with an explicit "upgrade cdkd" error. That refusal is the point here rather
+than a side effect — a binary that did not know the flag would ignore it and
+refill the refused baseline — but it is a **trade, not a free win**, and it is
+worth knowing before you upgrade one machine in a fleet: cdkd stamps the
+current schema version on every state file it writes, so once a v10 binary has
+deployed a stack, every older binary fails on that stack, whether or not it
+holds a refused record. Upgrade the whole fleet together.
 
 ### `skippedOutputs` (informational, no version bump)
 
@@ -2270,11 +2326,11 @@ first read.
 
 ### Schema Version
 
-Current writers emit **`version: 9`** on the region-prefixed key layout
+Current writers emit **`version: 10`** on the region-prefixed key layout
 (`cdkd/{stackName}/{region}/state.json`, introduced by `version: 2`). Older
 `version: 1` blobs at the non-region key (`cdkd/{stackName}/state.json`) are
 still readable; the next save migrates them to the region-prefixed key and
-deletes the legacy key. Every v1..v8 blob is read and auto-upgraded in memory
+deletes the legacy key. Every v1..v9 blob is read and auto-upgraded in memory
 by the current binary, and the next write persists the current version
 silently — no user action, no migration command.
 
