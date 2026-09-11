@@ -763,15 +763,15 @@ the retry pair plus `rollback-executor.ts` were in neither list, until
 #2042's audit. Both directions fenced by
 `tests/unit/scripts/cross-cutting-list-sync.test.ts`; the per-gate file
 lists live in `.markgate.yml`'s `integ-destroy.include` and the hooks' own
-activation patterns. CLAUDE.md deliberately keeps no copy of any gate's SCOPE
-list — not the two integ gates', and since the hook-pointer pass not
-`integ-local`'s or `integ-schema-migration`'s either. (Its `pr-review` entry
-does still spell out that gate's agent-instruction path SET, which is a
-bias-exemption list rather than a scope, and is stated there because the
-decision behind it is the thing a lane re-litigates.) What it still carries for
-`check` and `docs` is an explicitly non-authoritative rough guide pointing
-here and at `.markgate.yml`; nothing in that guide is fenced, so read the
-`include:` lists rather than it.
+activation patterns. The only gate SCOPE list CLAUDE.md still carries is the
+`check` / `docs` rough guide, which says of itself that it is not
+authoritative — not the two integ gates', and since the hook-pointer pass not
+`integ-local`'s or `integ-schema-migration`'s either. Nothing in that guide is
+fenced, so read the `include:` lists rather than it. Its `pr-review` entry does
+also carry that gate's agent-instruction path list, which is a bias EXEMPTION
+rather than a scope and is stated there because the decision behind it is what
+a lane re-litigates; it is an unfenced copy like any other, so check it against
+`pr-review-gate.sh`'s comment before relying on a membership.
 
 **PR-diff scope guards (integ-destroy / integ-broad / integ-local).** The
 three integ gates first check whether the merged PR's diff touches their
