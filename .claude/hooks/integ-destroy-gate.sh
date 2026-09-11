@@ -331,18 +331,49 @@ or similar) and the `integ-destroy` marker is stale.
 EOF_HEAD
 fi
 
+# ACTION FIRST. The diagnostic below is what makes a wrong refusal legible, but
+# the refusal is read at the moment of a blocked merge, so the thing to DO must
+# not sit under fifty lines of explanation.
+cat >&2 <<'EOF'
+Required action — no exceptions:
+  /run-integ <test-name>      # e.g. /run-integ bench-cdk-sample
+
+The skill is the ONLY legitimate setter of this marker. It will run
+deploy + destroy against real AWS and only call
+`markgate set integ-destroy` if BOTH of the following hold:
+  - destroy completed with 0 errors
+  - 0 orphan resources after the post-destroy verification
+
+Do NOT call `markgate set integ-destroy` directly from a shell to
+bypass this hook. The whole point of the gate is that an unverified
+destroy cannot reach main; setting the marker by hand defeats it. If
+you believe the file in scope is genuinely unrelated to deletion
+behavior, the right fix is to narrow `.markgate.yml` integ-destroy
+scope, not to bypass the marker. Narrowing does not clear this
+refusal by itself -- editing the include list is one of the things
+that MOVES the digest -- so the gate stays stale until the next
+`/run-integ` records it.
+
+EOF
+
 cat >&2 <<'EOF'
 What put this branch in scope — read this rather than hand-expanding the
-`include:` globs in `.markgate.yml` — run it in THIS worktree, since markgate
-stores a marker per worktree and this hook may have resolved a `cd` / `-C`
-target that is not your shell's cwd:
-  mise exec -- markgate status integ-destroy --explain
-
+`include:` globs in `.markgate.yml`:
+EOF
+# Emitted rather than hard-coded so the advice is copy-pasteable in the
+# environment the refusal happened in: `$target_dir` is the tree this gate
+# actually checked, which a `cd` / `-C` in the blocked command can make
+# different from the caller's cwd, and markers are per-worktree; and
+# `${markgate[*]}` is the same resolution this hook used, so the line stays
+# runnable where mise is absent and the hook fell back to a bare `markgate`.
+printf '  cd %s && %s status integ-destroy --explain\n\n' \
+  "$target_dir" "${markgate[*]}" >&2
+cat >&2 <<'EOF'
 The `scope:` block it prints is the exact file list markgate digests for this
 gate; `merge base:` — printed only when a marker exists — is the base that
-marker was set against, which is not necessarily the live one. Spell it
-`mise exec --`: a bare `markgate` may be an older build on PATH that cannot
-parse this repo's `hash: diff` gates at all.
+marker was set against, which is not necessarily the live one. Prefer the
+`mise exec --` form the line above uses: a bare `markgate` may be an older
+build on PATH that cannot parse this repo's `hash: diff` gates at all.
 
 EOF
 
@@ -377,32 +408,14 @@ cause out, unequal says only that the base moved at some point, not that the
 move is what staled the marker.
 
 An EMPTY `scope:` next to `(digest differs)` is not a broken gate either — it
-means the in-scope delta emptied AFTER the marker was set, because the change
-was reverted or it landed upstream and the merge base moved past it. The digest
-was taken over a non-empty delta and no longer matches the empty one.
+means the in-scope delta emptied AFTER the marker was set. Ways it does: the
+change was reverted; the `include:` / `exclude:` list stopped matching the file
+you changed, which is what narrowing the scope does; or the change landed
+upstream AND this branch then merged or rebased `origin/main`, moving the merge
+base past it — landing alone is not enough, for the reason above. The digest was
+taken over a non-empty delta and no longer matches the empty one.
 
 EOF
   ;;
 esac
-
-cat >&2 <<'EOF'
-Required action — no exceptions:
-  /run-integ <test-name>      # e.g. /run-integ bench-cdk-sample
-
-The skill is the ONLY legitimate setter of this marker. It will run
-deploy + destroy against real AWS and only call
-`markgate set integ-destroy` if BOTH of the following hold:
-  - destroy completed with 0 errors
-  - 0 orphan resources after the post-destroy verification
-
-Do NOT call `markgate set integ-destroy` directly from a shell to
-bypass this hook. The whole point of the gate is that an unverified
-destroy cannot reach main; setting the marker by hand defeats it. If
-you believe the file in scope is genuinely unrelated to deletion
-behavior, the right fix is to narrow `.markgate.yml` integ-destroy
-scope, not to bypass the marker. Narrowing does not clear this
-refusal by itself -- editing the include list is one of the things
-that MOVES the digest -- so the gate stays stale until the next
-`/run-integ` records it.
-EOF
 exit 2

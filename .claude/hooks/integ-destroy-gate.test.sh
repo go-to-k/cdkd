@@ -366,10 +366,51 @@ run_msg_case "merge-base advice is stated as ONE-WAY (#3010)" stale \
 run_msg_case "empty scope beside digest-differs has a reading (#3010)" stale \
   'in-scope delta emptied AFTER the marker was set' 'could not EVALUATE' "$payload_merge"
 
+# That reading is itself a list, and its first version closed at two entries --
+# omitting the one the SAME refusal recommends twenty lines later ("narrow
+# `.markgate.yml` integ-destroy scope"). Measured: narrowing `include:` so the
+# changed file drops out gives an empty `scope:` with `(digest differs)`, so a
+# reader who follows the remedy would have been told their change was reverted.
+run_msg_case "empty-scope reading includes the narrowing cause (#3010)" stale \
+  'stopped matching the file' 'could not EVALUATE' "$payload_merge"
+
+# ...and its "landed upstream" entry contradicted the peer-merge sentence six
+# lines above it, which says a peer's merge does not move the merge base.
+# Measured on the squash shape this repo allows: landing the identical content
+# on `origin/main` left the merge base and the scope untouched, `verify` rc 0.
+# Only the branch merging or rebasing afterwards empties it.
+run_msg_case "empty-scope reading does not contradict the peer-merge line (#3010)" stale \
+  'landing alone is not enough' 'could not EVALUATE' "$payload_merge"
+
+# --- ORDER: the thing to DO comes before the explanation ---
+#
+# The refusal is read at the moment of a blocked merge. The diagnostic block
+# grew across four review rounds and pushed `Required action` to line ~37 of a
+# ~54-line message before this was fixed; nothing asserted the order, so it
+# could drift back silently. Its own case because want/reject needles cannot
+# express "before".
+order_out=$(printf '%s' "$payload_merge" | MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+action_line=$(printf '%s' "$order_out" | grep -n '^Required action' | head -1 | cut -d: -f1)
+diag_line=$(printf '%s' "$order_out" | grep -n '^What put this branch in scope' | head -1 | cut -d: -f1)
+if [ -n "$action_line" ] && [ -n "$diag_line" ] && [ "$action_line" -lt "$diag_line" ]; then
+  pass=$((pass + 1)); printf 'OK   required action precedes the diagnostic (#3010)\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL required action precedes the diagnostic (#3010): action at line ${action_line:-none}, diagnostic at line ${diag_line:-none}\n"
+  printf 'FAIL required action precedes the diagnostic (#3010)\n'
+fi
+
 # Markers are per-worktree and this hook may have resolved a `cd` / `-C` target
 # that is not the caller's cwd, so the advised command names where to run it.
-run_msg_case "diagnostic says WHICH worktree to run in (#3010)" stale \
-  'run it in THIS worktree' 'could not EVALUATE' "$payload_merge"
+# The advised command is EMITTED, not hard-coded, so it names the tree this gate
+# actually checked -- a `cd` / `-C` in the blocked command can make that a
+# different worktree from the caller's cwd, and markgate's markers are
+# per-worktree, so a diagnostic run in the wrong tree answers about the wrong
+# marker. Asserting the resolved path is what distinguishes the emitted form
+# from the hard-coded one it replaced.
+run_msg_case "diagnostic names the tree this gate checked (#3010)" stale \
+  "cd $side_repo && mise exec -- markgate status integ-destroy --explain" \
+  'could not EVALUATE' "$payload_merge"
 
 # --- The remaining prose this PR added, one needle each ---
 #
@@ -377,8 +418,11 @@ run_msg_case "diagnostic says WHICH worktree to run in (#3010)" stale \
 # fenced individually for the reason the per-cause cases exist: a trim leaves
 # grammatical prose, and each of these carries a claim whose loss reinstates a
 # wrong reading the refusal was written to prevent.
+# Needle stops at the wrap. It read `... an older build` and went red when a
+# reword moved "build" onto the next line -- the second time that happened in
+# this file, so: keep every needle inside one rendered line.
 run_msg_case "diagnostic keeps the stale-binary warning (#3010)" stale \
-  'a bare `markgate` may be an older build' 'could not EVALUATE' "$payload_merge"
+  'a bare `markgate` may be an older' 'could not EVALUATE' "$payload_merge"
 
 # Needle kept on ONE line: `grep` matches per line, so a needle spanning the
 # message's 80-column wrap matches nothing and the case fails for a reason that
