@@ -79,6 +79,18 @@ case "\$1" in
       # extraction comes back empty.
       echo "markgate: hash=diff: base ref does not resolve" >&2
       exit 2
+    elif [ "\$verdict" = "ttl" ]; then
+      # \`integ-destroy\` carries \`ttl: 14d\`, so a marker can be stale with
+      # NOTHING in scope having moved. The hook's message must not explain
+      # this one as a code change (issue 3010 review, B2).
+      printf 'key:        %s\nstate:      stale (expired by ttl: 14d, marker is 17d old)\n' "\$2"
+    elif [ "\$verdict" = "stale_noreason" ]; then
+      # The hook's reason extraction "fails open to the pre-0.3 generic
+      # message" -- an older or odd markgate whose \`status\` carries no
+      # parenthesized reason. \`verify\` still says stale, so this is a LIVE
+      # second stale spelling, and it is the one a user with a mismatched
+      # markgate reaches. Nothing else in this suite produces it.
+      printf 'key:        %s\nstate:      stale\n' "\$2"
     else
       printf 'key:        %s\nstate:      stale (digest differs)\n' "\$2"
     fi
@@ -218,11 +230,23 @@ run_msg_case "stale marker still advises /run-integ" stale \
 
 # --- The stale message must be SELF-DIAGNOSING (issue #3010) ---
 #
+# Needles are held in variables so each is written ONCE and every case below
+# anchors on the same string. Two of the three are anchored deliberately wider
+# than the sentence they belong to:
+#
+#   - N_EXPLAIN keeps the `mise exec -- ` prefix. Without it the needle is a
+#     strict SUBSTRING of the advised command, so deleting the prefix -- the
+#     one part of that line the paragraph itself calls load-bearing, since a
+#     bare `markgate` on PATH can be an older build that cannot parse a
+#     `hash: diff` gate -- left the suite green (measured).
+#   - N_SCOPE covers the sentence explaining what `--explain` PRINTS. Without
+#     it, deleting that whole paragraph left the suite green: the command line
+#     alone survived and nothing said what to read in its output.
+#
 # #3010 reported this gate invalidating on a peer's merge with nothing in
-# scope on the branch. It does not: `hash: diff` digests the branch's delta
-# from merge-base(origin/main, HEAD), and a peer's in-scope merge leaves that
-# digest alone (reproduced against markgate 0.4.1 in both directions --
-# with and without merging origin/main back into the branch). What actually
+# scope on the branch. A peer's merge alone does not: `hash: diff` digests the
+# branch's delta from merge-base(origin/main, HEAD), and a peer's merge does
+# not move that merge base (reproduced against markgate 0.4.1). What actually
 # happened is that the include list was hand-expanded as git pathspecs and one
 # entry -- `src/provisioning/provider-registry.ts`, added by #2721 and really
 # changed by that branch -- was missed, so a legitimate refusal read as a
@@ -234,24 +258,59 @@ run_msg_case "stale marker still advises /run-integ" stale \
 # hand-expansion. Asserted on the hook's OWN stderr rather than on a
 # re-statement: a case driving a predicate the suite declares stays green when
 # the text is reverted (.claude/rules/hooks-authoring.md).
+N_EXPLAIN='mise exec -- markgate status integ-destroy --explain'
+N_SCOPE='the exact file list markgate digests'
+N_CAUSE='does not stale this marker by itself'
+payload_merge="$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
 run_msg_case "stale message names markgate --explain (#3010)" stale \
-  'markgate status integ-destroy --explain' 'could not EVALUATE' \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+  "$N_EXPLAIN" 'could not EVALUATE' "$payload_merge"
 
-# The claim that makes the command actionable: a peer's merge is NOT a cause
-# of staleness here. Separate from the case above because the command alone
+run_msg_case "stale message says what --explain prints (#3010)" stale \
+  "$N_SCOPE" 'could not EVALUATE' "$payload_merge"
+
+# The claim that makes the command actionable: a peer's merge is NOT by itself
+# a cause of staleness here. Separate from the cases above because the command
 # tells the reader what to run, not what to conclude from the answer.
-run_msg_case "stale message rules out a peer merge as the cause (#3010)" stale \
-  'does NOT stale this marker' 'could not EVALUATE' \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+run_msg_case "stale message rules out a bare peer merge as the cause (#3010)" stale \
+  "$N_CAUSE" 'could not EVALUATE' "$payload_merge"
 
-# Placement: the diagnostic belongs in the block shared by both stale paths,
+# --- ...and it must NOT be offered where it would be FALSE ---
+#
+# The causal paragraph explains a DIGEST mismatch. This gate also carries
+# `ttl: 14d`, so a marker goes stale while the branch sits perfectly still, and
+# there the paragraph would send the reader to `--explain` hunting a file that
+# never changed. Same for the reason-less stale spelling, where the cause is
+# simply unknown. The `--explain` command itself stays offered on both, so each
+# state needs BOTH halves asserted -- a single "is it absent" case passes just
+# as well when the whole block vanished.
+#
+# The first case of each pair also pins that the mock really drove that path:
+# `expired by ttl` comes only from the reason branch, and the
+# IMPLICIT_DELETE_DEPENDENCIES header only from the reason-LESS fallback. Without
+# them a mock verdict that silently fell through to the ordinary stale path
+# would satisfy the absence assertions for the wrong reason.
+run_msg_case "ttl expiry is not explained as a code change (#3010)" ttl \
+  'expired by ttl' "$N_CAUSE" "$payload_merge"
+
+run_msg_case "ttl expiry still offers the scope diagnostic (#3010)" ttl \
+  "$N_EXPLAIN" "$N_CAUSE" "$payload_merge"
+
+run_msg_case "reason-less stale takes the fallback header (#3010)" stale_noreason \
+  'IMPLICIT_DELETE_DEPENDENCIES' "$N_CAUSE" "$payload_merge"
+
+run_msg_case "reason-less stale still offers the scope diagnostic (#3010)" stale_noreason \
+  "$N_EXPLAIN" "$N_CAUSE" "$payload_merge"
+
+# Placement: the diagnostic belongs in the block shared by every stale path,
 # not in the evaluation-error path, whose remedy is a base ref rather than a
-# scope question. Without this, moving it up into `gate_refuse_unevaluable_marker`
-# would keep both cases above green while the stale path lost the text.
+# scope question. This case fences ADDITION, and a move is not a substitute for
+# measuring that: MOVING the block into `gate_refuse_unevaluable_marker` reddens
+# four cases -- this one plus the three stale cases that lose the text -- so it
+# cannot show what this case alone catches. DUPLICATING it there reddens this
+# case and nothing else, which is the probe that justifies keeping it.
 run_msg_case "exit-2 path does not offer the scope diagnostic (#3010)" error \
-  'could not EVALUATE' 'markgate status integ-destroy --explain' \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+  'could not EVALUATE' "$N_EXPLAIN" "$payload_merge"
 
 # --- DIFF-FILTER cases (issue #2042) ---
 #

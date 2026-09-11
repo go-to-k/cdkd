@@ -337,16 +337,41 @@ What put this branch in scope — read this rather than hand-expanding the
   mise exec -- markgate status integ-destroy --explain
 
 The `scope:` block it prints is the exact file list markgate digests for this
-gate, and `merge base:` is the commit that delta is taken from. Spell it
+gate; `merge base:` — printed only when a marker exists — is the base that
+marker was set against, which is not necessarily the live one. Spell it
 `mise exec --`: a bare `markgate` may be an older build on PATH that cannot
 parse this repo's `hash: diff` gates at all.
 
-A peer's merge landing on `origin/main` does NOT stale this marker — `hash: diff`
-digests THIS branch's delta from the merge base — so a stale marker means an
-in-scope file moved on this branch. Measured in issue #3010, where a
-hand-expanded include list missed an entry this branch really had changed and
-the gate looked broken.
+EOF
 
+# The paragraph below says what a DIGEST mismatch means, and it is true of
+# nothing else, so it is printed for nothing else. This gate also carries
+# `ttl: 14d`, and an expired marker is stale while the branch sat perfectly
+# still -- telling that reader "an in-scope file moved on this branch" is false
+# and sends them to `--explain` for a file that never changed. The reason-less
+# fallback above is an unknown cause, so it is excluded on the same ground.
+# The `--explain` command itself stays UNCONDITIONAL: seeing the gate's real
+# scope is the right first step under any staleness, and the reason-less path is
+# exactly the one a user reaches with an odd or older markgate -- the audience
+# this block was written for.
+case "$reason" in
+*"digest differs"*)
+  cat >&2 <<'EOF'
+`hash: diff` digests THIS branch's delta from merge-base(origin/main, HEAD), so
+a peer's merge landing on `origin/main` does not stale this marker by itself —
+it does not move that merge base. Two things do: an in-scope file changing ON
+THIS BRANCH, and merging or rebasing `origin/main` INTO this branch when the
+incoming change touches a file this branch also modified, which keeps that file
+in the delta while its base side moves under it.
+
+Measured in issue #3010, where a hand-expanded include list missed an entry the
+branch really had changed and the gate looked broken.
+
+EOF
+  ;;
+esac
+
+cat >&2 <<'EOF'
 Required action — no exceptions:
   /run-integ <test-name>      # e.g. /run-integ bench-cdk-sample
 
