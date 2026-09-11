@@ -1171,7 +1171,7 @@ function allRecordedSecrets(
    * the resource loop says so in its own comment — and the region-ambiguous
    * rethrow is deliberately unmasked at the site, so both reach the boundary.
    * Without these needles the plaintext renders into `console.error`'s cause
-   * chain. Pass an empty map if a caller genuinely has none.
+   * chain.
    */
   orphanSecrets: ReadonlyMap<string, RecordedSecretValues>
 ): RecordedSecretValues {
