@@ -332,6 +332,21 @@ EOF_HEAD
 fi
 
 cat >&2 <<'EOF'
+What put this branch in scope — read this rather than hand-expanding the
+`include:` globs in `.markgate.yml`:
+  mise exec -- markgate status integ-destroy --explain
+
+The `scope:` block it prints is the exact file list markgate digests for this
+gate, and `merge base:` is the commit that delta is taken from. Spell it
+`mise exec --`: a bare `markgate` may be an older build on PATH that cannot
+parse this repo's `hash: diff` gates at all.
+
+A peer's merge landing on `origin/main` does NOT stale this marker — `hash: diff`
+digests THIS branch's delta from the merge base — so a stale marker means an
+in-scope file moved on this branch. Measured in issue #3010, where a
+hand-expanded include list missed an entry this branch really had changed and
+the gate looked broken.
+
 Required action — no exceptions:
   /run-integ <test-name>      # e.g. /run-integ bench-cdk-sample
 

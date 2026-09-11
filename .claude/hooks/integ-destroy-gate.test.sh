@@ -216,6 +216,43 @@ run_msg_case "stale marker still advises /run-integ" stale \
   'Required action' 'could not EVALUATE' \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
 
+# --- The stale message must be SELF-DIAGNOSING (issue #3010) ---
+#
+# #3010 reported this gate invalidating on a peer's merge with nothing in
+# scope on the branch. It does not: `hash: diff` digests the branch's delta
+# from merge-base(origin/main, HEAD), and a peer's in-scope merge leaves that
+# digest alone (reproduced against markgate 0.4.1 in both directions --
+# with and without merging origin/main back into the branch). What actually
+# happened is that the include list was hand-expanded as git pathspecs and one
+# entry -- `src/provisioning/provider-registry.ts`, added by #2721 and really
+# changed by that branch -- was missed, so a legitimate refusal read as a
+# broken gate. Both remedies that follow from that reading are bad: a
+# real-AWS run the branch does not need, or setting the marker by hand, which
+# the paragraph below this one forbids.
+#
+# So the message names the command that answers the question without any
+# hand-expansion. Asserted on the hook's OWN stderr rather than on a
+# re-statement: a case driving a predicate the suite declares stays green when
+# the text is reverted (.claude/rules/hooks-authoring.md).
+run_msg_case "stale message names markgate --explain (#3010)" stale \
+  'markgate status integ-destroy --explain' 'could not EVALUATE' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+# The claim that makes the command actionable: a peer's merge is NOT a cause
+# of staleness here. Separate from the case above because the command alone
+# tells the reader what to run, not what to conclude from the answer.
+run_msg_case "stale message rules out a peer merge as the cause (#3010)" stale \
+  'does NOT stale this marker' 'could not EVALUATE' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+# Placement: the diagnostic belongs in the block shared by both stale paths,
+# not in the evaluation-error path, whose remedy is a base ref rather than a
+# scope question. Without this, moving it up into `gate_refuse_unevaluable_marker`
+# would keep both cases above green while the stale path lost the text.
+run_msg_case "exit-2 path does not offer the scope diagnostic (#3010)" error \
+  'could not EVALUATE' 'markgate status integ-destroy --explain' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
 # --- DIFF-FILTER cases (issue #2042) ---
 #
 # Every case above deliberately runs against fixture repos WITHOUT an
