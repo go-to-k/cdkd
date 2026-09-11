@@ -69,13 +69,20 @@ jobs:
           # both triggers on one code path, and means a `push` run that finds an
           # armed PR behaves identically to the arm-time run.
           #
-          # SAME-REPO ONLY, and that filter is load-bearing. A fork's head branch
-          # NAME is attacker-chosen and open PRs include fork PRs -- so anyone
-          # could open one from a branch called `release-please--branches--main`
-          # and be picked here. The run would then read `armed` off the DECOY,
-          # get `no`, and exit 0 saying "not armed" while the real, armed, stale
-          # release PR went unchecked and merged. Pushing a branch to THIS repo
-          # needs write access, so the same-repo test removes that reach.
+          # SAME-REPO ONLY. A fork's head branch NAME is attacker-chosen and open
+          # PRs include fork PRs, so without this anyone could open one from a
+          # branch called `release-please--branches--main`. Pushing a branch to
+          # THIS repo needs write access, which is the boundary the test draws.
+          #
+          # What that buys, stated against the code as it stands rather than an
+          # earlier draft of it. The `count != 1` refusal below means a decoy
+          # ALONGSIDE the real release PR would exit 1, not pass silently -- so
+          # the two remaining reaches are:
+          #   * DoS. One fork PR wedges every run into that refusal, turning a
+          #     guard that should be quiet into a permanent red anyone can set.
+          #   * Acting on a fork PR. With no real release PR open, a lone decoy
+          #     is `count == 1`, and this job holds `pull-requests: write` -- it
+          #     would read, and could comment on and disarm, a fork's PR.
           #
           # A deleted fork leaves `head.repo` null, which `// ""` turns into a
           # non-match rather than a jq error -- correct, since it was a fork.
@@ -126,20 +133,23 @@ jobs:
           esac
 
           head_ref=$(gh pr view "${pr}" --repo "${REPO}" --json headRefName --jq .headRefName)
-          # `fetch-depth: 0` on the checkout already populated
-          # `refs/remotes/origin/*`, so the branch is normally local already.
-          # The fetch is the fallback for a ref created after the checkout, and
-          # it runs ANONYMOUSLY because `persist-credentials: false` strips the
-          # token -- fine for this public repo, and the reason a failure here is
-          # reported rather than swallowed by `--quiet`. The likeliest cause is
-          # the head branch having been deleted between the two calls.
-          if ! head=$(git rev-parse --verify --quiet "refs/remotes/origin/${head_ref}"); then
-            if ! git fetch --no-tags --quiet origin "${head_ref}"; then
-              echo "::error::could not read the head branch '${head_ref}' of #${pr}. It may have been deleted, or this repo is private and the anonymous fetch was refused."
-              exit 1
-            fi
-            head=$(git rev-parse FETCH_HEAD)
+          # ALWAYS fetch; do NOT prefer the `refs/remotes/origin/*` the checkout
+          # already populated. release-please FORCE-PUSHES the release branch
+          # when it rebuilds, so a rebuild landing between the checkout and this
+          # line would leave the cached ref pointing at the OLD head -- and the
+          # run would compare main's tips against it and disarm a PR that had
+          # just been made current. The window is seconds and the direction is
+          # conservative, but a fetch costs nothing and removes it.
+          #
+          # This runs ANONYMOUSLY: `persist-credentials: false` strips the
+          # token. Fine for a public repo, and the reason the failure is
+          # reported rather than swallowed by `--quiet` -- the likeliest cause
+          # is the head branch having been deleted between the two calls.
+          if ! git fetch --no-tags --quiet origin "${head_ref}"; then
+            echo "::error::could not read the head branch '${head_ref}' of #${pr}. It may have been deleted, or this repo is private and the anonymous fetch was refused."
+            exit 1
           fi
+          head=$(git rev-parse FETCH_HEAD)
 
           # CLAUDE.md names THREE release-please-owned files; `package.json` is
           # deliberately not one of them here. Ordinary `chore(deps)` PRs touch
