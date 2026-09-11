@@ -5,7 +5,7 @@ import { resolveSingleRegion } from '../../../src/cli/commands/state.js';
  * Issue #3003: the ERROR paths of `cdkd state show` / `cdkd state resources`.
  *
  * Issue #2772 made every value those views RENDER control-safe, because their
- * rows are joined by newlines and a state record is an unchecked cast anyone
+ * output is line-oriented and a state record is an unchecked cast anyone
  * with `s3:PutObject` on the state bucket can write. The refusals were not
  * covered, and a refusal is the path a malformed record is MOST likely to
  * take — so the diagnostic a reader trusts could forge the row the rendered

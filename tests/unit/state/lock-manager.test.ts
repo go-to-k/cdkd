@@ -440,25 +440,70 @@ describe('LockManager', () => {
       expect(message).toContain('at key');
     });
 
-    it('sanitizes the STACK NAME in its DEBUG lines too (issue #3003)', async () => {
-      // Debug is quieter than warn, not a different terminal. These four lines
-      // were guarded by the same commit that added this case and fenced by
-      // nothing -- the shape the rest of that commit was closing.
+    it('sanitizes the STACK NAME in all four of its DEBUG lines (issue #3003)', async () => {
+      // Debug is quieter than warn, not a different terminal. `getLockRecord`
+      // writes four such lines and they reach three different branches, so
+      // one fixture cannot drive them all -- an earlier version of this case
+      // drove two and its name said four.
+      const hostile = 'Ghost\n  PhysicalID: arn:forged';
+      const clean = (calls: string[]): void => {
+        for (const call of calls) {
+          expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        }
+      };
+      const debugCalls = (): string[] =>
+        childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+
+      // (a) the absent branch: `Getting lock info` + `No lock exists`.
       childLoggerMock.debug.mockClear();
-      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
-      s3Client.send.mockRejectedValueOnce(noSuchKey);
-
-      expect(await lockManager.getLockInfo('Ghost\n  PhysicalID: arn:forged', 'us-east-1')).toBeNull();
-
-      const calls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
-      expect(calls.some((c) => c.includes('Getting lock info'))).toBe(true);
-      expect(calls.some((c) => c.includes('No lock exists'))).toBe(true);
-      for (const call of calls) {
-        expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      }
-      // Not vacuous: both lines still name the stack, flattened.
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      expect(await lockManager.getLockInfo(hostile, 'us-east-1')).toBeNull();
+      let calls = debugCalls();
+      clean(calls);
       expect(calls.find((c) => c.includes('Getting lock info'))).toContain('PhysicalID: arn:forged');
       expect(calls.find((c) => c.includes('No lock exists'))).toContain('PhysicalID: arn:forged');
+
+      // (b) the non-object branch: `is not an object`.
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('null') },
+      });
+      expect(await lockManager.getLockInfo(hostile, 'us-east-1')).toBeNull();
+      calls = debugCalls();
+      clean(calls);
+      expect(calls.find((c) => c.includes('is not an object'))).toContain('PhysicalID: arn:forged');
+
+      // (c) the happy branch: `Lock info for stack:`.
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ owner: 'u@h:1', timestamp: 1, expiresAt: Date.now() + 1000 })
+            ),
+        },
+      });
+      expect(await lockManager.getLockInfo(hostile, 'us-east-1')).not.toBeNull();
+      calls = debugCalls();
+      clean(calls);
+      expect(calls.find((c) => c.includes('Lock info for stack:'))).toContain(
+        'PhysicalID: arn:forged'
+      );
+    });
+
+    it('uses the ASCII ALLOWLIST in `safeSegment`, not the denylist (issue #3003)', async () => {
+      // The class on the SEGMENT helper, the twin of the two class fences on
+      // the S3 side. Every other hostile byte in this file is in both classes.
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      childLoggerMock.debug.mockClear();
+
+      expect(await lockManager.getLockInfo('Gho\u200bst', 'us-east-1')).toBeNull();
+
+      const line = childLoggerMock.debug.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((c) => c.includes('Getting lock info'));
+      expect(line).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      expect(line).toContain('Gho st');
     });
 
     it('a malformed lock body cannot forge a row through the thrown message (issue #3003)', async () => {
@@ -467,7 +512,7 @@ describe('LockManager', () => {
       // fields to sanitize and the catch wraps V8's `SyntaxError` — which
       // quotes the offending INPUT, so a `lock.json` anyone with
       // `s3:PutObject` can write reaches the terminal through the error.
-      // `cdkd state show` surfaces this and joins its rows with newlines.
+      // `cdkd state show` surfaces this, and cdkd's output is line-oriented.
       //
       // The body takes the array-opener shape deliberately: V8 quotes the
       // input only for `Unexpected token 'X', "..." is not valid JSON`, while

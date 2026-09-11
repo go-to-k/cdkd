@@ -774,8 +774,8 @@ export function formatError(error: unknown): string {
       // `SyntaxError` from `JSON.parse`, and V8 quotes the offending INPUT in
       // that message — so a `state.json` or `lock.json` anyone with
       // `s3:PutObject` on the state bucket can write reaches the terminal
-      // through this line. `cdkd state show` joins its rows with newlines, so
-      // a newline here forges a row in the diagnostic, and it did so one line
+      // through this line. cdkd's output is line-oriented, so an injected
+      // newline invents a line that reads like a row -- and it did so one line
       // BELOW a message the thrower had already sanitized.
       //
       // The DENYLIST class, not `asciiOnly`: a cause is free-form text from an

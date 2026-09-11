@@ -3320,8 +3320,8 @@ export interface CdkdStateStackTree {
  * One spelling of "this value came from an S3 key or a state record, and is
  * about to be interpolated into a message a terminal will render" (issue
  * #3003). `cdkd state show --show-nested` reaches the walker's refusals below,
- * and its rows are joined by newlines, so an unsanitized value forges a row in
- * the diagnostic. A `logicalId` is a KEY of the record body -- CloudFormation
+ * and cdkd's output is line-oriented, so an unsanitized value invents a line
+ * that reads like a row. A `logicalId` is a KEY of the record body -- CloudFormation
  * constrains a logical id, but nothing enforces that on a record read back
  * from S3, and it is half of the child stack name derived from it.
  *

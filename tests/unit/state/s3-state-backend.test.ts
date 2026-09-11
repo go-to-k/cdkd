@@ -551,7 +551,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // The case above proves the record is REFUSED. What it does not cover is
       // what the refusal SAYS: the message interpolated the raw value, so the
       // string that never reached the rendered row reached the diagnostic
-      // instead — and `cdkd state show` joins its rows with newlines.
+      // instead — and cdkd's output is line-oriented.
       const bad = {
         version: '2\n  PhysicalID: arn:forged',
         stackName: 'X',
