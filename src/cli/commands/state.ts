@@ -1075,14 +1075,13 @@ function renderStateBlock(
       //
       // The DIGEST goes through `formatAttributeValue`, like the Outputs value
       // above. The argument is stronger than for the key: a key is a string
-      // whatever an operator
-      // put there, while a VALUE can be any JSON type, and state is read as an
-      // unchecked cast that validates neither. A String method called on it
-      // directly would throw on a hand-edited number or `null` and take the
-      // WHOLE render with it: `renderStateBlock` builds every line before
-      // anything is written, so one bad digest costs the stack header and
-      // every resource, and under `--show-nested` the parent and every
-      // sibling.
+      // whatever an operator put there, while a VALUE can be any JSON type, and
+      // state is read as an unchecked cast that validates neither. A String
+      // method called on it directly would throw on a hand-edited number or
+      // `null` and take the WHOLE render with it: `renderStateBlock` builds
+      // every line before anything is written, so one bad digest costs the
+      // stack header and every resource, and under `--show-nested` the parent
+      // and every sibling.
       //
       // `skippedOutputsEqual` normalises a hand-edited `null` RECORD on this
       // same field — a different level from a null DIGEST inside it, but the
