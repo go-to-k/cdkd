@@ -726,7 +726,11 @@ describe('cross-file fences', () => {
       // Built FROM the constant. Hard-coding the label here while the failure
       // message interpolated `SUBISSUE_LABEL` let a rename of the constant pass
       // with the documents left stale — the two spellings have to be one.
-      const negated = new RegExp(`index\\((\\\\)?"${SUBISSUE_LABEL}(\\\\)?"\\)\\s*\\|\\s*not`);
+      // ESCAPED on the way in: `backfill-type` is regex-inert today, but a value
+      // carrying `.` or `+` would silently LOOSEN the fence rather than break
+      // it, which is the direction that goes unnoticed.
+      const label = SUBISSUE_LABEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const negated = new RegExp(`index\\((\\\\)?"${label}(\\\\)?"\\)\\s*\\|\\s*not`);
       expect(
         negated.test(listing),
         `this backlog listing does not EXCLUDE '${SUBISSUE_LABEL}': ${first}`
@@ -749,15 +753,25 @@ describe('cross-file fences', () => {
     // `toContain('EXCLUDES the label')` it replaced DID catch. Naming what a
     // replacement can no longer see is the rule; here the answer was "the only
     // thing that mattered", so both halves are asserted together.
+    // The span is bounded to ONE paragraph. Unbounded `[\s\S]*?` catches the
+    // inversion but not a head phrase DETACHED from its verb — move the
+    // `EXCLUDES the label` clause into a different bullet and the now-verbless
+    // claim still matches, as it would if a second occurrence were added later
+    // to rescue an inverted first one.
+    const para = '(?:(?!\\n\\n)[\\s\\S])*?';
     expect(filing, 'the claim lost its verb, so it can be inverted and stay green').toMatch(
-      /Every backlog listing in `triage\.md`[\s\S]*?EXCLUDES the label/
+      new RegExp(`Every backlog listing in \`triage\\.md\`${para}EXCLUDES the label`)
     );
     expect(filing).toContain('§3-0');
     expect(filing).toContain('§3-a');
-    // And round 2's own correction — the retro.md half — which nothing asserted:
-    // deleting that clause left the fence green while the listing it describes
-    // is the one where a missed exclusion inflates a retro's finding count.
-    expect(filing, 'the retro.md half of the claim is unasserted').toMatch(/`retro\.md`/);
+    // And round 2's own correction — the retro.md half — spanned to ITS verb
+    // too. Asserting the filename alone reds on DELETING the clause but not on
+    // inverting it ("…and so does §10's count in `retro.md` — it does NOT"),
+    // which is the same defect one level down: round 3 fixed the triage half
+    // this way and left this one naming a string.
+    expect(filing, 'the retro.md half of the claim is unasserted or invertible').toMatch(
+      new RegExp(`and so does §10's folded-finding count in \`retro\\.md\`${para}matters`)
+    );
   });
 
   it('keys on ONE marker spelling, aliased rather than re-typed', () => {
@@ -971,7 +985,15 @@ esac
       // flat property checklist the parent used to hold.
       const index = readFileSync(realOut, 'utf8');
       expect(index).toContain('- [ ] #900 — `AWS::S3::Bucket` (2 remaining)');
-      expect(index, 'the index regressed to a per-PROPERTY listing').not.toContain('- [ ] `A`');
+      // The negative names the shape the parent ACTUALLY used to hold — the
+      // flat checklist `renderUmbrellaChecklist` emits, `- [ ] \`Type\`: \`Prop\``.
+      // A first version spelled it `- [ ] \`A\``, which that renderer never
+      // produces, so the assertion could not have fired for the regression it
+      // named: a negative needs an input where the wrong value would actually
+      // be EMITTED (.claude/rules/testing.md).
+      expect(index, 'the index regressed to the flat per-property checklist').not.toContain(
+        '`AWS::S3::Bucket`: `A`'
+      );
     } finally {
       rmSync(box.dir, { recursive: true, force: true });
     }
