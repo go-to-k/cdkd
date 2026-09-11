@@ -3118,18 +3118,20 @@ function main() {
   // from an earlier run — or one naming a property this cycle did not settle —
   // would otherwise hide a live decision behind a write that is not on the
   // branch.
-  // Resolved through `fixturesDir` so this read and the `removed` it subtracts
-  // from name the same directory — `writeAutoTolerated` already takes that
-  // seam. The default path is byte-identical (`FIXTURES_DIR` IS that
-  // directory), and no behaviour changes today: measured 2026-09-12, a
-  // `--fixtures-dir` run reports all 134 fixtures "could not read", because
-  // `committedOf` follows the seam too and git cannot resolve a path outside
-  // the repository — so `removed` is empty there and the map is never
-  // consulted for a subtraction. The alignment is kept because this map became
-  // the whole subtraction oracle in go-to-k/cdkd#3005, and a caller that ever
-  // does reach both halves must not read one from a scratch tree and the other
-  // from the committed one.
-  const tolerancePath = join(fixturesDir, '_todo-backfill.json');
+  // REPO_ROOT, deliberately, and NOT the `--fixtures-dir` seam. The three
+  // readers of this file must name one path or "settled" means different
+  // things in different places, which is the whole defect go-to-k/cdkd#3005
+  // turned out to carry: `writeAutoTolerated` takes a `repoRoot` seam and is
+  // called here with the default, and the CI-side oracle
+  // (`tests/unit/provisioning/_property-coverage-utils.ts`) resolves it from
+  // its own location. Pointing this read at `fixturesDir` was tried and
+  // REVERTED: it would have had the Settle step write one file while the
+  // diagnosis read another. It changed nothing observable either way —
+  // measured 2026-09-12, a `--fixtures-dir` run reports all 134 fixtures
+  // "could not read", because `committedOf` follows the seam too and git
+  // cannot resolve a path outside the repository, so `removed` is empty there
+  // and this map is never consulted for a subtraction.
+  const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
   /** @type {Record<string, Record<string, string>>} */
   let liveTolerance = {};
   if (existsSync(tolerancePath)) {
@@ -3155,6 +3157,18 @@ function main() {
           'treated as settled, so this report OVER-counts rather than hiding a decision\n'
       );
     }
+  } else if (autoTolerated.length > 0) {
+    // An ABSENT file with a non-empty `written` record is contradictory —
+    // `writeAutoTolerated` reads the file before writing it, so it cannot have
+    // written to one that is not there. The cross-check below empties
+    // `autoTolerated` in that state, which silently removes the whole "the job
+    // SETTLED itself" section, so the state is announced rather than left to be
+    // read as "this cycle settled nothing".
+    process.stderr.write(
+      `${tolerancePath} does not exist, but the auto-tolerated record names ` +
+        `${autoTolerated.length} write(s) — dropping them from the report; nothing is treated ` +
+        'as settled, so this report OVER-counts rather than hiding a decision\n'
+    );
   }
   if (autoTolerated.length > 0) {
     autoTolerated = autoTolerated.filter(

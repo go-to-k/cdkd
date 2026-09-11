@@ -4855,51 +4855,48 @@ describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () 
 
 describe('main()’s tolerance read (issue #3005)', () => {
   const SCRIPT_PATH = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
-  const spawnIn = (dir: string): string => {
-    try {
-      return execFileSync('node', [SCRIPT_PATH, `--fixtures-dir=${dir}`], { encoding: 'utf8' });
-    } catch (e) {
-      return String((e as { stdout?: unknown }).stdout ?? '');
-    }
-  };
 
-  it('resolves the tolerance file from the SAME directory it reads fixtures from', () => {
+  it('resolves the tolerance file to the SAME path its writer and CI use', () => {
     // A SOURCE-shape assertion, and the reason is worth stating rather than
-    // hiding behind a weaker test: the behaviour is not reachable through the
-    // seam. Measured 2026-09-12, a `--fixtures-dir` run reports all 134
-    // fixtures "could not read" -- `committedOf` follows the seam too and git
-    // cannot resolve a path outside the repository -- so `removed` is empty
-    // there and the tolerance map is never consulted for a subtraction. A spawn
-    // case would therefore pass with either spelling, which is exactly the
-    // vacuous green this suite exists to refuse.
+    // hiding behind a weaker test: the behaviour is not reachable at runtime.
+    // Measured 2026-09-12, a `--fixtures-dir` run reports all 134 fixtures
+    // "could not read" -- `committedOf` follows the seam too and git cannot
+    // resolve a path outside the repository -- so `removed` is empty there and
+    // the tolerance map is never consulted for a subtraction. A spawn case
+    // would pass with any spelling, which is the vacuous green this suite
+    // refuses.
     //
-    // What is pinned is the ALIGNMENT: the map became the whole subtraction
-    // oracle in go-to-k/cdkd#3005, so it must never be read from the committed
-    // tree while `removed` comes from a scratch one.
-    const source = readFileSync(join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs'), 'utf8');
+    // What is pinned is that the THREE readers name one file. The map became
+    // the whole subtraction oracle in go-to-k/cdkd#3005, and "settled" meaning
+    // different things in different places is the defect that issue turned out
+    // to carry. Pointing this read at the `--fixtures-dir` seam was tried and
+    // reverted: `writeAutoTolerated` takes a `repoRoot` seam and is called with
+    // the default, so the seam would have had the Settle step write one file
+    // while the diagnosis read another.
+    const source = readFileSync(SCRIPT_PATH, 'utf8');
     expect(
       source,
-      'the tolerance file is resolved against REPO_ROOT while the fixtures it is subtracted ' +
-        'from come from the seam directory -- the two must name one directory'
-    ).toContain("const tolerancePath = join(fixturesDir, '_todo-backfill.json');");
-    // Non-vacuity: the seam that makes the two able to differ still exists.
-    expect(source).toContain("const fixturesDir = rawArg('--fixtures-dir') || FIXTURES_DIR;");
+      'the diagnosis no longer resolves the tolerance file the way its writer does'
+    ).toContain("const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');");
+    // The writer's own spelling, so a change to either side fails here rather
+    // than letting the two drift apart silently.
+    expect(
+      source,
+      'writeAutoTolerated no longer resolves the tolerance file the way the diagnosis does'
+    ).toContain("const path = join(repoRoot, 'tests/fixtures/cfn-schemas/_todo-backfill.json');");
+    // ...and the writer is still called WITHOUT a repoRoot override, which is
+    // what makes the two resolve equal on every real run.
+    expect(source).toContain('writeAutoTolerated(removed, providerFiles)');
   });
 
-  it('OVER-counts on an unparseable tolerance file instead of dying', () => {
-    // The `catch` added with the seam read. Throwing there would kill the run
-    // before the report is written, and the report going out is what makes the
-    // pull request open at all — so the fallback settles nothing, which can
-    // only show a decision that is already settled, never hide a live one.
-    const dir = mkdtempSync(join(tmpdir(), 'cdkd-tolerance-broken-'));
-    try {
-      cpSync(join(REPO_ROOT, 'tests/fixtures/cfn-schemas'), dir, { recursive: true });
-      writeFileSync(join(dir, '_todo-backfill.json'), '{ not json');
-      const out = spawnIn(dir);
-      // The report still rendered — the whole point of the fallback.
-      expect(out).toContain('What changed, and what needs a decision');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 60_000);
+  // The `try/catch` around that read has NO case, and the absence is recorded
+  // rather than papered over with one that asserts nothing. A spawn case was
+  // written and then withdrawn: it wrote a broken `_todo-backfill.json` into a
+  // `--fixtures-dir` scratch tree, which the diagnosis does not read — the path
+  // is `REPO_ROOT`-fixed, deliberately, so all three readers name one file.
+  // Probed after that was settled: removing the wrap left the suite green, so
+  // the case was measuring nothing. Reaching the catch needs the COMMITTED
+  // tolerance file to be unparseable, and this suite's own convention refuses a
+  // case that writes to it (`withScratchRoot` asserts its bytes are unchanged).
+  // What the wrap buys is stated at the call site instead.
 });

@@ -324,18 +324,31 @@ const UNCOVERED_TERMS: Record<string, string> = {
  * not contribute a position), then count identifiers in declaration position
  * with the separator in a non-consuming alternation.
  *
+ * Three position shapes are counted, not one, and the two extra ones were
+ * measured rather than imagined. A REST element and a KEY position (a computed
+ * or quoted key, which the strip reduces to a bare `:`) are terms that
+ * `names` cannot read — so on a shared line they made BOTH arms silent:
+ * `pendingSdkBump = [], [k]: schemaGaps` read 1 declaration and 1 name against
+ * 1 line, and a genuine seventh term escaped classification with every floor
+ * and anchor green. An earlier revision of this paragraph asserted such a term
+ * was "caught by the `names.length === lines.length` arm instead"; that is a
+ * conjunction no shape satisfies, since the arm only fires when the exotic term
+ * is ALONE on its line (names 0 against lines 1).
+ *
  * BOUND, stated because a fence that over-claims is what this file exists to
- * prevent: it is exact for PLAIN-IDENTIFIER lines with FLAT defaults, which is
- * every line `countDecisions` has. The strip is regex, not a parser, so a
- * NESTED brace default (`{ a: { b: 1 }, c: 2 }`) or a regex-literal default
- * reads 2 — a FALSE RED, the safe direction, and neither shape exists here. In
- * the other direction a second term that is a rest element, a computed key or a
- * quoted key reads 1; those are caught by the `names.length === lines.length`
- * arm instead, because none of them parses as a term name either.
+ * prevent: the strip is a regex, not a parser, so a NESTED brace default
+ * (`{ a: { b: 1 }, c: 2 }`) or a regex-literal default reads 2 — a FALSE RED,
+ * the safe direction, and neither shape exists in `countDecisions`.
  */
 const declarationCount = (line: string): number => {
   const bare = line.replace(/\[[^\]]*\]|\{[^}]*\}|\([^)]*\)|'[^']*'|"[^"]*"|`[^`]*`/g, '');
-  return (bare.match(/(?:^|,)\s*[A-Za-z_$][\w$]*/g) ?? []).length;
+  return (
+    (bare.match(/(?:^|,)\s*(?:\.\.\.)?[A-Za-z_$][\w$]*/g) ?? []).length +
+    // A rest element and a key position are terms `names` cannot read, so they
+    // are counted HERE or they are counted nowhere.
+    (bare.match(/(?:^|,)\s*\.\.\./g) ?? []).length +
+    (bare.match(/(?:^|,)\s*:/g) ?? []).length
+  );
 };
 
 /**
@@ -451,6 +464,11 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       '  removed, schemaGaps,',
       '  pendingSdkBump = [], schemaGaps = []',
       '  a, b, c,',
+      // A second term `names` cannot read either — these made BOTH arms silent
+      // until the rest and key positions were counted here.
+      '  pendingSdkBump = [], ...rest',
+      '  pendingSdkBump = [], [k]: schemaGaps',
+      "  pendingSdkBump = [], 'schema-gaps': schemaGaps",
     ];
     for (const line of declaresOne) {
       expect(declarationCount(line), `false red on valid line ${JSON.stringify(line)}`).toBe(1);
