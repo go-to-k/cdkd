@@ -137,9 +137,9 @@ reason: nearly every decision the count can carry also reddens a check that
 rest of the count IS that family of checks). So the label and the title are
 there to tell you the work exists, not to hold the gate.
 
-The exception is the unreadable-fixture class named at the end of this section,
-and it is narrower than it sounds — read it there rather than here, so there is
-only one description of it on the page.
+The exception is the unreadable-fixture class described a few paragraphs down,
+and it is narrower than it sounds — read it there rather than here, so the
+merge-blocking story has one description rather than two.
 
 **Unsettled** is the load-bearing word in that sentence, and it was wrong until
 issue [#3005](https://github.com/go-to-k/cdkd/issues/3005). A property listed in

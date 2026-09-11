@@ -4750,6 +4750,29 @@ describe('partitionSettledRemovals (issue #3005)', () => {
     expect(md).not.toContain('additions only');
   });
 
+  it('does not say "additions only" when THIS run settled the removal either', () => {
+    // The sibling of the case above, and the one the first fix missed: keying
+    // the sentence on `alreadyTolerated` alone left it contradicting the
+    // job-settled section, which the 73%-auto-settleable figure makes the
+    // common path rather than the rare one.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      skipped: [],
+      divergences: [],
+      autoTolerated: [
+        {
+          resourceType: 'AWS::Route53::RecordSet',
+          property: 'GeoProximityLocation',
+          rationale: 'settled by the job',
+        },
+      ],
+    });
+    expect(md).toContain('Nothing in this refresh needs a decision');
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('the job SETTLED itself (1)');
+  });
+
   it('still says "additions only" when nothing was removed at all', () => {
     // The control for the case above: without it, deleting the conditional and
     // always using the longer sentence would pass.

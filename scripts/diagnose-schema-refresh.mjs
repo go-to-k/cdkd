@@ -896,7 +896,7 @@ export function countDecisions({
  * measures 73% of declared properties as auto-settleable.
  *
  * @param {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} removed
- * @param {Record<string, Record<string, string> | undefined>} bogusTolerated the
+ * @param {Record<string, Record<string, string> | undefined> | undefined} bogusTolerated the
  *   tolerance file's `bogusTolerated` map; `{}` when the file is absent, which
  *   settles nothing and so over-counts — the safe direction.
  * @param {ReadonlyArray<{resourceType: string, property: string}>} [settledThisCycle]
@@ -1232,13 +1232,16 @@ export function renderDiagnosis(input) {
     pendingSdkBump,
   });
   if (decisionTotal === 0) {
-    // "additions only" is FALSE when a standing tolerance settled a removal —
-    // AWS did remove something, it just needs no judgement. The section below
-    // lists them; this sentence must not contradict it.
+    // "additions only" is FALSE whenever a removal was SETTLED — AWS did remove
+    // something, it just needs no judgement. BOTH no-decision sections count:
+    // keying on `alreadyTolerated` alone left the sentence contradicting the
+    // job-settled section, which is the one the 73% figure says is the common
+    // path. The sections below list them; this sentence must not contradict
+    // either.
     lines.push(
-      alreadyTolerated.length > 0
+      alreadyTolerated.length > 0 || autoTolerated.length > 0
         ? 'Nothing in this refresh needs a decision. AWS did remove a property the provider ' +
-            'declares, but a standing tolerance already settles it — see the section below.'
+            'declares, but it is already settled — see the section(s) below.'
         : 'Nothing in this refresh needs a decision — additions only.',
       ''
     );

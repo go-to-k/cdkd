@@ -27,7 +27,7 @@
  * `writeAutoTolerated` SKIPS an already-tolerated property and so puts it in
  * neither `written` nor `escalated`. A removal of such a property was therefore
  * counted with nothing red: a decision class that merges cleanly, which is the
- * shape #3005 calls worse than the nested-key one. `subtractSettledRemovals`
+ * shape #3005 calls worse than the nested-key one. `partitionSettledRemovals`
  * now reads the same tolerance FILE both sides read, and the confluence case in
  * `diagnose-schema-refresh.test.ts` pins them to one definition of "settled".
  *
@@ -123,7 +123,13 @@ const stripComments = (run: string): string =>
 
 const refreshShell = (name: string): string => {
   const step = stepsOf(refresh, 'refresh').find((s) => s.name === name);
-  expect(step, `no refresh step named ${JSON.stringify(name)} — renamed or deleted`).toBeDefined();
+  // `step?.run`, not `step`: a step converted to `uses:` passes a `toBeDefined`
+  // on the step and then dies with "Cannot read properties of undefined" one
+  // line later, which reads as a broken test rather than a renamed step.
+  expect(
+    step?.run,
+    `no refresh step named ${JSON.stringify(name)} runs a shell — renamed, deleted, or now a \`uses:\``
+  ).toBeDefined();
   return stripComments(step!.run!);
 };
 
@@ -202,7 +208,7 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'An UNSETTLED removal leaves a provider declaring a property the schema no longer has, and ' +
       'tests/unit/provisioning/property-coverage.test.ts fails that classification unless the ' +
       "property is in _todo-backfill.json's bogusTolerated. It reaches CI through the whole unit " +
-      'suite rather than a task of its own. The link holds only because `subtractSettledRemovals` ' +
+      'suite rather than a task of its own. The link holds only because `partitionSettledRemovals` ' +
       'decides SETTLED from the same tolerance FILE that `classifyCoverage` reads: subtracting ' +
       'only the current cycle\'s `written` list left an already-tolerated removal counted while ' +
       'property-coverage was green (go-to-k/cdkd#3005), and the confluence case in ' +
@@ -303,6 +309,34 @@ const UNCOVERED_TERMS: Record<string, string> = {
  * `CI_COVERAGE`'s `covers` and fails — which is the point: a decision class
  * nothing reddens is the exact defect #3005 reports.
  */
+/**
+ * How many terms one destructuring LINE declares.
+ *
+ * Extracted, and fenced by a table below, because the line count alone only
+ * bounds the name count while each line carries ONE term: `matchAll` with `/gm`
+ * yields at most one match per line, so `removed, divergences` parses as
+ * `removed` and the two counts still agree — a seventh term added beside a
+ * sixth vanishes with every floor and anchor passing. Formatting makes that
+ * unreachable today, which is a property of the formatter, not of this fence.
+ *
+ * It is a separate function with its own cases because two earlier spellings
+ * were both wrong, in opposite directions, and an end-to-end probe could not
+ * tell them apart:
+ *
+ *   - counting COMMAS red `failedChecks = ['a', 'b'],` (valid) and passed
+ *     `removed, divergences` (a hidden term);
+ *   - anchoring on `(^|,)…(?:=|,|$)` CONSUMED the separating comma, so two bare
+ *     terms could not both match and `removed, schemaGaps,` counted 1.
+ *
+ * So: strip bracketed, braced, parenthesised and quoted spans (a default must
+ * not contribute a position), then count identifiers in declaration position
+ * with the separator in a non-consuming alternation.
+ */
+const declarationCount = (line: string): number => {
+  const bare = line.replace(/\[[^\]]*\]|\{[^}]*\}|\([^)]*\)|'[^']*'|"[^"]*"/g, '');
+  return (bare.match(/(?:^|,)\s*[A-Za-z_$][\w$]*/g) ?? []).length;
+};
+
 const decisionTerms = (): string[] => {
   const source = countDecisions.toString();
   const destructuring = source.match(/\(\s*\{([\s\S]*?)\}\s*\)/);
@@ -339,17 +373,9 @@ const decisionTerms = (): string[] => {
   // unreachable today; that is a property of the formatter, not of this fence,
   // so it is asserted rather than relied upon.
   //
-  // Counting DECLARATION POSITIONS, not commas. A bare comma count is wrong in
-  // both directions: `removed, divergences` without a trailing comma has one
-  // comma and still hides a term, while a default holding a comma
-  // (`failedChecks = ['a', 'b'],`) has two and is perfectly valid. Bracketed,
-  // braced, parenthesised and quoted spans are stripped first so a default
-  // cannot contribute a position.
   for (const line of lines) {
-    const bare = line.replace(/\[[^\]]*\]|\{[^}]*\}|\([^)]*\)|'[^']*'|"[^"]*"/g, '');
-    const declarations = (bare.match(/(^|,)\s*[A-Za-z_$][\w$]*\s*(?:=|,|$)/g) ?? []).length;
     expect(
-      declarations,
+      declarationCount(line),
       `countDecisions declares more than one term on the line ${JSON.stringify(line)}; the ` +
         'per-line scan reads only the first, so a term there would be silently dropped'
     ).toBeLessThanOrEqual(1);
@@ -389,6 +415,44 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       5
     );
     expect(graded).toContain('audit:nested-key-coverage:check');
+  });
+
+  it('counts declarations per line in both directions — the guard itself', () => {
+    // A table, not an end-to-end probe: the guard has been wrong twice and the
+    // two wrong spellings failed on DIFFERENT shapes, which a single mutation
+    // of countDecisions cannot distinguish. Every real line must read 1 (or a
+    // correct file reds), and every hidden-term shape must read more than 1 (or
+    // a seventh term escapes).
+    const declaresOne = [
+      '  removed,',
+      '  divergences,',
+      '  nestedKeyUnparsed = false,',
+      '  failedChecks = [],',
+      '  unreadable = [],',
+      '  pendingSdkBump = [],',
+      // Valid lines whose DEFAULT contains a separator — the false-red the
+      // comma count produced.
+      "  failedChecks = ['a', 'b'],",
+      '  opts = { a: 1, b: 2 },',
+      '  fn = (a, b) => a,',
+    ];
+    const hidesATerm = [
+      '  removed, divergences',
+      '  removed, divergences,',
+      // The spelling the consuming-separator version read as one.
+      '  removed, schemaGaps,',
+      '  pendingSdkBump = [], schemaGaps = []',
+      '  a, b, c,',
+    ];
+    for (const line of declaresOne) {
+      expect(declarationCount(line), `false red on valid line ${JSON.stringify(line)}`).toBe(1);
+    }
+    for (const line of hidesATerm) {
+      expect(
+        declarationCount(line),
+        `a term hidden on ${JSON.stringify(line)} would not be reported`
+      ).toBeGreaterThan(1);
+    }
   });
 
   it('derives a real decision-term population from the shipped countDecisions', () => {
@@ -503,7 +567,10 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // Comment-stripped: a line such as `# we do not set -o pipefail here`
     // satisfies both assertions below while arming nothing.
     const body = stripComments(step!.run!);
-    const pipefail = body.indexOf('set -o pipefail');
+    // Anchored: `stripComments` drops only whole-line comments, so a substring
+    // search is satisfied by a trailing `# no set -o pipefail here` or a quoted
+    // echo.
+    const pipefail = body.search(/^\s*set -o pipefail/m);
     const invocation = body.search(/^\s*vp run test(\s|$)/m);
     expect(pipefail, 'the tee’d unit-suite step no longer sets pipefail').toBeGreaterThan(-1);
     expect(
