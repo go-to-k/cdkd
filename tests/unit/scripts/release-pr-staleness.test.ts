@@ -26,8 +26,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
  * release is unchanged and the PR is left on its original base).
  *
  * Why this suite EXECUTES the workflow's shell against real git repositories
- * and a stubbed `gh`: the whole check is six git/gh invocations, each of which
- * rots silently. Drop the `!` from `merge-base`, compare against the wrong ref,
+ * and a stubbed `gh`: the whole check is a chain of git/gh invocations, each of
+ * which rots silently. Drop the `!` from `merge-base`, compare against the wrong ref,
  * invert the `armed` test — and it stops disarming anything while still exiting
  * 0 on every run, which is indistinguishable from "nothing was stale". A suite
  * that pattern-matched the YAML would certify that state.
@@ -45,9 +45,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
  * off `gh pr list`'s page, two same-repo matches, an unreadable auto-merge
  * state, a head branch that cannot be read, `gh` naming no head branch at all,
  * a head branch name carrying shell metacharacters, and `--disable-auto`
- * losing the race it polices. The table's four rows plus those eight are the
- * shell cases; the `describe` below them checks the YAML wiring instead, so do
- * not read a count off one half.
+ * losing the race it polices.
+ *
+ * Deliberately NOT stated as a count. Three successive revisions of this
+ * docblock gave a number ("six invocations", "the ten", "those eight") and all
+ * three were wrong, because nothing re-checks a number in prose. The `describe`
+ * block at the bottom covers the YAML wiring rather than the shell, so any
+ * count taken off one half was going to be wrong anyway.
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -512,8 +516,10 @@ esac
     // Distinct from the case above: there the fetch fails, here `gh` answered
     // nothing. Without the guard the empty value reaches `git fetch origin ""`
     // and is reported as a branch that "may have been deleted" — a
-    // misdiagnosis pointing at the repo when the fault was the CLI. Same
-    // fail-closed rule the `armed` read already had.
+    // misdiagnosis pointing at the repo when the fault was the CLI. The guard
+    // is `git check-ref-format`, an ALLOWLIST like the `armed` read's, rather
+    // than a `-z` testing one bad shape: it also rejects whitespace-only and
+    // leading-dash answers.
     const r = run(
       fixture({
         stale: true,
@@ -523,21 +529,33 @@ esac
       })
     );
     expect(r.status).not.toBe(0);
-    expect(r.output).toContain('no head branch name');
+    expect(r.output).toContain('no usable head branch name');
     expect(disarmed(r)).toBe(false);
   });
 
   it('does not evaluate a head branch name that carries shell metacharacters', () => {
     // The one place a head ref reaches a shell is `git fetch … "${head_ref}"`.
+    //
+    // The payload is `$(>pwned)` and NOT `$(touch pwned)`, which is what this
+    // case first used: `git check-ref-format --branch` REJECTS the latter (it
+    // contains a space), so it modelled a value GitHub can never hand back,
+    // while `$(>pwned)` is ref-format VALID and still writes the file under a
+    // parser. Both measured.
+    //
     // What this case does NOT catch, measured rather than assumed: dropping the
-    // quotes changes nothing, because bash does not re-scan a variable's VALUE
-    // for command substitution — `v=$(printf %s 'x$(touch /tmp/p)'); cmd $v`
-    // creates no file. What it DOES catch is the rewrite that makes the value
-    // re-enter the parser: replacing the line with `eval "git fetch … $head_ref"`
-    // reds this case and ONLY this case. The probe is the side effect — if the
-    // `$(…)` ever runs, the file exists. The run itself is expected to fail,
-    // since no such branch exists to fetch.
-    const hostile = `${RELEASE_BRANCH}$(touch pwned)`;
+    // quotes changes nothing here. Two separate reasons, and only the second is
+    // load-bearing — bash does not re-scan a variable's VALUE for command
+    // substitution, AND unquoted expansion still word-splits and globs, which
+    // this payload would trigger if a ref could carry it. It cannot:
+    // `check-ref-format` rejects space, `*`, `?`, `[`, `:`, `\`, `~` and `^`,
+    // and the workflow now runs that same check before the fetch.
+    //
+    // What it DOES catch is the rewrite that makes the value re-enter the
+    // parser: replacing the line with `eval "git fetch … $head_ref"` reds this
+    // case and ONLY this case. The probe is the side effect — if the `$(…)`
+    // ever runs, the file exists. The run itself is expected to fail, since no
+    // such branch exists to fetch.
+    const hostile = `${RELEASE_BRANCH}$(>pwned)`;
     const fx = fixture({
       stale: true,
       armed: true,
@@ -545,6 +563,9 @@ esac
     });
     const r = run(fx);
     expect(r.status).not.toBe(0);
+    // Pins WHICH failure. Without it, a future change that exits 1 before ever
+    // reaching the fetch satisfies both assertions below vacuously.
+    expect(r.output).toContain('could not read the head branch');
     expect(existsSync(join(fx.cwd, 'pwned'))).toBe(false);
     expect(disarmed(r)).toBe(false);
   });

@@ -86,9 +86,11 @@ jobs:
           #     FORK's branch name against THIS repo, which does not carry it.
           #     So the reach is a second DoS wearing a misleading cause ("may
           #     have been deleted"), not a write. The comment/disarm this job's
-          #     `pull-requests: write` allows needs BOTH an identically named
-          #     branch still present here AND someone with write access having
-          #     armed auto-merge on that fork PR -- a fork author cannot arm it.
+          #     `pull-requests: write` allows needs THREE things at once: an
+          #     identically named branch still present here, someone with write
+          #     access having armed auto-merge on that fork PR (its author
+          #     cannot -- arming needs merge rights), and that branch being
+          #     STALE, since a current one exits 0 below without writing.
           #     Stated at that length because two earlier drafts of this bullet
           #     overstated the reach, each time describing a chain nobody ran.
           #
@@ -142,12 +144,16 @@ jobs:
           esac
 
           head_ref=$(gh pr view "${pr}" --repo "${REPO}" --json headRefName --jq .headRefName)
-          # Same fail-closed rule as `armed` above. An empty answer would reach
-          # `git fetch origin ""`, whose failure is reported as "could not read
-          # the head branch ''" -- a misdiagnosis pointing at a deleted branch
-          # when the real fault was `gh`.
-          if [ -z "${head_ref}" ]; then
-            echo "::error::gh returned no head branch name for #${pr}. Refusing to guess which branch to compare."
+          # Same ALLOWLIST discipline as `armed` above -- accept only what git
+          # itself calls a valid branch name -- rather than testing one bad
+          # shape. A bare `-z` was the single-shape version and let whitespace
+          # and leading-dash answers through: measured, `check-ref-format`
+          # REJECTS '', '   ' and '--upload-pack=x', and ACCEPTS an ordinary
+          # `release-please--branches--main`. An empty answer reaching
+          # `git fetch origin ""` was also reported as "could not read the head
+          # branch ''", pointing at a deleted branch when the fault was `gh`.
+          if ! git check-ref-format --branch "${head_ref}" >/dev/null 2>&1; then
+            echo "::error::gh gave no usable head branch name for #${pr} (got '${head_ref}'). Refusing to guess which branch to compare."
             exit 1
           fi
           # ALWAYS fetch; do NOT prefer the `refs/remotes/origin/*` the checkout
@@ -162,7 +168,10 @@ jobs:
           # token. Fine for a public repo, and the reason the failure is
           # reported rather than swallowed by `--quiet` -- the likeliest cause
           # is the head branch having been deleted between the two calls.
-          if ! git fetch --no-tags --quiet origin "${head_ref}"; then
+          # `refs/heads/...`, not the bare name: the answer then reaches git in
+          # an unambiguous ref position rather than one where a leading dash
+          # could be read as an option.
+          if ! git fetch --no-tags --quiet origin "refs/heads/${head_ref}"; then
             echo "::error::could not read the head branch '${head_ref}' of #${pr}. Likeliest causes: the branch was deleted, a transient network failure (this fetch is not retried), or this repo is private and the anonymous fetch was refused."
             exit 1
           fi
