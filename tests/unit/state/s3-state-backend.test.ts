@@ -609,6 +609,56 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(message).toContain('PhysicalID: arn:forged');
     });
 
+    it('sanitizes the legacy region-mismatch DEBUG line (issue #3003)', async () => {
+      // A debug line, but debug is quieter than warn -- not a different
+      // terminal -- and this one carries both a stack name and state-BODY
+      // content. Its sibling in `probeLegacyState` has been sanitized since
+      // issue #1926; this one had not.
+      childLoggerMock.debug.mockClear();
+      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                version: 1,
+                stackName: 'S',
+                region: 'eu-west-1\n  PhysicalID: arn:forged',
+                resources: {},
+                outputs: {},
+                lastModified: 1,
+              })
+            ),
+        },
+        ETag: '"e"',
+      });
+
+      const result = await backend.getState('Ghost\n  StackForged: yes', 'us-east-1');
+      expect(result).toBeNull();
+
+      // PER CALL, not over a joined blob: joining and then splitting on `\n`
+      // is blind to the very newline under test, and a blob also drags in
+      // sibling lines this case does not own. Each call's own string still
+      // contains an injected newline if one survived.
+      const debugCalls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+      const debugText = debugCalls.join('\n');
+      expect(debugText).toContain('skipping legacy fallback');
+      // Asserted on the WHOLE captured text, not on one line pulled out of it:
+      // finding the line by `split('\n')` first is blind to the very newline
+      // under test, because the fragment it returns no longer contains one.
+      // Both hostile values are still reported, flattened, so neither
+      // assertion passes by the value being dropped.
+      // Every captured call, so a sibling line on this same read path that
+      // stayed raw fails here too -- which is how this case found two.
+      for (const call of debugCalls) {
+        expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      }
+      const mismatch = debugCalls.find((c) => c.includes('skipping legacy fallback'));
+      expect(mismatch).toContain('PhysicalID: arn:forged');
+      expect(mismatch).toContain('StackForged: yes');
+    });
+
     it('sanitizes the LEGACY-key read failure, on getState\'s own fallback (issue #3003)', async () => {
       // `getState` falls back to the legacy key when the region-scoped one is
       // absent, so `tryGetLegacy`'s refusal is on the `state show` path too.
@@ -631,17 +681,23 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(message).toContain('PhysicalID: arn:forged');
     });
 
-    it('sanitizes the REGION in the has-no-body refusal (issue #3003)', async () => {
+    it('sanitizes BOTH the stack name and the region in the has-no-body refusal (issue #3003)', async () => {
+      // Both halves, in one case, because they come from the same S3 key and
+      // a case that hardened only the region left the name unfenced --
+      // neutering `this.displayName(stackName)` there reddened no injection
+      // case anywhere in the suite.
       s3Client.send.mockResolvedValueOnce({ ETag: '"e"' });
 
       const caught = await backend
-        .getState('X', 'us-east-1\n  PhysicalID: arn:forged')
+        .getState('Ghost\n  StackForged: yes', 'us-east-1\n  PhysicalID: arn:forged')
         .catch((e: unknown) => e);
       const message = (caught as Error).message;
 
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message.split('\n').some((l) => l.startsWith('  '))).toBe(false);
       expect(message).toContain('has no body');
       expect(message).toContain('PhysicalID: arn:forged');
+      expect(message).toContain('StackForged: yes');
     });
 
     it('sanitizes the STACK NAME in the VERSION refusal too (issue #3003)', async () => {

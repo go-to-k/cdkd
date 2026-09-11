@@ -431,7 +431,7 @@ describe('cdkd state resources', () => {
     expect(out).toContain('    Tags: [{"Key":"env","Value":"dev"}]');
   });
 
-  it('sanitizes its OWN refusals, which are separate templates from state show\'s (issue #3003)', async () => {
+  it('sanitizes its OWN no-state refusal, a separate template from state show\'s (issue #3003)', async () => {
     // `stateResourcesCommand` carries its own copies of the two refusals
     // `stateShowCommand` has. Driving only the `show` copies left these
     // untested -- the "N of N+1 sites" shape issue #3003 exists to close,

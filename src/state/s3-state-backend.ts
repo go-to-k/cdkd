@@ -378,7 +378,12 @@ export class S3StateBackend {
 
     // 1. Try new region-scoped key first.
     try {
-      this.logger.debug(`Getting state for stack: ${stackName} (${region})`);
+      // The three debug lines on THIS read path take the guard; the rest of
+      // the file's raw-`stackName` log sites are deploy / destroy paths with
+      // their own reachability, tracked separately.
+      this.logger.debug(
+        `Getting state for stack: ${this.displayName(stackName)} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE})`
+      );
 
       const response = await this.s3Client.send(
         new GetObjectCommand({
@@ -405,21 +410,19 @@ export class S3StateBackend {
 
       const bodyString = await response.Body.transformToString();
       const state = this.parseStateBody(bodyString, stackName);
-      this.logger.debug(`Retrieved state: ${stackName} (${region}), ETag: ${response.ETag}`);
+      this.logger.debug(
+        `Retrieved state: ${this.displayName(stackName)} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}), ETag: ${response.ETag}`
+      );
       return { state, etag: response.ETag };
     } catch (error) {
       if (!isNoSuchKey(error)) {
         if (error instanceof StateError) throw error;
-        // Both values are precomputed rather than written inline. It is not
-        // load-bearing HERE — this message is quoted in no doc — but the rule
-        // is uniform so the one message that IS quoted cannot be the only
-        // place anyone remembers it: `check-docs-error-strings` splits holes
-        // on `/\$\{[^{}]*\}/`, so a hole carrying BRACES (an options object,
-        // a `||` with one) is not a wildcard and the whole template stops
-        // being derivable. An earlier revision precomputed one value and
-        // inlined a brace-bearing call on the same line, which made its own
-        // stated reason untrue.
-        const detail = displaySafe(error instanceof Error ? error.message : String(error));
+        // Both values are precomputed for the brace reason `parseStateBody`
+        // states below. Not load-bearing here -- this message is quoted in no
+        // doc -- but kept uniform so the one message that IS quoted is not the
+        // only place anyone remembers the rule.
+        const detail =
+          displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE;
         const shown = this.displayName(stackName);
         const inRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
         throw new StateError(
@@ -427,7 +430,9 @@ export class S3StateBackend {
           error instanceof Error ? error : undefined
         );
       }
-      this.logger.debug(`No state at new key for stack: ${stackName} (${region})`);
+      this.logger.debug(
+        `No state at new key for stack: ${this.displayName(stackName)} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE})`
+      );
     }
 
     // 2. Fall back to legacy key when it exists AND its region matches.
@@ -1255,9 +1260,12 @@ export class S3StateBackend {
       // reaches here is `JSON.parse` on the legacy body, so `detail` is a
       // snippet OF THAT BODY rather than AWS's own wording. Debug is quieter
       // than warn, not a different terminal.
+      // DENYLIST for the detail: it is a parser's own free-form message, the
+      // class the ascii allowlist would blank. `cls` below is a bounded error
+      // NAME, so the allowlist is right there.
       this.logger.debug(
         `Could not read legacy state region for '${this.displayName(stackName)}': ` +
-          `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`
+          `${displaySafe(detail) || UNRENDERABLE}`
       );
       const cls = error instanceof Error && error.name ? error.name : 'an unknown error';
       return { kind: 'unreadable', reason: displaySafe(cls, { asciiOnly: true }) || UNRENDERABLE };
@@ -1326,9 +1334,13 @@ export class S3StateBackend {
       // that record for a different target region — that's the silent-failure
       // bug PR 1 fixes.
       if (state.region && state.region !== region) {
+        // Guarded like the sibling in `probeLegacyState`, and for the reason
+        // that one gives: debug is quieter than warn, not a different terminal.
+        // `state.region` here is state-BODY content, not just a key segment.
         this.logger.debug(
-          `Legacy state for stack '${stackName}' has region '${state.region}', ` +
-            `not '${region}' — skipping legacy fallback.`
+          `Legacy state for stack '${this.displayName(stackName)}' has region ` +
+            `'${displaySafe(state.region, { asciiOnly: true }) || UNRENDERABLE}', ` +
+            `not '${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}' — skipping legacy fallback.`
         );
         return null;
       }
@@ -1339,7 +1351,8 @@ export class S3StateBackend {
       // Same guard as the new-key path above, and reachable from the same
       // command: `getState` falls back here, so a `state show` on a legacy
       // record takes this refusal (issue #3003).
-      const detail = displaySafe(error instanceof Error ? error.message : String(error));
+      const detail =
+        displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE;
       throw new StateError(
         `Failed to get legacy state for stack '${this.displayName(stackName)}': ${detail}`,
         error instanceof Error ? error : undefined
@@ -1369,15 +1382,14 @@ export class S3StateBackend {
       // would blank a legitimately non-ASCII diagnostic.
       const raw = error instanceof Error ? error.message : String(error);
       const detail = displaySafe(raw) || UNRENDERABLE;
-      // The sanitised `detail` is a VARIABLE, not an expression written inline
-      // in the template. `scripts/check-docs-error-strings.ts` derives the
-      // producible message shapes from `src/`, and a sanitiser CALL inside the
-      // interpolation defeats that derivation -- which un-anchors the sample in
-      // `docs/troubleshooting.md` that quotes this line. Measured one variable
-      // at a time: the `+` CONCATENATION is fine (the checker joins those, and
-      // the version refusal below is a three-part concatenation that anchors),
-      // so an earlier revision of this comment blaming the concatenation was
-      // wrong about its own mechanism.
+      // `detail` is a VARIABLE because a `${...}` hole carrying BRACES stops
+      // `scripts/check-docs-error-strings.ts` deriving this template, and
+      // `docs/troubleshooting.md` quotes this message. Its hole splitter is
+      // `/\$\{[^{}]*\}/`, so the brace is the whole of it: a brace-free call
+      // is fine -- `${this.displayName(stackName)}` is one, three lines below,
+      // and anchors today -- and so is `+` concatenation, which the checker
+      // joins. Two earlier revisions of this comment blamed the concatenation
+      // and then the call; both were wrong, in that order.
       throw new StateError(
         `State file for stack '${this.displayName(stackName)}' is not valid JSON: ${detail}`,
         error instanceof Error ? error : undefined

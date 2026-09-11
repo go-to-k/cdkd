@@ -147,9 +147,10 @@ interface HeldLock {
  * name and an AWS region both have a known charset, so the ASCII allowlist is
  * a no-op on every legitimate input while an S3 key admits any UTF-8.
  *
- * The expression was written out at six sites before issue #3003; free-form
- * text (a parser's own message) deliberately takes the DENYLIST class instead
- * and does NOT go through here.
+ * The expression was written out nine times across five statements before
+ * issue #3003; eight of those now call this, and the ninth was a free-form
+ * parser message, which takes the DENYLIST class and deliberately does NOT go
+ * through here.
  */
 function safeSegment(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -629,10 +630,13 @@ export class LockManager {
       // DENYLIST for the detail, ASCII allowlist for the name: the detail is a
       // parser's own free-form message (the allowlist would blank a
       // legitimately non-ASCII diagnostic), while a stack name has a known
-      // charset. `parseStateBody` draws the same line for the same two values.
-      const detail = displaySafe(error instanceof Error ? error.message : String(error));
+      // charset. `display-safe.ts`'s own header is the authority for that
+      // split -- the state backend applies it too, but saying so here would be
+      // a claim about another module's private method that nothing fences.
+      const detail =
+        displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE;
       throw new LockError(
-        `Failed to get lock info for stack '${safeSegment(stackName)}': ${detail || UNRENDERABLE}`,
+        `Failed to get lock info for stack '${safeSegment(stackName)}': ${detail}`,
         error instanceof Error ? error : undefined
       );
     }
