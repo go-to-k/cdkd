@@ -261,9 +261,11 @@ const UNCOVERED_TERMS: Record<string, string> = {
     'producers which differ in exactly the way that matters here. `committedVersion` sets it when',
     '`git show HEAD:<fixture>` fails for a reason that is NOT "path not in HEAD"; there the',
     'working-tree copy CI parses is fine, so every fixture-driven check stays green and the term is',
-    'genuinely uncovered. The `catch` around `comparePropertySets` also sets it, for an unparseable',
-    'WORKING-TREE fixture — and THAT arm does redden CI, since every fixture-reading check would',
-    'fail to load it. So the exemption is only ever needed for the first producer. Accepted rather',
+    'genuinely uncovered. The `catch` around `comparePropertySets` sets it too, and that arm is',
+    'NOT confined to the safe direction: the call parses BOTH sides, so an unparseable COMMITTED',
+    'fixture reaches it with the working-tree copy fine and CI green, exactly like the first',
+    'producer. Only an unparseable WORKING-TREE fixture reddens CI, since every fixture-reading',
+    'check fails to load it. So the exemption is needed for both producers. Accepted rather',
     'than mechanised because its arms break the refresh run as a whole rather than describing',
     'anything about a schema: git absent, a broken repository, or the 32 MB `maxBuffer` — which the',
     'corpus is three orders of magnitude short of (largest fixture 68,594 B over 135 files,',
@@ -336,12 +338,26 @@ const UNCOVERED_TERMS: Record<string, string> = {
  * is ALONE on its line (names 0 against lines 1).
  *
  * BOUND, stated because a fence that over-claims is what this file exists to
- * prevent: the strip is a regex, not a parser, so a NESTED brace default
- * (`{ a: { b: 1 }, c: 2 }`) or a regex-literal default reads 2 — a FALSE RED,
- * the safe direction, and neither shape exists in `countDecisions`.
+ * prevent. The strip is a regex, not a parser, and an earlier revision called
+ * that residual "a FALSE RED, the safe direction" — which was only half of it:
+ * the same imprecision produced a false GREEN, measured, on a computed key
+ * whose expression carries its own `]` or `)`. So a line the strip did not
+ * reduce to a delimiter-free form is now REFUSED as 2 rather than counted, and
+ * what is left is false reds only: a nested brace default
+ * (`{ a: { b: 1 }, c: 2 }`) and a regex-literal default, neither of which
+ * `countDecisions` has. No false green is known, which is a different claim
+ * from none existing — the honest statement is that the corpus this was
+ * executed against found none.
  */
 const declarationCount = (line: string): number => {
   const bare = line.replace(/\[[^\]]*\]|\{[^}]*\}|\([^)]*\)|'[^']*'|"[^"]*"|`[^`]*`/g, '');
+  // A surviving delimiter means the strip did not reach a parse, so the line is
+  // REFUSED rather than counted. That is what closes the last measured false
+  // GREEN: `[K[0]]: schemaGaps` leaves `, ]: schemaGaps` behind — the inner `]`
+  // ends the strip early and then sits between the comma and the colon, so
+  // every position pattern misses it and `names` cannot read the term either.
+  // Refusing costs only a false red on a shape `countDecisions` does not have.
+  if (/[[\]{}()]/.test(bare)) return 2;
   return (
     (bare.match(/(?:^|,)\s*(?:\.\.\.)?[A-Za-z_$][\w$]*/g) ?? []).length +
     // A rest element and a key position are terms `names` cannot read, so they
@@ -469,6 +485,11 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       '  pendingSdkBump = [], ...rest',
       '  pendingSdkBump = [], [k]: schemaGaps',
       "  pendingSdkBump = [], 'schema-gaps': schemaGaps",
+      // A computed key carrying its OWN delimiter — the shape that ended the
+      // strip early and then hid between the comma and the colon, so every
+      // position pattern missed it. Caught by the refusal, not by a position.
+      '  pendingSdkBump = [], [K[0]]: schemaGaps',
+      '  pendingSdkBump = [], [f(a[0])]: schemaGaps',
     ];
     for (const line of declaresOne) {
       expect(declarationCount(line), `false red on valid line ${JSON.stringify(line)}`).toBe(1);
