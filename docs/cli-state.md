@@ -199,8 +199,9 @@ they print as untrusted text:
   JSON, and a value nothing can serialize as `(unserializable)`. A few fields are
   decided before any of that: a falsy `region` omits its whole row, a falsy
   `parentRegion` drops only the parenthesized region from the `Parent:` row, and
-  an absent or null `provisionedBy` reports the legacy default. A `lastModified` that cannot be read as a
-  time prints as itself instead of an instant. In `cdkd state show`, a
+  an absent or null `provisionedBy` reports the legacy default. A
+  `lastModified` that cannot be read as a time prints as itself instead of an
+  instant. In `cdkd state show`, a
   `dependencies` that is not a list prints as itself, and `(none)` is supplied
   only for an absent one or an empty list; `cdkd state resources --long` supplies
   it for a `null` too, so the two views differ on that one value. The marker is
@@ -215,10 +216,17 @@ they print as untrusted text:
   (`cdkd state resources` never reads a lock).
 
 This tolerance covers the VALUES these views render. A record can still be
-malformed in a way that fails earlier than that — a lock whose `expiresAt` is an
-object, or a `resources` entry holding `null` rather than a resource — and there
-the command reports an error and renders nothing. Reach for `--json`, which reads
-the stored bytes without rendering them.
+malformed in a way that fails earlier than that — a `resources` entry holding
+`null` rather than a resource, or a lock whose `expiresAt` holds an object that
+cannot be coerced to a number — and there the command reports an error and
+renders nothing.
+
+Plain `cdkd state show --json` is the way to read such a record: it emits the
+record as parsed, without walking it or rendering a lock summary. The other two
+JSON modes walk the resources before emitting anything, so the `null` resource
+entry fails `cdkd state resources --json` and
+`cdkd state show --show-nested --json` as well. The lock case does not reach
+them: neither renders a lock summary.
 
 **Resource properties are deliberately excluded from every mode here** — use
 [`cdkd state show`](#cdkd-state-show) when you need them. A physical id may be
@@ -277,7 +285,8 @@ binding, and the key still absent from the stored outputs.
 For an output whose resolver THREW, the deploy's own warning already names it;
 for one that merely resolved to `undefined` there is no per-output warning at
 all. For such a key while it is ABSENT from the stored outputs, this block is
-the first place it is named in the human-readable view. A key whose earlier
+the first place it is named in the human-readable view without `--verbose`,
+which logs the same decision from `cdkd diff` at debug level. A key whose earlier
 value was retained is ALSO stored under `Outputs:` — it appears in both
 sections — and is NOT suppressed by the record. It takes the ordinary resolve
 path, which can end in `cdkd diff` suppressing its whole Outputs section with

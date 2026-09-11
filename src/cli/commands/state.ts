@@ -681,9 +681,12 @@ async function stateResourcesCommand(
  * pretty-prints — `JSON.stringify` is called without an indent, so a newline
  * here is content injected by the value, not layout.
  *
- * Only the human path routes through this; `--json` serializes the state
- * record directly and stays byte-faithful, which is the same split
- * `renderOutputChangeLines` makes.
+ * Only the human path routes through this, which is the same split
+ * `renderOutputChangeLines` makes. `--json` is the OTHER side of it rather than
+ * a byte-faithful echo: `state show --json` reserializes the parsed record and
+ * the lock it prints was sanitised upstream, and `state resources --json` emits
+ * a constructed summary with defaults filled in. What `--json` does not do is
+ * pass a value through THIS function.
  */
 function formatAttributeValue(value: unknown): string {
   if (value === null) return 'null';
@@ -743,6 +746,12 @@ function formatDuration(ms: number): string {
  * rather than joined by it: an element that throws on STRING COERCION
  * (`{"toString": null}` is valid JSON, and `JSON.stringify` handles it fine)
  * throws INSIDE `join`, where no guard wrapping the result can catch it.
+ *
+ * ABSENT and `null` part company here, deliberately. An absent field is a
+ * record saying nothing, which `(none)` states correctly; a `null` is a record
+ * saying `null`, and printing `(none)` over it would claim something the record
+ * does not. JSON can express `null` here and a hand-edited record can carry it,
+ * so the difference is worth the surprise of seeing `Dependencies: null`.
  */
 function formatDependencyList(deps: unknown): string {
   if (Array.isArray(deps)) {
@@ -781,11 +790,14 @@ function formatLastModified(value: unknown): string {
  * Render lock metadata for the `state show` block.
  *
  * This row takes NO display guard — `Version` is the other, for its own reason —
- * and here the reason is upstream: `LockManager.getLockRecord` already passes `owner` and `operation`
- * through `displaySafe`, which absorbs a non-string and replaces the whole
- * control class with spaces. They arrive here as control-free strings, so a
- * guard would be redundant — and a test for one could only be written by mocking
- * the read that sanitises them, which would pin nothing about the real path.
+ * and here the reason is upstream: `LockManager.getLockRecord` already passes
+ * `owner` and `operation` through `displaySafe`, which coerces and replaces the
+ * whole control class with spaces. They arrive here as control-free strings, so
+ * a guard would be redundant — and a test for one could only be written by
+ * mocking the read that sanitises them, which would pin nothing about the real
+ * path. `displaySafe`'s own `String(value)` is unguarded, so a value that throws
+ * on coercion fails THERE, before this function; that is go-to-k/cdkd#2947 and
+ * not something a guard here could catch either.
  *
  * `expiresAt` is declared a number and is not guaranteed to be one, but it
  * reaches the row only through subtraction and `formatDuration`, so no character
@@ -1019,9 +1031,11 @@ function renderStateBlock(
   // `Version` takes none, and is the one field here whose type IS enforced:
   // `S3StateBackend.parseStateBody` refuses any value but a readable schema
   // number or `undefined` before a renderer sees the record, so a hand-edited
-  // one fails there with a message about the schema rather than reaching this
-  // row. A guard here would be unreachable by that route and could only be
-  // pinned by a test that mocks the read away.
+  // one fails THERE rather than reaching this row. A guard here would be
+  // unreachable by that route and could only be pinned by a test that mocks the
+  // read away. What that failure SAYS is a separate question — building the
+  // rejection message coerces the value, so one that throws on coercion reports
+  // that instead of the schema (go-to-k/cdkd#2947).
   lines.push(`Stack: ${formatAttributeValue(state.stackName)}`);
   if (state.region) lines.push(`  Region: ${formatAttributeValue(state.region)}`);
   lines.push(`  Version: ${state.version}`);
