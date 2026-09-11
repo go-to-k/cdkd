@@ -268,7 +268,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['layout-deployment.md', 12],
   ['layout-drift.md', 5],
   ['layout-local.md', 45],
-  // layout-misc.md (reach 30) split four ways: its six globs made every
+  // layout-misc.md (floor 30, reach 41) split four ways: its six globs made every
   // synthesis / state / assets / types edit load all four areas' notes.
   ['layout-assets.md', 5], // measured 7
   ['layout-build.md', 2], // literal list: EXACT, see below
@@ -420,35 +420,37 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `layout-deployment-secrets.md` and the new `code-layout.md` index row moved
   // several of them, and a `measured` comment that no longer matches the tree
   // reads as evidence while being none.
-  // Ceiling 57_000 -> 58_000 by go-to-k/cdkd#2717. The growth is ONE TABLE ROW
-  // in `code-layout.md`, the family index, for the `layout-ci-checks.md`
-  // satellite. That is structural rather than incidental: the satellite
-  // convention requires every area to be reachable from the index, so this
-  // payload gains a row every time a rule file is split -- and a split is what
-  // this fence ASKS FOR when a per-file cap is hit. Left at 57_000 the two
-  // caps pull against each other: go-to-k/cdkd#2719 split `state-schema.md` to
-  // get UNDER this one and left 96 B of headroom, which a single index row then
-  // consumed. The FLOOR is what still catches a glob narrowing.
-  // RE-DERIVED at the layout-misc split: 57,323 -> 44,040. The old band was
+  // Ceiling was 57_000 -> 58_000 by go-to-k/cdkd#2717, calibrated against a
+  // 57,019 B payload with 96 B of headroom, where a single `code-layout.md`
+  // index row was enough to breach it. That reasoning stands and is why the
+  // cap is not merely tightened to the measurement: this payload gains an
+  // index row every time a rule file is SPLIT, and a split is what this fence
+  // asks for. What changed at the layout-misc split is the base -- the payload
+  // fell 13 KB, so 58_000 left 14,105 B of slack, room for two satellites the
+  // size of `layout-state-types.md` to land unseen. 48_000 keeps ~4 KB, which
+  // is ~16 index rows at the 256 B this branch's four rows cost, and still
+  // binds. The FLOOR is what catches a glob narrowing.
+  // RE-DERIVED at the layout-misc split: 57,323 -> 43,895. The old band was
   // calibrated with the grab-bag's synthesis and assets notes counted in, so
   // its floor was satisfied by 13 KB describing other layers.
-  ['src/state/s3-state-backend.ts', 38_000, 58_000],         // measured 43,895
+  ['src/state/s3-state-backend.ts', 38_000, 48_000],         // measured 43,895
   // The representative path for state-version-purge.md, whose two-file glob
   // (the purge and its replication-gap detector, issue
   // go-to-k/cdkd#2447) matches nothing else. Without this row the satellite
   // sits under no budget at all: the `src/state/s3-state-backend.ts` row above
   // does NOT match it, which is the whole reason it was split out.
   ['src/state/s3-noncurrent-version-purge.ts', 43_000, 56_000], // measured 49,744; RE-DERIVED at the layout-misc split (was 53_000/64_000 at 61,168; the old CAP left 14 KB of slack, enough for a whole satellite to land unseen)
-  // Ceiling 57_000 -> 58_000 by go-to-k/cdkd#2717. The growth is ONE TABLE ROW
-  // in `code-layout.md`, the family index, for the `layout-ci-checks.md`
-  // satellite. That is structural rather than incidental: the satellite
-  // convention requires every area to be reachable from the index, so this
-  // payload gains a row every time a rule file is split -- and a split is what
-  // this fence ASKS FOR when a per-file cap is hit. Left at 57_000 the two
-  // caps pull against each other: go-to-k/cdkd#2719 split `state-schema.md` to
-  // get UNDER this one and left 96 B of headroom, which a single index row then
-  // consumed. The FLOOR is what still catches a glob narrowing.
-  ['src/types/state.ts', 38_000, 58_000],                    // measured 43,895; RE-DERIVED at the layout-misc split, see the s3-state-backend row
+  // Ceiling was 57_000 -> 58_000 by go-to-k/cdkd#2717, calibrated against a
+  // 57,019 B payload with 96 B of headroom, where a single `code-layout.md`
+  // index row was enough to breach it. That reasoning stands and is why the
+  // cap is not merely tightened to the measurement: this payload gains an
+  // index row every time a rule file is SPLIT, and a split is what this fence
+  // asks for. What changed at the layout-misc split is the base -- the payload
+  // fell 13 KB, so 58_000 left 14,105 B of slack, room for two satellites the
+  // size of `layout-state-types.md` to land unseen. 48_000 keeps ~4 KB, which
+  // is ~16 index rows at the 256 B this branch's four rows cost, and still
+  // binds. The FLOOR is what catches a glob narrowing.
+  ['src/types/state.ts', 38_000, 48_000],                    // measured 43,895; RE-DERIVED at the layout-misc split, see the s3-state-backend row
   ['src/synthesis/synthesizer.ts', 21_000, 28_000], // measured 24,121; RE-DERIVED at the layout-misc split (was 30_000/40_000; the 39,197 beside it was stale, the real figure 39,346)
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
