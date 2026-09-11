@@ -15,17 +15,22 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
+  # No `paths:` filter on PRs, deliberately, and NOT an oversight to be tidied
+  # back into sync with the push list above. `build` is a REQUIRED status check
+  # in the `main` branch ruleset, and a required check can only be required if
+  # it reports on every PR: a `paths:`-filtered workflow does not start at all
+  # when nothing matches, leaving the check at "Expected" forever and blocking
+  # the PR permanently. A skipped JOB reports and counts as passing; a workflow
+  # that never ran does not report.
+  #
+  # What that requirement buys is exactly what the old comment here promised and
+  # could not deliver once auto-merge existed: "a dependency bump that breaks
+  # the docs build must fail on the PR, not after merge." `package.json` and
+  # `pnpm-lock.yaml` are in the push filter for that reason, so every dependabot
+  # PR built the docs — but with auto-merge armed and this check not required,
+  # the merge would proceed over a red build anyway. The cost is one docs build
+  # on PRs that touch neither docs nor dependencies.
   pull_request:
-    # Keep in sync with the push paths (minus nothing): a dependency bump that
-    # breaks the docs build must fail on the PR, not after merge.
-    paths:
-      - "docs/**"
-      - "docs-site/**"
-      - "vite.docs.config.ts"
-      - ".github/workflows/docs-deploy.yml"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
   workflow_dispatch:
 
 permissions:

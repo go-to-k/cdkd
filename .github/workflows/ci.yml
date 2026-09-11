@@ -479,3 +479,143 @@ jobs:
       - run: vp install --frozen-lockfile
       - run: vp run build
       - run: vp env exec --node ${{ matrix.node-version }} node dist/cli.js --version
+
+  # A stale standing release PR is MERGEABLE and silently reverts main.
+  # release-please does not rebuild a release PR whose computed release is
+  # unchanged — it logs `PR #N remained the same` and leaves the branch on the
+  # base it was cut from. A `chore:` / `ci:` / `docs:` commit produces no
+  # changelog entry, so it lands on main WITHOUT the release branch following;
+  # if it touched a file release-please owns, merging the PR takes the branch's
+  # older copy. GitHub reports MERGEABLE throughout — measured on
+  # go-to-k/cdkd#2503, which would have undone 285 CHANGELOG header
+  # conversions and was closed and recreated as #2508.
+  #
+  # The remedy has always been "close the PR, delete its branch, re-run
+  # release.yml"; what was missing is anything that makes the condition VISIBLE
+  # before the merge. A human reading the diff was that check. Auto-merge
+  # removes the human, so the check has to become a required status.
+  #
+  # `package.json` is deliberately NOT inspected: `chore(deps)` PRs touch it
+  # constantly, and release-please's own diff there is the `version` line
+  # alone — a three-way merge of that cannot revert a dependency line, so
+  # including it would block every release PR that is merely behind.
+  #
+  # A fork contributor can name a branch `release-please--x` and enter this job.
+  # That is harmless and deliberately not guarded against: the job reads only
+  # git ancestry and can do nothing but fail their own PR. Guarding on the PR
+  # author instead would add a SECOND way for the job to go silently inert,
+  # which is the failure mode `ci-ok-gate.test.ts` exists to prevent.
+  release-pr-not-stale:
+    if: startsWith(github.head_ref, 'release-please--')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # The PR HEAD, not the default `refs/pull/N/merge`. That ref has the base
+      # branch already merged into it, so every ancestry question below would
+      # answer "yes" no matter how stale the branch actually is — a vacuous
+      # pass, and the only way this job can be wrong in the unsafe direction.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: release-please-owned files on main must be ancestors of this branch
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin main
+          stale=0
+          for f in CHANGELOG.md .release-please-manifest.json; do
+            tip=$(git rev-list -1 FETCH_HEAD -- "${f}")
+            # An empty answer means the file has no history on main at all —
+            # renamed, deleted, or never committed. The guard cannot answer the
+            # question it was added to answer, and "cannot answer" is a failure
+            # rather than a pass.
+            if [ -z "${tip}" ]; then
+              echo "::error::${f} has no commit history on main. This guard cannot evaluate staleness, so it fails closed. If the file was renamed, update this job."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "${tip}" HEAD; then
+              echo "::error::${f} was last changed on main by ${tip}, which is NOT an ancestor of this release branch — the branch is stale and merging it would revert that change. Close this PR, delete its branch, and re-run release.yml via workflow_dispatch to recreate it from current main."
+              stale=1
+            fi
+          done
+          [ "${stale}" -eq 0 ]
+
+  # The single check name the `main` branch ruleset requires. It exists instead
+  # of the ruleset naming the real jobs for two reasons:
+  #
+  #   1. `runtime-compat` is a matrix. A required check has to match the
+  #      EXPANDED name (`runtime-compat (20)`), but a matrix job that never
+  #      starts — because `check-build-test` failed — reports under the
+  #      UNEXPANDED name (`runtime-compat`). Requiring either spelling leaves
+  #      the other permanently "Expected", which blocks the PR forever.
+  #   2. Adding or renaming a job above then needs a line in `needs:` here
+  #      rather than an edit to repository settings nothing in this tree can
+  #      review.
+  #
+  # `if: always()` is load-bearing. Without it this job is SKIPPED whenever an
+  # upstream job fails, and a skipped required check counts as PASSING — the
+  # gate would report green exactly when CI is red.
+  #
+  # What this check does and does not attest to, stated so the ruleset change is
+  # made with eyes open: on a `pull_request` trigger the workflow DEFINITION
+  # comes from the PR's own ref, so a fork author can rewrite this job to `exit
+  # 0` and the required check reports green. That is a property of every
+  # `pull_request`-based required check, not something aggregating into one name
+  # introduced — requiring `check-build-test` directly was defeatable the same
+  # way. The controls are unchanged: the edit is visible in the diff, a
+  # first-time contributor's run needs maintainer approval, and a fork token is
+  # read-only. Human review of a workflow diff remains the control.
+  #
+  # Two checks are deliberately NOT reachable from here and NOT required, both
+  # because a `paths:`-filtered workflow does not START on every PR and a
+  # required check that never reports sits at "Expected" forever:
+  #   - `hooks.yml` / `hook-suites` — runs only on a `.claude/hooks/**` PR,
+  #     which is never a release or a dependabot PR, i.e. never one auto-merge
+  #     is armed on. Agent-side merges still require it via `ci-green-gate`.
+  #   - `docs-deploy.yml` / `build` — this one IS reachable by dependabot
+  #     (`package.json` / `pnpm-lock.yaml` are in its filter), so its
+  #     `pull_request` filter was REMOVED in the same change that added this
+  #     job: it now runs on every PR and is required by name. See that file.
+  ci-ok:
+    if: always()
+    needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      # Through `env:` rather than inline in `run:`. The value space here is a
+      # closed enum so inline is safe today, but the repo's pattern is that
+      # expression data reaches a shell as a variable, never as source text.
+      RESULTS: ${{ join(needs.*.result, ' ') }}
+      # Must equal the length of `needs:` above. Both halves are read out of
+      # this file by tests/unit/scripts/ci-ok-gate.test.ts, which also asserts
+      # `needs:` covers every other job — so this cannot drift silently.
+      EXPECTED_UPSTREAM: '4'
+    steps:
+      - name: every upstream job succeeded or was skipped
+        run: |
+          set -euo pipefail
+          # `skipped` is accepted on purpose: release-pr-not-stale skips on
+          # every non-release PR, and a matrix job skipped because its `needs`
+          # failed is already reported by that failing job's own result.
+          echo "upstream results: ${RESULTS}"
+          seen=0
+          for r in ${RESULTS}; do
+            seen=$((seen + 1))
+            case "${r}" in
+              success | skipped) ;;
+              *)
+                echo "::error::an upstream CI job reported '${r}' — this gate is red. See the run summary for which job."
+                exit 1
+                ;;
+            esac
+          done
+          # Without this, "every result was good" and "there were no results"
+          # are the same exit 0: an empty render makes the loop above run zero
+          # times. This job is the SOLE required status check, so a vacuous
+          # green here is a merge gate that examined nothing.
+          if [ "${seen}" -ne "${EXPECTED_UPSTREAM}" ]; then
+            echo "::error::examined ${seen} upstream result(s), expected ${EXPECTED_UPSTREAM}. The needs list did not reach this step, so this gate attests to nothing and fails closed."
+            exit 1
+          fi
