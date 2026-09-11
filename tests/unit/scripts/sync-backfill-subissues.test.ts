@@ -753,22 +753,34 @@ describe('cross-file fences', () => {
     // `toContain('EXCLUDES the label')` it replaced DID catch. Naming what a
     // replacement can no longer see is the rule; here the answer was "the only
     // thing that mattered", so both halves are asserted together.
-    // The span is bounded to ONE paragraph. Unbounded `[\s\S]*?` catches the
-    // inversion but not a head phrase DETACHED from its verb — move the
-    // `EXCLUDES the label` clause into a different bullet and the now-verbless
-    // claim still matches, as it would if a second occurrence were added later
-    // to rescue an inverted first one.
+    // The span is bounded to ONE PARAGRAPH, and what that buys is narrower than
+    // it looks — measured, after the comment here first claimed more. The
+    // claim's bullet list is CONTIGUOUS (no blank line between bullets), so
+    // `(?!\n\n)` bounds the span to the whole list rather than to one bullet:
+    // moving the `EXCLUDES the label` clause into a later bullet keeps this
+    // GREEN. What the bound does catch is a detach across a blank line, and a
+    // second occurrence added later to rescue an inverted first one — again
+    // only once a blank line separates them.
+    //
+    // The residual both halves share, and which no regex over prose closes:
+    // APPENDING a contradiction inside the same paragraph. Polarity in English
+    // is not something a matcher can fence; this pins the head to its verb and
+    // stops there, deliberately.
     const para = '(?:(?!\\n\\n)[\\s\\S])*?';
     expect(filing, 'the claim lost its verb, so it can be inverted and stay green').toMatch(
       new RegExp(`Every backlog listing in \`triage\\.md\`${para}EXCLUDES the label`)
     );
     expect(filing).toContain('§3-0');
     expect(filing).toContain('§3-a');
-    // And round 2's own correction — the retro.md half — spanned to ITS verb
-    // too. Asserting the filename alone reds on DELETING the clause but not on
-    // inverting it ("…and so does §10's count in `retro.md` — it does NOT"),
-    // which is the same defect one level down: round 3 fixed the triage half
-    // this way and left this one naming a string.
+    // And round 2's own correction — the retro.md half. Asserting the FILENAME
+    // alone reds on deleting the clause but not on inverting it, which is the
+    // same defect one level down: round 3 fixed the triage half by spanning to
+    // its verb and left this one naming a string.
+    //
+    // Note what carries the polarity here, because it is not the span: "and so
+    // does" is INSIDE the matched head literal, so an in-place inversion reds on
+    // the head by itself and the `${para}matters` tail adds nothing but a little
+    // more pinned text. Do not read this as the verb-span the triage half has.
     expect(filing, 'the retro.md half of the claim is unasserted or invertible').toMatch(
       new RegExp(`and so does §10's folded-finding count in \`retro\\.md\`${para}matters`)
     );
