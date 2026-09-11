@@ -57,6 +57,15 @@ exit 1
 MISE_EOF
 chmod +x "$SHIM_DIR/mise"
 
+# The `state:` VOCABULARY below is markgate 0.4.1's, verified against the pinned
+# binary and against `internal/cli/status.go`: `match`, `mismatch (<reason>)`,
+# `no marker`. markgate never prints the word `stale`. An earlier revision of
+# this mock did, and it inverted the suite: narrowing the hook's reason
+# extraction to `/^state: +stale/` -- which kills the whole #3010 diagnostic in
+# production, since no real markgate emits that -- left every case GREEN, while
+# aligning it with the real word reddened eight. A mock that speaks a dialect
+# the subject never hears fences the mock. Re-check these strings against
+# `markgate status` before editing them.
 cat > "$SHIM_DIR/markgate" <<MARKGATE_EOF
 #!/usr/bin/env bash
 echo "\$PWD" >> "$CWD_TRACE_FILE"
@@ -83,16 +92,15 @@ case "\$1" in
       # \`integ-destroy\` carries \`ttl: 14d\`, so a marker can be stale with
       # NOTHING in scope having moved. The hook's message must not explain
       # this one as a code change (issue 3010 review, B2).
-      printf 'key:        %s\nstate:      stale (expired by ttl: 14d, marker is 17d old)\n' "\$2"
-    elif [ "\$verdict" = "stale_noreason" ]; then
+      printf 'key:        %s\nstate:      mismatch (expired by ttl: 14d, marker is 17d old)\n' "\$2"
+    elif [ "\$verdict" = "no_marker" ]; then
       # The hook's reason extraction "fails open to the pre-0.3 generic
-      # message" -- an older or odd markgate whose \`status\` carries no
-      # parenthesized reason. \`verify\` still says stale, so this is a LIVE
-      # second stale spelling, and it is the one a user with a mismatched
-      # markgate reaches. Nothing else in this suite produces it.
-      printf 'key:        %s\nstate:      stale\n' "\$2"
+      # message" when \`status\` carries no PARENTHESIZED reason. On 0.4.1 that
+      # is the \`no marker\` state, and it is live: markers are per-worktree,
+      # so a fresh lane hits it before its first \`/run-integ\`.
+      printf 'key:        %s\nstate:      no marker\n' "\$2"
     else
-      printf 'key:        %s\nstate:      stale (digest differs)\n' "\$2"
+      printf 'key:        %s\nstate:      mismatch (digest differs)\n' "\$2"
     fi
     exit 0
     ;;
@@ -326,6 +334,66 @@ run_msg_case "scope heredoc stays QUOTED (#3010)" stale \
 run_msg_case "causes heredoc stays QUOTED (#3010)" stale \
   '`hash: diff` digests this branch' 'could not EVALUATE' "$payload_merge"
 
+# The THIRD heredoc is the dangerous one to leave unfenced: its body carries
+# `markgate set integ-destroy` inside backticks, twice. Unquoted, the refusal
+# RUNS the marker set it exists to forbid -- the gate would clear itself while
+# printing a message about not clearing it by hand. This block predates the PR;
+# the PR is what split the message into three independently quoted heredocs, so
+# it is the change that makes a per-block fence meaningful.
+run_msg_case "remedy heredoc stays QUOTED (#3010)" stale \
+  '`markgate set integ-destroy` if BOTH' 'could not EVALUATE' "$payload_merge"
+
+# --- Two readings that are NOT a broken gate, and were missing ---
+#
+# Both measured against markgate 0.4.1, and both are states an agent reaches and
+# misreads as a markgate defect -- which is the whole subject of #3010.
+#
+# merge base: is written by `set`, so ANY later merge or rebase makes it differ
+# from the live one whatever the actual cause. Measured: marker set at base
+# e9a7a59; branch merges origin/main (an unrelated in-scope file); `verify` rc 0,
+# FRESH, recorded e9a7a59 vs live 36a4766. Then a plain worktree edit -> rc 1,
+# same base mismatch, cause #1. So equality excludes cause 2 and inequality says
+# nothing; the message must not sell it as a discriminator.
+run_msg_case "merge-base advice is stated as ONE-WAY (#3010)" stale \
+  'ONE-WAY test' 'could not EVALUATE' "$payload_merge"
+
+# An EMPTY scope: beside (digest differs). Measured: branch changes one in-scope
+# and one out-of-scope file, `set`, then reverts the in-scope one -> `scope:`
+# prints nothing and `state:` is `mismatch (digest differs)`, rc 1.
+# `refuseDeadScope` does not fire, because it globs CandidateNames and the
+# include still matches the tree. This is #3010's reported symptom exactly, so
+# the message owes it a reading rather than leaving it to look like a defect.
+run_msg_case "empty scope beside digest-differs has a reading (#3010)" stale \
+  'in-scope delta emptied AFTER the marker was set' 'could not EVALUATE' "$payload_merge"
+
+# Markers are per-worktree and this hook may have resolved a `cd` / `-C` target
+# that is not the caller's cwd, so the advised command names where to run it.
+run_msg_case "diagnostic says WHICH worktree to run in (#3010)" stale \
+  'run it in THIS worktree' 'could not EVALUATE' "$payload_merge"
+
+# --- The remaining prose this PR added, one needle each ---
+#
+# Every sentence below was measured as deletable with the suite green. They are
+# fenced individually for the reason the per-cause cases exist: a trim leaves
+# grammatical prose, and each of these carries a claim whose loss reinstates a
+# wrong reading the refusal was written to prevent.
+run_msg_case "diagnostic keeps the stale-binary warning (#3010)" stale \
+  'a bare `markgate` may be an older build' 'could not EVALUATE' "$payload_merge"
+
+# Needle kept on ONE line: `grep` matches per line, so a needle spanning the
+# message's 80-column wrap matches nothing and the case fails for a reason that
+# has nothing to do with the hook. It did, on first writing.
+run_msg_case "diagnostic says merge base: is the SET-time value (#3010)" stale \
+  'printed only when a marker exists' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "remedy says narrowing alone does not clear it (#3010)" stale \
+  'Narrowing does not clear this' 'could not EVALUATE' "$payload_merge"
+
+# The fourth heredoc. Its body carries `integ-destroy` in backticks; unquoted,
+# the header the reason-LESS path prints is mangled the same way as the others.
+run_msg_case "fallback-header heredoc stays QUOTED (#3010)" no_marker \
+  '`integ-destroy` marker is stale' 'could not EVALUATE' "$payload_merge"
+
 # --- ...and it must NOT be offered where it would be FALSE ---
 #
 # The causal paragraph explains a DIGEST mismatch. This gate also carries
@@ -347,10 +415,10 @@ run_msg_case "ttl expiry is not explained as a code change (#3010)" ttl \
 run_msg_case "ttl expiry still offers the scope diagnostic (#3010)" ttl \
   "$N_EXPLAIN" "$N_CAUSE" "$payload_merge"
 
-run_msg_case "reason-less stale takes the fallback header (#3010)" stale_noreason \
+run_msg_case "no-marker state takes the fallback header (#3010)" no_marker \
   'IMPLICIT_DELETE_DEPENDENCIES' "$N_CAUSE" "$payload_merge"
 
-run_msg_case "reason-less stale still offers the scope diagnostic (#3010)" stale_noreason \
+run_msg_case "no-marker state still offers the scope diagnostic (#3010)" no_marker \
   "$N_EXPLAIN" "$N_CAUSE" "$payload_merge"
 
 # Placement: the diagnostic belongs in the block shared by every stale path,

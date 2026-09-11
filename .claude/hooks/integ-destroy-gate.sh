@@ -333,7 +333,9 @@ fi
 
 cat >&2 <<'EOF'
 What put this branch in scope — read this rather than hand-expanding the
-`include:` globs in `.markgate.yml`:
+`include:` globs in `.markgate.yml` — run it in THIS worktree, since markgate
+stores a marker per worktree and this hook may have resolved a `cd` / `-C`
+target that is not your shell's cwd:
   mise exec -- markgate status integ-destroy --explain
 
 The `scope:` block it prints is the exact file list markgate digests for this
@@ -368,12 +370,16 @@ What does: an in-scope file changing in THIS WORKING TREE; merging
 incoming change touches an in-scope file this branch also modified, which keeps
 that file in the delta while its base side moves under it; and editing this
 gate's `include:` / `exclude:` list, which changes WHICH files are digested with
-no file changing at all. `--explain` narrows it to the files actually digested,
-and comparing its `merge base:` against `git merge-base origin/main HEAD`
-separates the second cause from the other two.
+no file changing at all. `--explain` narrows it to the files actually digested.
+Its `merge base:` is recorded at `set` time, so comparing it against
+`git merge-base origin/main HEAD` is a ONE-WAY test: equal rules the second
+cause out, unequal says only that the base moved at some point, not that the
+move is what staled the marker.
 
-Measured in issue #3010, where a hand-expanded include list missed an entry the
-branch really had changed and the gate looked broken.
+An EMPTY `scope:` next to `(digest differs)` is not a broken gate either — it
+means the in-scope delta emptied AFTER the marker was set, because the change
+was reverted or it landed upstream and the merge base moved past it. The digest
+was taken over a non-empty delta and no longer matches the empty one.
 
 EOF
   ;;
