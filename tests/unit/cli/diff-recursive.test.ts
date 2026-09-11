@@ -2618,6 +2618,39 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
     expect(treeIsWorthRendering({ ...node, blocking: [] })).toBe(false);
   });
 
+  it('an adoption whose row is NO_CHANGE is still reported', () => {
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      // NO_CHANGE, which `renderChangeLines` has no case for — the adopted
+      // record's properties already match the template. This is the shape the
+      // real-AWS fixture hit: every count zero, the row unrendered, and the
+      // preview silent about the one thing the user ran it to learn.
+      changes: changeMap([
+        { logicalId: 'KeptRole', changeType: 'NO_CHANGE', resourceType: 'AWS::IAM::Role' },
+      ]),
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: ['KeptRole'],
+      blocking: [],
+      children: [],
+    };
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const out = lines.join('\n');
+
+    // The deploy DOES work here — it splices the record into `resources` and
+    // persists the state without the orphan — so "No changes detected" is
+    // wrong, and the per-row annotation cannot carry it.
+    expect(nodeHasChanges(node)).toBe(true);
+    expect(treeIsWorthRendering(node)).toBe(true);
+    expect(out).toContain('1 resource(s) to adopt from a previous rollback: KeptRole');
+    // Without an adoption the same node must stay quiet, or the arm would
+    // report every unchanged stack.
+    expect(nodeHasChanges({ ...node, adoptedOrphans: [] })).toBe(false);
+  });
+
   it('--json carries both keys, so a CI consumer can gate on the refusal', () => {
     const node: DiffTreeNode = {
       stackName: 'S',

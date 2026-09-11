@@ -113,6 +113,19 @@ its `DeletionPolicy` is `Retain`. cdkd recorded what it left behind, and the
 next deploy re-adopts that resource instead of asking AWS for a name the
 resource still holds — so the row is an UPDATE rather than a create.
 
+When the adopted resource needs no property change at all, there is no row to
+annotate: it compares equal, like any unchanged resource. The summary names it
+instead, so an adoption is never silent:
+
+```text
+0 to create, 0 to update, 0 to delete
+1 resource(s) to adopt from a previous rollback: Bucket
+```
+
+A stack in that state is NOT "no changes detected", and `--fail` treats it as a
+change: the deploy still takes the resource back into state and rewrites the
+state file without the orphan record.
+
 `cdkd diff` runs the same verification the deploy runs before it draws this
 row: the resource must still exist, still answer to the recorded physical id,
 and be claimed by no other cdkd stack. A record that fails any of those is not

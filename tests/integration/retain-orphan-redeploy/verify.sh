@@ -388,12 +388,16 @@ fi
 # The annotation, not merely "an update appeared": a stack whose other
 # resources changed would show updates anyway, so the token is what ties the
 # row to the orphan record.
-if ! grep -q "adopted from a rollback orphan" "${DIFF_LOG}"; then
+# The SUMMARY line, not the per-row annotation. This fixture's adopted role
+# already matches the template, so its row is NO_CHANGE and renders nothing —
+# which is how the first version of this phase failed against real AWS while
+# every unit test was green, and why the summary line exists at all.
+if ! grep -q "resource(s) to adopt from a previous rollback" "${DIFF_LOG}"; then
   echo "FAIL: cdkd diff did not annotate the adopted row. Without the pre-pass"
   echo "      the diff reports a CREATE for a resource the deploy UPDATES,"
   echo "      which is the preview/apply divergence go-to-k/cdkd#2943 closes."
-  echo "      Sentinel check follows: if the header below IS present, the diff"
-  echo "      ran and the adoption simply did not happen."
+  echo "      Sentinel check follows: if the summary count below IS present,"
+  echo "      the diff ran and the adoption simply did not happen."
   grep -c "to create, " "${DIFF_LOG}" || echo "      (no diff summary line at all - the run did not produce a preview)"
   tail -40 "${DIFF_LOG}"
   rm -f "${DIFF_LOG}"

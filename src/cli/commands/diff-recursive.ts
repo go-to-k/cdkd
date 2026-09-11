@@ -1257,7 +1257,17 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
   // Issue #1921: an Outputs-only change has no resource change at all, so this
   // arm is the ONLY thing standing between it and "No changes detected" — and
   // it is what makes `--fail` exit 1 for it, matching `cdk diff --fail`.
-  return node.outputChanges.length > 0;
+  //
+  // go-to-k/cdkd#2943 adds the same arm for adoption, for the same reason and
+  // found the same way — by running it against real AWS. An adopted record
+  // whose properties already match the template diffs as NO_CHANGE, so a stack
+  // whose only pending work is the adoption had every count at zero and
+  // printed "No changes detected". The deploy does work there: it splices the
+  // record into `resources` and persists the state without the orphan. A
+  // preview that calls that nothing is wrong in the direction that matters —
+  // the user ran `cdkd diff` precisely to find out whether the next deploy
+  // will adopt or collide.
+  return node.outputChanges.length > 0 || node.adoptedOrphans.length > 0;
 }
 
 /** True when this node OR any descendant has a real change (tree-wide drift detector for `--fail`). */
@@ -1292,6 +1302,8 @@ export function countBlocking(node: DiffTreeNode): number {
  * detected" and exit non-zero citing reasons that were never printed.
  */
 export function treeIsWorthRendering(node: DiffTreeNode): boolean {
+  // `treeHasChanges` already covers adoption since go-to-k/cdkd#2943 taught
+  // `nodeHasChanges` about it, so this stays a two-term predicate.
   return treeHasChanges(node) || countBlocking(node) > 0;
 }
 
@@ -1758,6 +1770,17 @@ export function renderDiffTree(
     if (outputs.add + outputs.change + outputs.remove > 0) {
       logFn(
         `${outputs.add} output(s) to add, ${outputs.change} to change, ${outputs.remove} to remove`
+      );
+    }
+    // A THIRD summary line, and the only place an adoption is guaranteed to
+    // appear. The per-row annotation rides a CREATE or UPDATE row, and an
+    // adopted record that already matches the template produces neither — it
+    // is NO_CHANGE, which renders nothing. Measured against real AWS: the
+    // fixture's adopted role matched, so the preview named it nowhere.
+    if (node.adoptedOrphans.length > 0) {
+      logFn(
+        `${node.adoptedOrphans.length} resource(s) to adopt from a previous rollback: ` +
+          `${node.adoptedOrphans.map(stripControlChars).join(', ')}`
       );
     }
   }
