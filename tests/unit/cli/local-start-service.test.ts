@@ -85,14 +85,14 @@ describe('createLocalStartServiceCommand', () => {
   it('parses --max-tasks <n> as a positive integer', () => {
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '5'], { from: 'user' });
+    const parsed = fresh.parse(['Svc', '--max-tasks', '5'], { from: 'user' });
     expect(parsed.opts().maxTasks).toBe(5);
   });
 
   it('parses --restart-policy values', () => {
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--restart-policy', 'always'], {
+    const parsed = fresh.parse(['Svc', '--restart-policy', 'always'], {
       from: 'user',
     });
     expect(parsed.opts().restartPolicy).toBe('always');
@@ -102,7 +102,7 @@ describe('createLocalStartServiceCommand', () => {
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
     expect(() =>
-      fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '0'], { from: 'user' })
+      fresh.parse(['Svc', '--max-tasks', '0'], { from: 'user' })
     ).toThrow(/--max-tasks must be a positive integer/);
   });
 
@@ -110,14 +110,14 @@ describe('createLocalStartServiceCommand', () => {
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
     expect(() =>
-      fresh.parse(['node', 'cdkd', 'Svc', '--restart-policy', 'forever'], { from: 'user' })
+      fresh.parse(['Svc', '--restart-policy', 'forever'], { from: 'user' })
     ).toThrow(/--restart-policy must be one of/);
   });
 
   it('parses --no-pull as pull=false (Commander auto-negation)', () => {
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--no-pull'], { from: 'user' });
+    const parsed = fresh.parse(['Svc', '--no-pull'], { from: 'user' });
     expect(parsed.opts().pull).toBe(false);
   });
 
@@ -129,7 +129,7 @@ describe('createLocalStartServiceCommand', () => {
     // octet (the shared-svc network's `169.254.171.0/24`).
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '83'], { from: 'user' });
+    const parsed = fresh.parse(['Svc', '--max-tasks', '83'], { from: 'user' });
     expect(parsed.opts().maxTasks).toBe(83);
   });
 
@@ -145,7 +145,7 @@ describe('createLocalStartServiceCommand', () => {
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
     expect(() =>
-      fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '84'], { from: 'user' })
+      fresh.parse(['Svc', '--max-tasks', '84'], { from: 'user' })
     ).toThrow(/--max-tasks 84 exceeds the per-replica link-local \/24 subnet allocator's range \(83\)/);
   });
 
@@ -153,7 +153,7 @@ describe('createLocalStartServiceCommand', () => {
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
     expect(() =>
-      fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '100'], { from: 'user' })
+      fresh.parse(['Svc', '--max-tasks', '100'], { from: 'user' })
     ).toThrow(/--max-tasks 100 exceeds.*83/);
   });
 });

@@ -41,20 +41,20 @@ describe('createLocalStartApiCommand --from-state flag plumbing', () => {
 
   it('--from-state defaults to false', () => {
     const cmd = freshCommand();
-    const parsed = cmd.parse(['node', 'cdkd'], { from: 'user' });
+    const parsed = cmd.parse([], { from: 'user' });
     expect(parsed.opts().fromState).toBe(false);
   });
 
   it('parses bare --from-state as fromState=true', () => {
     const cmd = freshCommand();
-    const parsed = cmd.parse(['node', 'cdkd', '--from-state'], { from: 'user' });
+    const parsed = cmd.parse(['--from-state'], { from: 'user' });
     expect(parsed.opts().fromState).toBe(true);
   });
 
   it('parses --stack-region <region> as stackRegion=<region>', () => {
     const cmd = freshCommand();
     const parsed = cmd.parse(
-      ['node', 'cdkd', '--from-state', '--stack-region', 'us-west-2'],
+      ['--from-state', '--stack-region', 'us-west-2'],
       { from: 'user' }
     );
     expect(parsed.opts().stackRegion).toBe('us-west-2');
@@ -63,7 +63,7 @@ describe('createLocalStartApiCommand --from-state flag plumbing', () => {
   it('parses --state-bucket <bucket> as stateBucket=<bucket>', () => {
     const cmd = freshCommand();
     const parsed = cmd.parse(
-      ['node', 'cdkd', '--from-state', '--state-bucket', 'my-state-bucket'],
+      ['--from-state', '--state-bucket', 'my-state-bucket'],
       { from: 'user' }
     );
     expect(parsed.opts().stateBucket).toBe('my-state-bucket');
@@ -71,14 +71,14 @@ describe('createLocalStartApiCommand --from-state flag plumbing', () => {
 
   it('defaults --state-prefix to "cdkd"', () => {
     const cmd = freshCommand();
-    const parsed = cmd.parse(['node', 'cdkd'], { from: 'user' });
+    const parsed = cmd.parse([], { from: 'user' });
     expect(parsed.opts().statePrefix).toBe('cdkd');
   });
 
   it('parses --state-prefix <prefix> as statePrefix=<prefix>', () => {
     const cmd = freshCommand();
     const parsed = cmd.parse(
-      ['node', 'cdkd', '--from-state', '--state-prefix', 'custom-prefix'],
+      ['--from-state', '--state-prefix', 'custom-prefix'],
       { from: 'user' }
     );
     expect(parsed.opts().statePrefix).toBe('custom-prefix');
