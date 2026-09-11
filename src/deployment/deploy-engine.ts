@@ -2831,6 +2831,13 @@ export class DeployEngine {
           // resources demote the info-log to debug (avoids "routing via
           // Cloud Control API" repeated on every redeploy).
           provisionedBy: currentState.resources[logicalId]?.provisionedBy,
+          // And the PIN, which beats the record: a resource recorded `sdk`
+          // still routes its update through Cloud Control while pinned. Without
+          // it the reporting path reasoned about a route this deploy was not
+          // going to take — it printed "will be silently dropped" over values
+          // Cloud Control was about to write (issue
+          // [#3009](https://github.com/go-to-k/cdkd/issues/3009)).
+          pinnedToCcApi: this.isPinnedToCcApi(stackName, logicalId),
         }));
       this.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
       this.logger.debug(`All resource properties validated`);

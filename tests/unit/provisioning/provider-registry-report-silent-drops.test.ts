@@ -9,7 +9,7 @@
  * uses, so no fragile log-level wiring is needed here.
  */
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 
@@ -462,6 +462,135 @@ describe('--prefer-sdk-route had no effect', () => {
     const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
     expect(text, 'warned that the preference was inert when it was honoured').not.toContain(
       'had no effect'
+    );
+  });
+});
+
+/**
+ * `--pin-cc-api` — the THIRD input that forces Cloud Control, and the one this
+ * reporting path did not see until issue
+ * [#3009](https://github.com/go-to-k/cdkd/issues/3009).
+ *
+ * The pin beats the state record: a resource recorded `sdk` still routes its
+ * update through Cloud Control while pinned. So every branch here reasoned
+ * about a route the deploy was not going to take — which reproduced BOTH
+ * defects the two preceding issues removed, through the pin instead of the
+ * record. go-to-k/cdkd#2750's false "will be silently dropped" came back, and
+ * go-to-k/cdkd#3000's inert-preference warning stayed silent in the case a user
+ * is most likely to report.
+ */
+describe('--pin-cc-api forces Cloud Control, and the reporting path must know', () => {
+  function pinned(covered: string[], props: Record<string, unknown>, resourceType: string) {
+    const { registry, info, warn } = makeRegistry();
+    if (covered.length > 0) registry.allowUnsupportedProperties(covered);
+    registry.validateResourceProperties([
+      {
+        logicalId: 'Pinned',
+        resourceType,
+        properties: props,
+        // The record says SDK — the pin is what routes it, and that is the
+        // whole point: a `cc-api` record would make this case pass for the
+        // sticky reason instead.
+        provisionedBy: 'sdk',
+        pinnedToCcApi: true,
+      },
+    ]);
+    return { info, warn };
+  }
+
+  it('does NOT claim a pinned resource will silently drop a covered property', () => {
+    // The go-to-k/cdkd#2750 sentence, reached through the pin. Cloud Control
+    // forwards the full map, so the value IS written and this line was the
+    // exact opposite of what happens.
+    const { resourceType, property } = pickSilentDropFixture();
+    const { warn } = pinned([`${resourceType}:${property}`], { [property]: 'x' }, resourceType);
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text, "the FALSE 'will be dropped' warn is back, via the pin").not.toMatch(
+      /silently dropped|will not be written|missing the field/
+    );
+  });
+
+  it('DOES warn that the preference was inert, naming the pin as the cause', () => {
+    // And the remedy differs from both other causes: dropping the flag is a
+    // plain, complete, non-destructive change, which is why this is the only
+    // one of the three that names a command.
+    const { resourceType, property } = pickSilentDropFixture();
+    const { warn } = pinned([`${resourceType}:${property}`], { [property]: 'x' }, resourceType);
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text, 'the pinned resource says nothing about the inert preference').toContain(
+      'had no effect'
+    );
+    expect(text, 'the pin is not named as the cause').toContain('--pin-cc-api');
+    expect(text, 'the remedy is not the one that works for a pin').toContain(
+      'Drop --pin-cc-api Pinned'
+    );
+    // NOT the other two causes — naming a sibling or the record would send the
+    // user after something that is not deciding this route.
+    expect(text, 'the pin case borrowed the sticky remedy').not.toContain('destroy-and-recreate');
+  });
+
+  it('suppresses the unrecognized-property warn for a pinned resource', () => {
+    // The third reader of the same question. It refuses to warn when the route
+    // is forced, because Cloud Control forwards an unknown key rather than
+    // dropping it — and it tested the record while never seeing the pin.
+    const { resourceType } = pickSilentDropFixture();
+    const { warn } = pinned([], { ThisKeyIsNotInTheSchema: 'x' }, resourceType);
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text, 'a pinned resource is warned its unknown property will not reach AWS').not.toMatch(
+      /will not reach AWS|unrecognized/i
+    );
+  });
+});
+
+/**
+ * The WIRING — the half a probe of this file cannot see.
+ *
+ * Every case above hands `pinnedToCcApi` to the registry directly, so deleting
+ * the engine's `pinnedToCcApi: this.isPinnedToCcApi(...)` line leaves them all
+ * green while the pin never reaches the reporting path in a real deploy. That
+ * mutation was measured surviving, which is `.claude/rules/testing.md`'s "a
+ * probed callee says nothing about its WIRING, so delete each argument the call
+ * site passes and assert THOSE".
+ *
+ * A SOURCE-SHAPE fence, and its limit is stated rather than discovered: the
+ * pre-flight `validateResourceProperties` call sits inside `deploy()`, past a
+ * synth, a state read and a lock, so reaching it behaviourally means driving a
+ * whole deploy — the sibling wiring suite
+ * (`deploy-engine-sdk-reroute-wiring.test.ts`) drives the per-resource dispatch
+ * instead and cannot reach this call at all. So this catches DELETION and a
+ * detached sibling, not a wrong VALUE.
+ */
+describe('the deploy engine threads the pin into the pre-flight check', () => {
+  it('passes pinnedToCcApi beside provisionedBy, in the same object literal', () => {
+    const raw = readFileSync(
+      new URL('../../../src/deployment/deploy-engine.ts', import.meta.url),
+      'utf8'
+    );
+    // Comment-stripped: an earlier fence in this session matched a COMMENT
+    // mentioning the option name and stayed green while the value was inert.
+    const src = raw
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    const at = src.indexOf('this.providerRegistry.validateResourceProperties(');
+    expect(at, 'the pre-flight property check is gone from deploy()').toBeGreaterThan(-1);
+    // The object literal that BUILDS that call's argument, taken as the text
+    // between the map callback and the call itself — so a `pinnedToCcApi`
+    // assigned somewhere else entirely does not satisfy this.
+    const mapAt = src.lastIndexOf('resourcesForPropertyCheck', at);
+    const literal = src.slice(mapAt, at);
+    expect(literal, 'the mapping that feeds the pre-flight check was restructured').toContain(
+      'provisionedBy:'
+    );
+    expect(
+      literal,
+      'the engine no longer threads the pin — the reporting path reasons about the wrong route'
+    ).toContain('pinnedToCcApi:');
+    // From the stack-scoped helper, not a bare option read: `pinCcApi` carries
+    // a stackName because a logical id is unique only within one template, and
+    // an unscoped read pins a same-named resource in a stack nobody named.
+    expect(literal, 'the pin is read unscoped — a nested child would inherit it').toMatch(
+      /pinnedToCcApi:\s*this\.isPinnedToCcApi\(/
     );
   });
 });

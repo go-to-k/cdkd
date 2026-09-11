@@ -311,6 +311,40 @@ export function wouldReturnToSdkProvider(input: ReturnToSdkInput): boolean {
   );
 }
 
+/**
+ * Why this resource will reach Cloud Control whatever its properties say, or
+ * `undefined` if nothing forces it there (issue
+ * [#3009](https://github.com/go-to-k/cdkd/issues/3009)).
+ *
+ * THREE inputs, ONE predicate. They were three separate tests scattered across
+ * the reporting path, and the defect both times was the same: a new one was
+ * added and an existing reader was not updated, so a branch reasoned about a
+ * route the deploy was not going to take. Returning the CAUSE rather than a
+ * boolean is what makes that hard to repeat — a caller that needs to explain
+ * itself to a user cannot get the explanation from a `true`.
+ *
+ * `'pin'` is checked FIRST because it is decided last and wins: `--pin-cc-api`
+ * keeps a resource on Cloud Control for this deploy even when its record says
+ * `sdk` and its provider would take it back.
+ *
+ * The exemption lookup on the record case is load-bearing and not a
+ * micro-optimisation: a type that will flip BACK to its SDK provider must NOT
+ * suppress a warning about a drop that will then really happen.
+ */
+export type ForcedCcRoute = 'pin' | 'sticky-record';
+
+export function forcedCcRoute(input: {
+  resourceType: string;
+  provisionedBy?: 'sdk' | 'cc-api' | undefined;
+  pinnedToCcApi?: boolean | undefined;
+}): ForcedCcRoute | undefined {
+  if (input.pinnedToCcApi === true) return 'pin';
+  if (input.provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(input.resourceType)) {
+    return 'sticky-record';
+  }
+  return undefined;
+}
+
 export class ProviderRegistry {
   private logger = getLogger().child('ProviderRegistry');
   private providers = new Map<string, ResourceProvider>();
@@ -724,6 +758,8 @@ export class ProviderRegistry {
       resourceType: string;
       properties: Record<string, unknown> | undefined;
       provisionedBy?: 'sdk' | 'cc-api' | undefined;
+      /** See {@link reportSilentDropDecisions}, which this forwards to. */
+      pinnedToCcApi?: boolean | undefined;
     }>
   ): void {
     // Materialized because it is walked TWICE below and the caller's argument
@@ -800,9 +836,22 @@ export class ProviderRegistry {
       resourceType: string;
       properties: Record<string, unknown> | undefined;
       provisionedBy?: 'sdk' | 'cc-api' | undefined;
+      /**
+       * Whether `--pin-cc-api` names this resource for THIS deploy (issue
+       * [#3009](https://github.com/go-to-k/cdkd/issues/3009)).
+       *
+       * The third input that forces Cloud Control, and the one this reporting
+       * path did not see. The pin beats the state record — a resource recorded
+       * `sdk` still routes its update through Cloud Control while pinned — so
+       * without it every branch below reasoned about a route the deploy was not
+       * going to take: it printed "will be silently dropped" over values Cloud
+       * Control was writing, and withheld the inert-preference warning in the
+       * one case a user is most likely to report.
+       */
+      pinnedToCcApi?: boolean;
     }>
   ): void {
-    for (const { logicalId, resourceType, properties, provisionedBy } of resources) {
+    for (const { logicalId, resourceType, properties, provisionedBy, pinnedToCcApi } of resources) {
       const drops = findSilentDropProperties(resourceType, properties);
 
       // The two lists are NOT a partition of `drops`, and treating them as one
@@ -815,16 +864,28 @@ export class ProviderRegistry {
       //     answers that and is empty in exactly that case — the same
       //     predicate the record write and the diff read.
       //   - a `provisionedBy: 'cc-api'` record keeps it there (rule 2), for
-      //     any bag. That is `stickyCc`, and it is the SAME test
-      //     `reportUnrecognizedProperties` already makes below; the exemption
-      //     lookup is what keeps a type that will flip BACK to the SDK route
-      //     from suppressing a warn about a drop that will then happen.
+      //     any bag. The exemption lookup is what keeps a type that will flip
+      //     BACK to the SDK route from suppressing a warn about a drop that
+      //     will then happen.
+      //   - `--pin-cc-api` names it for THIS deploy, which beats the record:
+      //     a resource recorded `sdk` still routes its update through Cloud
+      //     Control while pinned (issue
+      //     [#3009](https://github.com/go-to-k/cdkd/issues/3009)).
       //
       // Without the second, this warn told a user with a sticky `cc-api`
       // alarm that `EvaluationWindow` "will be silently dropped" while Cloud
       // Control was writing it, and prescribed removing the override — a
       // no-op, since the resource was already on the route that remedy names.
-      const stickyCc = provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType);
+      // Without the THIRD it did exactly that again, through the pin, for two
+      // more releases: the state-record half was threaded here and the pin was
+      // not, so a pinned resource got the retired sentence back.
+      //
+      // ONE predicate with three causes, because all three answer the same
+      // question — will this resource reach Cloud Control whatever its
+      // properties say — and two of them being consulted while the third was
+      // ignored is how the defect survived its own fix.
+      const forcedToCc = forcedCcRoute({ resourceType, provisionedBy, pinnedToCcApi });
+      const stickyCc = forcedToCc !== undefined;
       const overridden = stickyCc
         ? []
         : findAcceptedSilentDrops(resourceType, properties, this.allowedUnsupportedProperties);
@@ -888,34 +949,46 @@ export class ProviderRegistry {
         const isAre = named.length === 1 ? 'is' : 'are';
         // STICKY wins when both hold: it is the earlier decision, so naming the
         // sibling would name a cause that is not the operative one.
-        const [cause, remedy] = stickyCc
-          ? [
-              `this resource's state record already routes it to Cloud Control ` +
-                `(provisionedBy: cc-api), which is decided before any property is consulted`,
-              // NO COMMAND, deliberately — the same call the create-only
-              // sentence below makes, for the same reason and against the
-              // MIRROR flag. `--recreate-via-sdk-provider <LogicalId>` looks
-              // like the answer and is refused in most of this branch's own
-              // population: `ambiguousIntentSdk` refuses it while any drop
-              // outside the preference is still actionable (which is exactly
-              // the `stickyCc && autoRouted.length > 0` half), 17 of the types
-              // carrying silentDrop entries are STATEFUL and need
-              // `--force-stateful-recreation` on top, and neither flag can
-              // address a resource inside a nested-stack child. It is also
-              // DESTRUCTIVE, which a one-line remedy must not omit. A sentence
-              // that has to be right about four conditions is a sentence that
-              // will be wrong about one; the deploy-safety docs carry it with
-              // its conditions.
-              `Returning this resource to the SDK provider is a destroy-and-recreate, not a ` +
-                `flag change — see docs/cli-deploy-safety.md. Widening ` +
-                `--prefer-sdk-route alone cannot do it.`,
-            ]
-          : [
-              `${autoRouted.join(', ')} ${autoRouted.length === 1 ? 'is' : 'are'} not covered ` +
-                `by it, and one uncovered property routes the whole RESOURCE to Cloud Control`,
-              `To keep the resource on its SDK provider, add ` +
-                `${autoRouted.map((p) => `${resourceType}:${p}`).join(',')} to --prefer-sdk-route as well.`,
-            ];
+        const [cause, remedy] =
+          forcedToCc === 'pin'
+            ? [
+                `--pin-cc-api names this resource for this deploy, which routes it ` +
+                  `to Cloud Control whatever its state record and its properties say`,
+                // The ONLY one of the three with a remedy that is a plain flag
+                // change, so it is the only one that names a command: dropping
+                // `--pin-cc-api` for this resource is complete, unconditional and
+                // non-destructive. The other two are not, which is why they hand
+                // off to the docs instead.
+                `Drop --pin-cc-api ${logicalId} to let the preference take effect.`,
+              ]
+            : forcedToCc === 'sticky-record'
+              ? [
+                  `this resource's state record already routes it to Cloud Control ` +
+                    `(provisionedBy: cc-api), which is decided before any property is consulted`,
+                  // NO COMMAND, deliberately — the same call the create-only
+                  // sentence below makes, for the same reason and against the
+                  // MIRROR flag. `--recreate-via-sdk-provider <LogicalId>` looks
+                  // like the answer and is refused in most of this branch's own
+                  // population: `ambiguousIntentSdk` refuses it while any drop
+                  // outside the preference is still actionable (which is exactly
+                  // the `stickyCc && autoRouted.length > 0` half), 17 of the types
+                  // carrying silentDrop entries are STATEFUL and need
+                  // `--force-stateful-recreation` on top, and neither flag can
+                  // address a resource inside a nested-stack child. It is also
+                  // DESTRUCTIVE, which a one-line remedy must not omit. A sentence
+                  // that has to be right about four conditions is a sentence that
+                  // will be wrong about one; the deploy-safety docs carry it with
+                  // its conditions.
+                  `Returning this resource to the SDK provider is a destroy-and-recreate, not a ` +
+                    `flag change — see docs/cli-deploy-safety.md. Widening ` +
+                    `--prefer-sdk-route alone cannot do it.`,
+                ]
+              : [
+                  `${autoRouted.join(', ')} ${autoRouted.length === 1 ? 'is' : 'are'} not covered ` +
+                    `by it, and one uncovered property routes the whole RESOURCE to Cloud Control`,
+                  `To keep the resource on its SDK provider, add ` +
+                    `${autoRouted.map((p) => `${resourceType}:${p}`).join(',')} to --prefer-sdk-route as well.`,
+                ];
         this.logger.warn(
           `${logicalId} (${resourceType}): --prefer-sdk-route had no effect for ${list} — ` +
             `${cause}. Cloud Control forwards the full property map, so ${list} ${isAre} ` +
@@ -973,6 +1046,7 @@ export class ProviderRegistry {
 
       this.reportUnrecognizedProperties(logicalId, resourceType, properties, {
         provisionedBy,
+        pinnedToCcApi,
         autoRouted: autoRouted.length > 0,
       });
     }
@@ -1031,11 +1105,17 @@ export class ProviderRegistry {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown> | undefined,
-    route: { provisionedBy?: 'sdk' | 'cc-api' | undefined; autoRouted: boolean }
+    route: {
+      provisionedBy?: 'sdk' | 'cc-api' | undefined;
+      pinnedToCcApi?: boolean | undefined;
+      autoRouted: boolean;
+    }
   ): void {
-    const stickyCc =
-      route.provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType);
-    if (stickyCc || route.autoRouted) return;
+    // SAME predicate as the sibling above, not a second spelling of it. This
+    // reader was the first to test the record and the last to learn about the
+    // pin; a pinned resource reached the warn below and was told an unknown
+    // property "will not reach AWS" while Cloud Control was forwarding it.
+    if (forcedCcRoute({ resourceType, ...route }) !== undefined || route.autoRouted) return;
 
     const unrecognized = findUnrecognizedProperties(resourceType, properties).filter(
       (property) => !this.allowedUnsupportedProperties.has(`${resourceType}:${property}`)
