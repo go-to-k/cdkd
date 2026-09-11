@@ -321,10 +321,12 @@ worth knowing before you read a report:
   `cdkd drift --accept` refuses them. The shapes that reach it are listed under
   [Redacted baselines](cli-drift.md#the-other-cause-of-a-masked-baseline-a-position-cdkd-could-not-certify).
 - **Some resources get no baseline at all.** Where the recorded properties no
-  longer spell the template's dynamic reference, cdkd cannot position the
-  redaction and skips the capture rather than risk persisting a decrypted
-  value (it says so at `--verbose`). Drift then compares against the recorded
-  properties for that resource, which can show as phantom drift.
+  longer spell the template's dynamic reference — or the resolution had to
+  discard part of the template it could not vouch for, such as the untaken
+  branch of an `Fn::If` whose condition an import cannot bind — cdkd cannot
+  position the redaction and skips the capture rather than risk persisting a
+  decrypted value (it says so at `--verbose`). Drift then compares against the
+  recorded properties for that resource, which can show as phantom drift.
 
 Both clear on a deploy that actually creates or updates the affected resource —
 not on any `cdkd deploy`. The **automatic refresh** cdkd runs at the start of a

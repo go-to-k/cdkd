@@ -74,16 +74,42 @@
  * bag. That is the row, and the near-miss is why the count above is stated as
  * "all nine" rather than left to a reader to check.
  *
+ * THE #2850 SHAPES NOW HAVE ROWS TOO. Issue
+ * [#2850](https://github.com/go-to-k/cdkd/issues/2850) measured two ways past
+ * the opener-count arm on the success path — a downgraded `Fn::If` dropping
+ * one reference while a parameter-sourced one is ADDED elsewhere (the totals
+ * balance), and a reference sourced ENTIRELY outside the bag then dropped
+ * (both counts zero, no warn) — plus a sibling discarder found while fixing
+ * it: `resolveValue`'s dispatch order drops the sibling keys of a multi-key
+ * intrinsic object. Every one of those rows red the SAFETY invariant against
+ * the pre-fix tree (measured: 4 failed / 32 passed, each failure quoting the
+ * persisted plaintext); they are refused by the DISCARD-EVENT walk
+ * (`resolveDiscardsNonInertSubtree`), whose negative controls — an `Fn::If`
+ * discarding pure literals, a multi-key intrinsic whose dropped sibling is a
+ * literal — are rows here as well, because the walk's risk direction is
+ * over-refusal.
+ *
+ * THE REVIEW ROUND THEN RE-ENUMERATED THE DISCARDERS and found the first cut
+ * had missed two, each now a refusing row with its own negative control:
+ * `resolveFindInMap`'s 4-argument `DefaultValue` is resolved LAZILY (a lookup
+ * HIT discards it unresolved — the `resolveIf` pattern on a second
+ * intrinsic), and a non-literal lookup KEY makes the un-taken mapping entries
+ * discarded template content; `resolveSelect` consumes its INDEX raw, so an
+ * intrinsic index discards the eagerly-decrypted list wholesale. The same
+ * round bought the `{Ref: 'AWS::NoValue'}` carve-out row: the one intrinsic
+ * whose discard cannot correspond to a value AWS holds, and without the
+ * carve-out the walk refused the optional-property idiom — the over-refusal
+ * direction's live case, not a hypothetical.
+ *
  * WHAT IS STILL ABSENT, and it is recorded rather than left to read as
- * coverage. `plaintext can still be persisted by this capture` — by a dropped
- * or traded reference
- * ([#2850](https://github.com/go-to-k/cdkd/issues/2850), whose shape the
- * PARAMETER-DEFAULT negative control below points at), a parameter bound to a
- * placeholder `Default` ([#2854](https://github.com/go-to-k/cdkd/issues/2854)),
- * and a secret with no counterpart in the source at all
- * ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). A row for any of
- * those would red the SAFETY invariant, exactly as the #2852 rows did before
- * the swap.
+ * coverage. `plaintext can still be persisted by this capture` — by a
+ * parameter bound to a placeholder `Default` while the DEPLOYED value was the
+ * reference ([#2854](https://github.com/go-to-k/cdkd/issues/2854) — no
+ * discard occurs, the divergence is in the VALUE, so the discard walk cannot
+ * see it), and by a secret with no counterpart in the source at all
+ * ([#2868](https://github.com/go-to-k/cdkd/issues/2868)). A row for either
+ * would red the SAFETY invariant, exactly as the #2852 and #2850 rows did
+ * before their fixes.
  *
  * #2868 IS WORTH STATING PRECISELY, because the note this paragraph replaced
  * listed "a readback key the source lacks" among the shapes #2852 closed and it
@@ -435,7 +461,260 @@ const ROWS: readonly Row[] = [
       'outside-the-bag class is throw-arm-only — an earlier revision of this ' +
       'line claimed that and a reviewer refuted it: drop the same reference ' +
       'with a downgraded Fn::If and BOTH counts read zero. That shape is issue ' +
-      '2850 and has no row here, because the SAFETY invariant would red on it',
+      '2850, whose rows follow below',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'BALANCED trade: one reference dropped by a downgraded Fn::If, another ADDED from a parameter Default',
+    properties: {
+      Prod: { 'Fn::If': ['IsProd', TOKEN, 'dev-placeholder'] },
+      Fallback: { Ref: 'SecretRef' },
+    },
+    readback: { Prod: PLAINTEXT, Fallback: PLAINTEXT_2 },
+    refused: true,
+    needle: PLAINTEXT,
+    why:
+      'ISSUE #2850 SHAPE A. The downgrade drops secret A (raw opener 1 -> persisted 0) ' +
+      'while the parameter-sourced reference ADDS one (raw 0 -> persisted 1), so the ' +
+      'TOTALS balance and a count comparison admits it. The secrets differ, so the ' +
+      'derived-needle pass cannot rescue the dropped leaf either',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN_2 },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'reference sourced from a PARAMETER DEFAULT, dropped by a downgraded Fn::If — both counts ZERO',
+    properties: {
+      Detail: { pw: { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev-placeholder'] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'ISSUE #2850 SHAPE B. The reference lives ENTIRELY outside the bag (a parameter ' +
+      'Default), so the raw count reads zero; the downgrade then drops it, so the ' +
+      'persisted count is zero too. 0 < 0 is false, nothing throws, and no warn fires',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'reference sourced from a MAPPINGS entry, dropped by a downgraded Fn::If — both counts ZERO',
+    properties: {
+      Detail: {
+        pw: { 'Fn::If': ['IsProd', { 'Fn::FindInMap': ['M', 's', 'pw'] }, 'dev-placeholder'] },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why: 'ISSUE #2850 SHAPE B, second source outside the bag — same zero counts, same silence',
+    template: {
+      Parameters: { Stage: { Type: 'String' } },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+      Mappings: { M: { s: { pw: TOKEN } } },
+    },
+  },
+  {
+    name: 'sibling subtree DROPPED by dispatch order: an intrinsic key beside other keys',
+    properties: { Detail: { pw: { Ref: 'PlainParam', nested: { Ref: 'SecretRef' } } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the SAME CLASS as Shape B, one discarder over: `resolveValue` dispatches on ' +
+      'the first matching intrinsic key, so `nested` — and the reference it sources ' +
+      'from the parameter Default — is silently dropped, with both counts zero',
+    template: {
+      Parameters: {
+        PlainParam: { Type: 'String', Default: 'public-value' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+    },
+  },
+  {
+    name: 'Fn::FindInMap 4-arg DefaultValue DISCARDED by a lookup HIT, reference in the default',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::FindInMap': ['M', { Ref: 'Stage' }, 'pw', { DefaultValue: { Ref: 'SecretRef' } }],
+        },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "THE REVIEW ROUND'S BLOCKER. resolveFindInMap resolves DefaultValue lazily, " +
+      'only on a lookup MISS — a HIT discards it UNRESOLVED, the resolveIf pattern ' +
+      'on a second intrinsic. Deployed with a parameter value that MISSED, AWS ' +
+      'holds the default reference decrypted; import binds the Default, hits, and ' +
+      'both counts read zero',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String', Default: 'dev' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Mappings: { M: { dev: { pw: 'dev-placeholder' } } },
+    },
+  },
+  {
+    name: 'Fn::FindInMap 4-arg with a pure-LITERAL DefaultValue, lookup hits',
+    properties: {
+      Detail: { pw: { 'Fn::FindInMap': ['M', 'dev', 'pw', { DefaultValue: 'fallback-literal' }] } },
+    },
+    readback: { Detail: { pw: 'from-map' } },
+    expected: { Detail: { pw: 'from-map' } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the DefaultValue arm: a literal default is inert ' +
+      'whichever way the deployed lookup went, and literal keys make the selection ' +
+      'template-constant',
+    template: { Mappings: { M: { dev: { pw: 'from-map' } } } },
+  },
+  {
+    name: 'Fn::FindInMap keyed by a PARAMETER, token in the un-taken mapping entry',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M', { Ref: 'Stage' }, 'pw'] } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'a non-literal key selects a mapping entry this import cannot prove is the ' +
+      'deployed one, so the un-taken entries are discarded template content — and ' +
+      'this map holds a reference in one of them, with both bag counts zero',
+    template: {
+      Parameters: { Stage: { Type: 'String', Default: 'dev' } },
+      Mappings: { M: { dev: { pw: 'dev-placeholder' }, prod: { pw: TOKEN } } },
+    },
+  },
+  {
+    name: 'Fn::FindInMap keyed by a PARAMETER over a pure-LITERAL map',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M', { Ref: 'Stage' }, 'pw'] } } },
+    readback: { Detail: { pw: 'prod-v' } },
+    expected: { Detail: { pw: 'prod-v' } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the keyed arm: whichever entry the deployed lookup ' +
+      'took, every value this map can supply is public template text — refusing ' +
+      'would cost the region-map idiom its baseline',
+    template: {
+      Parameters: { Stage: { Type: 'String', Default: 'dev' } },
+      Mappings: { M: { dev: { pw: 'dev-v' }, prod: { pw: 'prod-v' } } },
+    },
+  },
+  {
+    name: 'Fn::Select with an INTRINSIC index over a list holding a reference',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [{ Ref: 'Idx' }, [{ Ref: 'SecretRef' }, 'pub-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "THE REVIEW ROUND'S MAJOR. resolveSelect consumes the index RAW — an " +
+      'intrinsic index selects undefined here while CloudFormation resolved it at ' +
+      'deploy, so the eagerly-decrypted elements are all discarded and AWS holds ' +
+      'one of them',
+    template: {
+      Parameters: {
+        Idx: { Type: 'String', Default: '1' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+    },
+  },
+  {
+    name: 'Fn::Select with an INTRINSIC index over a pure-LITERAL list',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [{ Ref: 'Idx' }, ['alpha', 'beta']] } },
+    },
+    readback: { Detail: { pw: 'beta' } },
+    expected: { Detail: { pw: 'beta' } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the Select arm: every element AWS could hold is ' +
+      'public template text, so the unknown selection discloses nothing',
+    template: { Parameters: { Idx: { Type: 'String', Default: '1' } } },
+  },
+  {
+    name: 'Fn::If discarding {Ref: AWS::NoValue} — the optional-property idiom',
+    properties: {
+      Detail: { opt: { 'Fn::If': ['HasOpt', 'real-value', { Ref: 'AWS::NoValue' }] } },
+    },
+    readback: { Detail: { opt: 'real-value' } },
+    expected: { Detail: { opt: 'real-value' } },
+    refused: false,
+    why:
+      'the NEGATIVE control a review round bought: AWS::NoValue is the one ' +
+      'intrinsic that cannot have produced a value at deploy either (it means ' +
+      'property REMOVAL), so discarding it discards nothing AWS could hold — ' +
+      'without the carve-out the most common Fn::If idiom lost its baseline',
+    template: {
+      Parameters: { Stage: { Type: 'String', Default: 'prod' } },
+      Conditions: { HasOpt: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::If whose condition is ABSENT from the evaluated map, reference in the true branch',
+    properties: {
+      Detail: { pw: { 'Fn::If': ['NoSuchCondition', { Ref: 'SecretRef' }, 'fallback-literal'] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the resolver WARNS and takes the false branch when the condition is not in ' +
+      'its context, so nothing throws and both counts read zero — the same silence ' +
+      'as Shape B, reached without any Conditions section at all',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::If under a DOWNGRADED condition discarding a BENIGN intrinsic',
+    properties: {
+      Detail: { endpoint: { 'Fn::If': ['IsProd', { Ref: 'PlainParam' }, 'dev-endpoint'] } },
+    },
+    readback: { Detail: { endpoint: 'prod-public-endpoint' } },
+    refused: true,
+    overRefusal: true,
+    why:
+      'the discarded branch is an intrinsic, so the walk cannot vouch for what the ' +
+      'deployed condition produced there — refused although this particular ' +
+      'parameter is public. The price of not enumerating reference sources',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        PlainParam: { Type: 'String', Default: 'public-endpoint-value' },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::If under a DOWNGRADED condition discarding a pure-LITERAL object',
+    properties: {
+      Detail: { cfg: { 'Fn::If': ['IsProd', { mode: 'prod', size: 3 }, { mode: 'dev' }] } },
+    },
+    readback: { Detail: { cfg: { mode: 'dev' } } },
+    expected: { Detail: { cfg: { mode: 'dev' } } },
+    refused: false,
+    why:
+      'the NEGATIVE control for the discard walk: the discarded branch is pure ' +
+      'literals, whose deployed value is the same public template text the walk can ' +
+      'read — refusing it would cost the common placeholder pattern its baseline',
+    template: {
+      Parameters: { Stage: { Type: 'String' } },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'intrinsic key beside a LITERAL sibling key — dispatch drops only inert text',
+    properties: { Detail: { pw: { Ref: 'SecretRef', Extra: 'literal-note' } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    expected: { Detail: { pw: TOKEN } },
+    refused: false,
+    why:
+      "the NEGATIVE control for the dispatch-order rule: the dropped sibling is an " +
+      'inert literal, and the dispatched Ref resolves the reference into the ' +
+      'persisted bag as a token the walk can position on',
     template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
   },
   {
@@ -676,12 +955,12 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     // A floor on the POOL, written as literals from this file rather than
     // derived from the array: a table that quietly lost its refusing rows would
     // otherwise satisfy every assertion below by having nothing to check.
-    expect(ROWS).toHaveLength(30);
-    expect(ROWS.filter((r) => r.refused)).toHaveLength(11);
-    expect(ROWS.filter((r) => !r.refused)).toHaveLength(19);
+    expect(ROWS).toHaveLength(45);
+    expect(ROWS.filter((r) => r.refused)).toHaveLength(20);
+    expect(ROWS.filter((r) => !r.refused)).toHaveLength(25);
     // The deliberate over-refusals, counted so they cannot grow unnoticed: each
     // costs a real resource its drift baseline.
-    expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(3);
+    expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(4);
     expect(
       ROWS.filter((r) => r.overRefusal && !r.refused),
       'an over-refusal that is not a refusal is a contradiction'
@@ -807,7 +1086,7 @@ describe('cdkd import: which resources may take an observedProperties baseline (
         provenByPlaintext++;
       }
     }
-    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(4);
+    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(12);
     expect(provenByMask, 'the loop ran over every refusal earned by a MASK').toBe(4);
   });
 });

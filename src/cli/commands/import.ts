@@ -1482,7 +1482,7 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  * the clear.
  *
  * The predicate is deliberately CONSERVATIVE — it over-refuses — and that is a
- * decision a review round paid for. Two arms:
+ * decision a review round paid for. Three arms:
  *
  *  - **Resolution THREW** — refuse, unconditionally. A throw means the
  *    resolver could not finish, so nothing about the persisted bag is
@@ -1510,6 +1510,19 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  *    remedy -- because a populated map makes absence from it real evidence of
  *    a public parameter, exactly as the deploy path already relies on.
  *
+ *  - **Resolution SUCCEEDED but DISCARDED a subtree that is not provably
+ *    inert** (issue [#2850](https://github.com/go-to-k/cdkd/issues/2850)).
+ *    The count in arm 2 sees only what the raw bag SPELLS, and that issue
+ *    measured two ways past it: a downgraded `Fn::If` dropping one reference
+ *    while a parameter-sourced reference is ADDED elsewhere (the totals
+ *    balance), and a reference sourced ENTIRELY from a parameter `Default` or
+ *    a `Mappings` entry then dropped (both counts read zero, and nothing
+ *    warns). {@link resolveDiscardsNonInertSubtree} carries the discard-event
+ *    enumeration and the fail-closed rules; "inert" is
+ *    {@link isInertDiscardedSubtree}'s definition — pure literals with no
+ *    opener text and no intrinsic anywhere, because every way a discarded
+ *    subtree could have SOURCED a reference is an intrinsic.
+ *
  * The cost of a false refusal is one resource's drift baseline until its next
  * deploy; the cost of a false pass is a plaintext secret in `state.json`. So an
  * unmeasurable bag refuses too.
@@ -1523,9 +1536,6 @@ function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFo
  * PLAINTEXT CAN STILL BE PERSISTED by this capture. Known ways, each with its
  * issue and none of them proven to be all of them:
  *
- *  - the resolve drops a reference, or trades one away, in a manner the opener
- *    comparison below cannot see --
- *    [#2850](https://github.com/go-to-k/cdkd/issues/2850);
  *  - a parameter binds to a placeholder `Default` while the DEPLOYED value was
  *    the reference, so no opener exists in any template this walk is handed --
  *    [#2854](https://github.com/go-to-k/cdkd/issues/2854);
@@ -1844,7 +1854,15 @@ export async function resolveImportedProperties(
       persistedOpeners === undefined ||
       // ARM 2 — the resolve SUCCEEDED but LOST an opener, which a downgraded
       // `Fn::If` does routinely.
-      persistedOpeners < rawOpeners
+      persistedOpeners < rawOpeners ||
+      // ARM 3 (issue #2850) — the resolve SUCCEEDED but DISCARDED a subtree it
+      // cannot vouch is inert. The count above sees only what the raw bag
+      // SPELLS, so it misses a drop the bag never spelled (a reference sourced
+      // from a parameter `Default` or a `Mappings` entry: both counts read
+      // zero) and a drop BALANCED by an addition elsewhere. The predicate's
+      // own doc block carries the discard-event enumeration and the
+      // fail-closed rules.
+      resolveDiscardsNonInertSubtree(unresolvedProperties, conditions, template.Mappings)
     ) {
       unsafeObservedBaselineLogicalIds.add(logicalId);
     }
@@ -1883,6 +1901,230 @@ function countDynamicReferenceOpeners(bag: unknown): number | undefined {
     count++;
     from = at + DYNAMIC_REFERENCE_OPENER.length;
   }
+}
+
+/**
+ * Whether an object key can make the resolver treat its object as an
+ * INTRINSIC. Deliberately BROADER than the resolver's own dispatch list
+ * (`resolveValue` names specific keys; this matches any `Fn::`-prefixed one):
+ * the callers below use it to decide what a DISCARDED subtree could have
+ * been, and over-matching there only widens a refusal, never a pass.
+ */
+function isIntrinsicShapedKey(key: string): boolean {
+  return key === 'Ref' || key.startsWith('Fn::');
+}
+
+/**
+ * Whether a subtree the resolve DISCARDED is provably INERT: pure JSON
+ * literals, carrying no `{{resolve:` opener text in any string leaf and no
+ * intrinsic-shaped object key anywhere.
+ *
+ * This is the capability question of issue
+ * [#2850](https://github.com/go-to-k/cdkd/issues/2850) asked in the
+ * fail-closed direction. Asking "could this subtree have carried or SOURCED a
+ * dynamic reference" precisely would need enumerating every source a reference
+ * can arrive from — a parameter `Default` via `Ref` or `Fn::Sub`, a `Mappings`
+ * entry via `Fn::FindInMap`, another stack's outputs via `Fn::ImportValue` /
+ * `Fn::GetStackOutput` — and the enumeration missing one form is exactly how
+ * the opener COUNT missed the first two. Every one of those source forms is an
+ * intrinsic, so "no intrinsic at all" covers them all without naming any, and
+ * a plain-literal subtree is one whose value at deploy time was the same
+ * public template text this walk can read.
+ */
+function isInertDiscardedSubtree(node: unknown): boolean {
+  if (typeof node === 'string') return !node.includes(DYNAMIC_REFERENCE_OPENER);
+  if (node === null || typeof node !== 'object') return true;
+  if (Array.isArray(node)) return node.every((element) => isInertDiscardedSubtree(element));
+  const record = node as Record<string, unknown>;
+  // `{Ref: 'AWS::NoValue'}` is the ONE intrinsic that cannot have produced a
+  // value at deploy time either — CloudFormation defines it as property
+  // REMOVAL — so discarding it discards nothing AWS could hold. Without this
+  // carve-out the walk refused the single most common `Fn::If` idiom
+  // (`[Cond, <value>, {Ref: 'AWS::NoValue'}]`) whenever the condition held,
+  // a pure false positive a review round measured (the matrix's NoValue row
+  // pins it). Exact single-key match only: a `Ref` beside other keys is the
+  // dispatch-order discard and stays non-inert.
+  const keys = Object.keys(record);
+  if (keys.length === 1 && keys[0] === 'Ref' && record['Ref'] === 'AWS::NoValue') return true;
+  return Object.entries(record).every(
+    ([key, value]) => !isIntrinsicShapedKey(key) && isInertDiscardedSubtree(value)
+  );
+}
+
+/**
+ * Whether a scalar the resolver consumes RAW (an `Fn::Select` index) is a
+ * template-constant literal: a number, or a string of digits. Anything else —
+ * an intrinsic object, a non-numeric string — makes the selection depend on a
+ * value this import cannot reproduce.
+ */
+function isStaticSelectIndex(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isInteger(value);
+  return typeof value === 'string' && /^\d+$/.test(value);
+}
+
+/** A `Fn::FindInMap` lookup-key argument the resolver can only have resolved
+ * to the same key at deploy time: a plain scalar literal. */
+function isStaticLookupKey(value: unknown): boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+/**
+ * ARM 3 of the observed-baseline refusal (issue
+ * [#2850](https://github.com/go-to-k/cdkd/issues/2850)): did the resolve
+ * DISCARD a subtree it cannot vouch is inert?
+ *
+ * The opener-count comparison (ARM 2) sees only what the raw bag SPELLS, and
+ * the issue measured two ways past it on the success arm: a downgraded
+ * `Fn::If` that drops one reference while a parameter-sourced reference is
+ * added elsewhere (the totals balance), and a reference sourced ENTIRELY from
+ * outside the bag then dropped (both counts read zero, nothing throws, no
+ * warn fires). Both are DISCARD events: the resolver threw a subtree away
+ * unresolved, and whatever that subtree would have produced — which is what
+ * AWS actually holds when the deployed condition took the other branch — is
+ * exactly what the persisted bag cannot position a redaction for.
+ *
+ * So this walk detects the discard EVENTS on the RAW bag instead of comparing
+ * positions across the resolve (which would need a path identity across the
+ * `Fn::If` collapse that does not exist). The discarders, enumerated from
+ * `IntrinsicFunctionResolver` rather than assumed — and re-enumerated by this
+ * PR's review round, which found the first cut had missed TWO (`Fn::FindInMap`
+ * and `Fn::Select` below; an earlier revision called `resolveIf` "the only
+ * LAZY selector" and the resolver's own source refutes it):
+ *
+ *  - `resolveIf` — a LAZY selector: it resolves the selected branch
+ *    only, so the unselected branch is discarded UNRESOLVED. A missing
+ *    condition warns and selects the FALSE branch (no throw), so the success
+ *    arm reaches it. Dispatch is `'Fn::If' in obj`, not single-key.
+ *  - `resolveFindInMap` — the OTHER lazy site: the 4-argument form's
+ *    `DefaultValue` is resolved only on a lookup MISS, so a HIT discards it
+ *    unresolved; and a non-literal lookup KEY makes the un-taken mapping
+ *    entries discarded template content. The walk's own arm comment carries
+ *    both modes.
+ *  - `resolveSelect` — eager on the LIST but the INDEX is consumed RAW, never
+ *    resolved: an intrinsic index selects `undefined` here while
+ *    CloudFormation resolved it at deploy, so the whole list is potentially
+ *    discarded content. (With a NUMERIC-LITERAL index the selection is
+ *    template-constant and the un-selected elements were discarded at deploy
+ *    too — that case discards nothing AWS could hold.)
+ *  - Dispatch order itself — `resolveValue` dispatches on the first matching
+ *    intrinsic key, so an object holding an intrinsic key AMONG OTHER KEYS
+ *    resolves as that intrinsic and silently DROPS the sibling keys'
+ *    subtrees.
+ *  - NOT `Fn::Sub`: its variable map is resolved eagerly, every entry.
+ *  - NOT `Fn::Join`'s delimiter: it is consumed raw too, but CloudFormation
+ *    itself admits no intrinsic there, and an intrinsic delimiter joins as
+ *    `[object Object]` — a mangled value, not a discarded reference.
+ *
+ * Fail-closed rules, in the order tested:
+ *
+ *  - single-key `Fn::If` with well-formed args and a condition the evaluated
+ *    map carries (`Object.hasOwn`, the same test `resolveIf` uses since issue
+ *    #2767): the UNSELECTED branch must be inert, and the SELECTED branch is
+ *    recursed into;
+ *  - single-key `Fn::If` whose condition the map does NOT carry: BOTH
+ *    branches must be inert. The resolver warns and takes the false branch,
+ *    so this is a SUPERSET of mirroring it — mirroring the lookup exactly is
+ *    the two-spellings-of-one-question drift this repo keeps paying for, and
+ *    the superset can only over-refuse, never leak;
+ *  - single-key `Fn::If` with MALFORMED args: refuse;
+ *  - a MULTI-KEY object carrying any intrinsic-shaped key: every value must
+ *    be inert — which sibling the dispatch order drops is deliberately not
+ *    mirrored here;
+ *  - everything else recurses, so a nested `Fn::If` inside an `Fn::Join` /
+ *    `Fn::Sub` argument is still found.
+ *
+ * Additive beside ARM 1 (throw) and ARM 2 (count loss): refusal strictly
+ * widens, so no previously-refused shape can start leaking, and the risk
+ * direction is over-refusal alone. The negative controls live in the matrix:
+ * an `Fn::If` discarding pure literals stays ADMITTED, and so does a
+ * multi-key intrinsic object whose sibling values are literals.
+ */
+function resolveDiscardsNonInertSubtree(
+  node: unknown,
+  conditions: Record<string, boolean>,
+  mappings: unknown
+): boolean {
+  if (node === null || typeof node !== 'object') return false;
+  if (Array.isArray(node)) {
+    return node.some((element) => resolveDiscardsNonInertSubtree(element, conditions, mappings));
+  }
+  const record = node as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length === 1 && keys[0] === 'Fn::If') {
+    const args = record['Fn::If'];
+    if (!Array.isArray(args) || args.length !== 3 || typeof args[0] !== 'string') {
+      return true;
+    }
+    const [conditionName, valueIfTrue, valueIfFalse] = args as [string, unknown, unknown];
+    if (!Object.hasOwn(conditions, conditionName)) {
+      return !isInertDiscardedSubtree(valueIfTrue) || !isInertDiscardedSubtree(valueIfFalse);
+    }
+    const selected = conditions[conditionName] ? valueIfTrue : valueIfFalse;
+    const discarded = conditions[conditionName] ? valueIfFalse : valueIfTrue;
+    if (!isInertDiscardedSubtree(discarded)) return true;
+    return resolveDiscardsNonInertSubtree(selected, conditions, mappings);
+  }
+  // `Fn::FindInMap` — TWO discard modes, both found by the PR's review round
+  // (the enumeration below this walk's doc block originally called `resolveIf`
+  // "the only LAZY selector", which the resolver's own source refutes):
+  //
+  //  - the 4-argument form's `DefaultValue` is resolved LAZILY, only when the
+  //    lookup misses ("resolve it lazily only when we need to fall back to
+  //    it", `resolveFindInMap`). A lookup that HITS at import discards the
+  //    `DefaultValue` subtree UNRESOLVED — the exact `resolveIf` pattern —
+  //    while the deployed stack may have MISSED (the keys were resolved from
+  //    values this import does not hold) and AWS holds what the default
+  //    resolved to. So a non-inert `DefaultValue` refuses regardless of which
+  //    way this import's lookup went, which is statically unknowable here.
+  //  - a lookup KEY that is not a scalar literal makes WHICH mapping entry
+  //    was selected depend on a value this import cannot reproduce, so the
+  //    un-taken entries are discarded template content. That matters exactly
+  //    when the map holds something non-inert (a `{{resolve:` token — the
+  //    Mappings grammar admits no intrinsics, but nothing enforces that on an
+  //    imported template), so refuse on the pair: non-literal key AND
+  //    non-inert map. The map checked is the NAMED one when the map name is a
+  //    literal, the whole `Mappings` section when even that is dynamic.
+  if (keys.length === 1 && keys[0] === 'Fn::FindInMap') {
+    const args = record['Fn::FindInMap'];
+    if (!Array.isArray(args) || args.length < 3) return true;
+    const options = args[3];
+    if (args.length > 3) {
+      const defaultValue =
+        options !== null && typeof options === 'object' && !Array.isArray(options)
+          ? (options as Record<string, unknown>)['DefaultValue']
+          : options;
+      if (!isInertDiscardedSubtree(defaultValue)) return true;
+    }
+    if (!args.slice(0, 3).every((key) => isStaticLookupKey(key))) {
+      const scope =
+        typeof args[0] === 'string' &&
+        mappings !== null &&
+        typeof mappings === 'object' &&
+        Object.hasOwn(mappings as Record<string, unknown>, args[0])
+          ? (mappings as Record<string, unknown>)[args[0]]
+          : mappings;
+      if (!isInertDiscardedSubtree(scope)) return true;
+    }
+    return args.some((arg) => resolveDiscardsNonInertSubtree(arg, conditions, mappings));
+  }
+  // `Fn::Select` consumes its index RAW — `resolveSelect` never resolves it,
+  // so an intrinsic index selects `undefined` in cdkd while CloudFormation
+  // RESOLVED it at deploy time. The list is resolved eagerly (every element
+  // decrypted and recorded), but the un-selected elements are then discarded,
+  // and with the maps dead by capture time the persisted bag cannot vouch for
+  // what AWS holds at that position. A non-static index over a non-inert list
+  // therefore refuses; over a pure-literal list every element AWS could hold
+  // is public template text and the resource keeps its baseline.
+  if (keys.length === 1 && keys[0] === 'Fn::Select') {
+    const args = record['Fn::Select'];
+    if (!Array.isArray(args) || args.length !== 2) return true;
+    if (!isStaticSelectIndex(args[0]) && !isInertDiscardedSubtree(args[1])) return true;
+    return args.some((arg) => resolveDiscardsNonInertSubtree(arg, conditions, mappings));
+  }
+  if (keys.length > 1 && keys.some((key) => isIntrinsicShapedKey(key))) {
+    return !keys.every((key) => isInertDiscardedSubtree(record[key]));
+  }
+  return keys.some((key) => resolveDiscardsNonInertSubtree(record[key], conditions, mappings));
 }
 
 function printSummary(rows: ImportRow[]): void {
@@ -2194,6 +2436,14 @@ export async function captureObservedForImportedResources(
       // in place. `cdkd scrub` is the remedy, and issue
       // [#2872](https://github.com/go-to-k/cdkd/issues/2872) records the
       // narrow case where that is WORSE than not refusing.
+      //
+      // AND THE MISSING BASELINE ITSELF IS NOT PERMANENT: the deploy-start
+      // auto-refresh and `cdkd state refresh-observed` both fill a missing
+      // baseline against the record's `properties`, which after a refusal can
+      // hold the wrong-branch LITERAL the refusal distrusted — neither writer
+      // holds the template evidence this walk refused on. Issue
+      // [#2944](https://github.com/go-to-k/cdkd/issues/2944) owns that
+      // residue; nothing at this site can close it.
       if (unsafeObservedBaselineLogicalIds.has(logicalId)) {
         logger.debug(
           `observedProperties capture SKIPPED for imported ${logicalId} (${resource.resourceType}): the recorded properties no longer spell the template's dynamic reference, so they cannot position a redaction — capturing an AWS readback against them could persist a resolved secret in plaintext. Drift will compare against the recorded properties for this resource until the next successful deploy.`
