@@ -223,6 +223,58 @@ describe('cdkd state resources', () => {
     expect(typeOffset0).toBe(typeOffset1);
   });
 
+  it('STRIPS control characters in the DEFAULT columns and still aligns them', async () => {
+    // The default branch measures its own column widths, so stripping has to
+    // happen before the measurement: pad the stripped value to a width counted
+    // from the raw one and every column after it shifts by the characters that
+    // were removed.
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        'Evil\u001b[31mId': makeResource({
+          // The longer of the two types, and control-bearing: measuring the raw
+          // type width, or dropping this column's guard, changes this row.
+          resourceType: 'AWS::S3::Buck\u001bet',
+          physicalId: 'evil\u001b[1mbucket',
+        }),
+        Plain: makeResource({ resourceType: 'AWS::IAM::Role', physicalId: 'plain-role' }),
+      })
+    );
+
+    const out = await runStateResources(['resources', 'StackA']);
+    const lines = out.trimEnd().split('\n');
+
+    // The ESC byte goes; the `[31m` it introduced is ordinary text and stays.
+    // Breaking the sequence is the point, not sanitising the name.
+    expect(out).not.toContain('\u001b');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe('Evil[31mId  AWS::S3::Bucket  evil[1mbucket');
+    expect(lines[1]).toBe('Plain       AWS::IAM::Role   plain-role');
+    // Measuring the RAW ids instead keeps the rows ALIGNED — both pad to the
+    // same width — and widens every column by the difference between the two
+    // MAXIMA, which is the byte removed from the longest id here. The
+    // exact-equality assertions above catch that; this one cannot.
+    expect(lines[0]!.indexOf('AWS::S3::Bucket')).toBe(lines[1]!.indexOf('AWS::IAM::Role'));
+  });
+
+  it('renders a non-string physicalId and resourceType in the DEFAULT columns', async () => {
+    // Raw, `.padEnd` on a non-string type throws and empties the whole listing.
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        Odd: makeResource({
+          resourceType: 4242 as unknown as string,
+          // Not `null`: `makeResource` coalesces that to its default.
+          physicalId: 0 as unknown as string,
+        }),
+      })
+    );
+
+    const out = await runStateResources(['resources', 'StackA']);
+
+    expect(out.trimEnd()).toBe('Odd  4242  0');
+  });
+
   it('emits a long human-readable block per resource with --long', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
@@ -260,6 +312,102 @@ describe('cdkd state resources', () => {
 
     expect(out).toContain('  Dependencies: (none)');
     expect(out).toContain('  Attributes: (none)');
+  });
+
+  it('renders a non-string physicalId under --long instead of dying', async () => {
+    // `stripControlChars` threw on a hand-edited number, and because the rows
+    // are built before anything is written the whole listing was lost.
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        R1: makeResource({
+          resourceType: 'AWS::SNS::Topic',
+          physicalId: 4242 as unknown as string,
+        }),
+      })
+    );
+
+    const out = await runStateResources(['resources', 'StackA', '--long']);
+
+    expect(out).toContain('  PhysicalID: 4242');
+    expect(out).toContain('R1');
+  });
+
+  it('renders a bare-string `dependencies` under --long rather than dying', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        Odd: makeResource({
+          physicalId: 'p-1',
+          dependencies: 'A\nFake: 1' as unknown as string[],
+        }),
+      })
+    );
+
+    const out = await runStateResources(['resources', 'StackA', '--long']);
+
+    expect(out).toContain('  Dependencies: AFake: 1');
+    expect(out.split('\n').filter((l) => l.startsWith('Fake: 1'))).toEqual([]);
+  });
+
+  it('renders a `dependencies` ELEMENT that throws on coercion under --long', async () => {
+    // The elements are rendered one at a time, so this never reaches `join` —
+    // joining first and guarding the result cannot catch it.
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        Odd: makeResource({
+          physicalId: 'p-1',
+          dependencies: [{ toString: null }] as unknown as string[],
+        }),
+      })
+    );
+
+    const out = await runStateResources(['resources', 'StackA', '--long']);
+
+    expect(out).toContain('  Dependencies: {"toString":null}');
+  });
+
+  it('renders a non-string resourceType under --long instead of dying', async () => {
+    // The bare strip throws on it and the listing comes out empty.
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        Odd: makeResource({ resourceType: 4242 as unknown as string, physicalId: 'p-1' }),
+      })
+    );
+
+    const out = await runStateResources(['resources', 'StackA', '--long']);
+
+    expect(out).toContain('  Type: 4242');
+    expect(out).toContain('  PhysicalID: p-1');
+  });
+
+  it('STRIPS control characters from every row it renders under --long', async () => {
+    // These lines are joined with a newline, and the strip removes newline
+    // too, so an unstripped field forges rows rather than only colouring them.
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        'My\u001bTable': makeResource({
+          resourceType: 'AWS::Dynamo\u001bDB::Table',
+          physicalId: 'tbl\u001b-1',
+          dependencies: ['Dep\u001bOne', 'Dep\nTwo'],
+          attributes: { 'Arn\u001bKey': 'arn\u001bvalue' },
+        }),
+      })
+    );
+
+    const out = await runStateResources(['resources', 'StackA', '--long']);
+
+    expect(out).not.toContain('\u001b');
+    expect(out.split('\n')).toContain('MyTable');
+    expect(out).toContain('  Type: AWS::DynamoDB::Table');
+    expect(out).toContain('  PhysicalID: tbl-1');
+    // The newline inside a dependency must NOT have produced an extra row.
+    expect(out).toContain('  Dependencies: DepOne, DepTwo');
+    // Key and value take different guards, so the row needs both to be right.
+    expect(out).toContain('    ArnKey: arnvalue');
   });
 
   it('renders structured attribute values as inline JSON under --long', async () => {

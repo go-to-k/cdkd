@@ -527,6 +527,25 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect((caught as Error).message).toMatch(/Unsupported state schema version 99/);
       expect((caught as Error).message).toMatch(/Upgrade cdkd/);
     });
+
+    it('refuses a NON-NUMERIC version, not only an unknown number', async () => {
+      // `cdkd state show` interpolates `state.version` without a display guard,
+      // unlike every other field it renders, and this refusal is the whole reason
+      // that is safe: a string here would reach the row and could carry a newline.
+      // The rejection has to be membership, not a version COMPARISON — a
+      // `v > CURRENT` check would keep the case above green and admit this one.
+      for (const version of ['2', '2\nStack: Fake', true, {}, []]) {
+        const bad = { version, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 };
+        s3Client.send.mockResolvedValueOnce({
+          Body: { transformToString: () => Promise.resolve(JSON.stringify(bad)) },
+          ETag: '"e"',
+        });
+
+        const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+        expect(caught, `version ${JSON.stringify(version)}`).toBeInstanceOf(StateError);
+        expect((caught as Error).message).toMatch(/Unsupported state schema version/);
+      }
+    });
   });
 
   describe('saveState', () => {

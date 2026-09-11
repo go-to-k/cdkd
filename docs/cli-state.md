@@ -179,6 +179,57 @@ header row, which makes it pipe-friendly.
 | `--json` | off | Emit the resource array as JSON. Takes precedence over `--long`. |
 | `--stack-region <region>` | — | Region of the record to read. Omitting it on a name with records in several regions is an error. |
 
+### What the human views do to a malformed record
+
+A state record is read as JSON and used as typed data without a field-by-field
+shape check, so a hand-edited one can hold anything. Both human views of
+`cdkd state resources` and every row of `cdkd state show` therefore treat what
+they print as untrusted text:
+
+- **Control characters are removed from every name, type, id, dependency list
+  and nested-stack header.** Two rows take no removal here because neither
+  needs it: the lock row's `owner` and `operation` are sanitized where the
+  lock record is read, before `cdkd state show` sees them, and `Version` is
+  refused where the state record is read unless it is a known schema number or
+  absent. The rows of these views are joined by newlines, so a newline inside
+  a field would not merely colour the output — it would invent a row that
+  reads exactly like a real one. The escape BYTE is removed and the characters
+  around it are kept, so a name carrying `ESC[31m` prints as `[31m`: the
+  sequence is broken, the name is not censored.
+- **A value whose type the record got wrong still prints, rather than ending the
+  output.** A number where a string belongs prints as that number, an object as
+  JSON, and a value nothing can serialize as `(unserializable)`. A few fields are
+  decided before any of that: a falsy `region` omits its whole row, a falsy
+  `parentRegion` drops only the parenthesized region from the `Parent:` row, and
+  an absent or null `provisionedBy` reports the legacy default. A
+  `lastModified` that cannot be read as a time prints as itself instead of an
+  instant. In `cdkd state show`, a
+  `dependencies` that is not a list prints as itself, and `(none)` is supplied
+  only for an absent one or an empty list; `cdkd state resources --long` supplies
+  it for a `null` too, so the two views differ on that one value. The marker is
+  ordinary text, so a record whose dependency list literally contains `(none)`
+  renders the same thing -- read `--json` when you need to tell them apart.
+- **`--json` applies none of this**, and is the mode to reach for when you need
+  the stored value rather than a readable one. It is not byte-for-byte in every
+  mode: `cdkd state show` emits the record as parsed, while
+  `cdkd state resources --json` substitutes an empty list or object for an absent
+  `dependencies` or `attributes`, and the lock `cdkd state show` reports has already
+  had its `owner` and `operation` put through the shared display sanitizer
+  (`cdkd state resources` never reads a lock).
+
+This tolerance covers the VALUES these views render. A record can still be
+malformed in a way that fails earlier than that — a `resources` entry holding
+`null` rather than a resource, or a lock whose `expiresAt` holds an object that
+cannot be coerced to a number — and there the command reports an error and
+renders nothing.
+
+Plain `cdkd state show --json` is the way to read such a record: it emits the
+record as parsed, without walking it or rendering a lock summary. The other two
+JSON modes walk the resources before emitting anything, so the `null` resource
+entry fails `cdkd state resources --json` and
+`cdkd state show --show-nested --json` as well. The lock case does not reach
+them: neither renders a lock summary.
+
 **Resource properties are deliberately excluded from every mode here** — use
 [`cdkd state show`](#cdkd-state-show) when you need them. A physical id may be
 a composite, pipe-delimited value for resource types AWS identifies by more
@@ -195,8 +246,71 @@ cdkd state show MyParent --show-nested
 cdkd state show MyParent --show-nested --json
 ```
 
-The deepest read: stack metadata, the lock record, outputs, and every resource
-with its properties, attributes, dependencies, and `provisionedBy` routing.
+The deepest read: stack metadata, the lock record, outputs, skipped outputs,
+and every resource with its properties, attributes, dependencies, and
+`provisionedBy` routing.
+
+### Skipped outputs
+
+A `Skipped outputs:` block appears when `skippedOutputs` contains entries. Its
+rows are the Outputs keys the last deploy could not resolve, each mapped to a
+digest of that output's template inputs.
+
+It sits after `Outputs:` where that section is rendered at all. `Outputs:` is
+omitted when the outputs bag is empty, which includes the first-deploy case
+this record exists for, every output having failed — so the two blocks do not
+always appear together:
+
+```text
+Skipped outputs:
+  ApiUrl: 1f3c9a0b7d42…
+
+The last deploy could not resolve the keys listed under `Skipped outputs:`
+above, and recorded a digest of their template inputs. While the record
+binds and a key is still absent from the stored outputs, `cdkd diff`
+previews it as ABSENT — no row, no warning. A key whose earlier value
+was retained is also stored under `Outputs:` here, where the record does
+NOT suppress it: the ordinary rules apply, up to `cdkd diff` suppressing
+its whole Outputs section if the key still cannot resolve.
+Binding rule: `bindingSkippedOutputs` in src/analyzer/skipped-outputs.ts.
+```
+
+The explanation sits at column zero, unlike the key rows, so it cannot be
+mistaken for another entry. Under `--show-nested` it is printed ONCE for the
+whole tree rather than after every child that skipped something.
+
+This block is the reason to look here rather than at `cdkd diff`: a suppressed
+key gets **no diff row and no warning**, so the text view is where the
+explanation lives. Suppression takes both conditions above — the record still
+binding, and the key still absent from the stored outputs.
+
+For an output whose resolver THREW, the deploy's own warning already names it;
+for one that merely resolved to `undefined` there is no per-output warning at
+all. For such a key while it is ABSENT from the stored outputs, this block is
+the first place it is named in the human-readable view without `--verbose`,
+which logs the same decision from `cdkd diff` at debug level. A key whose earlier
+value was retained is ALSO stored under `Outputs:` — it appears in both
+sections — and is NOT suppressed by the record. It takes the ordinary resolve
+path, which can end in `cdkd diff` suppressing its whole Outputs section with
+a warning if the key fails again. `--json` and the stored `state.json` carry the
+record either way.
+
+The digest is TRUNCATED to 12 characters here, after control characters are
+stripped — so an ESC costs no preview space, though a sequence's printable
+tail (`[2J`) still does. One value is exempt: `(unserializable)`, which is
+what prints for a digest nothing can serialize, is longer than the window and
+is shown whole, because cut to `(unserializa…` it would read as a hash prefix.
+A trailing `…` marks a value that was actually cut, so a value exactly 12
+characters long is not mistaken for a truncated one. A prefix DIFFERENCE tells
+you at a glance that two records differ; a prefix MATCH proves nothing, so
+compare digests through `--json`, which carries them whole, as does the stored
+`state.json`.
+
+The block is omitted when the field is present but empty, and when it is
+absent. Absence means only that no skipped set was RECORDED, not that nothing
+was skipped: records written before the field existed never carried one, and
+several state writers deliberately drop it. The `--json` shape is unchanged
+either way.
 
 | Flag | Default | Description |
 | --- | --- | --- |
