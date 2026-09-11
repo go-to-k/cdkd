@@ -194,7 +194,7 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'secret living only in the observed bag — service-echoed, redacted at write ' +
       "time by another resource's needle — would otherwise have no needle of its " +
       'own. The rewrite that follows goes through `scrubResourceRecord`, which is ' +
-      'already listed below.',
+      'listed in its own entry.',
   },
   'src/deployment/rollback-executor.ts': {
     sites: 1,

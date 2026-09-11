@@ -1161,24 +1161,34 @@ function allRecordedSecrets(
   outputSecrets: RecordedSecretValues,
   perResourceSecrets: ReadonlyMap<string, RecordedSecretValues>,
   /**
-   * Orphan-record needles (issue go-to-k/cdkd#2943). OPTIONAL only because
-   * three of the four call sites run before the orphan loop has filled it;
-   * the ERROR BOUNDARY must always pass it. `pinCrossRegionSecrets` can throw
-   * AFTER recording a foreign plaintext — the resource loop says so in its own
-   * comment — and the region-ambiguous rethrow is deliberately unmasked at the
-   * site, so both reach the boundary. Without this argument there is no needle
-   * for them and the plaintext renders into `console.error`'s cause chain.
+   * Orphan-record needles (issue go-to-k/cdkd#2943).
+   *
+   * REQUIRED, not optional. All three call sites run after the orphan loop has
+   * filled the map, so there is no site that could not supply it — and an
+   * optional parameter here invites a future call site that silently omits it.
+   * The one at the ERROR BOUNDARY is why that matters:
+   * `pinCrossRegionSecrets` can throw AFTER recording a foreign plaintext —
+   * the resource loop says so in its own comment — and the region-ambiguous
+   * rethrow is deliberately unmasked at the site, so both reach the boundary.
+   * Without these needles the plaintext renders into `console.error`'s cause
+   * chain. Pass an empty map if a caller genuinely has none.
    */
-  orphanSecrets?: ReadonlyMap<string, RecordedSecretValues>
+  orphanSecrets: ReadonlyMap<string, RecordedSecretValues>
 ): RecordedSecretValues {
   const union: RecordedSecretValues = new Map();
   for (const recorded of perResourceSecrets.values()) {
     for (const [value, expression] of recorded) union.set(value, expression);
   }
-  for (const [value, expression] of outputSecrets) union.set(value, expression);
-  for (const recorded of orphanSecrets?.values() ?? []) {
+  // BEFORE `outputSecrets`, not after. Two docs in this file state that on a
+  // value collision the OUTPUTS' expression wins "because it is written last",
+  // and `redactUnaccountedOutputs`' subsumption argument leans on it. Folding
+  // the orphan bags afterwards silently made the orphan's expression win and
+  // falsified both. Order is irrelevant at the masking sites, which read keys
+  // only; it decides precision for the unaccounted-outputs pass alone.
+  for (const recorded of orphanSecrets.values()) {
     for (const [value, expression] of recorded) union.set(value, expression);
   }
+  for (const [value, expression] of outputSecrets) union.set(value, expression);
   for (const value of union.keys()) {
     if (value.length < MIN_NEEDLE_LENGTH) union.delete(value);
   }
@@ -3816,7 +3826,7 @@ export async function scrubStack(
         // review). The map is filled IN PLACE, so registering it early changes
         // nothing about what the loop below reads — but `maskSecretsInError` at
         // the bottom of this function masks against
-        // `allRecordedSecrets(outputSecrets, perResourceSecrets)`, and both
+        // `allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)`, and both
         // `pinCrossRegionSecrets` and the cross-stack pre-pass can THROW after
         // recording a foreign plaintext into this map. Registering afterwards
         // left exactly that window unmasked: the escaping error, and every link

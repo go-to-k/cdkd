@@ -1264,9 +1264,11 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
 /**
  * How many deploy refusals the whole tree carries (issue go-to-k/cdkd#2943).
  *
- * A COUNT rather than a boolean because the caller's message quotes it, and a
- * separate `has` predicate beside it would be a second thing to keep in step
- * with the recursion.
+ * A COUNT rather than a boolean because the caller's message quotes it.
+ * {@link treeIsWorthRendering} below IS a boolean built on this, added when
+ * review found the render gate gated on changes alone — it derives from this
+ * count rather than walking the tree again, so there is still one recursion to
+ * keep in step.
  *
  * Deliberately SEPARATE from {@link treeHasChanges}: `--fail` answers "is
  * there a delta", and a refusal is not a delta — a user who runs
@@ -1274,6 +1276,10 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
  * with "the deploy cannot start", which is true whether or not anything
  * changed.
  */
+export function countBlocking(node: DiffTreeNode): number {
+  return node.blocking.length + node.children.reduce((n, c) => n + countBlocking(c), 0);
+}
+
 /**
  * Whether `cdkd diff` should render this tree's block at all (issue
  * go-to-k/cdkd#2943).
@@ -1287,10 +1293,6 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
  */
 export function treeIsWorthRendering(node: DiffTreeNode): boolean {
   return treeHasChanges(node) || countBlocking(node) > 0;
-}
-
-export function countBlocking(node: DiffTreeNode): number {
-  return node.blocking.length + node.children.reduce((n, c) => n + countBlocking(c), 0);
 }
 
 export function treeHasChanges(node: DiffTreeNode): boolean {
