@@ -120,6 +120,31 @@ learn the resolved secret VALUES — recorded in memory, never printed and never
 re-persisted — and replaces those values in the state record's `properties`,
 `attributes` and `observedProperties` with the expression.
 
+### Rollback-orphan records
+
+A rollback that leaves a `DeletionPolicy: Retain` resource behind records what
+it left, as `orphans` in the state file. Each record carries a whole resource
+state — `properties` and `attributes` — so `scrub` examines it too.
+
+Those records need their own treatment, because the sentence that opens this
+section does not hold for them: an orphan's logical id may be GONE from the
+template, which is what happens when you remove the failing resource from your
+CDK app. There is then nothing to re-resolve for it. So `scrub` derives that
+record's secrets from the record ITSELF — any `{{resolve:...}}` expression it
+still holds — in addition to every secret the run learned from the live
+resources and outputs.
+
+Both sources are needed, and they cover different failures. The record's own
+expressions find a secret in a record the template can no longer describe. The
+run-wide set finds a PLAINTEXT the write side should have replaced and did not
+— that value carries no expression to derive from, but it is usually the same
+secret a live resource still references.
+
+One gap remains, and a clean verdict does not rule it out: a record whose
+logical id is gone from the template AND which holds plaintext matches neither
+source, because nothing in the run knows that plaintext. `cdkd diff` will still
+show you the record, and `cdkd state show` prints it.
+
 It performs no AWS create, update or delete. What it WRITES is the state
 bucket: each targeted stack's `state.json`, under that stack's lock, and then
 the entries that stack publishes in the shared

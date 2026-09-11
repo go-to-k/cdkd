@@ -36,11 +36,16 @@ import { matchStacks, describeStack } from '../stack-matcher.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { makeCanonicalizePropertiesFn } from '../../provisioning/canonicalize-properties.js';
+import { planOrphanAdoption, makeSiblingClaimReader } from '../../deployment/orphan-adoption.js';
+import { explicitNamePropertyFor } from '../../provisioning/resource-name.js';
+import type { ResourceState, StackState } from '../../types/state.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
 import {
   buildDiffTree,
   diffTreeToJson,
   renderDiffTree,
   treeHasChanges,
+  countBlocking,
   type DiffTreeNode,
 } from './diff-recursive.js';
 
@@ -57,6 +62,41 @@ class DiffDetectedError extends CdkdError {
     super('diff detected', 'DIFF_DETECTED');
     this.name = 'DiffDetectedError';
     Object.setPrototypeOf(this, DiffDetectedError.prototype);
+  }
+}
+
+/**
+ * Signals that the preview completed and `cdkd deploy` would REFUSE to start
+ * (issue go-to-k/cdkd#2943) — today, a rollback-orphan record whose physical
+ * id another cdkd stack already manages.
+ *
+ * Exit **3**, and neither 1 nor 2, for reasons that are about what a caller
+ * can conclude:
+ *
+ *  - **1** is `--fail`'s "a change was detected". A refusal is not a change,
+ *    and merging them would make a CI job that gates on drift report the same
+ *    code for "there is work to do" and "the work cannot begin".
+ *  - **2** is this CLI's partial-failure family, documented as "work
+ *    completed, re-running typically resolves it" (`docs/cli-reference.md`).
+ *    A refusal is the opposite: re-running changes nothing until a human
+ *    resolves the ownership conflict.
+ *
+ * It is NOT silent: unlike `--fail`, this is not a flag the user opted into,
+ * so the reason has to be visible even when the diff report scrolled away.
+ * The `Blocking` section already printed the per-record detail; this adds the
+ * one line that says the run cannot proceed.
+ */
+class DeployRefusalPreviewError extends CdkdError {
+  readonly exitCode: number = 3;
+
+  constructor(count: number) {
+    super(
+      `cdkd deploy would refuse to start: ${count} blocking condition(s) reported above. ` +
+        `Resolve them, or run \`cdkd state\` to inspect the conflicting stack.`,
+      'DEPLOY_REFUSAL_PREVIEW'
+    );
+    this.name = 'DeployRefusalPreviewError';
+    Object.setPrototypeOf(this, DeployRefusalPreviewError.prototype);
   }
 }
 
@@ -201,13 +241,64 @@ async function diffCommand(
       ...(options.profile && { profile: options.profile }),
     });
     const diffCalculator = new DiffCalculator();
-    // Providers are registered here purely so the diff can consult the SAME
-    // per-type property normalization the deploy engine applies (issue #1591).
-    // `cdkd diff` otherwise needs no provider: it compares the template against
-    // cdkd state and never touches AWS.
+    // Providers are registered here so the diff can consult the SAME per-type
+    // property normalization the deploy engine applies (issue #1591) — and,
+    // since go-to-k/cdkd#2943, so the rollback-orphan pre-pass can ask a
+    // provider whether a recorded resource still exists.
+    //
+    // That second use is the first PROVIDER call on this path. `cdkd diff`
+    // already reaches AWS (parameter binding and condition evaluation issue
+    // `GetParameter`), so it is not the first AWS call — but it is the first
+    // time the diff asks about a live resource, and it happens only for a
+    // stack whose state holds orphan records. A stack that has never had a
+    // rollback orphan something pays nothing: `previewOrphanAdoption` is not
+    // consulted when `state.orphans` is empty.
     const diffProviderRegistry = new ProviderRegistry();
     registerAllProviders(diffProviderRegistry);
     const canonicalizeProperties = makeCanonicalizePropertiesFn(diffProviderRegistry);
+
+    // The SAME pre-pass `DeployEngine.executeDeployment` runs, wired from the
+    // diff's own registry and state backend (issue go-to-k/cdkd#2943). It is
+    // shared code, not a reimplementation: the two must agree on which records
+    // they adopt and which they refuse, or the preview stops predicting the
+    // deploy — which is the defect this closes.
+    //
+    // The deploy SPLICES and then THROWS on a refusal; here the caller keeps
+    // both halves and renders them. `planOrphanAdoption` itself performs
+    // neither, so no behaviour is duplicated to keep in step.
+    const previewOrphanAdoption = async (
+      state: StackState,
+      effectiveTemplate: CloudFormationTemplate,
+      orphanStackName: string,
+      orphanRegion: string
+    ): Promise<{ adopted: Record<string, ResourceState>; refusals: string[] }> => {
+      const outcome = await planOrphanAdoption({
+        records: state.orphans ?? [],
+        managedLogicalIds: new Set(Object.keys(state.resources)),
+        template: effectiveTemplate,
+        stackName: orphanStackName,
+        region: orphanRegion,
+        getProvider: (resourceType, provisionedBy) =>
+          diffProviderRegistry.getProviderFor({ resourceType, provisionedBy }).provider,
+        nameProperties: (resourceType) => {
+          const property = explicitNamePropertyFor(resourceType);
+          return property ? [property] : [];
+        },
+        readSiblingClaims: makeSiblingClaimReader({
+          stateBackend,
+          selfStackName: orphanStackName,
+          selfRegion: orphanRegion,
+          logger,
+        }),
+        logger,
+      });
+      // NOTICES are deliberately dropped here. On the deploy path they explain
+      // why a record was kept rather than acted on, at the moment the user is
+      // changing AWS; in a preview the same lines would print on EVERY diff of
+      // a stack holding a permanently-unadoptable record, which is noise
+      // attached to a command people run repeatedly.
+      return { adopted: outcome.adopted, refusals: outcome.refusals };
+    };
     const recursive = options.recursive ?? false;
 
     // Issue #1002 PR 2 — when a stack's region is in cdkd-assets mode, the
@@ -256,6 +347,7 @@ async function diffCommand(
           // CloudFormation fallback opt-out as deploy, so preview and apply
           // resolve cross-stack references identically.
           ...(options.cfnFallback === false && { cfnFallback: false }),
+          previewOrphanAdoption,
         })
       );
     }
@@ -276,6 +368,13 @@ async function diffCommand(
     // 6. --fail (CDK parity with `cdk diff --fail`): exit 1 when any change is
     // detected. With --recursive this covers the whole nested-stack tree, so
     // CI can gate on tree-wide drift.
+    // BEFORE `--fail`, mirroring how `cdkd scrub` ranks a refusal above its
+    // own `--fail`: when both are true the user needs the one that says the
+    // deploy cannot start, not the one that says something changed.
+    const blockingCount = trees.reduce((n, tree) => n + countBlocking(tree), 0);
+    if (blockingCount > 0) {
+      throw new DeployRefusalPreviewError(blockingCount);
+    }
     if (options.fail && trees.some(treeHasChanges)) {
       throw new DiffDetectedError();
     }

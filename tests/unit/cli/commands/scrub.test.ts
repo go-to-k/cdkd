@@ -332,3 +332,143 @@ describe('cdkd scrub - scrubStack', () => {
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Rollback-orphan records (issue go-to-k/cdkd#2943).
+ *
+ * `scrub` walked `resources` and `outputs` only, so its
+ * `No plaintext secrets found` verdict was silent about `orphans[*].state` —
+ * a whole `ResourceState`, `properties` and `attributes` included.
+ *
+ * The write side redacts that field today, proven against real AWS by
+ * `tests/integration/retain-orphan-secret`. These cases are the READ-side
+ * backstop for the one situation `scrub` exists for: the write side was wrong
+ * or absent. That is not hypothetical — the first implementation of the
+ * redaction keyed on the LIVE resource map, and an orphan is by definition
+ * absent from that map, so its needles came out empty and the plaintext was
+ * persisted with the whole unit suite green.
+ */
+describe('cdkd scrub - orphan records (go-to-k/cdkd#2943)', () => {
+  let stateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let lockManager: {
+    acquireLockWithRetry: ReturnType<typeof vi.fn>;
+    releaseLock: ReturnType<typeof vi.fn>;
+  };
+
+  /** A record whose logical id is GONE from the template — the hard case. */
+  const orphanHolding = (value: unknown) => ({
+    logicalId: 'RemovedFromTemplate',
+    orphanedAt: 1,
+    state: {
+      physicalId: 'MyStack-RemovedFromTemplate',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Value: value },
+    },
+  });
+
+  const stateWithOrphan = (value: unknown, resources: StackState['resources'] = {}): StackState => ({
+    version: 9,
+    region: 'us-east-1',
+    stackName: 'MyStack',
+    resources,
+    outputs: {},
+    orphans: [orphanHolding(value)],
+    lastModified: 0,
+  });
+
+  const emptyTemplateStack = () => ({
+    stackName: 'MyStack',
+    template: { Resources: {}, Outputs: {} } as CloudFormationTemplate,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    lockManager = {
+      acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
+      releaseLock: vi.fn().mockResolvedValue(undefined),
+    };
+    stateBackend = {
+      getState: vi.fn(),
+      saveState: vi.fn().mockResolvedValue('etag-2'),
+    };
+  });
+
+  it('derives a needle from the RECORD when the template has no entry for it', async () => {
+    // The record still holds an EXPRESSION, so resolving the record's own bag
+    // records the pair. The template is EMPTY — the user removed the failing
+    // resource from their CDK app, which is the ordinary way to reach this
+    // state — so the resources pass learns nothing and cannot help.
+    stateBackend.getState.mockResolvedValue({
+      state: stateWithOrphan(SECRET_EXPR),
+      etag: 'etag-1',
+    });
+
+    const result = await scrubStack(
+      emptyTemplateStack() as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: false, logger }
+    );
+
+    // A needle existed at all — without the per-record derivation `totalSecrets`
+    // is 0 and scrub returns early, printing a clean verdict over the record.
+    expect(result.secretsFound).toBeGreaterThan(0);
+  });
+
+  it('WRITES BACK the scrubbed records instead of carrying the originals', async () => {
+    stateBackend.getState.mockResolvedValue({
+      state: stateWithOrphan(SECRET_PLAINTEXT, {
+        // A live resource still references the same secret, so the resources
+        // pass learns the needle. This is the UNION half: the record holds
+        // PLAINTEXT and therefore yields no needle of its own.
+        Fn: {
+          physicalId: 'my-fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { Environment: { Variables: { SECRET: SECRET_PLAINTEXT } } },
+        },
+      }),
+      etag: 'etag-1',
+    });
+
+    await scrubStack(
+      {
+        stackName: 'MyStack',
+        template: {
+          Resources: {
+            Fn: {
+              Type: 'AWS::Lambda::Function',
+              Properties: { Environment: { Variables: { SECRET: SECRET_EXPR } } },
+            },
+          },
+          Outputs: {},
+        } as CloudFormationTemplate,
+      } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: false, logger }
+    );
+
+    expect(stateBackend.saveState).toHaveBeenCalled();
+    const written = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    // Before this change `orphans` rode the `...carriedState` spread untouched,
+    // so a scrubbed record was computed and then thrown away.
+    expect(written.orphans![0]!.state.properties['Value']).toBe(SECRET_EXPR);
+  });
+
+  it('does not GIVE a record-free state an orphans key', async () => {
+    stateBackend.getState.mockResolvedValue({ state: makeLeakyState(), etag: 'etag-1' });
+
+    await scrubStack(makeStackInfo() as never, 'us-east-1', stateBackend as never, lockManager as never, {
+      dryRun: false,
+      logger,
+    });
+
+    const written = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    // The no-schema-bump argument for `orphans` depends on a stack that never
+    // orphaned anything never gaining the key — scrubbing must not be the
+    // thing that adds it.
+    expect('orphans' in written).toBe(false);
+  });
+});

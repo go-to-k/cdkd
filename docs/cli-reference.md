@@ -297,7 +297,7 @@ in profile A and the deploy role lives in account B that profile A trusts.
 
 ## Exit codes
 
-cdkd commands distinguish three outcomes via the process exit code, so CI and
+cdkd commands distinguish four outcomes via the process exit code, so CI and
 bench scripts can react without grepping log output:
 
 | Exit | Meaning |
@@ -305,12 +305,22 @@ bench scripts can react without grepping log output:
 | `0` | Success — the command completed and no resource is in an error state. |
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. The default for any thrown error. |
 | `2` | Partial failure — work completed, but one or more resources failed, were skipped, or were only partially compared. State is preserved and re-running typically resolves it. |
+| `3` | The command completed and reported that the operation it previews **cannot start**. Unlike `2`, re-running changes nothing until a person resolves what it named. Used only by `cdkd diff` today. |
 
 Two commands use `1` for a non-crash outcome, because there the operative
 meaning is "non-zero result", not "the command crashed":
 
 - **`cdkd drift` exits `1` when drift is detected.**
 - **`cdkd diff --fail` exits `1` when any change is detected.**
+
+`cdkd diff` also exits **`3`** when it finds a condition that would make
+`cdkd deploy` refuse to start — today, a rollback-orphaned resource whose
+physical name another cdkd stack already records (see
+[docs/cli-diff.md](cli-diff.md#exit-3-the-deploy-would-refuse)). The full preview is printed
+first, with the reasons under a `Blocking (cdkd deploy will refuse):` heading;
+the exit code is separate from `--fail` on purpose, so a CI job that gates on
+drift does not report the same code for "there is work to do" and "the work
+cannot begin".
 
 The `cdkd local` family adds two codes of its own:
 

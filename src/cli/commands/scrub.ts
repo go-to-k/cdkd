@@ -3566,6 +3566,13 @@ export async function scrubStack(
   // changes nothing about how the body reads them.
   const perResourceSecrets = new Map<string, Map<string, string>>();
   const outputSecrets = new Map<string, string>();
+  /**
+   * Needles derived from each rollback-orphan record's OWN recorded bag
+   * (issue go-to-k/cdkd#2943), keyed by logical id — per-record for the same
+   * reason `perResourceSecrets` is per-resource: one record's secret must not
+   * rewrite another's coinciding literal.
+   */
+  const orphanSecrets = new Map<string, Map<string, string>>();
   // Filled by the cross-stack pre-pass; read by the return sites below. Hoisted
   // beside the secret maps for the same reason they are: the value is needed
   // after a throw could have happened.
@@ -3865,6 +3872,52 @@ export async function scrubStack(
         // template every run, so a resource with no recorded secret still has a
         // usable source in hand.
         perResourceTemplateProps.set(logicalId, templateResource.Properties);
+      }
+
+      // Rollback-orphan records (issue go-to-k/cdkd#2943). `orphans[*].state`
+      // is a whole `ResourceState` — `properties` and `attributes` — and until
+      // this loop `scrub` walked past it, so its verdict line was silent about
+      // a field that can carry a secret.
+      //
+      // Needles come from the RECORD, not the template, and that is the whole
+      // difference from the loop above. An orphan's logical id may be gone
+      // from the template — a user who removed the failing resource from their
+      // CDK app is the ordinary way to reach this state — and then there is
+      // nothing to re-resolve for it. Deriving from the record keeps that case
+      // covered instead of silently dropping it.
+      //
+      // `resolveCrossStackReads` is NOT armed here, unlike the resource loop.
+      // A persisted bag is post-resolution: an `Fn::ImportValue` node became a
+      // value before it was ever written, and the only unresolved leaves in it
+      // are the dynamic references redaction put back, which the resolve below
+      // handles. If that is ever wrong the cost is a missed needle, not a
+      // wrong rewrite, and the union in the rewrite pass is the backstop.
+      for (const record of state.orphans ?? []) {
+        const recordedSecretValues = new Map<string, string>();
+        // Registered before the pin for the same reason the resource loop
+        // registers early: the pin can throw, and the error boundary masks
+        // against every bag this map is reachable from.
+        orphanSecrets.set(record.logicalId, recordedSecretValues);
+        const resolveInput = await pinCrossRegionSecrets(
+          { properties: record.state.properties, attributes: record.state.attributes ?? {} },
+          stack.stackName,
+          {
+            stackRegion: region,
+            producerRegions,
+            resolvers,
+            recordedSecretValues,
+            origin: `orphan record '${record.logicalId}'`,
+          }
+        );
+        try {
+          await resolver.resolve(resolveInput, resolverContext(recordedSecretValues));
+        } catch (err) {
+          if (isRegionAmbiguousRefusal(err)) throw err;
+          logger.debug(
+            `Resolution of orphan record ${record.logicalId} during scrub was partial: ` +
+              `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
+          );
+        }
       }
 
       // Outputs are secret-bearing too (a CfnOutput resolving a secret reference),
@@ -4180,7 +4233,13 @@ export async function scrubStack(
     }
 
     const totalSecrets =
-      outputSecrets.size + [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0);
+      outputSecrets.size +
+      [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0) +
+      // Orphan needles count (issue go-to-k/cdkd#2943). Without this term a
+      // stack whose ONLY secret lives in a rollback-orphan record takes the
+      // zero-needle branch below, returns `recordsChanged: 0`, and prints
+      // "No plaintext secrets found" over the record it never examined.
+      [...orphanSecrets.values()].reduce((n, m) => n + m.size, 0);
     if (totalSecrets === 0) {
       // NOT a blanket "nothing found": `unverifiableReads` is carried out even
       // here, because a stack whose only cross-stack read cdkd declined by
@@ -4271,6 +4330,43 @@ export async function scrubStack(
       if (JSON.stringify(scrubbed) !== JSON.stringify(record)) recordsChanged++;
       newResources[logicalId] = scrubbed;
     }
+
+    // Rollback-orphan records (issue go-to-k/cdkd#2943).
+    //
+    // Needles are a UNION of two sources, because neither alone covers the
+    // case this pass exists for:
+    //
+    //  - the record's OWN derivation (above) finds a secret whose record still
+    //    holds a `{{resolve:...}}` EXPRESSION, including one whose logical id
+    //    has left the template entirely;
+    //  - `allRecordedSecrets` finds a PLAINTEXT the write side failed to
+    //    redact, which carries no expression to derive from and so yields no
+    //    needle of its own — but is very often the same secret a live resource
+    //    or output still references, which this run already learned.
+    //
+    // The first was the design decision; the second is not a cheaper
+    // alternative to it, which an earlier framing of this work got wrong. They
+    // catch disjoint things, and the write-side-failed case is precisely the
+    // one `scrub` exists to recover from.
+    //
+    // Residual, stated rather than implied by a clean verdict: a record whose
+    // logical id is gone from the template AND whose bag holds plaintext
+    // matches neither source. Nothing in this run knows that plaintext.
+    const newOrphans = (state.orphans ?? []).map((record) => {
+      const own = orphanSecrets.get(record.logicalId);
+      const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets));
+      for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
+      if (needles.size === 0) return record;
+      const scrubbed = scrubResourceRecord(
+        record.state,
+        needles,
+        undefined,
+        STATE_SOURCED_CROSS_GENERATION_RULES
+      );
+      if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
+      recordsChanged++;
+      return { ...record, state: scrubbed };
+    });
     // `TEMPLATE_SOURCED_RULES`, converging this call with its deploy-side twin
     // `DeployEngine.redactOutputs` (issues
     // [#1943](https://github.com/go-to-k/cdkd/issues/1943) /
@@ -4347,6 +4443,12 @@ export async function scrubStack(
       const nextState: StackState = {
         ...carriedState,
         resources: newResources,
+        // WRITTEN BACK, not carried. `orphans` rode the `...carriedState`
+        // spread untouched before go-to-k/cdkd#2943, which was correct while
+        // nothing scrubbed it and is a silent drop of this pass's work now.
+        // Spread conditionally so a state file that never orphaned anything
+        // does not GAIN the key by being scrubbed.
+        ...(state.orphans !== undefined && { orphans: newOrphans }),
         // The cast restates what `StackState` already gets wrong rather than
         // introducing a lie: `outputs` is TYPED as required while every
         // consumer treats it as optional, and a state file that simply has no

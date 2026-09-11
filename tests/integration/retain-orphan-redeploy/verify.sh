@@ -363,6 +363,42 @@ if [ "${ORPHAN_COUNT}" != "1" ]; then
 fi
 echo "    OK: state carries 1 orphan record"
 
+# --- Phase 8b: the PREVIEW must agree with the deploy -------------------
+# go-to-k/cdkd#2943. The state now holds a verified-adoptable record and the
+# role is live in AWS, which is the only window where this can be measured:
+# before the rollback there is no record, and after Phase 9 the record is
+# consumed. Unit tests stub the pre-pass; this is the arm where `provider.
+# import()` really runs against AWS from the diff path.
+echo "==> Phase 8b: cdkd diff must preview the adoption, not a create"
+DIFF_LOG="$(mktemp)"
+CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" diff "${ADOPT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${DIFF_LOG}" 2>&1
+DIFF_RC=$?
+if [ "${DIFF_RC}" != "0" ]; then
+  echo "FAIL: cdkd diff exited ${DIFF_RC}; expected 0 (nothing here is refused —"
+  echo "      no sibling stack claims this role). A 3 would mean the refusal"
+  echo "      path fired on a record this run created and owns."
+  tail -40 "${DIFF_LOG}"
+  rm -f "${DIFF_LOG}"
+  exit 1
+fi
+# The annotation, not merely "an update appeared": a stack whose other
+# resources changed would show updates anyway, so the token is what ties the
+# row to the orphan record.
+if ! grep -q "adopted from a rollback orphan" "${DIFF_LOG}"; then
+  echo "FAIL: cdkd diff did not annotate the adopted row. Without the pre-pass"
+  echo "      the diff reports a CREATE for a resource the deploy UPDATES,"
+  echo "      which is the preview/apply divergence go-to-k/cdkd#2943 closes."
+  echo "      Sentinel check follows: if the header below IS present, the diff"
+  echo "      ran and the adoption simply did not happen."
+  grep -c "to create, " "${DIFF_LOG}" || echo "      (no diff summary line at all - the run did not produce a preview)"
+  tail -40 "${DIFF_LOG}"
+  rm -f "${DIFF_LOG}"
+  exit 1
+fi
+echo "    OK: cdkd diff previewed the adoption"
+rm -f "${DIFF_LOG}"
+
 echo "==> Phase 9: redeploy with the failure repaired (must SUCCEED by adopting)"
 CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${ADOPT_LOG}" 2>&1 || {
