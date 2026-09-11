@@ -37,8 +37,13 @@ permissions:
   contents: read
 
 concurrency:
+  # PRs cancel, main does not. `build` became a REQUIRED check that runs on
+  # every PR, so with `cancel-in-progress: false` a second push queued its full
+  # SSG build behind the superseded one and every PR's required check
+  # serialized. A superseded PR build has no value; a superseded main build
+  # feeds a deploy, so that one still runs to completion.
   group: docs-deploy-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

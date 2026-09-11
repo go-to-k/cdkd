@@ -56,7 +56,15 @@ interface CiWorkflow {
     string,
     {
       if?: string;
-      steps?: { name?: string; uses?: string; run?: string; with?: Record<string, unknown> }[];
+      'continue-on-error'?: unknown;
+      steps?: {
+        name?: string;
+        uses?: string;
+        run?: string;
+        if?: string;
+        'continue-on-error'?: unknown;
+        with?: Record<string, unknown>;
+      }[];
     }
   >;
 }
@@ -195,7 +203,9 @@ describe('release-pr-not-stale', () => {
   });
 
   afterAll(() => {
-    rmSync(scratch, { recursive: true, force: true });
+    // `mkdtempSync` failing leaves `scratch` undefined, and an unguarded
+    // `rmSync` then throws a TypeError that buries the real cause.
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
   });
 
   describe('the checkout the guard depends on', () => {
@@ -211,7 +221,20 @@ describe('release-pr-not-stale', () => {
 
     it('fetches the full history the ancestry test needs', () => {
       const checkout = jobSteps().find((s) => (s.uses ?? '').startsWith('actions/checkout@'));
-      expect(checkout?.with?.['fetch-depth']).toBe(0);
+      // `Number(...)` because `fetch-depth: "0"` is equally valid YAML and
+      // equally correct — a bare `toBe(0)` reds on a harmless requoting.
+      expect(Number(checkout?.with?.['fetch-depth'])).toBe(0);
+    });
+
+    it('lets the shell exit status decide the job', () => {
+      // This suite EXECUTES the extracted shell, so it attests that the TEXT is
+      // correct — never that the runner acts on its exit status.
+      // `continue-on-error: true` or a false step-level `if:` severs that link
+      // and the job reports success having decided nothing.
+      const step = jobSteps().find((s) => s.name === STEP);
+      expect(step?.['continue-on-error']).toBeUndefined();
+      expect(step?.if).toBeUndefined();
+      expect(workflow().jobs[JOB]?.['continue-on-error']).toBeUndefined();
     });
   });
 
