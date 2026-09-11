@@ -46,6 +46,7 @@ import {
   renderDiffTree,
   treeHasChanges,
   countBlocking,
+  treeIsWorthRendering,
   type DiffTreeNode,
 } from './diff-recursive.js';
 
@@ -357,7 +358,13 @@ async function diffCommand(
       process.stdout.write(`${JSON.stringify(trees.map(diffTreeToJson), null, 2)}\n`);
     } else {
       for (const tree of trees) {
-        if (!treeHasChanges(tree)) {
+        // `countBlocking` too, not `treeHasChanges` alone. The renderer is
+        // deliberately written to print a `Blocking` section for a node with
+        // no changes; gating the CALL on changes alone put that coincidence
+        // back one level up, where a changeless refusal would print
+        // "No changes detected" and then exit 3 citing reasons "reported
+        // above" that were never printed.
+        if (!treeIsWorthRendering(tree)) {
           logger.info(`\n✓ No changes detected for stack ${tree.stackName}`);
           continue;
         }

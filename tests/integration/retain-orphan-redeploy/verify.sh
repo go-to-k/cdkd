@@ -371,9 +371,12 @@ echo "    OK: state carries 1 orphan record"
 # import()` really runs against AWS from the diff path.
 echo "==> Phase 8b: cdkd diff must preview the adoption, not a create"
 DIFF_LOG="$(mktemp)"
+# `|| DIFF_RC=$?`, not a bare `$?` on the next line: `set -e` is armed, so a
+# non-zero exit aborts the script BEFORE the assignment and every diagnostic
+# below is dead code. Seeded to 0 because the `||` arm does not run on success.
+DIFF_RC=0
 CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" diff "${ADOPT_STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${DIFF_LOG}" 2>&1
-DIFF_RC=$?
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${DIFF_LOG}" 2>&1 || DIFF_RC=$?
 if [ "${DIFF_RC}" != "0" ]; then
   echo "FAIL: cdkd diff exited ${DIFF_RC}; expected 0 (nothing here is refused —"
   echo "      no sibling stack claims this role). A 3 would mean the refusal"

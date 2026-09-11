@@ -277,6 +277,19 @@ export interface StackDiffResult {
    */
   adoptedOrphans: string[];
   /**
+   * The adopted records themselves, keyed by logical id (issue
+   * go-to-k/cdkd#2943).
+   *
+   * Returned alongside the names because `buildDiffTree` has two consumers
+   * that read `resources` AFTER the diff and must see the same state the diff
+   * saw: `collectCcApiRoutes` reads `provisionedBy` for the sticky-CC
+   * annotation, and `resolveChildStackParameters` resolves a nested child's
+   * `Parameters` against the parent's records. Handing them the un-spliced
+   * state made an adopted `cc-api` row print without its routing annotation
+   * and made a child parameter referencing an adopted resource drop silently.
+   */
+  adoptedRecords: Record<string, ResourceState>;
+  /**
    * Reasons `cdkd deploy` would REFUSE, in its own words (issue
    * go-to-k/cdkd#2943). Non-empty means the deploy this preview describes
    * cannot start at all.
@@ -648,11 +661,17 @@ export async function computeStackDiff(
   // state, so splicing a verified record in is the whole mechanism — there is
   // no new change type on either side.
   //
-  // COPIED, never mutated in place. `DeployEngine` writes through its own
-  // `currentState` because it goes on to deploy from it; this function's doc
-  // promises it only reads, and `buildDiffTree` hands the same record to
-  // `resolveChildStackParameters` and `collectCcApiRoutes` afterwards.
+  // COPIED, never mutated in place: `DeployEngine` writes through its own
+  // `currentState` because it goes on to deploy from it, while this function's
+  // doc promises it only reads.
+  //
+  // An earlier version of this comment cited `collectCcApiRoutes` and
+  // `resolveChildStackParameters` as the REASON for copying. That had the
+  // argument backwards — those two are exactly the consumers that need to see
+  // the spliced records, and handing them the un-spliced state starved them.
+  // They are served by `adoptedRecords` below, which the caller merges.
   let adoptedOrphans: string[] = [];
+  let adoptedRecords: Record<string, ResourceState> = {};
   let blocking: string[] = [];
   let stateForDiff = currentState;
   if (currentState.orphans?.length && options.previewOrphanAdoption) {
@@ -663,6 +682,7 @@ export async function computeStackDiff(
       region
     );
     adoptedOrphans = Object.keys(plan.adopted);
+    adoptedRecords = plan.adopted;
     blocking = plan.refusals;
     if (adoptedOrphans.length > 0) {
       stateForDiff = {
@@ -774,7 +794,7 @@ export async function computeStackDiff(
     );
   }
 
-  return { changes, outputChanges, adoptedOrphans, blocking };
+  return { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking };
 }
 
 /**
@@ -955,14 +975,8 @@ export async function buildDiffTree(args: {
   // Accumulated, not replaced: see `parentHasSecretReference`'s doc.
   const secretBearingAbove =
     parentHasSecretReference === true || templateHasSecretDynamicReference(template);
-  const { changes, outputChanges, adoptedOrphans, blocking } = await computeStackDiff(
-    state,
-    template,
-    region,
-    stackName,
-    stateBackend,
-    diffCalculator,
-    {
+  const { changes, outputChanges, adoptedOrphans, adoptedRecords, blocking } =
+    await computeStackDiff(state, template, region, stackName, stateBackend, diffCalculator, {
       ...(parameters && { parameters }),
       ...(canonicalizeProperties && { canonicalizeProperties }),
       ...(cfnFallback !== undefined && { cfnFallback }),
@@ -970,9 +984,17 @@ export async function buildDiffTree(args: {
       // A live template of its own, so this node decides for itself; the
       // inherited flag only matters for the DELETED children below.
       inheritSecretBearingTemplate: false,
-    }
-  );
-  const ccApiRoutes = collectCcApiRoutes(template, state);
+    });
+  // The SAME state the diff read. `collectCcApiRoutes` reads `provisionedBy`
+  // off each record for the sticky-Cloud-Control annotation, and an adopted
+  // `cc-api` record is invisible in the un-spliced bag — the row would print
+  // without `[via CC API: ...]` while the deploy routes it that way, which is
+  // the inverse-of-truth annotation go-to-k/cdkd#2719 closed.
+  const stateAfterAdoption =
+    Object.keys(adoptedRecords).length > 0
+      ? { ...state, resources: { ...state.resources, ...adoptedRecords } }
+      : state;
+  const ccApiRoutes = collectCcApiRoutes(template, stateAfterAdoption);
   const node: DiffTreeNode = {
     stackName,
     displayName,
@@ -1010,10 +1032,15 @@ export async function buildDiffTree(args: {
     // already-resolved parameters, so the child's diff resolver can resolve a
     // `Ref` to one of those parameters — mirroring the deploy engine's
     // parent->child `DeployEngineOptions.parameters` forwarding.
+    //
+    // `stateAfterAdoption`, not `state`: a child parameter whose value is a
+    // `Ref` / `Fn::GetAtt` to a resource this node just adopted resolves on
+    // the deploy path and would drop here, swallowed by the best-effort catch,
+    // leaving the child preview degraded for a reason nothing prints.
     const childParameters = await resolveChildStackParameters(
       resource,
       template,
-      state,
+      stateAfterAdoption,
       region,
       stackName,
       stateBackend,
@@ -1247,6 +1274,21 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
  * with "the deploy cannot start", which is true whether or not anything
  * changed.
  */
+/**
+ * Whether `cdkd diff` should render this tree's block at all (issue
+ * go-to-k/cdkd#2943).
+ *
+ * A named predicate rather than an inline conjunction at the call site,
+ * because the two halves are easy to get wrong INDEPENDENTLY and were:
+ * {@link renderDiffTree} was written to print a `Blocking` section for a node
+ * with no changes, and the caller then skipped the render on
+ * `!treeHasChanges` alone — so a changeless refusal would print "No changes
+ * detected" and exit non-zero citing reasons that were never printed.
+ */
+export function treeIsWorthRendering(node: DiffTreeNode): boolean {
+  return treeHasChanges(node) || countBlocking(node) > 0;
+}
+
 export function countBlocking(node: DiffTreeNode): number {
   return node.blocking.length + node.children.reduce((n, c) => n + countBlocking(c), 0);
 }

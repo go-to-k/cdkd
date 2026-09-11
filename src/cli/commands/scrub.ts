@@ -1159,13 +1159,26 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
  */
 function allRecordedSecrets(
   outputSecrets: RecordedSecretValues,
-  perResourceSecrets: ReadonlyMap<string, RecordedSecretValues>
+  perResourceSecrets: ReadonlyMap<string, RecordedSecretValues>,
+  /**
+   * Orphan-record needles (issue go-to-k/cdkd#2943). OPTIONAL only because
+   * three of the four call sites run before the orphan loop has filled it;
+   * the ERROR BOUNDARY must always pass it. `pinCrossRegionSecrets` can throw
+   * AFTER recording a foreign plaintext — the resource loop says so in its own
+   * comment — and the region-ambiguous rethrow is deliberately unmasked at the
+   * site, so both reach the boundary. Without this argument there is no needle
+   * for them and the plaintext renders into `console.error`'s cause chain.
+   */
+  orphanSecrets?: ReadonlyMap<string, RecordedSecretValues>
 ): RecordedSecretValues {
   const union: RecordedSecretValues = new Map();
   for (const recorded of perResourceSecrets.values()) {
     for (const [value, expression] of recorded) union.set(value, expression);
   }
   for (const [value, expression] of outputSecrets) union.set(value, expression);
+  for (const recorded of orphanSecrets?.values() ?? []) {
+    for (const [value, expression] of recorded) union.set(value, expression);
+  }
   for (const value of union.keys()) {
     if (value.length < MIN_NEEDLE_LENGTH) union.delete(value);
   }
@@ -3895,11 +3908,22 @@ export async function scrubStack(
       for (const record of state.orphans ?? []) {
         const recordedSecretValues = new Map<string, string>();
         // Registered before the pin for the same reason the resource loop
-        // registers early: the pin can throw, and the error boundary masks
-        // against every bag this map is reachable from.
+        // registers early: `pinCrossRegionSecrets` can throw AFTER recording a
+        // foreign plaintext, and the error boundary at the bottom of this
+        // function masks against `allRecordedSecrets(..., orphanSecrets)` —
+        // which reads this map. Registering after the pin would leave that
+        // throw with no needle for what it had already recorded.
         orphanSecrets.set(record.logicalId, recordedSecretValues);
         const resolveInput = await pinCrossRegionSecrets(
-          { properties: record.state.properties, attributes: record.state.attributes ?? {} },
+          {
+            properties: record.state.properties,
+            attributes: record.state.attributes ?? {},
+            // The THIRD bag, because `scrubResourceRecord` scrubs it too. A
+            // service-echoed secret can live only here — redacted at write
+            // time by another resource's needle — and omitting it would leave
+            // that leaf with no needle of its own.
+            observedProperties: record.state.observedProperties ?? {},
+          },
           stack.stackName,
           {
             stackRegion: region,
@@ -4354,7 +4378,7 @@ export async function scrubStack(
     // matches neither source. Nothing in this run knows that plaintext.
     const newOrphans = (state.orphans ?? []).map((record) => {
       const own = orphanSecrets.get(record.logicalId);
-      const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets));
+      const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
       for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
       if (needles.size === 0) return record;
       const scrubbed = scrubResourceRecord(
@@ -4426,7 +4450,17 @@ export async function scrubStack(
       positionedOutputs,
       state.outputs,
       accountedOutputKeys,
-      allRecordedSecrets(outputSecrets, perResourceSecrets)
+      // Orphan needles included (issue go-to-k/cdkd#2943), for CONSISTENCY
+      // rather than from a measurement: this argument already carries
+      // `perResourceSecrets`, whose needles belong to a resource's property
+      // and not to any output, so the objection to including orphan needles —
+      // that substituting one writes an expression the output never had —
+      // applies equally to what is already here. Given that, matching the
+      // established choice beats inventing a second rule, and the direction is
+      // toward redacting more. The residual is the one this whole helper
+      // carries: it redacts by VALUE because the template cannot position
+      // these keys, so a coinciding literal is redacted too.
+      allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
     );
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
     if (outputsChanged) recordsChanged++;
@@ -4487,7 +4521,10 @@ export async function scrubStack(
     // be a safe needle is not masked, exactly as it is not redacted. Returns
     // the original error by identity when nothing matched, so the ordinary
     // "no state for this stack" failure keeps its identity.
-    throw maskSecretsInError(err, allRecordedSecrets(outputSecrets, perResourceSecrets));
+    throw maskSecretsInError(
+      err,
+      allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
+    );
   } finally {
     if (acquired) {
       await lockManager.releaseLock(stack.stackName, region).catch((err) => {

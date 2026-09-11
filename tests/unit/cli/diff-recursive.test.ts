@@ -72,6 +72,7 @@ import {
   treeHasChanges,
   diffTreeToJson,
   countBlocking,
+  treeIsWorthRendering,
   renderChangeLines,
   renderDiffTree,
   type DiffTreeNode,
@@ -2513,6 +2514,29 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
     expect(changes.get('KeptRole')!.changeType).toBe('CREATE');
   });
 
+  it('returns the adopted RECORDS, not only their names', async () => {
+    const adopted = {
+      KeptRole: { ...res(ROLE, { Path: '/app/' }), physicalId: 'S-KeptRole', provisionedBy: 'cc-api' as const },
+    };
+    const { adoptedRecords } = await computeStackDiff(
+      stateWithRecord(),
+      declaring,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      { previewOrphanAdoption: async () => ({ adopted, refusals: [] }) }
+    );
+
+    // `buildDiffTree` merges these into the state it hands `collectCcApiRoutes`
+    // and `resolveChildStackParameters`. Names alone cannot serve either: the
+    // first reads `provisionedBy` off the record — an adopted `cc-api` row
+    // would print with no routing annotation while the deploy routes it via
+    // Cloud Control — and the second resolves a child's `Parameters` against
+    // the parent's records.
+    expect(adoptedRecords['KeptRole']?.provisionedBy).toBe('cc-api');
+  });
+
   it('is not consulted at all when the state holds no records', async () => {
     const preview = vi.fn();
     const { adoptedOrphans, blocking } = await computeStackDiff(
@@ -2570,6 +2594,28 @@ describe('rollback-orphan adoption preview (go-to-k/cdkd#2943)', () => {
     expect(out).toContain('Nested stack: S~C');
     expect(out).toContain('! ChildRole:');
     expect(countBlocking(node)).toBe(2);
+  });
+
+  it('a changeless tree that BLOCKS is still worth rendering', () => {
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      changes: changeMap([]),
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: [],
+      blocking: ['KeptRole: conflict'],
+      children: [],
+    };
+
+    // The renderer prints a Blocking section for a changeless node, and the
+    // caller has to agree. Gating the CALL on changes alone put the
+    // coincidence back one level up: "No changes detected" followed by a
+    // non-zero exit citing reasons "reported above" that never printed.
+    expect(treeIsWorthRendering(node)).toBe(true);
+    expect(treeHasChanges(node)).toBe(false);
+    expect(treeIsWorthRendering({ ...node, blocking: [] })).toBe(false);
   });
 
   it('--json carries both keys, so a CI consumer can gate on the refusal', () => {

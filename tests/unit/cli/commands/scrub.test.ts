@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
+import { DynamicReferenceRegionAmbiguousError } from '../../../../src/utils/error-handler.js';
 
 vi.mock('../../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -26,6 +27,10 @@ const SECURE_EXPR = '{{resolve:ssm:/prod/db/password}}';
 // It resolves to SECRET_PLAINTEXT too, so the value-keyed map collapses the
 // pair and only the template can say which leaf held which (issue #1910).
 const SECRET_EXPR_STAGED = '{{resolve:secretsmanager:my-secret:SecretString:password:AWSCURRENT}}';
+// A secret that exists ONLY in an orphan record — no live resource or output
+// references it, so nothing but the orphan pass can record it.
+const ORPHAN_PLAINTEXT = 'orphan-only-secret-plaintext';
+const THROW_AFTER_RECORDING_EXPR = '{{resolve:secretsmanager:orphan-secret:SecretString}}';
 
 // Mock resolver: resolving a value equal to SECRET_EXPR records the secret and
 // returns the plaintext (as the real resolver does). This lets scrubStack learn
@@ -45,6 +50,20 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
           if (v === SECURE_EXPR) {
             ctx.recordedSecretValues?.set(SECURE_PLAINTEXT, SECURE_EXPR);
             return SECURE_PLAINTEXT;
+          }
+          // Records, THEN throws with the plaintext in the message. This is
+          // the shape the resource loop's comment describes for
+          // `pinCrossRegionSecrets`: it can fail after having recorded a
+          // foreign plaintext, and the error then reaches the boundary.
+          if (v === THROW_AFTER_RECORDING_EXPR) {
+            ctx.recordedSecretValues?.set(ORPHAN_PLAINTEXT, THROW_AFTER_RECORDING_EXPR);
+            // The orphan loop's catch SWALLOWS an ordinary error, so an
+            // ordinary one would make the case below vacuous. This is the
+            // class the loop deliberately rethrows, which is what carries the
+            // message out to the masking boundary.
+            throw new DynamicReferenceRegionAmbiguousError(
+              `region ambiguous while handling ${ORPHAN_PLAINTEXT}`
+            );
           }
           if (v === SECRET_EXPR_STAGED) {
             ctx.recordedSecretValues?.set(SECRET_PLAINTEXT, SECRET_EXPR_STAGED);
@@ -470,5 +489,74 @@ describe('cdkd scrub - orphan records (go-to-k/cdkd#2943)', () => {
     // orphaned anything never gaining the key — scrubbing must not be the
     // thing that adds it.
     expect('orphans' in written).toBe(false);
+  });
+});
+
+describe('cdkd scrub - orphan needles reach the masking boundary (go-to-k/cdkd#2943)', () => {
+  it('masks an orphan-only plaintext in an error escaping scrubStack', async () => {
+    // The record's resolution records the plaintext and THEN fails. Nothing
+    // else in the run knows that value: the template is empty, so neither the
+    // resources pass nor the outputs pass has a needle for it.
+    //
+    // Before the fix the boundary masked against
+    // `allRecordedSecrets(outputSecrets, perResourceSecrets)` — two bags that
+    // cannot contain it — so the plaintext rendered into the error the CLI
+    // prints, cause chain included. A security reviewer found this, and the
+    // comment beside the orphan map claimed the opposite was true.
+    const stateBackend = {
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 9,
+          region: 'us-east-1',
+          stackName: 'MyStack',
+          resources: {},
+          outputs: {},
+          orphans: [
+            {
+              logicalId: 'Gone',
+              orphanedAt: 1,
+              state: {
+                physicalId: 'MyStack-Gone',
+                resourceType: 'AWS::SSM::Parameter',
+                properties: { Value: THROW_AFTER_RECORDING_EXPR },
+              },
+            },
+          ],
+          lastModified: 0,
+        } as StackState,
+        etag: 'etag-1',
+      }),
+      saveState: vi.fn().mockResolvedValue('etag-2'),
+    };
+    const lockManager = {
+      acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
+      releaseLock: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const caught = await scrubStack(
+      { stackName: 'MyStack', template: { Resources: {}, Outputs: {} } as CloudFormationTemplate } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: false, logger }
+    ).then(
+      () => null,
+      (err: unknown) => err
+    );
+
+    // UNCONDITIONAL. An `if (caught !== null)` guard here would make the case
+    // pass when nothing throws, which is how a negative assertion becomes
+    // unfalsifiable by construction — and the swallowing catch in the orphan
+    // loop means "nothing throws" is the DEFAULT, so the guard would have hidden
+    // a dead test.
+    expect(caught).not.toBeNull();
+    expect(JSON.stringify(caught, Object.getOwnPropertyNames(caught as object))).not.toContain(
+      ORPHAN_PLAINTEXT
+    );
+    // ...and the masked form really is there, so the case cannot pass because
+    // the message went missing entirely.
+    expect(JSON.stringify(caught, Object.getOwnPropertyNames(caught as object))).toContain(
+      'region ambiguous'
+    );
   });
 });
