@@ -421,9 +421,13 @@ export class S3StateBackend {
     } catch (error) {
       if (!isNoSuchKey(error)) {
         if (error instanceof StateError) throw error;
-        // Precomputed like every other sanitised value in this method.
+        // The ASCII allowlist, like every other `detail` in this file. Only
+        // `formatError`'s cause line takes the denylist, because that one
+        // prints causes raised anywhere in cdkd rather than from these catches.
         const detail =
-          displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE;
+          displaySafe(error instanceof Error ? error.message : String(error), {
+            asciiOnly: true,
+          }) || UNRENDERABLE;
         throw new StateError(
           `Failed to get state for stack '${shownStackName}' (${shownRegionName}): ${detail}`,
           error instanceof Error ? error : undefined
@@ -438,14 +442,14 @@ export class S3StateBackend {
       // A WARN, so it prints at default verbosity on the same `state show` /
       // `state resources` path the refusals around it were guarded for -- and
       // it names the stack twice, once inside a printed S3 key (issue #3003).
-      // The KEY is built from the real name and sanitized AFTER, not built from
-      // the sanitized name: the latter prints a key that is not the key read,
-      // which is worse than the raw text this guard removes.
-      const shown = this.displayName(stackName);
+      // The KEY is built from the real name and sanitized AFTER. Building it
+      // from the sanitized name substitutes a DIFFERENT name into the middle of
+      // the key; sanitizing after only blanks characters a terminal must not
+      // receive, the same trade every other row here makes.
       const shownKey =
         displaySafe(this.getLegacyStateKey(stackName), { asciiOnly: true }) || UNRENDERABLE;
       this.logger.warn(
-        `Loaded legacy state for stack '${shown}' from '${shownKey}'. ` +
+        `Loaded legacy state for stack '${shownStackName}' from '${shownKey}'. ` +
           `It will be migrated to the region-scoped layout on next save.`
       );
       return { ...legacy, migrationPending: true };
@@ -1262,13 +1266,6 @@ export class S3StateBackend {
       // reaches here is `JSON.parse` on the legacy body, so `detail` is a
       // snippet OF THAT BODY rather than AWS's own wording. Debug is quieter
       // than warn, not a different terminal.
-      // ASCII allowlist, deliberately, and this is the value that most needs
-      // it: `describeAwsFailure` returns the message verbatim, and the failure
-      // that reaches here is `JSON.parse` on the legacy BODY -- so the
-      // non-ASCII content is the attacker's bytes, not a service's own
-      // wording. The denylist leaves the invisibles `display-safe.ts` names as
-      // its residual (`U+200B`-`U+200D`, `U+FEFF`, the bidi marks); the
-      // allowlist has none. `cls` below is a bounded error NAME.
       this.logger.debug(
         `Could not read legacy state region for '${this.displayName(stackName)}': ` +
           `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`
@@ -1358,7 +1355,9 @@ export class S3StateBackend {
       // command: `getState` falls back here, so a `state show` on a legacy
       // record takes this refusal (issue #3003).
       const detail =
-        displaySafe(error instanceof Error ? error.message : String(error)) || UNRENDERABLE;
+        displaySafe(error instanceof Error ? error.message : String(error), {
+          asciiOnly: true,
+        }) || UNRENDERABLE;
       throw new StateError(
         `Failed to get legacy state for stack '${this.displayName(stackName)}': ${detail}`,
         error instanceof Error ? error : undefined

@@ -627,8 +627,37 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       for (const call of calls) {
         expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
       }
-      // Not vacuous: the region is reported, flattened rather than dropped.
-      expect(calls.join('\n')).toContain('PhysicalID: arn:forged');
+      // Bound to the line this case exists for, not to the joined blob: a
+      // joined `toContain` is satisfied by `Getting state for stack` alone, so
+      // dropping the region from `Retrieved state` would leave it green.
+      expect(calls.find((c) => c.includes('Retrieved state'))).toContain('PhysicalID: arn:forged');
+      expect(calls.find((c) => c.includes('Getting state for stack'))).toContain(
+        'PhysicalID: arn:forged'
+      );
+    });
+
+    it('sanitizes the REGION on the MISS path too (issue #3003)', async () => {
+      // The success path returns before `No state at new key`, so the case
+      // above cannot reach that line. This one takes the miss path and the
+      // legacy fallback, which is also where the mismatch line's CALLER-region
+      // hole lives -- the third interpolation the earlier round guarded and
+      // fenced with nothing.
+      childLoggerMock.debug.mockClear();
+      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+
+      const result = await backend.getState('S', 'us-east-1\n  PhysicalID: arn:forged');
+      expect(result).toBeNull();
+
+      const calls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(calls.some((c) => c.includes('No state at new key'))).toBe(true);
+      for (const call of calls) {
+        expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      }
+      expect(calls.find((c) => c.includes('No state at new key'))).toContain(
+        'PhysicalID: arn:forged'
+      );
     });
 
     it('sanitizes the legacy region-mismatch DEBUG line (issue #3003)', async () => {

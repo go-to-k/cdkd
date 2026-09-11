@@ -147,12 +147,11 @@ interface HeldLock {
  * name and an AWS region both have a known charset, so the ASCII allowlist is
  * a no-op on every legitimate input while an S3 key admits any UTF-8.
  *
- * It replaced the expression written out at every site in this file that
- * names a stack or a region. Two sites deliberately do NOT call it: a
- * free-form parser message takes the DENYLIST class instead, for the reason
- * `display-safe.ts`'s header gives. A count used to stand here and was wrong
- * twice, so it does not any more -- `grep safeSegment` is exact and this was
- * not.
+ * Call it for a stack name or a region. It is deliberately NOT the guard for
+ * every value in this file -- a free-form error message takes a different
+ * class -- and this comment does not try to enumerate which sites use it:
+ * three revisions of that sentence carried a count or a scope claim and each
+ * was wrong. `grep safeSegment` answers it exactly.
  */
 function safeSegment(value: string | undefined): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
