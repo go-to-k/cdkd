@@ -132,12 +132,23 @@ indistinguishable, in every list view, from a refresh that needed nothing.
 blocks the merge button — a required check that has not reported is not a pass.
 Approve the workflows and the same block holds for the opposite reason: every
 decision the count can carry also reddens a check that `ci-ok` waits on (a
-removal leaves a declaration `property-coverage` fails, a nested key leaves
-`audit:nested-key-coverage:check` at exit 1, and the rest of the count IS that
-family of checks). So the label and the title are there to tell you the work
-exists, not to hold the gate. The one class that is counted without reddening
-anything is a fixture the diagnosis itself could not read — it names those in
-the PR body, and it means the run is broken rather than that AWS moved.
+nested key leaves `audit:nested-key-coverage:check` at exit 1, an unsettled
+removal leaves a declaration `property-coverage` fails, and the rest of the
+count IS that family of checks). So the label and the title are there to tell
+you the work exists, not to hold the gate.
+
+**Unsettled** is the load-bearing word in that sentence, and it was wrong until
+issue [#3005](https://github.com/go-to-k/cdkd/issues/3005). A property listed in
+`_todo-backfill.json`'s `bogusTolerated` is settled — that is what the entry's
+rationale says — so `property-coverage` is green for it, and AWS removing it
+again is not a decision. The count used to disagree, because it subtracted only
+what the CURRENT cycle wrote: a tolerance committed on an earlier cycle left the
+removal counted, and the PR was titled "1 decision needed" with nothing red and
+nothing to do. Both sides now read the tolerance FILE, so they cannot disagree.
+
+The one class still counted without reddening anything is a fixture the
+diagnosis itself could not read from `HEAD` — it names those in the PR body, and
+it means the run is broken rather than that AWS moved.
 
 The marking is **cleared by the next run** once you have committed the
 classifications: the job recomputes the count while the PR is open, even on a

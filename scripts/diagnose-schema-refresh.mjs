@@ -847,6 +847,58 @@ export function countDecisions({
 }
 
 /**
+ * Drop from `removed` every property the tolerance file already SETTLES, so the
+ * decision count describes work a reader can actually do.
+ *
+ * Membership is read off the `bogusTolerated` MAP — the same input
+ * `classifyCoverage` decides `bogus` from — and deliberately NOT off this
+ * cycle's `written` list. The two are not the same set, and taking the smaller
+ * one counted a decision nothing could act on (issue
+ * [#3005](https://github.com/go-to-k/cdkd/issues/3005)).
+ *
+ * `writeAutoTolerated` SKIPS a property whose entry is already there
+ * (`already !== undefined` → `continue`), so it lands in neither `written` nor
+ * `escalated` — the behaviour `diagnose-schema-refresh.test.ts` pins as
+ * "Skipped outright". Subtracting `written` alone therefore left an
+ * ALREADY-tolerated removal in the count while `property-coverage` stayed
+ * GREEN, so the pull request was titled "1 decision needed" over a property
+ * whose rationale is committed, with no check red and nothing for a reader to
+ * do. A decision class that merges cleanly is the shape #3005 calls worse than
+ * a red one, and this was its one live instance.
+ *
+ * Reachable on the standing bot pull request with nothing unusual: AWS adds a
+ * name that is in `bogusTolerated` (the coverage test's staleness arm reds that
+ * cycle, by design), AWS drops it again, and now HEAD carries the name while
+ * the working tree does not. Measured 2026-09-12, 12 of the file's 13 entries
+ * name a property the generated `handled` map declares — so 12 names are one
+ * add/remove pair away from it.
+ *
+ * Reading the FILE also KEEPS the protection the caller's `written` cross-check
+ * was added for rather than weakening it: a `written` claim the branch does not
+ * carry is still excluded, because the file is what is consulted either way.
+ *
+ * @param {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} removed
+ * @param {Record<string, Record<string, string> | undefined>} bogusTolerated the
+ *   tolerance file's `bogusTolerated` map; `{}` when the file is absent, which
+ *   settles nothing and so over-counts — the safe direction.
+ * @returns {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} the same
+ *   entries minus settled properties, with emptied entries dropped.
+ */
+export function subtractSettledRemovals(removed, bogusTolerated) {
+  // Looked up two levels deep in the map rather than through a flattened
+  // `type|property` key set: this is the same `?.[type]?.[property] !==
+  // undefined` test `writeAutoTolerated` and `classifyCoverage` already use, so
+  // all three agree on what SETTLED means, and there is no separator that has
+  // to be chosen not to collide with a name.
+  return removed
+    .map((e) => ({
+      ...e,
+      properties: e.properties.filter((p) => bogusTolerated?.[e.resourceType]?.[p] === undefined),
+    }))
+    .filter((e) => e.properties.length > 0);
+}
+
+/**
  * Apply {@link classifyRemovedProperty} to every removed-but-declared property,
  * writing the settled ones into `_todo-backfill.json`'s `bogusTolerated` block
  * and returning what happened for the report to render.
@@ -2981,17 +3033,17 @@ function main() {
   // would otherwise hide a live decision behind a write that is not on the
   // branch.
   const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
-  if (autoTolerated.length > 0 && existsSync(tolerancePath)) {
-    const live = JSON.parse(readFileSync(tolerancePath, 'utf8')).bogusTolerated ?? {};
-    autoTolerated = autoTolerated.filter((w) => live[w.resourceType]?.[w.property] !== undefined);
+  /** @type {Record<string, Record<string, string>>} */
+  let liveTolerance = {};
+  if (existsSync(tolerancePath)) {
+    liveTolerance = JSON.parse(readFileSync(tolerancePath, 'utf8')).bogusTolerated ?? {};
   }
-  const settled = new Set(autoTolerated.map((w) => `${w.resourceType}\u0000${w.property}`));
-  const removedForReport = removed
-    .map((e) => ({
-      ...e,
-      properties: e.properties.filter((p) => !settled.has(`${e.resourceType}\u0000${p}`)),
-    }))
-    .filter((e) => e.properties.length > 0);
+  if (autoTolerated.length > 0) {
+    autoTolerated = autoTolerated.filter(
+      (w) => liveTolerance[w.resourceType]?.[w.property] !== undefined
+    );
+  }
+  const removedForReport = subtractSettledRemovals(removed, liveTolerance);
 
   const failedChecks = readArgValue('--failed-checks')
     .split(',')

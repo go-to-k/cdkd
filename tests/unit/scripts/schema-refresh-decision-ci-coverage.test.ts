@@ -9,14 +9,27 @@
  * auto-merge — only a REQUIRED status check binds there, and at filing time
  * (2026-09-11T10:01Z) the repository had none that a red fixture check reached.
  * go-to-k/cdkd#2999 landed the `ci-ok` aggregate less than two hours later and
- * made it the required check, which closes the hole by a different mechanism:
- * every term `countDecisions` can raise ALSO reds `check-build-test`, and
+ * made it the required check, which closes MOST of the hole by a different
+ * mechanism: every term `countDecisions` can raise ALSO reds `check-build-test`,
+ * and
  * `ci-ok` waits on that job. So a decision-carrying refresh PR is unmergeable
  * in BOTH of the states it is ever in — held at `action_required`, where a
  * required check that has not reported blocks the merge button, and approved
  * and run, where it reports red — and the decision-count job would be a second
  * required check answering the same question, the duplication #3005 itself
  * argued against.
+ *
+ * MOST, because the equivalence did NOT hold for `removed` when this was
+ * written, and that was #3005's report being right about one term. A property
+ * already in `_todo-backfill.json`'s `bogusTolerated` is settled — that is what
+ * the entry's rationale says, and `classifyCoverage` reports it green — yet the
+ * count subtracted only what the CURRENT cycle wrote, because
+ * `writeAutoTolerated` SKIPS an already-tolerated property and so puts it in
+ * neither `written` nor `escalated`. A removal of such a property was therefore
+ * counted with nothing red: a decision class that merges cleanly, which is the
+ * shape #3005 calls worse than the nested-key one. `subtractSettledRemovals`
+ * now reads the same tolerance FILE both sides read, and the confluence case in
+ * `diagnose-schema-refresh.test.ts` pins them to one definition of "settled".
  *
  * That closure is EMERGENT, not designed, and this file is what keeps it true.
  * Nothing else relates the two workflows: `cfn-schema-refresh.yml` grades a
@@ -102,14 +115,23 @@ const stepsOf = (workflow: unknown, job: string): Step[] => {
  * there the comments quote WRONG forms that negative assertions would read as
  * defects.
  */
+const stripComments = (run: string): string =>
+  run
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n');
+
 const refreshShell = (name: string): string => {
   const step = stepsOf(refresh, 'refresh').find((s) => s.name === name);
   expect(step, `no refresh step named ${JSON.stringify(name)} — renamed or deleted`).toBeDefined();
-  return step!
-    .run!.split('\n')
-    .filter((l) => !/^\s*#/.test(l))
-    .join('\n');
+  return stripComments(step!.run!);
 };
+
+/** Every refresh step's shell, joined — the population `run_check` is read from. */
+const allRefreshShells = (): string =>
+  stepsOf(refresh, 'refresh')
+    .map((s) => stripComments(s.run ?? ''))
+    .join('\n');
 
 /**
  * Every check the refresh GRADES a cycle with: the `run_check` names from
@@ -121,10 +143,40 @@ const refreshShell = (name: string): string => {
  * populates `divergences`, `nestedKeyUnparsed` and `pendingSdkBump`.
  */
 const gradedChecks = (): string[] => {
-  const fromRunCheck = [...refreshShell(REGENERATE_STEP).matchAll(/^\s*run_check (\S+)/gm)].map(
-    (m) => m[1]!
-  );
-  const fromDiagnose = [...refreshShell(DIAGNOSE_STEP).matchAll(/\bvp run (\S+)/g)].map((m) => m[1]!);
+  // EVERY step, not the one `run_check` lives in today. Scoping this to
+  // `Regenerate` made a `run_check` added in a NEW step invisible here, and the
+  // sibling suite scopes the same way, so neither would have reddened.
+  const shells = allRefreshShells();
+  const fromRunCheck = [...shells.matchAll(/^\s*run_check (\S+)/gm)].map((m) => m[1]!);
+  // The anchored pattern only sees a call that OPENS its line. A `run_check`
+  // behind a guard, inside an `if`, or second on a `;`-joined line would be
+  // silently dropped — and dropping a NEW one leaves this population equal to
+  // CI_COVERAGE's keys, so the set-equality case below stays green over exactly
+  // the hole it exists to close. Counting the mentions turns that silence into
+  // a failure: an unparsed spelling is reported rather than vanishing.
+  const mentions = (shells.match(/\brun_check\s+\S/g) ?? []).length;
+  expect(
+    fromRunCheck.length,
+    `${mentions} \`run_check\` invocation(s) in the refresh shell, but only ${fromRunCheck.length} ` +
+      'parsed. A call that does not open its line is invisible to this fence — put it on its own ' +
+      'line, or widen the pattern here.'
+  ).toBe(mentions);
+
+  // The Diagnose step stays SCOPED, and that is deliberate rather than an
+  // oversight of the widening above: `run_check` is a marker that says "this is
+  // graded", while a bare `vp run` is not — the refresh also runs generators
+  // (`gen:all-matrices`, `format`) whose failure aborts the step under
+  // `set -euo pipefail`, so no PR and no marking follow and they grade nothing.
+  // What makes the scoping safe is that this is the step whose invocation
+  // WRITES the count, asserted below, so it cannot quietly stop being the one
+  // the count comes from.
+  const diagnose = refreshShell(DIAGNOSE_STEP);
+  expect(
+    diagnose,
+    `the ${JSON.stringify(DIAGNOSE_STEP)} step no longer writes the decision count, so scoping ` +
+      'the graded-checker scan to it is no longer justified'
+  ).toContain('--decision-count-out');
+  const fromDiagnose = [...diagnose.matchAll(/^\s*vp run (\S+)/gm)].map((m) => m[1]!);
   return [...new Set([...fromRunCheck, ...fromDiagnose])];
 };
 
@@ -146,10 +198,14 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
     command: 'vp run test',
     covers: ['removed', 'failedChecks'],
     why:
-      'An unsettled removal leaves a provider declaring a property the schema no longer has, and ' +
-      'tests/unit/provisioning/property-coverage.test.ts fails that classification unless it is in ' +
-      "_todo-backfill.json's bogusTolerated — which the refresh's writer mode PRESERVES and never " +
-      'adds to. It reaches CI through the whole unit suite rather than a task of its own.',
+      'An UNSETTLED removal leaves a provider declaring a property the schema no longer has, and ' +
+      'tests/unit/provisioning/property-coverage.test.ts fails that classification unless the ' +
+      "property is in _todo-backfill.json's bogusTolerated. It reaches CI through the whole unit " +
+      'suite rather than a task of its own. The link holds only because `subtractSettledRemovals` ' +
+      'decides SETTLED from the same tolerance FILE that `classifyCoverage` reads: subtracting ' +
+      'only the current cycle\'s `written` list left an already-tolerated removal counted while ' +
+      'property-coverage was green (go-to-k/cdkd#3005), and the confluence case in ' +
+      'diagnose-schema-refresh.test.ts is what pins the two readers to one definition.',
   },
   'audit:sdk-attr-coverage:check': {
     command: 'vp run audit:sdk-attr-coverage:check',
@@ -194,17 +250,39 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
  */
 const UNCOVERED_TERMS: Record<string, string> = {
   unreadable: [
-    'Not a schema decision — it is the DIAGNOSIS failing to read its own input. `committedVersion`',
-    'sets it when `git show HEAD:<fixture>` fails for a reason that is NOT "path not in HEAD", so',
-    'the fixture in the working tree (the copy CI parses) is fine and every fixture-driven check',
-    'stays green. Accepted rather than mechanised because the arms that reach it break the refresh',
-    'run as a whole rather than describing anything about a schema: git absent, a broken',
-    'repository, or the 32 MB `maxBuffer` — which the corpus is three orders of magnitude short of',
-    '(largest fixture 68,594 B over 135 files, measured 2026-09-12). It is also loud where it',
-    'happens: the diagnosis renders the unreadable fixtures by name in the PR body it is counted',
-    'in. Recorded on go-to-k/cdkd#3005 as the residual of closing it.',
+    'Not a schema decision — it is the DIAGNOSIS failing to read its own input, and it has TWO',
+    'producers which differ in exactly the way that matters here. `committedVersion` sets it when',
+    '`git show HEAD:<fixture>` fails for a reason that is NOT "path not in HEAD"; there the',
+    'working-tree copy CI parses is fine, so every fixture-driven check stays green and the term is',
+    'genuinely uncovered. The `catch` around `comparePropertySets` also sets it, for an unparseable',
+    'WORKING-TREE fixture — and THAT arm does redden CI, since every fixture-reading check would',
+    'fail to load it. So the exemption is only ever needed for the first producer. Accepted rather',
+    'than mechanised because its arms break the refresh run as a whole rather than describing',
+    'anything about a schema: git absent, a broken repository, or the 32 MB `maxBuffer` — which the',
+    'corpus is three orders of magnitude short of (largest fixture 68,594 B over 135 files,',
+    'measured 2026-09-12). It is also loud where it happens: the diagnosis renders the unreadable',
+    'fixtures by name in the PR body it is counted in. Recorded on go-to-k/cdkd#3005 as the',
+    'residual of closing it.',
   ].join(' '),
 };
+
+// TWO LINKS IN THE CHAIN ARE NOT ASSERTABLE HERE, named so they are not
+// mistaken for things this file covers. An unassertable link left unstated is
+// worse than an uncovered term, because the header's argument then reads as
+// fully fenced.
+//
+// 1. `ci-ok` is a REQUIRED status check on `main`. That is repository branch
+//    protection (a ruleset, not a file), so no test can see it. Confirmed live
+//    2026-09-12 — `gh api repos/go-to-k/cdkd/rules/branches/main` returns
+//    `ci-ok` among six required contexts — and were it removed, every case
+//    below would still pass while nothing blocked the merge button.
+// 2. The refresh grades `property-coverage` under `CDKD_GENERATE_BACKFILL=true`
+//    and `ci.yml` does not. The writer mode regenerates `types` before
+//    asserting, so its `unaccounted` arm cannot fail — a strictly WEAKER
+//    predicate than CI's. That is the safe direction for the claim (it can only
+//    make the refresh count LOWER than CI's redness), but the command-prefix
+//    match cannot see an env difference, so the two runs are not pinned to one
+//    predicate here.
 
 /**
  * The decision terms, read off the SHIPPED function rather than listed.
@@ -222,9 +300,27 @@ const decisionTerms = (): string[] => {
     'countDecisions no longer destructures its input — the term list cannot be derived from it, ' +
       'so this fence would silently stop watching for a new decision class'
   ).not.toBeNull();
-  return [...destructuring![1]!.matchAll(/^\s*([A-Za-z][A-Za-z0-9]*)\s*(?:=|,|$)/gm)].map(
+  // `[A-Za-z_$][\w$]*`, not `[A-Za-z][A-Za-z0-9]*`: the narrower class cannot
+  // match `schema_gaps` or `$extra` even partially, so such a term yielded
+  // NOTHING and left the population unchanged — a seventh term escaping
+  // classification while the floor and the anchors below both still passed.
+  const lines = destructuring![1]!
+    .split('\n')
+    .map((l) => l.replace(/\/\/.*$/, '').trim())
+    .filter((l) => l.length > 0);
+  const names = [...destructuring![1]!.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*(?:=|,|$)/gm)].map(
     (m) => m[1]!
   );
+  // One name per declaration line. A parameter this pattern cannot read is the
+  // one that would slip through unclassified, so an under-count is reported
+  // rather than absorbed — the same reasoning as the `run_check` mention count.
+  expect(
+    names.length,
+    `countDecisions destructures ${lines.length} line(s) but only ${names.length} parsed as a ` +
+      `term name: ${JSON.stringify(lines)}. A term this pattern cannot read leaves the ` +
+      'classification below with nothing to fail on.'
+  ).toBe(lines.length);
+  return names;
 };
 
 /**
@@ -282,13 +378,29 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
 
   it('runs every mapped command inside check-build-test', () => {
     const lines = ciCommandLines(CI_CHECK_JOB);
+    // A matched line must also be able to FAIL the job. `vp run x || true`,
+    // `vp run x || echo …`, a `;`-joined tail and a trailing `&` all satisfy a
+    // plain prefix match while the step exits 0 — the fence would then claim a
+    // redness the line cannot produce. Step-level `if:` and `continue-on-error`
+    // are the same lever one level up and are fenced by ci-ok-gate.test.ts; the
+    // shell tail is the half nothing else watches.
+    const neutralised = (line: string, command: string): boolean => {
+      const tail = line.slice(command.length);
+      return /(\|\||&&|;|&\s*$)/.test(tail);
+    };
     for (const [check, { command }] of Object.entries(CI_COVERAGE)) {
-      const found = lines.some((l) => l === command || l.startsWith(`${command} `));
+      const matches = lines.filter((l) => l === command || l.startsWith(`${command} `));
       expect(
-        found,
+        matches.length,
         `${CI_CHECK_JOB} no longer runs ${JSON.stringify(command)}, so the refresh's ` +
           `${JSON.stringify(check)} grading has nothing behind it in CI — a decision of that class ` +
           'would leave ci-ok green and the merge button live'
+      ).toBeGreaterThan(0);
+      expect(
+        matches.some((l) => !neutralised(l, command)),
+        `every ${JSON.stringify(command)} invocation in ${CI_CHECK_JOB} has a tail that swallows ` +
+          `its failure (${JSON.stringify(matches)}), so the refresh's ${JSON.stringify(check)} ` +
+          'grading is present but cannot redden the job'
       ).toBe(true);
     }
   });
@@ -298,7 +410,10 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // only true while the invocation carries no filter: `vp run test <name>`
     // would still match a bare `startsWith` and cover nothing.
     const invocations = ciCommandLines(CI_CHECK_JOB)
-      .filter((l) => /^vp run test\b/.test(l))
+      // `(\s|$)`, not `\b`: a word boundary fires before `:`, so a legitimate
+      // `vp run test:coverage` step would be selected and then red as "a
+      // filtered run", which is both wrong and misleading about why.
+      .filter((l) => /^vp run test(\s|$)/.test(l))
       // Everything up to the first pipe is the command. Redirections are not
       // arguments to it, and are dropped token-wise rather than by a regex over
       // the whole line: a pattern with a trailing `\S*` also eats the token

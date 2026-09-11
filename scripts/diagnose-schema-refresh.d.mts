@@ -125,6 +125,15 @@ export declare function countDecisions(
       >
     >
 ): number;
+/**
+ * Drop the removals `bogusTolerated` already settles, so the count and
+ * `property-coverage` agree about what SETTLED means (issue
+ * https://github.com/go-to-k/cdkd/issues/3005).
+ */
+export declare function subtractSettledRemovals(
+  removed: readonly RemovedEntry[],
+  bogusTolerated: Record<string, Record<string, string> | undefined> | undefined
+): RemovedEntry[];
 export declare function parseDefinitionMemberMissing(
   detail: string
 ): { definition: string; member: string } | undefined;
