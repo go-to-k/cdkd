@@ -456,8 +456,19 @@ describe('docs error-string checker: the real tree', () => {
     expect(names.has('LockError')).toBe(true);
     expect(names.has('ProvisioningError')).toBe(true);
     // Subclasses declared outside error-handler.ts must be picked up too.
-    const all = analyze(ROOT);
-    expect(all.counts.errorNames).toBeGreaterThan(names.size);
+    //
+    // `report`, not a second `analyze(ROOT)`. The describe already scans the
+    // whole tree once, at collection time, and re-scanning it INSIDE a case
+    // put a whole-repo walk under vitest's 5 s in-process default — which
+    // passes on an idle machine and fails on a loaded one, i.e. it fails in
+    // the direction that reads as flakiness rather than as an under-declared
+    // bound (go-to-k/cdkd#2953: one failure under a full-suite run, green on
+    // an immediate re-run of the same tree, green in isolation).
+    //
+    // Declaring a timeout would have fixed the symptom; the scan itself was
+    // the redundancy. Do not reintroduce it — the shared `report` is the same
+    // call with the same argument.
+    expect(report.counts.errorNames).toBeGreaterThan(names.size);
   });
 
   it('requires a reason of real length on every allow-list entry', () => {
