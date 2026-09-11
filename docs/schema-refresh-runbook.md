@@ -127,6 +127,18 @@ pull request does not change that. So a decision-carrying PR does not show a
 red check; it shows no check at all. Before this marking existed it was
 indistinguishable, in every list view, from a refresh that needed nothing.
 
+**You cannot merge one by mistake, and the marking is not what stops you.**
+`ci-ok` is a required status check on `main`, so the held state above already
+blocks the merge button — a required check that has not reported is not a pass.
+Approve the workflows and the same block holds for the opposite reason: every
+decision the count can carry also reddens a check that `ci-ok` waits on (a
+removal leaves a declaration `property-coverage` fails, a nested key leaves
+`audit:nested-key-coverage:check` at exit 1, and the rest of the count IS that
+family of checks). So the label and the title are there to tell you the work
+exists, not to hold the gate. The one class that is counted without reddening
+anything is a fixture the diagnosis itself could not read — it names those in
+the PR body, and it means the run is broken rather than that AWS moved.
+
 The marking is **cleared by the next run** once you have committed the
 classifications: the job recomputes the count while the PR is open, even on a
 day AWS changed nothing, then drops the label, restores the plain title and
