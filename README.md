@@ -1,17 +1,21 @@
-# cdkd (CDK Direct)
+<div align="center">
+  <h1>cdkd (CDK Direct)</h1>
+  <a href="https://www.npmjs.com/package/@go-to-k/cdkd">
+    <img src="https://img.shields.io/npm/v/@go-to-k/cdkd.svg" alt="npm version" />
+  </a>
+  <a href="https://www.npmjs.com/package/@go-to-k/cdkd">
+    <img src="https://img.shields.io/npm/dw/@go-to-k/cdkd.svg" alt="Downloads" />
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/npm/l/@go-to-k/cdkd.svg" alt="License: Apache-2.0" />
+  </a>
+  <h3>Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation.</h3>
+  <p>
+    📚 Documentation: <a href="https://cdkd.dev"><b>cdkd.dev</b></a>
+  </p>
+</div>
 
-[![npm version](https://img.shields.io/npm/v/@go-to-k/cdkd.svg)](https://www.npmjs.com/package/@go-to-k/cdkd)
-[![Downloads](https://img.shields.io/npm/dw/@go-to-k/cdkd.svg)](https://www.npmjs.com/package/@go-to-k/cdkd)
-[![License: Apache-2.0](https://img.shields.io/npm/l/@go-to-k/cdkd.svg)](./LICENSE)
-
-Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation.
-
-**📚 Documentation: [cdkd.dev](https://cdkd.dev)**
-
-<a href="https://cdkd.dev"><picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/docs-site-dark.png">
-<img alt="cdkd documentation site — cdkd.dev" src="https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/docs-site-light.png" width="820">
-</picture></a>
+---
 
 - **Drop-in CDK compatible**: your existing CDK app code runs as-is; just replace `cdk deploy` with `cdkd deploy`.
 - **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits; **faster than Terraform and CloudFormation Express mode** too (see [Benchmark](#benchmark)).
