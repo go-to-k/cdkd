@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
   getPropertyCoverage,
+  withoutAcceptedSilentDropProperties,
   withoutSilentDropProperties,
 } from '../../../src/provisioning/property-coverage.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -494,6 +495,14 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
    * `tests/integration/sdk-to-cc-autoroute` phases 4b/4c exercise live. What
    * it never reports is a property change confined to the dropped key, since
    * it narrows both of its own sides.
+   *
+   * A consequence, and deliberate: a record a pre-#2750 binary wrote still
+   * HOLDS the allow-listed key, and a flag-ful policy-only deploy now takes the
+   * attribute-only branch, which keeps the recorded properties as they are, so
+   * the leftover key stays. The redundant `update()` used to rewrite it away.
+   * That is harmless, because every reader narrows the record first (the
+   * diff's stored side, `currentPropsAsWritten`); a deploy without the flag
+   * narrows nothing on the desired side and is the healing path.
    */
   describe('the no-change re-check narrows its DESIRED side too (#2809)', () => {
     function recordState(
@@ -561,6 +570,8 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       await makeEngine().deploy(stackName, template);
 
       expect(mockProvider.update).not.toHaveBeenCalled();
+      expect(mockProvider.create).not.toHaveBeenCalled();
+      expect(mockProvider.delete).not.toHaveBeenCalled();
     });
 
     it('also skips for a record with NO provisionedBy marker, which counts as SDK', async () => {
@@ -579,6 +590,8 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       await makeEngine().deploy(stackName, template);
 
       expect(mockProvider.update).not.toHaveBeenCalled();
+      expect(mockProvider.create).not.toHaveBeenCalled();
+      expect(mockProvider.delete).not.toHaveBeenCalled();
     });
 
     it('still skips on the Cloud Control route, where the record DOES hold the key', async () => {
@@ -597,6 +610,8 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       await makeEngine().deploy(stackName, template);
 
       expect(mockProvider.update).not.toHaveBeenCalled();
+      expect(mockProvider.create).not.toHaveBeenCalled();
+      expect(mockProvider.delete).not.toHaveBeenCalled();
     });
 
     it('compares the FULL desired bag when the registry double has no allow-set method', async () => {
@@ -629,10 +644,13 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
     describe('an attribute-only flip on a type whose update() RE-CREATES', () => {
       const SUB_TYPE = 'AWS::SNS::Subscription';
       const SUB_DROPPED = 'Region';
-      const SUB_ARN = 'arn:aws:sns:us-east-1:123456789012:orders:5f2c0b44';
+      // The shape CDK emits: `Region` is set only for a topic in ANOTHER region,
+      // so the topic (and the subscription, which lives with it) is in
+      // us-west-2 while the queue stays in the stack's us-east-1.
+      const SUB_ARN = 'arn:aws:sns:us-west-2:123456789012:orders:5f2c0b44';
       const SUB_WRITTEN = {
         Protocol: 'sqs',
-        TopicArn: 'arn:aws:sns:us-east-1:123456789012:orders',
+        TopicArn: 'arn:aws:sns:us-west-2:123456789012:orders',
         Endpoint: 'arn:aws:sqs:us-east-1:123456789012:orders-queue',
       };
       const SUB_DESIRED = { ...SUB_WRITTEN, [SUB_DROPPED]: 'us-west-2' };
@@ -648,6 +666,15 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
         // by the record-side helper, so the skip was reachable all along and
         // this whole case would pass without the fix.
         expect(withoutSilentDropProperties(SUB_TYPE, SUB_DESIRED)).toEqual(SUB_WRITTEN);
+        // And through the helper the re-check itself calls, with this case's
+        // allow set: the desired side the engine compares is the written bag.
+        expect(
+          withoutAcceptedSilentDropProperties(
+            SUB_TYPE,
+            SUB_DESIRED,
+            new Set([`${SUB_TYPE}:${SUB_DROPPED}`])
+          )
+        ).toEqual(SUB_WRITTEN);
       });
 
       it('refreshes DeletionPolicy in state and never reaches the provider', async () => {

@@ -230,6 +230,8 @@ describe('SNSSubscriptionProvider', () => {
       expect(unsubscribeAt).toBeGreaterThanOrEqual(0);
       expect(subscribeAt).toBeGreaterThan(unsubscribeAt);
       expect((commands[unsubscribeAt] as UnsubscribeCommand).input.SubscriptionArn).toBe(OLD_ARN);
+      // Exactly the two primed calls, so neither primer can leak.
+      expect(mockSend).toHaveBeenCalledTimes(2);
       expect(result.physicalId).toBe(NEW_ARN);
       expect(result.wasReplaced).toBe(true);
     });
