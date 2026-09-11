@@ -882,10 +882,14 @@ export function countDecisions({
  * made the settled removal render NOWHERE: `writeAutoTolerated` skipped it, so
  * it is in no `written` list and gets no "the job settled this" section, and
  * with it gone from `removed` the report said "additions only" over a property
- * AWS had actually removed — and the RENAME hint, which
- * `classifyRemovedProperty` calls the most decisive signal in the report,
- * could never fire for it. Trading a wrong decision for an invisible removal
+ * AWS had actually removed. Trading a wrong decision for an invisible removal
  * is not a fix. The caller renders `settled` in its own section.
+ *
+ * What that section does NOT carry is the RENAME hint: `settled` is name +
+ * rationale, and the hint is rendered from the `removed` loop. That is a
+ * deliberate bound rather than an oversight — a property with a standing
+ * tolerance has already been judged, and re-offering a rename candidate for it
+ * would re-open a settled question every cycle.
  *
  * `settledThisCycle` is what keeps the report from saying two things about one
  * property. The workflow runs `Settle the removals…` BEFORE `Diagnose`, and

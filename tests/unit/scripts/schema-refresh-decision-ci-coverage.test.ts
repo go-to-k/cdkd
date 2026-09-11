@@ -68,6 +68,10 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { countDecisions } from '../../../scripts/diagnose-schema-refresh.mjs';
+// The real parser, for the reason `decisionTerms`'s docblock gives. `typescript-v6`
+// is the npm alias of typescript@6 the sibling critics use — TS7 ships the stable
+// compiler API only under `typescript/unstable/*`.
+import ts from 'typescript-v6';
 import { readFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
@@ -88,8 +92,6 @@ const ci: any = parseYaml(ciText);
 const CI_CHECK_JOB = 'check-build-test';
 /** The aggregate job that IS the required status check on `main`. */
 const CI_GATE_JOB = 'ci-ok';
-/** The refresh step whose `run_check` calls grade a refresh. */
-const REGENERATE_STEP = 'Regenerate the derived artifacts';
 /** The refresh step that runs the nested-key critic and renders the count. */
 const DIAGNOSE_STEP = 'Diagnose what needs a decision';
 
@@ -239,11 +241,15 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'The critic exits 1 on any divergence outside NESTED_KEY_ALLOW_LIST. pendingSdkBump rides ' +
       'it too: partitionPendingSdkBump moves such a finding out of `divergences` inside the ' +
       'DIAGNOSIS only, so the critic itself is still red for it. nestedKeyUnparsed has two ' +
-      'disjuncts and both need the critic to be red: the zero-divergence one requires a non-zero ' +
-      'rc (or the critic wording a failure), and the parser-shortfall one compares a strict ' +
-      'against a loose parse of the SAME log, so it can only fire over finding-shaped lines the ' +
-      'critic PRINTED — which it does on its failing path, its --check clean path emitting one ' +
-      'summary line and no finding.',
+      'disjuncts. The parser-shortfall one compares a strict against a loose parse of the SAME ' +
+      'log, so it can only fire over finding-shaped lines the critic PRINTED — which it does on ' +
+      'its failing path, its --check clean path emitting one summary line and no finding. The ' +
+      'zero-divergence one requires a non-zero rc, and that is the REFRESH run\'s rc, not CI\'s: ' +
+      'ci.yml runs the task itself, so an ENVIRONMENTAL failure of the refresh invocation (an ' +
+      'empty log, a missing task, an OOM kill — the three that disjunct exists for) counts a ' +
+      'decision while CI is green. That is the OVER-count direction, which blocks a merge rather ' +
+      'than allowing one, so it does not reopen go-to-k/cdkd#3005 — but it is stated because this ' +
+      'file refuses over-claims, and \'both disjuncts need the critic to be red\' was one.',
   },
 };
 
@@ -268,7 +274,7 @@ const UNCOVERED_TERMS: Record<string, string> = {
     'check fails to load it. So the exemption is needed for both producers. Accepted rather',
     'than mechanised because its arms break the refresh run as a whole rather than describing',
     'anything about a schema: git absent, a broken repository, or the 32 MB `maxBuffer` — which the',
-    'corpus is three orders of magnitude short of (largest fixture 68,594 B over 135 files,',
+    'corpus is three orders of magnitude short of (largest fixture 68,594 B over the 134 files the diagnosis reads,',
     'measured 2026-09-12). It is also loud where it happens: the diagnosis renders the unreadable',
     'fixtures by name in the PR body it is counted in. Recorded on go-to-k/cdkd#3005 as the',
     'residual of closing it.',
@@ -304,114 +310,88 @@ const UNCOVERED_TERMS: Record<string, string> = {
 //    generator, not this relation.
 
 /**
- * How many terms one destructuring LINE declares.
- *
- * Extracted, and fenced by a table below, because the line count alone only
- * bounds the name count while each line carries ONE term: `matchAll` with `/gm`
- * yields at most one match per line, so `removed, divergences` parses as
- * `removed` and the two counts still agree — a seventh term added beside a
- * sixth vanishes with every floor and anchor passing. Formatting makes that
- * unreachable today, which is a property of the formatter, not of this fence.
- *
- * It is a separate function with its own cases because two earlier spellings
- * were both wrong, in opposite directions, and an end-to-end probe could not
- * tell them apart:
- *
- *   - counting COMMAS red `failedChecks = ['a', 'b'],` (valid) and passed
- *     `removed, divergences` (a hidden term);
- *   - anchoring on `(^|,)…(?:=|,|$)` CONSUMED the separating comma, so two bare
- *     terms could not both match and `removed, schemaGaps,` counted 1.
- *
- * So: strip bracketed, braced, parenthesised and quoted spans (a default must
- * not contribute a position), then count identifiers in declaration position
- * with the separator in a non-consuming alternation.
- *
- * Three position shapes are counted, not one, and the two extra ones were
- * measured rather than imagined. A REST element and a KEY position (a computed
- * or quoted key, which the strip reduces to a bare `:`) are terms that
- * `names` cannot read — so on a shared line they made BOTH arms silent:
- * `pendingSdkBump = [], [k]: schemaGaps` read 1 declaration and 1 name against
- * 1 line, and a genuine seventh term escaped classification with every floor
- * and anchor green. An earlier revision of this paragraph asserted such a term
- * was "caught by the `names.length === lines.length` arm instead"; that is a
- * conjunction no shape satisfies, since the arm only fires when the exotic term
- * is ALONE on its line (names 0 against lines 1).
- *
- * BOUND, stated because a fence that over-claims is what this file exists to
- * prevent. The strip is a regex, not a parser, and an earlier revision called
- * that residual "a FALSE RED, the safe direction" — which was only half of it:
- * the same imprecision produced a false GREEN, measured, on a computed key
- * whose expression carries its own `]` or `)`. So a line the strip did not
- * reduce to a delimiter-free form is now REFUSED as 2 rather than counted, and
- * what is left is false reds only: a nested brace default
- * (`{ a: { b: 1 }, c: 2 }`) and a regex-literal default, neither of which
- * `countDecisions` has. No false green is known, which is a different claim
- * from none existing — the honest statement is that the corpus this was
- * executed against found none.
- */
-const declarationCount = (line: string): number => {
-  const bare = line.replace(/\[[^\]]*\]|\{[^}]*\}|\([^)]*\)|'[^']*'|"[^"]*"|`[^`]*`/g, '');
-  // A surviving delimiter means the strip did not reach a parse, so the line is
-  // REFUSED rather than counted. That is what closes the last measured false
-  // GREEN: `[K[0]]: schemaGaps` leaves `, ]: schemaGaps` behind — the inner `]`
-  // ends the strip early and then sits between the comma and the colon, so
-  // every position pattern misses it and `names` cannot read the term either.
-  // Refusing costs only a false red on a shape `countDecisions` does not have.
-  if (/[[\]{}()]/.test(bare)) return 2;
-  return (
-    (bare.match(/(?:^|,)\s*(?:\.\.\.)?[A-Za-z_$][\w$]*/g) ?? []).length +
-    // A rest element and a key position are terms `names` cannot read, so they
-    // are counted HERE or they are counted nowhere.
-    (bare.match(/(?:^|,)\s*\.\.\./g) ?? []).length +
-    (bare.match(/(?:^|,)\s*:/g) ?? []).length
-  );
-};
-
-/**
- * The decision terms, read off the SHIPPED function rather than listed.
+ * The decision terms, parsed out of the SHIPPED `countDecisions` with the
+ * TypeScript compiler API.
  *
  * `countDecisions` destructures its input, so the parameter names ARE the
  * terms. A seventh term added there lands in this set with no entry in
  * `CI_COVERAGE`'s `covers` and fails — which is the point: a decision class
  * nothing reddens is the exact defect #3005 reports.
+ *
+ * WHY A PARSER, and why that is not over-engineering. This derivation was a
+ * regex over the destructuring text, and it was wrong SIX times: counting
+ * commas (false red on a default holding one, false green on `a, b`); a
+ * position pattern that consumed its own separator; one that missed a rest
+ * element and a key position; one that missed a computed key carrying its own
+ * `]`; a whole-line refusal on surviving brackets that still missed a
+ * surviving QUOTE, where the strip had swallowed the separating comma. Each
+ * fix was correct on the shape the previous one got wrong, which is the
+ * signature `.claude/skills/work-issues/references/implement.md` names: three
+ * spellings in three rounds means change instrument, parse for real, and
+ * REFUSE what the model does not cover.
+ *
+ * So it parses, and refuses. A REST element or a COMPUTED key is reported as a
+ * refusal rather than skipped: both mean a decision term can exist that this
+ * fence cannot name — a rest element lets one arrive with no signature change
+ * at all — and a fence that silently classifies a subset is the defect this
+ * file is about, one level up.
  */
 const decisionTerms = (): string[] => {
-  const source = countDecisions.toString();
-  const destructuring = source.match(/\(\s*\{([\s\S]*?)\}\s*\)/);
-  expect(
-    destructuring,
-    'countDecisions no longer destructures its input — the term list cannot be derived from it, ' +
-      'so this fence would silently stop watching for a new decision class'
-  ).not.toBeNull();
-  // `[A-Za-z_$][\w$]*`, not `[A-Za-z][A-Za-z0-9]*`: the narrower class cannot
-  // match `schema_gaps` or `$extra` even partially, so such a term yielded
-  // NOTHING and left the population unchanged — a seventh term escaping
-  // classification while the floor and the anchors below both still passed.
-  const lines = destructuring![1]!
-    .split('\n')
-    .map((l) => l.replace(/\/\/.*$/, '').trim())
-    .filter((l) => l.length > 0);
-  const names = [...destructuring![1]!.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*(?:=|,|$)/gm)].map(
-    (m) => m[1]!
+  const source = `const __countDecisions = ${countDecisions.toString()};`;
+  const sourceFile = ts.createSourceFile(
+    'count-decisions.js',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS
   );
-  // One name per declaration line. A parameter this pattern cannot read is the
-  // one that would slip through unclassified, so an under-count is reported
-  // rather than absorbed — the same reasoning as the `run_check` mention count.
+  const diagnostics = (sourceFile as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics;
   expect(
-    names.length,
-    `countDecisions destructures ${lines.length} line(s) but only ${names.length} parsed as a ` +
-      `term name: ${JSON.stringify(lines)}. A term this pattern cannot read leaves the ` +
-      'classification below with nothing to fail on.'
-  ).toBe(lines.length);
-  // ...and the count above only bounds the names while each line carries ONE
-  // term, which is `declarationCount`'s subject — its docblock has the why.
-  for (const line of lines) {
-    expect(
-      declarationCount(line),
-      `countDecisions declares more than one term on the line ${JSON.stringify(line)}; the ` +
-        'per-line scan reads only the first, so a term there would be silently dropped'
-    ).toBeLessThanOrEqual(1);
+    diagnostics?.length ?? 0,
+    'countDecisions did not parse — the term list cannot be derived, so this fence would ' +
+      'silently stop watching for a new decision class'
+  ).toBe(0);
+
+  let parameters: ts.NodeArray<ts.ParameterDeclaration> | undefined;
+  const walk = (node: ts.Node): void => {
+    if (
+      parameters === undefined &&
+      (ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) || ts.isArrowFunction(node))
+    ) {
+      parameters = node.parameters;
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(sourceFile);
+  expect(parameters?.length ?? 0, 'countDecisions declares no parameters').toBeGreaterThan(0);
+
+  const binding = parameters![0]!.name;
+  expect(
+    ts.isObjectBindingPattern(binding),
+    'countDecisions no longer destructures its input — the parameter names are the term list, ' +
+      'so this fence has nothing to derive from'
+  ).toBe(true);
+
+  const names: string[] = [];
+  const refusals: string[] = [];
+  for (const element of (binding as ts.ObjectBindingPattern).elements) {
+    if (element.dotDotDotToken) {
+      refusals.push('a rest element');
+      continue;
+    }
+    const key = element.propertyName ?? element.name;
+    if (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)) {
+      names.push(key.text);
+    } else {
+      refusals.push(`a computed key (${key.getText(sourceFile)})`);
+    }
   }
+  expect(
+    refusals,
+    `countDecisions destructures ${JSON.stringify(refusals)} — a term this fence cannot NAME is ` +
+      'one it cannot classify, and a rest element lets a new one arrive with no signature ' +
+      'change at all. Name the term, or widen this derivation deliberately.'
+  ).toEqual([]);
   return names;
 };
 
@@ -449,57 +429,82 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(graded).toContain('audit:nested-key-coverage:check');
   });
 
-  it('counts declarations per line in both directions — the guard itself', () => {
-    // A table, not an end-to-end probe: the guard has been wrong twice and the
-    // two wrong spellings failed on DIFFERENT shapes, which a single mutation
-    // of countDecisions cannot distinguish. Every real line must read 1 (or a
-    // correct file reds), and every hidden-term shape must read more than 1 (or
-    // a seventh term escapes).
-    const declaresOne = [
-      '  removed,',
-      '  divergences,',
-      '  nestedKeyUnparsed = false,',
-      '  failedChecks = [],',
-      '  unreadable = [],',
-      '  pendingSdkBump = [],',
-      // Valid lines whose DEFAULT contains a separator — the false-red the
-      // comma count produced.
-      "  failedChecks = ['a', 'b'],",
-      '  opts = { a: 1, b: 2 },',
-      '  fn = (a, b) => a,',
-      // A template literal IS a quoted span; it was not in the strip and read
-      // as 2. The flat object row above passes only because it is flat — a
-      // NESTED one still reads 2, which the docblock's BOUND states rather
-      // than this table pretending otherwise.
-      '  tag = `a, b`,',
-    ];
-    const hidesATerm = [
-      '  removed, divergences',
-      '  removed, divergences,',
-      // The spelling the consuming-separator version read as one.
-      '  removed, schemaGaps,',
-      '  pendingSdkBump = [], schemaGaps = []',
-      '  a, b, c,',
-      // A second term `names` cannot read either — these made BOTH arms silent
-      // until the rest and key positions were counted here.
-      '  pendingSdkBump = [], ...rest',
-      '  pendingSdkBump = [], [k]: schemaGaps',
-      "  pendingSdkBump = [], 'schema-gaps': schemaGaps",
-      // A computed key carrying its OWN delimiter — the shape that ended the
-      // strip early and then hid between the comma and the colon, so every
-      // position pattern missed it. Caught by the refusal, not by a position.
-      '  pendingSdkBump = [], [K[0]]: schemaGaps',
-      '  pendingSdkBump = [], [f(a[0])]: schemaGaps',
-    ];
-    for (const line of declaresOne) {
-      expect(declarationCount(line), `false red on valid line ${JSON.stringify(line)}`).toBe(1);
-    }
-    for (const line of hidesATerm) {
+  it('reads every destructuring shape, and REFUSES the two it cannot name', () => {
+    // The derivation's own cases, against the parser rather than the shipped
+    // `countDecisions` — six regex spellings each got a different shape wrong,
+    // and an end-to-end mutation could not tell them apart because each was
+    // correct on the shape the previous one missed. These are those shapes.
+    //
+    // The helper re-runs `decisionTerms`'s extraction over a synthetic function
+    // rather than restating it: a second copy of the walk would be a seventh
+    // spelling to get wrong.
+    const extract = (destructuring: string) => {
+      const sourceFile = ts.createSourceFile(
+        'probe.js',
+        `const __f = function ({ ${destructuring} }) { return 1; };`,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.JS
+      );
       expect(
-        declarationCount(line),
-        `a term hidden on ${JSON.stringify(line)} would not be reported`
-      ).toBeGreaterThan(1);
+        (sourceFile as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics?.length ?? 0,
+        `the probe source is not valid JS: ${destructuring}`
+      ).toBe(0);
+      let parameters: ts.NodeArray<ts.ParameterDeclaration> | undefined;
+      const walk = (node: ts.Node): void => {
+        if (parameters === undefined && ts.isFunctionExpression(node)) parameters = node.parameters;
+        ts.forEachChild(node, walk);
+      };
+      walk(sourceFile);
+      const binding = parameters![0]!.name as ts.ObjectBindingPattern;
+      const names: string[] = [];
+      const refusals: string[] = [];
+      for (const element of binding.elements) {
+        if (element.dotDotDotToken) {
+          refusals.push('rest');
+          continue;
+        }
+        const key = element.propertyName ?? element.name;
+        if (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)) {
+          names.push(key.text);
+        } else {
+          refusals.push('computed');
+        }
+      }
+      return { names, refusals };
+    };
+
+    // Shapes every regex spelling had to be taught one at a time, each read
+    // correctly here with no rule of its own.
+    const reads: Array<[string, string[]]> = [
+      ['removed, divergences', ['removed', 'divergences']],
+      ['removed, nestedKeyUnparsed = false', ['removed', 'nestedKeyUnparsed']],
+      // Defaults that carry a separator — the false reds the comma count and
+      // the bracket refusal produced.
+      ["removed, failedChecks = ['a', 'b']", ['removed', 'failedChecks']],
+      ['removed, opts = { a: { b: 1 }, c: 2 }', ['removed', 'opts']],
+      ['removed, fn = (a, b) => a', ['removed', 'fn']],
+      ['removed, tag = `a, b`', ['removed', 'tag']],
+      ['removed, nested = [[1], [2]]', ['removed', 'nested']],
+      // An ODD quote inside a default: the strip swallowed the separating
+      // comma and the second term vanished from every arm.
+      ["removed, sepChar = 'it\\'s', schemaGaps = 'x'", ['removed', 'sepChar', 'schemaGaps']],
+      // A quoted key names a term; a rename names the PROPERTY, not the local.
+      ["removed, 'schema-gaps': schemaGaps", ['removed', 'schema-gaps']],
+      ['removed: r, divergences', ['removed', 'divergences']],
+    ];
+    for (const [destructuring, expected] of reads) {
+      const { names, refusals } = extract(destructuring);
+      expect(names, `misread: ${destructuring}`).toEqual(expected);
+      expect(refusals, `wrongly refused: ${destructuring}`).toEqual([]);
     }
+
+    // ...and the two shapes it must REFUSE rather than silently classify a
+    // subset of. A computed key was the shape that escaped every position
+    // pattern; a rest element lets a term arrive with no signature change.
+    expect(extract('removed, [K[0]]: schemaGaps').refusals).toEqual(['computed']);
+    expect(extract('removed, [f(a[0])]: schemaGaps').refusals).toEqual(['computed']);
+    expect(extract('removed, ...rest').refusals).toEqual(['rest']);
   });
 
   it('derives a real decision-term population from the shipped countDecisions', () => {
