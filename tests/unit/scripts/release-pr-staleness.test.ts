@@ -1,4 +1,12 @@
-import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import {
+  readFileSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  mkdirSync,
+  chmodSync,
+  existsSync,
+} from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -18,8 +26,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
  * release is unchanged and the PR is left on its original base).
  *
  * Why this suite EXECUTES the workflow's shell against real git repositories
- * and a stubbed `gh`: the whole check is six git/gh invocations, each of which
- * rots silently. Drop the `!` from `merge-base`, compare against the wrong ref,
+ * and a stubbed `gh`: the whole check is a chain of git/gh invocations, each of
+ * which rots silently. Drop the `!` from `merge-base`, compare against the wrong ref,
  * invert the `armed` test — and it stops disarming anything while still exiting
  * 0 on every run, which is indistinguishable from "nothing was stale". A suite
  * that pattern-matched the YAML would certify that state.
@@ -35,8 +43,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
  * plus the failure modes that are NOT in the table and were each a live defect
  * found in review: a fork PR decoying the lookup, 30+ PRs evicting the real one
  * off `gh pr list`'s page, two same-repo matches, an unreadable auto-merge
- * state, a head branch that cannot be read, and `--disable-auto` losing the
- * race it polices.
+ * state, a head branch that cannot be read, `gh` naming no head branch at all,
+ * a head branch name carrying shell metacharacters, and `--disable-auto`
+ * losing the race it polices.
+ *
+ * Deliberately NOT stated as a count. Three successive revisions of this
+ * docblock gave a number ("six invocations", "the ten", "those eight") and all
+ * three were wrong, because nothing re-checks a number in prose. The `describe`
+ * block at the bottom covers the YAML wiring rather than the shell, so any
+ * count taken off one half was going to be wrong anyway.
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -172,6 +187,12 @@ describe('release-pr-staleness', () => {
      * what a `gh` that exits 0 without the field would produce.
      */
     armedAnswer?: string;
+    /**
+     * Make the `headRefName` read answer with nothing — a `gh` that exits 0
+     * without the field. Distinct from `headRefMissing`, where `gh` answers
+     * fine and the FETCH is what fails.
+     */
+    headRefAnswerEmpty?: boolean;
   }): { cwd: string; ghLog: string; tip: string; binDir: string } {
     const id = `f${seq++}`;
     const origin = join(scratch, `${id}-origin`);
@@ -223,8 +244,9 @@ describe('release-pr-staleness', () => {
     // The PR lookup runs the WORKFLOW'S OWN `--jq` expression through real `jq`
     // against a canned PR list, rather than returning a canned answer. The
     // filter is the thing under test — restricting to same-repo PRs is what
-    // stops a fork decoy named `release-please--…` becoming the `[0]` this
-    // picks — and a stub that answered `42` regardless would certify a filter
+    // keeps a fork decoy named `release-please--…` out of the match set, so
+    // the real PR is the only thing counted — and a stub that answered `42`
+    // regardless would certify a filter
     // that had been deleted. (An earlier cut returned the raw JSON array,
     // ignoring `--jq` altogether; that is the same class one step further out.)
     const openPrs =
@@ -252,29 +274,39 @@ describe('release-pr-staleness', () => {
       .slice(0, 30)
       .map((o) => ({ number: o.number, headRefName: o.headRef, isCrossRepository: o.fork }));
     const ghStub = `#!/usr/bin/env bash
-echo "$*" >> ${JSON.stringify(ghLog)}
-# Pull the --jq expression out of argv the way real gh consumes it.
+echo "$*" >> "$GH_LOG"
+# Pull the --jq expression, and the PR number, out of argv the way real gh
+# consumes them.
 filter=""
+prnum=""
 prev=""
 for a in "$@"; do
   if [ "$prev" = "--jq" ]; then filter="$a"; fi
+  case "$prev" in view | merge | comment) prnum="$a" ;; esac
   prev="$a"
 done
 case "$*" in
   *"api repos/"*pulls*) jq -r "$filter" "$(dirname "$0")/rest.json" ;;
   *"pr list"*)          jq -r "$filter" "$(dirname "$0")/ghlist.json" ;;
-  *autoMergeRequest*) printf '%s' ${JSON.stringify(opts.armedAnswer ?? (opts.armed ? 'yes' : 'no'))} ;;
-  *headRefName*)      printf '%s' ${JSON.stringify(RELEASE_BRANCH)} ;;
+  *autoMergeRequest*) cat "$(dirname "$0")/armed.txt" ;;
+  # The head ref of the PR the shell ACTUALLY matched, read back out of the
+  # same canned list — not a constant. A constant meant no case could drive an
+  # attacker-shaped branch name into \`git fetch\`, the one place a head ref
+  # reaches a shell, so the earlier hardening protected the STUB and left the
+  # workflow path uncovered.
+  *headRefName*)      ${opts.headRefAnswerEmpty ? ':' : `jq -r --arg n "$prnum" '.[] | select(.number == ($n | tonumber)) | .head.ref' "$(dirname "$0")/rest.json"`} ;;
   *"--disable-auto"*) exit ${opts.disarmFails ? 1 : 0} ;;
   *)                  : ;;
 esac
 `;
-    // The payloads go in FILES beside the stub, never interpolated into the
-    // script. Embedding them put JSON inside a bash double-quoted string, so a
-    // `$` or backtick in a head ref would EXPAND — in a suite whose whole point
-    // is modelling attacker-chosen branch names.
+    // Every payload goes in a FILE beside the stub, or an env var — never
+    // interpolated into the script. Embedding them put JSON inside a bash
+    // double-quoted string, so a `$` or backtick in a head ref (or in the
+    // canned `armed` answer, or the log path) would EXPAND — in a suite whose
+    // whole point is modelling attacker-chosen branch names.
     writeFileSync(join(binDir, 'rest.json'), JSON.stringify(restPrs));
     writeFileSync(join(binDir, 'ghlist.json'), JSON.stringify(ghListPrs));
+    writeFileSync(join(binDir, 'armed.txt'), opts.armedAnswer ?? (opts.armed ? 'yes' : 'no'));
     const ghPath = join(binDir, 'gh');
     writeFileSync(ghPath, ghStub);
     chmodSync(ghPath, 0o755);
@@ -294,6 +326,7 @@ esac
           ...process.env,
           ...GIT_ENV,
           PATH: `${stubDir}:${process.env['PATH'] ?? ''}`,
+          GH_LOG: fx.ghLog,
           GH_TOKEN: 'x',
           REPO: 'go-to-k/cdkd',
         },
@@ -378,13 +411,15 @@ esac
   });
 
   it('ignores a FORK PR whose head branch carries the release prefix', () => {
-    // `gh pr list` includes fork PRs and orders newest-first, and a fork's head
-    // branch NAME is attacker-chosen. Without the same-repo filter, a decoy
-    // named `release-please--branches--main` becomes the `[0]` the shell picks:
-    // `armed` is then read off the DECOY (not armed), the run exits 0 saying
-    // "not armed", and the real armed, stale release PR is never checked and
-    // merges. Pushing a branch to THIS repo needs write access, which is what
-    // the filter buys.
+    // Open PRs include fork PRs, and a fork's head branch NAME is
+    // attacker-chosen. Without the same-repo filter, a decoy named
+    // `release-please--branches--main` joins the match set, so `count` is 2 and
+    // the run ends in the "refusing to guess which one" refusal — the real
+    // stale PR is never disarmed, and one PR anyone can open reds this guard on
+    // every run. Pushing a branch to THIS repo needs write access, which is
+    // what the filter buys. (This comment described an `[0]`-picks-the-decoy
+    // silent pass for two revisions. There is no `[0]`, and the `count != 1`
+    // refusal landed in the same commit as the filter; measured below.)
     const fx = fixture({
       stale: true,
       armed: true,
@@ -407,9 +442,10 @@ esac
     // that one page. So ~30 fork PRs — attacker-chosen, no privilege — evict
     // the release PR from the page, the filter returns nothing, and the run
     // exits 0 reporting "no standing release PR" while the real armed stale PR
-    // merges. Same suppression as the decoy above, reached by TRUNCATION
-    // instead of ordering, and it fires benignly on a dependabot burst too.
-    // The shell uses `gh api --paginate` for exactly this reason.
+    // merges. This is the SILENT one of the two fork reaches: the decoy above
+    // ends in a loud `count != 1` refusal, while truncation leaves nothing to
+    // count. It fires benignly on a dependabot burst too. The shell uses
+    // `gh api --paginate` for exactly this reason.
     const noise = Array.from({ length: 40 }, (_, i) => ({
       number: 1000 + i,
       headRef: `feat/noise-${i}`,
@@ -473,6 +509,64 @@ esac
     const r = run(fixture({ stale: true, armed: true, headRefMissing: true }));
     expect(r.status).not.toBe(0);
     expect(r.output).toContain('could not read the head branch');
+    expect(disarmed(r)).toBe(false);
+  });
+
+  it('fails closed when gh returns no head branch name', () => {
+    // Distinct from the case above: there the fetch fails, here `gh` answered
+    // nothing. Without the guard the empty value reaches `git fetch origin ""`
+    // and is reported as a branch that "may have been deleted" — a
+    // misdiagnosis pointing at the repo when the fault was the CLI. The guard
+    // is `git check-ref-format`, an ALLOWLIST like the `armed` read's, rather
+    // than a `-z` testing one bad shape: it also rejects whitespace-only and
+    // leading-dash answers.
+    const r = run(
+      fixture({
+        stale: true,
+        armed: true,
+        openPrs: [{ number: 7, headRef: RELEASE_BRANCH, fork: false }],
+        headRefAnswerEmpty: true,
+      })
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.output).toContain('no usable head branch name');
+    expect(disarmed(r)).toBe(false);
+  });
+
+  it('does not evaluate a head branch name that carries shell metacharacters', () => {
+    // The one place a head ref reaches a shell is `git fetch … "${head_ref}"`.
+    //
+    // The payload is `$(>pwned)` and NOT `$(touch pwned)`, which is what this
+    // case first used: `git check-ref-format --branch` REJECTS the latter (it
+    // contains a space), so it modelled a value GitHub can never hand back,
+    // while `$(>pwned)` is ref-format VALID and still writes the file under a
+    // parser. Both measured.
+    //
+    // What this case does NOT catch, measured rather than assumed: dropping the
+    // quotes changes nothing here. Two separate reasons, and only the second is
+    // load-bearing — bash does not re-scan a variable's VALUE for command
+    // substitution, AND unquoted expansion still word-splits and globs, which
+    // this payload would trigger if a ref could carry it. It cannot:
+    // `check-ref-format` rejects space, `*`, `?`, `[`, `:`, `\`, `~` and `^`,
+    // and the workflow now runs that same check before the fetch.
+    //
+    // What it DOES catch is the rewrite that makes the value re-enter the
+    // parser: replacing the line with `eval "git fetch … $head_ref"` reds this
+    // case and ONLY this case. The probe is the side effect — if the `$(…)`
+    // ever runs, the file exists. The run itself is expected to fail, since no
+    // such branch exists to fetch.
+    const hostile = `${RELEASE_BRANCH}$(>pwned)`;
+    const fx = fixture({
+      stale: true,
+      armed: true,
+      openPrs: [{ number: 42, headRef: hostile, fork: false }],
+    });
+    const r = run(fx);
+    expect(r.status).not.toBe(0);
+    // Pins WHICH failure. Without it, a future change that exits 1 before ever
+    // reaching the fetch satisfies both assertions below vacuously.
+    expect(r.output).toContain('could not read the head branch');
+    expect(existsSync(join(fx.cwd, 'pwned'))).toBe(false);
     expect(disarmed(r)).toBe(false);
   });
 
