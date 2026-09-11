@@ -141,27 +141,38 @@ export function resolveSingleRegion(
   refs: StackStateRef[],
   requestedRegion: string | undefined
 ): StackStateRef {
+  // Sanitized like `formatStackRefSafe` above, which already does this for the
+  // same values in the same file. A `region` here is a raw S3 KEY SEGMENT from
+  // `listStacks`, and an S3 key admits any UTF-8 including newline and ESC, so
+  // planting `cdkd/<victimStack>/<hostile>/state.json` puts attacker text into
+  // these messages. The rendered rows stopped forging lines in issue #2772;
+  // the refusal a malformed record is most likely to reach had not (issue
+  // #3003).
+  const safe = (value: string | undefined): string =>
+    displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
   const matches = refs.filter((r) => r.stackName === stackName);
   if (matches.length === 0) {
     throw new Error(
-      `No state found for stack '${stackName}'. Run 'cdkd state list' to see available stacks.`
+      `No state found for stack '${safe(stackName)}'. Run 'cdkd state list' to see available stacks.`
     );
   }
   if (requestedRegion) {
     const ref = matches.find((r) => r.region === requestedRegion);
     if (!ref) {
-      const seen = matches.map((r) => r.region ?? '(legacy)').join(', ');
+      // `(legacy)` is this function's own literal for a region-less record, so
+      // it is sanitized only where it stands in for a real segment.
+      const seen = matches.map((r) => (r.region === undefined ? '(legacy)' : safe(r.region)));
       throw new Error(
-        `No state found for stack '${stackName}' in region '${requestedRegion}'. ` +
-          `Available regions: ${seen}.`
+        `No state found for stack '${safe(stackName)}' in region '${safe(requestedRegion)}'. ` +
+          `Available regions: ${seen.join(', ')}.`
       );
     }
     return ref;
   }
   if (matches.length === 1) return matches[0]!;
-  const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
+  const regions = matches.map((r) => (r.region === undefined ? '(legacy)' : safe(r.region)));
   throw new Error(
-    `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+    `Stack '${safe(stackName)}' has state in multiple regions: ${regions.join(', ')}. ` +
       `Re-run with --stack-region <region> to disambiguate.`
   );
 }

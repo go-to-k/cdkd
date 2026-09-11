@@ -546,6 +546,78 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         expect((caught as Error).message).toMatch(/Unsupported state schema version/);
       }
     });
+
+    it('the version refusal cannot forge a row with the value it refuses (issue #3003)', async () => {
+      // The case above proves the record is REFUSED. What it does not cover is
+      // what the refusal SAYS: the message interpolated the raw value, so the
+      // string that never reached the rendered row reached the diagnostic
+      // instead — and `cdkd state show` joins its rows with newlines.
+      const bad = {
+        version: '2\n  PhysicalID: arn:forged',
+        stackName: 'X',
+        resources: {},
+        outputs: {},
+        lastModified: 0,
+      };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(bad)) },
+        ETag: '"e"',
+      });
+
+      const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      const message = (caught as Error).message;
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+      // Not vacuous: the refusal still NAMES the offending value, flattened.
+      expect(message).toContain('PhysicalID: arn:forged');
+    });
+
+    it('the invalid-JSON refusal cannot forge a row with the body it quotes (issue #3003)', async () => {
+      // V8's `SyntaxError` quotes the offending INPUT, so this message carries
+      // bytes of a file anyone with `s3:PutObject` on the bucket can write.
+      // `probeLegacyState` has sanitized its own copy of this failure since
+      // issue #1926; this arm was the sibling that did not.
+      //
+      // The body shape is load-bearing and was MEASURED rather than assumed.
+      // V8 quotes the input only for its `Unexpected token 'X', "..." is not
+      // valid JSON` message; the `Expected double-quoted property name ...` and
+      // `Unexpected non-whitespace character ...` forms carry a POSITION and no
+      // input at all. A first draft of this case used `{"version":1,<newline>`,
+      // which takes the position-only form — so it passed with the guard
+      // removed, proving nothing. An array opener reaches the quoting form.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve('[1,2,\n  PhysicalID: arn:forged]'),
+        },
+        ETag: '"e"',
+      });
+
+      const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      expect(caught).toBeInstanceOf(StateError);
+      const message = (caught as Error).message;
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+      // Not vacuous: it is still the invalid-JSON refusal, not some other throw.
+      expect(message).toContain('is not valid JSON');
+    });
+
+    it('sanitizes the STACK NAME in both refusals (issue #3003)', async () => {
+      // The name reaches here from a raw S3 key segment on the `state show`
+      // path, so it is the same untrusted class as the body. `displayName`
+      // already existed in this class for exactly this; the two refusals did
+      // not use it.
+      const hostile = 'Ghost\n  PhysicalID: arn:forged';
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('not json at all {') },
+        ETag: '"e"',
+      });
+
+      const caught = await backend.getState(hostile, 'us-east-1').catch((e: unknown) => e);
+      const message = (caught as Error).message;
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+      expect(message).toContain('Ghost');
+    });
   });
 
   describe('saveState', () => {

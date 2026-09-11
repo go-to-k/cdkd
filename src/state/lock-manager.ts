@@ -604,8 +604,16 @@ export class LockManager {
         throw error;
       }
 
+      // Sanitized like the display fields above, and for a sharper reason: the
+      // failure that reaches here is `JSON.parse` on the lock body, and V8's
+      // `SyntaxError` quotes the offending INPUT — so this message carries
+      // bytes of a file anyone with `s3:PutObject` on the bucket can write.
+      // `cdkd state show` surfaces it, and its rows are joined by newlines
+      // (issue #3003).
+      const detail = error instanceof Error ? error.message : String(error);
       throw new LockError(
-        `Failed to get lock info for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to get lock info for stack '${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}': ` +
+          `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`,
         error instanceof Error ? error : undefined
       );
     }

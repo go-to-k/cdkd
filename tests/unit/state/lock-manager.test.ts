@@ -417,6 +417,55 @@ describe('LockManager', () => {
 
       expect(result).toBeNull();
     });
+
+    it('a malformed lock body cannot forge a row through the thrown message (issue #3003)', async () => {
+      // The case above sanitizes the lock's DISPLAY fields at the source. This
+      // is the other half: when the body does not parse at all, there are no
+      // fields to sanitize and the catch wraps V8's `SyntaxError` — which
+      // quotes the offending INPUT, so a `lock.json` anyone with
+      // `s3:PutObject` can write reaches the terminal through the error.
+      // `cdkd state show` surfaces this and joins its rows with newlines.
+      //
+      // The body takes the array-opener shape deliberately: V8 quotes the
+      // input only for `Unexpected token 'X', "..." is not valid JSON`, while
+      // an object-shaped truncation yields a position and no input, which
+      // would make this case pass with the guard removed.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve('[1,2,\n  PhysicalID: arn:forged]'),
+        },
+      });
+
+      const caught = await lockManager
+        .getLockInfo('test-stack', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+      // Not vacuous: it is still the lock-read failure carrying the parser's
+      // own words, flattened rather than dropped.
+      expect(message).toContain('Failed to get lock info');
+      expect(message).toContain('PhysicalID');
+    });
+
+    it('sanitizes the STACK NAME in the lock-read failure (issue #3003)', async () => {
+      // The name reaches here from an S3 key segment on the `state show` path,
+      // so it is the same untrusted class as the body.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve('[1,2,\n  PhysicalID: arn:forged]'),
+        },
+      });
+
+      const caught = await lockManager
+        .getLockInfo('Ghost\n  PhysicalID: arn:forged', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('Ghost');
+    });
   });
 
   describe('isLocked', () => {

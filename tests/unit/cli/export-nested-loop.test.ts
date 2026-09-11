@@ -2213,3 +2213,73 @@ describe('runPerStackImportLoop (issue #1791) — deps.ec2Client hand-off', () =
     expect(calls.filter((c) => c.name === 'CreateChangeSet')).toEqual([]);
   });
 });
+
+describe('buildCdkdStateStackTree refusals cannot forge a row (issue #3003)', () => {
+  // Reached by `cdkd state show --show-nested`. Its untrusted input is a
+  // resources KEY of the record body — an unchecked cast, and half of the
+  // child stack name the walker derives. CloudFormation constrains a logical
+  // id, but nothing enforces that on a record read back from S3, which is the
+  // same argument that closed the rendered rows in issue #2772.
+  const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+  const HOSTILE_ID = 'Child\n  PhysicalID: arn:forged';
+
+  function stateWith(overrides: Partial<StackState>): StackState {
+    return {
+      version: 6,
+      stackName: 'Parent',
+      region: 'us-east-1',
+      resources: {},
+      outputs: {},
+      lastModified: 0,
+      ...overrides,
+    } as StackState;
+  }
+
+  function nestedRow() {
+    return {
+      physicalId: 'arn:child',
+      resourceType: 'AWS::CloudFormation::Stack',
+      properties: {},
+    };
+  }
+
+  it('sanitizes the missing-child refusal', async () => {
+    const { backend } = buildStateBackend({
+      'Parent|us-east-1': stateWith({ resources: { [HOSTILE_ID]: nestedRow() } }),
+      // No child record, so the walker refuses.
+    });
+
+    const caught = await buildCdkdStateStackTree('Parent', 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+    const message = (caught as Error).message;
+
+    expect(message).not.toMatch(CONTROL);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    // Not vacuous: it is the missing-child refusal, still naming the child.
+    expect(message).toContain('missing nested-child');
+    expect(message).toContain('PhysicalID: arn:forged');
+  });
+
+  it('sanitizes the region-mismatch refusal', async () => {
+    const childName = `Parent~${HOSTILE_ID}`;
+    const { backend } = buildStateBackend({
+      'Parent|us-east-1': stateWith({ resources: { [HOSTILE_ID]: nestedRow() } }),
+      [`${childName}|us-east-1`]: stateWith({
+        stackName: childName,
+        // The mismatch the walker refuses on, carried by the RECORD rather
+        // than by the key — a second untrusted source on the same path.
+        region: 'eu-west-1\n  PhysicalID: arn:forged',
+      }),
+    });
+
+    const caught = await buildCdkdStateStackTree('Parent', 'us-east-1', backend).catch(
+      (e: unknown) => e
+    );
+    const message = (caught as Error).message;
+
+    expect(message).not.toMatch(CONTROL);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    expect(message).toContain('region mismatch');
+  });
+});

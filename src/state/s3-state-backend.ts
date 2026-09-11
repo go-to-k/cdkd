@@ -1330,18 +1330,36 @@ export class S3StateBackend {
     try {
       parsed = JSON.parse(bodyString) as StackState;
     } catch (error) {
+      // Sanitized for the same reason `probeLegacyState` sanitizes its own
+      // `JSON.parse` failure: V8's `SyntaxError` quotes the offending INPUT,
+      // so this message carries bytes of the state body — a file anyone with
+      // `s3:PutObject` on the bucket can write. `state show` joins its rows
+      // with newlines, so an unsanitized newline here forges a row in the very
+      // diagnostic a reader trusts most (issue #3003).
+      const raw = error instanceof Error ? error.message : String(error);
+      const detail = displaySafe(raw, { asciiOnly: true }) || UNRENDERABLE;
+      // ONE template literal, not a concatenation: `check-docs-error-strings`
+      // derives the producible message shapes from `src/` and cannot join two
+      // fragments, so splitting this line silently un-anchors the sample in
+      // `docs/troubleshooting.md` that quotes it.
       throw new StateError(
-        `State file for stack '${stackName}' is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        `State file for stack '${this.displayName(stackName)}' is not valid JSON: ${detail}`,
         error instanceof Error ? error : undefined
       );
     }
 
     const v = parsed.version;
     if (v !== undefined && !STATE_SCHEMA_VERSIONS_READABLE.includes(v)) {
+      // `displaySafe` rather than `String(v)`: the value is an unchecked cast
+      // and a string one reaches the terminal verbatim. It does NOT close the
+      // other half — `displaySafe` coerces with its own unguarded `String`, so
+      // a `v` that throws on coercion still throws, one frame further in. That
+      // is issue #2947's call, not this one's.
+      const shown = displaySafe(v, { asciiOnly: true }) || UNRENDERABLE;
       throw new StateError(
-        `Unsupported state schema version ${String(v)} for stack '${stackName}'. ` +
+        `Unsupported state schema version ${shown} for stack '${this.displayName(stackName)}'. ` +
           `This cdkd binary supports versions ${STATE_SCHEMA_VERSIONS_READABLE.join(', ')}. ` +
-          `Upgrade cdkd to a version that supports schema ${String(v)}.`
+          `Upgrade cdkd to a version that supports schema ${shown}.`
       );
     }
 

@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
+import { displaySafe } from '../../utils/display-safe.js';
+import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 import {
   CreateChangeSetCommand,
   DescribeChangeSetCommand,
@@ -3374,18 +3376,27 @@ async function walkCdkdStateStackTree(
   stateBackend: S3StateBackend
 ): Promise<CdkdStateStackTree> {
   const nestedChildren = new Map<string, CdkdStateStackTree>();
+  // `logicalId` is a KEY of the record body, so it is an unchecked cast and
+  // carries whatever a hand-edited or planted state file holds — and it is half
+  // of `childStackName`. `state show --show-nested` surfaces the refusals
+  // below, and its rows are joined by newlines, so an unsanitized one forges a
+  // row in the diagnostic (issue #3003). CloudFormation constrains a logical
+  // id, but nothing enforces that on a record read back from S3; the same
+  // argument closed the rendered rows in issue #2772.
+  const safe = (value: string | undefined): string =>
+    displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
   for (const [logicalId, resource] of Object.entries(state.resources)) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     const childStackName = `${stackName}~${logicalId}`;
     const childResult = await stateBackend.getState(childStackName, region);
     if (!childResult) {
       throw new Error(
-        `cdkd state is missing nested-child '${childStackName}' (${region}). ` +
-          `Parent stack '${stackName}' lists '${logicalId}' as an ` +
+        `cdkd state is missing nested-child '${safe(childStackName)}' (${safe(region)}). ` +
+          `Parent stack '${safe(stackName)}' lists '${safe(logicalId)}' as an ` +
           `${NESTED_STACK_RESOURCE_TYPE} row but no child state file exists at ` +
-          `'cdkd/${childStackName}/${region}/state.json'. The cdkd state tree is ` +
+          `'cdkd/${safe(childStackName)}/${safe(region)}/state.json'. The cdkd state tree is ` +
           `inconsistent — re-deploy the parent stack to refresh, or run ` +
-          `'cdkd state orphan ${stackName}' and re-import.`
+          `'cdkd state orphan ${safe(stackName)}' and re-import.`
       );
     }
     // Sanity-check the child's recorded region against the walker's
@@ -3398,9 +3409,9 @@ async function walkCdkdStateStackTree(
     // we cannot guarantee.
     if (childResult.state.region !== undefined && childResult.state.region !== region) {
       throw new Error(
-        `cdkd state region mismatch: nested-child '${childStackName}' has ` +
-          `state.region='${childResult.state.region}' but its parent '${stackName}' ` +
-          `is being walked against region='${region}'. AWS does not support ` +
+        `cdkd state region mismatch: nested-child '${safe(childStackName)}' has ` +
+          `state.region='${safe(childResult.state.region)}' but its parent '${safe(stackName)}' ` +
+          `is being walked against region='${safe(region)}'. AWS does not support ` +
           `cross-region nested stacks; the state tree appears corrupt — ` +
           `re-deploy the parent stack to refresh.`
       );
