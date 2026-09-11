@@ -36,6 +36,17 @@ import { dirname, join } from 'node:path';
  * so it is what every lane would do. Lower these numbers when a pass wins
  * bytes back; never raise them.
  *
+ * REMEDY 1 IS SPENT; REACH FOR 2 FIRST. Three passes cut rationale and the
+ * fourth found the real lever had never been touched: twelve Workflow-Rules
+ * bullets were DESCRIBING hooks that already block at the moment of the action
+ * and print the replacement command. Collapsing them to what a reader needs
+ * BEFORE the attempt took 4.9 KB, against ~1.9 KB for the whole
+ * evidence-cutting pass before it. Cutting rationale is asymptotic once the
+ * evidence is gone -- what is left after that is a DELIVERY question, not a
+ * length one: ask which mechanism already delivers the rule, and keep only the
+ * part a hook's block cannot deliver because the reader needs it before
+ * attempting anything.
+ *
  * WHAT TO DO WHEN THIS REDS -- in this order:
  *   1. Cut RATIONALE, not the directive. Dates, PR/issue numbers used as
  *      evidence, "measured 2026-xx-xx", incident retellings: move them to the
@@ -58,7 +69,7 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
 
-const MAX_CLAUDE_MD_BYTES = 45_066;
+const MAX_CLAUDE_MD_BYTES = 40_100;
 
 /**
  * `## Workflow Rules` is the section that grows: it took 62% of the file at
@@ -67,7 +78,7 @@ const MAX_CLAUDE_MD_BYTES = 45_066;
  * shrinking the reference sections, which are the parts a reader needs least
  * often but can least afford to lose.
  */
-const MAX_WORKFLOW_RULES_BYTES = 26_452;
+const MAX_WORKFLOW_RULES_BYTES = 21_515;
 
 /**
  * CLAUDE.md plus every rule file that loads ONLY with it (see
@@ -95,7 +106,7 @@ const MAX_WORKFLOW_RULES_BYTES = 26_452;
  * Whether the relocated text still LOADS is a different question, and the
  * injected-only sweep further down is what answers it.
  */
-const MAX_INJECTED_CONTEXT_BYTES = 63_200;
+const MAX_INJECTED_CONTEXT_BYTES = 58_200;
 
 /**
  * `## Workflow Rules` must keep at least this many top-level `- **` bullets.
