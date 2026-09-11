@@ -81,35 +81,33 @@ function gateShell(): string {
   return step?.run as string;
 }
 
-function bareCondition(condition: string): string {
-  return condition
-    .trim()
-    .replace(/^\$\{\{\s*/, '')
-    .replace(/\s*\}\}$/, '')
-    .trim();
-}
-
-/**
- * Whether a step `if:` is exempt from the unconditional-step rule.
+/*
+ * There is deliberately NO exemption for a step `if:`, and the two revisions
+ * that tried to write one are why.
  *
- * `always()` is exempt outright — the step runs on every path, so it can never
- * be the reason a job reported success having done nothing.
+ * The shape an exemption would serve is a diagnostic dump gated on `failure()`
+ * beside real work. `.github/workflows/ci.yml` contains ZERO step-level `if:`
+ * (measured), so every exemption written so far funded a shape this file does
+ * not have — while each one opened a real hole:
  *
- * `failure()` / `cancelled()` are exempt ONLY when the job carries at least one
- * UNCONDITIONAL step, and that qualifier is the whole point. A diagnostic dump
- * gated on `failure()` beside real work is correct code, and banning it refuses
- * a shape the sibling repos actually carry. But the SAME condition on a job's
- * only work — `- name: unit tests / if: failure() / run: vp test` — skips on
- * every green path while the job reports `success`, which is precisely the
- * vacuity ci-ok cannot see. An earlier cut exempted the two conditions
- * unconditionally and readmitted exactly that mutation.
+ *   1. `failure()` / `cancelled()` exempt outright. A job whose only work is
+ *      gated on `failure()` skips on every green path, reports `success`, and
+ *      ci-ok counts it.
+ *   2. Exempt when "some step is unconditional". Every job here opens with an
+ *      unconditional `uses: actions/checkout@…`, so the predicate is TRUE for
+ *      all five jobs by construction and (1) came straight back. Measured:
+ *      gating all 30 `run:` steps of `check-build-test` while leaving the two
+ *      `uses:` steps alone yielded zero offenders.
+ *
+ * Revision 2's probe only reddened because it gated the CHECKOUT too — the one
+ * arm the hole does not cover. A probe that varied the wrong thing.
+ *
+ * So: any step `if:` in a gated job is an offender, full stop. If a diagnostic
+ * dump ever lands here, the PR adding it adds an exemption keyed on a FLOOR of
+ * unconditional `run:` steps per job — a dump only ADDS a gated step, so a
+ * floor admits it while gating real work still reds — and proves it with a
+ * probe that leaves the checkout alone.
  */
-function isExemptStepCondition(condition: string, jobSteps: { if?: string }[]): boolean {
-  const bare = bareCondition(condition);
-  if (bare === 'always()') return true;
-  if (bare !== 'failure()' && bare !== 'cancelled()') return false;
-  return jobSteps.some((s) => s.if === undefined);
-}
 
 /**
  * Run the extracted step under bash with the two env vars the runner supplies,
@@ -215,11 +213,7 @@ describe('ci-ok — the single required status check', () => {
       }
       for (const s of j.steps ?? []) {
         const label = s.name ?? s.run?.split('\n')[0] ?? '<step>';
-        if (
-          s.if !== undefined &&
-          !ALLOWED_CONDITIONAL.has(name) &&
-          !isExemptStepCondition(s.if, j.steps ?? [])
-        ) {
+        if (s.if !== undefined && !ALLOWED_CONDITIONAL.has(name)) {
           offenders.push(`${name} > ${label} (step if:)`);
         }
         // NOT gated on ALLOWED_CONDITIONAL: a step-level `continue-on-error`
