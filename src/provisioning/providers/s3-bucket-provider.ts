@@ -121,6 +121,22 @@ function configItemId(item: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Whether the template asks for a bucket-level Object Lock.
+ *
+ * Shared on purpose by the two sites that must agree: `create()` passes
+ * `ObjectLockEnabledForBucket` to `CreateBucket` from it, and the create-path
+ * Object Lock skip records `{ ObjectLockEnabled: 'Enabled' }` from it. Spelled
+ * twice, the recorded value could claim a flag the bucket does not carry.
+ *
+ * Note the source: the BUCKET-level `ObjectLockEnabled`, never the one nested
+ * inside `ObjectLockConfiguration` -- only the top-level property reaches
+ * `CreateBucket`, and it is the only one AWS can report back.
+ */
+function declaresBucketObjectLock(properties: Record<string, unknown>): boolean {
+  return properties['ObjectLockEnabled'] === true || properties['ObjectLockEnabled'] === 'true';
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -4145,16 +4161,23 @@ export class S3BucketProvider implements ResourceProvider {
    *
    * CFn property: ObjectLockConfiguration
    *   - ObjectLockEnabled: 'Enabled'
-   *   - Rule.DefaultRetention (Mode, Days, Years)
+   *   - Rule.DefaultRetention (Mode, Days, Years, DefaultEventHold)
    * SDK: PutObjectLockConfiguration with ObjectLockConfiguration
    *
    * Note: ObjectLockEnabled at bucket level must be set at creation time.
    * This method only applies the rule/default retention config post-creation.
+   *
+   * Returns whether the Put was issued. A malformed `DefaultEventHold`
+   * container SKIPS the whole Put (see the guard below), and the callers owe
+   * `effectiveProperties` the previous value when it does.
    */
   private async applyObjectLockConfiguration(
     bucketName: string,
-    config: Record<string, unknown>
-  ): Promise<void> {
+    config: Record<string, unknown>,
+    // The state-replay downgrade (issue #1605). Present only on a replay-
+    // reachable call -- the reverse-replacement create and the update path.
+    onUnusable?: (message: string) => void
+  ): Promise<boolean> {
     const rule = config['Rule'] as Record<string, unknown> | undefined;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const objectLockConfig: any = {
@@ -4163,11 +4186,54 @@ export class S3BucketProvider implements ResourceProvider {
     if (rule) {
       const retention = rule['DefaultRetention'] as Record<string, unknown> | undefined;
       if (retention) {
+        // `DefaultEventHold` is the newest member of `DefaultRetention` (CFn
+        // schema capture 2026-09-11, `@aws-sdk/client-s3` >= 3.1129.0), and it
+        // is the only OBJECT here. That is why it takes a shape guard its
+        // scalar siblings do not need: a malformed SCALAR stringifies onto the
+        // wire and S3 rejects it loudly, while a malformed CONTAINER indexes to
+        // `undefined` on every member and vanishes as an empty
+        // `DefaultEventHold: {}` -- the declared WORM protection silently gone
+        // from a Put that otherwise succeeds (the #1581 silent-DROP class).
+        //
+        // The skip unit is the WHOLE Put, not the member:
+        // `PutObjectLockConfiguration` replaces the entire rule, so sending
+        // retention MINUS the hold would apply a weaker configuration than the
+        // template declared -- exactly the substitution this guard family
+        // refuses. An ABSENT hold keeps defaulting (`!= null`), since most
+        // templates declare none.
+        const declaredHold = retention['DefaultEventHold'];
+        let eventHold: Record<string, unknown> | undefined;
+        if (declaredHold != null) {
+          // The two-arm split, spelled as two CALLS rather than as one call
+          // with a possibly-`undefined` option: under
+          // `exactOptionalPropertyTypes` an explicit `{ onUnusable: undefined }`
+          // is not assignable to the optional member. The no-options arm is the
+          // THROWING overload -- the template-path create answer -- while a
+          // replay-reachable caller passes a real callback and gets
+          // warn-and-skip.
+          const path =
+            'AWS::S3::Bucket ObjectLockConfiguration.Rule.DefaultRetention.DefaultEventHold';
+          eventHold = onUnusable
+            ? requireConfigObject(declaredHold, path, { onUnusable })
+            : requireConfigObject(declaredHold, path);
+          if (eventHold === undefined) {
+            // Announced by `requireConfigObject` itself. Reported to the
+            // caller so state records what AWS still holds rather than the
+            // malformed desired bag (issue #1612).
+            return false;
+          }
+        }
         objectLockConfig.Rule = {
           DefaultRetention: {
             Mode: retention['Mode'] as string | undefined,
             Days: retention['Days'] as number | undefined,
             Years: retention['Years'] as number | undefined,
+            DefaultEventHold: eventHold
+              ? {
+                  Days: eventHold['Days'] as number | undefined,
+                  Years: eventHold['Years'] as number | undefined,
+                }
+              : undefined,
           },
         };
       }
@@ -4179,6 +4245,7 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(`Applied object lock configuration to bucket ${bucketName}`);
+    return true;
   }
 
   /**
@@ -5224,7 +5291,12 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['ObjectLockConfiguration'] as Record<string, unknown> | undefined,
       properties['ObjectLockConfiguration'] as Record<string, unknown> | undefined,
-      async (cfg) => this.applyObjectLockConfiguration(bucketName, cfg),
+      async (cfg) => {
+        const applied = await this.applyObjectLockConfiguration(bucketName, cfg, (m) =>
+          this.logger.warn(m)
+        );
+        if (!applied) retainPrevious('ObjectLockConfiguration');
+      },
       async () => {
         await this.s3Client.send(
           new PutObjectLockConfigurationCommand({
@@ -5667,7 +5739,26 @@ export class S3BucketProvider implements ResourceProvider {
       | Record<string, unknown>
       | undefined;
     if (objectLockConfig) {
-      await this.applyObjectLockConfiguration(bucketName, objectLockConfig);
+      const applied = await this.applyObjectLockConfiguration(
+        bucketName,
+        objectLockConfig,
+        replayOnUnusable
+      );
+      if (!applied) {
+        // Replay-CREATE: no RULE was applied and there is no previous value to
+        // keep. But the replay-CREATE "DROP the key" answer is scoped to a
+        // skip whose declared value AWS cannot report (issue #1718), and here
+        // it can: the bucket-level flag is set by `CreateBucket` from the
+        // TOP-LEVEL `ObjectLockEnabled`, independently of this Put, and
+        // `readObjectLock` always emits it. Dropping the whole block would
+        // leave state silent about a member AWS holds -- phantom drift in the
+        // other direction. So record exactly what survives: the flag when the
+        // bucket really was created object-lock-enabled, nothing otherwise.
+        overrides.set(
+          'ObjectLockConfiguration',
+          declaresBucketObjectLock(properties) ? { ObjectLockEnabled: 'Enabled' } : undefined
+        );
+      }
     }
     return overrides;
   }
@@ -6238,7 +6329,7 @@ export class S3BucketProvider implements ResourceProvider {
       }
 
       // ObjectLockEnabled must be set at bucket creation time
-      if (properties['ObjectLockEnabled'] === true || properties['ObjectLockEnabled'] === 'true') {
+      if (declaresBucketObjectLock(properties)) {
         createParams.ObjectLockEnabledForBucket = true;
       }
 
@@ -7507,6 +7598,15 @@ export class S3BucketProvider implements ResourceProvider {
         if (r.Mode !== undefined) retention['Mode'] = r.Mode;
         if (r.Days !== undefined) retention['Days'] = r.Days;
         if (r.Years !== undefined) retention['Years'] = r.Years;
+        // Emitted in the CFn spelling the applier reads, or a template that
+        // declares `DefaultEventHold` records a key this readback can never
+        // report and `cdkd drift` reports the difference forever.
+        if (r.DefaultEventHold !== undefined) {
+          const eventHold: Record<string, unknown> = {};
+          if (r.DefaultEventHold.Days !== undefined) eventHold['Days'] = r.DefaultEventHold.Days;
+          if (r.DefaultEventHold.Years !== undefined) eventHold['Years'] = r.DefaultEventHold.Years;
+          retention['DefaultEventHold'] = eventHold;
+        }
         out['Rule'] = { DefaultRetention: retention };
       }
       return out;

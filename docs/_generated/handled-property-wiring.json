@@ -16883,9 +16883,11 @@
             "AWS::S3::Bucket"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
+            "applyAllSubConfigsForCreate",
             "create"
           ]
         },

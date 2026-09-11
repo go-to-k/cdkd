@@ -3,6 +3,7 @@ import {
   PutBucketAnalyticsConfigurationCommand,
   PutBucketLifecycleConfigurationCommand,
   PutBucketReplicationCommand,
+  PutObjectLockConfigurationCommand,
 } from '@aws-sdk/client-s3';
 
 /**
@@ -74,6 +75,8 @@ const BUCKET = 'container-shape-bucket';
 const FILTER_PATH = 'AWS::S3::Bucket LifecycleConfiguration.Rules[].Filter';
 const SCA_PATH = 'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis';
 const DATA_EXPORT_PATH = `${SCA_PATH}.DataExport`;
+const EVENT_HOLD_PATH =
+  'AWS::S3::Bucket ObjectLockConfiguration.Rule.DefaultRetention.DefaultEventHold';
 
 const VALID_DATA_EXPORT = {
   OutputSchemaVersion: 'V_1',
@@ -116,6 +119,14 @@ const analyticsProps = (config: Record<string, unknown>) => ({
   BucketName: BUCKET,
   AnalyticsConfigurations: [{ Id: 'probe', ...config }],
 });
+const objectLockProps = (hold: unknown) => ({
+  BucketName: BUCKET,
+  ObjectLockEnabled: true,
+  ObjectLockConfiguration: {
+    ObjectLockEnabled: 'Enabled',
+    Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: hold } },
+  },
+});
 
 // Each is NOT a plain object, i.e. every probe of it indexes to `undefined`.
 // The ARRAY is the one a bare `typeof === 'object'` check would have waved
@@ -153,6 +164,19 @@ describe('create path: a non-object container is REFUSED, not silently emptied',
       expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
     });
 
+    it(`object lock: refuses a DefaultEventHold that is ${label}`, async () => {
+      // PR #3002. This is the THROWING arm of the guard, and it is the arm a
+      // plain `cdkd deploy` takes: `replayWarn(...).onUnusable` is `undefined`
+      // on a template-path create. Measured before this case existed --
+      // downgrading the arm to a no-op callback left the ENTIRE unit suite
+      // green (992/992 files) while a declared WORM rule was silently skipped
+      // and the deploy reported success. Every other case for this member
+      // drives the warn arm, so nothing else can see it.
+      await expect(
+        provider.create('B', RESOURCE_TYPE, objectLockProps(value))
+      ).rejects.toThrow(`${EVENT_HOLD_PATH} must be an object`);
+      expect(sentCommands(PutObjectLockConfigurationCommand)).toHaveLength(0);
+    });
   }
 
   it('the refusal fires BEFORE the widened-scope rule can reach S3', async () => {

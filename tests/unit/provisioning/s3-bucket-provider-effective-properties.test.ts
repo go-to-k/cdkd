@@ -392,6 +392,28 @@ const WIRING_SITES: WiringSite[] = [
     },
   },
   {
+    // PR #3002's whole-Put skip. `PutObjectLockConfiguration` replaces the
+    // entire rule, so a malformed `DefaultEventHold` cannot be dropped while
+    // the retention is applied -- that would send a WEAKER configuration than
+    // the template declared. Without this row, `retainPrevious` pointed at the
+    // wrong key (or omitted) leaves state claiming an Object Lock rule AWS
+    // never received -- a WORM setting, so the wrong direction to guess in.
+    name: 'object lock (whole Put, DefaultEventHold refusal)',
+    key: 'ObjectLockConfiguration',
+    previous: {
+      ObjectLockEnabled: 'Enabled',
+      Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: { Days: 3 } } },
+    },
+    desired: {
+      ObjectLockEnabled: 'Enabled',
+      Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: 'yes' } },
+    },
+    expected: {
+      ObjectLockEnabled: 'Enabled',
+      Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: { Days: 3 } } },
+    },
+  },
+  {
     name: 'replication (whole Put)',
     key: 'ReplicationConfiguration',
     previous: {
@@ -514,6 +536,36 @@ describe('replay-CREATE: every applier drops ITS OWN key (wiring fence)', () => 
       expect(result.effectiveProperties?.['LifecycleConfiguration']).toEqual(UNSKIPPED_SIBLING);
     });
   }
+});
+
+describe('the create-path object-lock skip records what SURVIVES, not nothing', () => {
+  it('keeps ObjectLockEnabled when the bucket was created object-lock-enabled', async () => {
+    // The row in WIRING_SITES above declares no TOP-LEVEL `ObjectLockEnabled`,
+    // so it takes the other branch and cannot see this one. The replay-CREATE
+    // "DROP the key" answer is scoped to a skip whose declared value AWS
+    // cannot report (issue #1718); the bucket-level flag is set by
+    // `CreateBucket`, independently of the skipped Put, and `readObjectLock`
+    // always emits it -- so dropping the whole block would make state silent
+    // about a member AWS holds.
+    const properties = {
+      BucketName: BUCKET,
+      ObjectLockEnabled: true,
+      ObjectLockConfiguration: {
+        ObjectLockEnabled: 'Enabled',
+        Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30, DefaultEventHold: 'yes' } },
+      },
+      LifecycleConfiguration: UNSKIPPED_SIBLING,
+    };
+
+    const result = await provider.create('B', RESOURCE_TYPE, properties, {
+      replayingState: true,
+    });
+
+    expect(result.effectiveProperties?.['ObjectLockConfiguration']).toEqual({
+      ObjectLockEnabled: 'Enabled',
+    });
+    expect(result.effectiveProperties?.['LifecycleConfiguration']).toEqual(UNSKIPPED_SIBLING);
+  });
 });
 
 describe('the create-path logging GATE is its own arm', () => {
