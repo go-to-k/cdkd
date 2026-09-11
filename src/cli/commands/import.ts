@@ -1849,20 +1849,46 @@ export async function resolveImportedProperties(
     }
     const rawOpeners = countDynamicReferenceOpeners(unresolvedProperties);
     const persistedOpeners = countDynamicReferenceOpeners(resource.properties);
+    // ARM 3 (issue #2850) — the resolve SUCCEEDED but DISCARDED a subtree it
+    // cannot vouch is inert. The count arm below sees only what the raw bag
+    // SPELLS, so it misses a drop the bag never spelled (a reference sourced
+    // from a parameter `Default` or a `Mappings` entry: both counts read
+    // zero) and a drop BALANCED by an addition elsewhere. The predicate's
+    // own doc block carries the discard-event enumeration and the fail-closed
+    // rules.
+    //
+    // EVALUATED IN ITS OWN try, FAIL-CLOSED (independent parent-review
+    // blocker): the walk recurses SYNCHRONOUSLY, so a bag nested deeper than
+    // the sync call stack — but still shallow enough for JSON.stringify's
+    // lighter frames, so the two counts above compute normally and nothing
+    // short-circuits — raises `RangeError` here, and no enclosing catch
+    // exists: the per-resource try wraps only the resolve, and a throw out of
+    // this function aborts the import AFTER the AWS-side import already
+    // succeeded — exactly what the parameter fallback above refuses to allow,
+    // in its own words ("a throw would lose the state write for work that
+    // cannot be undone"). A bag the walk cannot traverse is a bag it cannot
+    // vouch for: refuse, the same direction as
+    // `countDynamicReferenceOpeners`' serialization guard. Pinned by the
+    // deep-bag case in the refusal-matrix suite, whose depth is derived from
+    // the running environment's own stringify limit so the window is not a
+    // hard-coded guess.
+    let discardsNonInertSubtree: boolean;
+    try {
+      discardsNonInertSubtree = resolveDiscardsNonInertSubtree(
+        unresolvedProperties,
+        conditions,
+        template.Mappings
+      );
+    } catch {
+      discardsNonInertSubtree = true;
+    }
     if (
       rawOpeners === undefined ||
       persistedOpeners === undefined ||
       // ARM 2 — the resolve SUCCEEDED but LOST an opener, which a downgraded
       // `Fn::If` does routinely.
       persistedOpeners < rawOpeners ||
-      // ARM 3 (issue #2850) — the resolve SUCCEEDED but DISCARDED a subtree it
-      // cannot vouch is inert. The count above sees only what the raw bag
-      // SPELLS, so it misses a drop the bag never spelled (a reference sourced
-      // from a parameter `Default` or a `Mappings` entry: both counts read
-      // zero) and a drop BALANCED by an addition elsewhere. The predicate's
-      // own doc block carries the discard-event enumeration and the
-      // fail-closed rules.
-      resolveDiscardsNonInertSubtree(unresolvedProperties, conditions, template.Mappings)
+      discardsNonInertSubtree
     ) {
       unsafeObservedBaselineLogicalIds.add(logicalId);
     }
@@ -1963,7 +1989,14 @@ function isInertDiscardedSubtree(node: unknown): boolean {
  * value this import cannot reproduce.
  */
 function isStaticSelectIndex(value: unknown): boolean {
-  if (typeof value === 'number') return Number.isInteger(value);
+  // Non-negative on the number arm too (parent review): `resolveSelect`
+  // treats a negative index as out-of-bounds and returns its placeholder,
+  // discarding the WHOLE list — the string arm's regex already refuses
+  // `'-1'`, and the two arms vouching for different shapes was the
+  // asymmetry. cdkd deploys the same placeholder, but this predicate's job
+  // is "the selection is a real, deploy-constant index", which a negative
+  // never is.
+  if (typeof value === 'number') return Number.isInteger(value) && value >= 0;
   return typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
 }
 
@@ -2028,8 +2061,13 @@ function isStaticLookupKey(value: unknown): boolean {
  *    itself admits no intrinsic there, and an intrinsic delimiter joins as
  *    `[object Object]` — a mangled value, not a discarded reference.
  *
- * Fail-closed rules, in the order tested:
+ * Fail-closed rules, in the order tested (an earlier revision of this list
+ * omitted the two arms the review round added while still claiming to BE the
+ * tested order — a list that claims an order and is not the order is worse
+ * than no list, so keep it complete or delete the claim):
  *
+ *  - an ARRAY recurses element-wise, so a discarder inside a list property
+ *    (`SecurityGroupIds: [{Fn::If: ...}]`) is found;
  *  - single-key `Fn::If` with well-formed args and a condition the evaluated
  *    map carries (`Object.hasOwn`, the same test `resolveIf` uses since issue
  *    #2767): the UNSELECTED branch must be inert, and the SELECTED branch is
@@ -2040,9 +2078,21 @@ function isStaticLookupKey(value: unknown): boolean {
  *    the two-spellings-of-one-question drift this repo keeps paying for, and
  *    the superset can only over-refuse, never leak;
  *  - single-key `Fn::If` with MALFORMED args: refuse;
- *  - a MULTI-KEY object carrying any intrinsic-shaped key: every value must
- *    be inert — which sibling the dispatch order drops is deliberately not
- *    mirrored here;
+ *  - single-key `Fn::FindInMap`: MALFORMED (< 3 args) refuses; a 4th
+ *    argument must be inert AS A WHOLE (its `DefaultValue` is resolved only
+ *    on a lookup miss, and any sibling key there — or a whole 4th arg with
+ *    no `DefaultValue` key — is discarded unconditionally); a non-literal
+ *    lookup key refuses unless the map in scope is inert (the NAMED map for
+ *    a literal map name, the whole `Mappings` section otherwise); then the
+ *    args recurse;
+ *  - single-key `Fn::Select`: MALFORMED (not exactly 2 args) refuses; a
+ *    non-static index refuses unless the list argument is inert; then the
+ *    args recurse;
+ *  - a MULTI-KEY object carrying intrinsic-shaped keys: TWO or more such
+ *    keys refuse outright (dispatch drops the losers as whole INTRINSICS,
+ *    whose values' text is not evidence of what they pull); with exactly
+ *    one, every value must be inert — which sibling the dispatch order
+ *    drops is deliberately not mirrored here;
  *  - everything else recurses, so a nested `Fn::If` inside an `Fn::Join` /
  *    `Fn::Sub` argument is still found.
  *
@@ -2051,6 +2101,10 @@ function isStaticLookupKey(value: unknown): boolean {
  * direction is over-refusal alone. The negative controls live in the matrix:
  * an `Fn::If` discarding pure literals stays ADMITTED, and so does a
  * multi-key intrinsic object whose sibling values are literals.
+ *
+ * THE CALLER WRAPS EVERY CALL IN A FAIL-CLOSED try (see the ARM 3 note at
+ * the call site): this walk recurses synchronously and a deep-enough bag
+ * overflows the call stack where the JSON.stringify arms still compute.
  */
 function resolveDiscardsNonInertSubtree(
   node: unknown,
@@ -2103,13 +2157,17 @@ function resolveDiscardsNonInertSubtree(
   if (keys.length === 1 && keys[0] === 'Fn::FindInMap') {
     const args = record['Fn::FindInMap'];
     if (!Array.isArray(args) || args.length < 3) return true;
-    const options = args[3];
     if (args.length > 3) {
-      const defaultValue =
-        options !== null && typeof options === 'object' && !Array.isArray(options)
-          ? (options as Record<string, unknown>)['DefaultValue']
-          : options;
-      if (!isInertDiscardedSubtree(defaultValue)) return true;
+      // The WHOLE 4th argument must be inert, not just its `DefaultValue`
+      // (parent review): `resolveFindInMap` reads ONLY that key, so a SIBLING
+      // key's subtree there is discarded unconditionally — and a 4th arg with
+      // no `DefaultValue` key at all (a typo'd one included) is discarded
+      // WHOLE, since `hasDefaultValue` reads false and the lookup proceeds as
+      // 3-arg. Judging the container instead of extracting one key covers
+      // every one of those shapes with the same fail-closed question, and an
+      // ordinary `{ DefaultValue: 'literal' }` is inert as a whole exactly
+      // when its default is.
+      if (!isInertDiscardedSubtree(args[3])) return true;
     }
     if (!args.slice(0, 3).every((key) => isStaticLookupKey(key))) {
       const scope =
@@ -2138,6 +2196,14 @@ function resolveDiscardsNonInertSubtree(
     return args.some((arg) => resolveDiscardsNonInertSubtree(arg, conditions, mappings));
   }
   if (keys.length > 1 && keys.some((key) => isIntrinsicShapedKey(key))) {
+    // TWO OR MORE intrinsic-shaped keys refuse OUTRIGHT (parent review):
+    // dispatch order runs exactly one of them and drops the others as WHOLE
+    // INTRINSICS — `{Ref: 'P', 'Fn::Sub': '${SecretRef}'}` discards the
+    // `Fn::Sub`, whose VALUE is an opener-free string while its SEMANTICS
+    // pull a parameter — so judging the dropped values' text is not evidence
+    // there. With a single intrinsic key, the dropped siblings are plain
+    // VALUES and the inertness question is the right one.
+    if (keys.filter((key) => isIntrinsicShapedKey(key)).length > 1) return true;
     return !keys.every((key) => isInertDiscardedSubtree(record[key]));
   }
   return keys.some((key) => resolveDiscardsNonInertSubtree(record[key], conditions, mappings));

@@ -686,6 +686,225 @@ const ROWS: readonly Row[] = [
     template: { Parameters: { Idx: { Type: 'String', Default: '1' } } },
   },
   {
+    name: 'Fn::If inside an ARRAY element, reference in the untaken branch',
+    properties: {
+      Detail: {
+        Items: [{ 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev-placeholder'] }, 'anchor-lit'],
+      },
+    },
+    readback: { Detail: { Items: [PLAINTEXT, 'anchor-lit'] } },
+    refused: true,
+    why:
+      'the ARRAY recursion arm, fenced (parent review measured it unpinned): a ' +
+      'discarder inside a list property is the everyday cdk-synth shape ' +
+      '(SecurityGroupIds and friends). The sibling literal anchors the ' +
+      'positional pairing, so the replay leaks rather than masks',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::Select with a NUMERIC index selecting the reference itself',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [0, [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    expected: { Detail: { pw: TOKEN } },
+    refused: false,
+    why:
+      "the NUMBER arm of the static-index test, fenced (parent review: every " +
+      'earlier Select row spelled its index as a string or an intrinsic, while ' +
+      'the dominant cdk-synth spelling is the bare number). Index 0 selects the ' +
+      'same element at deploy, the secret resolves, and the token persists',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'nested Fn::If inside the TAKEN branch of an outer Fn::If',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::If': [
+            'IsTrue',
+            { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev-ph'] },
+            'other-literal',
+          ],
+        },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the SELECTED-branch recursion, fenced: the outer condition holds (its ' +
+      'parameter has a Default), so the walk must descend into the taken branch ' +
+      'to see the inner downgraded drop — both counts read zero',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String', Default: 'prod' },
+        Unbound: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: {
+        IsTrue: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] },
+        IsProd: { 'Fn::Equals': [{ Ref: 'Unbound' }, 'prod'] },
+      },
+    },
+  },
+  {
+    name: 'MALFORMED two-argument Fn::If, reference in the true branch',
+    properties: {
+      Detail: { pw: { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the malformed-args arm, fenced: resolveIf destructures the missing false ' +
+      'branch as undefined and resolves it without throwing, so the downgraded ' +
+      'condition persists an ABSENT leaf while the true branch — and whatever ' +
+      'AWS holds from it — was discarded unresolved',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'Fn::FindInMap keyed by a NUMERIC literal over a map with a token elsewhere',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M', 1, 'pw'] } } },
+    readback: { Detail: { pw: 'one-v' } },
+    expected: { Detail: { pw: 'one-v' } },
+    refused: false,
+    why:
+      "the NUMBER/boolean arm of the static-key test, fenced: resolveFindInMap " +
+      "String()s the key, so a numeric literal selects the same entry at deploy " +
+      'and the un-taken token-bearing entry was discarded identically on both sides',
+    template: { Mappings: { M: { '1': { pw: 'one-v' }, prod: { pw: TOKEN } } } },
+  },
+  {
+    name: 'Fn::FindInMap whose MAP NAME is an intrinsic, token in a SIBLING map',
+    properties: { Detail: { pw: { 'Fn::FindInMap': [{ Ref: 'MapName' }, 'dev', 'pw'] } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the whole-Mappings scope fallback, fenced: a dynamic map name means the ' +
+      'named-map narrowing cannot apply, and the sibling map holds a reference ' +
+      'the deployed lookup could have selected',
+    template: {
+      Parameters: { MapName: { Type: 'String', Default: 'M' } },
+      Mappings: {
+        M: { dev: { pw: 'm-dev-v' } },
+        S: { x: { y: TOKEN } },
+      },
+    },
+  },
+  {
+    name: 'downgraded Fn::If nested inside an Fn::Join argument',
+    properties: {
+      Detail: {
+        pw: { 'Fn::Join': ['-', ['pre', { 'Fn::If': ['IsProd', { Ref: 'SecretRef' }, 'dev'] }]] },
+      },
+    },
+    readback: { Detail: { pw: `pre-${PLAINTEXT}` } },
+    refused: true,
+    why:
+      "the generic-recursion tail, fenced: the walk doc claims a nested Fn::If " +
+      'inside an Fn::Join argument is still found, and no row exercised the ' +
+      'claim — the joined readback embeds the decrypted value mid-string',
+    template: {
+      Parameters: {
+        Stage: { Type: 'String' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+      Conditions: { IsProd: { 'Fn::Equals': [{ Ref: 'Stage' }, 'prod'] } },
+    },
+  },
+  {
+    name: 'TWO intrinsic-shaped keys in one object, both values inert text',
+    properties: {
+      Detail: { pw: { Ref: 'PlainParam', 'Fn::Sub': '${SecretRef}' } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "the parent review's multi-key refinement: dispatch runs the Ref and drops " +
+      "the Fn::Sub as a WHOLE INTRINSIC, whose string VALUE is opener-free while " +
+      'its semantics pull the secret-bearing parameter — judging the dropped ' +
+      "values' text admits it",
+    template: {
+      Parameters: {
+        PlainParam: { Type: 'String', Default: 'plain-endpoint' },
+        SecretRef: { Type: 'String', Default: TOKEN },
+      },
+    },
+  },
+  {
+    name: 'Fn::Select with a NEGATIVE numeric index over a list holding a reference',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [-1, [{ Ref: 'SecretRef' }, 'x-element']] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      'the number arm must vouch only for a real index: resolveSelect answers a ' +
+      'negative with its OutOfBounds placeholder, discarding the whole ' +
+      'eagerly-decrypted list, so the persisted leaf is a placeholder literal ' +
+      'the readback pairs against',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'ONE-argument Fn::FindInMap resolved through the stringified-undefined keys',
+    properties: { Detail: { pw: { 'Fn::FindInMap': ['M'] } } },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "the malformed-FindInMap arm, fenced on its one SUCCESS-arm route: " +
+      "resolveFindInMap String()s the missing keys to 'undefined', so a map " +
+      'carrying that literal key resolves cleanly and both counts read zero',
+    template: {
+      Mappings: { M: { undefined: { undefined: 'undef-v' } } },
+    },
+  },
+  {
+    name: 'THREE-argument-plus Fn::Select, numeric index, reference in the list',
+    properties: {
+      Detail: { pw: { 'Fn::Select': [0, [{ Ref: 'SecretRef' }, 'x-element'], 'extra'] } },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    overRefusal: true,
+    why:
+      'the malformed-Select arm, fenced: resolveSelect destructures the first ' +
+      'two args and ignores the extra, so the reference resolves and the token ' +
+      'persists — nothing would have leaked, and the arm refuses the unmodelled ' +
+      'shape anyway, which is the fail-closed trade the label records',
+    template: { Parameters: { SecretRef: { Type: 'String', Default: TOKEN } } },
+  },
+  {
+    name: 'Fn::FindInMap options object with a NON-DefaultValue sibling carrying a Ref',
+    properties: {
+      Detail: {
+        pw: {
+          'Fn::FindInMap': ['M', 'dev', 'pw', { DefaultValue: 'fallback-lit', Other: { Ref: 'SecretRef' } }],
+        },
+      },
+    },
+    readback: { Detail: { pw: PLAINTEXT } },
+    refused: true,
+    why:
+      "the whole-options inertness check, fenced (parent review): resolveFindInMap " +
+      'reads ONLY DefaultValue, so the sibling subtree is discarded ' +
+      'unconditionally — extracting the one key and judging it alone admitted this',
+    template: {
+      Mappings: { M: { dev: { pw: 'm-dev-v' } } },
+      Parameters: { SecretRef: { Type: 'String', Default: TOKEN } },
+    },
+  },
+  {
     name: 'Fn::If discarding {Ref: AWS::NoValue} — the optional-property idiom',
     properties: {
       Detail: { opt: { 'Fn::If': ['HasOpt', 'real-value', { Ref: 'AWS::NoValue' }] } },
@@ -1003,12 +1222,16 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     // A floor on the POOL, written as literals from this file rather than
     // derived from the array: a table that quietly lost its refusing rows would
     // otherwise satisfy every assertion below by having nothing to check.
-    expect(ROWS).toHaveLength(48);
-    expect(ROWS.filter((r) => r.refused)).toHaveLength(22);
-    expect(ROWS.filter((r) => !r.refused)).toHaveLength(26);
-    // The deliberate over-refusals, counted so they cannot grow unnoticed: each
-    // costs a real resource its drift baseline.
-    expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(4);
+    expect(ROWS).toHaveLength(60);
+    expect(ROWS.filter((r) => r.refused)).toHaveLength(32);
+    expect(ROWS.filter((r) => !r.refused)).toHaveLength(28);
+    // The deliberate over-refusals. This counts the rows' own LABEL, so it
+    // cannot catch production refusing more than it should — the widening
+    // fence is the ADMITTED rows above, which red when a refusal reaches
+    // them. What the label buys is premise-loop EXEMPTION: an overRefusal row
+    // skips the proves-it-really-leaked replay, so quietly silencing an
+    // unearned refusal has to flip this literal and show up in the diff.
+    expect(ROWS.filter((r) => r.overRefusal)).toHaveLength(5);
     expect(
       ROWS.filter((r) => r.overRefusal && !r.refused),
       'an over-refusal that is not a refusal is a contradiction'
@@ -1033,6 +1256,71 @@ describe('cdkd import: which resources may take an observedProperties baseline (
     ).toHaveLength(0);
     expect(new Set(ROWS.map((r) => r.name)).size, 'row names are unique').toBe(ROWS.length);
   });
+
+  it('a bag too deep for the discard walk is REFUSED, and the import survives (parent-review blocker)', async () => {
+    // The discard walk recurses SYNCHRONOUSLY while `countDynamicReferenceOpeners`
+    // guards its own JSON.stringify with a try — stringify's frames are lighter,
+    // so a depth window exists where both opener counts compute normally and the
+    // walk ALONE overflows the call stack. Unwrapped, that `RangeError` escaped
+    // `resolveImportedProperties` and aborted the import AFTER the AWS-side
+    // import had succeeded — the loss the function's own parameter-fallback
+    // comment forbids. The fix catches it at the ARM-3 call site and REFUSES.
+    //
+    // The depth is DERIVED from this environment's own stringify limit rather
+    // than hard-coded, because both limits scale with the engine's stack size
+    // while their RATIO is set by relative frame weight (~0.5 measured); 70%
+    // of the stringify limit sits inside the window with margin on both sides.
+    // If an engine ever inverts the frame-weight ratio, this case fails LOUDLY
+    // (the bag is admitted, or the resolver itself throws and the refusal is
+    // ARM 1's) rather than leaving the window silently untested. The RESOLVER
+    // survives the depth because its recursion awaits per level, unwinding the
+    // native stack — which is exactly why ARM 1 does not fire first.
+    const nest = (depth: number): unknown => {
+      let value: unknown = 'leaf';
+      for (let i = 0; i < depth; i++) value = { a: value };
+      return value;
+    };
+    const stringifyLimit = (() => {
+      let lo = 1;
+      let hi = 1 << 20;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        try {
+          JSON.stringify(nest(mid));
+          lo = mid;
+        } catch {
+          hi = mid - 1;
+        }
+      }
+      return lo;
+    })();
+    const depth = Math.floor(stringifyLimit * 0.7);
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      stackName: 'matrix-stack',
+      region: 'us-east-1',
+      resources: {
+        Res: {
+          physicalId: 'res-phys',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { Deep: nest(depth) } as Record<string, unknown>,
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    const refusedIds = await resolveImportedProperties(
+      state,
+      { Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: {} } } } as CloudFormationTemplate,
+      'us-east-1',
+      undefined as never,
+      getLogger()
+    );
+    expect(
+      refusedIds.has('Res'),
+      'a bag the walk cannot traverse must be refused fail-closed, not admitted'
+    ).toBe(true);
+  }, 30_000);
 
   for (const row of ROWS) {
     it(`SAFE: ${row.name}`, async () => {
@@ -1134,7 +1422,7 @@ describe('cdkd import: which resources may take an observedProperties baseline (
         provenByPlaintext++;
       }
     }
-    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(14);
+    expect(provenByPlaintext, 'the loop ran over every refusal earned by a PLAINTEXT').toBe(23);
     expect(provenByMask, 'the loop ran over every refusal earned by a MASK').toBe(4);
   });
 });
