@@ -1,0 +1,326 @@
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
+import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
+
+/**
+ * `.github/workflows/release-pr-staleness.yml` — the check that disarms
+ * auto-merge on a standing release PR that `main` has moved past.
+ *
+ * Why it exists rather than the `release-pr-not-stale` job in ci.yml doing the
+ * whole job: a `pull_request` workflow does NOT re-run when the BASE branch
+ * moves, so that job keeps whatever verdict it reached at the release PR's last
+ * head push — and the hazard is precisely the case where release-please never
+ * pushes again (a `chore:` commit produces no changelog entry, so the computed
+ * release is unchanged and the PR is left on its original base).
+ *
+ * Why this suite EXECUTES the workflow's shell against real git repositories
+ * and a stubbed `gh`: the whole check is six git/gh invocations, each of which
+ * rots silently. Drop the `!` from `merge-base`, compare against the wrong ref,
+ * invert the `armed` test — and it stops disarming anything while still exiting
+ * 0 on every run, which is indistinguishable from "nothing was stale". A suite
+ * that pattern-matched the YAML would certify that state.
+ *
+ * The four cases below are the whole decision table:
+ *
+ *   current + armed        -> leave alone
+ *   stale   + armed        -> disable auto-merge, comment once
+ *   stale   + NOT armed    -> no disable, no comment (nothing to disarm; the
+ *                             auto_merge_enabled trigger catches it later)
+ *   owned file has no history on main -> FAIL CLOSED, never a silent pass
+ */
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+const WORKFLOW = join(repoRoot, '.github', 'workflows', 'release-pr-staleness.yml');
+
+const CHANGELOG = 'CHANGELOG.md';
+const MANIFEST = '.release-please-manifest.json';
+const RELEASE_BRANCH = 'release-please--branches--main';
+
+const DISARM_STEP = 'disarm auto-merge on a release PR main has moved past';
+
+interface StalenessWorkflow {
+  on?: Record<string, { types?: unknown; branches?: unknown } | null>;
+  jobs?: Record<
+    string,
+    {
+      permissions?: unknown;
+      steps?: { name?: string; uses?: string; run?: string; with?: Record<string, unknown> }[];
+    }
+  >;
+}
+
+function workflow(): StalenessWorkflow {
+  return parseYaml(readFileSync(WORKFLOW, 'utf8')) as StalenessWorkflow;
+}
+
+/**
+ * The `run:` body of the workflow's disarm step, taken from the file rather
+ * than re-typed — a copy here would keep passing after the workflow's copy was
+ * broken. Selected BY STEP NAME, so inserting a step ahead of it cannot
+ * silently retarget the extractor.
+ *
+ * (The sibling repos read this as TEXT because they ship no YAML library, the
+ * reason `release-please-v0.test.ts` records there. cdkd has `yaml`, and its
+ * two other workflow fences already parse, so this one does too.)
+ */
+function disarmShell(): string {
+  const step = workflow().jobs?.['disarm']?.steps?.find((s) => s.name === DISARM_STEP);
+  expect(
+    step?.run,
+    `the \`${DISARM_STEP}\` step is gone from .github/workflows/release-pr-staleness.yml. ` +
+      'If it was renamed, update this extractor; if it was REMOVED, restore it — a stale ' +
+      'release PR could then auto-merge with nothing objecting.'
+  ).toBeTruthy();
+  return step?.run as string;
+}
+
+const GIT_ENV = {
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+  GIT_AUTHOR_NAME: 't',
+  GIT_AUTHOR_EMAIL: 't@example.invalid',
+  GIT_COMMITTER_NAME: 't',
+  GIT_COMMITTER_EMAIL: 't@example.invalid',
+};
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...GIT_ENV },
+  }).trim();
+}
+
+function commit(repo: string, file: string, body: string, subject: string): string {
+  writeFileSync(join(repo, file), body);
+  git(repo, 'add', file);
+  git(repo, 'commit', '-q', '-m', subject);
+  return git(repo, 'rev-parse', 'HEAD');
+}
+
+interface Run {
+  status: number;
+  output: string;
+  /** Every `gh` invocation the shell made, one per line, args space-joined. */
+  ghCalls: string[];
+}
+
+describe('release-pr-staleness', () => {
+  let scratch: string;
+  let seq = 0;
+
+  afterAll(() => {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  });
+
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'cdkd-staleness-'));
+  });
+
+  /**
+   * A repo whose `main` ends in a commit touching only `lastFile` and whose
+   * release branch was cut BEFORE it (`stale: true`) or at the tip
+   * (`stale: false`). Returns the working clone the shell runs in.
+   *
+   * `seedManifest: false` builds a history where the manifest never existed, so
+   * the empty-tip branch is reached with the CHANGELOG arm able to pass.
+   */
+  function fixture(opts: {
+    stale: boolean;
+    armed: boolean;
+    lastFile?: string;
+    seedManifest?: boolean;
+    noReleasePr?: boolean;
+  }): { cwd: string; ghLog: string; tip: string } {
+    const id = `f${seq++}`;
+    const origin = join(scratch, `${id}-origin`);
+    mkdirSync(origin);
+    git(origin, 'init', '-q', '-b', 'main');
+    writeFileSync(join(origin, CHANGELOG), '# Changelog\n\n## 0.1.0\n');
+    if (opts.seedManifest !== false) {
+      writeFileSync(join(origin, MANIFEST), '{ ".": "0.1.0" }\n');
+    }
+    git(origin, 'add', '.');
+    git(origin, 'commit', '-q', '-m', 'chore(release): 0.1.0');
+    const base = commit(origin, 'src.txt', 'work\n', 'feat: something');
+
+    // The release branch, cut from `base` when stale and from the tip when not.
+    // Its own commit touches a file release-please does NOT own, so the branch
+    // is never an ancestor of main in either case — only the owned-file tips
+    // decide, which is the property under test.
+    const lastFile = opts.lastFile ?? CHANGELOG;
+    const tip =
+      lastFile === CHANGELOG
+        ? commit(origin, CHANGELOG, '# Changelog\n\n## 0.1.0 (normalized)\n', 'chore(docs): normalize')
+        : commit(origin, MANIFEST, '{ ".": "0.1.0-edited" }\n', 'chore: hand-edit the manifest');
+
+    git(origin, 'checkout', '-q', '-b', RELEASE_BRANCH, opts.stale ? base : tip);
+    commit(origin, 'RELEASE_NOTE.txt', 'release-please\n', 'chore(release): 0.1.1');
+    git(origin, 'checkout', '-q', 'main');
+
+    const bare = join(scratch, `${id}-remote.git`);
+    execFileSync('git', ['clone', '-q', '--bare', origin, bare], {
+      env: { ...process.env, ...GIT_ENV },
+    });
+    const cwd = join(scratch, `${id}-work`);
+    execFileSync('git', ['clone', '-q', bare, cwd], { env: { ...process.env, ...GIT_ENV } });
+
+    // `gh` stub: canned reads, recorded writes. Writing the log from the stub
+    // (rather than inferring from stdout) is what lets a case assert that
+    // `pr merge --disable-auto` was NOT called.
+    const binDir = join(scratch, `${id}-bin`);
+    mkdirSync(binDir);
+    const ghLog = join(scratch, `${id}-gh.log`);
+    // The stub emulates `--jq`, because the production shell reads the FILTERED
+    // value: `gh pr list --jq '[...][0].number // empty'` yields a bare number
+    // or nothing, never the array. Returning raw JSON here made `$pr` the whole
+    // document and every downstream call nonsense — a stub more permissive than
+    // real `gh` is how a suite certifies a check that cannot work.
+    const prNumber = opts.noReleasePr ? '' : '42';
+    const ghStub = `#!/usr/bin/env bash
+echo "$*" >> ${JSON.stringify(ghLog)}
+case "$*" in
+  *"pr list"*)        printf '%s' ${JSON.stringify(prNumber)} ;;
+  *autoMergeRequest*) printf '%s' ${JSON.stringify(opts.armed ? 'yes' : 'no')} ;;
+  *headRefName*)      printf '%s' ${JSON.stringify(RELEASE_BRANCH)} ;;
+  *)                  : ;;
+esac
+`;
+    const ghPath = join(binDir, 'gh');
+    writeFileSync(ghPath, ghStub);
+    chmodSync(ghPath, 0o755);
+
+    return { cwd, ghLog, tip };
+  }
+
+  function run(fx: ReturnType<typeof fixture>): Run {
+    const binDir = dirname(join(fx.ghLog, '..')); // unused placeholder, see below
+    void binDir;
+    const stubDir = fx.ghLog.replace(/-gh\.log$/, '-bin');
+    let status = 0;
+    let output = '';
+    try {
+      output = execFileSync('bash', ['-c', disarmShell()], {
+        cwd: fx.cwd,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          ...GIT_ENV,
+          PATH: `${stubDir}:${process.env['PATH'] ?? ''}`,
+          GH_TOKEN: 'x',
+          REPO: 'go-to-k/cdkd',
+        },
+        stdio: 'pipe',
+      });
+    } catch (error) {
+      const e = error as { status?: number; stdout?: string; stderr?: string };
+      status = e.status ?? 1;
+      output = `${e.stdout ?? ''}${e.stderr ?? ''}`;
+    }
+    let ghCalls: string[] = [];
+    try {
+      ghCalls = readFileSync(fx.ghLog, 'utf8').split('\n').filter(Boolean);
+    } catch {
+      ghCalls = [];
+    }
+    return { status, output, ghCalls };
+  }
+
+  const disarmed = (r: Run) => r.ghCalls.some((c) => c.includes('--disable-auto'));
+  const commented = (r: Run) => r.ghCalls.some((c) => c.includes('pr comment'));
+
+  it('leaves a current release PR alone', () => {
+    const r = run(fixture({ stale: false, armed: true }));
+    expect(r.status).toBe(0);
+    expect(r.output).toContain('is current with main');
+    expect(disarmed(r)).toBe(false);
+    expect(commented(r)).toBe(false);
+  });
+
+  it('disarms and comments when main moved CHANGELOG.md past an armed PR', () => {
+    const fx = fixture({ stale: true, armed: true });
+    const r = run(fx);
+    expect(r.status).toBe(0);
+    expect(disarmed(r)).toBe(true);
+    expect(commented(r)).toBe(true);
+    expect(r.output).toContain(CHANGELOG);
+    expect(r.output).toContain(fx.tip);
+  });
+
+  it('disarms when main moved the MANIFEST past an armed PR', () => {
+    // Without this, gating the ancestry test on `[ "${f}" = "CHANGELOG.md" ]`
+    // survives the suite and the manifest arm never discriminates.
+    const fx = fixture({ stale: true, armed: true, lastFile: MANIFEST });
+    const r = run(fx);
+    expect(disarmed(r)).toBe(true);
+    expect(r.output).toContain(MANIFEST);
+    expect(r.output).not.toContain(`${CHANGELOG} (main:`);
+  });
+
+  it('does not comment on a stale PR that is not armed', () => {
+    // There is nothing to disarm, and a comment on every push to main would
+    // bury the signal. The auto_merge_enabled trigger catches it later.
+    const r = run(fixture({ stale: true, armed: false }));
+    expect(r.status).toBe(0);
+    expect(disarmed(r)).toBe(false);
+    expect(commented(r)).toBe(false);
+    expect(r.output).toContain('not armed');
+  });
+
+  it('does nothing when no release PR is open', () => {
+    const r = run(fixture({ stale: true, armed: true, noReleasePr: true }));
+    expect(r.status).toBe(0);
+    expect(r.output).toContain('No standing release PR');
+    expect(disarmed(r)).toBe(false);
+  });
+
+  it('fails closed when an owned file has no history on main', () => {
+    // "Cannot answer" must not read as "found nothing wrong": a rename would
+    // otherwise silence this check forever, and it is the last line of defence.
+    const r = run(fixture({ stale: false, armed: true, seedManifest: false }));
+    expect(r.status).not.toBe(0);
+    expect(r.output).toContain('cannot evaluate staleness');
+    expect(r.output).toContain(MANIFEST);
+    expect(disarmed(r)).toBe(false);
+  });
+
+  describe('the workflow wiring', () => {
+    const yml = () => readFileSync(WORKFLOW, 'utf8');
+
+    it('fires both when main moves and when auto-merge is armed', () => {
+      // Neither trigger alone is enough. `push` misses a PR armed AFTER main
+      // moved — the common case, since a release PR can sit for days — and
+      // `auto_merge_enabled` misses main moving under an already-armed PR.
+      expect(yml()).toContain('types: [auto_merge_enabled]');
+      expect(yml()).toMatch(/push:\s*\n\s*branches: \[main\]/);
+    });
+
+    it('can actually disarm', () => {
+      // `gh pr merge --disable-auto` needs pull-requests: write, and a
+      // `pull_request` token is read-only for forks — which is why the trigger
+      // is `pull_request_target`.
+      expect(yml()).toContain('pull_request_target:');
+      expect(yml()).toContain('pull-requests: write');
+    });
+
+    it('checks out full history and no head code', () => {
+      // `rev-list -1 <ref> -- <path>` needs the commits that touched each file;
+      // and this workflow must never execute head-controlled content.
+      expect(yml()).toContain('fetch-depth: 0');
+      expect(yml()).toContain('persist-credentials: false');
+      expect(yml()).not.toContain('github.event.pull_request.head.sha');
+    });
+
+    it('checks exactly the files release-please owns', () => {
+      const m = /^for f in (.+); do$/m.exec(disarmShell());
+      expect(m, "the check's `for f in ...; do` loop is gone").not.toBeNull();
+      expect((m as RegExpExecArray)[1]!.trim().split(/\s+/).sort()).toEqual(
+        [CHANGELOG, MANIFEST].sort()
+      );
+    });
+  });
+});

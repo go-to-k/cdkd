@@ -1,0 +1,125 @@
+name: release-pr-staleness
+
+# Disarm auto-merge on a standing release PR that `main` has moved past.
+#
+# THE HAZARD. release-please does not rebuild a release PR whose computed
+# release is unchanged -- it logs `PR #N remained the same` and leaves the
+# branch on the base it was cut from. A `chore:` / `ci:` / `docs:` commit
+# produces no changelog entry, so it lands on `main` WITHOUT the release branch
+# following, and merging the PR then takes the branch's older copy of any file
+# release-please owns. GitHub reports MERGEABLE throughout.
+#
+# WHY ci.yml's `release-pr-not-stale` JOB CANNOT COVER THIS. That job is the
+# right check in the wrong place: a `pull_request` workflow does NOT re-run when
+# the BASE branch moves (its default activity types are `opened`,
+# `synchronize`, `reopened` -- all head-side). So the release PR keeps the green
+# it earned at its last head push, and the hazard is precisely the case where
+# release-please never pushes again. The job still earns its keep for the
+# ordinary case, where a feat/fix lands and release-please rebuilds; this
+# workflow covers the path it structurally cannot see.
+#
+# WHY TWO TRIGGERS, AND WHY NEITHER ALONE IS ENOUGH.
+#   push to main         -- main moves while auto-merge is ALREADY armed.
+#   auto_merge_enabled   -- auto-merge is armed on a PR main moved past EARLIER.
+# The second is the common one and is easy to miss: a release PR sits for days,
+# a `chore:` commit lands, and the maintainer later arms auto-merge on a PR that
+# is green from an old run. It merges immediately. A push-only check never runs
+# at that moment.
+#
+# `pull_request_target`, not `pull_request`: this needs `pull-requests: write`
+# to disarm, and a `pull_request` token is read-only for forks. It runs only
+# base-controlled code -- `gh` and `git` against refs -- and never checks out or
+# executes anything from the head.
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [auto_merge_enabled]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-pr-staleness
+  cancel-in-progress: false
+
+jobs:
+  disarm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Full history: `git rev-list -1 <ref> -- <path>` needs the commits that
+      # touched each owned file, which a shallow clone does not carry.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: disarm auto-merge on a release PR main has moved past
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # The standing release PR, whatever event brought us here. Reading it
+          # back by head-branch prefix rather than from the event payload keeps
+          # both triggers on one code path, and means a `push` run that finds an
+          # armed PR behaves identically to the arm-time run.
+          pr=$(gh pr list --repo "${REPO}" --state open --json number,headRefName \
+                 --jq '[.[] | select(.headRefName | startswith("release-please--"))][0].number // empty')
+          if [ -z "${pr}" ]; then
+            echo "No standing release PR. Nothing to check."
+            exit 0
+          fi
+
+          armed=$(gh pr view "${pr}" --repo "${REPO}" --json autoMergeRequest \
+                    --jq 'if .autoMergeRequest == null then "no" else "yes" end')
+          head_ref=$(gh pr view "${pr}" --repo "${REPO}" --json headRefName --jq .headRefName)
+          git fetch --no-tags --quiet origin "${head_ref}"
+          head=$(git rev-parse FETCH_HEAD)
+
+          stale=""
+          for f in CHANGELOG.md .release-please-manifest.json; do
+            tip=$(git rev-list -1 HEAD -- "${f}")
+            # An empty answer means the file has no history on main at all --
+            # renamed, deleted, or never committed. The check cannot answer the
+            # question it exists to answer, and "cannot answer" is a failure
+            # rather than a pass.
+            if [ -z "${tip}" ]; then
+              echo "::error::${f} has no commit history on main. This check cannot evaluate staleness, so it fails closed. If the file was renamed, update this workflow."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "${tip}" "${head}"; then
+              stale="${stale}${stale:+, }${f} (main: ${tip})"
+            fi
+          done
+
+          if [ -z "${stale}" ]; then
+            echo "Release PR #${pr} is current with main (auto-merge armed: ${armed})."
+            exit 0
+          fi
+
+          echo "::warning::Release PR #${pr} is stale: ${stale}"
+
+          # Disarming is the only ACTION available, so a PR that is not armed
+          # gets a comment and nothing else -- and gets it once, because a
+          # repeat comment on every push to main would bury the signal. The
+          # arm-time trigger is what catches it later.
+          if [ "${armed}" = "yes" ]; then
+            gh pr merge "${pr}" --repo "${REPO}" --disable-auto
+            gh pr comment "${pr}" --repo "${REPO}" --body "$(cat <<EOF
+          Auto-merge has been **disabled** on this pull request: \`main\` has moved past it.
+
+          Stale against: ${stale}
+
+          release-please does not rebuild a release PR whose computed release is unchanged, so a \`chore:\` / \`ci:\` / \`docs:\` commit lands on \`main\` without this branch following. Merging as-is would take this branch's older copy of the file(s) above and revert that commit, and GitHub reports the PR as mergeable throughout.
+
+          To release: close this PR, delete its branch, and re-run the Release workflow (\`workflow_dispatch\`). release-please recomputes the identical release from current \`main\`.
+          EOF
+          )"
+          else
+            echo "Auto-merge is not armed on #${pr}; nothing to disable. The auto_merge_enabled trigger will re-check when it is."
+          fi
