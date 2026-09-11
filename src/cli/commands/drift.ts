@@ -8,6 +8,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
+import type { Logger } from '../../types/config.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import {
   CdkdError,
@@ -132,7 +133,20 @@ import type { ResourceState, StackState } from '../../types/state.js';
  * raised from a catch that ABANDONS the resource, so no outcome carrying it ever
  * reaches the code that computes the other two.
  */
+
 export type NotComparedCause = 'refused' | 'unresolvedToken' | 'readFailed' | 'baselineRefused';
+
+/**
+ * The schema version at which `ResourceState.observedBaselineRefused` arrived.
+ * A record BELOW it could not carry a refusal, which is what
+ * {@link warnIfPreV10BaselineGap} keys on (issue
+ * [#3011](https://github.com/go-to-k/cdkd/issues/3011)).
+ *
+ * A literal rather than `STATE_SCHEMA_VERSION_CURRENT`: this is a FIXED
+ * historical boundary, and binding it to "current" would silently stop warning
+ * about v10 records on the next bump — the population it names does not move.
+ */
+const PRE_V10_BASELINE_WARNING_FLOOR = 10;
 
 /**
  * Per-resource drift outcome surfaced by the drift command.
@@ -337,6 +351,19 @@ interface StackDriftReport {
   etag: string;
   /** When the state was loaded from the legacy v1 key — forwarded to saveState. */
   migrationPending: boolean;
+  /**
+   * Stack-level advisories this run produced, verbatim (issue
+   * [#3011](https://github.com/go-to-k/cdkd/issues/3011)). Carried on the
+   * report so `--json` can surface them: `logger.warn` goes to STDERR while the
+   * payload goes to STDOUT, and a consumer that captures only stdout — the
+   * CI-in-a-pipeline shape, and the one at most risk from the disclosure these
+   * advise about — would otherwise never see them.
+   *
+   * Non-sensitive by construction: every producer interpolates stack / region /
+   * logical ids and counts, never a property value or a readback. A producer
+   * that cannot promise that must not push here.
+   */
+  warnings: string[];
 }
 
 /**
@@ -2876,6 +2903,28 @@ async function runDriftForStack(
       }
     }
 
+    // Issue #3011. The `baselineRefused` gate above can only fire for a record
+    // a v10-or-later binary refused, because only such a binary knew how to
+    // record the refusal. A stack imported by an EARLIER release carries the
+    // same untrustworthy `properties` with nothing marking them, so drift
+    // compares it and — since a refused record spells no `{{resolve:` for the
+    // redaction to key on — can print the live decrypted value.
+    //
+    // The marker cannot reach that population by construction, and the obvious
+    // widening (gate on bare `observedProperties === undefined`) would sweep in
+    // every pre-observed-capture record and every provider without
+    // `readCurrentState`, stopping drift comparing a large and entirely
+    // legitimate set.
+    //
+    // So this warns instead, and the condition is EXACT rather than a guess
+    // about which stacks were imported: `version < 10` is precisely "cdkd could
+    // not have recorded a refusal on this record, whatever it did". It fires
+    // ONCE per stack, changes no behaviour and no exit code, and self-clears on
+    // the stack's first v10 write. The cost is one line on a stack that was
+    // never imported — a warning, not a refusal, and the direction to err in
+    // when the alternative is printing a decrypted secret.
+    const warnings = warnIfPreV10BaselineGap(state, outcomes, logger);
+
     return {
       stackName,
       region,
@@ -2883,8 +2932,92 @@ async function runDriftForStack(
       state,
       etag: result.etag,
       migrationPending: result.migrationPending ?? false,
+      warnings,
     };
   });
+}
+
+/**
+ * Warn once for a stack whose state PREDATES the refused-baseline marker
+ * (`ResourceState.observedBaselineRefused`, state schema v10) and still has a
+ * resource without a drift baseline (issue
+ * [#3011](https://github.com/go-to-k/cdkd/issues/3011)).
+ *
+ * Both conjuncts are load-bearing, and neither is a heuristic:
+ *
+ *  - `version < 10` is not "probably imported" — it is the exact statement that
+ *    this record could not carry a refusal even if one was made. A v10 record
+ *    that omits the field is a record nothing refused, and warning there would
+ *    be false.
+ *  - the missing baseline is what makes the warning ACTIONABLE. A pre-v10 stack
+ *    where every resource has a baseline has nothing for drift to fall back to
+ *    `properties` for, so it cannot hit the disclosure.
+ *
+ * Exported for unit testing -- internal to the drift flow otherwise.
+ */
+export function warnIfPreV10BaselineGap(
+  state: StackState,
+  outcomes: readonly DriftOutcome[],
+  logger: Logger
+): string[] {
+  // `undefined` is a legacy record too, and reads as older than 10 rather than
+  // as "no opinion" -- a record with no version predates every field.
+  if ((state.version ?? 1) >= PRE_V10_BASELINE_WARNING_FLOOR) return [];
+
+  // Only resources drift actually COMPARED can carry the disclosure this warns
+  // about, so the count is taken from the OUTCOMES rather than from the record
+  // (review of issue #3011). `observedProperties === undefined` is also true of
+  // a Custom Resource (`skipped`, issue #323) and of a type no provider reads
+  // back (`unsupported`) -- neither is ever compared, so neither can surface a
+  // live value, and counting them would make this line fire forever on stacks
+  // it has nothing to say about.
+  const compared = new Set(
+    outcomes.flatMap((o) =>
+      matchOutcome<string[]>(o, {
+        drifted: (d) => [d.logicalId],
+        clean: (c) => [c.logicalId],
+        notCompared: (n) => [n.logicalId],
+        unsupported: () => [],
+        skipped: () => [],
+      })
+    )
+  );
+  const affected = Object.entries(state.resources ?? {})
+    .filter(([id, r]) => r.observedProperties === undefined && compared.has(id))
+    .map(([id]) => id);
+  if (affected.length === 0) return [];
+
+  // NAMED, capped: "deploy a change to those resources" naming none is not a
+  // remedy the user can act on, and under `--all` the region is what tells two
+  // same-named stacks apart.
+  const shown = affected.slice(0, 10).join(', ');
+  const rest = affected.length > 10 ? `, and ${affected.length - 10} more` : '';
+  const finding =
+    `${state.stackName} (${state.region ?? 'unknown region'}): this stack's state predates ` +
+    `cdkd's refused-baseline marker (schema v${state.version ?? 1}; the marker arrived in ` +
+    `v${PRE_V10_BASELINE_WARNING_FLOOR}), and ${affected.length} of its compared ` +
+    `resource(s) have no drift baseline: ${shown}${rest}. If any were adopted by ` +
+    `'cdkd import' and that import REFUSED to capture a baseline, cdkd cannot tell — so it ` +
+    `compares them against their recorded properties, which can hold a placeholder the ` +
+    `deployed stack never used and can surface a live secret in this report. ` +
+    `Re-run 'cdkd import' for this stack to put the record right.`;
+  // SEPARATE line, and it is the half a review round had to add. The first
+  // wording said this warning "stops after the stack's next deploy", which is
+  // FALSE and dangerous: `saveState` stamps the CURRENT schema version
+  // unconditionally, so any write — `cdkd drift --accept` / `--revert` in this
+  // very invocation, a NO_CHANGE deploy, a partial save — silences this line
+  // while the untrustworthy properties survive. Worse on the deploy path: the
+  // baseline auto-refresh then refills those resources FROM those same
+  // properties, with no marker to stop it, so the thing that silences the
+  // warning is the disclosure itself.
+  const note =
+    `  Note: ANY write to this stack's state — including this run's --accept / --revert, ` +
+    `or a deploy that changes nothing about the resources above — re-stamps it at the ` +
+    `current schema version and SILENCES this warning without fixing those records. ` +
+    `Only a re-import, or a deploy that actually CHANGES a listed resource, repairs one.`;
+  logger.warn(finding);
+  logger.warn(note);
+  return [finding, note];
 }
 
 /**
@@ -5931,6 +6064,20 @@ interface StackDriftJson {
    */
   clean: Array<{ logicalId: string; type: string; referencesUnresolved: false }>;
   notSupported: Array<{ logicalId: string; type: string }>;
+  /**
+   * Stack-level advisories, verbatim (issue
+   * [#3011](https://github.com/go-to-k/cdkd/issues/3011)). OMITTED when empty,
+   * so an ordinary payload is byte-identical to what a pre-#3011 consumer
+   * parsed.
+   *
+   * It exists because the warnings go to STDERR and this payload goes to
+   * STDOUT: a consumer capturing only stdout — the CI-in-a-pipeline shape, and
+   * the one most exposed to the disclosure these advise about — could not see
+   * them at all. Strings rather than a structured shape on purpose: they are an
+   * advisory for a human reading a log, not a field to branch on, and inventing
+   * a schema for them would invite exactly that.
+   */
+  warnings?: string[];
   /** Issue #323: Custom Resources (drift not applicable). */
   skipped: Array<{ logicalId: string; type: string }>;
   /**
@@ -6014,6 +6161,8 @@ function writeJsonReport(reports: StackDriftReport[]): void {
     return {
       stack: r.stackName,
       region: r.region,
+      // Omitted when empty — see the field's doc.
+      ...(r.warnings.length > 0 && { warnings: r.warnings }),
       drifted,
       clean,
       notSupported,

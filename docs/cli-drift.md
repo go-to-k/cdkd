@@ -123,8 +123,23 @@ A **clean** verdict never means anything except compared-and-matched.
 The `baselineRefused` cause is recorded on the state record, which means it only
 covers a refusal made by a cdkd that knew how to record one (state schema v10 and
 later). A stack imported by an older release carries the same untrustworthy
-properties with nothing marking them, and `cdkd drift` still compares it — re-run
-`cdkd import`, or deploy a change to the resource, to put the record right.
+properties with nothing marking them, and `cdkd drift` still compares it.
+
+cdkd cannot tell those apart from the record, so it **says so** instead: when a
+stack's state predates v10 and any of the resources it compared has no drift
+baseline, `cdkd drift` names the stack, the region, and those resources. It is a
+warning rather than a refusal because the same condition also describes stacks
+that were never imported at all.
+
+**The warning going away does not mean the records were fixed.** cdkd stamps the
+current schema version on every state write, so *any* write — `--accept` or
+`--revert` in the same run, or a deploy that changes nothing about those
+resources — silences the warning while leaving the untrustworthy properties in
+place. On the deploy path it is worse: the baseline refresh then refills those
+resources *from* those same properties. The warning says this itself, and the
+reliable remedy is to **re-run `cdkd import`** for the stack — or to deploy a
+change that actually touches a listed resource, which rebuilds its record from
+your template.
 
 A **drifted** resource can be partially compared too: the changes it reports
 are real, but they are not the whole comparison, so it carries
@@ -783,6 +798,27 @@ resolved.
   }
 ]
 ```
+
+A report may also carry a `warnings` array of stack-level advisory strings. It
+is **omitted when there is nothing to say**, so an ordinary payload is unchanged.
+It exists because cdkd's warnings go to stderr while this payload goes to
+stdout — a pipeline that captures only stdout would otherwise miss them:
+
+```json
+[
+  {
+    "stack": "LegacyStack",
+    "region": "us-east-1",
+    "warnings": [
+      "LegacyStack (us-east-1): this stack's state predates cdkd's refused-baseline marker ..."
+    ],
+    "drifted": []
+  }
+]
+```
+
+The strings are for a human reading a log, not fields to branch on — they carry
+stack names, regions, logical ids and counts, never a property value.
 
 A populated `notCompared`, showing the two per-entry keys:
 

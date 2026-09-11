@@ -134,6 +134,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 import {
   createDriftCommand,
   collectNarrowedTopLevelKeys,
+  warnIfPreV10BaselineGap,
 } from '../../../src/cli/commands/drift.js';
 
 function captureStdout(): { output: string[]; restore: () => void } {
@@ -1326,6 +1327,160 @@ describe('cdkd drift', () => {
     expect(messages).toMatch(/--accept and --revert are mutually exclusive/);
     // saveState / provider.update never run when the flags collide.
     expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  describe('pre-v10 baseline gap warning (issue #3011)', () => {
+    // The marker can only exist on a record a v10-or-later binary wrote, so the
+    // #2952 gate cannot reach a stack imported by an earlier release. This warns
+    // instead, on an EXACT condition rather than a guess about which stacks were
+    // imported.
+    const logger = () => {
+      const warn = vi.fn();
+      return {
+        spy: warn,
+        logger: { warn, info: vi.fn(), debug: vi.fn(), error: vi.fn(), setLevel: vi.fn() },
+      };
+    };
+    const stateAt = (version: number, observed?: Record<string, unknown>) =>
+      ({
+        version,
+        stackName: 'LegacyStack',
+        region: 'us-east-1',
+        resources: {
+          NoBaseline: {
+            physicalId: 'p1',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { Password: 'dev-placeholder' },
+            ...(observed && { observedProperties: observed }),
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      }) as unknown as Parameters<typeof warnIfPreV10BaselineGap>[0];
+
+    // The resource was COMPARED — which is what makes it able to carry the
+    // disclosure. `skipped` / `unsupported` outcomes are the control below.
+    const comparedOutcomes = [
+      { kind: 'clean', logicalId: 'NoBaseline', resourceType: 'AWS::SQS::Queue' },
+    ] as unknown as Parameters<typeof warnIfPreV10BaselineGap>[1];
+
+    it('warns for a PRE-v10 stack with a resource lacking a baseline', () => {
+      const { spy, logger: l } = logger();
+      warnIfPreV10BaselineGap(stateAt(9), comparedOutcomes, l as never);
+      // TWO lines: the finding, then the note that any state write silences it.
+      expect(spy).toHaveBeenCalledTimes(2);
+      const said = String(spy.mock.calls[0]![0]);
+      // Names the stack, the count, and the remedy — a warning a user cannot
+      // act on is noise, and this one competes with real drift output.
+      expect(said).toContain('LegacyStack');
+      expect(said).toContain('1 of its compared resource(s)');
+      // Names the resource — "deploy a change to those resources" naming none
+      // is not a remedy anyone can act on.
+      expect(said).toContain('NoBaseline');
+      // ...and the region, which is what tells two same-named stacks apart
+      // under `--all`.
+      expect(said).toContain('us-east-1');
+      expect(said).toMatch(/re-run 'cdkd import'/i);
+    });
+
+    it('says that ANY state write silences it without fixing the record', () => {
+      // The blocker a review round found. The first wording claimed the warning
+      // "stops after the stack's next deploy", which reads as "the remedy took
+      // effect" and is FALSE: `saveState` stamps the current schema version
+      // unconditionally, so `--accept` / `--revert` in this very run, or a
+      // NO_CHANGE deploy, silence this line while the untrustworthy properties
+      // survive — and on the deploy path the baseline auto-refresh then refills
+      // them FROM those properties, so the thing that silences the warning is
+      // the disclosure itself.
+      const { spy, logger: l } = logger();
+      warnIfPreV10BaselineGap(stateAt(9), comparedOutcomes, l as never);
+      const note = String(spy.mock.calls[1]![0]);
+      expect(note).toMatch(/SILENCES this warning without fixing/i);
+      expect(note).toMatch(/--accept/);
+      // And it must NOT repeat the retired claim.
+      const all = spy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(all).not.toMatch(/stops after the stack's next deploy/i);
+    });
+
+    it('surfaces the advisory in the --json payload, which is where CI can see it', async () => {
+      // The warning goes to STDERR; the payload goes to STDOUT. A consumer that
+      // captures only stdout — the CI-in-a-pipeline shape, and the one most
+      // exposed to the disclosure this advises about — would otherwise never
+      // see it. Driven END-TO-END rather than off the helper, because the
+      // property under test is that the two halves are WIRED.
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'LegacyStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce({
+        state: {
+          version: 9,
+          stackName: 'LegacyStack',
+          region: 'us-east-1',
+          resources: {
+            NoBaseline: {
+              physicalId: 'p1',
+              resourceType: 'AWS::SQS::Queue',
+              properties: { Password: 'dev-placeholder' },
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        },
+        etag: 'e1',
+      });
+      mockRegistryGetProvider.mockImplementation(() => ({
+        readCurrentState: async () => ({ Password: 'dev-placeholder' }),
+      }));
+
+      const { output } = await runDrift(['LegacyStack', '--json']);
+      const payload = JSON.parse(output) as Array<{ warnings?: string[] }>;
+
+      expect(payload[0]?.warnings?.length).toBe(2);
+      expect(payload[0]!.warnings!.join('\n')).toContain('predates');
+      // Non-sensitive by construction: ids and counts, never a property value.
+      expect(payload[0]!.warnings!.join('\n')).toContain('NoBaseline');
+    });
+
+    it('ignores resources drift never COMPARED (skipped / unsupported)', () => {
+      // The second conjunct made exact. `observedProperties === undefined` is
+      // also true of a Custom Resource and of a type no provider reads back —
+      // neither is ever compared, so neither can surface a live value, and
+      // counting them would fire this line forever on stacks it has nothing to
+      // say about.
+      const { spy, logger: l } = logger();
+      const notCompared = [
+        { kind: 'skipped', logicalId: 'NoBaseline', resourceType: 'Custom::Thing' },
+      ] as unknown as Parameters<typeof warnIfPreV10BaselineGap>[1];
+      warnIfPreV10BaselineGap(stateAt(9), notCompared, l as never);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT warn for a v10 stack, whatever its baselines look like', () => {
+      // The discriminator. A v10 record that omits the marker is a record
+      // nothing refused — warning there would be false, and would fire on the
+      // ordinary "provider has no readCurrentState" population forever.
+      const { spy, logger: l } = logger();
+      warnIfPreV10BaselineGap(stateAt(10), comparedOutcomes, l as never);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT warn for a pre-v10 stack whose resources all HAVE a baseline', () => {
+      // The second conjunct. With a baseline everywhere, drift never falls back
+      // to `properties`, so the disclosure this warns about cannot happen and
+      // the line would be pure noise.
+      const { spy, logger: l } = logger();
+      warnIfPreV10BaselineGap(stateAt(9, { Password: 'live' }), comparedOutcomes, l as never);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('treats a version-less legacy record as older than v10', () => {
+      // A record with no `version` predates every field, so `?? 1` must read as
+      // legacy rather than as "no opinion" — defaulting it to current would
+      // silence the warning for the oldest records of all.
+      const { spy, logger: l } = logger();
+      const legacy = stateAt(9) as unknown as Record<string, unknown>;
+      delete legacy['version'];
+      warnIfPreV10BaselineGap(legacy as never, comparedOutcomes, l as never);
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('detection gates an import-REFUSED record (issue #2952)', () => {

@@ -78,7 +78,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-09-05T22:48:21Z	PASS	94	verify.sh	PR2662 gate run; destroy 3 deleted 0 errors, 0 orphans
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-09-05T14:04:48Z	PASS	75	verify.sh	rc 0, real deploy+destroy 2 deleted 0 errors, 0 ECR orphans, state gone
-drift-revert	2026-09-11T12:02:06Z	PASS	163	verify.sh	2952 review fixes; broad set
+drift-revert	2026-09-11T13:09:51Z	PASS	162	verify.sh	3011 review fixes; broad set
 drift-revert-arrays	2026-09-10T13:40:26Z	PASS	192	verify.sh	gating PR 2912 (#2884/#2893 name it); rc0, 19 deleted 0 errors, orphan log group swept
 drift-revert-vpc	2026-09-10T21:55:30Z	PASS	301	verify.sh	broad-set gate for PR 2924 round-5 tree (383f4d75). The prior broad run predates the opt-in, the structured RedactedAttributeRead entries and the bag-scope change, all of which sit on every deploy's resolveOutputs / resolveRefValue / buildResolverContext path. All 7 steps: deploy 21, inject drift, drift exit 1, --revert -y, drift exit 0, destroy. 21 created / 21 deleted, 0 errors; orphan scan clean across VPC / subnets / SG / ENI / IGW / route tables / EFS / ASG / LaunchTemplate / TargetGroup / ServiceDiscovery / IAM. 533 surviving state.json versions are prior-run history: fixture greps clean for secret material and the newest surviving version holds 0 dynamic refs and 0 masks over VPC + EFS only
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
