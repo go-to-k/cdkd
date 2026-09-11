@@ -54,8 +54,11 @@ before any other set may be split this way:
   creates, updates, reopens and closes each one from `main`'s coverage map; no
   triage, no claim, no filing. Every backlog listing in `triage.md` — §1's, §3-0's
   cutoff query and §3-a's two signal queries — EXCLUDES the label for that
-  reason; a listing that grows here must carry it too, or the ~44 come straight
-  back onto the shortlist.
+  reason, and so does §10's folded-finding count in `retro.md`, where it matters
+  MOST: that one selects issues whose body gained a `- [ ] ` row, and a sync
+  rewrites every sub-issue with a body that is nothing else. A listing added to
+  either file must carry it, or the ~44 come straight back — onto the shortlist,
+  or into a retro's finding count.
 - **It is not one root cause.** A resource type is a provider with its own SDK
   input shape, its own drift read-back and its own integration fixture — no
   single sentence describes the fix at every site, which is this rule's own

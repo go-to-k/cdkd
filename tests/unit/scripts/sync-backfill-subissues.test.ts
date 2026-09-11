@@ -15,7 +15,8 @@
  * reason a multi-line issue body never reaches a shell.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +29,7 @@ import {
   SUBISSUE_LABEL,
   applyAction,
   fetchExisting,
+  fetchLinked,
   linkSubIssue,
   planReconciliation,
   readMarkerType,
@@ -108,15 +110,58 @@ describe('readMarkerType', () => {
     // mechanism, and a review can quote a body back into a comment. Matching
     // mid-line would bind an issue to a type it merely mentions.
     //
-    // The BEHAVIOUR is what is asserted; which clause rejects it is recorded in
-    // `readMarkerType`'s own comment, because measuring it changed the answer:
-    // relaxing `startsWith` to `includes` leaves this green (an equivalent
-    // mutation — the fixed-offset slice shifts and fails the type class), so an
-    // assertion claiming to fence the anchor would be claiming a fence it does
-    // not have. The case below is the one that discriminates, and the
-    // type-class case that follows is where the probe goes red.
+    // Relaxing `startsWith` to `includes` leaves this green — an EQUIVALENT
+    // mutation, because the fixed-offset slice shifts and fails the type class.
+    // So this case fences the behaviour, not the anchor, and the two cases
+    // below fence the two clauses that are NOT equivalent.
     expect(readMarkerType(`see the ${subIssueTypeMarker('AWS::S3::Bucket')} marker`)).toBeUndefined();
     expect(readMarkerType(`  ${subIssueTypeMarker('AWS::S3::Bucket')}`)).toBeUndefined();
+  });
+
+  it('needs the line anchor for a line with NO marker that still slices clean', () => {
+    // DELETING `startsWith` is a different mutation from relaxing it to
+    // `includes`, and this one is NOT equivalent — but the discriminating input
+    // is not what it first looks like. Prose followed by a real marker does not
+    // work: that shifts the fixed-offset slice INTO `<!-- backfill-type: `,
+    // which the type class rejects anyway, so such a case survives the mutation
+    // and proves nothing (measured — the first version of this case did exactly
+    // that).
+    //
+    // What discriminates is a line carrying NO marker at all, whose bytes just
+    // happen to line up: any text ending in ` -->` with a class-valid substring
+    // starting at offset `MARKER_PREFIX.length`. Without the anchor, such a line
+    // binds a live issue to a type it never mentioned.
+    const decoy = 'Mentioned in review AWS::S3::Bucket -->';
+    expect(decoy).not.toContain(MARKER_PREFIX);
+    expect(
+      decoy.slice(MARKER_PREFIX.length, decoy.length - MARKER_SUFFIX.length),
+      'the decoy does not slice to a class-valid type, so this case proves nothing'
+    ).toBe('AWS::S3::Bucket');
+    expect(readMarkerType(decoy)).toBeUndefined();
+  });
+
+  it('needs the suffix test, whose absence TRUNCATES rather than rejects', () => {
+    // The worst of the three to lose, because it fails silently instead of
+    // loudly. Without `endsWith`, a marker whose closing `-->` was mangled
+    // yields a truncated but perfectly CLASS-VALID type — `AWS::S3::Bucke` —
+    // which no plan can ever match. That issue is then never updated and never
+    // closed, and the real type looks new and gets a duplicate: the outcome
+    // refusal 2 exists to prevent, reached PAST refusal 2, which only sees
+    // types it could not read at all.
+    const mangled = `${MARKER_PREFIX}AWS::S3::BucketX`;
+    expect(readMarkerType(mangled)).toBeUndefined();
+    // The discriminator, DERIVED rather than hard-coded — a literal expectation
+    // here was wrong by one character on the first attempt, and a wrong literal
+    // in a case about truncation would have been a quiet joke at its own
+    // expense. What makes this dangerous is not that the value differs from the
+    // real type but that it is CLASS-VALID: the type-class test cannot catch it,
+    // so `endsWith` is the only thing standing between a mangled marker and an
+    // issue keyed to a string no plan will ever match.
+    const truncated = mangled.slice(MARKER_PREFIX.length, mangled.length - MARKER_SUFFIX.length);
+    expect(truncated).not.toBe('AWS::S3::Bucket');
+    expect(truncated, 'the truncation is not class-valid, so this case proves nothing').toMatch(
+      /^[A-Z][\w:]+$/
+    );
   });
 
   it('refuses a name outside the coverage map\'s own type class', () => {
@@ -397,6 +442,85 @@ describe('the gh calls', () => {
     expect(() => linkSubIssue(run, 'go-to-k/cdkd', 2762, 900)).toThrow(/refusing to POST/);
   });
 
+  it('refuses a listing that came back at exactly the limit', () => {
+    // `gh` returns newest-first, so a truncated page drops the OLDEST issues —
+    // which then look new and get duplicated, the unrecoverable outcome refusal
+    // 2 guards from the other side. A full page and a truncated one are
+    // indistinguishable, so the boundary is the only signal there is.
+    const full = JSON.stringify(
+      Array.from({ length: MAX_SUB_ISSUES * 2 }, (_, i) => ({
+        number: i + 1,
+        state: 'OPEN',
+        title: 't',
+        body: 'b',
+      }))
+    );
+    const { run } = recorder([full]);
+    expect(() => fetchExisting(run, 'go-to-k/cdkd')).toThrow(/may be\s+truncated/);
+  });
+
+  it('targets ONE repository from every call, read half and write half alike', () => {
+    // Two resolution rules is how the halves come to disagree about which
+    // repository they are reconciling: the read half could infer from the git
+    // remote while the write half used $REPO. Asserted per ACTION KIND rather
+    // than once — `create` carried `--repo` while `edit` / `reopen` / `close`
+    // did not, and a single-kind case cannot see that.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-subissue-'));
+    try {
+      const kinds: Action[] = [
+        { kind: 'create', type: 'T', title: 'T', body: 'b' },
+        { kind: 'update', number: 10, type: 'T', title: 'T', body: 'b' },
+        { kind: 'reopen', number: 10, type: 'T' },
+        { kind: 'close', number: 10, type: 'T' },
+      ];
+      for (const action of kinds) {
+        const { run, calls } = recorder(['https://github.com/go-to-k/cdkd/issues/900']);
+        applyAction(run, 'go-to-k/cdkd', action, dir);
+        const argv = calls[0]!;
+        expect(argv, `${action.kind} does not name the repository`).toContain('--repo');
+        expect(argv[argv.indexOf('--repo') + 1]).toBe('go-to-k/cdkd');
+      }
+      // And the read half, which is the one that could have inferred it.
+      const { run, calls } = recorder(['[]']);
+      fetchExisting(run, 'go-to-k/cdkd');
+      expect(calls[0]).toContain('--repo');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes an UPDATED body by file too, not only a created one', () => {
+    // The `update` arm rewrites a ~44-line body on every type whose properties
+    // moved. Asserted separately because the `--body-file` invariant was pinned
+    // for `create` alone, so an update arm switching to `--body` would ship the
+    // whole body through argv with the suite green.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-subissue-'));
+    try {
+      const { run, calls } = recorder(['']);
+      applyAction(
+        run,
+        'go-to-k/cdkd',
+        { kind: 'update', number: 10, type: 'T', title: 'T', body: 'line one\nline two\n' },
+        dir
+      );
+      expect(calls[0]).toContain('--body-file');
+      expect(calls[0]!.some((a) => a.includes('line two'))).toBe(false);
+      expect(calls[0]!.slice(0, 3)).toEqual(['issue', 'edit', '10']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads the parent\'s already-linked children, paginated', () => {
+    // Without this the link loop re-POSTs every child on every run. `--paginate`
+    // is the load-bearing flag: a parent at 44 children spans more than one page
+    // of the default size, so an unpaginated read reports the tail as unlinked.
+    const { run, calls } = recorder(['900\n901\n\n902\n']);
+    expect(fetchLinked(run, 'go-to-k/cdkd', 2762)).toEqual(new Set([900, 901, 902]));
+    expect(calls[0]).toContain('--paginate');
+    expect(calls[0]).toContain('repos/go-to-k/cdkd/issues/2762/sub_issues');
+  });
+
   it('links by database id, under the parent', () => {
     const { run, calls } = recorder(['123456', '']);
     linkSubIssue(run, 'go-to-k/cdkd', 2762, 900);
@@ -567,38 +691,55 @@ describe('cross-file fences', () => {
     // was universal, so the corpus carried a false statement about its own
     // mechanism with a green test beside it. A listing added later must fail
     // here rather than be remembered.
-    const triage = readFileSync(
-      join(REPO_ROOT, '.claude/skills/work-issues/references/triage.md'),
-      'utf8'
+    // The population is BOTH files that list open issues, not `triage.md`
+    // alone: `retro.md` counts issues whose body gained a `- [ ] ` row, and a
+    // sync rewrites every generated sub-issue with a body that is nothing but
+    // such rows — so a run touching none of them would report up to 44 findings
+    // folded. Found in review, after a first cut scoped to triage.md.
+    const sources = ['triage.md', 'retro.md'].map((f) =>
+      readFileSync(join(REPO_ROOT, '.claude/skills/work-issues/references', f), 'utf8')
     );
     // Per COMMAND, not per fenced block: §3-a carries TWO listings in one
     // block, so a block-granular scan found 3 where there are 4 and would have
     // passed with one of them unfiltered. Commands are separated by blank lines
     // inside a block.
-    const blocks = triage.split('```').filter((_, i) => i % 2 === 1);
-    const listings = blocks
+    const listings = sources
+      .flatMap((src) => src.split('```').filter((_, i) => i % 2 === 1))
       .flatMap((b) => b.split(/\n\s*\n/))
       .filter(
         (c) =>
           c.includes('repos/{owner}/{repo}/issues?state=open') ||
           c.includes('gh issue list --state open')
       );
-    expect(listings.length, 'no backlog listing was found — this fence is scanning nothing').toBe(4);
+    expect(
+      listings.length,
+      'the backlog-listing scan found a different number than the 5 this fence was calibrated ' +
+        'against — a listing was added, removed, or reshaped past what the split recognises'
+    ).toBe(5);
     for (const listing of listings) {
-      const first = listing.trim().split('\n').find((l) => l.trim().startsWith('gh')) ?? listing.slice(0, 60);
+      const first =
+        listing.trim().split('\n').find((l) => l.trim().startsWith('gh')) ?? listing.slice(0, 60);
+      // NEGATED, not merely mentioned. Dropping `| not` inverts every shortlist
+      // to the bot issues and would otherwise pass — the filter naming the label
+      // is the half that is easy to assert and the wrong half.
       expect(
-        listing.includes(`index("${SUBISSUE_LABEL}")`) ||
-          listing.includes(`index(\\"${SUBISSUE_LABEL}\\")`),
-        `this backlog listing does not exclude '${SUBISSUE_LABEL}': ${first}`
+        /index\((\\)?"backfill-type(\\)?"\)\s*\|\s*not/.test(listing),
+        `this backlog listing does not EXCLUDE '${SUBISSUE_LABEL}': ${first}`
       ).toBe(true);
     }
     // And `filing.md`'s claim ABOUT that exclusion, which is the sentence a
     // future session reads before deciding whether to consolidate the set back.
+    // Asserted as the ENUMERATION, because the claim this replaced was the false
+    // universal "§3's backlog listing EXCLUDES the label" — which contains the
+    // substring a `toContain('EXCLUDES the label')` would have matched, so
+    // reverting to the false sentence kept that assertion green.
     const filing = readFileSync(
       join(REPO_ROOT, '.claude/skills/work-issues/references/filing.md'),
       'utf8'
     );
-    expect(filing).toContain('EXCLUDES the label');
+    expect(filing).toMatch(/Every backlog listing in `triage\.md`/);
+    expect(filing).toContain('§3-0');
+    expect(filing).toContain('§3-a');
   });
 
   it('keys on ONE marker spelling, aliased rather than re-typed', () => {
@@ -620,4 +761,168 @@ describe('cross-file fences', () => {
       expect(VALUELESS_FLAGS.has(flag), `${flag} is not declared valueless`).toBe(true);
     }
   });
+});
+
+/**
+ * The CLI half, SPAWNED.
+ *
+ * Everything above drives exported functions; `main()` and `isMain()` were
+ * reached by nothing, and the live workflow case stubs `node` away entirely —
+ * so the argv parsing, the `REPO` / `PARENT` / `INDEX_OUT` contract, the
+ * usage exit, the not-a-plan refusal, the exit-1-vs-2 split the file's header
+ * argues at length, and both operator recovery flags the runbook documents
+ * (`--dry-run`, `--allow-empty-plan`) were untested. That is the half that
+ * writes ~44 public issues.
+ *
+ * A stub `gh` on PATH keeps every case offline AND is the assertion for the
+ * most important one: a dry run must issue no writing verb. The stub fails
+ * CLOSED on anything it does not model, so a case cannot pass by reaching a
+ * command nobody thought about.
+ */
+describe('the CLI, spawned', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/sync-backfill-subissues.ts');
+
+  function sandbox(listing: unknown[]) {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-subissue-cli-'));
+    const bin = join(dir, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(dir, 'listing.json'), JSON.stringify(listing));
+    writeFileSync(
+      join(bin, 'gh'),
+      `#!/bin/bash
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list") cat "$GH_LISTING" ;;
+  *) echo "stub gh: unmodelled subcommand: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 }
+    );
+    return { dir, bin, log: join(dir, 'gh.log') };
+  }
+
+  const spawnCli = (
+    box: ReturnType<typeof sandbox>,
+    args: string[],
+    env: Record<string, string>
+  ) =>
+    spawnSync(process.execPath, [SCRIPT, ...args], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${box.bin}:${process.env['PATH'] ?? ''}`,
+        HOME: box.dir,
+        GH_LOG: box.log,
+        GH_LISTING: join(box.dir, 'listing.json'),
+        ...env,
+      },
+    });
+
+  const planFile = (dir: string, plan: unknown) => {
+    const p = join(dir, 'plan.json');
+    writeFileSync(p, JSON.stringify(plan));
+    return p;
+  };
+
+  it('a --dry-run plans everything and writes NOTHING', () => {
+    // The runbook's "see what a run WOULD do" recipe. Asserted by what the stub
+    // `gh` was asked for, not by the exit code: a dry run that silently created
+    // issues would exit 0 too.
+    const box = sandbox([]);
+    try {
+      const plan = planFile(box.dir, { types: [entry('AWS::S3::Bucket', ['A'])] });
+      const res = spawnCli(box, [plan, '--dry-run'], { REPO: 'go-to-k/cdkd', PARENT: '2762' });
+      expect(res.status, res.stderr).toBe(0);
+      expect(res.stdout).toContain('create AWS::S3::Bucket');
+      expect(res.stdout).toContain('1 action(s) planned; nothing written.');
+      const calls = readFileSync(box.log, 'utf8');
+      expect(calls).toContain('gh issue list');
+      for (const verb of ['issue create', 'issue edit', 'issue close', 'issue reopen', 'api']) {
+        expect(calls, `a dry run reached '${verb}'`).not.toContain(verb);
+      }
+    } finally {
+      rmSync(box.dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('refuses a document that is not a plan with exit 2, not 1', () => {
+    // The split the header argues: 1 is a REFUSAL a human acts on from the
+    // runbook, 2 is "could not evaluate". Collapsing them makes the runbook's
+    // per-refusal recovery unreachable.
+    const box = sandbox([]);
+    try {
+      const plan = planFile(box.dir, { notTypes: [] });
+      const res = spawnCli(box, [plan, '--dry-run'], { REPO: 'go-to-k/cdkd', PARENT: '2762' });
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("has no 'types' array");
+    } finally {
+      rmSync(box.dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('refuses an empty plan while a sub-issue is open, and --allow-empty-plan clears it', () => {
+    // Both halves, because a refusal with no way through would leave a genuinely
+    // finished campaign with 44 issues open forever — and the flag is the
+    // runbook's documented recovery.
+    const open = {
+      number: 10,
+      state: 'OPEN',
+      title: 't',
+      body: renderSubIssueBody({ type: 'AWS::S3::Bucket', properties: ['A'] }),
+    };
+    const box = sandbox([open]);
+    try {
+      const plan = planFile(box.dir, { types: [] });
+      const env = { REPO: 'go-to-k/cdkd', PARENT: '2762' };
+      const refused = spawnCli(box, [plan, '--dry-run'], env);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain('--allow-empty-plan');
+
+      const allowed = spawnCli(box, [plan, '--dry-run', '--allow-empty-plan'], env);
+      expect(allowed.status, allowed.stderr).toBe(0);
+      expect(allowed.stdout).toContain('close AWS::S3::Bucket');
+    } finally {
+      rmSync(box.dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('needs REPO and PARENT, and says so with exit 2', () => {
+    // `REPO` is the one the live workflow case cannot see — its spawn env omits
+    // it — so a step that stopped exporting it would fail only at runtime.
+    const box = sandbox([]);
+    try {
+      const plan = planFile(box.dir, { types: [] });
+      const partial: Record<string, string>[] = [
+        { PARENT: '2762' },
+        { REPO: 'go-to-k/cdkd' },
+        {},
+      ];
+      for (const env of partial) {
+        const res = spawnCli(box, [plan], env);
+        expect(res.status, `missing env was accepted: ${JSON.stringify(env)}`).toBe(2);
+        expect(res.stderr).toContain('usage:');
+      }
+      // And a PARENT that is not a positive integer is not a parent.
+      const bad = spawnCli(box, [plan], { REPO: 'go-to-k/cdkd', PARENT: 'not-a-number' });
+      expect(bad.status).toBe(2);
+    } finally {
+      rmSync(box.dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('writes the INDEX only when asked, and the index is the per-type one', () => {
+    const box = sandbox([]);
+    try {
+      const plan = planFile(box.dir, { types: [entry('AWS::S3::Bucket', ['A', 'B'])] });
+      const out = join(box.dir, 'index.md');
+      // A dry run must not write it either — it is a side effect like any other.
+      spawnCli(box, [plan, '--dry-run'], {
+        REPO: 'go-to-k/cdkd',
+        PARENT: '2762',
+        INDEX_OUT: out,
+      });
+      expect(existsSync(out), 'a dry run wrote the index file').toBe(false);
+    } finally {
+      rmSync(box.dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

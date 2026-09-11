@@ -234,7 +234,10 @@ jobs:
           # make that state unrepresentable -- the defect that once killed this
           # step under `set -e` with no annotation and left the umbrella's stale
           # rows standing permanently.
-          grep -qE '^- \[ \] |^_No remaining silent-drop properties' /tmp/index.md
+          grep -qE '^- \[ \] |^_No remaining silent-drop properties' /tmp/index.md || {
+            echo "::error::The rendered index is neither rows nor the finished-campaign sentinel, so it was NOT spliced into umbrella #${umbrella}. The sub-issues are current; the parent is one run behind."
+            exit 1
+          }
 
           U=$(mktemp)
           # The chaining and the `-s` test are load-bearing, not style: the

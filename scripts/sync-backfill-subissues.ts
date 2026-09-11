@@ -137,19 +137,36 @@ export type Action =
 /**
  * Read the resource type an issue body declares, or `undefined`.
  *
- * Three tests, and only the third is load-bearing on its own — measured, not
- * assumed. A marker QUOTED inside prose (this file's own documentation, a
- * comment explaining the mechanism, a review quoting a body back) must not be
- * mistaken for the real one, and what actually rejects it is the TYPE-CLASS
- * test below: the type is sliced at a fixed offset, so any prose before the
- * marker shifts the slice and it comes back carrying a tail of
- * `backfill-type: ` or of the prose itself, neither of which matches. Relaxing
- * `startsWith` to `includes` is therefore an EQUIVALENT mutation here (probed:
- * the suite stays green), and `endsWith` alone already rejects trailing text.
- * The line-start test stays because it states the intent at the point of the
- * read and costs nothing — but do not read it as the guard, and do not delete
- * the class test on the theory that the anchor covers it. Same reasoning as the
- * parent splice's `grep -Fx` and the dup-check marker's line anchor.
+ * Three tests, each catching something the others do not — measured one clause
+ * at a time, because a first reading of this guard got the division of labour
+ * wrong in both directions:
+ *
+ *   - **The TYPE CLASS** is what rejects a marker QUOTED inside prose (this
+ *     file's own documentation, a comment explaining the mechanism, a review
+ *     quoting a body back). The type is sliced at a FIXED offset, so any text
+ *     before the marker shifts the slice and it returns a tail of
+ *     `backfill-type: ` or of the prose. Relaxing `startsWith` to `includes` is
+ *     therefore an EQUIVALENT mutation, and an assertion "fencing the anchor"
+ *     would be claiming something it does not have.
+ *   - **`startsWith`** is NOT equivalent to deleting it, though the input that
+ *     shows it is not the obvious one. Prose followed by a REAL marker does not
+ *     discriminate — that shifts the slice into `backfill-type: `, which the
+ *     class rejects anyway. What discriminates is a line carrying no marker at
+ *     all whose bytes line up: any text ending in ` -->` with a class-valid
+ *     substring at offset `MARKER_PREFIX.length`, e.g.
+ *     `"Mentioned in review AWS::S3::Bucket -->"`. Without the anchor that
+ *     binds a live issue to a type it never mentioned.
+ *   - **`endsWith`** is the one whose absence is worst, and its failure is
+ *     silent rather than loud. A marker with a MANGLED suffix
+ *     (`<!-- backfill-type: AWS::S3::BucketXXXX`) then yields the TRUNCATED
+ *     `AWS::S3::Bucke` — a perfectly class-valid string that no plan can ever
+ *     match. That issue is never updated and never closed, and the real type
+ *     looks new and gets a duplicate: refusal 2's exact outcome, reached PAST
+ *     refusal 2, which only sees types it could not read at all.
+ *
+ * So delete none of the three on the theory that another covers it. Same
+ * reasoning as the parent splice's `grep -Fx` and the dup-check marker's line
+ * anchor.
  *
  * `\r` is stripped first. A body edited in the GitHub WEB UI is stored with
  * CRLF, so the marker line ends `-->\r` and a suffix test against `' -->'`
@@ -486,6 +503,11 @@ function isMain(): boolean {
 /**
  * The CLI, as a function rather than a top-level block.
  *
+ * Named `main`, not `run`: every helper in this file takes a parameter named
+ * `run` (the injected {@link Runner}), so a `run()` at module scope is a name a
+ * future edit inside one of them could reach — calling the Runner with no
+ * arguments instead of the CLI, silently.
+ *
  * `process.exit()` is deliberately absent from every path. On POSIX a `stderr`
  * connected to a PIPE — which is what a GitHub Actions runner gives it — is
  * ASYNCHRONOUS, and `process.exit` drops whatever has not flushed. The line it
@@ -494,7 +516,7 @@ function isMain(): boolean {
  * message is a red run nobody can act on. Setting `exitCode` and returning lets
  * Node drain first.
  */
-function run(): void {
+function main(): void {
   const args = process.argv.slice(2);
   const planPath = args.find((a) => !a.startsWith('-'));
   const allowEmptyPlan = args.includes('--allow-empty-plan');
@@ -559,4 +581,4 @@ function run(): void {
   }
 }
 
-if (isMain()) run();
+if (isMain()) main();

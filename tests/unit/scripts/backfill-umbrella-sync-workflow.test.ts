@@ -289,6 +289,18 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       );
       expect(accepted, 'the splice no longer accepts the finished-campaign sentinel').not.toBeNull();
       expect(UMBRELLA_EMPTY_SENTINEL.startsWith(accepted![1]!)).toBe(true);
+      // ANNOTATED, not bare. A bare `grep -q` under `set -euo pipefail` kills
+      // the step with no annotation — which is the very defect the comment
+      // beside it cites, reproduced by restoring the guard that documents it.
+      // It fires AFTER the reconciler has mutated ~44 issues, so an unexplained
+      // red is the worst moment to leave a maintainer without a message.
+      expect(
+        guardArm(splice, 'The rendered index is neither rows nor'),
+        'the index fence kills the step silently'
+      ).toContain('exit 1');
+      expect(splice, 'the index fence has no annotation').toMatch(
+        /::error::The rendered index is neither rows nor/
+      );
       // Ordered: written by the reconciler, fenced, then spliced.
       const wroteAt = splice.indexOf('INDEX_OUT=/tmp/index.md');
       const fencedAt = splice.indexOf("grep -qE '^- \\[ \\] |^_No remaining");
@@ -406,7 +418,10 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
         /gh issue view "\$\{umbrella\}" --json body -q \.body \| tr -d '\\r' > "\$\{U\}" && \[ -s "\$\{U\}" \]/
       );
       const arm = guardArm(splice, 'Could not read backfill umbrella');
-      expect(arm, 'the unreadable-body refusal falls through to the write').toContain('exit 1');
+      expect(
+        arm,
+        'the unreadable-body refusal exits 0, so a transport failure ends the run GREEN with the parent unwritten'
+      ).toContain('exit 1');
       // `exit 1`, not the `exit 0` this asserted until go-to-k/cdkd#2949. Two
       // things moved it, and they point the same way. The umbrella's number was
       // just resolved from a SUCCESSFUL listing, so a read failure here is a
@@ -419,9 +434,10 @@ describe('backfill-umbrella-sync workflow (issue #2774)', () => {
       // Asserted against the whole shell rather than the arm: `guardArm` slices
       // FROM the needle, so the annotation level that precedes it on the same
       // line is outside what it returns.
-      expect(splice, 'a transport failure is still reported as a warning').toMatch(
-        /::error::Could not read backfill umbrella/
-      );
+      expect(
+        splice,
+        'the unreadable-body failure is annotated as a warning, which the run summary does not surface as a failure'
+      ).toMatch(/::error::Could not read backfill umbrella/);
       // The marker-SHAPE refusals keep `exit 0` — those are human-fixable and
       // reached before any mutation. Asserted here so the two classes cannot
       // quietly converge on one exit.
