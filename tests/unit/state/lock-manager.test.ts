@@ -418,6 +418,22 @@ describe('LockManager', () => {
       expect(result).toBeNull();
     });
 
+    it('uses the ASCII ALLOWLIST for the error detail, not the denylist (issue #3003)', async () => {
+      // The class, which nothing pinned: every other hostile byte in this file
+      // is in both classes. A zero-width space and a bidi mark are in neither
+      // denylist and only the allowlist removes them.
+      s3Client.send.mockRejectedValueOnce(new Error('Denied\u200b\u200e at key'));
+
+      const caught = await lockManager
+        .getLockInfo('test-stack', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      expect(message).toContain('Denied');
+      expect(message).toContain('at key');
+    });
+
     it('a malformed lock body cannot forge a row through the thrown message (issue #3003)', async () => {
       // The case above sanitizes the lock's DISPLAY fields at the source. This
       // is the other half: when the body does not parse at all, there are no

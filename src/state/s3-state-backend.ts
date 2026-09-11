@@ -421,10 +421,8 @@ export class S3StateBackend {
     } catch (error) {
       if (!isNoSuchKey(error)) {
         if (error instanceof StateError) throw error;
-        // The ASCII allowlist: this text can quote bytes of the object body,
-        // and the allowlist is the class with no residual. (Six revisions of
-        // this comment tried to say which OTHER sites take which class and
-        // each was wrong, so it no longer says.)
+        // The ASCII allowlist. `parseStateBody`'s own `StateError` is
+        // rethrown above, so what reaches here is an AWS / stream failure.
         const detail =
           displaySafe(error instanceof Error ? error.message : String(error), {
             asciiOnly: true,
@@ -1262,10 +1260,10 @@ export class S3StateBackend {
       // put terminal escapes, or a neighbouring plaintext property value, into
       // a default-verbosity warn. A class name cannot carry either.
       const { detail } = describeAwsFailure(error);
-      // Sanitized, unlike the usual detail-at-debug site: the failure that
-      // reaches here is `JSON.parse` on the legacy body, so `detail` is a
-      // snippet OF THAT BODY rather than AWS's own wording. Debug is quieter
-      // than warn, not a different terminal.
+      // Sanitized, unlike the usual detail-at-debug site: debug is quieter
+      // than warn, not a different terminal. (The `try` above spans
+      // `s3Client.send`, so this `detail` is AWS's own wording as often as it
+      // is a parse snippet -- an earlier revision claimed only the latter.)
       this.logger.debug(
         `Could not read legacy state region for '${this.displayName(stackName)}': ` +
           `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`

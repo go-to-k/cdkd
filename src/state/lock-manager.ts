@@ -492,8 +492,7 @@ export class LockManager {
         `Failed to acquire lock for stack ` +
           `'${safeSegment(stackName)}' ` +
           `(${safeSegment(region)}): ` +
-          // The DENYLIST form for the SDK's own text (the allowlist would mangle
-          // a legitimate non-ASCII message). Sanitized rather than left raw
+          // Sanitized rather than left raw
           // because S3 error text echoes the KEY, which embeds the stack name --
           // so the value this line just sanitized twice would otherwise walk
           // back in through the third interpolation, into the terminal and into
@@ -559,8 +558,13 @@ export class LockManager {
 
     const key = this.getLockKey(stackName, region);
 
+    // Debug is quieter than warn, not a different terminal -- the same
+    // argument `getState` applies to its own debug lines (issue #3003).
+    // Above the `try` because the catch logs it too.
+    const shownStack = safeSegment(stackName);
+
     try {
-      this.logger.debug(`Getting lock info for stack: ${stackName}`);
+      this.logger.debug(`Getting lock info for stack: ${shownStack}`);
 
       const response = await this.s3Client.send(
         new GetObjectCommand({
@@ -588,7 +592,7 @@ export class LockManager {
       // to remove a record whose lock.json is `null`.
       const raw: unknown = JSON.parse(bodyString);
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-        this.logger.debug(`Lock file for stack ${stackName} is not an object; treating as absent`);
+        this.logger.debug(`Lock file for stack ${shownStack} is not an object; treating as absent`);
         return null;
       }
       const parsed = raw as LockInfo;
@@ -608,12 +612,12 @@ export class LockManager {
         ...(parsed.operation !== undefined && { operation: displaySafe(parsed.operation) }),
       };
 
-      this.logger.debug(`Lock info for stack: ${stackName}:`, lockInfo);
+      this.logger.debug(`Lock info for stack: ${shownStack}:`, lockInfo);
 
       return { info: lockInfo, etag: response.ETag };
     } catch (error) {
       if (error instanceof NoSuchKey) {
-        this.logger.debug(`No lock exists for stack: ${stackName}`);
+        this.logger.debug(`No lock exists for stack: ${shownStack}`);
         return null;
       }
 
@@ -621,18 +625,8 @@ export class LockManager {
         throw error;
       }
 
-      // Sanitized like the display fields above, and for a sharper reason: the
-      // failure that reaches here is `JSON.parse` on the lock body, and V8's
-      // `SyntaxError` quotes the offending INPUT — so this message carries
-      // bytes of a file anyone with `s3:PutObject` on the bucket can write.
-      // `cdkd state show` surfaces it, and its rows are joined by newlines
-      // (issue #3003).
-      // DENYLIST for the detail, ASCII allowlist for the name: the detail is a
-      // parser's own free-form message (the allowlist would blank a
-      // legitimately non-ASCII diagnostic), while a stack name has a known
-      // charset. `display-safe.ts`'s own header is the authority for that
-      // split -- the state backend applies it too, but saying so here would be
-      // a claim about another module's private method that nothing fences.
+      // Sanitized like the display fields above. `cdkd state show` surfaces
+      // this message and its rows are joined by newlines (issue #3003).
       const detail =
         displaySafe(error instanceof Error ? error.message : String(error), {
           asciiOnly: true,
