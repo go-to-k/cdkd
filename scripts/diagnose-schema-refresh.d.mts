@@ -240,6 +240,27 @@ export declare const UMBRELLA_EMPTY_SENTINEL: string;
 export declare function renderUmbrellaDocument(generatedSource: string): string;
 /** One `- [ ] \`Type\`: \`Prop\`` row per remaining silent-drop property. */
 export declare function renderUmbrellaChecklist(generatedSource: string): string[];
+/** A resource type and the silent-drop properties still owned by it. */
+export interface SilentDropGroup {
+  type: string;
+  properties: string[];
+}
+/** The remaining silent-drop properties, grouped by owning resource type. */
+export declare function parseSilentDropByType(generatedSource: string): SilentDropGroup[];
+/** The opening half of the `backfill-type` marker a sub-issue is keyed by. */
+export declare const SUBISSUE_TYPE_MARKER_PREFIX: string;
+/** The closing half of the `backfill-type` marker. */
+export declare const SUBISSUE_TYPE_MARKER_SUFFIX: string;
+/** The whole marker line identifying a per-type backfill sub-issue. */
+export declare function subIssueTypeMarker(type: string): string;
+/** The `Effort` band a type's remaining property count implies. */
+export declare function subIssueEffort(count: number): 'small (S)' | 'medium (M)' | 'large (L)';
+/** One per-type sub-issue's generated body. */
+export declare function renderSubIssueBody(group: SilentDropGroup): string;
+/** The JSON reconciliation plan `--umbrella-subissues` emits. */
+export declare function renderSubIssuePlan(generatedSource: string): string;
+/** Modes that render one committed file, exit, and must fail non-zero. */
+export declare const RENDER_ONLY_FLAGS: ReadonlySet<string>;
 /**
  * Whether the refresh job may settle a removed-but-declared property itself.
  * `auto` only when there is no rename candidate on the type, the type's own SDK

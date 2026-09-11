@@ -281,7 +281,18 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // and the incident travels with the rule. Neither cap nor the floor moved,
     // and the binding margin is unchanged -- the three fields below are the
     // assertion for that, and no margin is quoted anywhere in this comment.
-    corpusBytes: 181_293,
+    //
+    // go-to-k/cdkd#2949 then grew it, and this one is an ADDITION rather than a
+    // retro — the backfill umbrella was fanned into generated per-type
+    // sub-issues, so triage.md §1 gained the backlog exclusion for their label
+    // and filing.md §5-f gained the carve-out saying why that set is not the
+    // "N sites of one root cause" split the rule forbids. The carve-out is the
+    // half that had to be written down: without it the next session reads §5-f,
+    // sees ~44 issues of one campaign, and consolidates them back. Neither
+    // touched file is near its cap (triage.md and filing.md are the 3rd and 6th
+    // largest), so the LEADERS did not move and neither did either per-file
+    // bound; only the corpus and, with it, the floor below.
+    corpusBytes: 183_720,
     largest: { file: 'verify.md', bytes: 29_928 },
     runnerUp: { file: 'implement.md', bytes: 29_915 },
   },
@@ -699,16 +710,23 @@ const MIN_REFERENCE_FILES = 6;
 // with "has lapsed ... expected 148200 to be greater than 151378", so the
 // assertion pins this constant from BELOW as well, and lowering it requires
 // compressing first. Section 10-c now states the carve-out it was missing.
-// Inputs at this
-// date: corpus 181,299, largest verify.md 29,928, runner-up implement.md
-// 29,921, so the two thresholds are 151,371 (largest-side) and 151,378
-// (runner-up side, binding); 151,750 clears the binding one by 372 B. The
-// binding constraint for the next retro is MAX_REFERENCE_FILE_BYTES rather than
-// this floor. No leader headroom is quoted here: the caps' own failure messages
-// print it live, and the figure an earlier draft stated went stale in the very
-// next retro (the go-to-k/cdkd#2911 one, which moved a leader without moving
-// either bound).
-const MIN_REFERENCE_CORPUS_BYTES = 151_750;
+// RE-DERIVED UPWARD for go-to-k/cdkd#2949, which grew the corpus by ~2.4 KB
+// across triage.md and filing.md. A floor left where it was after a growth
+// change is a floor that no longer notices a deletion of the size that landed:
+// the guard is `corpus - eitherLeader`, so every byte added raises the number a
+// wholesale drop would still clear. Raising it is the only direction an
+// addition may move it — the downward re-derivation stays reserved for a
+// deliberate compression pass, per the entries above.
+//
+// Inputs at this date: corpus 183,720, largest verify.md 29,928, runner-up
+// implement.md 29,915, so the two thresholds are 153,792 (largest-side) and
+// 153,805 (runner-up side, binding); 154,180 clears the binding one by 375 B,
+// the same slack the previous derivation carried. The binding constraint for
+// the next retro is MAX_REFERENCE_FILE_BYTES rather than this floor. No leader
+// headroom is quoted here: the caps' own failure messages print it live, and
+// the figure an earlier draft stated went stale in the very next retro (the
+// go-to-k/cdkd#2911 one, which moved a leader without moving either bound).
+const MIN_REFERENCE_CORPUS_BYTES = 154_180;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

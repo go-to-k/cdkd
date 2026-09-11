@@ -187,6 +187,31 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     expect(run.stdout).toMatch(WORKFLOW_SHAPE);
   }, 60_000);
 
+  it('renders the SUB-ISSUE plan in the same corpus — every render-only mode, not one', () => {
+    // The mode the sync workflow actually consumes since go-to-k/cdkd#2949.
+    // Asserted as its OWN spawn rather than trusted to the sibling above: they
+    // share a parser but not an entry-point arm, and the no-dependency property
+    // is about what the process LOADS before either arm runs — so a mode added
+    // to `RENDER_ONLY_FLAGS` without being reachable bare would pass a fence
+    // that only ever spawns the first one.
+    const root = makeCorpus();
+    expect(existsSync(join(root, 'node_modules'))).toBe(false);
+
+    const run = spawnSync(
+      process.execPath,
+      ['scripts/diagnose-schema-refresh.mjs', '--umbrella-subissues'],
+      { cwd: root, encoding: 'utf8' }
+    );
+    expect(run.stderr).toBe('');
+    expect(run.status).toBe(0);
+    const plan = JSON.parse(run.stdout) as { types: Array<{ type: string; body: string }> };
+    expect(Array.isArray(plan.types)).toBe(true);
+    expect(plan.types.length, 'the fixture corpus rendered no types').toBeGreaterThan(0);
+    // The body carries the marker the reconciler keys on — the one field whose
+    // absence would make every run mint duplicates.
+    expect(plan.types[0]!.body).toContain(`<!-- backfill-type: ${plan.types[0]!.type} -->`);
+  }, 60_000);
+
   it('CONTROL: the same corpus DOES fail when a dependency-bearing import is static', () => {
     // Without this the case above passes in a corpus where nothing resolves a
     // bare specifier at all — indistinguishable from one where the fix works.
@@ -458,7 +483,33 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     expect(jobs.match(/^ {2}[\w-]+:$/gm)).toEqual(['  sync:']);
     const syncJob = jobs.slice(jobs.indexOf('\n  sync:'));
     expect(syncJob).toContain('run-install: false');
-    expect(syncJob).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-checklist');
+    expect(syncJob).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-subissues');
+    // The SECOND no-dependency consumer in the same job (go-to-k/cdkd#2949).
+    // It runs under the same `run-install: false`, so the no-`node_modules`
+    // guarantee this file measures has to cover it too — and it is the one that
+    // WRITES, across ~44 public issues, so a load-time crash there is not a
+    // missing checklist but a half-applied reconciliation.
+    expect(syncJob).toContain('node scripts/sync-backfill-subissues.ts');
+  });
+
+  it('the reconciler imports nothing outside node: builtins either', () => {
+    // Cheaper than a spawn and aimed at the same property, because the spawn
+    // cases above can only reach a mode that takes no token. ESM resolves a
+    // module's WHOLE graph before any code runs, so the check that matters is
+    // static: every import specifier is either `node:`-prefixed or a relative
+    // path INSIDE scripts/ that is itself covered by the spawns above.
+    const src = readFileSync(join(repoRoot, 'scripts/sync-backfill-subissues.ts'), 'utf8');
+    const specifiers = [...src.matchAll(/^import\s[\s\S]*?from\s+'([^']+)';$/gm)].map((m) => m[1]!);
+    expect(specifiers.length, 'no imports were found — the scan is looking at nothing').toBeGreaterThan(0);
+    for (const spec of specifiers) {
+      expect(
+        spec.startsWith('node:') || spec.startsWith('./'),
+        `${spec} is a package import; the sync job installs none`
+      ).toBe(true);
+    }
+    // And the one relative import is the module the spawn cases already prove
+    // loads bare. Named, so a new relative import does not ride in on this.
+    expect(specifiers.filter((s) => s.startsWith('./'))).toEqual(['./diagnose-schema-refresh.mjs']);
   });
 });
 
