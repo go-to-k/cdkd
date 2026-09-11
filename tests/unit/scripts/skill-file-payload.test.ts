@@ -269,9 +269,21 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // the cap's own failure message -- but the calibration to carry forward is
     // that they are the thinnest on record in BOTH slots, so the next edit to
     // either file opens with a compression pass, not an addition.
-    corpusBytes: 181_299,
+    //
+    // The go-to-k/cdkd#2911 / go-to-k/cdkd#2938 retro took that literally and is
+    // the first RETRO to come out net negative (the line above records the first
+    // time the corpus went down at all, which was not a retro): it added one
+    // rule to implement.md 5-g
+    // (a lost lane TRANSCRIPT restarts only from a self-contained prompt) and
+    // paid by RELOCATING 5-e's caller-probe paragraph to `.claude/rules/testing.md`
+    // ("Mutation probes"), which already owned the per-use rule and is where the
+    // retro's own test-vacuity lesson landed -- so implement.md keeps a pointer
+    // and the incident travels with the rule. Neither cap nor the floor moved,
+    // and the binding margin is unchanged -- the three fields below are the
+    // assertion for that, and no margin is quoted anywhere in this comment.
+    corpusBytes: 181_293,
     largest: { file: 'verify.md', bytes: 29_928 },
-    runnerUp: { file: 'implement.md', bytes: 29_921 },
+    runnerUp: { file: 'implement.md', bytes: 29_915 },
   },
 };
 
@@ -690,9 +702,12 @@ const MIN_REFERENCE_FILES = 6;
 // Inputs at this
 // date: corpus 181,299, largest verify.md 29,928, runner-up implement.md
 // 29,921, so the two thresholds are 151,371 (largest-side) and 151,378
-// (runner-up side, binding); 151,750 clears the binding one by 372 B. The two
-// leaders are now 72 B and 79 B from MAX_REFERENCE_FILE_BYTES -- the binding
-// constraint for the next retro is that cap, not this floor.
+// (runner-up side, binding); 151,750 clears the binding one by 372 B. The
+// binding constraint for the next retro is MAX_REFERENCE_FILE_BYTES rather than
+// this floor. No leader headroom is quoted here: the caps' own failure messages
+// print it live, and the figure an earlier draft stated went stale in the very
+// next retro (the go-to-k/cdkd#2911 one, which moved a leader without moving
+// either bound).
 const MIN_REFERENCE_CORPUS_BYTES = 151_750;
 
 function skillNames(): string[] {

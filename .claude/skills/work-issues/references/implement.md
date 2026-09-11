@@ -230,10 +230,9 @@ inverse replace is a second edit: Python's `str.replace('', x)` matches between
 every character and rewrote an 11 KB file to 838 KB, scoring the three probes
 after it against a corrupted subject.
 
-**Probe the CALLER too — a probed callee says nothing about its wiring.**
-go-to-k/cdkd#2719: a predicate with eight probed gates, and deleting the line
-FEEDING it one of two inputs left 1,442 tests green. Delete each argument the
-call site passes and assert the ARGUMENTS; an outcome re-tests only the callee.
+**Probe the CALLER too, and the WAY IN** — `.claude/rules/testing.md` →
+"Mutation probes" owns both: wiring, and the vacuity a normalising entrypoint
+causes.
 
 **A mutation probe proves a test discriminates only if it changes the value
 the test READS.** Four vacuous tests shipped in one day, all one shape: the
@@ -409,7 +408,9 @@ one-line "done" loses the run (2 of 3 lanes, 2026-09-05) — as does a lane that
 finishes with NO report reaching you (twice, 2026-09-10: only its nested
 reviewers' notifications arrived, reading as progress). Never wait on a quiet
 lane: list the agents, resume any already `completed` with "REPORT ONLY, do not
-touch the tree" — a plain resume re-edits.
+touch the tree" — a plain resume re-edits, and a lane whose TRANSCRIPT is gone
+(`could not be resumed`, 3x in one run) restarts only from a prompt you kept
+SELF-CONTAINED and still hold.
 
 A subagent's Bash **bypasses the PreToolUse gate hooks** (it can `gh pr create` past `verify-pr-gate`) —
 enforce quality yourself; the orchestrator still gates the MERGE.
