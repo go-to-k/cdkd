@@ -187,13 +187,15 @@ shape check, so a hand-edited one can hold anything. Both human views of
 they print as untrusted text:
 
 - **Control characters are removed from every name, type, id, dependency list
-  and nested-stack header.** The lock row is the exception and needs no removal:
-  its `owner` and `operation` are sanitized where the lock is read, before
-  `cdkd state show` sees them. The rows of these views are joined by
-  newlines, so a newline inside a field would not merely colour the output — it
-  would invent a row that reads exactly like a real one. The escape BYTE is
-  removed and the characters around it are kept, so a name carrying `ESC[31m`
-  prints as `[31m`: the sequence is broken, the name is not censored.
+  and nested-stack header.** Two rows take no removal here because neither
+  needs it: the lock row's `owner` and `operation` are sanitized where the
+  lock record is read, before `cdkd state show` sees them, and `Version` is
+  refused where the state record is read unless it is a known schema number or
+  absent. The rows of these views are joined by newlines, so a newline inside
+  a field would not merely colour the output — it would invent a row that
+  reads exactly like a real one. The escape BYTE is removed and the characters
+  around it are kept, so a name carrying `ESC[31m` prints as `[31m`: the
+  sequence is broken, the name is not censored.
 - **A value whose type the record got wrong still prints, rather than ending the
   output.** A number where a string belongs prints as that number, an object as
   JSON, and a value nothing can serialize as `(unserializable)`. A few fields are
@@ -295,11 +297,13 @@ record either way.
 
 The digest is TRUNCATED to 12 characters here, after control characters are
 stripped — so an ESC costs no preview space, though a sequence's printable
-tail (`[2J`) still does. A trailing `…` marks a value that was actually cut,
-so a value exactly 12 characters long is not mistaken for a
-truncated one. A prefix DIFFERENCE tells you
-at a glance that two records differ; a prefix MATCH proves nothing, so compare
-digests through `--json`, which carries them whole, as does the stored
+tail (`[2J`) still does. One value is exempt: `(unserializable)`, which is
+what prints for a digest nothing can serialize, is longer than the window and
+is shown whole, because cut to `(unserializa…` it would read as a hash prefix.
+A trailing `…` marks a value that was actually cut, so a value exactly 12
+characters long is not mistaken for a truncated one. A prefix DIFFERENCE tells
+you at a glance that two records differ; a prefix MATCH proves nothing, so
+compare digests through `--json`, which carries them whole, as does the stored
 `state.json`.
 
 The block is omitted when the field is present but empty, and when it is

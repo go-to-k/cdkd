@@ -721,7 +721,7 @@ function formatAttributeValue(value: unknown): string {
   } catch {
     json = undefined;
   }
-  return json === undefined ? '(unserializable)' : stripControlChars(json);
+  return json === undefined ? UNSERIALIZABLE : stripControlChars(json);
 }
 
 /**
@@ -947,6 +947,9 @@ async function stateShowCommand(
  */
 const SKIPPED_DIGEST_PREVIEW_LEN = 12;
 
+/** What `formatAttributeValue` prints for a value `JSON.stringify` refuses. */
+const UNSERIALIZABLE = '(unserializable)';
+
 /**
  * The `skippedOutputs` rows a state record owes, sorted by key.
  */
@@ -1116,9 +1119,13 @@ function renderStateBlock(
       // Marked when it actually happened, so a value that is EXACTLY the
       // window's length is not read as one that was cut, and a cut value is
       // not read as whole.
+      //
+      // The formatter's own sentinel is exempt: `(unserializable)` is longer
+      // than the window, and cut to `(unserializa…` it reads as a hash prefix
+      // rather than as the guard having fired.
       const fullDigest = formatAttributeValue(digest);
       const shownDigest =
-        fullDigest.length > SKIPPED_DIGEST_PREVIEW_LEN
+        fullDigest.length > SKIPPED_DIGEST_PREVIEW_LEN && fullDigest !== UNSERIALIZABLE
           ? `${fullDigest.slice(0, SKIPPED_DIGEST_PREVIEW_LEN)}…`
           : fullDigest;
       lines.push(`  ${stripControlChars(k)}: ${shownDigest}`);

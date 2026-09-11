@@ -218,7 +218,12 @@ describe('cdkd state show', () => {
       makeState({
         stackName: 'MyStack',
         region: 'us-east-1',
-        outputs: { ApiUrl: 'https://api.example.com' },
+        // Not every stored output is a string, and that is ordinary data rather
+        // than a hand edit: the deploy engine assigns the resolved value
+        // UNCOERCED, so a list-valued `Fn::GetAtt` persists a JSON array
+        // (CLAUDE.md, "State Schema"). These two are what tell the value's
+        // formatter from a bare strip, which would throw on either.
+        outputs: { ApiUrl: 'https://api.example.com', Azs: ['us-east-1a', 'us-east-1b'], Count: 2 },
         resources: {
           MyBucket: makeResource({
             resourceType: 'AWS::S3::Bucket',
@@ -239,7 +244,12 @@ describe('cdkd state show', () => {
     expect(out).toContain('  Last Modified: 2026-04-29T10:23:45.000Z');
     expect(out).toContain('  Lock: unlocked');
     expect(out).toContain('Outputs:');
-    expect(out).toContain('  ApiUrl: https://api.example.com');
+    // Whole rows, in insertion order: the array as JSON, the number as itself.
+    expect(out.split('\n').filter((l) => /^  (ApiUrl|Azs|Count): /.test(l))).toEqual([
+      '  ApiUrl: https://api.example.com',
+      '  Azs: ["us-east-1a","us-east-1b"]',
+      '  Count: 2',
+    ]);
     expect(out).toContain('Resources (1):');
     expect(out).toContain('MyBucket');
     expect(out).toContain('  Type: AWS::S3::Bucket');
@@ -512,6 +522,50 @@ describe('cdkd state show', () => {
     const out = await runStateShow(['show', 'IsoStack']);
 
     expect(out).toContain('  Last Modified: 2026-04-29T00:00:00.000Z');
+  });
+
+  it('dates a `null` and a boolean `lastModified` as the doc says, and does not hide it', async () => {
+    // `formatLastModified`'s doc claims both still date. They do — `null` is
+    // epoch 0 — and that is worth pinning precisely BECAUSE it is indistinguishable
+    // from a genuine 1970 record: a wrong timestamp printed confidently is the
+    // shape nothing else here would notice. `makeState` coalesces `null` to its
+    // default, so the record is patched after construction.
+    for (const [value, expected] of [
+      [null, '1970-01-01T00:00:00.000Z'],
+      [true, '1970-01-01T00:00:00.001Z'],
+    ] as const) {
+      const record = makeState({ stackName: 'EpochStack' });
+      record.state.lastModified = value as unknown as number;
+      mockListStacks.mockResolvedValue(defaultListResponse('EpochStack'));
+      mockGetState.mockResolvedValue(record);
+      mockGetLockInfo.mockResolvedValue(null);
+
+      const out = await runStateShow(['show', 'EpochStack']);
+
+      expect(out.split('\n').filter((l) => l.startsWith('  Last Modified: '))).toEqual([
+        `  Last Modified: ${expected}`,
+      ]);
+    }
+  });
+
+  it('never truncates the formatter\'s own sentinel into a digest-shaped prefix', async () => {
+    // `(unserializable)` is 16 characters, past the 12-character window, so an
+    // unexempted cut renders `(unserializa…` — which reads as a hash prefix, not
+    // as the guard having fired. Reached through a digest `JSON.stringify` refuses.
+    mockListStacks.mockResolvedValue(defaultListResponse('SentinelStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'SentinelStack',
+        skippedOutputs: { Deep: unstringifiableFromParsedJson() as unknown as string },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'SentinelStack']);
+
+    expect(out.split('\n').filter((l) => l.startsWith('  Deep: '))).toEqual([
+      '  Deep: (unserializable)',
+    ]);
   });
 
   it('STRIPS an undatable `lastModified` on the way back out', async () => {
@@ -1217,7 +1271,7 @@ describe('cdkd state show', () => {
     }
   });
 
-  it('the legend follows a CHILD-only or GRANDCHILD-only skipped set', async () => {
+  it('a CHILD-only or GRANDCHILD-only skipped set still earns the legend, once', async () => {
     // `treeOwesSkippedLegend` recurses. With the parent carrying the set the
     // recursion short-circuits, so deleting the descendant scan survives that
     // fixture -- these two are what pin it.
