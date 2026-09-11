@@ -44,7 +44,10 @@ const DOCS_DEPLOY_YML = join(REPO_ROOT, '.github', 'workflows', 'docs-deploy.yml
 const GATE_STEP = 'every upstream job succeeded or was skipped';
 
 interface CiWorkflow {
-  on?: Record<string, { paths?: unknown; 'paths-ignore'?: unknown } | null>;
+  on?: Record<
+    string,
+    { paths?: unknown; 'paths-ignore'?: unknown; branches?: unknown } | null
+  >;
   jobs: Record<
     string,
     {
@@ -148,28 +151,52 @@ describe('ci-ok — the single required status check', () => {
     // job) and a step-level `if:` that is false (the step is skipped). Both
     // read as innocuous, and both reach the "green having examined nothing"
     // failure this file exists for.
+    // `?? false` because an explicit `continue-on-error: false` is semantically
+    // identical to its absence, and a fence that reds on it refuses a correct
+    // spelling.
     const job = workflow().jobs['ci-ok'];
     const step = job?.steps?.find((s) => s.name === GATE_STEP);
-    expect(step?.['continue-on-error']).toBeUndefined();
+    expect(step?.['continue-on-error'] ?? false).toBe(false);
     expect(step?.if).toBeUndefined();
-    expect(job?.['continue-on-error']).toBeUndefined();
+    expect(job?.['continue-on-error'] ?? false).toBe(false);
   });
 
-  it('keeps every gated job unconditional', () => {
-    // `skipped` is accepted for every upstream, so an `if:` on
-    // `check-build-test` or `once-leak-detect` yields four skipped results,
-    // `seen == EXPECTED_UPSTREAM`, and a green gate over a CI that ran nothing.
-    // Only the two jobs that are SUPPOSED to be conditional may carry one.
+  it('keeps every gated job unconditional and failing', () => {
+    // Three levers make an upstream job stop contributing a real verdict while
+    // `ci-ok` still counts it, and each lands a different `needs.*.result`:
+    //
+    //   job `if:`                 -> `skipped`, which ci-ok ACCEPTS
+    //   job `continue-on-error`   -> a FAILED job reports `success`
+    //   step `if:`                -> `success` with the step never executed
+    //
+    // All three give `seen == EXPECTED_UPSTREAM` and a green gate over a CI
+    // that decided nothing, and the first two also read green in the Checks UI,
+    // so `ci-green-gate` passes too. Only the two jobs that are SUPPOSED to be
+    // conditional may carry an `if:`.
     const jobs = workflow().jobs;
-    const conditional = Object.entries(jobs)
-      .filter(([name, j]) => j.if !== undefined && name !== 'ci-ok' && name !== 'release-pr-not-stale')
-      .map(([name]) => name);
+    const ALLOWED_CONDITIONAL = new Set(['ci-ok', 'release-pr-not-stale']);
+    const offenders: string[] = [];
+    for (const [name, j] of Object.entries(jobs)) {
+      if (j.if !== undefined && !ALLOWED_CONDITIONAL.has(name)) {
+        offenders.push(`${name} (job if:)`);
+      }
+      if ((j['continue-on-error'] ?? false) !== false) {
+        offenders.push(`${name} (job continue-on-error)`);
+      }
+      for (const s of j.steps ?? []) {
+        const label = s.name ?? s.run?.split('\n')[0] ?? '<step>';
+        if (s.if !== undefined && !ALLOWED_CONDITIONAL.has(name)) {
+          offenders.push(`${name} > ${label} (step if:)`);
+        }
+      }
+    }
     expect(
-      conditional,
-      `these ci.yml jobs gained an \`if:\`: ${conditional.join(', ')}. ci-ok accepts a ` +
-        'SKIPPED upstream, so a conditional job can make the gate green over a CI that ran ' +
-        'nothing. If the condition is intended, teach ci-ok to tell "skipped because not ' +
-        'applicable" from "skipped because nothing ran".'
+      offenders,
+      `these ci.yml jobs can report a verdict ci-ok counts without earning it: ` +
+        `${offenders.join(', ')}. ci-ok accepts a SKIPPED upstream and cannot tell a ` +
+        `continue-on-error success from a real one, so any of these makes the gate green ` +
+        `over a CI that ran nothing. If the condition is intended, teach ci-ok to tell ` +
+        `"skipped because not applicable" from "skipped because nothing ran".`
     ).toEqual([]);
   });
 
@@ -189,6 +216,10 @@ describe('ci-ok — the single required status check', () => {
     expect(pr, 'ci.yml no longer triggers on `pull_request`').not.toBeUndefined();
     expect(pr?.paths).toBeUndefined();
     expect(pr?.['paths-ignore']).toBeUndefined();
+    // `branches:` narrows the same way a `paths:` filter does — a PR whose base
+    // is not listed never starts the workflow, so the required check sits at
+    // "Expected" forever. `main` is the only base this repo takes PRs against.
+    expect(pr?.branches).toEqual(['main']);
   });
 
   it('takes the results through env, not as inlined expression text', () => {
@@ -258,5 +289,19 @@ describe('the other required checks this workflow cannot reach', () => {
         'and every such PR is blocked forever. Remove the filter, or drop `build` from the ' +
         "ruleset's required checks."
     ).toBe(true);
+  });
+
+  it('cancels superseded docs builds on PRs but never on main', () => {
+    // Load-bearing in BOTH directions, which is why the expression is pinned
+    // rather than just its truthiness: `build` is required and runs on every
+    // PR, so a never-cancelling group queues each push's full SSG build behind
+    // the superseded one and serializes every PR's required check. On `main`
+    // the same build feeds a deploy, so cancelling there would drop a publish.
+    const docs = parseYaml(readFileSync(DOCS_DEPLOY_YML, 'utf8')) as {
+      concurrency?: { 'cancel-in-progress'?: unknown };
+    };
+    expect(docs.concurrency?.['cancel-in-progress']).toBe(
+      "${{ github.event_name == 'pull_request' }}"
+    );
   });
 });

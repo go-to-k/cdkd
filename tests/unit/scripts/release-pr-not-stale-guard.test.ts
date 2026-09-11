@@ -136,7 +136,17 @@ function guardRun(cwd: string): { status: number; output: string } {
 }
 
 describe('release-pr-not-stale', () => {
-  let scratch: string;
+  // `| undefined` on purpose: the `if (scratch)` guard in afterAll exists
+  // because `mkdtempSync` can fail, and the non-nullable type said otherwise.
+  // Everything that USES it goes through `scratchDir()`, which turns a
+  // not-yet-created scratch into a named failure rather than a `join(undefined)`
+  // TypeError several frames away from the cause.
+  let scratch: string | undefined;
+
+  function scratchDir(): string {
+    expect(scratch, 'the scratch directory was never created (mkdtempSync failed)').toBeTruthy();
+    return scratch as string;
+  }
   let cloneSeq = 0;
 
   interface Fixture {
@@ -158,7 +168,7 @@ describe('release-pr-not-stale', () => {
    * branch of the loop is reached with the CHANGELOG arm passing.
    */
   function makeRemote(name: string, lastFile: string, seedManifest = true): Fixture {
-    const origin = join(scratch, `${name}-origin`);
+    const origin = join(scratchDir(), `${name}-origin`);
     mkdirSync(origin);
     git(origin, 'init', '-q', '-b', 'main');
     writeFileSync(join(origin, CHANGELOG), '# Changelog\n\n## 0.1.0\n');
@@ -171,7 +181,7 @@ describe('release-pr-not-stale', () => {
         ? commit(origin, CHANGELOG, '# Changelog\n\n## 0.1.0 (normalized)\n', 'chore(docs): normalize')
         : commit(origin, MANIFEST, '{ ".": "0.1.0-edited" }\n', 'chore: hand-edit the manifest');
 
-    const remote = join(scratch, `${name}-remote.git`);
+    const remote = join(scratchDir(), `${name}-remote.git`);
     execFileSync('git', ['clone', '-q', '--bare', origin, remote], {
       env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
     });
@@ -180,7 +190,7 @@ describe('release-pr-not-stale', () => {
 
   /** A release branch cut from `at`, with release-please's own commit on top. */
   function releaseBranchAt(fixture: Fixture, at: string): string {
-    const wt = join(scratch, `wt-${cloneSeq++}`);
+    const wt = join(scratchDir(), `wt-${cloneSeq++}`);
     execFileSync('git', ['clone', '-q', fixture.remote, wt], {
       env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
     });
@@ -221,9 +231,14 @@ describe('release-pr-not-stale', () => {
 
     it('fetches the full history the ancestry test needs', () => {
       const checkout = jobSteps().find((s) => (s.uses ?? '').startsWith('actions/checkout@'));
-      // `Number(...)` because `fetch-depth: "0"` is equally valid YAML and
-      // equally correct — a bare `toBe(0)` reds on a harmless requoting.
-      expect(Number(checkout?.with?.['fetch-depth'])).toBe(0);
+      // `String(... ?? '')`, NOT `Number(...)`. Comparing numerically was an
+      // attempt to tolerate the equally-valid `fetch-depth: "0"`, and it
+      // RETIRED the bound instead: a bare `fetch-depth:` parses to null and
+      // `fetch-depth: ""` to the empty string, both of which `Number()` maps to
+      // 0 — while actions/checkout reads `Number(getInput(...) || '1')` and
+      // clones at depth ONE. That is precisely the shallow-clone mutation this
+      // case exists to catch, and the numeric form greened on it.
+      expect(String(checkout?.with?.['fetch-depth'] ?? '')).toBe('0');
     });
 
     it('lets the shell exit status decide the job', () => {
@@ -231,10 +246,13 @@ describe('release-pr-not-stale', () => {
       // correct — never that the runner acts on its exit status.
       // `continue-on-error: true` or a false step-level `if:` severs that link
       // and the job reports success having decided nothing.
+      // `?? false` because an explicit `continue-on-error: false` is
+      // semantically identical to its absence, and a fence that reds on it is
+      // refusing a correct spelling.
       const step = jobSteps().find((s) => s.name === STEP);
-      expect(step?.['continue-on-error']).toBeUndefined();
+      expect(step?.['continue-on-error'] ?? false).toBe(false);
       expect(step?.if).toBeUndefined();
-      expect(workflow().jobs[JOB]?.['continue-on-error']).toBeUndefined();
+      expect(workflow().jobs[JOB]?.['continue-on-error'] ?? false).toBe(false);
     });
   });
 
