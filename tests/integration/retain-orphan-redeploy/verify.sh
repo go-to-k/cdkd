@@ -393,9 +393,9 @@ fi
 # which is how the first version of this phase failed against real AWS while
 # every unit test was green, and why the summary line exists at all.
 if ! grep -q "resource(s) to adopt from a previous rollback" "${DIFF_LOG}"; then
-  echo "FAIL: cdkd diff did not annotate the adopted row. Without the pre-pass"
-  echo "      the diff reports a CREATE for a resource the deploy UPDATES,"
-  echo "      which is the preview/apply divergence go-to-k/cdkd#2943 closes."
+  echo "FAIL: cdkd diff did not report the adoption in its summary line. Without"
+  echo "      the pre-pass the diff reports a CREATE for a resource the deploy"
+  echo "      adopts — the preview/apply divergence go-to-k/cdkd#2943 closes."
   echo "      Sentinel check follows: if the summary count below IS present,"
   echo "      the diff ran and the adoption simply did not happen."
   grep -c "to create, " "${DIFF_LOG}" || echo "      (no diff summary line at all - the run did not produce a preview)"
