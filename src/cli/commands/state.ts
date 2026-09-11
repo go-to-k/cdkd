@@ -828,8 +828,8 @@ function createStateResourcesCommand(): Command {
  * `cdkd state show <stack>` command implementation
  *
  * Renders the full state record for one stack: stack-level metadata, lock
- * status, outputs, and every resource (including properties). The deepest /
- * most verbose `state` subcommand — use `state list` / `state resources` for
+ * status, outputs, skipped outputs, and every resource (including properties).
+ * The deepest / most verbose `state` subcommand — use `state list` / `state resources` for
  * lighter inspection.
  *
  * When the same stack name has state in multiple regions, requires
@@ -976,11 +976,11 @@ function skippedOutputsLegend(): string[] {
     'The last deploy could not resolve the keys listed under `Skipped outputs:`',
     'above, and recorded a digest of their template inputs. While the record',
     'binds and a key is still absent from the stored outputs, `cdkd diff`',
-    'previews it as ABSENT — no row, no warning. A key whose earlier value was',
-    'retained is also stored under `Outputs:` here, where the record does NOT',
-    'suppress it: the ordinary rules apply, up to `cdkd diff` suppressing its',
-    'whole Outputs section if the key still cannot resolve. Binding rule:',
-    '`bindingSkippedOutputs` in src/analyzer/skipped-outputs.ts.',
+    'previews it as ABSENT — no row, no warning. A key whose earlier value',
+    'was retained is also stored under `Outputs:` here, where the record does',
+    'NOT suppress it: the ordinary rules apply, up to `cdkd diff` suppressing',
+    'its whole Outputs section if the key still cannot resolve.',
+    'Binding rule: `bindingSkippedOutputs` in src/analyzer/skipped-outputs.ts.',
   ];
 }
 
@@ -1064,11 +1064,10 @@ function renderStateBlock(
   // state already holds. Absent field renders nothing, which means only that
   // no skipped set was recorded: pre-#2740 records never carried one, and
   // several writers DROP it (see the field's doc in `types/state.ts`).
-  const skippedEntries = sortedSkippedOutputs(state);
   if (rendersSkippedBlock(state)) {
     lines.push('');
     lines.push('Skipped outputs:');
-    for (const [k, digest] of skippedEntries) {
+    for (const [k, digest] of sortedSkippedOutputs(state)) {
       // The KEY is stripped like every other key this block prints. The
       // `Export.Name` argument above does not reach these: they are template
       // `Outputs` keys, so this is defence against a template cdkd never
@@ -1129,6 +1128,10 @@ function renderStateBlock(
     // exactly that.
     lines.push(stripControlChars(logicalId));
     lines.push(`  Type: ${formatAttributeValue(resource.resourceType)}`);
+    // The formatter makes a corrupt id read like an ordinary one: a `null`
+    // renders as the literal `null`, which the string `"null"` also does. That
+    // ambiguity is the trade already accepted for every Outputs, attribute and
+    // property value here, and `--json` is where a reader settles it.
     lines.push(`  PhysicalID: ${formatAttributeValue(resource.physicalId)}`);
     // v7+ (#614): show the provisioning layer so users can see which
     // resources took the Cloud Control auto-route. Absent on pre-v7

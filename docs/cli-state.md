@@ -258,11 +258,11 @@ Skipped outputs:
 The last deploy could not resolve the keys listed under `Skipped outputs:`
 above, and recorded a digest of their template inputs. While the record
 binds and a key is still absent from the stored outputs, `cdkd diff`
-previews it as ABSENT — no row, no warning. A key whose earlier value was
-retained is also stored under `Outputs:` here, where the record does NOT
-suppress it: the ordinary rules apply, up to `cdkd diff` suppressing its
-whole Outputs section if the key still cannot resolve. Binding rule:
-`bindingSkippedOutputs` in src/analyzer/skipped-outputs.ts.
+previews it as ABSENT — no row, no warning. A key whose earlier value
+was retained is also stored under `Outputs:` here, where the record does
+NOT suppress it: the ordinary rules apply, up to `cdkd diff` suppressing
+its whole Outputs section if the key still cannot resolve.
+Binding rule: `bindingSkippedOutputs` in src/analyzer/skipped-outputs.ts.
 ```
 
 The explanation sits at column zero, unlike the key rows, so it cannot be

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { marked, type Tokens } from 'marked';
 import type { LockInfo, ResourceState, StackState } from '../../../src/types/state.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
@@ -691,14 +692,22 @@ describe('cdkd state show', () => {
   });
 
   it('renders a non-string PhysicalID instead of throwing', async () => {
-    // `stripControlChars` alone would throw on it; the formatter names it.
+    // Whole-ROW equality, like the cases around it: a substring match would hold
+    // while the rest of the row changed. And an OBJECT arm, because a number
+    // cannot tell the formatter from `stripControlChars(String(x))` — both render
+    // `4242`, so the primitive arm alone leaves the claim pinned for primitives.
     mockListStacks.mockResolvedValue(defaultListResponse('OddPhysStack'));
     mockGetState.mockResolvedValue(
       makeState({
         stackName: 'OddPhysStack',
         resources: {
-          R1: {
+          ANumber: {
             physicalId: 4242 as unknown as string,
+            resourceType: 'AWS::SNS::Topic',
+            properties: {},
+          },
+          BObject: {
+            physicalId: { a: 1 } as unknown as string,
             resourceType: 'AWS::SNS::Topic',
             properties: {},
           },
@@ -708,9 +717,11 @@ describe('cdkd state show', () => {
     mockGetLockInfo.mockResolvedValue(null);
 
     const out = await runStateShow(['show', 'OddPhysStack']);
+    const rows = out.split('\n').filter((l) => l.startsWith('  PhysicalID: '));
 
-    expect(out).toContain('  PhysicalID: 4242');
-    expect(out).toContain('Resources (1):');
+    // `[object Object]` is what the bare `String(...)` would give for the second.
+    expect(rows).toEqual(['  PhysicalID: 4242', '  PhysicalID: {"a":1}']);
+    expect(out).toContain('Resources (2):');
   });
 
   it('renders an `undefined` attribute value instead of throwing', async () => {
@@ -1089,6 +1100,88 @@ describe('cdkd state show', () => {
     expect(prose.filter((l) => /^\s/.test(l))).toEqual([]);
   });
 
+  it('the legend the binary PRINTS is the legend docs/cli-state.md shows', async () => {
+    // The legend's lines are duplicated verbatim into the docs page and nothing
+    // synced them, so any reword left the docs copy stale in silence — the same
+    // class of defect as a comment that stops matching its code.
+    //
+    // Derived from the RENDER, not from the source text: reading the array
+    // literal would compare one copy of the string against another copy of the
+    // string, which two copies drifting the same way would satisfy. Rendering
+    // makes the BINARY's output the authority.
+    mockListStacks.mockResolvedValue(defaultListResponse('SyncStack'));
+    mockGetState.mockResolvedValue(
+      makeState({ skippedOutputs: { ApiUrl: 'a'.repeat(64) } })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'SyncStack']);
+
+    // Both sides are anchored on the BLOCK HEADER and take everything at column
+    // zero up to the next section — not on the legend's first sentence, which
+    // would leave a PREPENDED sentence outside the compared region on either
+    // side. The indented rows are dropped because the docs copy uses an example
+    // key rather than this fixture's.
+    const columnZeroLegend = (lines: string[], from: number, to: number) =>
+      lines.slice(from + 1, to).filter((l) => l !== '' && !l.startsWith('  '));
+
+    // The SAME bound on both sides: the render always has a `Resources (` header
+    // after the legend, while the documented example may or may not show one.
+    // Bounding only the render makes extending the example with that section --
+    // a legitimate docs edit that changes no legend line -- fail this case.
+    const untilNextSection = (lines: string[], from: number) => {
+      const at = lines.findIndex((l, i) => i > from && /^Resources \(/.test(l));
+      return at === -1 ? lines.length : at;
+    };
+
+    const rows = out.split('\n');
+    const blockAt = rows.indexOf('Skipped outputs:');
+    expect(blockAt, 'the render carries the block').toBeGreaterThan(-1);
+    const resourcesAt = untilNextSection(rows, blockAt);
+    expect(resourcesAt, 'the resources header bounds the legend').toBeGreaterThan(blockAt);
+    const legend = columnZeroLegend(rows, blockAt, resourcesAt);
+    // A floor, so a selection that silently collapsed to one line cannot pass.
+    expect(legend.length).toBeGreaterThanOrEqual(6);
+
+    // The docs side is read by RENDERING the page, not by scanning it for fences.
+    // Hand-parsing them was wrong twice: walking up from the header picks a
+    // fence-like LINE OF CONTENT as the opener, and an example indented by a
+    // space is a legitimate edit that an exact line lookup misses. `marked` is
+    // already the repo's answer to "what does a reader actually see" — see
+    // `tests/unit/scripts/rule-file-payload.test.ts` — and its code token hands
+    // back the block's text with the fence gone and the indentation normalized.
+    const page = readFileSync(resolve(import.meta.dirname, '../../../docs/cli-state.md'), 'utf-8');
+    // `walkTokens`, not a filter over the top level: a code block inside a
+    // blockquote or a list item renders to a reader exactly the same and would
+    // otherwise be invisible here, in both directions — a stale nested copy would
+    // pass, and moving this example into a blockquote would find none.
+    const copies: string[][] = [];
+    marked.walkTokens(marked.lexer(page), (token) => {
+      if (token.type !== 'code') return;
+      const lines = (token as Tokens.Code).text.split('\n');
+      if (lines.includes('Skipped outputs:')) copies.push(lines);
+    });
+
+    // EXACTLY one, and then EVERY one: `find` would check the first and let a
+    // second example carry stale prose, or let a matching block added earlier
+    // mask the one this section is about.
+    expect(copies, 'docs/cli-state.md carries the block in one code example').toHaveLength(1);
+
+    // The whole SEQUENCE, not per-line inclusion: reordering two lines always
+    // passes an inclusion check, and a dropped or shortened line passes it
+    // whenever the original line still appears anywhere else on the page.
+    // EVERY occurrence, not the first in each block: one example can show two
+    // renders, and checking only the first lets a matching copy mask a stale one
+    // below it.
+    for (const lines of copies) {
+      const heads = lines.flatMap((l, i) => (l === 'Skipped outputs:' ? [i] : []));
+      expect(heads.length, 'the example shows at least one block').toBeGreaterThan(0);
+      for (const at of heads) {
+        expect(columnZeroLegend(lines, at, untilNextSection(lines, at))).toEqual(legend);
+      }
+    }
+  });
+
   it('the pointer the legend SHIPS resolves: symbol exists, cited path exists', async () => {
     // The legend is user-visible text naming a symbol and a source file, and
     // asserting the literal string only proves the string is there. A rename
@@ -1174,13 +1267,26 @@ describe('cdkd state show', () => {
         out.split('The last deploy could not resolve the keys listed').length - 1,
         `legend for ${carrier}`
       ).toBe(1);
-      // FOLLOWS, as the name says: counting alone passes with the legend
-      // printed before the block it explains.
-      const lines = out.split('\n');
-      const block = lines.findIndex((l) => l === 'Skipped outputs:');
-      const legend = lines.findIndex((l) => l.startsWith('The last deploy'));
-      expect(legend, `legend after block for ${carrier}`).toBeGreaterThan(block);
     }
+  });
+
+  it('the legend FOLLOWS the block it explains', async () => {
+    // Split out of the recursion case above: counting occurrences passes with the
+    // legend printed BEFORE the block, so the order needs a claim of its own
+    // rather than a third assertion inside a case named for something else.
+    mockListStacks.mockResolvedValue(defaultListResponse('OrderStack'));
+    mockGetState.mockResolvedValue(
+      makeState({ stackName: 'OrderStack', skippedOutputs: { Only: 'a'.repeat(64) } })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'OrderStack']);
+
+    const lines = out.split('\n');
+    const block = lines.findIndex((l) => l === 'Skipped outputs:');
+    const legend = lines.findIndex((l) => l.startsWith('The last deploy'));
+    expect(block).toBeGreaterThan(-1);
+    expect(legend).toBeGreaterThan(block);
   });
 
   it('a resource logical id spelled like the header emits NO legend', async () => {
@@ -1216,11 +1322,37 @@ describe('cdkd state show', () => {
     );
     mockGetLockInfo.mockResolvedValue(null);
 
-    const out = await runStateShow(['show', 'LoneRoot', '--show-nested']);
+    const nested = await runStateShow(['show', 'LoneRoot', '--show-nested']);
 
-    expect(out.split('\n').filter((l) => l === 'Skipped outputs:')).toHaveLength(1);
-    expect(out.split('The last deploy could not resolve the keys listed').length - 1).toBe(1);
-    expect(out).not.toContain('Nested stack:');
+    expect(nested.split('\n').filter((l) => l === 'Skipped outputs:')).toHaveLength(1);
+    expect(nested.split('The last deploy could not resolve the keys listed').length - 1).toBe(1);
+    expect(nested).not.toContain('Nested stack:');
+
+    // ...and it moved to the END of the tree, which is what the JSDoc claims and
+    // what counting occurrences cannot see: a variant printing the legend inline
+    // when the ROOT owes it, and at the end only for a descendant, emits exactly
+    // one either way. The position is the only thing that separates them, so the
+    // single-stack path is rendered here too as the comparand.
+    const posOf = (out: string) => {
+      const lines = out.split('\n');
+      return {
+        legend: lines.findIndex((l) => l.startsWith('The last deploy')),
+        resources: lines.findIndex((l) => /^Resources \(/.test(l)),
+      };
+    };
+    const n = posOf(nested);
+    expect(n.resources).toBeGreaterThan(-1);
+    expect(n.legend, 'under --show-nested the legend is last').toBeGreaterThan(n.resources);
+
+    const plain = await runStateShow(['show', 'LoneRoot']);
+    const pl = posOf(plain);
+    expect(pl.resources).toBeGreaterThan(-1);
+    // Present BEFORE ordered: `findIndex` returns -1 for a missing legend, which
+    // is less than any real index, so the order check alone passes on no legend.
+    expect(pl.legend, 'the single-stack path renders a legend at all').toBeGreaterThan(-1);
+    expect(pl.legend, 'on the single-stack path it stays with its block').toBeLessThan(
+      pl.resources
+    );
   });
 
   it('a tree node carrying an EMPTY skipped map gets neither block nor legend', async () => {
