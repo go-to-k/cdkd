@@ -177,7 +177,7 @@ describe('ProviderRegistry warns about unrecognized properties on the SDK route 
     expect(lines[0]).toContain('misspelled');
     // The 1-click report link and the suppression flag.
     expect(lines[0]).toContain('https://github.com/go-to-k/cdkd/issues/new');
-    expect(lines[0]).toContain(`--allow-unsupported-properties ${fx.resourceType}:${UNKNOWN_PROP}`);
+    expect(lines[0]).toContain(`--prefer-sdk-route ${fx.resourceType}:${UNKNOWN_PROP}`);
   });
 
   it('stays silent for a handled property', () => {

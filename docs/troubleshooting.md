@@ -1811,7 +1811,7 @@ Whether you need to do anything depends on the resource type:
   The flag refuses while the template still carries the silent-drop property
   that sent the resource to Cloud Control in the first place, so first either
   remove that property or accept the drop with
-  `--allow-unsupported-properties <Type>:<Prop>`.
+  `--prefer-sdk-route <Type>:<Prop>`.
 
 ### A property you set in the template never reaches AWS
 
@@ -1830,13 +1830,13 @@ whose template carries such a property is routed through the Cloud Control API
 instead, which forwards the whole property map. The deploy says so:
 
 ```
-MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Provider does not yet wire EvaluationWindow — CC API will forward the full property map. Override via --allow-unsupported-properties AWS::CloudWatch::Alarm:EvaluationWindow.)
+MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Provider does not yet wire EvaluationWindow — CC API will forward the full property map. Override via --prefer-sdk-route AWS::CloudWatch::Alarm:EvaluationWindow.)
 ```
 
 So if the field is genuinely missing from AWS, the auto-route did not fire.
 Three reasons:
 
-1. **You passed `--allow-unsupported-properties <Type>:<Prop>`.** That flag
+1. **You passed `--prefer-sdk-route <Type>:<Prop>`.** That flag
    means "keep this resource on the SDK provider and accept the drop" — it is
    the opt-in to exactly this outcome.
 2. **The property is not in cdkd's committed CloudFormation schema snapshot.**

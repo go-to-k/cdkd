@@ -54,9 +54,9 @@ compares each top-level template property against the provider's declared
 with a rationale) sets. Any unhandled top-level property in the CFn schema
 triggers a fast-fail with the silently-dropped property name, the
 rationale, a 1-click GitHub issue link to request support, and the exact
-`--allow-unsupported-properties <ResourceType>:<PropertyName>` re-run
+`--prefer-sdk-route <ResourceType>:<PropertyName>` re-run
 command. The escape hatch itself is documented under
-[`--allow-unsupported-properties`](cli-deploy-safety.md#allow-unsupported-properties-deploy).
+[`--prefer-sdk-route`](cli-deploy-safety.md#prefer-sdk-route-deploy).
 
 Coverage data is generated from the CFn schema fixtures + each SDK
 provider's declarations into the runtime, and CI fails if it drifts. Tier 2 (Cloud Control) types are NOT in the map:

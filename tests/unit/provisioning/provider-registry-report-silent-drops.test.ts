@@ -121,7 +121,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(msg).toContain(fx.resourceType);
     expect(msg).toContain('routing via Cloud Control API');
     expect(msg).toContain(fx.property);
-    expect(msg).toContain('--allow-unsupported-properties');
+    expect(msg).toContain('--prefer-sdk-route');
     expect(msg).toContain(`${fx.resourceType}:${fx.property}`);
   });
 
@@ -142,7 +142,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(msg).toContain(fx.resourceType);
     expect(msg).toContain(fx.property);
     expect(msg).toContain('silently dropped');
-    expect(msg).toContain('--allow-unsupported-properties');
+    expect(msg).toContain('--prefer-sdk-route');
   });
 
   /**
@@ -152,7 +152,22 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
    * property reaches AWS after all and the "will be silently dropped" line is
    * simply false. Only the auto-route line is true here.
    */
-  it('does NOT warn about an overridden drop when a SIBLING drop auto-routes the resource', () => {
+  it('does NOT warn that an overridden drop will be DROPPED when a sibling auto-routes', () => {
+    // Narrowed from `expect(warn).not.toHaveBeenCalled()` by issue
+    // go-to-k/cdkd#3000, and the narrowing is a deliberate revision of
+    // go-to-k/cdkd#2750's decision rather than an erosion of it.
+    //
+    // What #2750 retired was a FALSE warn: it told the user the property "will
+    // be silently dropped" while Cloud Control was writing it, and prescribed
+    // removing the override — a no-op. That sentence must stay gone, and the
+    // assertion below is what keeps it gone.
+    //
+    // What #3000 added is the opposite claim and a true one: the user's
+    // preference went INERT and the property IS written. It fires only for a
+    // user who actually passed the flag for a property on THIS resource, so it
+    // is not the broadcast warn #2750 removed — and without it an explicit
+    // instruction appears silently ignored, which is the confusion that drove
+    // the flag's rename.
     const pair = pickSilentDropPair();
     const { registry, info, warn } = makeRegistry();
     registry.allowUnsupportedProperties([`${pair.resourceType}:${pair.propA}`]);
@@ -163,7 +178,13 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
         properties: { [pair.propA]: 'x', [pair.propB]: 'y' },
       },
     ]);
-    expect(warn).not.toHaveBeenCalled();
+    const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned, "the FALSE 'will be dropped' warn is back").not.toMatch(
+      /silently dropped|will not be written|missing the field/
+    );
+    // And the true one IS present — otherwise this case would pass in the
+    // world where #3000's warning was never wired.
+    expect(warned, 'the inert-preference warning is gone').toContain('had no effect');
     expect(info).toHaveBeenCalledTimes(1);
     const msg = info.mock.calls[0]![0] as string;
     expect(msg).toContain('routing via Cloud Control API');
@@ -305,5 +326,72 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     ]);
     expect(info).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The INERT-preference warning (issue
+ * [#3000](https://github.com/go-to-k/cdkd/issues/3000)).
+ *
+ * The preference is per `<Type>:<Prop>` while ROUTING is per RESOURCE, so one
+ * uncovered sibling drop sends the whole resource to Cloud Control — which
+ * forwards the full map, writing the very properties the user asked to keep off
+ * the wire. Neither of the flag's purposes is served, and until this warning
+ * nothing named that: the user sees an explicit instruction apparently ignored.
+ * It is the concrete confusion that motivated the rename.
+ */
+describe('--prefer-sdk-route had no effect', () => {
+  /** A type with TWO silent drops, so one can be covered and one not. */
+  function twoDrops() {
+    const { resourceType, propA, propB } = pickSilentDropPair();
+    const { registry, warn } = makeRegistry();
+    return { registry, warn, resourceType, covered: propA, uncovered: propB };
+  }
+
+  it('warns, naming the covered property and the sibling that overrode it', () => {
+    const { registry, warn, resourceType, covered, uncovered } = twoDrops();
+    registry.allowUnsupportedProperties([`${resourceType}:${covered}`]);
+
+    registry.validateResourceProperties([
+      {
+        logicalId: 'Target',
+        resourceType,
+        properties: { [covered]: 'x', [uncovered]: 'y' },
+        provisionedBy: 'sdk',
+      },
+    ]);
+
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text, 'no warning names the inert preference').toContain('had no effect');
+    // BOTH halves: which property was ignored, and which one caused it. Naming
+    // only the first leaves the user with no action to take.
+    expect(text).toContain(covered);
+    expect(text).toContain(uncovered);
+    // And the remedy is to WIDEN the preference, not to drop it.
+    expect(text).toContain('--prefer-sdk-route');
+  });
+
+  it('stays silent when the preference COVERS every drop on the resource', () => {
+    // Then the resource really does stay on the SDK provider and the values
+    // really are unwritten — the flag worked, and this warning would be false.
+    const { registry, warn, resourceType, covered, uncovered } = twoDrops();
+    registry.allowUnsupportedProperties([
+      `${resourceType}:${covered}`,
+      `${resourceType}:${uncovered}`,
+    ]);
+
+    registry.validateResourceProperties([
+      {
+        logicalId: 'Target',
+        resourceType,
+        properties: { [covered]: 'x', [uncovered]: 'y' },
+        provisionedBy: 'sdk',
+      },
+    ]);
+
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text, 'warned that the preference was inert when it was honoured').not.toContain(
+      'had no effect'
+    );
   });
 });

@@ -15,7 +15,7 @@ under [Deploy: waits & concurrency](cli-deploy.md) and
 
 ```bash
 cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh
-cdkd deploy MyStack --allow-unsupported-properties AWS::Lambda::Function:CapacityProviderConfig
+cdkd deploy MyStack --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig
 cdkd deploy MyStack --recreate-via-cc-api MyLambda --yes
 cdkd deploy MyStack --replace --yes
 cdkd deploy MyStack --strict-getatt          # fail on any guessed Fn::GetAtt value
@@ -27,7 +27,7 @@ cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resol
 | Flag | Applies to | Description |
 | --- | --- | --- |
 | `--allow-unsupported-types <types>` | deploy, destroy, state destroy | Attempt a resource type cdkd rejects at pre-flight as unsupported. |
-| `--allow-unsupported-properties <entries>` | deploy | Pin a resource to the SDK provider and accept a silently dropped property, instead of the default Cloud Control auto-route. |
+| `--prefer-sdk-route <entries>` | deploy | Pin a resource to the SDK provider and accept a silently dropped property, instead of the default Cloud Control auto-route. |
 | `--recreate-via-cc-api <LogicalId>` | deploy | Destroy + recreate one resource via Cloud Control API, for a dropped property the auto-route's in-place update cannot deliver. |
 | `--recreate-via-sdk-provider <LogicalId>` | deploy | The reverse: destroy + recreate one resource via cdkd's SDK provider. |
 | `--pin-cc-api <LogicalId>` | deploy | Decline the automatic return to the SDK provider for one resource, keeping it on Cloud Control for this deploy. |
@@ -84,7 +84,7 @@ cdkd deploy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::B
 cdkd destroy MyStack --allow-unsupported-types AWS::AppMesh::Mesh,AWS::Budgets::Budget
 ```
 
-## `--allow-unsupported-properties` (deploy)
+## `--prefer-sdk-route` (deploy)
 
 ### Default: the Cloud Control auto-route
 
@@ -113,7 +113,7 @@ When the auto-route fires, cdkd logs an info line per affected resource:
 [info] MyLambda (AWS::Lambda::Function): routing via Cloud Control API
        (cdkd's SDK Provider does not yet wire CapacityProviderConfig — CC API
         will forward the full property map. Override via
-        --allow-unsupported-properties AWS::Lambda::Function:CapacityProviderConfig.)
+        --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig.)
 ```
 
 Two categories never trigger the auto-route:
@@ -127,14 +127,14 @@ Two categories never trigger the auto-route:
 
 ### The override
 
-`--allow-unsupported-properties <entries>` is the **opt-out** from that
+`--prefer-sdk-route <entries>` is the **opt-out** from that
 auto-route. Each entry is a `<ResourceType>:<PropertyName>` token
 (comma-separated and repeatable); the flag pins the resource to the SDK
 provider path and **accepts the silent drop** for the named property. A warn
 line is logged so the drop is auditable.
 
 ```bash
-cdkd deploy MyStack --allow-unsupported-properties AWS::Lambda::Function:CapacityProviderConfig,AWS::Lambda::Function:FunctionScalingConfig
+cdkd deploy MyStack --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig,AWS::Lambda::Function:FunctionScalingConfig
 ```
 
 Entries are per type-and-property pair, not blanket, so you acknowledge each
@@ -154,7 +154,7 @@ consequences worth knowing:
   a patch against a record that already claimed the value — sent nothing.) The
   exception is a create-only property; see below.
 - **`cdkd diff` and `cdkd deploy` disagree about the property, on purpose.**
-  `diff` registers no `--allow-unsupported-properties`, so it previews the
+  `diff` registers no `--prefer-sdk-route`, so it previews the
   flag-less deploy and shows the property as a pending change with the
   `[via CC API: <Prop>]` annotation. Re-running `deploy` WITH the flag reports
   no change for it, because that deploy will not write it.
@@ -174,7 +174,7 @@ Three exceptions:
   later does not deliver it. Applying it means recreating the resource, which
   is [`--recreate-via-cc-api`](#recreate-via-cc-api-deploy) — and that flag is
   refused while the same property is still named in
-  `--allow-unsupported-properties`, so drop the entry in the same run. A
+  `--prefer-sdk-route`, so drop the entry in the same run. A
   stateful type also needs
   [`--force-stateful-recreation`](#force-stateful-recreation), and a type whose
   provider declines the Cloud Control fallback cannot be recreated that way at
@@ -285,7 +285,7 @@ said the opposite until that run measured it.
 
 **One sequence defeats this, and it is a bug, not a reason to reach for the
 flag.** If an earlier deploy accepted the drop with
-[`--allow-unsupported-properties`](#allow-unsupported-properties-deploy), that
+[`--prefer-sdk-route`](#prefer-sdk-route-deploy), that
 deploy still RECORDED the property in cdkd state without writing it to AWS. The
 later flag-less deploy does re-route the resource to Cloud Control, but the
 update is computed as a patch against that record, the property is identical on
@@ -389,10 +389,10 @@ to read — a permissions problem, say — cdkd falls back to the generic caveat
 without failing the deploy, so an empty consumer list is not proof there are
 none. Plan multi-stack recreates from leaf to root.
 
-### Interaction with `--allow-unsupported-properties`
+### Interaction with `--prefer-sdk-route`
 
 `--recreate-via-cc-api MyLambda` combined with
-`--allow-unsupported-properties AWS::Lambda::Function:CapacityProviderConfig`,
+`--prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig`,
 on a resource whose template carries `CapacityProviderConfig`, is **ambiguous
 intent**:
 
@@ -508,11 +508,11 @@ cdkd deploy MyStack \
   is merely *routable* (Cloud Control, custom resource, escape hatch) does not
   qualify.
 - **The template still uses a silent-drop property that is not listed in
-  `--allow-unsupported-properties`.** The auto-route would send the
+  `--prefer-sdk-route`.** The auto-route would send the
   SDK-recreated resource straight back to Cloud Control on the very next
   routing decision, so cdkd refuses as inverse ambiguous intent. Fix it by
   removing the property from the template, or by accepting the drop with
-  `--allow-unsupported-properties <Type>:<Prop>`.
+  `--prefer-sdk-route <Type>:<Prop>`.
 
 ### What `--recreate-via-sdk-provider` is NOT
 

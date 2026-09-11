@@ -21,7 +21,7 @@ The detailed per-command / per-flag reference is split across these pages:
   observed-state capture, name prefixing, per-resource timeouts, and CDK
   annotation messages.
 - **[Deploy: safety & compatibility flags](cli-deploy-safety.md)** —
-  `--allow-unsupported-types`, `--allow-unsupported-properties`,
+  `--allow-unsupported-types`, `--prefer-sdk-route`,
   `--recreate-via-cc-api`, `--replace`, `--recreate-via-sdk-provider`,
   `--strict-getatt`, `--allow-unaddressed`, and `--no-cfn-fallback`.
 - **[Destroy flags & guards](cli-destroy.md)** — data guards,

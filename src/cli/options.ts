@@ -746,10 +746,14 @@ export const allowUnsupportedTypesOption = new Option(
  */
 const RESOURCE_PROPERTY_FORMAT = /^[A-Z][A-Za-z0-9]+(::[A-Z][A-Za-z0-9]+)+:[A-Z][A-Za-z0-9]*$/;
 
-export function parseAllowUnsupportedPropertiesToken(
-  value: string,
-  previous: string[] | undefined
-): string[] {
+/**
+ * The flag the errors below name themselves after.
+ *
+ * Both spellings share one parser, so the message has to say which one the user
+ * typed — quoting the canonical name at someone who typed the deprecated alias
+ * sends them looking for a flag they did not use.
+ */
+function parseRouteEntries(value: string, previous: string[] | undefined, flag: string): string[] {
   const parsed = value
     .split(',')
     .map((s) => s.trim())
@@ -757,14 +761,14 @@ export function parseAllowUnsupportedPropertiesToken(
   for (const token of parsed) {
     if (!RESOURCE_PROPERTY_FORMAT.test(token)) {
       throw new Error(
-        `Invalid --allow-unsupported-properties value "${token}": expected ` +
+        `Invalid ${flag} value "${token}": expected ` +
           `<ResourceType>:<PropertyName> with PascalCase on both halves ` +
           `(e.g. AWS::Lambda::Function:RuntimeManagementConfig).`
       );
     }
     if (token.startsWith('Custom::')) {
       throw new Error(
-        `Invalid --allow-unsupported-properties value "${token}": Custom:: ` +
+        `Invalid ${flag} value "${token}": Custom:: ` +
           `resources are routed through cfn-response and have no write-side ` +
           `silent drop at cdkd, so the flag would have no effect. Use ` +
           `--allow-unsupported-types for type-level escape hatches instead.`
@@ -774,13 +778,89 @@ export function parseAllowUnsupportedPropertiesToken(
   return [...(previous ?? []), ...parsed];
 }
 
+export function parsePreferSdkRouteToken(value: string, previous: string[] | undefined): string[] {
+  return parseRouteEntries(value, previous, '--prefer-sdk-route');
+}
+
+/**
+ * Whether the deprecated alias has already warned this process.
+ *
+ * Commander calls the parser ONCE PER OCCURRENCE, and this flag is repeatable —
+ * so without this a user passing it three times gets the deprecation notice
+ * three times, which reads as three separate problems.
+ */
+let deprecatedAliasWarned = false;
+
+/** Reset between tests; the warning is per-process, not per-parse. */
+export function resetDeprecatedAliasWarning(): void {
+  deprecatedAliasWarned = false;
+}
+
+export function parseAllowUnsupportedPropertiesToken(
+  value: string,
+  previous: string[] | undefined
+): string[] {
+  if (!deprecatedAliasWarned) {
+    deprecatedAliasWarned = true;
+    // STDERR, not the logger: option parsing runs before the logger's verbosity
+    // is resolved, and a deprecation the user cannot see is not a deprecation.
+    process.stderr.write(
+      '--allow-unsupported-properties is deprecated and will be removed in a ' +
+        'future release; use --prefer-sdk-route, which takes the same ' +
+        '<ResourceType>:<PropertyName> tokens and does the same thing. The old ' +
+        'name reads as the opposite of its behaviour: it does not make the ' +
+        'property reach AWS, it keeps the resource on the SDK provider and ' +
+        'accepts that the value is NOT written.\n'
+    );
+  }
+  return parseRouteEntries(value, previous, '--allow-unsupported-properties');
+}
+
+/**
+ * `--prefer-sdk-route` — keep a resource on its SDK provider instead of letting
+ * an unwired property auto-route it to Cloud Control (issue
+ * [#3000](https://github.com/go-to-k/cdkd/issues/3000)).
+ *
+ * RENAMED from `--allow-unsupported-properties`, which read as the opposite of
+ * what it does and rhymed with `--allow-unsupported-types`, a flag that runs the
+ * OTHER way: that one ENABLES a Cloud Control attempt, this one DISABLES the
+ * Cloud Control auto-route. Two independent readers took the old name backwards
+ * in one session, one of them while writing 44 issue bodies describing it.
+ *
+ * `prefer`, not a negative or a guarantee, and the reason is mechanical rather
+ * than stylistic. The allow set is per `<Type>:<Prop>` while ROUTING is per
+ * RESOURCE, so one un-allowed sibling drop on the same resource sends the whole
+ * resource to Cloud Control anyway — and Cloud Control then forwards the full
+ * map, so the named property reaches AWS after all. A name promising "do not
+ * route" would be a promise this flag cannot keep; `prefer` is the one modality
+ * that is true in both cases.
+ *
+ * The help text therefore carries what the name deliberately does not: that the
+ * values go UNWRITTEN when the preference is honoured, and that it is ignored
+ * when the resource routes to Cloud Control for another reason.
+ */
+export const preferSdkRouteOption = new Option(
+  '--prefer-sdk-route <entries>',
+  'Comma-separated <ResourceType>:<PropertyName> tokens to keep on the SDK provider ' +
+    'instead of auto-routing the resource to Cloud Control. The named values are then ' +
+    'NOT written to AWS — the deployed resource is missing the field. Ignored for a ' +
+    'resource that routes to Cloud Control for another reason (a sibling unwired ' +
+    'property, or a sticky cc-api state record), where the values are written after all. ' +
+    'Example: --prefer-sdk-route AWS::Lambda::Function:RuntimeManagementConfig'
+).argParser(parsePreferSdkRouteToken);
+
+/**
+ * The deprecated spelling. HIDDEN from `--help` so new users meet only the
+ * successor, but still parsed so existing scripts keep working; it warns once
+ * per process and feeds the SAME option name, so nothing downstream can tell
+ * which spelling was used.
+ */
 export const allowUnsupportedPropertiesOption = new Option(
   '--allow-unsupported-properties <entries>',
-  'Comma-separated <ResourceType>:<PropertyName> tokens to accept as silently dropped ' +
-    'at deploy time. Escape hatch — the property will NOT be written to AWS, the ' +
-    'deployed resource will be missing the field. Example: ' +
-    '--allow-unsupported-properties AWS::Lambda::Function:RuntimeManagementConfig,AWS::RDS::DBInstance:CACertificateIdentifier'
-).argParser(parseAllowUnsupportedPropertiesToken);
+  'Deprecated alias for --prefer-sdk-route.'
+)
+  .argParser(parseAllowUnsupportedPropertiesToken)
+  .hideHelp();
 
 /**
  * Issue [#615] — `--recreate-via-cc-api <LogicalId>` (repeatable). Each
@@ -826,7 +906,7 @@ export const recreateViaCcApiOption = new Option(
     'destroy-and-recreate cost is acknowledged for each target. Stateful resource ' +
     'types (RDS, DynamoDB, S3, EFS, ...) refuse unless --force-stateful-recreation ' +
     'is ALSO passed (two-flag protection). Cannot be combined with ' +
-    '--allow-unsupported-properties on the same resource type and property.'
+    '--prefer-sdk-route on the same resource type and property.'
 ).argParser(parseRecreateViaCcApiToken);
 
 /**
@@ -1156,6 +1236,7 @@ export const deployOptions = [
     'Only deploy requested stacks, do not include dependencies'
   ).default(false),
   allowUnsupportedTypesOption,
+  preferSdkRouteOption,
   allowUnsupportedPropertiesOption,
   recreateViaCcApiOption,
   recreateViaSdkProviderOption,

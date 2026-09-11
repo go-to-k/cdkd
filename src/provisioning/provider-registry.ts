@@ -565,7 +565,7 @@ export class ProviderRegistry {
       `this type cannot fall back to Cloud Control API (${reason}):\n` +
       `${details}\n` +
       `Remove the properties, or force the SDK provider path and accept the drop via ` +
-      `--allow-unsupported-properties ${overrideHint} ` +
+      `--prefer-sdk-route ${overrideHint} ` +
       `(the provider may still reject the resource if the property is required).`
     );
   }
@@ -854,13 +854,39 @@ export class ProviderRegistry {
           `${logicalId} (${resourceType}): routing via Cloud Control API ` +
           `(cdkd's SDK Provider does not yet wire ${propList} — CC API will ` +
           `forward the full property map. Override via ` +
-          `--allow-unsupported-properties ${overrideHint}.)`;
+          `--prefer-sdk-route ${overrideHint}.)`;
         if (provisionedBy === 'cc-api') {
           // Sticky continuation — already on CC from a prior deploy.
           // Debug-only to avoid repetitive noise on every redeploy.
           this.logger.debug(message);
         } else {
           this.logger.info(message);
+        }
+
+        // Say when the user's preference was INERT, because from their side it
+        // looks like cdkd ignored an explicit instruction (issue
+        // [#3000](https://github.com/go-to-k/cdkd/issues/3000)).
+        //
+        // The preference is per `<Type>:<Prop>` while ROUTING is per RESOURCE,
+        // so one un-allowed sibling sends the whole resource to Cloud Control —
+        // which then forwards the full map, writing the very properties the
+        // user asked to keep off the wire. NEITHER of the flag's two purposes
+        // is served: not the SDK route, and not the omission. That is the one
+        // outcome nothing named, and it is why the old flag name read as a lie.
+        const inert = drops
+          .map(({ property }) => property)
+          .filter((property) =>
+            this.allowedUnsupportedProperties.has(`${resourceType}:${property}`)
+          );
+        if (inert.length > 0) {
+          this.logger.warn(
+            `${logicalId} (${resourceType}): --prefer-sdk-route had no effect for ` +
+              `${inert.join(', ')} — ${propList} ${autoRouted.length === 1 ? 'is' : 'are'} not ` +
+              `covered by it, and one uncovered property routes the whole RESOURCE to Cloud ` +
+              `Control. Cloud Control forwards the full property map, so ${inert.join(', ')} ` +
+              `${inert.length === 1 ? 'is' : 'are'} written to AWS after all. To keep the ` +
+              `resource on its SDK provider, add ${overrideHint} to --prefer-sdk-route as well.`
+          );
         }
       }
       if (overridden.length > 0) {
@@ -907,7 +933,7 @@ export class ProviderRegistry {
         }
         this.logger.warn(
           `${logicalId} (${resourceType}): ${overridden.join(', ')} will be ` +
-            `silently dropped (--allow-unsupported-properties override ` +
+            `silently dropped (--prefer-sdk-route override ` +
             `accepted). ${remedies.join(' ')}`
         );
       }
@@ -1003,7 +1029,7 @@ export class ProviderRegistry {
         `${unsupportedPropertyIssueUrl(resourceType, unrecognized[0]!)}` +
         `${one ? '' : ` (link is for ${unrecognized[0]!})`}. ` +
         `If the drop is intended — an addPropertyOverride escape hatch — silence this via ` +
-        `--allow-unsupported-properties ${overrideHint}.`
+        `--prefer-sdk-route ${overrideHint}.`
     );
   }
 
