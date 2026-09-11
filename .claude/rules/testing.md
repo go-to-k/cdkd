@@ -99,16 +99,23 @@ the trigger is a TS entry point, or several spawns in a case.
 
 ## Mutation probes: mutate every site the value reaches, not the first one
 
-- A probe that flips one use of a value proves that ONE use is pinned. PR #2010:
-  a banner read `stackUnaddressed` in a guard AND in the interpolated message;
-  the guard-flip probe failed the test, swapping the INTERPOLATION did not —
-  and the fixture's clean stack never entered the warn arm, so its
-  `not.toContain(...)` assertion was unfalsifiable by construction.
+- A probe that flips one use of a value proves that ONE use is pinned (PR #2010:
+  a guard-flip reddened the test, the same value's INTERPOLATION did not, and
+  the fixture's clean stack never entered the warn arm, so its
+  `not.toContain(...)` was unfalsifiable by construction).
 - **Enumerate the value's uses before probing** (`grep` the identifier in the
   changed hunk). One probe per use — for a GUARD the uses are its CALL SITES
   and both directions of its message, each needing its OWN negative:
   go-to-k/cdkd#2674 fenced a damage sentence in the out-of direction only, so
-  a change confined to the into text went unwatched (2026-09-05).
+  a change confined to the into text went unwatched (2026-09-05). A probed
+  callee says nothing about its WIRING, so delete each argument the call site
+  passes and assert THOSE (a deleted feeding line left 1,442 tests green,
+  go-to-k/cdkd#2719). And a case reaching the subject through an outer layer
+  inherits that layer's NORMALISATION, so it cannot exhibit what it asserts
+  while reading correct (go-to-k/cdkd#2911, four rounds: `resolveValue` rebuilt
+  a structure, un-sharing a memo's reference; `Fn::Split` returned a `string[]`
+  an object branch never enters) -- enter by a route that PRESERVES the
+  property, or call the private method directly.
 - **A negative assertion needs a case where the wrong value would actually be
   EMITTED** — e.g. two DIRTY stacks with different counts (1 and 2), asserting
   the total 3 appears in neither banner.
