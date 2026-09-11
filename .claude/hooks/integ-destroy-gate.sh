@@ -351,12 +351,9 @@ you believe the file in scope is genuinely unrelated to deletion
 behavior, the right fix is to narrow `.markgate.yml` integ-destroy
 scope, not to bypass the marker.
 
-Be honest with yourself about that one: narrowing CAN turn this
-refusal green with no integ run at all. Measured -- drop the only
-in-scope path the marker had not seen and `verify` goes back to 0.
-So narrowing is a decision about what counts as deletion logic,
-and a reviewable one; it is not a way to get a single merge
-through. The gate fires again the moment an in-scope file moves.
+Narrowing CAN clear a `(digest differs)` refusal with no integ run
+-- which makes it a scope decision to review, not a per-merge
+escape. It cannot clear a TTL expiry or a missing marker.
 
 EOF
 
@@ -372,8 +369,10 @@ EOF
 # runnable where mise is absent and the hook fell back to a bare `markgate`.
 # `%q` on the path: this tree can sit under a directory with a space or an
 # apostrophe, and an unquoted `cd` there either takes two arguments or leaves
-# the reader's shell at a continuation prompt. Same rendering on bash 3.2 and
-# 5.x, and a no-op for an ordinary path.
+# the reader's shell at a continuation prompt. A no-op for an ordinary path; a
+# non-ASCII one renders as `$'...'` under 3.2 and literally under 5.x, which
+# both `eval` correctly but are not byte-identical -- do not restate that as
+# "same rendering".
 printf '  cd %q && %s status integ-destroy --explain\n\n' \
   "$target_dir" "${markgate[*]}" >&2
 cat >&2 <<'EOF'

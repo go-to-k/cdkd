@@ -467,15 +467,6 @@ run_msg_case "diagnostic says --explain splits its streams (#3010)" stale \
 run_msg_case "include-list cause is qualified, not flat (#3010)" stale \
   'widening onto paths this branch has not touched' 'could not EVALUATE' "$payload_merge"
 
-# --- The emitted `cd` line must survive a PASTE ---
-#
-# `$target_dir` is interpolated into the advice, and this repo's worktrees can
-# sit under a directory with a space or an apostrophe. Unquoted, `cd` there
-# takes two arguments; with an apostrophe the pasted line leaves the reader at a
-# continuation prompt. Asserted by EXECUTING the `cd` half rather than by
-# matching the escape, so the case survives any future change of quoting style
-# and fails on a broken one. (go-to-k/cdkd#2027 is the 24-site precedent for
-# this class in these hooks.)
 # --- Without mise, the advice must still be the command that exists ---
 #
 # The hook resolves `mise exec -- markgate` when mise is on PATH and a bare
@@ -499,6 +490,15 @@ else
   printf 'FAIL advice matches the resolved binary without mise (#3010)\n'
 fi
 
+# --- The emitted `cd` line must survive a PASTE ---
+#
+# `$target_dir` is interpolated into the advice, and this repo's worktrees can
+# sit under a directory with a space or an apostrophe. Unquoted, `cd` there
+# takes two arguments; with an apostrophe the pasted line leaves the reader at a
+# continuation prompt. Asserted by EXECUTING the `cd` half rather than by
+# matching the escape, so the case survives any future change of quoting style
+# and fails on a broken one. (go-to-k/cdkd#2027 is the 24-site precedent for
+# this class in these hooks.)
 space_repo="$TMPDIR/side repo"
 git init -q -b feature/x "$space_repo"
 declare_gate "$space_repo" integ-destroy
@@ -522,8 +522,16 @@ fi
 run_msg_case "diagnostic says merge base: is the SET-time value (#3010)" stale \
   'appears only when a marker exists' 'could not EVALUATE' "$payload_merge"
 
-run_msg_case "remedy says narrowing alone does not clear it (#3010)" stale \
-  'narrowing CAN turn this' 'could not EVALUATE' "$payload_merge"
+# Named for what it asserts. It read "narrowing alone does not clear it" while
+# needling text that says the opposite -- the same name/assertion drift this PR
+# fixed one case earlier. The claim is also CONDITIONAL: narrowing clears a
+# digest mismatch and cannot clear a TTL expiry or a missing marker (measured),
+# so the sentence names its condition and the two states it does not cover.
+run_msg_case "remedy admits narrowing CAN clear a digest mismatch (#3010)" stale \
+  'Narrowing CAN clear' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "remedy names the states narrowing cannot clear (#3010)" stale \
+  'cannot clear a TTL expiry or a' 'could not EVALUATE' "$payload_merge"
 
 # The fourth heredoc. Its body carries `integ-destroy` in backticks; unquoted,
 # the header the reason-LESS path prints is mangled the same way as the others.
@@ -780,6 +788,63 @@ x2236_case() {
     printf 'FAIL %s%s\n' "$name" "$detail"
   fi
 }
+
+# --- The HUNK filter itself, which nothing above exercised ---
+#
+# Every diff-filter case above drives `strict_delete` (any change to a listed
+# file blocks) or an out-of-scope control. The OTHER half of the decision --
+# `provider_pattern` / `filtered_delete` gated on `delete_symbol_pattern`, which
+# is what decides a change to a provider or to an orchestration command -- had
+# no case at all. Measured: neutering `delete_symbol_pattern` to a never-match
+# string, or dropping `provider_pattern`, or replacing the whole
+# `grep -qE "$filtered_delete|$provider_pattern"` with `false`, each left the
+# suite at 60/0 while turning every provider verdict from 2 into 0. That is a
+# merge allowed with a stale marker for a PR rewriting a provider's `delete()`
+# -- a fail-open, and the dangerous direction.
+#
+# Its own staging helper because `stage_filter_change` REFUSES delete-symbol
+# vocabulary by design: the strict cases depend on their content being
+# symbol-free, and these two cases depend on the opposite.
+stage_filter_hunk() {
+  local rel="$1"; local line="$2"
+  git -C "$filter_repo" reset -q --hard refs/remotes/origin/main
+  mkdir -p "$filter_repo/$(dirname "$rel")"
+  printf '%s\n' "$line" > "$filter_repo/$rel"
+  git -C "$filter_repo" add -A
+  git -C "$filter_repo" -c user.email=t@t -c user.name=t commit -q -m "hunk $rel"
+}
+
+# A provider whose diff ADDS a delete symbol: the hunk filter must arm the gate.
+stage_filter_hunk "src/provisioning/providers/sqs-queue-provider.ts" \
+  "  async deleteResource(physicalId: string) { return this.client.send(cmd); }"
+run_case "hunk filter: provider delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# The SAME provider file with a string-only change: the filter must let it
+# through. This is the half that proves the case above passes on the SYMBOL and
+# not merely on the path -- without it, a `provider_pattern` promoted to strict
+# would keep both green.
+stage_filter_hunk "src/provisioning/providers/sqs-queue-provider.ts" \
+  "  private readonly label = 'queue provider';"
+run_case "hunk filter: provider string-only change passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# --- markgate missing entirely ---
+#
+# The hook resolves `mise exec -- markgate`, else a bare `markgate`, else
+# refuses. Measured: flipping that last `exit 2` to `exit 0` left the suite at
+# 60/0 -- no case ran with neither binary on PATH, so the gate could be made to
+# pass silently on any machine that had not run `mise install`.
+nomg_out=$(printf '%s' "$payload_merge" \
+  | PATH="/usr/bin:/bin" MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+nomg_rc=$?
+if [ "$nomg_rc" -eq 2 ] && printf '%s' "$nomg_out" | grep -q 'markgate is not installed'; then
+  pass=$((pass + 1)); printf 'OK   refuses when markgate is not installed (exit 2)\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL refuses when markgate is not installed: want exit 2 + 'markgate is not installed', got rc=$nomg_rc\n  output: $nomg_out\n"
+  printf 'FAIL refuses when markgate is not installed (got %s)\n' "$nomg_rc"
+fi
 
 x2236_case "target declaring integ-destroy consults that marker" 2 stale CALLED - "$x2236_declares"
 x2236_case "sibling declaring only its own gate is NOT accepted on it" 2 fresh NOT_CALLED "declares no gate" "$x2236_other"
