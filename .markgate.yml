@@ -304,6 +304,11 @@ gates:
       # workflows above -- a checker INPUT outside this scope is a marker that
       # reads fresh while the thing it certifies has changed.
       - ".github/workflows/docs-deploy.yml"
+      # release-pr-staleness.test.ts EXECUTES this workflow's shell against real
+      # git repositories, so the suite's verdict is about this file's contents.
+      # Same reason as the workflows above: a checker INPUT outside this scope
+      # is a marker that reads fresh while the thing it certifies has changed.
+      - ".github/workflows/release-pr-staleness.yml"
       # release-please-v0.test.ts reads all three: the config's
       # bump-minor-pre-major, the manifest's 0.x version, and the release
       # workflow's publish-job guard (the two layers that keep an accidental

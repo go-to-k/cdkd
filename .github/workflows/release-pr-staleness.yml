@@ -1,0 +1,202 @@
+name: release-pr-staleness
+
+# Disarm auto-merge on a standing release PR that `main` has moved past.
+#
+# THE HAZARD. release-please does not rebuild a release PR whose computed
+# release is unchanged -- it logs `PR #N remained the same` and leaves the
+# branch on the base it was cut from. A `chore:` / `ci:` / `docs:` commit
+# produces no changelog entry, so it lands on `main` WITHOUT the release branch
+# following, and merging the PR then takes the branch's older copy of any file
+# release-please owns. GitHub reports MERGEABLE throughout.
+#
+# WHY ci.yml's `release-pr-not-stale` JOB CANNOT COVER THIS. That job is the
+# right check in the wrong place: a `pull_request` workflow does NOT re-run when
+# the BASE branch moves (its default activity types are `opened`,
+# `synchronize`, `reopened` -- all head-side). So the release PR keeps the green
+# it earned at its last head push, and the hazard is precisely the case where
+# release-please never pushes again. The job still earns its keep for the
+# ordinary case, where a feat/fix lands and release-please rebuilds; this
+# workflow covers the path it structurally cannot see.
+#
+# WHY TWO TRIGGERS, AND WHY NEITHER ALONE IS ENOUGH.
+#   push to main         -- main moves while auto-merge is ALREADY armed.
+#   auto_merge_enabled   -- auto-merge is armed on a PR main moved past EARLIER.
+# The second is the common one and is easy to miss: a release PR sits for days,
+# a `chore:` commit lands, and the maintainer later arms auto-merge on a PR that
+# is green from an old run. It merges immediately. A push-only check never runs
+# at that moment.
+#
+# `pull_request_target`, not `pull_request`: this needs `pull-requests: write`
+# to disarm, and a `pull_request` token is read-only for forks. It runs only
+# base-controlled code -- `gh` and `git` against refs -- and never checks out or
+# executes anything from the head.
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [auto_merge_enabled]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-pr-staleness
+  cancel-in-progress: false
+
+jobs:
+  disarm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Full history: `git rev-list -1 <ref> -- <path>` needs the commits that
+      # touched each owned file, which a shallow clone does not carry.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: disarm auto-merge on a release PR main has moved past
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # The standing release PR, whatever event brought us here. Reading it
+          # back by head-branch prefix rather than from the event payload keeps
+          # both triggers on one code path, and means a `push` run that finds an
+          # armed PR behaves identically to the arm-time run.
+          #
+          # SAME-REPO ONLY, and that filter is load-bearing. A fork's head branch
+          # NAME is attacker-chosen and open PRs include fork PRs -- so anyone
+          # could open one from a branch called `release-please--branches--main`
+          # and be picked here. The run would then read `armed` off the DECOY,
+          # get `no`, and exit 0 saying "not armed" while the real, armed, stale
+          # release PR went unchecked and merged. Pushing a branch to THIS repo
+          # needs write access, so the same-repo test removes that reach.
+          #
+          # A deleted fork leaves `head.repo` null, which `// ""` turns into a
+          # non-match rather than a jq error -- correct, since it was a fork.
+          #
+          # Deliberately NOT also matched on author: release-please's PRs are
+          # authored by `app/github-actions` today, but switching it to a PAT or
+          # a GitHub App changes that silently, and the guard would go inert with
+          # nothing saying so -- the same failure mode the `if:` conditions in
+          # ci.yml were repeatedly wrong about.
+          # `gh api --paginate`, NOT `gh pr list`. `gh pr list` defaults to
+          # `--limit 30` and applies `--jq` CLIENT-SIDE to that one page, so
+          # ~30 fork PRs -- attacker-chosen, no privilege -- evict the release
+          # PR from the page, the filter returns nothing, and the run exits 0
+          # saying "no standing release PR" while the real armed stale PR
+          # merges. Same suppression as the decoy below, reached by truncation
+          # instead of ordering, and it also fires benignly on a dependabot
+          # burst. Pagination enumerates EVERY open PR, so neither can happen.
+          prs=$(gh api "repos/${REPO}/pulls?state=open&per_page=100" --paginate \
+                  --jq '.[] | select((.head.repo.full_name // "") == .base.repo.full_name)
+                            | select(.head.ref | startswith("release-please--"))
+                            | .number')
+          if [ -z "${prs}" ]; then
+            echo "No standing release PR. Nothing to check."
+            exit 0
+          fi
+          # More than one is an anomaly, not a case to guess at: picking one
+          # would leave the other unchecked and still exit 0.
+          count=$(printf '%s\n' "${prs}" | wc -l | tr -d ' ')
+          if [ "${count}" != "1" ]; then
+            echo "::error::found ${count} open same-repo release PRs ($(printf '%s' "${prs}" | tr '\n' ' ')). Refusing to guess which one auto-merge is armed on — close the extras."
+            exit 1
+          fi
+          pr="${prs}"
+
+          armed=$(gh pr view "${pr}" --repo "${REPO}" --json autoMergeRequest \
+                    --jq 'if .autoMergeRequest == null then "no" else "yes" end')
+          # Anything other than the two known answers FAILS CLOSED. A bare
+          # `[ "${armed}" = "yes" ]` sends every other value down the no-op
+          # branch and exits 0, which is indistinguishable from a genuinely
+          # unarmed PR -- so a `gh` that exits 0 with empty stdout, or one whose
+          # schema drops `autoMergeRequest`, would silently retire this check.
+          case "${armed}" in
+            yes | no) ;;
+            *)
+              echo "::error::could not read auto-merge state for #${pr} (got '${armed}'). Refusing to treat an unreadable answer as 'not armed'."
+              exit 1
+              ;;
+          esac
+
+          head_ref=$(gh pr view "${pr}" --repo "${REPO}" --json headRefName --jq .headRefName)
+          # `fetch-depth: 0` on the checkout already populated
+          # `refs/remotes/origin/*`, so the branch is normally local already.
+          # The fetch is the fallback for a ref created after the checkout, and
+          # it runs ANONYMOUSLY because `persist-credentials: false` strips the
+          # token -- fine for this public repo, and the reason a failure here is
+          # reported rather than swallowed by `--quiet`. The likeliest cause is
+          # the head branch having been deleted between the two calls.
+          if ! head=$(git rev-parse --verify --quiet "refs/remotes/origin/${head_ref}"); then
+            if ! git fetch --no-tags --quiet origin "${head_ref}"; then
+              echo "::error::could not read the head branch '${head_ref}' of #${pr}. It may have been deleted, or this repo is private and the anonymous fetch was refused."
+              exit 1
+            fi
+            head=$(git rev-parse FETCH_HEAD)
+          fi
+
+          # CLAUDE.md names THREE release-please-owned files; `package.json` is
+          # deliberately not one of them here. Ordinary `chore(deps)` PRs touch
+          # it constantly, so main's tip for it moves far more often than a
+          # release PR is rebuilt -- every release PR would read as stale. And
+          # release-please's own diff there is the `version` line alone, which a
+          # three-way merge cannot use to revert a dependency line.
+          stale=""
+          for f in CHANGELOG.md .release-please-manifest.json; do
+            tip=$(git rev-list -1 HEAD -- "${f}")
+            # An empty answer means the file has no history on main at all --
+            # renamed, deleted, or never committed. The check cannot answer the
+            # question it exists to answer, and "cannot answer" is a failure
+            # rather than a pass.
+            if [ -z "${tip}" ]; then
+              echo "::error::${f} has no commit history on main. This check cannot evaluate staleness, so it fails closed. If the file was renamed, update this workflow."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "${tip}" "${head}"; then
+              stale="${stale}${stale:+, }${f} (main: ${tip})"
+            fi
+          done
+
+          if [ -z "${stale}" ]; then
+            echo "Release PR #${pr} is current with main (auto-merge armed: ${armed})."
+            exit 0
+          fi
+
+          echo "::warning::Release PR #${pr} is stale: ${stale}"
+
+          # Disarming is the only ACTION available, so an UNARMED stale PR gets
+          # nothing but a run-log line: there is no auto-merge to remove, and a
+          # comment repeated on every push to main would bury the signal. The
+          # `auto_merge_enabled` trigger is what catches it the moment arming
+          # makes it actionable.
+          if [ "${armed}" = "yes" ]; then
+            # Guarded because this races the very thing it polices: auto-merge
+            # can fire, or a human can disarm, between the read above and here.
+            # Unguarded, `set -e` would abort with gh's raw error BEFORE the
+            # comment below explains what happened.
+            if ! gh pr merge "${pr}" --repo "${REPO}" --disable-auto; then
+              echo "::error::could not disable auto-merge on #${pr} — it may already have merged, or been disarmed since this run started."
+              exit 1
+            fi
+            # The heredoc body sits at COLUMN 0 on purpose: YAML dedents the
+            # block scalar before bash sees it, so re-indenting these lines to
+            # match the `if` turns the terminator into a syntax error.
+            gh pr comment "${pr}" --repo "${REPO}" --body "$(cat <<EOF
+          Auto-merge has been **disabled** on this pull request: \`main\` has moved past it.
+
+          Stale against: ${stale}
+
+          release-please does not rebuild a release PR whose computed release is unchanged, so a \`chore:\` / \`ci:\` / \`docs:\` commit lands on \`main\` without this branch following. Merging as-is would take this branch's older copy of the file(s) above and revert that commit, and GitHub reports the PR as mergeable throughout.
+
+          To release: close this PR, delete its branch, and re-run the Release workflow (\`workflow_dispatch\`). release-please recomputes the identical release from current \`main\`.
+          EOF
+          )"
+          else
+            echo "Auto-merge is not armed on #${pr}; nothing to disable. The auto_merge_enabled trigger will re-check when it is."
+          fi
