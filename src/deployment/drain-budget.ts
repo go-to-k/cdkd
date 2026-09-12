@@ -89,11 +89,15 @@ export const drainDeadlines = new AsyncLocalStorage<DrainBudget>();
  *
  * THE TRADE, stated because it is real: iterations that actually WAIT spend
  * the shared budget, so a later one can find it exhausted and its drain get
- * no grace. That is the same exposure issue
+ * no grace. That is the exposure issue
  * [#2814](https://github.com/go-to-k/cdkd/issues/2814) records for nesting,
- * now reachable across a loop as well -- and on the `Export.Name` leg the
- * cost is a DROPPED write rather than a late one, since that block's
- * `nameSecrets` is a per-iteration local. What bounds it is that only real
+ * reachable across a loop as well: a part such a drain stops waiting for
+ * records LATE. Late, not lost -- the engine's `Export.Name` block writes each
+ * recording through to the pass map (it used to copy a per-iteration local,
+ * which DROPPED a late one), and the outputs readers after the pass redact
+ * against the pass map at the moment they read -- but a reader that already
+ * took its copy does not see it, and the resolver warns when a drain stops
+ * waiting. What bounds it is that only real
  * waiting spends the budget: reaching zero takes a full cap of drain wait
  * inside one pass, not merely a slow pass. It is taken deliberately -- an
  * unbounded hold on a deploy's state save costs a first deploy every

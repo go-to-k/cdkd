@@ -98,7 +98,7 @@ Index of every area: [code-layout.md](code-layout.md).
     residual above `maskingContext`), and five review rounds on #2803 each
     wrote a version of it here that measurement then refuted.
   - **Concurrent resolutions DRAIN before a rejection surfaces, BOUNDED by
-    one cap per resolution** (#2563, residual #2814; see
+    one cap per resolution** (#2563, #2814; see
     `allSettledKeepingFirstRejection`).
   - **The mask is only as good as the CALLER'S BAG** (issue #2748; the whole
     mechanism is in `evaluateConditions`' own comment). `maskSecretsForLog`
@@ -360,10 +360,10 @@ Index of every area: [code-layout.md](code-layout.md).
   - **Most writers pass a position source** (issue #1910; the `attributes`
     walks do not — #2847's import readback is one): the rollback
     JOURNAL (`DeployEngine.redactOperationsForJournal`); the stack OUTPUTS
-    (positioned by `DeployEngine.outputsTemplateSource`, consumed by all three
+    (positioned by `DeployEngine.outputsTemplateSource`, consumed by all seven
     outputs-redaction sites through one `redactOutputs` helper — which since
-    issue #1943 passes `TEMPLATE_SOURCED_RULES` rather than the default: two
-    of the three sites hand it a bag that is NOT this generation's, so
+    issue #1943 passes `TEMPLATE_SOURCED_RULES` rather than the default: three
+    of the seven can hand it a bag that is NOT this generation's, so
     `descendArrays` is a claim the site cannot make; reachable because
     `TemplateOutput.Value` is `unknown` and a list-valued output puts an array
     on both sides; the `cdkd scrub` twin still passes the default — issue

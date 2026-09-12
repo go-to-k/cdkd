@@ -15,8 +15,9 @@ import ts from 'typescript-v6';
  * is the needle set every masking and redaction site downstream reads. Under a
  * bare `Promise.all` a rejecting part surfaces at once, so a caller's `catch` /
  * `finally` can run while a sibling is still in flight — `DeployEngine`'s
- * `Export.Name` block copies its private map into the pass map in exactly such
- * a `finally`, and a recording that lands afterwards reaches nothing.
+ * `Export.Name` block copied its private map into the pass map in exactly such
+ * a `finally`, and a recording that landed afterwards reached nothing (since
+ * issue #2814 that block writes each recording through to the pass map).
  *
  * WHY THE SEAM IS THE SDK CLIENT, NOT A FAKE RESOLVER. The property under test
  * is the resolver's own concurrency, so a mocked resolver cannot discriminate:
@@ -1855,10 +1856,11 @@ describe('an INLINE budget is fenced by its OWNER, not by a callee (issue #2563)
 /**
  * The engine-level consequence, on the path the issue actually reports: an
  * `Export.Name` built by `Fn::Join` from a secret reference and a sibling that
- * THROWS. The engine resolves that name into a PRIVATE `nameSecrets` map and
- * copies it into the pass map in a `finally`; pre-drain the sibling's
+ * THROWS. The engine resolved that name into a PRIVATE `nameSecrets` map and
+ * copied it into the pass map in a `finally`; pre-drain the sibling's
  * recording landed after that copy and the pass map never learned the
- * plaintext.
+ * plaintext. (Since issue #2814 the map writes through instead, so this case
+ * pins the drain's ORDER; the #2814 describe below pins the write-through.)
  *
  * THE DISCRIMINATOR IS A LATER EXPORT NAME, not the failing one. A name whose
  * literal text carries a plaintext the pass knows is REFUSED and not keyed
@@ -1875,7 +1877,7 @@ describe('the engine Export.Name copy sees a concurrent sibling record (issue #2
 
   it('a later export name carrying the plaintext is refused, not published', async () => {
     // The failing sibling rejects in a microtask; the secret part answers a
-    // timer later, so pre-drain the `finally` copy ran first.
+    // timer later, so pre-drain the name's block ended first.
     control.delays.set(SLOW_ID, 1);
     control.fails.add(FAIL_ID);
 
@@ -1965,5 +1967,617 @@ describe('the engine Export.Name copy sees a concurrent sibling record (issue #2
     ).toContain('prod-public-endpoint');
     expect(saved.exportNames ?? [], 'the later name must be REFUSED, not keyed').not.toContain(laterName);
     expect(JSON.stringify(saved), 'the plaintext must not reach state').not.toContain(valueOf(SLOW_ID));
+  });
+});
+
+/**
+ * Poll, one macrotask at a time, until `condition` holds. The cases below
+ * order events by what they OBSERVE rather than by racing timers against each
+ * other, so a loaded runner changes how long they take, not what they assert.
+ */
+async function until(condition: () => boolean, what: string): Promise<void> {
+  for (let turn = 0; turn < 500; turn += 1) {
+    if (condition()) return;
+    await settleTurn();
+  }
+  throw new Error(`timed out waiting for: ${what}`);
+}
+
+type WarnSpy = ReturnType<typeof vi.fn<(message: string) => void>>;
+
+/** The resolver's own logger, whose `warn` carries the abandoned-drain report. */
+function spyResolverWarn(resolver: unknown): WarnSpy {
+  const logger = (resolver as { logger: { warn: (message: string) => void } }).logger;
+  return vi.spyOn(logger, 'warn').mockImplementation(() => {}) as unknown as WarnSpy;
+}
+
+const abandonedReports = (warn: WarnSpy): string[] =>
+  warn.mock.calls.map(([message]) => String(message)).filter((m) => m.includes('cdkd stopped waiting'));
+
+describe('a drain the cap releases reports the parts it stopped waiting for (issue #2814)', () => {
+  it('warns once, with the count, and the late recording still lands in the map', async () => {
+    concurrentDrainCap.ms = 20;
+    const slow = gate();
+    control.holds.set(SLOW_ID, slow.promise);
+    control.fails.add(FAIL_ID);
+    const context = makeContext();
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const warn = spyResolverWarn(resolver);
+
+    await expect(
+      resolver.resolve({ 'Fn::Join': ['-', [ref(SLOW_ID), ref(FAIL_ID)]] }, context)
+    ).rejects.toThrow(`refused ${FAIL_ID}`);
+
+    // The premise: the cap released the rejection BEFORE the held part
+    // recorded. Without it the report below would describe nothing.
+    expect(context.recordedSecretValues.has(valueOf(SLOW_ID))).toBe(false);
+    const reports = abandonedReports(warn);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('1 concurrent part was still running');
+    expect(reports[0]).toContain('capped at 0.02s');
+
+    // Late, not lost: the part keeps running and records into the same map.
+    slow.open();
+    await until(() => control.events.includes(`record:${SLOW_ID}`), 'the held part to record');
+    await settleTurn();
+    expect(context.recordedSecretValues.get(valueOf(SLOW_ID))).toBe(ref(SLOW_ID));
+  });
+
+  it('counts every part still running when the cap fires', async () => {
+    concurrentDrainCap.ms = 20;
+    control.hangs.add(HANG_IDS[0]!);
+    control.hangs.add(HANG_IDS[1]!);
+    control.fails.add(FAIL_ID);
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const warn = spyResolverWarn(resolver);
+
+    await expect(
+      resolver.resolve(
+        { 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(HANG_IDS[1]!), ref(FAIL_ID)]] },
+        makeContext()
+      )
+    ).rejects.toThrow(`refused ${FAIL_ID}`);
+
+    const reports = abandonedReports(warn);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('2 concurrent parts were still running');
+  });
+
+  it('a LIST drain reports too, not only a join', async () => {
+    // The helper's other call site: a list resolves its elements through the
+    // same drain, and wires its own report.
+    concurrentDrainCap.ms = 20;
+    control.hangs.add(HANG_IDS[0]!);
+    control.fails.add(FAIL_ID);
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const warn = spyResolverWarn(resolver);
+
+    await expect(
+      resolver.resolve([ref(HANG_IDS[0]!), ref(FAIL_ID)], makeContext())
+    ).rejects.toThrow(`refused ${FAIL_ID}`);
+
+    const reports = abandonedReports(warn);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('1 concurrent part was still running');
+  });
+
+  it('warns once per budget when one failure releases nested drains', async () => {
+    // The inner join spends the budget waiting on its hung part and throws;
+    // the outer join then arms on the spent budget and releases at once,
+    // abandoning ITS hung part too. Two drains abandoned work, one report.
+    concurrentDrainCap.ms = 20;
+    control.hangs.add(HANG_IDS[0]!);
+    control.hangs.add(HANG_IDS[1]!);
+    control.fails.add(FAIL_DEEP_ID);
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const warn = spyResolverWarn(resolver);
+
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::Join': [
+            '-',
+            [{ 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_DEEP_ID)]] }, ref(HANG_IDS[1]!)],
+          ],
+        },
+        makeContext()
+      )
+    ).rejects.toThrow(`refused ${FAIL_DEEP_ID}`);
+
+    expect(abandonedReports(warn)).toHaveLength(1);
+  });
+
+  it('reports again for an independent resolution: once per budget, not per resolver', async () => {
+    concurrentDrainCap.ms = 20;
+    control.hangs.add(HANG_IDS[0]!);
+    control.fails.add(FAIL_ID);
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const warn = spyResolverWarn(resolver);
+    const join = { 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_ID)]] };
+
+    await expect(resolver.resolve(join, makeContext())).rejects.toThrow(`refused ${FAIL_ID}`);
+    await expect(resolver.resolve(join, makeContext())).rejects.toThrow(`refused ${FAIL_ID}`);
+
+    expect(abandonedReports(warn)).toHaveLength(2);
+  });
+
+  it('reports once for two resolutions sharing one budget', async () => {
+    // The outputs pass wraps its loop this way, so one report per pass.
+    concurrentDrainCap.ms = 20;
+    control.hangs.add(HANG_IDS[0]!);
+    control.hangs.add(HANG_IDS[1]!);
+    control.fails.add(FAIL_ID);
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const warn = spyResolverWarn(resolver);
+
+    await withSharedDrainBudget(async () => {
+      for (const hung of [HANG_IDS[0]!, HANG_IDS[1]!]) {
+        await expect(
+          resolver.resolve({ 'Fn::Join': ['-', [ref(hung), ref(FAIL_ID)]] }, makeContext())
+        ).rejects.toThrow(`refused ${FAIL_ID}`);
+      }
+    });
+
+    expect(abandonedReports(warn)).toHaveLength(1);
+  });
+
+  it('names the DEFAULT cap when no test seam is set', async () => {
+    // Every case here that RENDERS a warning shrinks the cap through
+    // `concurrentDrainCap.ms`, so the 60 s the shipped binary reports is
+    // never rendered by them. Calling the reporter directly is the only way
+    // to see that arm without waiting a real minute for a drain to release.
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const warn = spyResolverWarn(resolver);
+
+    (resolver as unknown as { warnAbandonedParts: (pending: number) => void }).warnAbandonedParts(2);
+
+    const reports = abandonedReports(warn);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('2 concurrent parts were still running');
+    expect(reports[0]).toContain('capped at 60s');
+  });
+
+  it('does not warn when every part settled inside the cap', async () => {
+    control.delays.set(SLOW_ID, 1);
+    control.fails.add(FAIL_ID);
+    const context = makeContext();
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const warn = spyResolverWarn(resolver);
+
+    await expect(
+      resolver.resolve({ 'Fn::Join': ['-', [ref(SLOW_ID), ref(FAIL_ID)]] }, context)
+    ).rejects.toThrow(`refused ${FAIL_ID}`);
+
+    // The positive half: the drain DID wait for the slow part, so the absent
+    // report is about a drain that had nothing to abandon.
+    expect(context.recordedSecretValues.has(valueOf(SLOW_ID))).toBe(true);
+    expect(abandonedReports(warn)).toEqual([]);
+  });
+});
+
+describe('a record the drain cap stopped waiting for still reaches the engine readers after it (issue #2814)', () => {
+  const stackName = 'drain-late-record-stack';
+  const SPACER_ID = 'cdkd-drain-spacer';
+  /** Resolves CLEANLY during the outputs pass, so the needle bag is not empty. */
+  const CLEAN_ID = 'cdkd-drain-clean';
+
+  /**
+   * `existing` switches the engine onto the NO-CHANGE path: the stack is
+   * already in state, and the diff reports its one resource unchanged.
+   */
+  function buildEngine(readCurrentState: () => Promise<unknown>, existing?: StackState) {
+    const provider = {
+      create: vi.fn().mockResolvedValue({ physicalId: 'res-phys' }),
+      update: vi.fn(),
+      delete: vi.fn().mockResolvedValue(undefined),
+      getAttribute: vi.fn(),
+      readCurrentState: vi.fn(readCurrentState),
+    };
+    const stateBackend = {
+      getState: vi
+        .fn()
+        .mockResolvedValue(existing ? { state: existing, etag: 'etag-0' } : { state: null, etag: undefined }),
+      saveState: vi.fn().mockResolvedValue('etag-new'),
+      loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+      popRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+      deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+    };
+    const exportIndex = {
+      updateForStack: vi.fn().mockResolvedValue(undefined),
+      lookup: vi.fn().mockResolvedValue(null),
+      patchEntry: vi.fn().mockResolvedValue(undefined),
+    };
+    const engine = new DeployEngine(
+      stateBackend as never,
+      { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn().mockResolvedValue(undefined) } as never,
+      {
+        buildGraph: vi.fn().mockReturnValue({}),
+        getExecutionLevels: vi.fn().mockReturnValue([['Res']]),
+        getDirectDependencies: vi.fn().mockReturnValue([]),
+      } as never,
+      {
+        calculateDiff: vi.fn().mockResolvedValue(
+          new Map<string, ResourceChange>([
+            [
+              'Res',
+              {
+                logicalId: 'Res',
+                changeType: existing ? 'NO_CHANGE' : 'CREATE',
+                resourceType: 'AWS::SQS::Queue',
+                desiredProperties: { QueueName: 'q' },
+              },
+            ],
+          ])
+        ),
+        hasChanges: vi.fn().mockReturnValue(existing === undefined),
+        filterByType: vi
+          .fn()
+          .mockImplementation((changes: Map<string, ResourceChange>, type: string) =>
+            Array.from(changes.values()).filter((c) => c.changeType === type)
+          ),
+      } as never,
+      {
+        getProvider: vi.fn().mockReturnValue(provider),
+        getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+      } as never,
+      { dryRun: false },
+      'us-east-1',
+      exportIndex as never
+    );
+    const warn = spyResolverWarn((engine as unknown as { resolver: unknown }).resolver);
+    // The ENGINE's own logger, a separate object: the refused-name and
+    // failed-output warnings go through it, and a plaintext check that read
+    // the resolver's stream alone could not see them.
+    const engineWarn = vi
+      .spyOn((engine as unknown as { logger: { warn: (message: string) => void } }).logger, 'warn')
+      .mockImplementation(() => {}) as unknown as WarnSpy;
+    return { engine, provider, stateBackend, exportIndex, warn, engineWarn };
+  }
+
+  it('a later export name carrying a plaintext recorded after the drain released is refused', async () => {
+    // Pre-fix, the Export.Name block resolved into a local map and copied it
+    // into the pass map in a `finally`: a part the cap stopped waiting for
+    // recorded into that local AFTER the copy, and the entry was dropped.
+    concurrentDrainCap.ms = 20;
+    const slow = gate();
+    const spacer = gate();
+    control.holds.set(SLOW_ID, slow.promise);
+    control.holds.set(SPACER_ID, spacer.promise);
+    control.fails.add(FAIL_ID);
+    const { engine, stateBackend, warn, engineWarn } = buildEngine(() => Promise.resolve(undefined));
+
+    const laterName = `prod-${valueOf(SLOW_ID)}-endpoint`;
+    const template: CloudFormationTemplate = {
+      Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
+      Outputs: {
+        Exporter: {
+          Value: 'public-a',
+          Export: { Name: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } as never },
+        },
+        // Holds the pass between the release above and the name below, so
+        // the late recording has somewhere to land before that name is judged.
+        Spacer: {
+          Value: 'public-s',
+          Export: { Name: { 'Fn::Join': ['-', ['spacer', ref(SPACER_ID)]] } as never },
+        },
+        LaterExporter: { Value: 'public-b', Export: { Name: laterName } },
+        // The positive control: without a name that MUST be published, the
+        // negatives below hold just as well when the pass never ran.
+        PublicExporter: { Value: 'public-c', Export: { Name: 'prod-public-endpoint' } },
+      },
+    };
+
+    const run = engine.deploy(stackName, template);
+    await until(() => abandonedReports(warn).length > 0, 'the cap to release the Exporter name');
+    expect(control.events, 'the held part must not have recorded yet').not.toContain(
+      `record:${SLOW_ID}`
+    );
+    slow.open();
+    await until(() => control.events.includes(`record:${SLOW_ID}`), 'the late recording');
+    await settleTurn();
+    spacer.open();
+    await run;
+
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(
+      saved.exportNames ?? [],
+      'the pass must have PUBLISHED — otherwise the two negatives below are vacuous'
+    ).toContain('prod-public-endpoint');
+    expect(saved.exportNames ?? [], 'the later name must be REFUSED, not keyed').not.toContain(laterName);
+    expect(JSON.stringify(saved), 'the plaintext must not reach state').not.toContain(valueOf(SLOW_ID));
+    // The refusal is announced on the ENGINE's logger, naming the output;
+    // that warning is the one place the refused name could leak.
+    const engineWarnings = engineWarn.mock.calls.map(([message]) => String(message));
+    expect(
+      engineWarnings.some((message) => message.includes('LaterExporter')),
+      'the refusal must have been warned — otherwise the negative below is vacuous'
+    ).toBe(true);
+    expect(engineWarnings.join('\n'), 'no engine warning carries the plaintext').not.toContain(
+      valueOf(SLOW_ID)
+    );
+  });
+
+  it('a plaintext recorded after the outputs pass is redacted from the save, the exports index and the summary', async () => {
+    // The outputs pass redacts its bag when it ends; a part the cap stopped
+    // waiting for records after that. The observed-capture drain before the
+    // final save is the window, held here so the recording lands inside it.
+    concurrentDrainCap.ms = 20;
+    const slow = gate();
+    const capture = gate();
+    control.holds.set(SLOW_ID, slow.promise);
+    control.fails.add(FAIL_ID);
+    const { engine, provider, stateBackend, exportIndex, warn, engineWarn } = buildEngine(() =>
+      capture.promise.then(() => undefined)
+    );
+    const redactOutputs = vi.spyOn(
+      engine as unknown as { redactOutputs: (o: Record<string, unknown>) => Record<string, unknown> },
+      'redactOutputs'
+    );
+
+    const literal = `lit-${valueOf(SLOW_ID)}-tail`;
+    const template: CloudFormationTemplate = {
+      Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
+      Outputs: {
+        Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
+        // Carries the plaintext by a route that resolves nothing, so only a
+        // needle the late part recorded can redact it.
+        Literal: { Value: literal, Export: { Name: 'lit-export' } },
+      },
+    };
+
+    const run = engine.deploy(stackName, template);
+    await until(() => redactOutputs.mock.calls.length > 0, 'the outputs pass to redact its bag');
+    expect(abandonedReports(warn), 'the cap must have released the Failing output').toHaveLength(1);
+    expect(control.events, 'the held part must not have recorded yet').not.toContain(
+      `record:${SLOW_ID}`
+    );
+    expect(provider.readCurrentState, 'the capture drain must be what holds the save').toHaveBeenCalled();
+    expect(
+      stateBackend.saveState.mock.calls.some(
+        (call) => (call[2] as StackState).outputs?.['Literal'] !== undefined
+      ),
+      'the final save must not have run yet'
+    ).toBe(false);
+    slow.open();
+    await until(() => control.events.includes(`record:${SLOW_ID}`), 'the late recording');
+    await settleTurn();
+    capture.open();
+    const result = await run;
+
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs['Literal'], 'the literal is PUBLISHED, and redacted').toBe(
+      `lit-${ref(SLOW_ID)}-tail`
+    );
+    expect(JSON.stringify(saved), 'the plaintext must not reach state').not.toContain(valueOf(SLOW_ID));
+    const indexed = exportIndex.updateForStack.mock.calls.at(-1)![2] as Record<string, unknown>;
+    expect(indexed['lit-export'], 'the export is INDEXED, and redacted').toBe(`lit-${ref(SLOW_ID)}-tail`);
+    expect(result.outputs, 'the summary prints the redacted literal').toEqual({
+      Literal: `lit-${ref(SLOW_ID)}-tail`,
+    });
+    expect(
+      [...warn.mock.calls, ...engineWarn.mock.calls].flat().join('\n'),
+      'no warning, resolver or engine, carries the plaintext'
+    ).not.toContain(valueOf(SLOW_ID));
+  });
+
+  it('folds the pass map in AGAIN when the needle bag is already non-empty', async () => {
+    // The REFOLD, not the first fold, and no other case here can see it —
+    // for two different reasons, neither of which is "the fold never runs".
+    // The late-record cases resolve no secret SUCCESSFULLY, so their bag is
+    // empty until the late needle arrives and the first fold carries it; the
+    // export-name case above does record (the `Spacer` output's EXPORT NAME
+    // resolves `SPACER_ID` cleanly, while the failing name records only
+    // `SLOW_ID` — its `FAIL_ID` part rejects), but those recordings land BEFORE the first
+    // fold. That case is in fact insensitive to the fold ALTOGETHER, measured:
+    // it passes with `absorbOutputsPassSecrets` deleted outright, because it
+    // asserts a REFUSED export name rather than a redacted bag. Either
+    // way a `redactOutputs` folding only on an empty bag serves them all
+    // (measured by the maintainer on PR 3044: 6414 tests, zero new
+    // failures). Here a clean secret output fills the bag DURING the pass and
+    // the late needle arrives after the first fold, so it can reach the save,
+    // the index and the summary only through a LATER one.
+    concurrentDrainCap.ms = 20;
+    const slow = gate();
+    const capture = gate();
+    control.holds.set(SLOW_ID, slow.promise);
+    control.fails.add(FAIL_ID);
+    const { engine, provider, stateBackend, exportIndex, warn, engineWarn } = buildEngine(() =>
+      capture.promise.then(() => undefined)
+    );
+    const redactOutputs = vi.spyOn(
+      engine as unknown as { redactOutputs: (o: Record<string, unknown>) => Record<string, unknown> },
+      'redactOutputs'
+    );
+    const needleBag = (): Map<string, string> =>
+      (engine as unknown as { outputSecrets: Map<string, string> }).outputSecrets;
+
+    const literal = `lit-${valueOf(SLOW_ID)}-tail`;
+    const template: CloudFormationTemplate = {
+      Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
+      Outputs: {
+        // Resolves cleanly, so its plaintext is a needle before the drain
+        // releases — this is what makes the fold below a REfold.
+        Clean: { Value: ref(CLEAN_ID) },
+        Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
+        Literal: { Value: literal, Export: { Name: 'lit-export' } },
+      },
+    };
+
+    const run = engine.deploy(stackName, template);
+    await until(() => redactOutputs.mock.calls.length > 0, 'the outputs pass to redact its bag');
+    expect(
+      needleBag().get(valueOf(CLEAN_ID)),
+      'the clean secret must already be a needle — otherwise the first fold is the only fold and this case proves nothing'
+    ).toBe(ref(CLEAN_ID));
+    expect(abandonedReports(warn), 'the cap must have released the Failing output').toHaveLength(1);
+    expect(control.events, 'the held part must not have recorded yet').not.toContain(
+      `record:${SLOW_ID}`
+    );
+    expect(provider.readCurrentState, 'the capture drain must be what holds the save').toHaveBeenCalled();
+    slow.open();
+    await until(() => control.events.includes(`record:${SLOW_ID}`), 'the late recording');
+    await settleTurn();
+    capture.open();
+    const result = await run;
+
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs['Clean'], 'the clean secret persists as its expression').toBe(ref(CLEAN_ID));
+    expect(saved.outputs['Literal'], 'the LATE needle redacted the literal too').toBe(
+      `lit-${ref(SLOW_ID)}-tail`
+    );
+    const indexed = exportIndex.updateForStack.mock.calls.at(-1)![2] as Record<string, unknown>;
+    expect(indexed['lit-export'], 'the export is INDEXED, and redacted').toBe(`lit-${ref(SLOW_ID)}-tail`);
+    expect(result.outputs, 'the summary prints both, redacted').toEqual({
+      Clean: ref(CLEAN_ID),
+      Literal: `lit-${ref(SLOW_ID)}-tail`,
+    });
+    expect(
+      [...warn.mock.calls, ...engineWarn.mock.calls].flat().join('\n'),
+      'no warning, resolver or engine, carries the plaintext'
+    ).not.toContain(valueOf(SLOW_ID));
+  });
+
+  it('a plaintext recorded while the final save is in flight is still redacted from the exports index and the summary', async () => {
+    // Each reader after the pass redacts at the moment it reads, so the index
+    // and the summary, which run after the save's await, see a needle that
+    // arrived during it. The save itself took its copy before, which is the
+    // residual this issue documents -- asserted below as the premise that
+    // the recording really arrived after that copy.
+    concurrentDrainCap.ms = 20;
+    const slow = gate();
+    const save = gate();
+    control.holds.set(SLOW_ID, slow.promise);
+    control.fails.add(FAIL_ID);
+    const { engine, stateBackend, exportIndex, warn, engineWarn } = buildEngine(() =>
+      Promise.resolve(undefined)
+    );
+    const redactOutputs = vi.spyOn(
+      engine as unknown as { redactOutputs: (o: Record<string, unknown>) => Record<string, unknown> },
+      'redactOutputs'
+    );
+    // Only a save AFTER the outputs pass is held: the per-resource saves
+    // during provisioning run before it.
+    let finalSaveEntered = false;
+    stateBackend.saveState.mockImplementation(async () => {
+      if (redactOutputs.mock.calls.length > 0) {
+        finalSaveEntered = true;
+        await save.promise;
+      }
+      return 'etag-new';
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
+      Outputs: {
+        Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
+        Literal: { Value: `lit-${valueOf(SLOW_ID)}-tail`, Export: { Name: 'lit-export' } },
+      },
+    };
+
+    const run = engine.deploy(stackName, template);
+    await until(() => finalSaveEntered, 'the final save to be in flight');
+    expect(abandonedReports(warn), 'the cap must have released the Failing output').toHaveLength(1);
+    expect(control.events, 'the held part must not have recorded yet').not.toContain(
+      `record:${SLOW_ID}`
+    );
+    slow.open();
+    await until(() => control.events.includes(`record:${SLOW_ID}`), 'the late recording');
+    await settleTurn();
+    save.open();
+    const result = await run;
+
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    // Asserting a plaintext IN state deliberately: it is the residual this
+    // issue documents, not a regression — the save had already taken its copy
+    // when the recording arrived, which no bounded wait can change. The
+    // assertions after it are what the fix buys: the index and the summary,
+    // both written later, carry the expression instead.
+    expect(saved.outputs['Literal'], 'the save took its copy before the recording (the residual)').toBe(
+      `lit-${valueOf(SLOW_ID)}-tail`
+    );
+    const indexed = exportIndex.updateForStack.mock.calls.at(-1)![2] as Record<string, unknown>;
+    expect(indexed['lit-export'], 'the export is INDEXED, and redacted').toBe(`lit-${ref(SLOW_ID)}-tail`);
+    expect(result.outputs, 'the summary prints the redacted literal').toEqual({
+      Literal: `lit-${ref(SLOW_ID)}-tail`,
+    });
+    expect(
+      [...warn.mock.calls, ...engineWarn.mock.calls].flat().join('\n'),
+      'no warning, resolver or engine, carries the plaintext'
+    ).not.toContain(valueOf(SLOW_ID));
+  });
+
+  it('the no-change path prints its kept bag redacted, as its save writes it', async () => {
+    // A released drain leaves an output unresolved, so this path keeps the
+    // PREVIOUS deploy's bag -- which here holds a literal nothing resolved
+    // then. The auto-refresh capture is the wait the late recording lands in.
+    concurrentDrainCap.ms = 20;
+    const slow = gate();
+    const capture = gate();
+    control.holds.set(SLOW_ID, slow.promise);
+    control.fails.add(FAIL_ID);
+    const literal = `lit-${valueOf(SLOW_ID)}-tail`;
+    const existing = {
+      version: 10,
+      stackName,
+      region: 'us-east-1',
+      resources: {
+        Res: { physicalId: 'res-phys', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'q' } },
+      },
+      outputs: { Literal: literal },
+      exportNames: [],
+      lastModified: 0,
+    } as unknown as StackState;
+    const { engine, provider, stateBackend, warn } = buildEngine(
+      () => capture.promise.then(() => undefined),
+      existing
+    );
+    const template: CloudFormationTemplate = {
+      Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
+      Outputs: {
+        Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
+        Literal: { Value: literal },
+      },
+    };
+
+    const run = engine.deploy(stackName, template);
+    await until(() => abandonedReports(warn).length > 0, 'the cap to release the Failing output');
+    expect(provider.readCurrentState, 'the auto-refresh capture must be what holds the save').toHaveBeenCalled();
+    expect(stateBackend.saveState, 'the save must not have run yet').not.toHaveBeenCalled();
+    expect(control.events, 'the held part must not have recorded yet').not.toContain(
+      `record:${SLOW_ID}`
+    );
+    slow.open();
+    await until(() => control.events.includes(`record:${SLOW_ID}`), 'the late recording');
+    await settleTurn();
+    capture.open();
+    const result = await run;
+
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs['Literal'], 'the save re-redacts the kept bag').toBe(`lit-${ref(SLOW_ID)}-tail`);
+    expect(result.outputs, 'the summary prints what the save wrote').toEqual({
+      Literal: `lit-${ref(SLOW_ID)}-tail`,
+    });
+  });
+
+  it("a reused engine does not carry the previous deploy's outputs-pass secrets into the next", async () => {
+    // Every redaction re-reads the pass maps, so the list of them must start
+    // empty per deploy like the bag it feeds: otherwise a literal output that
+    // merely equals a secret an EARLIER deploy resolved would be rewritten,
+    // which the outputs redaction deliberately never does.
+    const { engine, stateBackend } = buildEngine(() => Promise.resolve(undefined));
+    const resources = { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } };
+
+    await engine.deploy(stackName, { Resources: resources, Outputs: { Secret: { Value: ref(SLOW_ID) } } });
+    const first = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(first.outputs['Secret'], 'the first deploy must have RECORDED the secret').toBe(ref(SLOW_ID));
+
+    const literal = `lit-${valueOf(SLOW_ID)}-tail`;
+    await engine.deploy(stackName, { Resources: resources, Outputs: { Literal: { Value: literal } } });
+    const second = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(second.outputs['Literal'], 'nothing THIS deploy resolved recorded it').toBe(literal);
   });
 });

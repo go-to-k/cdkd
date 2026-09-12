@@ -157,6 +157,50 @@ import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 const EMPTY_SECRETS: RecordedSecretValues = new Map();
 
 /**
+ * A secrets map that keeps its OWN entries and also writes each one through
+ * to `target` the moment it is recorded (issue
+ * [#2814](https://github.com/go-to-k/cdkd/issues/2814)).
+ *
+ * The outputs pass resolves each intrinsic `Export.Name` through one of these.
+ * Its own entries are what `exportNameSecretExposure` reads as "substituted
+ * into THIS name", which must stay exact -- a view of the whole pass map
+ * (`cdkd scrub`'s `SharedEntriesSecrets`) would report every secret the pass
+ * has recorded as one the name holds, and refuse every alias. The write-through
+ * is what a copy could not give: a part the drain cap stopped waiting for
+ * records AFTER the name's block has ended, and when this was a local copied
+ * into the pass map in a `finally`, such a record reached nothing.
+ *
+ * Only `set` writes through: it is the one operation the resolver performs on
+ * a recording map (grepped -- no resolver path calls `delete` or `clear` on
+ * one). `cdkd scrub`'s `SharedEntriesSecrets` overrides those too, and the
+ * asymmetry is deliberate: that one is a VIEW holding no entries of its own,
+ * while a `delete` here would leave the pass map carrying an entry this map
+ * dropped -- one needle too many, which over-redacts rather than leaks.
+ * The ENTRIES only, never the resolved pairs beside them
+ * (issue #2485): those are keyed by map INSTANCE (`recordResolvedPair`), so
+ * they stay on this one. A name never positions a leaf, and a value re-using
+ * the same token records its own pair at the seam, so carrying them could add
+ * nothing -- what it COULD do is mark a pair conflicting (an `ssm` reference
+ * whose `Type` came back unclassifiable is never cached, so a name resolving
+ * it re-asks AWS and can see a value that moved since the value pass) and
+ * destroy the positioning the value pass had earned.
+ */
+class ForwardingSecrets extends Map<string, string> {
+  private readonly target: RecordedSecretValues | undefined;
+
+  constructor(target: RecordedSecretValues | undefined) {
+    super();
+    this.target = target;
+  }
+
+  override set(plaintext: string, expression: string): this {
+    super.set(plaintext, expression);
+    this.target?.set(plaintext, expression);
+    return this;
+  }
+}
+
+/**
  * One entry the resolver pushed into `ResolverContext.redactedAttributeReads`
  * (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847)).
  *
@@ -1082,6 +1126,16 @@ export class DeployEngine {
    */
   private outputSecrets: RecordedSecretValues = new Map();
   /**
+   * The outputs pass's own recording map(s), one per `resolveOutputs` call
+   * this deploy, so every redaction of the outputs bag re-reads them rather
+   * than trusting the copy taken when the pass ended (issue
+   * [#2814](https://github.com/go-to-k/cdkd/issues/2814)): a part the drain
+   * cap stopped waiting for records into its pass map LATE, and the final
+   * save, the exports index and the deploy summary all run after that copy.
+   * Reset per `deploy()`.
+   */
+  private outputsPassSecretMaps: RecordedSecretValues[] = [];
+  /**
    * UNRESOLVED template `Outputs` values, keyed by output name (issue #1910) —
    * the outputs' POSITION source, the sibling of `perResourceTemplateProps` for
    * the bag `resolveOutputs` produces. Without it two outputs resolving one
@@ -1245,6 +1299,7 @@ export class DeployEngine {
     // pairs — and now mark it as today's.
     this.attemptedResolvedProps = new Map();
     this.outputSecrets = new Map();
+    this.outputsPassSecretMaps = [];
     // Null-prototype for the same reason as the outputs bag it positions
     // (issue #1943's class, and #2740's `__proto__` case): both are keyed by
     // TEMPLATE-CONTROLLED output names two lines apart, so an output literally
@@ -1469,12 +1524,16 @@ export class DeployEngine {
    * Redact the resolved stack OUTPUTS bag, positioned by the unresolved
    * template `Outputs` values (issue #1910).
    *
-   * A single entry point because THREE call sites redact this same bag — the
-   * state-persist choke point, the no-change re-check, and the post-deploy
-   * publish that feeds the exports index / deploy summary — and before this
-   * they each spelled the value-only redaction separately. Two outputs
-   * resolving one secret collapsed onto whichever expression was recorded last
-   * at all three.
+   * A single entry point because SEVEN call sites redact this same bag — the
+   * state-persist choke point, the no-change re-check, that path's exports
+   * index and deploy summary, the changes path's index and summary, and the
+   * outputs pass itself. THREE of those are the ones issue #1910 unified —
+   * the persist choke point, the re-check, and the outputs pass, which the
+   * list above ends on rather than opens with: before it they each spelled
+   * the value-only redaction separately, and two outputs resolving one secret
+   * collapsed onto whichever expression was recorded last at all three. The
+   * other FOUR are issue #2814's, both paths' index and summary: each read
+   * the bag unredacted until then, and now redacts at the moment it reads.
    */
   /**
    * Record the plaintext behind every output {@link redactOutputs} just masked,
@@ -1487,9 +1546,18 @@ export class DeployEngine {
    * value read back out of a previous run's state — is skipped, because there
    * is no plaintext behind it to remember.
    *
-   * Called only from the REAL-DEPLOY outputs pass. The other two `redactOutputs`
-   * callers hand it a bag from a previous generation, where a mask is already
-   * unrecoverable and pretending otherwise would serve a stale value.
+   * Called only from the REAL-DEPLOY outputs pass. Of the six other
+   * `redactOutputs` callers, three CAN hand it a bag from a previous
+   * generation — the persist walk always may, and the no-change path's
+   * exports index and summary do on the arms where that path keeps the
+   * previous bag — and there a mask is already unrecoverable, so pretending
+   * otherwise would
+   * serve a stale value. The other three are not this pass either: the
+   * no-change path performs the FIRST redaction of its own resolution there,
+   * and the changes path's index and summary re-redact the bag this pass
+   * already produced. (The "other two" this replaces counted the base's three
+   * callers correctly; what was wrong was calling both of the others
+   * previous-generation, when only the persist walk was one.)
    */
   private rememberRecoverableMaskedOutputs(
     stackName: string,
@@ -1505,13 +1573,67 @@ export class DeployEngine {
     }
   }
 
+  /**
+   * Fold every outputs-pass recording map into `outputSecrets` — the entries,
+   * and the uncollapsed evidence beside them (issue #2485: without it a
+   * literal Output embedding one of two same-plaintext references would lose
+   * its span positioning and persist the sibling's expression). Only what the
+   * outputs pass itself resolved, so the outputs redaction (GHSA fix) uses
+   * only outputs-substituted references: a literal output equal to a secret
+   * nothing resolved is not recorded, and is not touched.
+   *
+   * Run by every {@link redactOutputs} (issue
+   * [#2814](https://github.com/go-to-k/cdkd/issues/2814)), because a part the
+   * drain cap stopped waiting for records into its pass map LATE: a secret
+   * that arrives between the pass and the final save is then still a needle
+   * for the save, the exports index and the deploy summary. Repeating it is
+   * safe for the ENTRIES — re-setting one the bag holds changes nothing, and
+   * `Map.set` on an existing key keeps its insertion order, so last-wins
+   * cannot be reordered by a refold.
+   *
+   * The PAIRS are where repeating is not merely a no-op, stated because the
+   * end-of-pass copy could not see it: a part the cap stopped waiting for can
+   * record a pair LATE, and a second value for one expression marks it
+   * `CONFLICTING_PLAINTEXT` (a non-cacheable `{{resolve:ssm:X}}` re-resolved
+   * to a moved value). A later refold then carries that conflict into
+   * `outputSecrets`, the leaf loses its positioning and falls to the value
+   * scan, which can persist a sibling's expression (the issue #2485 class).
+   * The plaintext stays MASKED either way, so the cost is which expression
+   * is stored, not a disclosure — and the alternative, dropping the late
+   * pair, would keep a positioning the pass itself no longer vouches for.
+   */
+  private absorbOutputsPassSecrets(): void {
+    for (const passSecrets of this.outputsPassSecretMaps) {
+      for (const [value, expr] of passSecrets) {
+        this.outputSecrets.set(value, expr);
+      }
+      mergeResolvedPairs(passSecrets, this.outputSecrets);
+    }
+  }
+
+  /**
+   * Redact the outputs bag. NOT a pure transform: it folds the outputs pass
+   * map into `outputSecrets` first (issue #2814), so every call can grow that
+   * bag. Its KEY set only grows, and the bag has no other reader, which is
+   * what makes calling this on every save, index write and summary safe. The
+   * resolved PAIRS beside those keys are not equally free to refold — see
+   * {@link absorbOutputsPassSecrets}, which states what a late one costs.
+   */
   private redactOutputs(outputs: Record<string, unknown>): Record<string, unknown> {
+    // First, and before the empty-bag return: a late recording (issue #2814)
+    // may be the only needle there is.
+    this.absorbOutputsPassSecrets();
     if (this.outputSecrets.size === 0) return outputs;
     // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
     // [#1943](https://github.com/go-to-k/cdkd/issues/1943)). `descendArrays` is
     // the only flag the two differ on, and it claims "this bag was PRODUCED by
-    // resolving this source" — which two of this method's three callers cannot
-    // say. `redactStateForPersist` walks whatever `state.outputs` holds, and on
+    // resolving this source" — which three of this method's seven callers
+    // cannot say: `redactStateForPersist`, and the no-change path's exports
+    // index and summary. (Both numbers are recounted, not incremented: issue
+    // #2814 took the callers from three to seven, and the "two" was already
+    // wrong before it — of the base's three sites only the persist walk took
+    // a foreign bag.) `redactStateForPersist` walks whatever `state.outputs`
+    // holds, and on
     // the no-change path that is `persistedOutputs`, the PREVIOUS deploy's bag,
     // while `outputsTemplateSource` is TODAY's template. Positional descent
     // there does not merely mis-redact: `redactByPath` returns a known-secret
@@ -3159,7 +3281,26 @@ export class DeployEngine {
                   await this.exportIndexStore.updateForStack(
                     stackName,
                     this.stackRegion,
-                    importableOutputs(refreshedState)
+                    // Redacted again as the save above redacts it (issue
+                    // #2814), so this path's index cannot diverge from what
+                    // state holds. It cannot differ today for one reason: a
+                    // LATE needle cannot arrive here at all, because a
+                    // released drain leaves an output unresolved, so
+                    // `resolutionFailed` is true and both flags guarding this
+                    // block are false. (Not because the bag is already
+                    // redacted — on the `exportSetChanged`-only arm it is
+                    // `persistedOutputs`, the PREVIOUS deploy's bag, and a
+                    // second pass is not unconditionally idempotent either;
+                    // see `absorbOutputsPassSecrets`.) The call is still the right shape
+                    // rather than redundant — it is the FAIL-SAFE direction.
+                    // If a swallow above a drain ever appears, the index ends
+                    // up more redacted than state, never less; and a reader
+                    // should not have to re-derive that gate to see why the
+                    // sibling on the changes path redacts and this did not.
+                    importableOutputs({
+                      ...refreshedState,
+                      outputs: this.redactOutputs(refreshedState.outputs),
+                    })
                   );
                 }
               } else if (observedRefresh) {
@@ -3198,7 +3339,11 @@ export class DeployEngine {
           updatePartial: 0,
           unchanged: Object.keys(currentState.resources).length,
           durationMs: Date.now() - startTime,
-          outputs: this.buildDisplayOutputs(template, persistedOutputs),
+          // Redacted again, as the save redacts the bag it writes (issue
+          // #2814): a part the drain cap stopped waiting for can record after
+          // the outputs pass, and the bag kept here may be the PREVIOUS
+          // deploy's, holding a literal nothing resolved then.
+          outputs: this.buildDisplayOutputs(template, this.redactOutputs(persistedOutputs)),
           attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
         };
       }
@@ -3268,6 +3413,17 @@ export class DeployEngine {
       // (typically <300ms in practice for medium stacks; see PR notes).
       await this.drainObservedCaptures(newState.resources);
 
+      // A part the drain cap stopped waiting for can record its secret after
+      // the outputs pass redacted `newState.outputs`, and the drain above is
+      // a real wait (issue #2814). The save below needs nothing extra for
+      // it: `withParentInfo` redacts the outputs again, and `redactOutputs`
+      // re-reads the pass map first. The exports index and the deploy
+      // summary read `newState` after the save's own await, so each redacts
+      // it again at that moment, against the recordings available then. That
+      // is not a promise they equal the saved copy: a record arriving during
+      // the save's await reaches them, while the save had already taken its
+      // copy.
+
       // 7b. Save final state (ETag may have been updated by partial saves).
       // The legacy migration delete (when migrationPending) was already done by
       // the first per-resource save inside executeDeployment, so this final
@@ -3318,7 +3474,10 @@ export class DeployEngine {
               // Output name, and an index fed the whole bag served those to
               // `Fn::ImportValue` — a same-named plain Output in an unrelated
               // stack could shadow a real export.
-              importableOutputs(newState)
+              importableOutputs({
+                ...newState,
+                outputs: this.redactOutputs(newState.outputs),
+              })
             )
           : Promise.resolve(),
       ]);
@@ -3336,7 +3495,7 @@ export class DeployEngine {
         updatePartial: actualCounts.updatePartial,
         unchanged: unchangedCount,
         durationMs,
-        outputs: this.buildDisplayOutputs(template, newState.outputs ?? {}),
+        outputs: this.buildDisplayOutputs(template, this.redactOutputs(newState.outputs ?? {})),
         attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
     } finally {
@@ -3949,11 +4108,13 @@ export class DeployEngine {
         )
       );
       // Redact resolved secrets out of outputs before they flow to the exports
-      // index / deploy summary / state (GHSA fix). The state save also redacts
-      // via `withParentInfo`, but the exports-index `updateForStack` and
-      // `buildDisplayOutputs` read this bag directly. `resolveOutputs` populated
-      // `this.outputSecrets` with the outputs' own substituted references, and
-      // `this.outputsTemplateSource` with the unresolved values that position
+      // index / deploy summary / state (GHSA fix). The state save
+      // (`withParentInfo`), the exports-index `updateForStack` and
+      // `buildDisplayOutputs` each redact this bag again when they read it
+      // (issue #2814). `redactOutputs` folds the outputs pass map into
+      // `this.outputSecrets` — the outputs' own substituted references — and
+      // `resolveOutputs` filled `this.outputsTemplateSource` with the
+      // unresolved values that position
       // them (#1910).
       const resolvedOutputsBeforeRedaction = outputs;
       outputs = this.redactOutputs(outputs);
@@ -3966,6 +4127,12 @@ export class DeployEngine {
       // template that deployed before this feature. See
       // `recoverableMaskedOutputs` for why the key is a COORDINATE and not a
       // bare plaintext.
+      // ONE call site, and it is here: an output that a LATER `redactOutputs`
+      // newly masks — one folding in a needle a part recorded after this
+      // point (issue #2814) — never enters the recoverable store. An
+      // in-process cross-stack consumer of that output is then refused on
+      // `***` instead of being served the plaintext, which is the fail-safe
+      // direction and the reason this is stated rather than fixed.
       this.rememberRecoverableMaskedOutputs(stackName, resolvedOutputsBeforeRedaction, outputs);
     } catch (outputError) {
       await this.persistStateAfterOutputFailure(
@@ -7764,8 +7931,10 @@ export class DeployEngine {
    * defense in depth here — but two masking sites in one flow must not argue
    * opposite sides of the same question. `secrets` is the outputs pass's own
    * map: everything recorded before this handler runs, an `Export.Name`
-   * resolution's entries included (its `finally` merges them back before the
-   * `catch` reaches here). Since issue #2563 a still-pending concurrent part
+   * resolution's entries included (its map writes each one through to the
+   * pass map as the resolver records it, so they are here before the `catch`
+   * is; issue #2814 replaced the `finally` that copied them at the end of
+   * the block). Since issue #2563 a still-pending concurrent part
    * is in the PASS bag before this handler runs: the resolver drains every
    * part it started before a rejection reaches a caller. Not
    * unconditionally, and the weaker claim is the true one -- the drain is
@@ -8015,6 +8184,15 @@ export class DeployEngine {
     // IS taken on every top-level stack.
     const outputsPassSecrets = context.recordedSecretValues ?? EMPTY_SECRETS;
     const outputsPassInherited = context.inheritedSecrets ?? EMPTY_SECRETS;
+    // Kept for every later redaction of the outputs bag (issue #2814); see
+    // `absorbOutputsPassSecrets`, which only reads it. The GUARD rather than
+    // `outputsPassSecrets`: that `??` fallback is `EMPTY_SECRETS`, a
+    // process-wide singleton, and a per-deploy needle list is no place for a
+    // cross-deploy object — inert today (nothing writes it), wrong the moment
+    // anything does.
+    if (context.recordedSecretValues) {
+      this.outputsPassSecretMaps.push(context.recordedSecretValues);
+    }
 
     // The names this deploy PUBLISHES. Owns keys in both this bag and the
     // position-source bag below, and is the set an export alias must not land
@@ -8087,7 +8265,8 @@ export class DeployEngine {
         // threshold, and no coincidental match against a sibling's secret.
         //
         // The isolation is for the DECISION only, and the RECORDING side
-        // effect is merged back below — do not re-isolate it. Every plaintext
+        // effect is written through to the pass map — do not re-isolate it.
+        // Every plaintext
         // this resolution records must stay a needle of the PASS map: for the
         // exposure refusal masked right below, and for every later consumer
         // that never resolves the reference itself (a value re-using the
@@ -8097,25 +8276,28 @@ export class DeployEngine {
         // unpinned `ssm` reference (issue #1901); since issue #1933 the cache
         // carries the verdict beside the value, so a hit re-records a cached
         // secret, and an unclassifiable-`Type` reference is never cached at
-        // all (`cacheable = false`) — it re-asks AWS and records again. The
-        // merge keeps every entry this resolution recorded BEFORE the block
-        // ended, and since issue #2563 the resolver DRAINS every part it
-        // started before a rejection reaches a caller
-        // (`allSettledKeepingFirstRejection`), which is what makes this copy
-        // shape safe as it stands: a concurrent resolution used to surface a
-        // part's rejection at once, so a sibling still in flight recorded
-        // into `nameSecrets` after this copy had run and the entry died with
-        // the local. The drain is BOUNDED so a hung part cannot hold a
-        // deploy's state save, and the budget is shared across this whole
-        // outputs pass rather than per resolution -- so an entry can still be
-        // recorded after this block, and it does not take a part that
-        // outlived a full cap: an earlier failing output can leave this
-        // drain with no wait at all, and this map is a per-iteration local,
-        // so such a record is DROPPED rather than late (residual: issue
-        // #2814). `cdkd scrub`'s sibling loop resolves the
-        // name through a live VIEW of its pass map instead (issue #2531) — a
-        // view that, on its own, could not have ordered the write either.
-        const nameSecrets: RecordedSecretValues = new Map();
+        // all (`cacheable = false`) — it re-asks AWS and records again.
+        //
+        // WRITTEN THROUGH, not copied back (issue #2814). Since issue #2563
+        // the resolver DRAINS every part it started before a rejection
+        // reaches a caller (`allSettledKeepingFirstRejection`), but the drain
+        // is BOUNDED so a hung part cannot hold a deploy's state save, and
+        // its budget is shared across this whole outputs pass -- so a part
+        // can record after this block has ended, and that does not take a
+        // part that outlived a full cap: an earlier failing output can leave
+        // this drain with no wait at all. This map used to be a per-iteration
+        // local copied into the pass map in a `finally`, so such a record was
+        // DROPPED. A `ForwardingSecrets` keeps its own entries (the exact set
+        // `exportNameSecretExposure` reads) and writes each through to the
+        // pass map when the resolver records it, late or not -- including a
+        // plaintext recorded just before this resolution throws, which the
+        // failure's own message below masks against. `cdkd scrub`'s sibling
+        // loop resolves the name through a VIEW of its pass map instead
+        // (issue #2531); a view holds no entries of its own, which is why it
+        // does not fit here.
+        const nameSecrets: RecordedSecretValues = new ForwardingSecrets(
+          context.recordedSecretValues
+        );
         // The alias NAME can carry the same masked `Ref` the value can — an
         // `Fn::Sub` over one is ordinary. Guarded for the same reason as the
         // value: an export whose NAME is built from a raw physical id binds
@@ -8127,53 +8309,19 @@ export class DeployEngine {
         const nameReads: RedactedAttributeRead[] = [];
         let exportName: unknown;
         try {
-          try {
-            exportName =
-              typeof output.Export.Name === 'string'
-                ? output.Export.Name
-                : await this.resolver.resolve(output.Export.Name, {
-                    ...context,
-                    recordedSecretValues: nameSecrets,
-                    redactedAttributeReads: nameReads,
-                  });
-            refuseMaskedOutputReads(outputKey, nameReads);
-          } finally {
-            // Merge what the name's resolution learned back into the PASS map.
-            //
-            // `finally`, and that is the load-bearing part rather than a style
-            // choice: the resolver records and caches AS IT GOES, so a
-            // resolution that records one element and then throws on the next
-            // (an `Fn::Join` where one part records before a concurrent sibling
-            // throws) has already put a plaintext in this map that a
-            // success-path merge would drop — and that plaintext must be a
-            // needle for the failure's own message and for the rest of the
-            // pass. (Not, as an earlier version said, because a later cache hit
-            // "records nothing": see the note above the map.) Any exit that
-            // skips this merge — `throw` here, `continue`, a discarded local —
-            // reopens that hole, so the invariant is: this recording survives
-            // EVERY exit from this block. Unconditional for the same reason: a
-            // name that resolved to a non-string warmed the cache just the
-            // same.
-
-            for (const [plaintext, expression] of nameSecrets) {
-              context.recordedSecretValues?.set(plaintext, expression);
-            }
-            // The ENTRIES only — not the resolved pairs beside them (issue
-            // #2485). A name never positions a leaf, and a value re-using the
-            // same token already recorded its own pair at the seam, so the
-            // merge could add nothing; what it COULD do is mark a pair
-            // conflicting — an `ssm` reference whose `Type` came back
-            // unclassifiable is never cached (the resolver's `cacheable =
-            // false`), so a name resolving it re-asks AWS and can see a value
-            // that moved since the value pass — and destroy the positioning
-            // the value pass had earned. The outputs-bag merge
-            // below is the one that carries evidence, because that bag
-            // positions.
-          }
+          exportName =
+            typeof output.Export.Name === 'string'
+              ? output.Export.Name
+              : await this.resolver.resolve(output.Export.Name, {
+                  ...context,
+                  recordedSecretValues: nameSecrets,
+                  redactedAttributeReads: nameReads,
+                });
+          refuseMaskedOutputReads(outputKey, nameReads);
         } catch (error) {
-          // The pass map, AFTER the `finally` above merged the name's own
-          // entries into it — the needle for a plaintext the failed name
-          // resolution itself recorded.
+          // The pass map, which already holds every entry the failed name
+          // resolution recorded (`nameSecrets` writes through) — the needle
+          // for a plaintext that resolution itself recorded.
           this.handleOutputResolutionFailure(
             error,
             outputKey,
@@ -8287,35 +8435,19 @@ export class DeployEngine {
       }
       outputsPassCompleted = true;
     } finally {
-      // Accumulate the secrets resolved while producing outputs so the outputs
-      // redaction (GHSA fix) uses only outputs-substituted references — a
-      // literal output equal to a secret is not recorded here and is not
-      // touched.
+      // No copy of this pass's secrets into `outputSecrets` here any more
+      // (issue #2814): `redactOutputs` folds the pass map in every time it
+      // runs (`absorbOutputsPassSecrets`), because a part the drain cap
+      // stopped waiting for can record after this pass has ended. That covers
+      // the `--strict-getatt` throw path as well, which DOES reach
+      // `redactOutputs` — through `persistStateAfterOutputFailure` ->
+      // `withParentInfo` -> `redactStateForPersist`, redacting
+      // `currentState.outputs`, the PREVIOUS deploy's bag — and the map was
+      // registered before the loop began, so whatever it recorded before the
+      // throw is folded in there.
       //
-      // `finally` for the same reason as the export-name merge above:
-      // `--strict-getatt` RETHROWS out of the loop, and everything this pass
-      // recorded before that point would otherwise be dropped while the
-      // resolver's module-global cache stays warm. Same invariant, other exit.
-      //
-      // An earlier revision called this DEFENSIVE and unobservable. That was
-      // WRONG, and how it was wrong is the point: the throw path DOES reach
-      // `redactOutputs`, through `persistStateAfterOutputFailure` ->
-      // `withParentInfo` -> `redactStateForPersist`, which redacts
-      // `currentState.outputs` — the PREVIOUS deploy's bag. Accumulating here is
-      // what lets that bag's plaintext be redacted at all, so the merge is
-      // load-bearing on exactly the path it was claimed not to reach.
-      if (context.recordedSecretValues) {
-        for (const [value, expr] of context.recordedSecretValues) {
-          this.outputSecrets.set(value, expr);
-        }
-        // ...and the uncollapsed evidence beside the entries (issue #2485):
-        // without it a literal Output embedding one of two same-plaintext
-        // references would lose its span positioning and persist the sibling's
-        // expression.
-        mergeResolvedPairs(context.recordedSecretValues, this.outputSecrets);
-      }
-      // ...and the POSITION source must GO, for the same reason it now matters.
-      // The post-loop pass below never ran, so this bag holds only the alias
+      // The POSITION source must GO on that path, because it reaches the
+      // redaction. The post-loop pass below never ran, so this bag holds only the alias
       // keys written before the throw: a PARTIAL source, built from THIS
       // template, about to position the PREVIOUS deploy's bag. That is the
       // bag/source provenance mismatch `secret-redaction` calls unsound —
