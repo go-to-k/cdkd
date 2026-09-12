@@ -676,8 +676,10 @@ stage_filter_change() {
   # hook and putting `detach` in a content line gives Fail: 1). It cannot fail
   # open in the dangerous direction, because over-strict is a loud,
   # self-correcting suite failure. The guard is also stricter than the hook by
-  # construction: the hook's `^[-+][^-+]` skips the first content character,
-  # this scans the whole string.
+  # construction: the hook drops comment and header lines with `grep -v` passes
+  # before matching, this scans the whole string. (It used to say the hook's
+  # `^[-+][^-+]` skips the first content character -- that prefix is gone, and
+  # removing it is what issue 3046 was.)
   case "$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')" in
     *delete*|*rollback*|*hyperplane*|*dependencyviolation*|*eni*|*detach*)
       fail=$((fail + 1))
@@ -1014,6 +1016,26 @@ stage_filter_hunk "src/cli/commands/destroy.ts" "// deleteStack is documented he
 run_case "hunk filter: a column-0 comment does NOT arm the gate (3046)" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
+# `#` in the comment alternation REQUIRES a following space, because in
+# TypeScript -- and the hunk-filtered buckets are 100% `.ts` -- `#name` is a
+# PRIVATE FIELD. Both directions, both measured:
+#   `+#deleteQueue = new Set();`   armed pre-PR, was DROPPED by the widening
+#                                  above until the space was required
+#   `+  #deleteQueue = new Set();` dropped BOTH before and after the widening
+#                                  -- a hole that predates this PR
+#   `+# delete the bucket`         a genuine comment, still dropped
+stage_filter_hunk "src/cli/commands/destroy.ts" "#deleteQueue = new Set();"
+run_case "hunk filter: a column-0 private field is not a comment (3046)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/cli/commands/destroy.ts" "  #deleteQueue = new Set();"
+run_case "hunk filter: an indented private field is not a comment (3046)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/cli/commands/destroy.ts" "# delete the bucket first"
+run_case "hunk filter: a real '# ' comment is still dropped (3046)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 # The header-skipping pass is now separate, so it needs its own case -- and the
 # case has to be a file whose PATH carries delete vocabulary, because that is
 # the only way a `+++ b/<path>` line can match the content pattern. Content is
@@ -1040,15 +1062,21 @@ run_case "a non-ASCII path still reaches the patterns (3047)" 2 stale "$filter_r
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
 # A path carrying glob metacharacters is kept as a case even though it fences
-# nothing, because the measurement behind it is worth not repeating: the review
-# that found the quoting defect also reported that the per-file `-- "$f"`
-# pathspec would fail to match `a[b]-provider.ts` and give an empty diff. It
-# does not. Measured for `[`, `*` and `?` against git 2.49: the diff is
-# byte-identical with and without `:(literal)`, because a pathspec equal to the
-# path matches it literally; the `git ls-files -- 'kee[p].ts'` demo behind the
-# report shows a glob matching a DIFFERENT file, which this call cannot do since
-# `$f` comes from git's own changed-file list. `:(literal)` was added, measured
-# to change no verdict, and removed.
+# nothing, because the measurement behind it is worth not repeating -- and
+# because the FIRST version of that measurement was wrong.
+#
+# Reported: the per-file `-- "$f"` pathspec would fail to match
+# `a[b]-provider.ts`, give an empty diff, and miss the delete symbol. It cannot
+# -- a pathspec equal to the path always matches it literally, so the file's own
+# hunks are always there.
+#
+# What the glob DOES do is match SIBLINGS too: measured on git 2.49,
+# `a*b-provider.ts` with two glob-matching siblings returns 3 files plain and 1
+# under `:(literal)`. That can only ADD hunks, so it over-arms and never misses,
+# and each sibling is separately iterated by the same loop. An earlier revision
+# of this comment said the two spellings were "byte-identical" -- measured on a
+# fixture with no sibling for the glob to match, so it could not discriminate.
+# `:(literal)` was added, measured to change no verdict, and removed.
 stage_filter_hunk "src/provisioning/providers/a[b]-provider.ts" \
   "  async deleteResource(id: string) { return this.client.send(id); }"
 run_case "a glob-magic path reaches the hunk filter (3047, regression guard)" 2 stale "$filter_repo" \

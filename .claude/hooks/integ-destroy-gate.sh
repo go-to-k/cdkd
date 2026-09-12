@@ -217,12 +217,16 @@ if [ -n "$diff_base" ]; then
   # (e.g. an ECS provider doc-comment containing the words "delete/update"
   # tripped the gate even though the diff didn't change any delete code).
   #
-  #   ^[-+]                  added or removed line
-  #   [^-+]                  one non-+/- char so we don't match the diff header `+++`/`---`
+  #   ^[-+]                  added or removed line, from its FIRST content
+  #                          character — this used to be `^[-+][^-+]`, where
+  #                          the `[^-+]` skipped the `+++`/`---` headers by
+  #                          eating that character; the headers have their own
+  #                          `grep -v` pass now (see below).
   #   [[:space:]]*           leading indent
   #   (?!//|\*|#)            negative lookahead — but POSIX grep -E doesn't
   #                          support lookahead. Workaround: filter comment
-  #                          lines with a second grep -v pass below.
+  #                          lines with grep -v passes below, one for the
+  #                          headers and one for comments.
   # `rollback` is included so a refactor that changes the order of
   # `partial state → rollback → final state` in `deploy-engine.ts`
   # (which would leak orphans on failure) trips the gate even when
@@ -252,8 +256,18 @@ if [ -n "$diff_base" ]; then
   delete_symbol_pattern='^[-+].*(delete|rollback|IMPLICIT_DELETE|hyperplane|DependencyViolation|ENI|detach)'
   # Lines we consider "comment only" — drop them before the symbol grep.
   # Matches an added/removed line whose first non-whitespace content is
-  # a JS/TS/SH comment introducer (`//`, `/*`, `*` mid-block, `#`).
-  comment_line_pattern='^[-+][[:space:]]*(\*|/\*|//|#)'
+  # a JS/TS/SH comment introducer (`//`, `/*`, `*` mid-block, `# `).
+  #
+  # `#` REQUIRES a following space, and that is the fix for a hole this file's
+  # own widening opened plus one that predated it. In TypeScript -- and the
+  # hunk-filtered buckets are 100% `.ts` -- `#name` is a PRIVATE FIELD, not a
+  # comment. Measured: `+#deleteQueue = new Set();` armed the gate under the
+  # old `^[-+][^-+]` pattern and was DROPPED once that pattern lost the
+  # character-eating prefix, and its indented twin `+  #deleteQueue` was
+  # dropped under BOTH. Requiring the space arms both while still dropping a
+  # genuine `# comment`. A shell comment written without a space is now
+  # over-blocked, which costs one integ run rather than a missed one.
+  comment_line_pattern='^[-+][[:space:]]*(\*|/\*|//|#[[:space:]])'
 
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -280,16 +294,23 @@ if [ -n "$diff_base" ]; then
       # suite, including the renamed-provider case below it -- an unfenced flag
       # whose comment claims it is load-bearing is the defect this file keeps
       # finding, so it is left off.
-      # No `:(literal)` on the path, and that is a MEASUREMENT, not an
-      # oversight. What follows `--` is a pathspec, so it was reported that a
-      # file named `a[b]-provider.ts` would name something else and give an
-      # empty per-file diff. Measured against git 2.49 for `[`, `*` and `?`:
-      # the diff is byte-identical with and without `:(literal)`, because a
-      # pathspec that equals the path also matches it literally. The
-      # `git ls-files -- 'kee[p].ts'` demo behind the report shows a glob
-      # matching a DIFFERENT file, which is not what this call does -- `$f`
-      # comes from git's own changed-file list, so it always names a file that
-      # exists. Adding the flag fenced nothing, so it is left off.
+      # No `:(literal)` on the path, and the reasoning is measured -- including
+      # the correction. What follows `--` is a pathspec, so it was reported
+      # that a file named `a[b]-provider.ts` would name something ELSE and give
+      # an empty per-file diff, i.e. a missed delete symbol. It cannot: a
+      # pathspec equal to the path always matches it literally, so the file's
+      # own hunks are always present.
+      #
+      # What the glob DOES do is match SIBLINGS as well. Measured, git 2.49:
+      # `a*b-provider.ts` with two glob-matching siblings returns 3 files under
+      # a plain pathspec and 1 under `:(literal)`. That direction can only
+      # ADD hunks, so it can over-arm and never miss -- and each sibling is
+      # separately iterated by this same loop anyway, so no verdict changes.
+      # (An earlier revision of this comment said the two spellings were
+      # "byte-identical". That was measured on a fixture with no sibling the
+      # glob could match, so it could not discriminate.) `:(literal)` was added,
+      # measured to change no verdict, and left off rather than shipped as an
+      # unfenced flag.
       if git diff "$diff_base"...HEAD -- "$f" \
          | grep -vE "$header_line_pattern" \
          | grep -vE "$comment_line_pattern" \
