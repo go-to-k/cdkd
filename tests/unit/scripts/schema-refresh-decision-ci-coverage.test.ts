@@ -336,21 +336,27 @@ const UNCOVERED_TERMS: Record<string, string> = {
  * at all — and a fence that silently classifies a subset is the defect this
  * file is about, one level up.
  */
-const decisionTerms = (): string[] => {
-  const source = `const __countDecisions = ${countDecisions.toString()};`;
+/**
+ * The ONE extraction. `decisionTerms` and the probe cases below both call it,
+ * so the corpus that justifies the parser actually exercises the code that
+ * ships — a hand-written second copy would be a seventh spelling to get wrong,
+ * and round 9 measured exactly that: with the walk duplicated, five arms of the
+ * real one (both refusals, the quoted/numeric key arms and `propertyName`)
+ * could each be deleted with every case still green.
+ *
+ * Returns names AND refusals rather than throwing, so the caller decides what a
+ * refusal means: fatal for the shipped signature, expected for a probe.
+ */
+const extractTerms = (functionSource: string): { names: string[]; refusals: string[] } => {
   const sourceFile = ts.createSourceFile(
     'count-decisions.js',
-    source,
+    `const __countDecisions = ${functionSource};`,
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.JS
   );
   const diagnostics = (sourceFile as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics;
-  expect(
-    diagnostics?.length ?? 0,
-    'countDecisions did not parse — the term list cannot be derived, so this fence would ' +
-      'silently stop watching for a new decision class'
-  ).toBe(0);
+  if ((diagnostics?.length ?? 0) > 0) return { names: [], refusals: ['the source did not parse'] };
 
   let parameters: ts.NodeArray<ts.ParameterDeclaration> | undefined;
   const walk = (node: ts.Node): void => {
@@ -363,18 +369,24 @@ const decisionTerms = (): string[] => {
     ts.forEachChild(node, walk);
   };
   walk(sourceFile);
-  expect(parameters?.length ?? 0, 'countDecisions declares no parameters').toBeGreaterThan(0);
-
-  const binding = parameters![0]!.name;
-  expect(
-    ts.isObjectBindingPattern(binding),
-    'countDecisions no longer destructures its input — the parameter names are the term list, ' +
-      'so this fence has nothing to derive from'
-  ).toBe(true);
+  if (parameters === undefined || parameters.length === 0) {
+    return { names: [], refusals: ['no parameters'] };
+  }
+  // A SECOND parameter is an unnameable term class by the same argument the two
+  // refusals below rest on: `countDecisions({...}, schemaGaps = [])` counts a
+  // seventh decision and this walk reads only the bag. Measured silent before
+  // this check existed.
+  if (parameters.length > 1) {
+    return { names: [], refusals: [`${parameters.length} parameters — only the first is read`] };
+  }
+  const binding = parameters[0]!.name;
+  if (!ts.isObjectBindingPattern(binding)) {
+    return { names: [], refusals: ['the parameter is not an object binding pattern'] };
+  }
 
   const names: string[] = [];
   const refusals: string[] = [];
-  for (const element of (binding as ts.ObjectBindingPattern).elements) {
+  for (const element of binding.elements) {
     if (element.dotDotDotToken) {
       refusals.push('a rest element');
       continue;
@@ -386,11 +398,42 @@ const decisionTerms = (): string[] => {
       refusals.push(`a computed key (${key.getText(sourceFile)})`);
     }
   }
+  return { names, refusals };
+};
+
+/**
+ * The decision terms, parsed out of the SHIPPED `countDecisions`.
+ *
+ * `countDecisions` destructures its input, so the parameter names ARE the
+ * terms. A seventh term added there lands in this set with no entry in
+ * `CI_COVERAGE`'s `covers` and fails — which is the point: a decision class
+ * nothing reddens is the exact defect #3005 reports.
+ *
+ * WHY A PARSER, and why that is not over-engineering. This derivation was a
+ * regex over the destructuring text, and it was wrong SIX times: counting
+ * commas (false red on a default holding one, false green on `a, b`); a
+ * position pattern that consumed its own separator; one that missed a rest
+ * element and a key position; one that missed a computed key carrying its own
+ * `]`; a whole-line refusal on surviving brackets that still missed a
+ * surviving QUOTE, where the strip had swallowed the separating comma. Each
+ * fix was correct on the shape the previous one got wrong, which is the
+ * signature `.claude/skills/work-issues/references/implement.md` names: three
+ * spellings in three rounds means change instrument, parse for real, and
+ * REFUSE what the model does not cover.
+ *
+ * Every refusal `extractTerms` can return is FATAL here. A rest element, a
+ * computed key and a second parameter all mean a decision term can exist that
+ * this fence cannot name — a rest element lets one arrive with no signature
+ * change at all — and a fence that silently classifies a subset is the defect
+ * this file is about, one level up.
+ */
+const decisionTerms = (): string[] => {
+  const { names, refusals } = extractTerms(countDecisions.toString());
   expect(
     refusals,
-    `countDecisions destructures ${JSON.stringify(refusals)} — a term this fence cannot NAME is ` +
-      'one it cannot classify, and a rest element lets a new one arrive with no signature ' +
-      'change at all. Name the term, or widen this derivation deliberately.'
+    `countDecisions is shaped so this fence cannot name every term (${JSON.stringify(refusals)}). ` +
+      'A term it cannot NAME is one it cannot classify. Name the term, or widen the extraction ' +
+      'deliberately.'
   ).toEqual([]);
   return names;
 };
@@ -438,41 +481,13 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // The helper re-runs `decisionTerms`'s extraction over a synthetic function
     // rather than restating it: a second copy of the walk would be a seventh
     // spelling to get wrong.
-    const extract = (destructuring: string) => {
-      const sourceFile = ts.createSourceFile(
-        'probe.js',
-        `const __f = function ({ ${destructuring} }) { return 1; };`,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.JS
-      );
-      expect(
-        (sourceFile as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics?.length ?? 0,
-        `the probe source is not valid JS: ${destructuring}`
-      ).toBe(0);
-      let parameters: ts.NodeArray<ts.ParameterDeclaration> | undefined;
-      const walk = (node: ts.Node): void => {
-        if (parameters === undefined && ts.isFunctionExpression(node)) parameters = node.parameters;
-        ts.forEachChild(node, walk);
-      };
-      walk(sourceFile);
-      const binding = parameters![0]!.name as ts.ObjectBindingPattern;
-      const names: string[] = [];
-      const refusals: string[] = [];
-      for (const element of binding.elements) {
-        if (element.dotDotDotToken) {
-          refusals.push('rest');
-          continue;
-        }
-        const key = element.propertyName ?? element.name;
-        if (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)) {
-          names.push(key.text);
-        } else {
-          refusals.push('computed');
-        }
-      }
-      return { names, refusals };
-    };
+    // The SHIPPED extraction, not a copy of it: `extractTerms` is what
+    // `decisionTerms` calls, so deleting one of its arms reds these cases.
+    // Round 9 measured the alternative — with the walk duplicated here, five
+    // arms of the real one could each be deleted with every case green, under
+    // a comment claiming that could not happen.
+    const extract = (destructuring: string) =>
+      extractTerms(`function countDecisions({ ${destructuring} }) { return 1; }`);
 
     // Shapes every regex spelling had to be taught one at a time, each read
     // correctly here with no rule of its own.
@@ -502,9 +517,22 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // ...and the two shapes it must REFUSE rather than silently classify a
     // subset of. A computed key was the shape that escaped every position
     // pattern; a rest element lets a term arrive with no signature change.
-    expect(extract('removed, [K[0]]: schemaGaps').refusals).toEqual(['computed']);
-    expect(extract('removed, [f(a[0])]: schemaGaps').refusals).toEqual(['computed']);
-    expect(extract('removed, ...rest').refusals).toEqual(['rest']);
+    expect(extract('removed, [K[0]]: schemaGaps').refusals).toEqual(['a computed key ([K[0]])']);
+    expect(extract('removed, [f(a[0])]: schemaGaps').refusals).toEqual([
+      'a computed key ([f(a[0])])',
+    ]);
+    expect(extract('removed, ...rest').refusals).toEqual(['a rest element']);
+    // A SECOND parameter is the same class one level out: the walk reads the
+    // bag, so a term declared beside it is unnameable here.
+    expect(
+      extractTerms('function countDecisions({ removed }, schemaGaps = []) { return 1; }').refusals
+    ).toEqual(['2 parameters — only the first is read']);
+    // ...and source that does not parse at all. Without a case here the
+    // diagnostics refusal could be neutered with every other one green, since
+    // every shape above is valid JS by construction.
+    expect(extractTerms('function countDecisions({ removed ) { }').refusals).toEqual([
+      'the source did not parse',
+    ]);
   });
 
   it('derives a real decision-term population from the shipped countDecisions', () => {
@@ -541,7 +569,10 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // correct code teaches the next author to work around it.
     const neutralised = (line: string, command: string): boolean => {
       const tail = line.slice(command.length);
-      return /(\|\||&\s*$)/.test(tail);
+      // `&&$` is a line continuation, not backgrounding — the comment above
+      // says `&&` is deliberately not a neutraliser, so the pattern must not
+      // catch it through the backgrounding arm.
+      return /(\|\||[^&]&\s*$|^&\s*$)/.test(tail);
     };
     for (const [check, { command }] of Object.entries(CI_COVERAGE)) {
       const matches = lines.filter((l) => l === command || l.startsWith(`${command} `));

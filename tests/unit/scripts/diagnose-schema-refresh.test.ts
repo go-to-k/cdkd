@@ -901,6 +901,14 @@ describe('the render guards, at every site that reaches Markdown', () => {
       // The failed-check HEADING is a twelfth site; without an entry here it
       // was pinned only against the wrong-guard swap, not against no guard.
       failedChecks: [POISON_TYPE],
+      // The two SETTLED sections render a type, a property and a rationale
+      // each. They were added by go-to-k/cdkd#3005 and did not join this input,
+      // so four render sites were outside the only case that watches them —
+      // which is precisely what the comment above forbids.
+      autoTolerated: [{ resourceType: POISON_TYPE, property: POISON, rationale: 'SDK has `X`' }],
+      alreadyTolerated: [
+        { resourceType: POISON_TYPE, property: POISON, rationale: 'SDK has `X`' },
+      ],
       skipped: [POISON],
       sdkLag: [
         {
@@ -933,10 +941,10 @@ describe('the render guards, at every site that reaches Markdown', () => {
     //
     // Sites, in render order: the removal's type heading and its property
     // bullet, the rename bullet, the divergence line's type and its key, the
-    // writable-added type and its property list, the lag row's type, and the
-    // skipped list.
+    // writable-added type and its property list, the lag row's type, the
+    // skipped list, and the two SETTLED sections' type + property (two each).
     const rejections = (md.match(/\[(?:name|key) rejected: unexpected characters\]/g) ?? []).length;
-    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(12);
+    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(16);
     // `renderDetail` strips rather than rejects, so it needs its own witness:
     // the backtick it removes cannot appear in the rendered detail.
     expect(md, 'renderDetail was bypassed at its call site').not.toContain('SDK has `X`');
@@ -2457,7 +2465,7 @@ describe('countDecisions', () => {
   // the property under test — a second, agreeing copy is what goes stale.
   const none = { removed: [], divergences: [] };
 
-  it('counts each of the five inputs, including the two with no section', () => {
+  it('counts each of the six inputs, including the two with no section', () => {
     // `nestedKeyUnparsed` and `unreadable` render no `### … a decision is
     // needed` heading of their own, which is exactly why a hand-written second
     // copy forgets them: an unparsed checker log and an unreadable fixture are
@@ -2478,6 +2486,24 @@ describe('countDecisions', () => {
     expect(countDecisions({ ...none, nestedKeyUnparsed: true })).toBe(1);
     expect(countDecisions({ ...none, failedChecks: ['property-coverage'] })).toBe(1);
     expect(countDecisions({ ...none, unreadable: ['A'] })).toBe(1);
+    // The sixth input had no arm of its own — the title said "five" for as long
+    // as `pendingSdkBump` existed. Counted per BUMP, so two findings sharing a
+    // client are ONE decision, which is the property a per-finding copy loses.
+    const bump = {
+      resourceType: 'A',
+      nestedKey: 'k',
+      bucket: 'definition-member-missing',
+      detail: 'd',
+      client: '@aws-sdk/client-glue',
+      installed: '1.0.0',
+      latest: '2.0.0',
+      definition: 'I',
+      member: 'm',
+    };
+    expect(countDecisions({ ...none, pendingSdkBump: [bump] })).toBe(1);
+    expect(countDecisions({ ...none, pendingSdkBump: [bump, { ...bump, nestedKey: 'k2' }] })).toBe(
+      1
+    );
   });
 
   it('counts a multi-property removal ONCE — the unit is the judgement', () => {
