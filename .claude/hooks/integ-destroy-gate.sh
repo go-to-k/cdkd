@@ -253,8 +253,9 @@ if [ -n "$diff_base" ]; then
       # whole words / camelCase boundaries; `EnigmaFoo` is safe.
       # No `--no-renames` here, unlike the name list above, and that asymmetry
       # is measured rather than an oversight: this diff is restricted to ONE
-      # path, so git has no destination to pair the rename with and reports the
-      # removed lines either way. Adding the flag changed no verdict in the
+      # path, so the other endpoint of the rename is outside the pathspec and
+      # git has nothing to pair with -- it reports the whole file as added or
+      # deleted either way. Adding the flag changed no verdict in the
       # suite, including the renamed-provider case below it -- an unfenced flag
       # whose comment claims it is load-bearing is the defect this file keeps
       # finding, so it is left off.

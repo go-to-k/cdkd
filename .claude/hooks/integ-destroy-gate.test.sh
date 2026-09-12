@@ -34,6 +34,18 @@ declare_gate() {
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Isolate git's configuration. Several cases now turn on git DEFAULTS -- the
+# rename fence needs detection ON to have something to defeat -- so a
+# maintainer with `diff.renames=false` (or a different `core.quotePath`) in
+# their global config would see those cases pass without the fix in place: a
+# green tally attesting to their machine rather than to the hook. Pointing the
+# global and system config at an empty file costs nothing and makes every case
+# answer the same question everywhere.
+export GIT_CONFIG_GLOBAL="$TMPDIR/gitconfig-global"
+export GIT_CONFIG_SYSTEM="$TMPDIR/gitconfig-system"
+: > "$GIT_CONFIG_GLOBAL"
+: > "$GIT_CONFIG_SYSTEM"
+
 side_repo="$TMPDIR/side-repo"
 main_repo="$TMPDIR/main-repo"
 git init -q -b feature/x "$side_repo"
@@ -863,9 +875,12 @@ stage_filter_change "src/provisioning/providers/sqs-queue-provider.ts" \
 run_case "hunk filter: provider string-only change passes through" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
-# ONE CASE PER ALTERNATIVE, the standard the strict cases above already hold
-# themselves to ("each ALONE so that dropping any single alternative fails a
-# case"). The first provider case covers only `providers/.*\.ts`; measured,
+# ONE CASE PER ALTERNATIVE. The #2042 strict cases above state that standard
+# ("each ALONE so that dropping any single alternative fails a case") -- an
+# earlier revision of THIS comment claimed they all met it, which was false when
+# written: 4 of `strict_delete`'s 7 did, and the analyzer trio did not until the
+# loop further down was added. The first provider case covers only
+# `providers/.*\.ts`; measured,
 # `filtered_delete` could be replaced with a never-match string, and
 # `provider_pattern` narrowed to `^src/provisioning/providers/.*\.ts$`, with the
 # suite at 63/0 either way. That drops destroy.ts, destroy-runner.ts,
@@ -926,6 +941,34 @@ else
   fail_log+="FAIL refuses when markgate is not installed: want exit 2 + 'markgate is not installed', got rc=$nomg_rc\n  output: $nomg_out\n"
   printf 'FAIL refuses when markgate is not installed (got %s)\n' "$nomg_rc"
 fi
+
+# --- The alternatives nothing was watching ---
+#
+# ONE CASE PER ALTERNATIVE is the standard this file claims, and measured, it
+# was held by 4 of `strict_delete`'s 7 and by 3 of `delete_symbol_pattern`'s 7.
+# Each group below could be deleted outright with the suite at 72/0.
+#
+# The analyzer trio first, because the hook's own header calls them "small
+# high-stakes analyzer files": a PR touching only the deletion-order DAG merged
+# with a stale or absent marker and nothing said so.
+for analyzer_file in dag-builder implicit-delete-deps lambda-vpc-deps; do
+  stage_filter_change "src/analyzer/$analyzer_file.ts" "const ORDER_SEED = 7;"
+  run_case "diff filter: $analyzer_file.ts is strict" 2 stale "$filter_repo" \
+    "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+done
+
+# Then the delete VOCABULARY. `delete`, `rollback` and `detach` were each
+# reachable through an existing case; narrowing the pattern to just those three
+# left the suite green, so the VPC/ENI teardown words the header names were
+# unfenced. `IMPLICIT_DELETE` is deliberately not listed here -- it survives
+# incidentally via `delete` under `grep -i`, so a case on it would fence nothing
+# that the first one does not.
+for delete_word in hyperplane DependencyViolation ENI; do
+  stage_filter_hunk "src/provisioning/providers/vpc-attachment-provider.ts" \
+    "  if (err.name === '$delete_word') { return this.retry(id); }"
+  run_case "hunk filter: '$delete_word' is delete-symbol vocabulary" 2 stale "$filter_repo" \
+    "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+done
 
 # --- A FAILED diff is not an empty one ---
 #
