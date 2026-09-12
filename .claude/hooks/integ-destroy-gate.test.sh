@@ -1083,13 +1083,45 @@ run_case "hunk filter: the +++ header is not read as content (3046)" 0 stale "" 
 # patterns cannot match, so the gate is skipped without consulting markgate.
 #
 # `core.quotePath` defaults to TRUE, so a non-ASCII path comes back C-quoted
-# and the leading `"` defeats every `^src/` anchor. Note this case depends on
-# git's DEFAULT, which is exactly what the config isolation at the top of this
-# file makes reliable -- without it, a maintainer with `core.quotePath=false`
-# globally would see it pass with the fix absent.
+# and the leading `"` defeats every `^src/` anchor.
+#
+# The fence for the FLAG has to be a case whose expected verdict is 0, and the
+# reason is worth stating because the obvious case does not work. An armed
+# (exit 2) non-ASCII case stopped discriminating the moment the quoted-path arm
+# landed: without the flag the path comes back quoted, the arm fires, and the
+# case still scores 2 -- passing without ever reaching the patterns it is named
+# for. Measured: with the flag removed the suite stayed 87/0; removing the flag
+# AND the arm reddened it.
+#
+# So the fence is BUCKETING. A non-ASCII provider path with symbol-free content
+# must score 0: with the flag it is unquoted, matches `provider_pattern`, enters
+# the hunk filter and finds no delete symbol. Without it the leading `"` makes
+# the arm fire instead and the case reds. This one genuinely depends on git's
+# DEFAULT, which is what the config isolation at the top of this file makes
+# reliable -- a maintainer with `core.quotePath=false` globally would otherwise
+# see it pass with the fix absent.
+stage_filter_change "src/provisioning/providers/café-b-provider.ts" \
+  "  private readonly label = 'b';"
+run_case "a non-ASCII path is BUCKETED, not just armed (3047)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# And the armed twin, kept as a regression guard rather than a fence: it scores
+# 2 with the flag (reaches `provider_pattern`, finds the symbol) and 2 without
+# it (the quoted-path arm fires), so no mutation of the hook reddens it alone.
 stage_filter_hunk "src/provisioning/providers/café-provider.ts" \
   "  async deleteResource(id: string) { return this.client.send(id); }"
-run_case "a non-ASCII path still reaches the patterns (3047)" 2 stale "$filter_repo" \
+run_case "a non-ASCII path with a delete symbol arms (3047, regression guard)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# `core.quotePath=false` covers bytes >= 0x80 and nothing else: a path holding
+# `"`, `\`, a tab or a newline still comes back C-quoted, reaches the buckets
+# with a leading `"`, matches no `^src/` anchor, and skips the gate. The hook
+# arms on any quoted path rather than letting that happen -- an integ run on a
+# filename this repo does not have, versus a merge with no destroy verification.
+# Correctly BUCKETING such a path is the `-z` work left on issue 3047.
+stage_filter_hunk 'src/provisioning/providers/qu"ote-provider.ts' \
+  "  async deleteResource(id: string) { return this.client.send(id); }"
+run_case "a C-quoted path arms the gate rather than skipping it (3047)" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
 # A path carrying glob metacharacters is kept as a case even though it fences
@@ -1108,17 +1140,6 @@ run_case "a non-ASCII path still reaches the patterns (3047)" 2 stale "$filter_r
 # of this comment said the two spellings were "byte-identical" -- measured on a
 # fixture with no sibling for the glob to match, so it could not discriminate.
 # `:(literal)` was added, measured to change no verdict, and removed.
-# `core.quotePath=false` covers bytes >= 0x80 and nothing else: a path holding
-# `"`, `\`, a tab or a newline still comes back C-quoted, reaches the buckets
-# with a leading `"`, matches no `^src/` anchor, and skips the gate. The hook
-# arms on any quoted path rather than letting that happen -- an integ run on a
-# filename this repo does not have, versus a merge with no destroy verification.
-# Correctly BUCKETING such a path is the `-z` work left on issue 3047.
-stage_filter_hunk 'src/provisioning/providers/qu"ote-provider.ts' \
-  "  async deleteResource(id: string) { return this.client.send(id); }"
-run_case "a C-quoted path arms the gate rather than skipping it (3047)" 2 stale "$filter_repo" \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
-
 stage_filter_hunk "src/provisioning/providers/a[b]-provider.ts" \
   "  async deleteResource(id: string) { return this.client.send(id); }"
 run_case "a glob-magic path reaches the hunk filter (3047, regression guard)" 2 stale "$filter_repo" \
