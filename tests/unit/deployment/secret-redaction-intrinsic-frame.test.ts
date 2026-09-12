@@ -405,6 +405,18 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
           };
         },
       ],
+      [
+        // What this pins is that the parser's `undefined` is a REFUSAL rather
+        // than a throw (the mutant that dereferences it crashes). It cannot tell
+        // that refusal from the frame helper's on an empty rendering: both keep
+        // the scan's answer, and no bag can distinguish them.
+        'the source cannot be parsed into segments (an Fn::Join whose delimiter is itself an intrinsic), so the marked bag keeps the scan answer rather than throwing',
+        () => ({
+          bag: { Dsn: `port:${PIN}` },
+          source: { Dsn: { 'Fn::Join': [{ Ref: 'Delimiter' }, ['port:', TOKEN_NAME]] } },
+          secrets: resolvedAlone(TOKEN_NAME, PIN),
+        }),
+      ],
     ];
 
     for (const [label, build] of refusals) {
@@ -458,6 +470,33 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       expect(
         redactSecretsForState({ Whole: PIN, Staged: PIN }, secrets, { Whole: source, Staged: TOKEN_STAGED })
       ).toEqual({ Whole: SSM, Staged: TOKEN_STAGED });
+    });
+  });
+
+  describe('residual, stated on the docstring rather than closed', () => {
+    it('takes a same-service SECRET sibling\'s expression for a leaf whose own reference resolved PUBLIC and whose value coincides with the middle', () => {
+      // Check 2 proves the candidate resolved to the middle in this pass, not
+      // that it is THIS leaf's token. The leaf's `ssm` parameter came back a
+      // public `String` — nothing records a public resolution — and a secure
+      // sibling of the same service resolved to the same two characters, so
+      // the sibling is the ONE candidate matching the token pattern, its pair
+      // equals the middle, and the marked bag takes its expression: a wrong
+      // REFERENCE (the whole-value scan's own class for a whole-leaf
+      // coincidence), never a disclosure. Pinned so a change that closes it
+      // is noticed, and so the docstring's residual stays a measured one.
+      const SECURE = '{{resolve:ssm:/secure/x}}';
+      const secrets = resolvedAlone(SECURE, PIN);
+      const source = { 'Fn::Join': ['', ['port:{{resolve:ssm:', { Ref: 'PublicParam' }, '}}']] };
+      // Premise: the source-free scan leaves this bag alone (the middle sits
+      // below the needle floor), so what is pinned is the ARM's addition —
+      // a lowered floor would make the scan write the sibling by itself.
+      expect(redactSecretsForState(`port:${PIN}`, secrets)).toBe(`port:${PIN}`);
+
+      const persisted = redactSecretsForState(markSameGenerationBag({ Dsn: `port:${PIN}` }), secrets, {
+        Dsn: source,
+      });
+
+      expect(persisted).toEqual({ Dsn: `port:${SECURE}` });
     });
   });
 });

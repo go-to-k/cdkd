@@ -203,8 +203,8 @@ Index of every area: [code-layout.md](code-layout.md).
     matches, and the match is not DEMONSTRABLY another value's expression per
     the pass's own map (fence against bag/source misalignment). Every refusal
     falls to `positionByIntrinsicFrame` (#2745, `positionByEmbeddedSpan`'s
-    intrinsic twin; its docstring is the authority), then to the value
-    scan, so no case gets worse. Deliberately NO
+    intrinsic twin; its docstring is the authority, residuals included),
+    then to the value scan. Deliberately NO
     `isKnownSecretExpression` test on this arm: candidates come only from
     stores of references treated as secret, so the test could never answer
     `false`, and an unfalsifiable guard fences nothing.

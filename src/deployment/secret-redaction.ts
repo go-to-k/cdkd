@@ -2852,13 +2852,14 @@ function positionByIntrinsicSkeleton(
 }
 
 /**
- * The ONE-span frame shared by {@link positionByEmbeddedSpan} and
+ * The ONE-span frame shared by {@link positionByEmbeddedSpan},
+ * {@link positionByIntrinsicFrame} (over the source's rendered text) and
  * {@link learnMixedLeafNeedle}: a source holding exactly one `{{resolve:...}}`
  * token, and a bag that starts with the source's prefix and ends with its
  * suffix with something non-empty between them that is NOT itself a complete
  * token (an already-redacted record is a persisted answer, not a plaintext).
- * `undefined` for any other shape. One helper rather than two copies so the
- * two refusals cannot drift apart.
+ * `undefined` for any other shape. One helper rather than three copies so the
+ * three refusals cannot drift apart.
  */
 function singleSpanFrame(
   bag: string,
@@ -2997,23 +2998,27 @@ function singleSpanFrame(
  * where the scan wrote the survivor. Stated so it is not mistaken for a leak.
  *
  * Everything else keeps the pre-#2485 fall-through: two or more spans (which
- * span produced which value is genuinely ambiguous when they share one), an
- * `Fn::Sub` / `Fn::Join` source (an object, not this arm at all — issue #2320's
- * placeholder primitive), a frame mismatch, a middle that is itself a complete
- * token (an already-redacted record, per the same refusal
- * {@link learnMixedLeafNeedle} makes), and a middle this pass cannot vouch for.
+ * span produced which value is genuinely ambiguous when they share one), a
+ * frame mismatch, a middle that is itself a complete token (an
+ * already-redacted record, per the same refusal {@link learnMixedLeafNeedle}
+ * makes), and a middle this pass cannot vouch for. An `Fn::Sub` / `Fn::Join`
+ * source (an object, not this arm at all — issue #2320's placeholder
+ * primitive) is {@link positionByIntrinsicFrame}'s since #2745, and reaches
+ * the value scan only where that arm refuses.
  *
  * The frame is copied from the SOURCE, not scanned. A needle occurring in the
  * literal frame would be a reference the template never had at that offset —
  * the fabricated-baseline direction {@link preferPositionDecisions} refuses —
  * and the whole-token arm returns its source unscanned for the same reason.
  *
- * RETURNS THE VALUE SCAN'S ANSWER ON EVERY REFUSAL, not `undefined`: the scan
- * is computed once, here, for `(bag, secrets)` — the arm's bound below compares
- * against it, and every fall-through IS it — so the compared value provably
+ * RETURNS THE VALUE SCAN'S ANSWER ON EVERY REFUSAL, not `undefined`: the two
+ * early returns below compute it for `(bag, secrets)`, and the bound in
+ * {@link writeFramedTokenWithinScanBound} computes its own from the same two
+ * arguments — every fall-through IS that scan — so the compared value provably
  * comes from the same bag and map the arm positions. An earlier revision took
  * the scan as a parameter, which left the bound one wrong caller away from
- * comparing against a scan of some other bag with no type error.
+ * comparing against a scan of some other bag with no type error; the shared
+ * helper keeps that property by taking `(bag, secrets)` rather than a scan.
  */
 function positionByEmbeddedSpan(
   bag: string,
@@ -3158,7 +3163,19 @@ const UNKNOWN_PART_PLACEHOLDER = '\u0000';
  *    whole bag plays there.
  * 2. THIS PASS resolved that candidate to the middle ({@link recordResolvedPair},
  *    per map instance) — the literal arm's evidence, and what a
- *    shape-plausible expression from another resource cannot satisfy.
+ *    shape-plausible expression this pass never resolved to the middle
+ *    (another resource's, typically) cannot satisfy. What it does NOT prove
+ *    is that the candidate is THIS leaf's token. A leaf
+ *    whose own reference resolved PUBLIC (an `ssm` `String`, which nothing
+ *    records) beside a same-service SECRET sibling whose value coincides
+ *    with the middle passes all three checks and takes the sibling's
+ *    expression — a wrong REFERENCE, not a disclosure, the class the
+ *    floorless whole-value scan already accepts for a whole-leaf coincidence:
+ *    for a 4+ character middle the value scan writes that same sibling
+ *    expression on its own, so what this arm ADDS is the sub-floor case on a
+ *    marked bag. Stated rather than closed, and pinned by
+ *    the unit file: nothing records a public resolution, so this arm cannot
+ *    tell "absent because public" from "absent because collapsed".
  * 3. The write stays within the value scan's class of answer, or — below the
  *    scan's floor — the bag carries the engine's same-generation mark:
  *    {@link writeFramedTokenWithinScanBound}, shared with the literal arm.
@@ -3181,7 +3198,9 @@ const UNKNOWN_PART_PLACEHOLDER = '\u0000';
  *
  * Every refusal before the bound returns `undefined` and the walk falls to the
  * value scan; the bound's own refusals return that scan directly — the same
- * answer either way, today's behavior, so no case gets worse. What stays: the
+ * answer either way, today's behavior, so no REFUSAL makes a case worse. The
+ * one ACCEPTANCE that can is check 2's residual above, where a public leaf
+ * gains a wrong reference in place of its plaintext. What stays: the
  * nonliteral frame above; a source with more than one token; an `Fn::Join`
  * whose delimiter is itself an intrinsic (the parser refuses it); and
  * everything the shared bound refuses, listed on the literal arm.
@@ -3538,8 +3557,9 @@ function redactByPath(
     // A literal leaf EMBEDDING one token, positioned by the span its source
     // states — exact where the value scan is ambiguous (issue #2485). On every
     // refusal (a public reference, an embedded token this pass cannot vouch
-    // for) the arm returns the value scan of the leaf itself, computed once
-    // inside it, so a secret embedded beside the token is still redacted.
+    // for) the arm returns the value scan of the leaf itself — computed for
+    // its own `(bag, secrets)`, at its early returns or inside the shared
+    // bound helper — so a secret embedded beside the token is still redacted.
     return positionByEmbeddedSpan(bag, source, secrets, bagIsSameGeneration);
   }
   if (typeof bag === 'string' && isPlainObject(source)) {
