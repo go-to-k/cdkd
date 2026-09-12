@@ -177,12 +177,29 @@ describe('ConsoleLogger sanitizes EXTRA arguments (issue #3003)', () => {
     expect(rendered()).toContain('owner');
   });
 
-  it('leaves an ordinary extra argument intact', () => {
+  it('keeps a benign NON-ASCII value, i.e. uses the denylist not the allowlist', () => {
+    // The earlier version of this case carried only printable ASCII, so it was
+    // red under NEITHER mutation -- neither dropping the guard nor switching it
+    // to `asciiOnly`. The mode is a real decision (`display-safe.ts` exposes
+    // both, and the state layer picks the allowlist for its known-charset
+    // values), so the one realistic over-sanitizing regression needs a value
+    // the two classes disagree about: the denylist keeps a Japanese name, the
+    // allowlist would render it as spaces.
     const logger = new ConsoleLogger('debug');
 
-    logger.debug('Lock info:', { owner: 'user@host:123', operation: 'deploy' });
+    logger.debug('Lock info:', { owner: 'ユーザー@host:123', operation: 'deploy' });
 
-    expect(rendered()).toContain('"owner":"user@host:123"');
+    expect(rendered()).toContain('"owner":"ユーザー@host:123"');
     expect(rendered()).toContain('"operation":"deploy"');
+  });
+
+  it('keeps the separator between the message and the arguments', () => {
+    // `displaySafe` TRIMS, so the `' ' +` has to sit outside the call. Nothing
+    // pinned that: dropping the separator reddened zero cases.
+    const logger = new ConsoleLogger('debug');
+
+    logger.debug('Lock info:', { owner: 'ok' });
+
+    expect(rendered()).toContain('Lock info: {"owner":"ok"}');
   });
 });

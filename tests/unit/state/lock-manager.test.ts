@@ -509,6 +509,19 @@ describe('LockManager', () => {
       expect(calls.find((c) => c.includes('Lock info for stack:'))).toContain(
         'PhysicalID: arn:forged'
       );
+
+      // The record travels as an EXTRA ARGUMENT, not interpolated into the
+      // message. That is load-bearing rather than stylistic: `formatMessage`
+      // sanitizes only the extra args, never the message, so the issue #3003
+      // guard covers this record ONLY while it stays in argument position.
+      // Pre-stringifying it at this call site -- the obvious "just interpolate
+      // it" refactor -- reopens the hole and reddened zero cases before this
+      // assertion existed. `lockInfo` is a cast of an attacker-writable
+      // `lock.json`, of which only `owner` and `operation` are sanitized here.
+      const infoCall = childLoggerMock.debug.mock.calls.find((c: unknown[]) =>
+        String(c[0]).includes('Lock info for stack:')
+      );
+      expect(typeof infoCall?.[1]).toBe('object');
     });
 
     it('uses the ASCII ALLOWLIST in `safeSegment`, not the denylist (issue #3003)', async () => {
