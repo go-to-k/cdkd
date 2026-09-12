@@ -1795,7 +1795,7 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   deploy persist `properties`                current template     TEMPLATE_DERIVED_RULES                VALUE SCAN
  *   deploy journal props / attemptedProps      current template     TEMPLATE_DERIVED_RULES                VALUE SCAN
  *   deploy no-change re-check                  current template     TEMPLATE_DERIVED_RULES                VALUE SCAN
- *   deploy `redactOutputs` (3 sites)           template `Outputs`   TEMPLATE_SOURCED_RULES                VALUE SCAN
+ *   deploy `redactOutputs` (7 sites)           template `Outputs`   TEMPLATE_SOURCED_RULES                VALUE SCAN
  *   `cdkd import` `properties`                 imported template    TEMPLATE_DERIVED_RULES                VALUE SCAN
  *   observed walk, template source             current template     TEMPLATE_SOURCED_RULES                VALUE SCAN
  *   `cdkd scrub` `properties`                  TODAY's template     TEMPLATE_SOURCED_RULES                VALUE SCAN

@@ -1542,9 +1542,16 @@ export class DeployEngine {
    * value read back out of a previous run's state — is skipped, because there
    * is no plaintext behind it to remember.
    *
-   * Called only from the REAL-DEPLOY outputs pass. The other two `redactOutputs`
-   * callers hand it a bag from a previous generation, where a mask is already
-   * unrecoverable and pretending otherwise would serve a stale value.
+   * Called only from the REAL-DEPLOY outputs pass. Of the six other
+   * `redactOutputs` callers, three hand it a bag from a previous generation —
+   * the persist walk, and the no-change path's exports index and summary —
+   * where a mask is already unrecoverable and pretending otherwise would
+   * serve a stale value. The other three are not this pass either: the
+   * no-change path performs the FIRST redaction of its own resolution there,
+   * and the changes path's index and summary re-redact the bag this pass
+   * already produced. (The "other two" this replaces counted the base's three
+   * callers correctly; what was wrong was calling both of the others
+   * previous-generation, when only the persist walk was one.)
    */
   private rememberRecoverableMaskedOutputs(
     stackName: string,
@@ -1614,8 +1621,12 @@ export class DeployEngine {
     // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
     // [#1943](https://github.com/go-to-k/cdkd/issues/1943)). `descendArrays` is
     // the only flag the two differ on, and it claims "this bag was PRODUCED by
-    // resolving this source" — which two of this method's three callers cannot
-    // say. `redactStateForPersist` walks whatever `state.outputs` holds, and on
+    // resolving this source" — which three of this method's seven callers
+    // cannot say: `redactStateForPersist`, and the no-change path's exports
+    // index and summary. (Both numbers are recounted, not incremented: issue
+    // #2814 took the callers from three to seven, and the "two" was already
+    // wrong before it — of the base's three sites only the persist walk took
+    // a foreign bag.) `redactStateForPersist` walks whatever `state.outputs` holds, and on
     // the no-change path that is `persistedOutputs`, the PREVIOUS deploy's bag,
     // while `outputsTemplateSource` is TODAY's template. Positional descent
     // there does not merely mis-redact: `redactByPath` returns a known-secret

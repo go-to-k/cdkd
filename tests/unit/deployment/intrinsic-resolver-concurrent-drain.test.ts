@@ -2369,8 +2369,12 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
     // for two different reasons, neither of which is "the fold never runs".
     // The late-record cases resolve no secret SUCCESSFULLY, so their bag is
     // empty until the late needle arrives and the first fold carries it; the
-    // export-name case above does record (both its parts settle before the
-    // pass ends), but those recordings land BEFORE the first fold. Either
+    // export-name case above does record (its `Spacer` output resolves
+    // `SPACER_ID` cleanly, while the failing name records only `SLOW_ID` --
+    // its `FAIL_ID` part rejects), but those recordings land BEFORE the first
+    // fold. That case is in fact insensitive to the fold ALTOGETHER, measured:
+    // it passes with `absorbOutputsPassSecrets` deleted outright, because it
+    // asserts a REFUSED export name rather than a redacted bag. Either
     // way a `redactOutputs` folding only on an empty bag serves them all
     // (measured by the maintainer on PR 3044: 6414 tests, zero new
     // failures). Here a clean secret output fills the bag DURING the pass and

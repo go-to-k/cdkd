@@ -130,11 +130,16 @@ vi.mock('p-limit', () => ({
  * outputs walk at the persist choke point may not claim its bag was PRODUCED by
  * resolving today's template.
  *
- * `redactOutputs` is one method behind three call sites, and two of them hand it
- * a bag that is not this generation's: `redactStateForPersist` redacts whatever
- * `state.outputs` holds, and the no-change path persists `persistedOutputs` —
- * the PREVIOUS deploy's bag — whenever a resolution failure keeps today's from
- * landing. `descendArrays` is the one flag `TEMPLATE_DERIVED_RULES` and
+ * `redactOutputs` is one method behind seven call sites, and three of them can
+ * hand it a bag that is not this generation's: `redactStateForPersist`, which
+ * redacts whatever `state.outputs` holds; the no-change path's SUMMARY, which
+ * prints `persistedOutputs` — the PREVIOUS deploy's bag — when a resolution
+ * failure keeps today's from landing; and that path's exports INDEX, which
+ * takes the same previous bag on the `exportSetChanged`-only arm (a failure
+ * disables both flags guarding the index write, so the index never runs on
+ * the failure path). (Issue #2814 took the site count from three to seven,
+ * and the foreign-bag count from one to three; the "two" here was wrong
+ * before that too.) `descendArrays` is the one flag `TEMPLATE_DERIVED_RULES` and
  * `TEMPLATE_SOURCED_RULES` differ on, and it is exactly that claim.
  */
 describe('secret-redaction - the two outputs rules constants on a cross-generation bag', () => {

@@ -4430,7 +4430,7 @@ export async function scrubStack(
     //
     // **THE TRADE, stated rather than re-decided.** Turning `descendArrays` off
     // gives up a legitimate positional descent, and on the deploy side that
-    // cost lands on the 2 of 3 `redactOutputs` sites whose bag WAS freshly
+    // cost lands on the 4 of 7 `redactOutputs` sites whose bag WAS freshly
     // resolved from today's template. This call site can never be one of those
     // — its bag is always persisted state — but it does NOT follow that the
     // swap is free here. When state happens to be current, the stored array and
