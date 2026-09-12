@@ -172,8 +172,24 @@ if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
   diff_base="origin/main"
 fi
 
+# A FAILED diff and an empty one are the same string, and they mean opposite
+# things. `origin/main` can resolve while sharing no history with HEAD -- a
+# shallow clone, or an unrelated-history checkout -- and then this exits 128
+# with empty stdout. Read as "nothing changed" that sets `delete_touch=0` and
+# the hook exits 0 with `rollback-executor.ts` rewritten: the gate disabled by
+# the one condition its own header calls out as needing exit 2 (the "shallow
+# clone with no merge base" branch below was unreachable because this ran
+# first). So the rc decides, and a failed diff falls through to markgate, which
+# is this file's stated tie-break: a false positive costs an integ run, a false
+# negative costs a broken main.
 if [ -n "$diff_base" ]; then
-  changed_files=$(git diff --name-only "$diff_base"...HEAD 2>/dev/null)
+  if ! changed_files=$(git diff --name-only "$diff_base"...HEAD 2>/dev/null); then
+    changed_files=""
+    diff_base=""
+  fi
+fi
+
+if [ -n "$diff_base" ]; then
   delete_touch=0
   # Strict files — any change triggers (small high-stakes analyzer
   # files plus the retry classifier / rollback executor; see header
@@ -353,7 +369,9 @@ scope, not to bypass the marker.
 
 Narrowing CAN clear a `(digest differs)` refusal with no integ run
 -- which makes it a scope decision to review, not a per-merge
-escape. It cannot clear a TTL expiry or a missing marker.
+escape. It cannot clear a TTL expiry or a missing marker, and
+`(digest differs)` is reported AHEAD of an expired TTL, so a
+marker older than the TTL stays refused after narrowing.
 
 EOF
 

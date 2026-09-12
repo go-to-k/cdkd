@@ -478,8 +478,13 @@ run_msg_case "include-list cause is qualified, not flat (#3010)" stale \
 nomise_dir="$TMPDIR/bin-nomise"
 mkdir -p "$nomise_dir"
 cp "$SHIM_DIR/markgate" "$nomise_dir/markgate"
+# Symlinked tools rather than `/usr/bin:/bin`, for the reason spelled out at the
+# markgate-missing case below: `jq` is only in `/usr/bin` on macOS 15+.
+for tool in bash env jq git awk sed grep dirname basename cat tr head tail wc cut sort uniq comm mktemp rm printf; do
+  tool_path=$(command -v "$tool" 2>/dev/null) && ln -sf "$tool_path" "$nomise_dir/$tool"
+done
 nomise_out=$(printf '%s' "$payload_merge" \
-  | PATH="$nomise_dir:/usr/bin:/bin" MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+  | PATH="$nomise_dir" MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
 nomise_cd=$(printf '%s' "$nomise_out" | grep -m1 '^  cd ')
 if printf '%s' "$nomise_cd" | grep -q '&& markgate status integ-destroy --explain' \
    && ! printf '%s' "$nomise_out" | grep -q 'mise exec'; then
@@ -532,6 +537,14 @@ run_msg_case "remedy admits narrowing CAN clear a digest mismatch (#3010)" stale
 
 run_msg_case "remedy names the states narrowing cannot clear (#3010)" stale \
   'cannot clear a TTL expiry or a' 'could not EVALUATE' "$payload_merge"
+
+# ...and the ORDER of markgate's own reporting, which makes the TTL warning
+# above reachable in a state that does not look like it. `evaluate()` returns at
+# `ownDigestDiff` BEFORE the TTL block, so a marker both aged past `ttl: 14d`
+# and digest-changed prints `(digest differs)`. A reader who sees that reason
+# cannot conclude their TTL is intact, and narrowing leaves them refused.
+run_msg_case "remedy says digest-differs outranks an expired TTL (#3010)" stale \
+  'reported AHEAD of an expired TTL' 'could not EVALUATE' "$payload_merge"
 
 # The fourth heredoc. Its body carries `integ-destroy` in backticks; unquoted,
 # the header the reason-LESS path prints is mangled the same way as the others.
@@ -805,8 +818,25 @@ x2236_case() {
 # Its own staging helper because `stage_filter_change` REFUSES delete-symbol
 # vocabulary by design: the strict cases depend on their content being
 # symbol-free, and these two cases depend on the opposite.
+# stage_filter_hunk <relative-path> <content-line-CARRYING-a-delete-symbol>
+#
+# The mirror of `stage_filter_change`'s guard, and needed for the same reason:
+# that helper REFUSES delete vocabulary because its cases prove a file trips the
+# gate on bucket membership; these cases prove the opposite, so the line must
+# carry one. Unasserted, stripping the symbol from a call below turns the
+# arming/pass-through PAIR into two pass-throughs and both stay green.
 stage_filter_hunk() {
   local rel="$1"; local line="$2"
+  case "$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')" in
+    *delete*|*rollback*|*hyperplane*|*dependencyviolation*|*eni*|*detach*) ;;
+    *)
+      fail=$((fail + 1))
+      fail_log+="FAIL stage_filter_hunk fixture for $rel carries NO delete-symbol "
+      fail_log+="vocabulary, so the case it feeds cannot arm the hunk filter and "
+      fail_log+="silently becomes a second pass-through: $line\n"
+      printf 'FAIL stage_filter_hunk fixture content carries no delete symbol: %s\n' "$rel"
+      ;;
+  esac
   git -C "$filter_repo" reset -q --hard refs/remotes/origin/main
   mkdir -p "$filter_repo/$(dirname "$rel")"
   printf '%s\n' "$line" > "$filter_repo/$rel"
@@ -824,9 +854,50 @@ run_case "hunk filter: provider delete symbol arms the gate" 2 stale "$filter_re
 # through. This is the half that proves the case above passes on the SYMBOL and
 # not merely on the path -- without it, a `provider_pattern` promoted to strict
 # would keep both green.
-stage_filter_hunk "src/provisioning/providers/sqs-queue-provider.ts" \
+# Staged through `stage_filter_change`, not `stage_filter_hunk`: this is the
+# NEGATIVE half, so its line must be symbol-FREE, which is exactly the
+# invariant that helper asserts. The two guards are mirrors and each call site
+# takes the one matching what it is proving.
+stage_filter_change "src/provisioning/providers/sqs-queue-provider.ts" \
   "  private readonly label = 'queue provider';"
 run_case "hunk filter: provider string-only change passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# ONE CASE PER ALTERNATIVE, the standard the strict cases above already hold
+# themselves to ("each ALONE so that dropping any single alternative fails a
+# case"). The first provider case covers only `providers/.*\.ts`; measured,
+# `filtered_delete` could be replaced with a never-match string, and
+# `provider_pattern` narrowed to `^src/provisioning/providers/.*\.ts$`, with the
+# suite at 63/0 either way. That drops destroy.ts, destroy-runner.ts,
+# deploy-engine.ts, cloud-control-provider.ts and region-check.ts out of the
+# gate entirely -- the destroy ORCHESTRATION, more central to this gate than any
+# single provider. The existing string-only case is the shared negative.
+stage_filter_hunk "src/cli/commands/destroy.ts" \
+  "  await runner.deleteStack({ stackName, force });"
+run_case "hunk filter: destroy.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/cli/commands/destroy-runner.ts" \
+  "  const order = plan.deleteOrder();"
+run_case "hunk filter: destroy-runner.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/deployment/deploy-engine.ts" \
+  "  await this.performRollback(failed);"
+run_case "hunk filter: deploy-engine.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/provisioning/cloud-control-provider.ts" \
+  "  private async deleteRemnant(id: string) { return this.cc.send(cmd); }"
+run_case "hunk filter: cloud-control-provider.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# NOT a comment line: `comment_line_pattern` strips `//` lines before the symbol
+# grep, so a commented delete symbol correctly does NOT arm the gate. Writing
+# this fixture as a comment first is how that was confirmed -- it came back 0.
+stage_filter_hunk "src/provisioning/region-check.ts" \
+  "  assertRegionMatch(region, target, { onDetach: true });"
+run_case "hunk filter: region-check.ts delete symbol arms the gate" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
 # --- markgate missing entirely ---
@@ -835,8 +906,18 @@ run_case "hunk filter: provider string-only change passes through" 0 stale "" \
 # refuses. Measured: flipping that last `exit 2` to `exit 0` left the suite at
 # 60/0 -- no case ran with neither binary on PATH, so the gate could be made to
 # pass silently on any machine that had not run `mise install`.
+# PATH derived from where `jq` and `git` actually live rather than hard-coded to
+# `/usr/bin:/bin`: `jq` ships there only on macOS 15+, so the hard-coded form
+# reddens this case on an older runner or a brew-only install for a reason that
+# has nothing to do with the hook. A stub dir of symlinks keeps mise and
+# markgate out without taking the rest of PATH with them.
+nomg_dir="$TMPDIR/bin-nomarkgate"
+mkdir -p "$nomg_dir"
+for tool in bash env jq git awk sed grep dirname basename cat tr head tail wc cut sort uniq comm mktemp rm printf; do
+  tool_path=$(command -v "$tool" 2>/dev/null) && ln -sf "$tool_path" "$nomg_dir/$tool"
+done
 nomg_out=$(printf '%s' "$payload_merge" \
-  | PATH="/usr/bin:/bin" MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+  | PATH="$nomg_dir" MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
 nomg_rc=$?
 if [ "$nomg_rc" -eq 2 ] && printf '%s' "$nomg_out" | grep -q 'markgate is not installed'; then
   pass=$((pass + 1)); printf 'OK   refuses when markgate is not installed (exit 2)\n'
@@ -845,6 +926,30 @@ else
   fail_log+="FAIL refuses when markgate is not installed: want exit 2 + 'markgate is not installed', got rc=$nomg_rc\n  output: $nomg_out\n"
   printf 'FAIL refuses when markgate is not installed (got %s)\n' "$nomg_rc"
 fi
+
+# --- A FAILED diff is not an empty one ---
+#
+# `origin/main` can resolve while sharing no history with HEAD: a shallow clone,
+# or an unrelated-history checkout. `git diff origin/main...HEAD` then exits 128
+# with EMPTY stdout, which the pre-filter read as "no files changed" -> not
+# delete-touching -> exit 0, with a STRICT file rewritten. The gate disabled by
+# the one condition its own header calls out as needing exit 2, and no case saw
+# it. The rc now decides and a failed diff falls through to markgate.
+nohist_repo="$TMPDIR/nohist-repo"
+git init -q -b main "$nohist_repo"
+declare_gate "$nohist_repo" integ-destroy
+mkdir -p "$nohist_repo/src/deployment"
+echo "base" > "$nohist_repo/src/deployment/rollback-executor.ts"
+git -C "$nohist_repo" add -A
+git -C "$nohist_repo" -c user.email=t@t -c user.name=t commit -q -m base
+git -C "$nohist_repo" update-ref refs/remotes/origin/main "$(git -C "$nohist_repo" rev-parse HEAD)"
+# An ORPHAN branch: resolvable origin/main, no merge base with HEAD.
+git -C "$nohist_repo" checkout -q --orphan feature/unrelated
+echo "changed" > "$nohist_repo/src/deployment/rollback-executor.ts"
+git -C "$nohist_repo" add -A
+git -C "$nohist_repo" -c user.email=t@t -c user.name=t commit -q -m unrelated
+run_case "unrelated history falls through to markgate, not through the gate" 2 stale "$nohist_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$nohist_repo")"
 
 x2236_case "target declaring integ-destroy consults that marker" 2 stale CALLED - "$x2236_declares"
 x2236_case "sibling declaring only its own gate is NOT accepted on it" 2 fresh NOT_CALLED "declares no gate" "$x2236_other"
