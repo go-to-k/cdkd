@@ -191,7 +191,14 @@ if [ -n "$diff_base" ]; then
   # have called stale. Measured. It also aligns this list with what markgate
   # actually digests -- its `DiffFrom` runs `--no-renames` too, so without the
   # flag the gate and the marker disagree about which files moved.
-  if ! changed_files=$(git diff --name-only --no-renames "$diff_base"...HEAD 2>/dev/null); then
+  # `-c core.quotePath=false`: the default is TRUE, so a path carrying a
+  # non-ASCII byte is printed C-quoted --
+  # `"src/provisioning/providers/caf\303\251-provider.ts"` -- and the leading
+  # `"` defeats the `^src/` anchor in all three patterns below, so the file
+  # matches nothing and the gate is skipped without consulting markgate. Same
+  # fail-open family as the rename flag beside it (issue 3047). Zero such paths
+  # exist in this repo today; the flag costs nothing for ASCII ones.
+  if ! changed_files=$(git -c core.quotePath=false diff --name-only --no-renames "$diff_base"...HEAD 2>/dev/null); then
     diff_base=""
   fi
 fi
@@ -210,12 +217,16 @@ if [ -n "$diff_base" ]; then
   # (e.g. an ECS provider doc-comment containing the words "delete/update"
   # tripped the gate even though the diff didn't change any delete code).
   #
-  #   ^[-+]                  added or removed line
-  #   [^-+]                  one non-+/- char so we don't match the diff header `+++`/`---`
+  #   ^[-+]                  added or removed line, from its FIRST content
+  #                          character — this used to be `^[-+][^-+]`, where
+  #                          the `[^-+]` skipped the `+++`/`---` headers by
+  #                          eating that character; the headers have their own
+  #                          `grep -v` pass now (see below).
   #   [[:space:]]*           leading indent
   #   (?!//|\*|#)            negative lookahead — but POSIX grep -E doesn't
   #                          support lookahead. Workaround: filter comment
-  #                          lines with a second grep -v pass below.
+  #                          lines with grep -v passes below, one for the
+  #                          headers and one for comments.
   # `rollback` is included so a refactor that changes the order of
   # `partial state → rollback → final state` in `deploy-engine.ts`
   # (which would leak orphans on failure) trips the gate even when
@@ -228,14 +239,57 @@ if [ -n "$diff_base" ]; then
   # positives on substrings (e.g. an unrelated word containing `eni`)
   # — which only cost an integ-test run, vs false negatives that
   # cost a broken main.
-  delete_symbol_pattern='^[-+][^-+].*(delete|rollback|IMPLICIT_DELETE|hyperplane|DependencyViolation|ENI|detach)'
+  # Both patterns below used to open `^[-+][^-+]`, which did TWO jobs in one
+  # regex: skip the `+++` / `---` file headers, and match the content. The
+  # `[^-+]` is what skips the header, and it does so by CONSUMING the first
+  # content character — so a symbol starting at column 0 was invisible.
+  # Measured (issue 3046): `+delete globalThis.cache;` and `+deleteStack(name);`
+  # scored 0 while their indented twins scored 2. The jobs are separated now:
+  # `header_line_pattern` drops the headers in their own `grep -v` pass, beside
+  # the comment one that was already there, and the two content patterns start
+  # at the first content character.
+  #
+  # The comment pattern carried the mirror of the same bug, in the over-block
+  # direction: a column-0 `//` was NOT recognised as a comment and could arm the
+  # gate. Same fix, both directions closed at once.
+  header_line_pattern='^(\+\+\+|---) '
+  delete_symbol_pattern='^[-+].*(delete|rollback|IMPLICIT_DELETE|hyperplane|DependencyViolation|ENI|detach)'
   # Lines we consider "comment only" — drop them before the symbol grep.
   # Matches an added/removed line whose first non-whitespace content is
-  # a JS/TS/SH comment introducer (`//`, `/*`, `*` mid-block, `#`).
-  comment_line_pattern='^[-+][^-+][[:space:]]*(\*|/\*|//|#)'
+  # a JS/TS/SH comment introducer (`//`, `/*`, `*` mid-block, `# `).
+  #
+  # `#` REQUIRES a following space, and that is the fix for a hole this file's
+  # own widening opened plus one that predated it. In TypeScript -- and the
+  # hunk-filtered buckets are 100% `.ts` -- `#name` is a PRIVATE FIELD, not a
+  # comment. Measured: `+#deleteQueue = new Set();` armed the gate under the
+  # old `^[-+][^-+]` pattern and was DROPPED once that pattern lost the
+  # character-eating prefix, and its indented twin `+  #deleteQueue` was
+  # dropped under BOTH. Requiring the space arms both while still dropping a
+  # genuine `# comment`. A shell comment written without a space is now
+  # over-blocked, which costs one integ run rather than a missed one.
+  comment_line_pattern='^[-+][[:space:]]*(\*|/\*|//|#[[:space:]])'
 
   while IFS= read -r f; do
     [ -z "$f" ] && continue
+    # A path git hands back C-QUOTED arms the gate outright. `core.quotePath`
+    # is off above, which covers bytes >= 0x80, but git still quotes a path
+    # containing `"`, `\`, a tab or a newline -- measured on 2.49 with the flag
+    # set. Such a name reaches the buckets with a leading `"`, matches no
+    # `^src/` anchor, and the gate skips WITHOUT consulting markgate: the
+    # fail-open direction. Arming instead costs an integ run on a filename this
+    # repo does not have (`git ls-files | grep -cE '["\\]'` is 0), which is the
+    # trade this file declares everywhere else.
+    #
+    # This is the safe half of the remaining work on issue 3047, not the fix:
+    # correctly BUCKETING such a path needs `-z` and a NUL-delimited read,
+    # which bash cannot do through a variable and which restructures the rc
+    # handling above. That stays with the cross-gate sweep on that issue.
+    case "$f" in
+      '"'*)
+        delete_touch=1
+        break
+        ;;
+    esac
     # Strict-delete files: any change at all is delete-touching.
     if printf '%s' "$f" | grep -qE "$strict_delete"; then
       delete_touch=1
@@ -259,7 +313,43 @@ if [ -n "$diff_base" ]; then
       # suite, including the renamed-provider case below it -- an unfenced flag
       # whose comment claims it is load-bearing is the defect this file keeps
       # finding, so it is left off.
-      if git diff "$diff_base"...HEAD -- "$f" \
+      # No `:(literal)` on the path, and the reasoning is measured -- including
+      # the correction. What follows `--` is a pathspec, so it was reported
+      # that a file named `a[b]-provider.ts` would name something ELSE and give
+      # an empty per-file diff, i.e. a missed delete symbol. It cannot: a
+      # pathspec equal to the path always matches it literally, so the file's
+      # own hunks are always present.
+      #
+      # What the glob DOES do is match SIBLINGS as well. Measured, git 2.49:
+      # `a*b-provider.ts` with two glob-matching siblings returns 3 files under
+      # a plain pathspec and 1 under `:(literal)`. That direction can only
+      # ADD hunks, so it can over-arm and never miss -- and each sibling is
+      # separately iterated by this same loop anyway, so no verdict changes.
+      # (An earlier revision of this comment said the two spellings were
+      # "byte-identical". That was measured on a fixture with no sibling the
+      # glob could match, so it could not discriminate.) `:(literal)` was added,
+      # measured to change no verdict, and left off rather than shipped as an
+      # unfenced flag.
+      # The diff is CAPTURED before it is filtered, so its exit status is
+      # readable. Inside the pipeline it was not: `if` tests the last command,
+      # so a failed `git diff` and a clean one were the same verdict --
+      # `delete_touch` stays 0 and markgate is never consulted. Exactly the
+      # defect this file fixed for the name list above ("A FAILED diff and an
+      # empty one are the same string"), one call later. `PIPESTATUS[0]` is NOT
+      # the fix: `grep -q` exits on its first match and SIGPIPEs git to 141 on
+      # the very path where the gate should arm.
+      #
+      # No case constructs a failing per-file diff, and the comment says so
+      # rather than implying one: once the name-list diff has succeeded, this
+      # one fails only under conditions that would have failed that one too,
+      # which the earlier rc check already routes to markgate. It is
+      # defence-in-depth on the fail-CLOSED side.
+      if ! hunk_diff=$(git diff "$diff_base"...HEAD -- "$f" 2>/dev/null); then
+        delete_touch=1
+        break
+      fi
+      if printf '%s\n' "$hunk_diff" \
+         | grep -vE "$header_line_pattern" \
          | grep -vE "$comment_line_pattern" \
          | grep -qiE "$delete_symbol_pattern"; then
         delete_touch=1

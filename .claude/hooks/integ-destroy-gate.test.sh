@@ -676,8 +676,10 @@ stage_filter_change() {
   # hook and putting `detach` in a content line gives Fail: 1). It cannot fail
   # open in the dangerous direction, because over-strict is a loud,
   # self-correcting suite failure. The guard is also stricter than the hook by
-  # construction: the hook's `^[-+][^-+]` skips the first content character,
-  # this scans the whole string.
+  # construction: the hook drops comment and header lines with `grep -v` passes
+  # before matching, this scans the whole string. (It used to say the hook's
+  # `^[-+][^-+]` skips the first content character -- that prefix is gone, and
+  # removing it is what issue 3046 was.)
   case "$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')" in
     *delete*|*rollback*|*hyperplane*|*dependencyviolation*|*eni*|*detach*)
       fail=$((fail + 1))
@@ -692,6 +694,36 @@ stage_filter_change() {
   printf '%s\n' "$line" > "$filter_repo/$rel"
   git -C "$filter_repo" add -A
   git -C "$filter_repo" -c user.email=t@t -c user.name=t commit -q -m "change $rel"
+  assert_single_file_delta stage_filter_change "$rel"
+}
+
+# Both staging helpers share `filter_repo` and rely on `reset --hard` to carry
+# nothing from the previous case. Nothing asserted that, and the failure would be
+# INVISIBLE: a leftover file can only ADD to the changed-file list, which can
+# only ARM the gate, and every case staged after the first pass-through control
+# expects exit 2. A contaminated fixture would pass for the wrong reason and the
+# tally would stay green.
+#
+# So each staging call proves its own delta is exactly the one file it staged.
+# Cheap, and it covers every case at once rather than one suspicious pair.
+#
+# It asserts the COUNT, not the name. Comparing names was the first spelling and
+# it failed on the two fixtures that matter most: git hands back
+# `"src/…/caf\303\251-provider.ts"` and `"src/…/qu\"ote-provider.ts"` C-quoted,
+# which is the defect those cases exist for -- so a name comparison would have
+# to re-implement git's unquoting to say anything, and would red for the reason
+# under test rather than for contamination.
+assert_single_file_delta() {
+  local helper="$1"; local rel="$2"; local got
+  got=$(git -C "$filter_repo" diff --name-only --no-renames \
+          refs/remotes/origin/main...HEAD | grep -c . || true)
+  if [ "$got" != "1" ]; then
+    fail=$((fail + 1))
+    fail_log+="FAIL $helper left a delta of $got files, not 1, after staging "
+    fail_log+="[$rel] -- a case reading this fixture may arm on the leftover "
+    fail_log+="rather than on what it stages\n"
+    printf 'FAIL %s fixture delta is %s files, not 1 (staged %s)\n' "$helper" "$got" "$rel"
+  fi
 }
 
 # Control: an out-of-scope file must pass through. If this ever blocks, the
@@ -877,6 +909,7 @@ stage_filter_hunk() {
   printf '%s\n' "$line" > "$filter_repo/$rel"
   git -C "$filter_repo" add -A
   git -C "$filter_repo" -c user.email=t@t -c user.name=t commit -q -m "hunk $rel"
+  assert_single_file_delta stage_filter_hunk "$rel"
 }
 
 # A provider whose diff ADDS a delete symbol: the hunk filter must arm the gate.
@@ -992,6 +1025,125 @@ for delete_word in hyperplane DependencyViolation ENI; do
   run_case "hunk filter: '$delete_word' is delete-symbol vocabulary" 2 stale "$filter_repo" \
     "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 done
+
+# --- Two jobs in one regex: the column-0 pair (issue 3046) ---
+#
+# `^[-+][^-+]` skipped the `+++` / `---` headers by CONSUMING the first content
+# character, so a delete symbol at column 0 was invisible to the symbol grep and
+# a column-0 `//` was invisible to the comment filter. Measured before the fix:
+# `+deleteStack(name);` scored 0 while `+  deleteStack(name);` scored 2. The
+# header skip is its own `grep -v` pass now, and both content patterns start at
+# the first content character.
+#
+# Both directions, because the two patterns broke in OPPOSITE directions: the
+# symbol one fails open (gate skipped), the comment one fails closed (an
+# unrelated doc comment arms the gate, the PR-73 false positive the filter was
+# added for).
+stage_filter_hunk "src/cli/commands/destroy.ts" "deleteStack({ stackName });"
+run_case "hunk filter: a column-0 delete symbol arms the gate (3046)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/cli/commands/destroy.ts" "// deleteStack is documented here, not called"
+run_case "hunk filter: a column-0 comment does NOT arm the gate (3046)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# `#` in the comment alternation REQUIRES a following space, because in
+# TypeScript -- and the hunk-filtered buckets are 100% `.ts` -- `#name` is a
+# PRIVATE FIELD. Both directions, both measured:
+#   `+#deleteQueue = new Set();`   armed pre-PR, was DROPPED by the widening
+#                                  above until the space was required
+#   `+  #deleteQueue = new Set();` dropped BOTH before and after the widening
+#                                  -- a hole that predates this PR
+#   `+# delete the bucket`         a genuine comment, still dropped
+stage_filter_hunk "src/cli/commands/destroy.ts" "#deleteQueue = new Set();"
+run_case "hunk filter: a column-0 private field is not a comment (3046)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/cli/commands/destroy.ts" "  #deleteQueue = new Set();"
+run_case "hunk filter: an indented private field is not a comment (3046)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/cli/commands/destroy.ts" "# delete the bucket first"
+run_case "hunk filter: a real '# ' comment is still dropped (3046)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# The header-skipping pass is now separate, so it needs its own case -- and the
+# case has to be a file whose PATH carries delete vocabulary, because that is
+# the only way a `+++ b/<path>` line can match the content pattern. Content is
+# symbol-free (staged through the guard that enforces it), so the ONLY thing
+# that could arm this is the header line.
+stage_filter_change "src/provisioning/providers/delete-marker-provider.ts" \
+  "  private readonly label = 'marker';"
+run_case "hunk filter: the +++ header is not read as content (3046)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# --- Paths git does not hand back verbatim (issue 3047) ---
+#
+# Two mechanisms, one consequence: the changed-file list names a file the
+# patterns cannot match, so the gate is skipped without consulting markgate.
+#
+# `core.quotePath` defaults to TRUE, so a non-ASCII path comes back C-quoted
+# and the leading `"` defeats every `^src/` anchor.
+#
+# The fence for the FLAG has to be a case whose expected verdict is 0, and the
+# reason is worth stating because the obvious case does not work. An armed
+# (exit 2) non-ASCII case stopped discriminating the moment the quoted-path arm
+# landed: without the flag the path comes back quoted, the arm fires, and the
+# case still scores 2 -- passing without ever reaching the patterns it is named
+# for. Measured: with the flag removed the suite stayed 87/0; removing the flag
+# AND the arm reddened it.
+#
+# So the fence is BUCKETING. A non-ASCII provider path with symbol-free content
+# must score 0: with the flag it is unquoted, matches `provider_pattern`, enters
+# the hunk filter and finds no delete symbol. Without it the leading `"` makes
+# the arm fire instead and the case reds. This one genuinely depends on git's
+# DEFAULT, which is what the config isolation at the top of this file makes
+# reliable -- a maintainer with `core.quotePath=false` globally would otherwise
+# see it pass with the fix absent.
+stage_filter_change "src/provisioning/providers/café-b-provider.ts" \
+  "  private readonly label = 'b';"
+run_case "a non-ASCII path is BUCKETED, not just armed (3047)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# And the armed twin, kept as a regression guard rather than a fence: it scores
+# 2 with the flag (reaches `provider_pattern`, finds the symbol) and 2 without
+# it (the quoted-path arm fires), so no mutation of the hook reddens it alone.
+stage_filter_hunk "src/provisioning/providers/café-provider.ts" \
+  "  async deleteResource(id: string) { return this.client.send(id); }"
+run_case "a non-ASCII path with a delete symbol arms (3047, regression guard)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# `core.quotePath=false` covers bytes >= 0x80 and nothing else: a path holding
+# `"`, `\`, a tab or a newline still comes back C-quoted, reaches the buckets
+# with a leading `"`, matches no `^src/` anchor, and skips the gate. The hook
+# arms on any quoted path rather than letting that happen -- an integ run on a
+# filename this repo does not have, versus a merge with no destroy verification.
+# Correctly BUCKETING such a path is the `-z` work left on issue 3047.
+stage_filter_hunk 'src/provisioning/providers/qu"ote-provider.ts' \
+  "  async deleteResource(id: string) { return this.client.send(id); }"
+run_case "a C-quoted path arms the gate rather than skipping it (3047)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# A path carrying glob metacharacters is kept as a case even though it fences
+# nothing, because the measurement behind it is worth not repeating -- and
+# because the FIRST version of that measurement was wrong.
+#
+# Reported: the per-file `-- "$f"` pathspec would fail to match
+# `a[b]-provider.ts`, give an empty diff, and miss the delete symbol. It cannot
+# -- a pathspec equal to the path always matches it literally, so the file's own
+# hunks are always there.
+#
+# What the glob DOES do is match SIBLINGS too: measured on git 2.49,
+# `a*b-provider.ts` with two glob-matching siblings returns 3 files plain and 1
+# under `:(literal)`. That can only ADD hunks, so it over-arms and never misses,
+# and each sibling is separately iterated by the same loop. An earlier revision
+# of this comment said the two spellings were "byte-identical" -- measured on a
+# fixture with no sibling for the glob to match, so it could not discriminate.
+# `:(literal)` was added, measured to change no verdict, and removed.
+stage_filter_hunk "src/provisioning/providers/a[b]-provider.ts" \
+  "  async deleteResource(id: string) { return this.client.send(id); }"
+run_case "a glob-magic path reaches the hunk filter (3047, regression guard)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 
 # --- A FAILED diff is not an empty one ---
 #
