@@ -46,6 +46,29 @@ export GIT_CONFIG_SYSTEM="$TMPDIR/gitconfig-system"
 : > "$GIT_CONFIG_GLOBAL"
 : > "$GIT_CONFIG_SYSTEM"
 
+# ...and PROVE the two exports above are honoured. Both variables date from git
+# 2.32; an older git ignores them SILENTLY, and exported-but-ignored is
+# indistinguishable from working -- the suite would go straight back to
+# attesting to the developer's `diff.renames`, which is the failure the block
+# above claims to end. Same shape as this repo's "registration is not
+# execution" rule for the hooks themselves.
+#
+# A POSITIVE probe, not "is the global config empty?": that one passes trivially
+# on a machine with no global config, which is exactly the machine that can tell
+# you nothing. Lifted from `branch-gate.test.sh`, the only other suite here that
+# neutralises git config.
+_ni_probe="$TMPDIR/ni-probe.gitconfig"
+printf '[hooktest]\n\tmarker = seen\n' > "$_ni_probe"
+for _ni_var in GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
+  if [ "$(env "$_ni_var=$_ni_probe" git config --get hooktest.marker 2>/dev/null)" != "seen" ]; then
+    printf 'FATAL: this git ignores %s, so the config isolation above is inert\n' "$_ni_var" >&2
+    printf '       and this suite would be reading the developer config.\n' >&2
+    printf '       Needs git >= 2.32; this is %s\n' "$(git --version)" >&2
+    exit 1
+  fi
+done
+unset _ni_probe _ni_var
+
 side_repo="$TMPDIR/side-repo"
 main_repo="$TMPDIR/main-repo"
 git init -q -b feature/x "$side_repo"
