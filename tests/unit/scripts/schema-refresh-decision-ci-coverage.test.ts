@@ -199,6 +199,27 @@ const gradedChecks = (): string[] => {
       'the graded-checker scan to it is no longer justified'
   ).toContain('--decision-count-out');
   const fromDiagnose = [...diagnose.matchAll(/^\s*vp run (\S+)/gm)].map((m) => m[1]!);
+  // Same silence, by the other route — and this one is not hypothetical: the
+  // refresh already writes `env X=1 vp run …` in its Regenerate step, a shape
+  // the anchored pattern cannot see. Unparsed, a NEW graded critic here leaves
+  // this population equal to `CI_COVERAGE`'s keys, and the set-equality case
+  // below stays green over exactly the hole it exists to close.
+  const diagnoseMentions = (diagnose.match(/\bvp run \S/g) ?? []).length;
+  expect(
+    fromDiagnose.length,
+    `${diagnoseMentions} \`vp run\` invocation(s) in the ${JSON.stringify(DIAGNOSE_STEP)} step, but ` +
+      `only ${fromDiagnose.length} parsed. A call that does not open its line — behind \`env\`, a ` +
+      'guard, or second on a `;`-joined line — is invisible to this fence. Put it on its own line, ' +
+      'or widen the pattern here.'
+  ).toBe(diagnoseMentions);
+
+  // `stepsOf(refresh, 'refresh')` reads ONE job, which is every job the
+  // refresh workflow declares — asserted rather than assumed, because a
+  // second job would take its graded checks out of this population silently.
+  expect(
+    Object.keys((refresh as { jobs: Record<string, unknown> }).jobs),
+    'cfn-schema-refresh.yml grew a second job — the graded-check scan reads only `refresh`'
+  ).toEqual(['refresh']);
   return [...new Set([...fromRunCheck, ...fromDiagnose])];
 };
 

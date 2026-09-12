@@ -4814,20 +4814,40 @@ describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () 
   // entries. Without `settledThisCycle` every auto-settled property lands in
   // BOTH report sections, the second under prose asserting an earlier cycle
   // wrote it — and that is the designed happy path, not a corner.
+  //
+  // The fixture is deliberately NOT four unrelated pairs. The subtraction is a
+  // CONJUNCTION (`w.resourceType === e.resourceType && w.property === p`), and
+  // over pairwise-distinct data either half alone decides every case, so each
+  // conjunct is individually deletable with the suite green. Two of the four
+  // entries exist only to discriminate: `HealthCheckId` shares its TYPE with
+  // the write (dropping the property test would wrongly exclude it), and
+  // `AWS::EC2::Instance.GeoProximityLocation` shares its PROPERTY NAME with the
+  // write (dropping the type test would wrongly exclude that one).
   const TOLERANCE = {
-    'AWS::Route53::RecordSet': { GeoProximityLocation: 'written by THIS run' },
+    'AWS::Route53::RecordSet': {
+      GeoProximityLocation: 'written by THIS run',
+      HealthCheckId: 'standing, and shares its TYPE with this run’s write',
+    },
     'AWS::AutoScaling::AutoScalingGroup': { DefaultCooldown: 'written long ago' },
+    'AWS::EC2::Instance': {
+      GeoProximityLocation: 'standing, and shares its PROPERTY NAME with this run’s write',
+    },
   };
   const WRITTEN_THIS_CYCLE = [
     { resourceType: 'AWS::Route53::RecordSet', property: 'GeoProximityLocation' },
   ];
   const removed = [
-    { resourceType: 'AWS::Route53::RecordSet', properties: ['GeoProximityLocation'], candidates: {} },
+    {
+      resourceType: 'AWS::Route53::RecordSet',
+      properties: ['GeoProximityLocation', 'HealthCheckId'],
+      candidates: {},
+    },
     {
       resourceType: 'AWS::AutoScaling::AutoScalingGroup',
       properties: ['DefaultCooldown'],
       candidates: {},
     },
+    { resourceType: 'AWS::EC2::Instance', properties: ['GeoProximityLocation'], candidates: {} },
   ];
 
   it('leaves this run’s OWN writes out of the standing-tolerance list', () => {
@@ -4842,7 +4862,9 @@ describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () 
     // ...but only the one nobody wrote this cycle is attributed to a STANDING
     // entry. The other already has its own section.
     expect(settled.map((s) => `${s.resourceType}.${s.property}`)).toEqual([
+      'AWS::Route53::RecordSet.HealthCheckId',
       'AWS::AutoScaling::AutoScalingGroup.DefaultCooldown',
+      'AWS::EC2::Instance.GeoProximityLocation',
     ]);
   });
 
@@ -4850,11 +4872,64 @@ describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () 
     // Without this, dropping every property from `settled` would pass the case
     // above and silently restore "the removal renders nowhere".
     const { settled } = partitionSettledRemovals(removed, TOLERANCE);
-    expect(settled.map((s) => s.property)).toEqual(['GeoProximityLocation', 'DefaultCooldown']);
+    expect(settled.map((s) => `${s.resourceType}.${s.property}`)).toEqual([
+      'AWS::Route53::RecordSet.GeoProximityLocation',
+      'AWS::Route53::RecordSet.HealthCheckId',
+      'AWS::AutoScaling::AutoScalingGroup.DefaultCooldown',
+      'AWS::EC2::Instance.GeoProximityLocation',
+    ]);
+  });
+
+  it('refuses a NON-STRING rationale rather than killing the report', () => {
+    // `_todo-backfill.json` is hand-edited by design and `classifyCoverage`
+    // reads only `Object.keys`, so a `"Prop": null` typo is GREEN on CI. If it
+    // reached the report, `renderDetail` would call `.replace` on it and the
+    // diagnosis would die before anything was written — the exact outcome the
+    // tolerance-read try/catch exists to prevent, one layer in. Unsettled is
+    // the safe verdict: the property stays counted.
+    for (const bad of [null, 42, { why: 'an object' }, ['a list']]) {
+      const tolerance = { 'AWS::EC2::Instance': { Tenancy: bad } } as unknown as Parameters<
+        typeof partitionSettledRemovals
+      >[1];
+      const entries = [
+        { resourceType: 'AWS::EC2::Instance', properties: ['Tenancy'], candidates: {} },
+      ];
+      const { remaining, settled } = partitionSettledRemovals(entries, tolerance);
+      expect(settled, `a ${typeof bad} rationale was treated as a settlement`).toEqual([]);
+      expect(countDecisions({ removed: remaining, divergences: [] })).toBe(1);
+      // ...and the report still renders, which is the half a bare "not settled"
+      // assertion cannot see.
+      expect(() =>
+        renderDiagnosis({
+          removed: remaining,
+          writableAdded: [],
+          skipped: [],
+          divergences: [],
+        })
+      ).not.toThrow();
+    }
   });
 
   it('renders each settled property in exactly ONE section', () => {
-    const { settled } = partitionSettledRemovals(removed, TOLERANCE, WRITTEN_THIS_CYCLE);
+    // Its own minimal pair: the discriminating fixture above deliberately
+    // repeats `GeoProximityLocation` across two types, which would make the
+    // per-name occurrence counts below say nothing about double-rendering.
+    const { settled } = partitionSettledRemovals(
+      [
+        {
+          resourceType: 'AWS::Route53::RecordSet',
+          properties: ['GeoProximityLocation'],
+          candidates: {},
+        },
+        {
+          resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+          properties: ['DefaultCooldown'],
+          candidates: {},
+        },
+      ],
+      TOLERANCE,
+      WRITTEN_THIS_CYCLE
+    );
     const md = renderDiagnosis({
       removed: [],
       writableAdded: [],

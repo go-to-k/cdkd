@@ -900,7 +900,7 @@ export function countDecisions({
  * run". That is the designed happy path rather than a corner: the rule file
  * measures 73% of declared properties as auto-settleable.
  *
- * @param {import('./diagnose-schema-refresh.d.mts').RemovedEntry[]} removed
+ * @param {ReadonlyArray<import('./diagnose-schema-refresh.d.mts').RemovedEntry>} removed
  * @param {Record<string, Record<string, string> | undefined> | undefined} bogusTolerated the
  *   tolerance file's `bogusTolerated` map; `{}` when the file is absent, which
  *   settles nothing and so over-counts — the safe direction.
@@ -928,7 +928,14 @@ export function partitionSettledRemovals(removed, bogusTolerated, settledThisCyc
       ...e,
       properties: e.properties.filter((p) => {
         const rationale = bogusTolerated?.[e.resourceType]?.[p];
-        if (rationale === undefined) return true;
+        // A non-STRING value is not a settlement. The file is hand-edited by
+        // design, `classifyCoverage` reads only `Object.keys` so a `"Prop": null`
+        // typo is GREEN on CI, and the value reaches `renderDetail`, which calls
+        // `.replace` on it — killing the diagnosis before the report is written,
+        // the outcome the tolerance-read catch two screens up exists to prevent.
+        // Treated as unsettled: the property stays COUNTED, the over-count
+        // direction, and the report still renders.
+        if (typeof rationale !== 'string') return true;
         // Settled either way — it leaves `remaining` and so leaves the count.
         // It only stays OUT of `settled` when this run wrote the entry, because
         // the job-settled section already renders it with its own rationale.
@@ -3158,7 +3165,9 @@ function main() {
     } catch (/** @type {any} */ error) {
       process.stderr.write(
         `could not read ${tolerancePath} (${error?.message ?? error}) — no removal will be ` +
-          'treated as settled, so this report OVER-counts rather than hiding a decision\n'
+          `treated as settled, so this report OVER-counts rather than hiding a decision. The ` +
+          `${autoTolerated.length} write(s) this cycle recorded are dropped from the report ` +
+          `with them, for the same reason.\n`
       );
     }
   } else if (autoTolerated.length > 0) {
@@ -3168,17 +3177,28 @@ function main() {
     // `autoTolerated` in that state, which silently removes the whole "the job
     // SETTLED itself" section, so the state is announced rather than left to be
     // read as "this cycle settled nothing".
+    //
+    // NO unit case, and the reason is recorded rather than left to look like an
+    // oversight: `tolerancePath` is pinned to REPO_ROOT on purpose (the three
+    // readers must name ONE file, which is why it does not follow the
+    // `--fixtures-dir` seam), so the only way to reach this arm is to move a
+    // TRACKED file out of the working tree — a probe that edits the repo to
+    // observe a stderr line. Of the two facts this arm rests on, one IS covered
+    // and the other is NOT, which is the half worth writing down: that
+    // `writeAutoTolerated` reads the file before writing is pinned by "NEVER
+    // overwrites an entry a human already wrote", while the cross-check filter
+    // below lives inside `main()` and has no case of its own — it is reachable
+    // only by spawning, and the same REPO_ROOT pin puts its input out of a
+    // test's reach.
     process.stderr.write(
       `${tolerancePath} does not exist, but the auto-tolerated record names ` +
         `${autoTolerated.length} write(s) — dropping them from the report; nothing is treated ` +
         'as settled, so this report OVER-counts rather than hiding a decision\n'
     );
   }
-  if (autoTolerated.length > 0) {
-    autoTolerated = autoTolerated.filter(
-      (w) => liveTolerance[w.resourceType]?.[w.property] !== undefined
-    );
-  }
+  autoTolerated = autoTolerated.filter(
+    (w) => liveTolerance[w.resourceType]?.[w.property] !== undefined
+  );
   // `autoTolerated` is passed so the two sections cannot both claim a property:
   // the Settle step wrote this cycle's entries into the file this map was read
   // from, so without it every auto-settled property renders twice, the second
