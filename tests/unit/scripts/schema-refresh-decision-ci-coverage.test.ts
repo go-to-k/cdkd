@@ -10,17 +10,24 @@
  * (2026-09-11T10:01Z) the repository had none that a red fixture check reached.
  * go-to-k/cdkd#2999 landed the `ci-ok` aggregate less than two hours later and
  * made it the required check, which closes MOST of the hole by a different
- * mechanism: every term `countDecisions` can raise ALSO reds `check-build-test`,
- * and
- * `ci-ok` waits on that job. So a decision-carrying refresh PR is unmergeable
- * in BOTH of the states it is ever in — held at `action_required`, where a
- * required check that has not reported blocks the merge button, and approved
- * and run, where it reports red — and the decision-count job would be a second
- * required check answering the same question, the duplication #3005 itself
- * argued against.
+ * mechanism: FIVE of `countDecisions`'s six terms also red `check-build-test`,
+ * and `ci-ok` waits on that job. So a decision-carrying refresh PR is
+ * unmergeable in BOTH of the states it is ever in — held at `action_required`,
+ * where a required check that has not reported blocks the merge button, and
+ * approved and run, where it reports red — and the decision-count job would be
+ * a second required check answering the same question, the duplication #3005
+ * itself argued against.
  *
- * MOST, because the equivalence did NOT hold for `removed` when this was
- * written, and that was #3005's report being right about one term. A property
+ * MOST is doing real work in that sentence and is not a hedge. TWO exceptions
+ * survive and both are named below rather than here: the sixth term,
+ * `unreadable`, is not covered at all (`UNCOVERED_TERMS`), and two of the five
+ * are read from a refresh-side EXIT CODE, so an environmental failure there
+ * counts a decision CI never sees. An earlier revision of this paragraph
+ * attributed MOST solely to `removed` and so read, after that term was fixed,
+ * as a complete closure — contradicting `UNCOVERED_TERMS` forty lines down.
+ *
+ * `removed` is the term #3005's report was right about, and it was the third
+ * exception until this change. A property
  * already in `_todo-backfill.json`'s `bogusTolerated` is settled — that is what
  * the entry's rationale says, and `classifyCoverage` reports it green — yet the
  * count subtracted only what the CURRENT cycle wrote, because
@@ -340,7 +347,11 @@ const extractTerms = (functionSource: string): { names: string[]; refusals: stri
   const walk = (node: ts.Node): void => {
     if (
       parameters === undefined &&
-      (ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) || ts.isArrowFunction(node))
+      // No `isFunctionDeclaration`: `extractTerms` wraps every input as
+      // `const __countDecisions = <source>;`, so the subject is always in
+      // INITIALIZER position and is an expression. The arm was unreachable for
+      // every input and had no case that could red.
+      (ts.isFunctionExpression(node) || ts.isArrowFunction(node))
     ) {
       parameters = node.parameters;
     }
@@ -423,13 +434,17 @@ const termsOrFail = (functionSource: string): string[] => {
 const decisionTerms = (): string[] => termsOrFail(countDecisions.toString());
 
 /**
- * The file's headline claim is that the term names "come out of the shipped
- * function itself". `decisionTerms` reading correctly is fenced by the cases
- * below; that it reads `countDecisions` AT ALL was not — replacing the argument
- * with a literal holding today's six names left every case green, which is the
- * silent-subset defect one level out from the one this file is about.
+ * This file's own text, for the two wirings no value comparison can reach.
+ *
+ * A first attempt at the term-source fence compared `decisionTerms()` against a
+ * PARALLEL helper that also called `countDecisions.toString()` — two copies of
+ * the same expression, so the mutation it claimed to catch (a literal holding
+ * today's six names) still passed. The subject is what `decisionTerms` and the
+ * coverage case are WRITTEN to call, and that is text.
+ *
+ * Needles are split so an assertion cannot satisfy itself.
  */
-const DECISION_TERMS_SOURCE = () => countDecisions.toString();
+const OWN_SOURCE = readFileSync(fileURLToPath(import.meta.url), 'utf8');
 
 /**
  * Every command line a `ci.yml` job runs, each paired with the SHELL of the
@@ -451,24 +466,52 @@ const ciCommandsWithStep = (job: string): Array<{ line: string; body: string }> 
  * Whether `set -o pipefail` is in force at `line` — the option, in any spelling,
  * on a line ABOVE it in the same step.
  *
- * Both halves were wrong in the first cut and both were measured. The spelling:
- * `/^\s*set -o pipefail/` misses `set -euo pipefail`, which is the MAJORITY
- * form in `ci.yml` (2 occurrences against 1), so a correctly armed step running
- * a check through a pipe was a false RED — the failure mode this file says
- * teaches the next author to work around it. The ORDER: without it,
- * `x | tee y` followed by `set -o pipefail` counted as armed, which is the
- * direction that lets a merge through.
+ * SPELLING. `/^\s*set -o pipefail/` reads only one of the forms bash accepts;
+ * `set -euo pipefail`, `set -eu -o pipefail` and `set -o errexit -o pipefail`
+ * all enable it (verified against bash) and none matched. The cost is a false
+ * RED on a correctly armed step — HYPOTHETICAL, not observed: the only tailed
+ * line in `check-build-test` sits under the one spelling the first pattern did
+ * read, and inside that job the ratio is 1 to 0, not the 2-to-1 a file-wide
+ * count gives. A past-tense claim that this "was" a false red would be wrong.
  *
- * A subshell is NOT modelled and that is a known bound: `( set -o pipefail; … )`
- * on its own line exempts the rest of the step although the option does not
- * escape the subshell. Stated rather than guessed at, because modelling shell
- * scoping with a regex is how this file's other guard was wrong six times.
+ * ORDER is the half that was live in the other direction: without it,
+ * `x | tee y` followed by `set -o pipefail` counted as armed, which lets a
+ * merge through.
+ *
+ * THREE BOUNDS, stated rather than modelled — a regex over shell scoping is how
+ * this file's other guard was wrong six times:
+ *   - a SUBSHELL (`( set -o pipefail; … )` on its own line) exempts the rest of
+ *     the step although the option does not escape it;
+ *   - a later `set +o pipefail` DISARM is not seen;
+ *   - the same line appearing twice in one step is located by its first
+ *     occurrence, so both share that verdict.
+ * A line the body does not contain at all fails CLOSED (nothing is armed)
+ * rather than scanning the whole body, which is the loosening direction.
  */
+/**
+ * Whether one `set` line turns pipefail ON.
+ *
+ * TOKENISED, not matched. Three regex spellings were tried and each missed a
+ * form bash accepts — the last one read `set -eu -o pipefail` but not
+ * `set -o errexit -o pipefail`, because there `-o` is followed by an option
+ * WORD rather than another flag cluster. Modelling `set`'s argument grammar in
+ * a pattern is the treadmill this file's other guard rode six times; the token
+ * before `pipefail` answers the question directly, and its SIGIL is what
+ * separates enabling from `set +o pipefail`.
+ */
+const enablesPipefail = (line: string): boolean => {
+  const tokens = line.trim().split(/\s+/);
+  if (tokens[0] !== 'set') return false;
+  const at = tokens.indexOf('pipefail');
+  if (at < 1) return false;
+  return /^-[a-z]*o[a-z]*$/.test(tokens[at - 1]!);
+};
+
 const pipefailArmedBefore = (line: string, stepBody: string): boolean => {
   const lines = stepBody.split('\n');
   const at = lines.findIndex((l) => l.trim() === line.trim());
-  const before = at === -1 ? lines : lines.slice(0, at);
-  return before.some((l) => /^\s*set\s+-[a-z]*o[a-z]*\s+pipefail\b/.test(l));
+  const before = at === -1 ? [] : lines.slice(0, at);
+  return before.some(enablesPipefail);
 };
 
 /**
@@ -687,6 +730,10 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // `&&` and `;` propagate under `bash -e`; rejecting them would red correct
     // code, which is the trap this guard has already fallen into once.
     expect(neutralised(`${CMD} && echo ok`, CMD, plain)).toBe(false);
+    // A trailing `&&` is a line CONTINUATION. The backgrounding arm carries a
+    // `[^&]` carve-out for exactly this, and without a case the carve-out could
+    // be dropped silently — the same gap the `||` arm had.
+    expect(neutralised(`${CMD} &&`, CMD, plain)).toBe(false);
     expect(neutralised(`${CMD} ; echo ok`, CMD, plain)).toBe(false);
     // Cannot.
     // `||` is decided by its OWN arm: the pipe arm used to match `||` too and
@@ -714,6 +761,33 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // ORDER: pipefail AFTER the line arms nothing. This is the direction that
     // lets a merge through.
     expect(neutralised(piped, CMD, `${piped}\nset -o pipefail\n`)).toBe(true);
+    // Every spelling bash accepts, and the near-misses it does not. Three regex
+    // spellings each read a different subset of this table.
+    for (const arm of [
+      'set -eu -o pipefail',
+      'set -e -o pipefail',
+      'set -o errexit -o pipefail',
+      'set -xo pipefail',
+    ]) {
+      expect(neutralised(piped, CMD, `${arm}\n${piped}\n`), `${arm} not recognised`).toBe(false);
+    }
+    for (const notArmed of [
+      'set +o pipefail', // DISABLES it
+      'set -o pipefailure', // a different option
+      'set -o errexit', // no pipefail at all
+      'export PIPEFAIL=1', // not `set`
+      '# set -o pipefail', // a COMMENT saying it, which arms nothing
+      'echo -o pipefail', // the tokens, in another command
+    ]) {
+      expect(
+        neutralised(piped, CMD, `${notArmed}\n${piped}\n`),
+        `${notArmed} wrongly read as arming pipefail`
+      ).toBe(true);
+    }
+    // A line the body does not contain fails CLOSED. Scanning the whole body
+    // instead is the order hole by another route: everything below the line
+    // would arm it.
+    expect(neutralised(piped, CMD, `set -o pipefail\nsomething else\n`)).toBe(true);
   });
 
   it('derives the terms from the SHIPPED function, and the fence CALLS its guards', () => {
@@ -722,26 +796,32 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // says nothing about its wiring (`.claude/rules/testing.md`), and all three
     // could be replaced with a constant while every other case stayed green.
     //
-    // The source: `decisionTerms` must read `countDecisions`, not a literal.
-    expect(DECISION_TERMS_SOURCE()).toBe(countDecisions.toString());
-    expect(DECISION_TERMS_SOURCE()).toContain('countDecisions');
-    expect(decisionTerms()).toEqual(extractTerms(DECISION_TERMS_SOURCE()).names);
+    // The source: `decisionTerms` must READ `countDecisions`, not a literal. A
+    // value comparison cannot say this — a literal carrying today's six names
+    // in order satisfies every one — so the subject is the call as written.
+    expect(
+      decisionTerms.toString(),
+      'decisionTerms no longer derives the terms from the shipped countDecisions'
+    ).toContain('countDecisions.toStr' + 'ing()');
 
     // The call: re-run the predicate over the real lines here, so the coverage
     // case's verdict is reproduced independently.
     //
-    // BOUND, stated because chasing it further would be theatre: replacing that
-    // case's `neutralised(...)` with a literal `true` leaves this green, and no
-    // in-process test can fence another test's own call — that is what review
-    // is for. What IS fenced is that the predicate is correct (its own cases),
-    // that the real lines satisfy it (below), and that the body threaded into
-    // it is the step's.
-    const lines = ciCommandsWithStep(CI_CHECK_JOB);
-    const tailed = lines.filter((e) =>
-      Object.values(CI_COVERAGE).some(
-        ({ command }) => e.line !== command && e.line.startsWith(`${command} `)
-      )
+    // ...and the call itself, which an earlier revision called unfenceable. It
+    // is not: the same text instrument reaches it.
+    expect(OWN_SOURCE, 'the coverage case no longer asks neutralised').toContain(
+      '!neutralis' + 'ed(e.line, command, e.body)'
     );
+    const lines = ciCommandsWithStep(CI_CHECK_JOB);
+    // One predicate for both the selection and the attribution — an earlier
+    // revision selected on `command + ' '` and attributed with a bare
+    // `startsWith`, so a line could be credited to a different, prefix-matching
+    // entry than the one that selected it.
+    const commandOf = (line: string): string | undefined =>
+      Object.values(CI_COVERAGE)
+        .map((c) => c.command)
+        .find((command) => line !== command && line.startsWith(`${command} `));
+    const tailed = lines.filter((e) => commandOf(e.line) !== undefined);
     expect(
       tailed.length,
       'no mapped command in check-build-test carries a tail any more, so the coverage case ' +
@@ -749,7 +829,7 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     ).toBeGreaterThan(0);
     for (const e of tailed) {
       expect(
-        neutralised(e.line, Object.values(CI_COVERAGE).find((c) => e.line.startsWith(c.command))!.command, e.body),
+        neutralised(e.line, commandOf(e.line)!, e.body),
         `${JSON.stringify(e.line)} is a tailed invocation of a mapped command that cannot fail ` +
           'its job'
       ).toBe(false);
