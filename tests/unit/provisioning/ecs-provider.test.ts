@@ -1917,6 +1917,29 @@ describe('ECSProvider', () => {
   // controller — under which cdkd then sends deployment parameters AWS
   // rejects for a CODE_DEPLOY / EXTERNAL service.
   describe('malformed DeploymentController (issue #1493)', () => {
+    it('refuses an UNRESOLVED INTRINSIC container instead of assuming the ECS controller', async () => {
+      // Issue #3032. A string fails the SHAPE test; an intrinsic PASSES it, so
+      // the case below cannot reach this arm. The refusal is the same
+      // deliberate decision (#1493) -- the `'ECS'` fallback silently picks a
+      // controller -- and a review round proposed downgrading it to a warning.
+      await expect(
+        provider.update(
+          'MyService',
+          'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service',
+          'AWS::ECS::Service',
+          {
+            Cluster: 'my-cluster',
+            ServiceName: 'my-service',
+            DesiredCount: 2,
+            DeploymentController: { Ref: 'ControllerParam' },
+          },
+          { Cluster: 'my-cluster', ServiceName: 'my-service', DesiredCount: 1 }
+        )
+      ).rejects.toThrow(
+        /AWS::ECS::Service DeploymentController must be an object \(got an unresolved Ref intrinsic/
+      );
+    });
+
     it('refuses a string container instead of assuming the ECS controller', async () => {
       await expect(
         provider.update(

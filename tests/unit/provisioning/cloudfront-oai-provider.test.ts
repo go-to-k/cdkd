@@ -366,6 +366,28 @@ describe('CloudFrontOAIProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('refuses an UNRESOLVED INTRINSIC container on update for the same reason', async () => {
+      // Issue #3032 widened the refusal to a shape the row above cannot reach:
+      // a string fails the SHAPE test while an intrinsic PASSES it. The
+      // refusal is the SAME deliberate decision (#1493) -- the fallback here
+      // is `''`, which blanks the live comment -- so this pins that an
+      // intrinsic inherits it rather than taking a downgrade. A review round
+      // proposed exactly that downgrade; this case is what makes the reversal
+      // visible if anyone applies it.
+      await expect(
+        provider.update(
+          'MyOai',
+          'E1ABCDEF123456',
+          'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+          { CloudFrontOriginAccessIdentityConfig: { Ref: 'CommentParam' } },
+          { CloudFrontOriginAccessIdentityConfig: { Comment: 'old' } }
+        )
+      ).rejects.toThrow(
+          /CloudFrontOriginAccessIdentityConfig must be an object \(got an unresolved Ref intrinsic/
+        );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('surfaces the refusal as a ProvisioningError, not a bare Error', async () => {
       const err = await provider
         .create('MyOai', 'AWS::CloudFront::CloudFrontOriginAccessIdentity', {

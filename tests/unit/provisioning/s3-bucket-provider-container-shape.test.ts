@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   PutBucketAnalyticsConfigurationCommand,
+  PutBucketNotificationConfigurationCommand,
+  PutBucketVersioningCommand,
   PutBucketLifecycleConfigurationCommand,
   PutBucketReplicationCommand,
   PutObjectLockConfigurationCommand,
@@ -142,6 +144,15 @@ const malformedContainers: Array<[string, unknown]> = [
   ['a number', 42],
   ['a blank string (FALSY — the #1493 truthiness-gate shape)', ''],
   ['zero (FALSY — the #1493 truthiness-gate shape)', 0],
+  // Issue #3032, and the highest-value row here: an UNRESOLVED INTRINSIC is
+  // the one malformed shape that is a plain OBJECT, so every row above is
+  // blind to it — the guard used to accept it, the key probe indexed to
+  // `undefined`, and the block read as EMPTY. Without this row the new
+  // refusal is unfenced at every create-path site in this file (measured:
+  // killing the throw arm reddened only helper-level and Glue cases, ZERO S3
+  // ones). The file already records this arm shipping unfenced once, in
+  // PR #3002, which is why it is a ROW rather than a single new case.
+  ['an unresolved intrinsic (a plain OBJECT, so the other rows cannot see it)', { Ref: 'Scope' }],
 ];
 
 describe('create path: a non-object container is REFUSED, not silently emptied', () => {
@@ -214,15 +225,21 @@ describe('create path: a non-object container is REFUSED, not silently emptied',
 
 describe('create path: the PRE-EXISTING DataExport refusal is preserved, not new', () => {
   // Deliberately its own block rather than a row in the table above, because
-  // these assertions would ALSO pass on the unfixed tree: before this change a
-  // non-object `DataExport` reached `readConfigString(dataExport,
+  // EVERY NON-OBJECT ROW here would ALSO pass on the unfixed tree: before that
+  // change a non-object `DataExport` reached `readConfigString(dataExport,
   // 'OutputSchemaVersion', …)`, whose refusal message is byte-identical and
   // which also fired before any Put — so no matcher can tell the two apart on
-  // the create path. Claiming them as proof of the new guard would be a test
-  // that pins the author's intent rather than the behavior. They are kept as a
-  // REGRESSION fence (the explicit guard must not have relaxed the create-path
-  // refusal); the genuinely NEW DataExport behavior is the replay/update
-  // downgrade, pinned separately below.
+  // the create path. Claiming those as proof of the guard would pin the
+  // author's intent rather than the behavior; they are kept as a REGRESSION
+  // fence (the explicit guard must not have relaxed the create-path refusal).
+  //
+  // The scope of that caveat NARROWED with issue #3032 and the wording is
+  // corrected here rather than left to read as covering the whole table: the
+  // INTRINSIC row is a plain object, so pre-#3032 it passed the container
+  // guard, the `OutputSchemaVersion` read took its fallback, and nothing threw
+  // at all. That row IS a genuine new-guard fence. The other genuinely new
+  // DataExport behavior is the replay/update downgrade, pinned separately
+  // below.
   for (const [label, value] of malformedContainers) {
     it(`analytics: still refuses a DataExport that is ${label}`, async () => {
       await expect(
@@ -428,6 +445,48 @@ describe('replay create (`replayingState`): warn and skip instead of stranding t
     expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
   });
 
+  it('lifecycle: an UNRESOLVED INTRINSIC Filter takes the same whole-Put skip', async () => {
+    // Issue #3032's warn arm, and the one that matters most: pre-guard, an
+    // intrinsic `Filter` indexed every scope probe to `undefined`, so the rule
+    // kept NO scope and the 30-day expiration applied to the WHOLE bucket --
+    // destructive, on a replay the user cannot edit from the template. The
+    // string fixture above cannot reach this: it fails the shape test, while
+    // an intrinsic PASSES it.
+    await provider.create(
+      'B',
+      RESOURCE_TYPE,
+      lifecycleProps({ ExpirationInDays: 30, Filter: { Ref: 'ScopeParam' } }),
+      { replayingState: true }
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('got an unresolved Ref intrinsic')
+    );
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('analytics: an UNRESOLVED INTRINSIC item is skipped, the valid sibling still applies', async () => {
+    // The per-ITEM skip unit for the same shape -- a different arm from the
+    // whole-Put one above, so it needs its own row.
+    await provider.create(
+      'B',
+      RESOURCE_TYPE,
+      {
+        BucketName: BUCKET,
+        AnalyticsConfigurations: [
+          { Id: 'bad', StorageClassAnalysis: { 'Fn::If': ['C', {}, {}] } },
+          { Id: 'good', StorageClassAnalysis: { DataExport: VALID_DATA_EXPORT } },
+        ],
+      },
+      { replayingState: true }
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('got an unresolved Fn::If intrinsic')
+    );
+    const puts = sentCommands(PutBucketAnalyticsConfigurationCommand);
+    expect(puts).toHaveLength(1);
+    expect((puts[0] as { input: { Id: string } }).input.Id).toBe('good');
+  });
+
   it('analytics: warns, skips the malformed item, still applies the valid sibling', async () => {
     await provider.create(
       'B',
@@ -493,6 +552,79 @@ describe('update path: warn and skip (the desired bag can be a historical state 
       expect.stringContaining(`${DATA_EXPORT_PATH} must be an object`)
     );
     expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('versioning: an UNRESOLVED INTRINSIC VersioningConfiguration does NOT suspend a live bucket', async () => {
+    // The module header's OWN headline case, and it had no provider-level
+    // witness until issue #3032 — `configStringRefusal` was fenced only at
+    // helper level. Pre-guard the refusal was `undefined`, `readConfigString`
+    // returned the `'Suspended'` fallback, and `applyVersioning` suspended
+    // versioning on a LIVE bucket from a template that asked for nothing of
+    // the sort.
+    await update({
+      BucketName: BUCKET,
+      VersioningConfiguration: { 'Fn::If': ['C', { Status: 'Enabled' }, { Status: 'Suspended' }] },
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('got an unresolved Fn::If intrinsic')
+    );
+    expect(sentCommands(PutBucketVersioningCommand)).toHaveLength(0);
+  });
+
+  it('notification: an UNRESOLVED INTRINSIC EventBridgeConfiguration is not folded to false', async () => {
+    // `configBooleanRefusal`'s provider-level witness. Pre-guard the intrinsic
+    // container indexed `EventBridgeEnabled` to `undefined`, the refusal was
+    // `undefined`, and `foldEventBridgeConfiguration` rewrote the block to
+    // `{ EventBridgeEnabled: false }` — silently DISABLING a delivery the
+    // template never disabled.
+    await update({
+      BucketName: BUCKET,
+      NotificationConfiguration: { EventBridgeConfiguration: { Ref: 'EbToggle' } },
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('got an unresolved Ref intrinsic')
+    );
+    expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('analytics: an UNRESOLVED INTRINSIC DataExport is skipped, not sent half-built', async () => {
+    // The 5th `requireConfigObject` site, and the rows above cannot reach it:
+    // `'nope'` / `42` fail the SHAPE test while an intrinsic passes it. Without
+    // the guard the item is SENT with `OutputSchemaVersion: 'V_1'` and no
+    // `Destination` -- a half-built export the template never asked for.
+    await update(analyticsProps({ StorageClassAnalysis: { DataExport: { Ref: 'Export' } } }));
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('got an unresolved Ref intrinsic')
+    );
+    expect(sentCommands(PutBucketAnalyticsConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('replication: an UNRESOLVED INTRINSIC Filter skips the whole Put on the update path', async () => {
+    // The destructive one. This applier's fall-through emits `Filter: {}` --
+    // valid CFn for "replicate EVERY object" -- so an accepted intrinsic here
+    // widened replication from the declared subset to the WHOLE bucket. The
+    // create path is covered by `malformedContainers`; this is the replay /
+    // update arm, which is the one a user cannot fix from the template.
+    // `replicationProps` is local to the replication describe above, so the
+    // shape is inlined rather than widened into shared scope.
+    await update({
+      BucketName: BUCKET,
+      ReplicationConfiguration: {
+        Role: 'arn:aws:iam::123456789012:role/repl',
+        Rules: [
+          {
+            Id: 'probe',
+            Status: 'Enabled',
+            Destination: { Bucket: 'arn:aws:s3:::repl-dest' },
+            Filter: { 'Fn::If': ['C', {}, {}] },
+          },
+        ],
+      },
+    });
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('got an unresolved Fn::If intrinsic')
+    );
+    expect(sentCommands(PutBucketReplicationCommand)).toHaveLength(0);
   });
 
   it('analytics: the update-path skip unit is the ITEM, not the whole sync', async () => {

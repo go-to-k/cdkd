@@ -86,6 +86,30 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     expect(updateInput().SecretString).toBeUndefined();
   });
 
+  it('refuses an UNRESOLVED INTRINSIC GenerateSecretString rather than generating from it', async () => {
+    // Issue #3032 widened `readConfigString`'s CONTAINER gate to the intrinsic
+    // shape, and `generateSecretString` reads `ExcludeCharacters` through it —
+    // so this site's behaviour changed and was, until this case, unwatched in
+    // BOTH directions (measured: adding an `onUnusable` downgrade there left
+    // the entire suite green).
+    //
+    // The refusal is the right answer for the same reason as the module's
+    // other no-downgrade sites: the `''` fallback means "exclude nothing", so
+    // cdkd would mint a LIVE secret whose character set ignores what the
+    // template declared — a weaker-than-declared substitution, and one the
+    // user cannot see afterwards because the value is generated.
+    //
+    // It only fires when the block CHANGED (`changedSecretValue` returns early
+    // when the config is unchanged), which is why `prev` differs here.
+    const prev = generated();
+    const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
+
+    await expect(provider.update('L', SECRET_ARN, TYPE, next, prev)).rejects.toThrow(
+      /GenerateSecretString must be an object \(got an unresolved Ref intrinsic/
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('a Description-only update of a GenerateSecretString secret sends NO SecretString', async () => {
     const prev = generated();
     const next = generated({ Description: 'renamed' });

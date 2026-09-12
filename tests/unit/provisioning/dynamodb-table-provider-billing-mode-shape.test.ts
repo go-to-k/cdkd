@@ -107,7 +107,15 @@ describe('DynamoDBTableProvider malformed BillingMode (issue #1545)', () => {
     ['null', null, 'null'],
     ['a blank string', '', 'a blank string'],
     ['a number', 5, 'a number'],
-    ['an object', { Ref: 'Unresolved' }, 'an object'],
+    // Split by issue #3032: the fixture here was an INTRINSIC labelled "an
+    // object", so the plain-object case had no row at all. They now refuse
+    // with different detail text -- the intrinsic names its cause.
+    [
+      'an unresolved intrinsic',
+      { Ref: 'Unresolved' },
+      'an unresolved Ref intrinsic — nothing substituted it before this call',
+    ],
+    ['an object', { Nested: 'value' }, 'an object'],
     ['an array', ['PAY_PER_REQUEST'], 'an array'],
   ])(
     'refuses %s on create instead of silently deploying a PROVISIONED table',

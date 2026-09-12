@@ -129,6 +129,30 @@ describe('UPDATE: a skipped WHOLE-Put records the PREVIOUS value', () => {
     });
   }
 
+  it('lifecycle: an UNRESOLVED INTRINSIC Filter retains the previous configuration', async () => {
+    // Issue #3032. The rows above drive the rule's `Status` FIELD; this drives
+    // the `Filter` CONTAINER, which is a different guard and newly refuses an
+    // intrinsic. It matters here because `lifecycleRuleRefused` -- the fold
+    // that decides what gets RECORDED -- runs the applier's own predicate, so
+    // a change to that predicate silently changes the recorded bag. Pre-guard
+    // the intrinsic was accepted, the rule kept no scope, and a bucket-wide
+    // expiration was both SENT and recorded as the template's own value.
+    const properties = {
+      BucketName: BUCKET,
+      LifecycleConfiguration: {
+        Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 30, Filter: { Ref: 'Scope' } }],
+      },
+    };
+    const previousProperties = { BucketName: BUCKET, LifecycleConfiguration: liveLifecycle };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      ...previousProperties,
+    });
+
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+    expect(result.effectiveProperties?.['LifecycleConfiguration']).toEqual(liveLifecycle);
+  });
+
   it('lifecycle: an ABSENT previous value removes the key rather than recording undefined', async () => {
     const properties = { BucketName: BUCKET, LifecycleConfiguration: malformedLifecycle(1) };
 

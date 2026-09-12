@@ -102,7 +102,7 @@ describe('AWS::ApiGateway::Method AuthorizationType (create)', () => {
         HttpMethod: 'GET',
         AuthorizationType: { Ref: 'SomethingUnresolved' },
       })
-    ).rejects.toThrow(/got an object/);
+    ).rejects.toThrow(/got an unresolved Ref intrinsic/);
   });
 
   it('still defaults to NONE when the field is absent', async () => {

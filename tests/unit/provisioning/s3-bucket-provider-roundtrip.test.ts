@@ -1501,14 +1501,14 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
     }
   );
 
-  it('ObjectLockConfiguration: an UNRESOLVED intrinsic still sends an empty hold (known residual)', async () => {
-    // MEASURED, not aspirational. `requireConfigObject` tests `isPlainObject`,
-    // and `{ Ref: 'X' }` IS one -- so an intrinsic that reached the provider
-    // unresolved passes the guard and sends `DefaultEventHold: {}`. That is
-    // the blind spot every `requireConfigObject` site in this file shares, and
-    // sniffing for intrinsic KEYS here alone would diverge from all of them.
-    // Pinned so the limitation is a recorded fact rather than something a
-    // later reader assumes the guard covers.
+  it('ObjectLockConfiguration: an UNRESOLVED intrinsic SKIPS the whole Put', async () => {
+    // This shipped in PR #3002 as a pinned RESIDUAL: `requireConfigObject`
+    // tested `isPlainObject`, and `{ Ref: 'X' }` IS one, so an intrinsic that
+    // reached the provider unresolved passed the guard and sent
+    // `DefaultEventHold: {}`. Issue #3032 closed it in the guard itself rather
+    // than here, which is why this case now asserts the opposite: sniffing for
+    // intrinsic keys at THIS site alone would have diverged from every other
+    // `requireConfigObject` caller, so the fix belonged one level down.
     await provider.update(
       'L',
       BUCKET_NAME,
@@ -1524,12 +1524,10 @@ describe('S3BucketProvider sub-config diff (PR #215)', () => {
       },
       { BucketName: BUCKET_NAME }
     );
-    const calls = callsOf(PutObjectLockConfigurationCommand);
-    expect(calls).toHaveLength(1);
-    expect(
-      (calls[0] as { input: { ObjectLockConfiguration: { Rule: { DefaultRetention: object } } } })
-        .input.ObjectLockConfiguration.Rule.DefaultRetention
-    ).toMatchObject({ DefaultEventHold: { Days: undefined, Years: undefined } });
+    expect(callsOf(PutObjectLockConfigurationCommand)).toHaveLength(0);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('got an unresolved Ref intrinsic')
+    );
   });
 
   it('ObjectLockConfiguration: an explicitly null DefaultEventHold is an ABSENT hold, not a refusal', async () => {

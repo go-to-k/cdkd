@@ -206,7 +206,7 @@ export function readConfigString(
 ): string {
   if (container === undefined || container === null) return fallback;
 
-  if (!isPlainObject(container)) {
+  if (!isPlainObject(container) || isUnresolvedIntrinsicContainer(container)) {
     const detail = malformedShapeDetail(container);
 
     if (options?.onUnusable) {
@@ -450,7 +450,7 @@ export function requireConfigObject(
   path: string,
   options?: ConfigObjectOptions
 ): Record<string, unknown> | undefined {
-  if (!isPlainObject(value)) {
+  if (!isPlainObject(value) || isUnresolvedIntrinsicContainer(value)) {
     const detail = malformedShapeDetail(value);
 
     if (options?.onUnusable) {
@@ -493,7 +493,7 @@ export function configStringRefusal(
   options?: ConfigStringOptions
 ): string | undefined {
   if (container === undefined || container === null) return undefined;
-  if (!isPlainObject(container)) {
+  if (!isPlainObject(container) || isUnresolvedIntrinsicContainer(container)) {
     return `${containerPath} must be an object ${malformedShapeDetail(container)}`;
   }
   return configValueRefusal(container[key], fallback, `${containerPath}.${key}`, options);
@@ -556,7 +556,7 @@ export function configBooleanRefusal(
   containerPath: string
 ): string | undefined {
   if (container === undefined || container === null) return undefined;
-  if (!isPlainObject(container)) {
+  if (!isPlainObject(container) || isUnresolvedIntrinsicContainer(container)) {
     return `${containerPath} must be an object ${malformedShapeDetail(container)}`;
   }
   const value = container[key];
@@ -593,6 +593,13 @@ function configValueRefusal(
  * only, which is invisible in review.
  */
 function malformedShapeDetail(value: unknown): string {
+  // When the value IS intrinsic-shaped, the generic "check for an
+  // unresolved intrinsic" hint restates what `describe` just said. Name the
+  // cause instead: nothing substituted it, which on these paths means a state
+  // record written by an older binary rather than a template defect.
+  if (isPlainObject(value) && isUnresolvedIntrinsicContainer(value)) {
+    return `(got ${describe(value)} — nothing substituted it before this call)`;
+  }
   return (
     `(got ${describe(value)}) — check for an unresolved intrinsic or a ` +
     `mis-nested template value`
@@ -609,10 +616,146 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * CFn intrinsic names this module is willing to NAME in an error message.
+ *
+ * Display-only, and the reason is in `describe`: the message reaches
+ * substring-matching retry classifiers, and a state record can carry an
+ * arbitrary `Fn::*` key (`cdkd import` writes the raw intrinsic shape when it
+ * cannot resolve one). An unrecognized key therefore degrades to the generic
+ * wording rather than being interpolated. Nothing depends on this list being
+ * complete — a missing entry costs diagnostic detail, never safety.
+ */
+const NAMEABLE_INTRINSIC_KEYS: ReadonlySet<string> = new Set([
+  'Ref',
+  'Fn::Base64',
+  'Fn::Cidr',
+  'Fn::FindInMap',
+  'Fn::GetAZs',
+  'Fn::GetAtt',
+  'Fn::GetStackOutput',
+  'Fn::If',
+  'Fn::ImportValue',
+  'Fn::Join',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::Sub',
+  'Fn::Transform',
+]);
+
+/**
+ * True for a single-key object whose key is `Ref` or `Fn::*` — the shape of an
+ * unresolved CloudFormation intrinsic (issue #3032).
+ *
+ * Every CONTAINER gate in this module needs it, which is the correction a
+ * review round forced: an earlier revision of this comment claimed the sibling
+ * guards were safe "by type", and that is true only of their FIELD halves. An
+ * intrinsic is not a string and not an array, so {@link requireConfigArray} and
+ * the value-level reads refuse it — but `readConfigString`,
+ * {@link configStringRefusal} and {@link configBooleanRefusal} each open by
+ * testing their CONTAINER with a bare `isPlainObject`, which an intrinsic
+ * passes. The key probe then indexes to `undefined` and the FALLBACK is
+ * substituted: measured on this module's own motivating case, a
+ * `VersioningConfiguration` of `{ 'Fn::If': [...] }` returned `'Suspended'`,
+ * i.e. versioning turned OFF on a live bucket (the #1471 headline). So all four
+ * container gates test this, not just {@link requireConfigObject}.
+ *
+ * A REVIEW ROUND ASKED FOR THE UPDATE-PATH DOWNGRADE HERE AND IT IS WRONG,
+ * which is worth recording because the general rule points the other way.
+ * SEVERAL `readConfigString` UPDATE sites pass no `onUnusable` and therefore
+ * now throw on an intrinsic — `route53-provider.ts` (`HostedZoneConfig`),
+ * `cloudfront-oai-provider.ts` (`CloudFrontOriginAccessIdentityConfig`),
+ * `kinesis-provider.ts` (`StreamModeDetails`), `ecs-provider.ts`
+ * (`DeploymentController`), `secretsmanager-secret-provider.ts`
+ * (`GenerateSecretString`, via `generateSecretString`) and `codebuild-provider.ts`
+ * (reached from `update()` through `mapProperties`). Not a count, for the same
+ * reason as the near-copy list below: two successive reviews each found
+ * another. Re-derive with
+ * `grep -rn 'readConfigString(' src/provisioning/providers/`.
+ * That reads like the #1544 un-rollbackable hazard —
+ * but each is a DELIBERATE refusal from issues #1493 / #1471, pinned by a test
+ * that states the reason in its own name ("refuses a string container on
+ * update, so the live comment is not blanked", "instead of assuming the ECS
+ * controller"). At those sites the FALLBACK is the destructive direction: it
+ * blanks a live comment or silently picks a controller. Adding the downgrade
+ * reddened the existing test at every one of those sites that had one, which
+ * is how the reversal was caught.
+ * An intrinsic container simply inherits that recorded decision — this change
+ * widens WHICH shapes are refused, never WHETHER a site refuses.
+ *
+ * Reachability is DOMINATED by the STATE-borne replay paths — the rollback
+ * executor's reverse-replacement create, its revert arms, and
+ * `cdkd drift --revert` — because a record written by an older binary can carry
+ * the raw intrinsic, which is why three S3 suites already list
+ * `{ 'Fn::If': [...] }` among "the malformed shapes a state record written by
+ * an older binary can carry". A fresh template is MOSTLY excluded rather than
+ * entirely: the resolver throws on an unresolvable `Ref` / `Fn::GetAtt` and
+ * hard-errors on an unknown `Fn::*` key, so those never arrive — but
+ * `Fn::Transform` is listed in its `HANDLED_INTRINSIC_KEYS` with no dispatch
+ * arm (deliberately, so a stray already-expanded occurrence does not
+ * hard-error), falls through the generic object walk, and reaches a provider
+ * bag verbatim. Refusing it here is the right outcome anyway: an unexpanded
+ * `Fn::Transform` sitting AS a container value means the macro never expanded,
+ * so the block is genuinely broken and the pre-guard behaviour was a silently
+ * emptied one.
+ *
+ * KEPT LOCAL, deliberately, and the rule is `.claude/rules/`'s own. SEVERAL
+ * near-copies of this shape exist across the tree — `create-only-properties.ts`,
+ * `mutually-exclusive-properties.ts`, `route53-provider.ts` and
+ * `dynamodb-globaltable-provider.ts` under `src/provisioning/`, plus more in
+ * `cli/commands/drift.ts`, `cli/commands/import.ts` and
+ * `deployment/intrinsic-function-resolver.ts`. Deliberately NOT stated as a
+ * count: three successive review rounds corrected one, each time finding
+ * another. Re-derive it if you need it
+ * (`grep -rn "startsWith('Fn::')" src/`) rather than trusting a number here.
+ * `mutually-exclusive-properties.ts` records WHY they are not shared — the modules answer different questions about the shape and
+ * must not drift into one another's behavior by accident. This module asks its OWN
+ * question ("is this container a real config block, or an intrinsic wearing
+ * one's shape"), so it takes its own predicate rather than overriding that
+ * decision. Note the copies do NOT agree and are not meant to:
+ * `dynamodb-globaltable-provider.ts` asks whether a block is ENTIRELY
+ * intrinsic (`keys.every`), which is a broader question than this one.
+ *
+ * No CFn config block declares a property named `Ref` or `Fn::*`, so the
+ * single-key test cannot misread a legitimate container.
+ */
+function isUnresolvedIntrinsicContainer(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'));
+}
+
 /** Human-readable type for an error message, without dumping user data. */
 function describe(value: unknown): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'an array';
   if (typeof value === 'string') return value.trim() === '' ? 'a blank string' : 'a string';
+  // Name the intrinsic KEY (never its arguments, which are template-controlled
+  // and can carry a resolved secret): "got an object" is true and undiagnosable
+  // for the one malformed shape that looks exactly like a valid container.
+  //
+  // The key reaches a THROWN message, and the SUBSTRING-matching classifiers
+  // in `retryable-errors.ts` read those — so a key spelled like one of their
+  // literals (`RequestThrottled`, say) would make a deterministic refusal look
+  // transient and burn the whole backoff schedule.
+  //
+  // An earlier revision argued the key set is CLOSED because the resolver
+  // hard-errors on an unknown `Fn::*`. That is FALSE for the population this
+  // guard exists for: `cdkd import` warns "State will be written with the raw
+  // intrinsic shape" on its resolution-failure arm, so a state record can
+  // carry ANY key, including one the resolver would reject. The revision even
+  // conceded that in a parenthetical and then concluded the opposite.
+  //
+  // So the key is BOUNDED at the point of interpolation instead: a recognized
+  // CFn intrinsic name is named, anything else degrades to the generic
+  // wording. That fails safe (an unrecognized key loses diagnostic detail, it
+  // never reaches a classifier) and keeps this module import-free. The list is
+  // for DISPLAY only -- drift against the resolver's own set costs nothing but
+  // a less specific message.
+  if (isPlainObject(value) && isUnresolvedIntrinsicContainer(value)) {
+    const key = Object.keys(value)[0]!;
+    return NAMEABLE_INTRINSIC_KEYS.has(key)
+      ? `an unresolved ${key} intrinsic`
+      : 'an unresolved intrinsic';
+  }
   return typeof value === 'object' ? 'an object' : `a ${typeof value}`;
 }

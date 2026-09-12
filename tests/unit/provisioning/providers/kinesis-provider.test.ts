@@ -374,6 +374,22 @@ describe('KinesisStreamProvider', () => {
         return Promise.resolve({});
       });
 
+      // Issue #3032 widened this to the INTRINSIC shape, which the string
+      // above cannot reach: a string fails the shape test, an intrinsic passes
+      // it. Same deliberate refusal -- the 'PROVISIONED' fallback would issue
+      // the wrong UpdateStreamMode against a recorded ON_DEMAND stream.
+      await expect(
+        provider.update(
+          'MyStream',
+          'test-stream',
+          'AWS::Kinesis::Stream',
+          { StreamModeDetails: { Ref: 'ModeParam' } as never },
+          { StreamModeDetails: { StreamMode: 'PROVISIONED' } }
+        )
+      ).rejects.toThrow(
+        /StreamModeDetails must be an object \(got an unresolved Ref intrinsic/
+      );
+
       await expect(
         provider.update(
           'MyStream',

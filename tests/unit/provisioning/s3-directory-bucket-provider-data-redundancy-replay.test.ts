@@ -151,7 +151,7 @@ describe('S3DirectoryBucketProvider malformed DataRedundancy on a state replay (
         {}
       )
     ).rejects.toThrow(
-      /AWS::S3Express::DirectoryBucket DataRedundancy must be a non-empty string \(got an object\)/
+      /AWS::S3Express::DirectoryBucket DataRedundancy must be a non-empty string \(got an unresolved Ref intrinsic/
     );
   });
 
