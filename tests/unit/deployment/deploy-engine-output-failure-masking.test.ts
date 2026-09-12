@@ -10,8 +10,9 @@
  *   records a plaintext into the pass map and then fails with a message
  *   embedding it. This pins the handler on both arms, the `cause` the strict
  *   arm threads (a masked CLONE that still carries the non-retryable marker),
- *   the alias pass (whose `finally` merges the name's entries back before the
- *   catch), a plaintext known only to the INHERITED bag (a nested-stack
+ *   the alias pass (whose name map writes each entry through to the pass map
+ *   as it is recorded, so the catch sees them; issue #2814 replaced the
+ *   `finally` that copied them), a plaintext known only to the INHERITED bag (a nested-stack
  *   child's parent-decrypted parameter), a non-`Error` thrown value, and the
  *   control that an unrecorded value is left alone (the mask is a needle set,
  *   not a blanket).
@@ -479,9 +480,11 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
   });
 
   it('alias pass: a failed Export.Name resolution is masked against the entries its own resolution recorded', async () => {
-    // The name is resolved into a private map whose entries the `finally`
-    // merges back into the pass map BEFORE the catch reaches the handler —
-    // which is what makes the name's own plaintext a needle here.
+    // The name is resolved into a map that writes each entry through to the
+    // pass map as the resolver records it, so they are there BEFORE the catch
+    // reaches the handler — which is what makes the name's own plaintext a
+    // needle here. (Issue #2814; until then a `finally` copied them at the
+    // end of the block, which dropped anything recorded after it.)
     await makeEngine().deploy(
       stackName,
       templateWith({ Pub: { Value: 'public-value', Export: { Name: { 'Fn::Sub': '__leak__' } as never } } })

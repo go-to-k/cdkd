@@ -171,7 +171,12 @@ const EMPTY_SECRETS: RecordedSecretValues = new Map();
  * into the pass map in a `finally`, such a record reached nothing.
  *
  * Only `set` writes through: it is the one operation the resolver performs on
- * a recording map. The ENTRIES only, never the resolved pairs beside them
+ * a recording map (grepped -- no resolver path calls `delete` or `clear` on
+ * one). `cdkd scrub`'s `SharedEntriesSecrets` overrides those too, and the
+ * asymmetry is deliberate: that one is a VIEW holding no entries of its own,
+ * while a `delete` here would leave the pass map carrying an entry this map
+ * dropped -- one needle too many, which over-redacts rather than leaks.
+ * The ENTRIES only, never the resolved pairs beside them
  * (issue #2485): those are keyed by map INSTANCE (`recordResolvedPair`), so
  * they stay on this one. A name never positions a leaf, and a value re-using
  * the same token records its own pair at the seam, so carrying them could add
@@ -1569,8 +1574,20 @@ export class DeployEngine {
    * drain cap stopped waiting for records into its pass map LATE: a secret
    * that arrives between the pass and the final save is then still a needle
    * for the save, the exports index and the deploy summary. Repeating it is
-   * safe: re-setting an entry the bag holds changes nothing, and
-   * `mergeResolvedPairs` of a pair already carried is a no-op.
+   * safe for the ENTRIES — re-setting one the bag holds changes nothing, and
+   * `Map.set` on an existing key keeps its insertion order, so last-wins
+   * cannot be reordered by a refold.
+   *
+   * The PAIRS are where repeating is not merely a no-op, stated because the
+   * end-of-pass copy could not see it: a part the cap stopped waiting for can
+   * record a pair LATE, and a second value for one expression marks it
+   * `CONFLICTING_PLAINTEXT` (a non-cacheable `{{resolve:ssm:X}}` re-resolved
+   * to a moved value). A later refold then carries that conflict into
+   * `outputSecrets`, the leaf loses its positioning and falls to the value
+   * scan, which can persist a sibling's expression (the issue #2485 class).
+   * The plaintext stays MASKED either way, so the cost is which expression
+   * is stored, not a disclosure — and the alternative, dropping the late
+   * pair, would keep a positioning the pass itself no longer vouches for.
    */
   private absorbOutputsPassSecrets(): void {
     for (const passSecrets of this.outputsPassSecretMaps) {
@@ -1581,6 +1598,12 @@ export class DeployEngine {
     }
   }
 
+  /**
+   * Redact the outputs bag. NOT a pure transform: it folds the outputs pass
+   * map into `outputSecrets` first (issue #2814), so every call can grow that
+   * bag. The growth is monotonic and the bag has no other reader, which is
+   * what makes calling this on every save, index write and summary safe.
+   */
   private redactOutputs(outputs: Record<string, unknown>): Record<string, unknown> {
     // First, and before the empty-bag return: a late recording (issue #2814)
     // may be the only needle there is.
@@ -3230,7 +3253,20 @@ export class DeployEngine {
                   await this.exportIndexStore.updateForStack(
                     stackName,
                     this.stackRegion,
-                    importableOutputs(refreshedState)
+                    // Redacted again as the save above redacts it (issue
+                    // #2814), so this path's index cannot diverge from what
+                    // state holds. Today it CANNOT differ: a released drain
+                    // leaves an output unresolved, `resolutionFailed` is then
+                    // true, and both flags guarding this block are false — so
+                    // the guard, not this call, is what keeps a late needle
+                    // out. Relying on that read three ways in review; the
+                    // sibling call on the changes path redacts, and a reader
+                    // should not have to re-derive the gate to see why this
+                    // one is safe.
+                    importableOutputs({
+                      ...refreshedState,
+                      outputs: this.redactOutputs(refreshedState.outputs),
+                    })
                   );
                 }
               } else if (observedRefresh) {
