@@ -1601,8 +1601,10 @@ export class DeployEngine {
   /**
    * Redact the outputs bag. NOT a pure transform: it folds the outputs pass
    * map into `outputSecrets` first (issue #2814), so every call can grow that
-   * bag. The growth is monotonic and the bag has no other reader, which is
-   * what makes calling this on every save, index write and summary safe.
+   * bag. Its KEY set only grows, and the bag has no other reader, which is
+   * what makes calling this on every save, index write and summary safe. The
+   * resolved PAIRS beside those keys are not equally free to refold — see
+   * {@link absorbOutputsPassSecrets}, which states what a late one costs.
    */
   private redactOutputs(outputs: Record<string, unknown>): Record<string, unknown> {
     // First, and before the empty-bag return: a late recording (issue #2814)
@@ -3255,14 +3257,19 @@ export class DeployEngine {
                     this.stackRegion,
                     // Redacted again as the save above redacts it (issue
                     // #2814), so this path's index cannot diverge from what
-                    // state holds. Today it CANNOT differ: a released drain
-                    // leaves an output unresolved, `resolutionFailed` is then
-                    // true, and both flags guarding this block are false — so
-                    // the guard, not this call, is what keeps a late needle
-                    // out. Relying on that read three ways in review; the
-                    // sibling call on the changes path redacts, and a reader
-                    // should not have to re-derive the gate to see why this
-                    // one is safe.
+                    // state holds. It CANNOT differ today, for two reasons
+                    // that cover different needles. An ORDINARY one is
+                    // already in the bag: `refreshedState.outputs` is itself
+                    // a `redactOutputs` product, and a second pass over one
+                    // is idempotent. A LATE one cannot arrive at all here: a
+                    // released drain leaves an output unresolved, so
+                    // `resolutionFailed` is true and both flags guarding this
+                    // block are false. The call is still the right shape
+                    // rather than redundant — it is the FAIL-SAFE direction.
+                    // If a swallow above a drain ever appears, the index ends
+                    // up more redacted than state, never less; and a reader
+                    // should not have to re-derive that gate to see why the
+                    // sibling on the changes path redacts and this did not.
                     importableOutputs({
                       ...refreshedState,
                       outputs: this.redactOutputs(refreshedState.outputs),
@@ -7890,8 +7897,10 @@ export class DeployEngine {
    * defense in depth here — but two masking sites in one flow must not argue
    * opposite sides of the same question. `secrets` is the outputs pass's own
    * map: everything recorded before this handler runs, an `Export.Name`
-   * resolution's entries included (its `finally` merges them back before the
-   * `catch` reaches here). Since issue #2563 a still-pending concurrent part
+   * resolution's entries included (its map writes each one through to the
+   * pass map as the resolver records it, so they are here before the `catch`
+   * is; issue #2814 replaced the `finally` that copied them at the end of
+   * the block). Since issue #2563 a still-pending concurrent part
    * is in the PASS bag before this handler runs: the resolver drains every
    * part it started before a rejection reaches a caller. Not
    * unconditionally, and the weaker claim is the true one -- the drain is

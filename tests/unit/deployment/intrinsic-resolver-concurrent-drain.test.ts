@@ -2122,10 +2122,10 @@ describe('a drain the cap releases reports the parts it stopped waiting for (iss
   });
 
   it('names the DEFAULT cap when no test seam is set', async () => {
-    // Every case here shrinks the cap through `concurrentDrainCap.ms`, so the
-    // 60 s the shipped binary reports is never rendered by them. Calling the
-    // reporter directly is the only way to see that arm without waiting a
-    // real minute for a drain to release.
+    // Every case here that RENDERS a warning shrinks the cap through
+    // `concurrentDrainCap.ms`, so the 60 s the shipped binary reports is
+    // never rendered by them. Calling the reporter directly is the only way
+    // to see that arm without waiting a real minute for a drain to release.
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const warn = spyResolverWarn(resolver);
 
@@ -2414,8 +2414,9 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
     const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
     // Asserting a plaintext IN state deliberately: it is the residual this
     // issue documents, not a regression — the save had already taken its copy
-    // when the recording arrived, which no bounded wait can change. The two
-    // assertions after it are what the fix buys.
+    // when the recording arrived, which no bounded wait can change. The
+    // assertions after it are what the fix buys: the index and the summary,
+    // both written later, carry the expression instead.
     expect(saved.outputs['Literal'], 'the save took its copy before the recording (the residual)').toBe(
       `lit-${valueOf(SLOW_ID)}-tail`
     );
