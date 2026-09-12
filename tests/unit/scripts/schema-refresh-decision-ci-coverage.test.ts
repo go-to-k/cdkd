@@ -19,10 +19,13 @@
  * itself argued against.
  *
  * MOST is doing real work in that sentence and is not a hedge. TWO exceptions
- * survive and both are named below rather than here: the sixth term,
- * `unreadable`, is not covered at all (`UNCOVERED_TERMS`), and two of the five
- * are read from a refresh-side EXIT CODE, so an environmental failure there
- * counts a decision CI never sees. An earlier revision of this paragraph
+ * survive: the sixth term, `unreadable`, is not covered at all
+ * (`UNCOVERED_TERMS`), and TWO of the five — `failedChecks` and
+ * `nestedKeyUnparsed` — are read from a refresh-side EXIT CODE, so an
+ * environmental failure of a refresh-side invocation counts a decision CI
+ * never sees, because CI runs those same tasks independently. Both terms carry
+ * that note on their `CI_COVERAGE` entries; an earlier revision put it on one
+ * of the two and said "named below" for both. An earlier revision of this paragraph
  * attributed MOST solely to `removed` and so read, after that term was fixed,
  * as a complete closure — contradicting `UNCOVERED_TERMS` forty lines down.
  *
@@ -116,10 +119,13 @@ const stepsOf = (workflow: unknown, job: string): Step[] => {
 /**
  * A refresh step's shell with `#` comment lines removed.
  *
- * Load-bearing rather than tidiness: this workflow's comments quote the very
- * task names its shell runs (the `run_check` block explains each check it
- * collects), so a comment-inclusive scan invents `run_check` names and the
- * derived population stops being the executed one. The sibling
+ * NOT because a comment could invent a `run_check` name — both extraction
+ * patterns are line-anchored, so a `#`-prefixed line can never contribute one,
+ * and an earlier revision of this paragraph claimed otherwise. What stripping
+ * actually protects is the two consumers that are NOT anchored: the unanchored
+ * `run_check` MENTION counter, which a comment naming the helper would push
+ * into a false RED, and the `--decision-count-out` containment check, where
+ * `cfn-schema-refresh.yml` carries a real comment naming that flag. The sibling
  * `cfn-schema-refresh-workflow.test.ts` strips for the mirror-image reason —
  * there the comments quote WRONG forms that negative assertions would read as
  * defects.
@@ -217,7 +223,11 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'An UNSETTLED removal leaves a provider declaring a property the schema no longer has, and ' +
       'tests/unit/provisioning/property-coverage.test.ts fails that classification unless the ' +
       "property is in _todo-backfill.json's bogusTolerated. It reaches CI through the whole unit " +
-      'suite rather than a task of its own. The link holds only because `partitionSettledRemovals` ' +
+      'suite rather than a task of its own. CAVEAT shared by every `failedChecks` entry: the ' +
+      'refresh records a check as failed from its EXIT CODE, so an invocation that never ran ' +
+      '(an OOM, a task runner that died) counts a decision while CI, running the same task ' +
+      'itself, is green — the over-count direction. The link holds only because ' +
+      '`partitionSettledRemovals` ' +
       'decides SETTLED from the same tolerance FILE that `classifyCoverage` reads: subtracting ' +
       'only the current cycle\'s `written` list left an already-tolerated removal counted while ' +
       'property-coverage was green (go-to-k/cdkd#3005), and the confluence case in ' +
@@ -433,18 +443,6 @@ const termsOrFail = (functionSource: string): string[] => {
 
 const decisionTerms = (): string[] => termsOrFail(countDecisions.toString());
 
-/**
- * This file's own text, for the two wirings no value comparison can reach.
- *
- * A first attempt at the term-source fence compared `decisionTerms()` against a
- * PARALLEL helper that also called `countDecisions.toString()` — two copies of
- * the same expression, so the mutation it claimed to catch (a literal holding
- * today's six names) still passed. The subject is what `decisionTerms` and the
- * coverage case are WRITTEN to call, and that is text.
- *
- * Needles are split so an assertion cannot satisfy itself.
- */
-const OWN_SOURCE = readFileSync(fileURLToPath(import.meta.url), 'utf8');
 
 /**
  * Every command line a `ci.yml` job runs, each paired with the SHELL of the
@@ -461,6 +459,31 @@ const ciCommandsWithStep = (job: string): Array<{ line: string; body: string }> 
       .filter((l) => l.length > 0 && !l.startsWith('#'))
       .map((line) => ({ line, body }));
   });
+
+/**
+ * Whether one `set` line turns pipefail ON.
+ *
+ * TOKENISED, not matched. The committed predecessor,
+ * `/^\s*set\s+-[a-z]*o[a-z]*\s+pipefail\b/`, reads NONE of
+ * `set -eu -o pipefail`, `set -e -o pipefail` or `set -o errexit -o pipefail`
+ * — it models exactly one flag cluster adjacent to `pipefail`. Widening it to
+ * accept preceding clusters then took the first two and still not the third,
+ * where `-o` is followed by an option WORD. (An earlier revision of this
+ * paragraph described that widening as "the last one" although it never
+ * reached a commit, so the claim could not be checked against history. It can
+ * now: the predecessor is one `git show` away and reads none of them.)
+ *
+ * Modelling `set`'s argument grammar in a pattern is the treadmill this file's
+ * other guard rode six times; the token before `pipefail` answers the question
+ * directly, and its SIGIL is what separates enabling from `set +o pipefail`.
+ */
+const enablesPipefail = (line: string): boolean => {
+  const tokens = line.trim().split(/\s+/);
+  if (tokens[0] !== 'set') return false;
+  const at = tokens.indexOf('pipefail');
+  if (at < 1) return false;
+  return /^-[a-z]*o[a-z]*$/.test(tokens[at - 1]!);
+};
 
 /**
  * Whether `set -o pipefail` is in force at `line` — the option, in any spelling,
@@ -480,33 +503,25 @@ const ciCommandsWithStep = (job: string): Array<{ line: string; body: string }> 
  *
  * THREE BOUNDS, stated rather than modelled — a regex over shell scoping is how
  * this file's other guard was wrong six times:
- *   - a SUBSHELL (`( set -o pipefail; … )` on its own line) exempts the rest of
- *     the step although the option does not escape it;
+ *   - a MULTI-LINE subshell exempts the rest of the step although the option
+ *     does not escape it. The one-line form `( set -o pipefail; … )` is NOT a
+ *     bound and an earlier revision listed it as one: its first token is `(`,
+ *     so the predicate correctly reports not-armed;
  *   - a later `set +o pipefail` DISARM is not seen;
+ *   - neither is a `set -o pipefail` that never executes — inside a heredoc
+ *     body, or in a branch the step does not take;
+ *   - `set -- -o pipefail` ends option parsing and arms nothing, but reads as
+ *     armed here;
+ *   - a trailing `;` or a quoted `set -o 'pipefail'` reads as NOT armed, which
+ *     is the false-RED direction;
  *   - the same line appearing twice in one step is located by its first
  *     occurrence, so both share that verdict.
+ * The loosening ones matter more than the tightening ones: this exemption's job
+ * is to stop a false RED, so being wrong toward "armed" lets a neutralised
+ * check pass.
  * A line the body does not contain at all fails CLOSED (nothing is armed)
  * rather than scanning the whole body, which is the loosening direction.
  */
-/**
- * Whether one `set` line turns pipefail ON.
- *
- * TOKENISED, not matched. Three regex spellings were tried and each missed a
- * form bash accepts — the last one read `set -eu -o pipefail` but not
- * `set -o errexit -o pipefail`, because there `-o` is followed by an option
- * WORD rather than another flag cluster. Modelling `set`'s argument grammar in
- * a pattern is the treadmill this file's other guard rode six times; the token
- * before `pipefail` answers the question directly, and its SIGIL is what
- * separates enabling from `set +o pipefail`.
- */
-const enablesPipefail = (line: string): boolean => {
-  const tokens = line.trim().split(/\s+/);
-  if (tokens[0] !== 'set') return false;
-  const at = tokens.indexOf('pipefail');
-  if (at < 1) return false;
-  return /^-[a-z]*o[a-z]*$/.test(tokens[at - 1]!);
-};
-
 const pipefailArmedBefore = (line: string, stepBody: string): boolean => {
   const lines = stepBody.split('\n');
   const at = lines.findIndex((l) => l.trim() === line.trim());
@@ -588,7 +603,7 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(graded).toContain('audit:nested-key-coverage:check');
   });
 
-  it('reads every destructuring shape, and REFUSES the two it cannot name', () => {
+  it('reads every destructuring shape, and REFUSES the ones it cannot name', () => {
     // The derivation's own cases, against the parser rather than the shipped
     // `countDecisions` — six regex spellings each got a different shape wrong,
     // and an end-to-end mutation could not tell them apart because each was
@@ -652,6 +667,12 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // Shapes that are refused LOUDLY rather than read as a subset. Each was
     // measured un-probed before this list existed.
     expect(extractTerms('42').refusals).toEqual(['no parameters']);
+    // ...and a function that parses but declares NO parameters. `'42'` reaches
+    // the `parameters === undefined` half; only this reaches `length === 0`,
+    // which without it degrades from a clean refusal to a TypeError.
+    expect(extractTerms('function countDecisions() { return 1; }').refusals).toEqual([
+      'no parameters',
+    ]);
     expect(extractTerms('function countDecisions(bag) { return 1; }').refusals).toEqual([
       'the parameter is not an object binding pattern',
     ]);
@@ -749,15 +770,19 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       neutralised(`${CMD} | tee /tmp/x.log`, CMD, `set -o pipefail\n${CMD} | tee /tmp/x.log\n`)
     ).toBe(false);
 
-    // The exemption's own two halves, both wrong in the first cut and both
-    // measured. SPELLING: `set -euo pipefail` is the MAJORITY form in ci.yml,
-    // and missing it made a correctly armed step a false RED.
+    // The exemption's own two halves. SPELLING is the half that is
+    // HYPOTHETICAL on this workflow — the docblock says why — and ORDER is the
+    // half that was live in the merge-allowing direction.
     const piped = `${CMD} | tee /tmp/x.log`;
     for (const arm of ['set -o pipefail', 'set -euo pipefail', 'set -eo pipefail']) {
       expect(neutralised(piped, CMD, `${arm}\n${piped}\n`), `${arm} not recognised`).toBe(false);
     }
     // ...and a `set` that does NOT enable pipefail is not an exemption.
     expect(neutralised(piped, CMD, `set -eux\n${piped}\n`)).toBe(true);
+    // The `command` argument decides WHERE the tail starts, so a mutation
+    // reading the whole line instead must be visible: a command whose own text
+    // holds `||` would then read as neutralised.
+    expect(neutralised('vp run x || y', 'vp run x || y', 'vp run x || y\n')).toBe(false);
     // ORDER: pipefail AFTER the line arms nothing. This is the direction that
     // lets a merge through.
     expect(neutralised(piped, CMD, `${piped}\nset -o pipefail\n`)).toBe(true);
@@ -790,28 +815,32 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(neutralised(piped, CMD, `set -o pipefail\nsomething else\n`)).toBe(true);
   });
 
-  it('derives the terms from the SHIPPED function, and the fence CALLS its guards', () => {
-    // Three wirings, each measured un-fenced: the term source, the
-    // `neutralised` call, and the step body threaded into it. A probed callee
-    // says nothing about its wiring (`.claude/rules/testing.md`), and all three
-    // could be replaced with a constant while every other case stayed green.
+  it('reproduces the coverage verdict over the real workflow lines', () => {
+    // The coverage case asks `neutralised` whether each mapped command can
+    // still fail its job. This re-derives that verdict here, so a wrong
+    // predicate or a wrongly threaded body shows up in two places.
     //
-    // The source: `decisionTerms` must READ `countDecisions`, not a literal. A
-    // value comparison cannot say this — a literal carrying today's six names
-    // in order satisfies every one — so the subject is the call as written.
-    expect(
-      decisionTerms.toString(),
-      'decisionTerms no longer derives the terms from the shipped countDecisions'
-    ).toContain('countDecisions.toStr' + 'ing()');
-
-    // The call: re-run the predicate over the real lines here, so the coverage
-    // case's verdict is reproduced independently.
+    // TWO WIRINGS ARE NOT FENCED, and saying so is the point rather than an
+    // omission — three instruments were tried on them and each fell in one
+    // line, which is this repo's signal to state the bound instead of
+    // modelling it again:
     //
-    // ...and the call itself, which an earlier revision called unfenceable. It
-    // is not: the same text instrument reaches it.
-    expect(OWN_SOURCE, 'the coverage case no longer asks neutralised').toContain(
-      '!neutralis' + 'ed(e.line, command, e.body)'
-    );
+    //  - that `decisionTerms` READS the shipped `countDecisions`. A value
+    //    comparison is satisfied by a literal holding today's six names in
+    //    order; a source-text fence is satisfied by keeping the call and
+    //    discarding it (`void countDecisions.toString();` above a literal
+    //    return — measured green). What protects the claim is WHEN it matters:
+    //    a literal is indistinguishable from the real call until
+    //    `countDecisions` changes, and at that moment it goes stale and the
+    //    floor, the anchors and the classification case all red. The scenario
+    //    this would fence — a seventh term arriving — is exactly the one a
+    //    stale literal cannot survive, which is why its probes are run against
+    //    the real function and recorded in the commit.
+    //  - that the coverage case CALLS `neutralised`. A text fence over this
+    //    file caught deleting the call but was satisfied by moving it into a
+    //    `//` comment or by appending `|| true`. This file strips comments in
+    //    three other places precisely because a text search cannot tell code
+    //    from commentary, so an unstripped one was the wrong instrument.
     const lines = ciCommandsWithStep(CI_CHECK_JOB);
     // One predicate for both the selection and the attribution — an earlier
     // revision selected on `command + ' '` and attributed with a bare
@@ -828,6 +857,20 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
         'below exercises none of `neutralised` against the real workflow'
     ).toBeGreaterThan(0);
     for (const e of tailed) {
+      // `commandOf` must attribute by the SAME predicate that selected the line
+      // — a bare `startsWith` can credit a line to a different, prefix-matching
+      // entry. No such pair exists in CI_COVERAGE today, so this asserts the
+      // property directly rather than waiting for one.
+      expect(
+        new Set(
+          Object.values(CI_COVERAGE)
+            .map((c) => c.command)
+            .filter((command) => e.line.startsWith(command))
+        ).size,
+        `${JSON.stringify(e.line)} starts with more than one DISTINCT mapped command, so ` +
+          'attribution by `startsWith` alone would be ambiguous. Two entries sharing one command ' +
+          'is not that — `vp run test` legitimately backs two of them.'
+      ).toBe(1);
       expect(
         neutralised(e.line, commandOf(e.line)!, e.body),
         `${JSON.stringify(e.line)} is a tailed invocation of a mapped command that cannot fail ` +
@@ -835,8 +878,10 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
       ).toBe(false);
     }
 
-    // The body: threading it is what the pipefail exemption reads. A constant
-    // "armed" body would disarm the pipe arm for every real line.
+    // The body each line was paired WITH is the step it came from. This catches
+    // an EMPTY or foreign body; it does not catch the call site substituting a
+    // constant "armed" one, which was measured green — the same un-fenceable
+    // class as the two above.
     for (const e of tailed) {
       expect(e.body, 'the step body threaded into neutralised is not the step it came from')
         .toContain(e.line);
