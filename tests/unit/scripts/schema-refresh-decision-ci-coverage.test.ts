@@ -176,7 +176,10 @@ const gradedChecks = (): string[] => {
   // CI_COVERAGE's keys, so the set-equality case below stays green over exactly
   // the hole it exists to close. Counting the mentions turns that silence into
   // a failure: an unparsed spelling is reported rather than vanishing.
-  const mentions = (shells.match(/\brun_check\s+\S/g) ?? []).length;
+  // `[^\S\n]+` rather than `\s+`: the latter crosses a newline, so ordinary
+  // prose ending a line with the command name would count as an invocation and
+  // red this guard with a message naming a call that is not there.
+  const mentions = (shells.match(/\brun_check[^\S\n]+\S/g) ?? []).length;
   expect(
     fromRunCheck.length,
     `${mentions} \`run_check\` invocation(s) in the refresh shell, but only ${fromRunCheck.length} ` +
@@ -209,11 +212,11 @@ const gradedChecks = (): string[] => {
   // and the set-equality case below stays green over exactly the hole it
   // exists to close.
   //
-  // `\s+`, not a literal space, and for the reason the sibling above already
-  // uses `\s+`: a tab-separated `vp\trun x` is invisible to the ANCHORED
-  // pattern too, so a literal space here would make the two counts trivially
-  // equal and the guard silently vacuous on exactly that spelling.
-  const diagnoseMentions = (diagnose.match(/\bvp\s+run\s+\S/g) ?? []).length;
+  // Horizontal whitespace, not a literal space: a tab-separated `vp\trun x` is
+  // invisible to the ANCHORED pattern too, so a literal space here would make
+  // the two counts trivially equal and the guard silently vacuous on exactly
+  // that spelling. Not `\s+` either — see the sibling above.
+  const diagnoseMentions = (diagnose.match(/\bvp[^\S\n]+run[^\S\n]+\S/g) ?? []).length;
   expect(
     fromDiagnose.length,
     `${diagnoseMentions} \`vp run\` invocation(s) in the ${JSON.stringify(DIAGNOSE_STEP)} step, but ` +

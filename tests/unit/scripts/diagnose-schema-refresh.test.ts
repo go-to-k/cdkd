@@ -5048,6 +5048,10 @@ describe('main()’s tolerance-file arms (issue #3005)', () => {
       { encoding: 'utf8' }
     );
     expect(out.error, 'the relocated diagnosis failed to spawn').toBeUndefined();
+    // The STATUS too: a future non-zero exit carrying the same stderr would
+    // otherwise go unseen, and the point of these arms is that the report is
+    // still written.
+    expect(out.status, `the relocated diagnosis exited ${out.status}: ${out.stderr}`).toBe(0);
     return { stdout: out.stdout ?? '', stderr: out.stderr ?? '' };
   };
 
@@ -5083,6 +5087,7 @@ describe('main()’s tolerance-file arms (issue #3005)', () => {
         { encoding: 'utf8' }
       );
       expect(out.error, 'the relocated diagnosis failed to spawn').toBeUndefined();
+      expect(out.status, `the relocated diagnosis exited ${out.status}: ${out.stderr}`).toBe(0);
       return { stdout: out.stdout ?? '', stderr: out.stderr ?? '' };
     });
     expect(stderr).toContain('no removal will be treated as settled');
@@ -5094,16 +5099,16 @@ describe('main()’s tolerance read (issue #3005)', () => {
   const SCRIPT_PATH = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
 
   it('resolves the tolerance file to the SAME path its writer and CI use', () => {
-    // A SOURCE-shape assertion, and the reason is worth stating rather than
-    // hiding behind a weaker test: the behaviour is not reachable at runtime.
-    // Measured 2026-09-12, a `--fixtures-dir` run reports all 134 fixtures
-    // "could not read" -- `committedOf` follows the seam too and git cannot
-    // resolve a path outside the repository -- so `removed` is empty there and
-    // the tolerance map is never consulted for a subtraction. A spawn case
-    // would pass with any spelling, which is the vacuous green this suite
-    // refuses.
+    // A SOURCE-shape assertion, and what it buys is NARROWER than an earlier
+    // revision of this comment claimed. That revision said the behaviour was
+    // unreachable at runtime and that "a spawn case would pass with any
+    // spelling"; both are false — `main()`'s tolerance-file arms above reach
+    // the read, and re-pointing `tolerancePath` at the `--fixtures-dir` seam
+    // reds all three of them (measured 2026-09-12).
     //
-    // What is pinned is that the THREE readers name one file. The map became
+    // It stays because the two instruments pin different things: the spawn
+    // cases exercise the DIAGNOSIS side alone, while what is pinned here is
+    // that all THREE readers name one file. The map became
     // the whole subtraction oracle in go-to-k/cdkd#3005, and "settled" meaning
     // different things in different places is the defect that issue turned out
     // to carry. Pointing this read at the `--fixtures-dir` seam was tried and
@@ -5126,14 +5131,12 @@ describe('main()’s tolerance read (issue #3005)', () => {
     expect(source).toContain('writeAutoTolerated(removed, providerFiles)');
   });
 
-  // The `try/catch` around that read has NO case, and the absence is recorded
-  // rather than papered over with one that asserts nothing. A spawn case was
-  // written and then withdrawn: it wrote a broken `_todo-backfill.json` into a
-  // `--fixtures-dir` scratch tree, which the diagnosis does not read — the path
-  // is `REPO_ROOT`-fixed, deliberately, so all three readers name one file.
-  // Probed after that was settled: removing the wrap left the suite green, so
-  // the case was measuring nothing. Reaching the catch needs the COMMITTED
-  // tolerance file to be unparseable, and this suite's own convention refuses a
-  // case that writes to it (`withScratchRoot` asserts its bytes are unchanged).
-  // What the wrap buys is stated at the call site instead.
+  // The `try/catch` around that read IS covered, by `main()`'s tolerance-file
+  // arms above. An earlier revision of this comment said it had no case and
+  // could not have one — reasoning that a `--fixtures-dir` scratch tree is not
+  // where the diagnosis reads (true) and concluding that only an unparseable
+  // COMMITTED file could reach it (false). The missing step is that
+  // `REPO_ROOT` is `join(__dirname, '..')`: relocating the SCRIPT relocates the
+  // pin, so the arm is reachable with the committed file untouched. Measured on
+  // the cases above: removing the wrap now reds two of the three.
 });

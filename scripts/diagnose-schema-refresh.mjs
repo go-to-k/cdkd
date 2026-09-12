@@ -3138,10 +3138,12 @@ function main() {
   // its own location. Pointing this read at `fixturesDir` was tried and
   // REVERTED: it would have had the Settle step write one file while the
   // diagnosis read another. It changed nothing observable either way —
-  // measured 2026-09-12, a `--fixtures-dir` run reports all 134 fixtures
-  // "could not read", because `committedOf` follows the seam too and git
-  // cannot resolve a path outside the repository, so `removed` is empty there
-  // and this map is never consulted for a subtraction.
+  // measured 2026-09-12, a `--fixtures-dir` run pointed OUTSIDE a repository
+  // reports all 134 fixtures "could not read", because `committedOf` follows
+  // the seam too and git cannot resolve such a path, so `removed` is empty
+  // there and this map is never consulted for a subtraction. The qualifier is
+  // load-bearing: inside one — which is how the tolerance-file arm cases reach
+  // this read, by relocating the SCRIPT — the fixtures resolve and it is.
   const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
   /** @type {Record<string, Record<string, string>>} */
   let liveTolerance = {};
