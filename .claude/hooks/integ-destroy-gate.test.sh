@@ -34,6 +34,41 @@ declare_gate() {
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Isolate git's configuration. Several cases now turn on git DEFAULTS -- the
+# rename fence needs detection ON to have something to defeat -- so a
+# maintainer with `diff.renames=false` (or a different `core.quotePath`) in
+# their global config would see those cases pass without the fix in place: a
+# green tally attesting to their machine rather than to the hook. Pointing the
+# global and system config at an empty file costs nothing and makes every case
+# answer the same question everywhere.
+export GIT_CONFIG_GLOBAL="$TMPDIR/gitconfig-global"
+export GIT_CONFIG_SYSTEM="$TMPDIR/gitconfig-system"
+: > "$GIT_CONFIG_GLOBAL"
+: > "$GIT_CONFIG_SYSTEM"
+
+# ...and PROVE the two exports above are honoured. Both variables date from git
+# 2.32; an older git ignores them SILENTLY, and exported-but-ignored is
+# indistinguishable from working -- the suite would go straight back to
+# attesting to the developer's `diff.renames`, which is the failure the block
+# above claims to end. Same shape as this repo's "registration is not
+# execution" rule for the hooks themselves.
+#
+# A POSITIVE probe, not "is the global config empty?": that one passes trivially
+# on a machine with no global config, which is exactly the machine that can tell
+# you nothing. Lifted from `branch-gate.test.sh`, the only other suite here that
+# neutralises git config.
+_ni_probe="$TMPDIR/ni-probe.gitconfig"
+printf '[hooktest]\n\tmarker = seen\n' > "$_ni_probe"
+for _ni_var in GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
+  if [ "$(env "$_ni_var=$_ni_probe" git config --get hooktest.marker 2>/dev/null)" != "seen" ]; then
+    printf 'FATAL: this git ignores %s, so the config isolation above is inert\n' "$_ni_var" >&2
+    printf '       and this suite would be reading the developer config.\n' >&2
+    printf '       Needs git >= 2.32; this is %s\n' "$(git --version)" >&2
+    exit 1
+  fi
+done
+unset _ni_probe _ni_var
+
 side_repo="$TMPDIR/side-repo"
 main_repo="$TMPDIR/main-repo"
 git init -q -b feature/x "$side_repo"
@@ -57,6 +92,15 @@ exit 1
 MISE_EOF
 chmod +x "$SHIM_DIR/mise"
 
+# The `state:` VOCABULARY below is markgate 0.4.1's, verified against the pinned
+# binary and against `internal/cli/status.go`: `match`, `mismatch (<reason>)`,
+# `no marker`. markgate never prints the word `stale`. An earlier revision of
+# this mock did, and it inverted the suite: narrowing the hook's reason
+# extraction to `/^state: +stale/` -- which kills the whole #3010 diagnostic in
+# production, since no real markgate emits that -- left every case GREEN, while
+# aligning it with the real word reddened eight. A mock that speaks a dialect
+# the subject never hears fences the mock. Re-check these strings against
+# `markgate status` before editing them.
 cat > "$SHIM_DIR/markgate" <<MARKGATE_EOF
 #!/usr/bin/env bash
 echo "\$PWD" >> "$CWD_TRACE_FILE"
@@ -79,8 +123,19 @@ case "\$1" in
       # extraction comes back empty.
       echo "markgate: hash=diff: base ref does not resolve" >&2
       exit 2
+    elif [ "\$verdict" = "ttl" ]; then
+      # \`integ-destroy\` carries \`ttl: 14d\`, so a marker can be stale with
+      # NOTHING in scope having moved. The hook's message must not explain
+      # this one as a code change (issue 3010 review, B2).
+      printf 'key:        %s\nstate:      mismatch (expired by ttl: 14d, marker is 17d old)\n' "\$2"
+    elif [ "\$verdict" = "no_marker" ]; then
+      # The hook's reason extraction "fails open to the pre-0.3 generic
+      # message" when \`status\` carries no PARENTHESIZED reason. On 0.4.1 that
+      # is the \`no marker\` state, and it is live: markers are per-worktree,
+      # so a fresh lane hits it before its first \`/run-integ\`.
+      printf 'key:        %s\nstate:      no marker\n' "\$2"
     else
-      printf 'key:        %s\nstate:      stale (digest differs)\n' "\$2"
+      printf 'key:        %s\nstate:      mismatch (digest differs)\n' "\$2"
     fi
     exit 0
     ;;
@@ -212,9 +267,361 @@ run_msg_case "exit-2 names git fetch, not /run-integ" error \
 # The converse: a genuinely stale marker must still advise the integ run
 # and must NOT claim an evaluation error. Without this the case above
 # could pass while the hook printed the error text unconditionally.
+# Needles the COMMAND, not the `Required action` heading it sits under. Named
+# "advises /run-integ" while asserting the heading, it passed with the
+# `/run-integ <test-name>` line deleted -- the gate's one actionable command,
+# unfenced under a case named for it.
 run_msg_case "stale marker still advises /run-integ" stale \
-  'Required action' 'could not EVALUATE' \
+  '/run-integ <test-name>' 'could not EVALUATE' \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+# The two conditions that make a marker legitimate. Deleting either bullet left
+# the suite green, and they are the whole reason the skill is the only setter.
+run_msg_case "stale message keeps the marker's preconditions" stale \
+  'destroy completed with 0 errors' 'could not EVALUATE' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+run_msg_case "stale message keeps the orphan precondition" stale \
+  '0 orphan resources after the post-destroy' 'could not EVALUATE' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+# --- The stale message must be SELF-DIAGNOSING (issue #3010) ---
+#
+# Needles are held in variables so each is written ONCE and every case below
+# anchors on the same string. Two of the three are anchored deliberately wider
+# than the sentence they belong to:
+#
+#   - N_EXPLAIN keeps the `mise exec -- ` prefix. Without it the needle is a
+#     strict SUBSTRING of the advised command, so deleting the prefix -- the
+#     one part of that line the paragraph itself calls load-bearing, since a
+#     bare `markgate` on PATH can be an older build that cannot parse a
+#     `hash: diff` gate -- left the suite green (measured).
+#   - N_SCOPE covers the sentence explaining what `--explain` PRINTS. Without
+#     it, deleting that whole paragraph left the suite green: the command line
+#     alone survived and nothing said what to read in its output.
+#
+# #3010 reported this gate invalidating on a peer's merge with nothing in
+# scope on the branch. A peer's merge alone does not: `hash: diff` digests the
+# branch's delta from merge-base(origin/main, HEAD), and a peer's merge does
+# not move that merge base (reproduced against markgate 0.4.1). What actually
+# happened is that the include list was hand-expanded as git pathspecs and one
+# entry -- `src/provisioning/provider-registry.ts`, added by #2721 and really
+# changed by that branch -- was missed, so a legitimate refusal read as a
+# broken gate. Both remedies that follow from that reading are bad: a
+# real-AWS run the branch does not need, or setting the marker by hand, which
+# the paragraph below this one forbids.
+#
+# So the message names the command that answers the question without any
+# hand-expansion. Asserted on the hook's OWN stderr rather than on a
+# re-statement: a case driving a predicate the suite declares stays green when
+# the text is reverted (.claude/rules/hooks-authoring.md).
+N_EXPLAIN='mise exec -- markgate status integ-destroy --explain'
+N_SCOPE='writes the `scope:` block'
+N_CAUSE='does not stale this marker by itself'
+payload_merge="$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+# NOTE: there is no separate "names the command" case. `$N_EXPLAIN` is a strict
+# substring of the resolved-tree case's needle further down, which asserts the
+# whole emitted line including the `cd <resolved>` prefix, so a standalone case
+# on the substring fences nothing the longer one does not.
+
+run_msg_case "stale message says what --explain prints (#3010)" stale \
+  "$N_SCOPE" 'could not EVALUATE' "$payload_merge"
+
+# The claim that makes the command actionable: a peer's merge is NOT by itself
+# a cause of staleness here. Separate from the cases above because the command
+# tells the reader what to run, not what to conclude from the answer.
+run_msg_case "stale message rules out a bare peer merge as the cause (#3010)" stale \
+  "$N_CAUSE" 'could not EVALUATE' "$payload_merge"
+
+# ONE CASE PER CAUSE. The paragraph names three, and the regression to guard
+# against is a TRIM -- which leaves grammatical prose and satisfies every needle
+# aimed at a different clause. Measured: with only the include-list cause
+# fenced, deleting EITHER of the other two left the suite at 35/0, in a PR whose
+# whole subject is that the list must not close early.
+#
+# Each cause is also a measurement against markgate 0.4.1, not a reading of the
+# code:
+#   worktree   an untracked non-ignored in-scope file, a chmod +x with zero
+#              content change, and an uncommitted edit each flip `verify` 0 -> 1,
+#              while `git diff origin/main...HEAD -- <scope>` shows none of them.
+#              That gap IS the #3010 failure mode, so the message says
+#              WORKING-TREE rather than "on this branch".
+#   include    widening `include:` while not one byte under the scope changes
+#              flips `verify` 0 -> 1 with `(digest differs)`, reaching this very
+#              branch of the message.
+# Control for both: the same mutation on an out-of-scope path leaves it fresh.
+run_msg_case "stale message says the delta is the WORKING TREE (#3010)" stale \
+  'uncommitted edits, mode changes and untracked' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "stale message names the worktree cause (#3010)" stale \
+  'in-scope file changing in THIS WORKING TREE' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "stale message names the merge-base cause (#3010)" stale \
+  'rebasing this branch onto it' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "stale message names the include-list cause (#3010)" stale \
+  'changes WHICH files are digested' 'could not EVALUATE' "$payload_merge"
+
+# The sentence that joins the three causes back to the command at the top. It
+# was unanchored, and deleting it left the suite green.
+run_msg_case "stale message says what --explain can and cannot settle (#3010)" stale \
+  'narrows it to the files actually digested' 'could not EVALUATE' "$payload_merge"
+
+# --- An UNQUOTED heredoc is invisible to every needle above ---
+#
+# `.claude/rules/hooks-authoring.md`: `cat >&2 <<EOF` (no quotes) expands
+# `$( )` and backticks in the BODY at refusal time, so every backtick span is
+# executed and deleted and the reader gets `command not found` lines instead of
+# the advice. This PR adds two backtick-dense heredocs, and measured, swapping
+# both to the unquoted form left the suite at 35/0: the needles above are all
+# backtick-free, so they survive the mangling verbatim.
+#
+# One needle per heredoc, each spanning a backtick pair, because the two blocks
+# are quoted independently and a needle in one cannot see the other.
+run_msg_case "scope heredoc stays QUOTED (#3010)" stale \
+  '`include:` globs in `.markgate.yml`' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "causes heredoc stays QUOTED (#3010)" stale \
+  '`hash: diff` digests this branch' 'could not EVALUATE' "$payload_merge"
+
+# The THIRD heredoc is the dangerous one to leave unfenced: its body carries
+# `markgate set integ-destroy` inside backticks, twice. Unquoted, the refusal
+# RUNS the marker set it exists to forbid -- the gate would clear itself while
+# printing a message about not clearing it by hand. This block predates the PR;
+# the PR is what split the message into three independently quoted heredocs, so
+# it is the change that makes a per-block fence meaningful.
+run_msg_case "remedy heredoc stays QUOTED (#3010)" stale \
+  '`markgate set integ-destroy` if BOTH' 'could not EVALUATE' "$payload_merge"
+
+# --- Two readings that are NOT a broken gate, and were missing ---
+#
+# Both measured against markgate 0.4.1, and both are states an agent reaches and
+# misreads as a markgate defect -- which is the whole subject of #3010.
+#
+# merge base: is written by `set`, so ANY later merge or rebase makes it differ
+# from the live one whatever the actual cause. Measured: marker set at base
+# e9a7a59; branch merges origin/main (an unrelated in-scope file); `verify` rc 0,
+# FRESH, recorded e9a7a59 vs live 36a4766. Then a plain worktree edit -> rc 1,
+# same base mismatch, cause #1. So equality excludes cause 2 and inequality says
+# nothing; the message must not sell it as a discriminator.
+run_msg_case "merge-base advice is stated as ONE-WAY (#3010)" stale \
+  'ONE-WAY test' 'could not EVALUATE' "$payload_merge"
+
+# An EMPTY scope: beside (digest differs). Measured: branch changes one in-scope
+# and one out-of-scope file, `set`, then reverts the in-scope one -> `scope:`
+# prints nothing and `state:` is `mismatch (digest differs)`, rc 1.
+# `refuseDeadScope` does not fire, because it globs CandidateNames and the
+# include still matches the tree. This is #3010's reported symptom exactly, so
+# the message owes it a reading rather than leaving it to look like a defect.
+run_msg_case "empty scope beside digest-differs has a reading (#3010)" stale \
+  'in-scope delta emptied AFTER the marker was set' 'could not EVALUATE' "$payload_merge"
+
+# That reading is itself a list, and its first version closed at two entries --
+# omitting the one the SAME refusal recommends twenty lines later ("narrow
+# `.markgate.yml` integ-destroy scope"). Measured: narrowing `include:` so the
+# changed file drops out gives an empty `scope:` with `(digest differs)`, so a
+# reader who follows the remedy would have been told their change was reverted.
+run_msg_case "empty-scope reading includes the narrowing cause (#3010)" stale \
+  'stopped matching the file' 'could not EVALUATE' "$payload_merge"
+
+# ONE CASE PER CAUSE applies to this list too, and did not at first: two of its
+# three were fenced, so deleting the first entry left the suite green.
+run_msg_case "empty-scope reading includes the revert cause (#3010)" stale \
+  'change was reverted' 'could not EVALUATE' "$payload_merge"
+
+# ...and the sentence that says WHY an emptied delta mismatches, without which
+# the three causes are a list with no conclusion.
+run_msg_case "empty-scope reading says why it mismatches (#3010)" stale \
+  'taken over a non-empty delta' 'could not EVALUATE' "$payload_merge"
+
+# ...and its "landed upstream" entry contradicted the peer-merge sentence six
+# lines above it, which says a peer's merge does not move the merge base.
+# Measured on the squash shape this repo allows: landing the identical content
+# on `origin/main` left the merge base and the scope untouched, `verify` rc 0.
+# Only the branch merging or rebasing afterwards empties it.
+run_msg_case "empty-scope reading does not contradict the peer-merge line (#3010)" stale \
+  'landing alone is not enough' 'could not EVALUATE' "$payload_merge"
+
+# --- ORDER: the thing to DO comes before the explanation ---
+#
+# The refusal is read at the moment of a blocked merge. The diagnostic block
+# grew across four review rounds and pushed `Required action` to line ~37 of a
+# ~54-line message before this was fixed; nothing asserted the order, so it
+# could drift back silently. Its own case because want/reject needles cannot
+# express "before".
+order_out=$(printf '%s' "$payload_merge" | MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+action_line=$(printf '%s' "$order_out" | grep -n '^Required action' | head -1 | cut -d: -f1)
+diag_line=$(printf '%s' "$order_out" | grep -n '^What put this branch in scope' | head -1 | cut -d: -f1)
+if [ -n "$action_line" ] && [ -n "$diag_line" ] && [ "$action_line" -lt "$diag_line" ]; then
+  pass=$((pass + 1)); printf 'OK   required action precedes the diagnostic (#3010)\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL required action precedes the diagnostic (#3010): action at line ${action_line:-none}, diagnostic at line ${diag_line:-none}\n"
+  printf 'FAIL required action precedes the diagnostic (#3010)\n'
+fi
+
+# The advised command is EMITTED, not hard-coded, so it names the tree this gate
+# actually checked -- a `cd` / `-C` in the blocked command can make that a
+# different worktree from the caller's cwd, and markgate's markers are
+# per-worktree, so a diagnostic run in the wrong tree answers about the wrong
+# marker.
+#
+# Driven from a payload whose cwd is main_repo and whose command `cd`s to
+# side_repo, and it REJECTS main_repo. A payload where the two coincide fences
+# nothing: substituting the payload cwd for the resolved target left the suite
+# green, so the case asserted only that SOME path was printed.
+run_msg_case "diagnostic names the RESOLVED tree, not the cwd (#3010)" stale \
+  "cd $side_repo && mise exec -- markgate status integ-destroy --explain" \
+  "cd $main_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"cd %s && gh pr merge 42"}}' "$main_repo" "$side_repo")"
+
+# --- The remaining prose this PR added, one needle each ---
+#
+# Every sentence below was measured as deletable with the suite green. They are
+# fenced individually for the reason the per-cause cases exist: a trim leaves
+# grammatical prose, and each of these carries a claim whose loss reinstates a
+# wrong reading the refusal was written to prevent.
+# Needle stops at the wrap. It read `... an older build` and went red when a
+# reword moved "build" onto the next line -- the second time that happened in
+# this file, so: keep every needle inside one rendered line.
+run_msg_case "diagnostic keeps the stale-binary warning (#3010)" stale \
+  'a bare `markgate` can pick up an older' 'could not EVALUATE' "$payload_merge"
+
+# markgate SPLITS `--explain` across streams: the `scope:` block goes to stderr
+# and everything else, `merge base:` included, to stdout (measured on 0.4.1).
+# A reader who pipes stdout -- the ordinary thing to do with a diagnostic --
+# loses exactly the half the message sent them for.
+run_msg_case "diagnostic says --explain splits its streams (#3010)" stale \
+  'to stderr, while `merge base:` goes to stdout' 'could not EVALUATE' "$payload_merge"
+
+# The include-list cause is CONDITIONAL and was stated flatly. Measured:
+# widening `include:` onto globs that match only files this branch has not
+# touched leaves `verify` at 0; only adding or removing a path that is IN the
+# delta moves the digest.
+run_msg_case "include-list cause is qualified, not flat (#3010)" stale \
+  'widening onto paths this branch has not touched' 'could not EVALUATE' "$payload_merge"
+
+# --- Without mise, the advice must still be the command that exists ---
+#
+# The hook resolves `mise exec -- markgate` when mise is on PATH and a bare
+# `markgate` otherwise (the `elif` in its resolver). The message used to say
+# "prefer the `mise exec --` form", which in the second environment both
+# misdescribes the line printed one paragraph above it and recommends a spelling
+# the reader cannot run. Asserted by RENDERING with mise removed from PATH,
+# because the prose alone cannot be told apart from the wrong prose.
+nomise_dir="$TMPDIR/bin-nomise"
+mkdir -p "$nomise_dir"
+cp "$SHIM_DIR/markgate" "$nomise_dir/markgate"
+# Symlinked tools rather than `/usr/bin:/bin`, for the reason spelled out at the
+# markgate-missing case below: `jq` is only in `/usr/bin` on macOS 15+.
+for tool in bash env jq git awk sed grep dirname basename cat tr head tail wc cut sort uniq comm mktemp rm printf; do
+  tool_path=$(command -v "$tool" 2>/dev/null) && ln -sf "$tool_path" "$nomise_dir/$tool"
+done
+nomise_out=$(printf '%s' "$payload_merge" \
+  | PATH="$nomise_dir" MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+nomise_cd=$(printf '%s' "$nomise_out" | grep -m1 '^  cd ')
+if printf '%s' "$nomise_cd" | grep -q '&& markgate status integ-destroy --explain' \
+   && ! printf '%s' "$nomise_out" | grep -q 'mise exec'; then
+  pass=$((pass + 1)); printf 'OK   advice matches the resolved binary without mise (#3010)\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL advice matches the resolved binary without mise (#3010): emitted '$nomise_cd'; 'mise exec' still present: $(printf '%s' "$nomise_out" | grep -c 'mise exec')\n"
+  printf 'FAIL advice matches the resolved binary without mise (#3010)\n'
+fi
+
+# --- The emitted `cd` line must survive a PASTE ---
+#
+# `$target_dir` is interpolated into the advice, and this repo's worktrees can
+# sit under a directory with a space or an apostrophe. Unquoted, `cd` there
+# takes two arguments; with an apostrophe the pasted line leaves the reader at a
+# continuation prompt. Asserted by EXECUTING the `cd` half rather than by
+# matching the escape, so the case survives any future change of quoting style
+# and fails on a broken one. (go-to-k/cdkd#2027 is the 24-site precedent for
+# this class in these hooks.)
+space_repo="$TMPDIR/side repo"
+git init -q -b feature/x "$space_repo"
+declare_gate "$space_repo" integ-destroy
+git -C "$space_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+space_out=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$space_repo" \
+  | MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+space_cd=$(printf '%s' "$space_out" | grep -m1 '^  cd ' | sed 's/ && .*//; s/^  //')
+space_want=$(cd "$space_repo" && pwd -P)
+space_got=$( (eval "$space_cd" >/dev/null 2>&1 && pwd -P) 2>/dev/null )
+if [ -n "$space_cd" ] && [ "$space_got" = "$space_want" ]; then
+  pass=$((pass + 1)); printf 'OK   emitted cd survives a path with a space (#3010)\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL emitted cd survives a path with a space (#3010): line '$space_cd' landed in '${space_got:-nowhere}', want '$space_want'\n"
+  printf 'FAIL emitted cd survives a path with a space (#3010)\n'
+fi
+
+# Needle kept on ONE line: `grep` matches per line, so a needle spanning the
+# message's 80-column wrap matches nothing and the case fails for a reason that
+# has nothing to do with the hook. It did, on first writing.
+run_msg_case "diagnostic says merge base: is the SET-time value (#3010)" stale \
+  'appears only when a marker exists' 'could not EVALUATE' "$payload_merge"
+
+# Named for what it asserts. It read "narrowing alone does not clear it" while
+# needling text that says the opposite -- the same name/assertion drift this PR
+# fixed one case earlier. The claim is also CONDITIONAL: narrowing clears a
+# digest mismatch and cannot clear a TTL expiry or a missing marker (measured),
+# so the sentence names its condition and the two states it does not cover.
+run_msg_case "remedy admits narrowing CAN clear a digest mismatch (#3010)" stale \
+  'Narrowing CAN clear' 'could not EVALUATE' "$payload_merge"
+
+run_msg_case "remedy names the states narrowing cannot clear (#3010)" stale \
+  'cannot clear a TTL expiry or a' 'could not EVALUATE' "$payload_merge"
+
+# ...and the ORDER of markgate's own reporting, which makes the TTL warning
+# above reachable in a state that does not look like it. `evaluate()` returns at
+# `ownDigestDiff` BEFORE the TTL block, so a marker both aged past `ttl: 14d`
+# and digest-changed prints `(digest differs)`. A reader who sees that reason
+# cannot conclude their TTL is intact, and narrowing leaves them refused.
+run_msg_case "remedy says digest-differs outranks an expired TTL (#3010)" stale \
+  'reported AHEAD of an expired TTL' 'could not EVALUATE' "$payload_merge"
+
+# The fourth heredoc. Its body carries `integ-destroy` in backticks; unquoted,
+# the header the reason-LESS path prints is mangled the same way as the others.
+run_msg_case "fallback-header heredoc stays QUOTED (#3010)" no_marker \
+  '`integ-destroy` marker is stale' 'could not EVALUATE' "$payload_merge"
+
+# --- ...and it must NOT be offered where it would be FALSE ---
+#
+# The causal paragraph explains a DIGEST mismatch. This gate also carries
+# `ttl: 14d`, so a marker goes stale while the branch sits perfectly still, and
+# there the paragraph would send the reader to `--explain` hunting a file that
+# never changed. Same for the reason-less stale spelling, where the cause is
+# simply unknown. The `--explain` command itself stays offered on both, so each
+# state needs BOTH halves asserted -- a single "is it absent" case passes just
+# as well when the whole block vanished.
+#
+# The first case of each pair also pins that the mock really drove that path:
+# `expired by ttl` comes only from the reason branch, and the
+# IMPLICIT_DELETE_DEPENDENCIES header only from the reason-LESS fallback. Without
+# them a mock verdict that silently fell through to the ordinary stale path
+# would satisfy the absence assertions for the wrong reason.
+run_msg_case "ttl expiry is not explained as a code change (#3010)" ttl \
+  'expired by ttl' "$N_CAUSE" "$payload_merge"
+
+run_msg_case "ttl expiry still offers the scope diagnostic (#3010)" ttl \
+  "$N_EXPLAIN" "$N_CAUSE" "$payload_merge"
+
+run_msg_case "no-marker state takes the fallback header (#3010)" no_marker \
+  'IMPLICIT_DELETE_DEPENDENCIES' "$N_CAUSE" "$payload_merge"
+
+run_msg_case "no-marker state still offers the scope diagnostic (#3010)" no_marker \
+  "$N_EXPLAIN" "$N_CAUSE" "$payload_merge"
+
+# Placement: the diagnostic belongs in the block shared by every stale path,
+# not in the evaluation-error path, whose remedy is a base ref rather than a
+# scope question. This case fences ADDITION, and a move is not a substitute for
+# measuring that: MOVING the block into `gate_refuse_unevaluable_marker` reddens
+# four cases -- this one plus the three stale cases that lose the text -- so it
+# cannot show what this case alone catches. DUPLICATING it there reddens this
+# case and nothing else, which is the probe that justifies keeping it.
+run_msg_case "exit-2 path does not offer the scope diagnostic (#3010)" error \
+  'could not EVALUATE' "$N_EXPLAIN" "$payload_merge"
 
 # --- DIFF-FILTER cases (issue #2042) ---
 #
@@ -429,6 +836,251 @@ x2236_case() {
     printf 'FAIL %s%s\n' "$name" "$detail"
   fi
 }
+
+# --- The HUNK filter itself, which nothing above exercised ---
+#
+# Every diff-filter case above drives `strict_delete` (any change to a listed
+# file blocks) or an out-of-scope control. The OTHER half of the decision --
+# `provider_pattern` / `filtered_delete` gated on `delete_symbol_pattern`, which
+# is what decides a change to a provider or to an orchestration command -- had
+# no case at all. Measured: neutering `delete_symbol_pattern` to a never-match
+# string, or dropping `provider_pattern`, or replacing the whole
+# `grep -qE "$filtered_delete|$provider_pattern"` with `false`, each left the
+# suite at 60/0 while turning every provider verdict from 2 into 0. That is a
+# merge allowed with a stale marker for a PR rewriting a provider's `delete()`
+# -- a fail-open, and the dangerous direction.
+#
+# Its own staging helper because `stage_filter_change` REFUSES delete-symbol
+# vocabulary by design: the strict cases depend on their content being
+# symbol-free, and these two cases depend on the opposite.
+# stage_filter_hunk <relative-path> <content-line-CARRYING-a-delete-symbol>
+#
+# The mirror of `stage_filter_change`'s guard, and needed for the same reason:
+# that helper REFUSES delete vocabulary because its cases prove a file trips the
+# gate on bucket membership; these cases prove the opposite, so the line must
+# carry one. Unasserted, stripping the symbol from a call below turns the
+# arming/pass-through PAIR into two pass-throughs and both stay green.
+stage_filter_hunk() {
+  local rel="$1"; local line="$2"
+  case "$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')" in
+    *delete*|*rollback*|*hyperplane*|*dependencyviolation*|*eni*|*detach*) ;;
+    *)
+      fail=$((fail + 1))
+      fail_log+="FAIL stage_filter_hunk fixture for $rel carries NO delete-symbol "
+      fail_log+="vocabulary, so the case it feeds cannot arm the hunk filter and "
+      fail_log+="silently becomes a second pass-through: $line\n"
+      printf 'FAIL stage_filter_hunk fixture content carries no delete symbol: %s\n' "$rel"
+      ;;
+  esac
+  git -C "$filter_repo" reset -q --hard refs/remotes/origin/main
+  mkdir -p "$filter_repo/$(dirname "$rel")"
+  printf '%s\n' "$line" > "$filter_repo/$rel"
+  git -C "$filter_repo" add -A
+  git -C "$filter_repo" -c user.email=t@t -c user.name=t commit -q -m "hunk $rel"
+}
+
+# A provider whose diff ADDS a delete symbol: the hunk filter must arm the gate.
+stage_filter_hunk "src/provisioning/providers/sqs-queue-provider.ts" \
+  "  async deleteResource(physicalId: string) { return this.client.send(cmd); }"
+run_case "hunk filter: provider delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# The SAME provider file with a string-only change: the filter must let it
+# through. This is the half that proves the case above passes on the SYMBOL and
+# not merely on the path -- without it, a `provider_pattern` promoted to strict
+# would keep both green.
+# Staged through `stage_filter_change`, not `stage_filter_hunk`: this is the
+# NEGATIVE half, so its line must be symbol-FREE, which is exactly the
+# invariant that helper asserts. The two guards are mirrors and each call site
+# takes the one matching what it is proving.
+stage_filter_change "src/provisioning/providers/sqs-queue-provider.ts" \
+  "  private readonly label = 'queue provider';"
+run_case "hunk filter: provider string-only change passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# ONE CASE PER ALTERNATIVE. The #2042 strict cases above state that standard
+# ("each ALONE so that dropping any single alternative fails a case") -- an
+# earlier revision of THIS comment claimed they all met it, which was false when
+# written: 4 of `strict_delete`'s 7 did, and the analyzer trio did not until the
+# loop further down was added. The first provider case covers only
+# `providers/.*\.ts`; measured,
+# `filtered_delete` could be replaced with a never-match string, and
+# `provider_pattern` narrowed to `^src/provisioning/providers/.*\.ts$`, with the
+# suite at 63/0 either way. That drops destroy.ts, destroy-runner.ts,
+# deploy-engine.ts, cloud-control-provider.ts and region-check.ts out of the
+# gate entirely -- the destroy ORCHESTRATION, more central to this gate than any
+# single provider. The existing string-only case is the shared negative.
+stage_filter_hunk "src/cli/commands/destroy.ts" \
+  "  await runner.deleteStack({ stackName, force });"
+run_case "hunk filter: destroy.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/cli/commands/destroy-runner.ts" \
+  "  const order = plan.deleteOrder();"
+run_case "hunk filter: destroy-runner.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/deployment/deploy-engine.ts" \
+  "  await this.performRollback(failed);"
+run_case "hunk filter: deploy-engine.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/provisioning/cloud-control-provider.ts" \
+  "  private async deleteRemnant(id: string) { return this.cc.send(cmd); }"
+run_case "hunk filter: cloud-control-provider.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# NOT a comment line: `comment_line_pattern` strips `//` lines before the symbol
+# grep, so a commented delete symbol correctly does NOT arm the gate. Writing
+# this fixture as a comment first is how that was confirmed -- it came back 0.
+stage_filter_hunk "src/provisioning/region-check.ts" \
+  "  assertRegionMatch(region, target, { onDetach: true });"
+run_case "hunk filter: region-check.ts delete symbol arms the gate" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# --- markgate missing entirely ---
+#
+# The hook resolves `mise exec -- markgate`, else a bare `markgate`, else
+# refuses. Measured: flipping that last `exit 2` to `exit 0` left the suite at
+# 60/0 -- no case ran with neither binary on PATH, so the gate could be made to
+# pass silently on any machine that had not run `mise install`.
+# PATH derived from where `jq` and `git` actually live rather than hard-coded to
+# `/usr/bin:/bin`: `jq` ships there only on macOS 15+, so the hard-coded form
+# reddens this case on an older runner or a brew-only install for a reason that
+# has nothing to do with the hook. A stub dir of symlinks keeps mise and
+# markgate out without taking the rest of PATH with them.
+nomg_dir="$TMPDIR/bin-nomarkgate"
+mkdir -p "$nomg_dir"
+for tool in bash env jq git awk sed grep dirname basename cat tr head tail wc cut sort uniq comm mktemp rm printf; do
+  tool_path=$(command -v "$tool" 2>/dev/null) && ln -sf "$tool_path" "$nomg_dir/$tool"
+done
+nomg_out=$(printf '%s' "$payload_merge" \
+  | PATH="$nomg_dir" MARKGATE_MOCK_VERDICT=stale "$HOOK" 2>&1 >/dev/null)
+nomg_rc=$?
+if [ "$nomg_rc" -eq 2 ] && printf '%s' "$nomg_out" | grep -q 'markgate is not installed'; then
+  pass=$((pass + 1)); printf 'OK   refuses when markgate is not installed (exit 2)\n'
+else
+  fail=$((fail + 1))
+  fail_log+="FAIL refuses when markgate is not installed: want exit 2 + 'markgate is not installed', got rc=$nomg_rc\n  output: $nomg_out\n"
+  printf 'FAIL refuses when markgate is not installed (got %s)\n' "$nomg_rc"
+fi
+
+# --- The alternatives nothing was watching ---
+#
+# ONE CASE PER ALTERNATIVE is the standard this file claims, and measured, it
+# was held by 4 of `strict_delete`'s 7 and by 3 of `delete_symbol_pattern`'s 7.
+# Each group below could be deleted outright with the suite at 72/0.
+#
+# The analyzer trio first, because the hook's own header calls them "small
+# high-stakes analyzer files": a PR touching only the deletion-order DAG merged
+# with a stale or absent marker and nothing said so.
+for analyzer_file in dag-builder implicit-delete-deps lambda-vpc-deps; do
+  stage_filter_change "src/analyzer/$analyzer_file.ts" "const ORDER_SEED = 7;"
+  run_case "diff filter: $analyzer_file.ts is strict" 2 stale "$filter_repo" \
+    "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+done
+
+# Then the delete VOCABULARY. `delete`, `rollback` and `detach` were each
+# reachable through an existing case; narrowing the pattern to just those three
+# left the suite green, so the VPC/ENI teardown words the header names were
+# unfenced. `IMPLICIT_DELETE` is deliberately not listed here -- it survives
+# incidentally via `delete` under `grep -i`, so a case on it would fence nothing
+# that the first one does not.
+for delete_word in hyperplane DependencyViolation ENI; do
+  stage_filter_hunk "src/provisioning/providers/vpc-attachment-provider.ts" \
+    "  if (err.name === '$delete_word') { return this.retry(id); }"
+  run_case "hunk filter: '$delete_word' is delete-symbol vocabulary" 2 stale "$filter_repo" \
+    "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+done
+
+# --- A FAILED diff is not an empty one ---
+#
+# `origin/main` can resolve while sharing no history with HEAD: a shallow clone,
+# or an unrelated-history checkout. `git diff origin/main...HEAD` then exits 128
+# with EMPTY stdout, which the pre-filter read as "no files changed" -> not
+# delete-touching -> exit 0, with a STRICT file rewritten. The gate disabled by
+# the one condition its own header calls out as needing exit 2, and no case saw
+# it. The rc now decides and a failed diff falls through to markgate.
+nohist_repo="$TMPDIR/nohist-repo"
+git init -q -b main "$nohist_repo"
+declare_gate "$nohist_repo" integ-destroy
+mkdir -p "$nohist_repo/src/deployment"
+echo "base" > "$nohist_repo/src/deployment/rollback-executor.ts"
+git -C "$nohist_repo" add -A
+git -C "$nohist_repo" -c user.email=t@t -c user.name=t commit -q -m base
+git -C "$nohist_repo" update-ref refs/remotes/origin/main "$(git -C "$nohist_repo" rev-parse HEAD)"
+# An ORPHAN branch: resolvable origin/main, no merge base with HEAD.
+git -C "$nohist_repo" checkout -q --orphan feature/unrelated
+echo "changed" > "$nohist_repo/src/deployment/rollback-executor.ts"
+git -C "$nohist_repo" add -A
+git -C "$nohist_repo" -c user.email=t@t -c user.name=t commit -q -m unrelated
+run_case "unrelated history falls through to markgate, not through the gate" 2 stale "$nohist_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$nohist_repo")"
+
+# --- A RENAME must not make a strict file disappear ---
+#
+# git's rename detection is ON by default, and `--name-only` then prints only
+# the DESTINATION path. Measured: `git mv src/deployment/rollback-executor.ts`
+# to a new name left the changed-file list with no strict path, `delete_touch`
+# stayed 0, and the hook exited 0 WITHOUT consulting markgate -- on a branch
+# markgate calls stale, since its own `DiffFrom` runs `--no-renames` and sees
+# the deletion. Adding `--no-renames` to the hook takes this fixture 0 -> 2 and
+# leaves the rest of the suite untouched, which is also the proof that nothing
+# else covered it.
+#
+# The file body is long and repetitive on purpose: git scores similarity, and a
+# one-line file is not detected as a rename at all, so a short fixture would
+# pass for the wrong reason.
+ren_repo="$TMPDIR/rename-repo"
+git init -q -b main "$ren_repo"
+declare_gate "$ren_repo" integ-destroy
+mkdir -p "$ren_repo/src/deployment"
+i=1
+while [ "$i" -le 40 ]; do
+  echo "export const line$i = $i;" >> "$ren_repo/src/deployment/rollback-executor.ts"
+  i=$((i + 1))
+done
+git -C "$ren_repo" add -A
+git -C "$ren_repo" -c user.email=t@t -c user.name=t commit -q -m base
+git -C "$ren_repo" update-ref refs/remotes/origin/main "$(git -C "$ren_repo" rev-parse HEAD)"
+git -C "$ren_repo" checkout -q -b feature/rename
+git -C "$ren_repo" mv src/deployment/rollback-executor.ts src/deployment/rollback-runner.ts
+git -C "$ren_repo" -c user.email=t@t -c user.name=t commit -q -m rename
+run_case "renaming a strict file still consults the marker" 2 stale "$ren_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$ren_repo")"
+
+# A renamed PROVIDER, which travels a different route: the destination path
+# still matches `provider_pattern`, so it reaches the hunk filter and arms on
+# the symbols the move carried.
+#
+# This case is a REGRESSION GUARD, not a fence, and saying so is the point: NO
+# mutation of the current hook reddens it. Dropping `--no-renames` from the name
+# list leaves it green (the destination alone is enough), and adding
+# `--no-renames` to the hunk diff changes nothing either, because that diff is
+# restricted to one path and git has no destination to pair the rename with. It
+# is kept because the next person to touch rename handling -- the defect above
+# is exactly that -- would otherwise have nothing asserting that a renamed
+# provider still reaches markgate.
+ren2_repo="$TMPDIR/rename-provider-repo"
+git init -q -b main "$ren2_repo"
+declare_gate "$ren2_repo" integ-destroy
+mkdir -p "$ren2_repo/src/provisioning/providers"
+echo "  async deleteResource(id: string) { return this.client.send(id); }" \
+  > "$ren2_repo/src/provisioning/providers/old-provider.ts"
+i=1
+while [ "$i" -le 40 ]; do
+  echo "export const line$i = $i;" >> "$ren2_repo/src/provisioning/providers/old-provider.ts"
+  i=$((i + 1))
+done
+git -C "$ren2_repo" add -A
+git -C "$ren2_repo" -c user.email=t@t -c user.name=t commit -q -m base
+git -C "$ren2_repo" update-ref refs/remotes/origin/main "$(git -C "$ren2_repo" rev-parse HEAD)"
+git -C "$ren2_repo" checkout -q -b feature/rename-provider
+git -C "$ren2_repo" mv src/provisioning/providers/old-provider.ts \
+  src/provisioning/providers/new-provider.ts
+git -C "$ren2_repo" -c user.email=t@t -c user.name=t commit -q -m rename-provider
+run_case "renaming a provider carrying a delete symbol arms the gate" 2 stale "$ren2_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$ren2_repo")"
 
 x2236_case "target declaring integ-destroy consults that marker" 2 stale CALLED - "$x2236_declares"
 x2236_case "sibling declaring only its own gate is NOT accepted on it" 2 fresh NOT_CALLED "declares no gate" "$x2236_other"

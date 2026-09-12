@@ -172,8 +172,31 @@ if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
   diff_base="origin/main"
 fi
 
+# A FAILED diff and an empty one are the same string, and they mean opposite
+# things. `origin/main` can resolve while sharing no history with HEAD -- a
+# shallow clone, or an unrelated-history checkout -- and then this exits 128
+# with empty stdout. Read as "nothing changed" that sets `delete_touch=0` and
+# the hook exits 0 with `rollback-executor.ts` rewritten: the gate disabled by
+# the one condition its own header calls out as needing exit 2 (the "shallow
+# clone with no merge base" branch below was unreachable because this ran
+# first). So the rc decides, and a failed diff falls through to markgate, which
+# is this file's stated tie-break: a false positive costs an integ run, a false
+# negative costs a broken main.
 if [ -n "$diff_base" ]; then
-  changed_files=$(git diff --name-only "$diff_base"...HEAD 2>/dev/null)
+  # `--no-renames`, and it is load-bearing rather than tidy. With rename
+  # detection ON -- git's default -- `--name-only` prints only the DESTINATION
+  # path, so `git mv src/deployment/rollback-executor.ts <anywhere>` produces a
+  # changed-file list with no strict path in it: `delete_touch` stays 0 and the
+  # hook exits 0 having never consulted markgate, on a branch markgate would
+  # have called stale. Measured. It also aligns this list with what markgate
+  # actually digests -- its `DiffFrom` runs `--no-renames` too, so without the
+  # flag the gate and the marker disagree about which files moved.
+  if ! changed_files=$(git diff --name-only --no-renames "$diff_base"...HEAD 2>/dev/null); then
+    diff_base=""
+  fi
+fi
+
+if [ -n "$diff_base" ]; then
   delete_touch=0
   # Strict files — any change triggers (small high-stakes analyzer
   # files plus the retry classifier / rollback executor; see header
@@ -228,6 +251,14 @@ if [ -n "$diff_base" ]; then
       # `Delete`/`DELETE` (mixed case in CFN-style constants) match the
       # lowercase patterns. Word boundaries (\b) keep matches scoped to
       # whole words / camelCase boundaries; `EnigmaFoo` is safe.
+      # No `--no-renames` here, unlike the name list above, and that asymmetry
+      # is measured rather than an oversight: this diff is restricted to ONE
+      # path, so the other endpoint of the rename is outside the pathspec and
+      # git has nothing to pair with -- it reports the whole file as added or
+      # deleted either way. Adding the flag changed no verdict in the
+      # suite, including the renamed-provider case below it -- an unfenced flag
+      # whose comment claims it is load-bearing is the defect this file keeps
+      # finding, so it is left off.
       if git diff "$diff_base"...HEAD -- "$f" \
          | grep -vE "$comment_line_pattern" \
          | grep -qiE "$delete_symbol_pattern"; then
@@ -331,6 +362,9 @@ or similar) and the `integ-destroy` marker is stale.
 EOF_HEAD
 fi
 
+# ACTION FIRST. The diagnostic below is what makes a wrong refusal legible, but
+# the refusal is read at the moment of a blocked merge, so the thing to DO must
+# not sit under fifty lines of explanation.
 cat >&2 <<'EOF'
 Required action — no exceptions:
   /run-integ <test-name>      # e.g. /run-integ bench-cdk-sample
@@ -347,5 +381,87 @@ destroy cannot reach main; setting the marker by hand defeats it. If
 you believe the file in scope is genuinely unrelated to deletion
 behavior, the right fix is to narrow `.markgate.yml` integ-destroy
 scope, not to bypass the marker.
+
+Narrowing CAN clear a `(digest differs)` refusal with no integ run
+-- which makes it a scope decision to review, not a per-merge
+escape. It cannot clear a TTL expiry or a missing marker, and
+`(digest differs)` is reported AHEAD of an expired TTL, so a
+marker older than the TTL stays refused after narrowing.
+
 EOF
+
+cat >&2 <<'EOF'
+What put this branch in scope — read this rather than hand-expanding the
+`include:` globs in `.markgate.yml`:
+EOF
+# Emitted rather than hard-coded so the advice is copy-pasteable in the
+# environment the refusal happened in: `$target_dir` is the tree this gate
+# actually checked, which a `cd` / `-C` in the blocked command can make
+# different from the caller's cwd, and markers are per-worktree; and
+# `${markgate[*]}` is the same resolution this hook used, so the line stays
+# runnable where mise is absent and the hook fell back to a bare `markgate`.
+# `%q` on the path: this tree can sit under a directory with a space or an
+# apostrophe, and an unquoted `cd` there either takes two arguments or leaves
+# the reader's shell at a continuation prompt. A no-op for an ordinary path; a
+# non-ASCII one renders as `$'...'` under 3.2 and literally under 5.x, which
+# both `eval` correctly but are not byte-identical -- do not restate that as
+# "same rendering".
+printf '  cd %q && %s status integ-destroy --explain\n\n' \
+  "$target_dir" "${markgate[*]}" >&2
+cat >&2 <<'EOF'
+Read BOTH streams. markgate writes the `scope:` block — the exact file list it
+digests for this gate — to stderr, while `merge base:` goes to stdout, so
+piping stdout alone loses the half you came for. (`state:` is printed on both.)
+`merge base:` appears only when a marker exists, and is the base that marker was
+SET against, which is not necessarily the live one.
+
+Run the command as printed. The binary in it is the one this gate resolved;
+retyping it as a bare `markgate` can pick up an older build on PATH that cannot
+parse this repo's `hash: diff` gates at all.
+
+EOF
+
+# The paragraph below says what a DIGEST mismatch means, and it is true of
+# nothing else, so it is printed for nothing else. This gate also carries
+# `ttl: 14d`, and an expired marker is stale while the branch sat perfectly
+# still -- telling that reader "an in-scope file moved on this branch" is false
+# and sends them to `--explain` for a file that never changed. The reason-less
+# fallback above is an unknown cause, so it is excluded on the same ground.
+# The `--explain` command itself stays UNCONDITIONAL: seeing the gate's real
+# scope is the right first step under any staleness, and the reason-less path is
+# exactly the one a user reaches with an odd or older markgate -- the audience
+# this block was written for.
+case "$reason" in
+*"digest differs"*)
+  cat >&2 <<'EOF'
+`hash: diff` digests this branch's WORKING-TREE delta from
+merge-base(origin/main, HEAD) — uncommitted edits, mode changes and untracked
+non-ignored files all count, so `git diff origin/main...HEAD` can show nothing
+in scope while the digest has moved. A peer's merge landing on `origin/main`
+does not stale this marker by itself: it does not move that merge base.
+
+What does: an in-scope file changing in THIS WORKING TREE; merging
+`origin/main` into this branch, or rebasing this branch onto it, when the
+incoming change touches an in-scope file this branch also modified, which keeps
+that file in the delta while its base side moves under it; and editing this
+gate's `include:` / `exclude:` list so that it starts or stops matching a path
+that is IN the delta, which changes WHICH files are digested with no file
+changing at all — widening onto paths this branch has not touched does nothing,
+measured. `--explain` narrows it to the files actually digested.
+Its `merge base:` is recorded at `set` time, so comparing it against
+`git merge-base origin/main HEAD` is a ONE-WAY test: equal rules the second
+cause out, unequal says only that the base moved at some point, not that the
+move is what staled the marker.
+
+An EMPTY `scope:` next to `(digest differs)` is not a broken gate either — it
+means the in-scope delta emptied AFTER the marker was set. Ways it does: the
+change was reverted; the `include:` / `exclude:` list stopped matching the file
+you changed, which is what narrowing the scope does; or the change landed
+upstream AND this branch then merged or rebased `origin/main`, moving the merge
+base past it — landing alone is not enough, for the reason above. The digest was
+taken over a non-empty delta and no longer matches the empty one.
+
+EOF
+  ;;
+esac
 exit 2
