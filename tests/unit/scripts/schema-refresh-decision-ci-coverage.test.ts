@@ -199,12 +199,21 @@ const gradedChecks = (): string[] => {
       'the graded-checker scan to it is no longer justified'
   ).toContain('--decision-count-out');
   const fromDiagnose = [...diagnose.matchAll(/^\s*vp run (\S+)/gm)].map((m) => m[1]!);
-  // Same silence, by the other route — and this one is not hypothetical: the
-  // refresh already writes `env X=1 vp run …` in its Regenerate step, a shape
-  // the anchored pattern cannot see. Unparsed, a NEW graded critic here leaves
-  // this population equal to `CI_COVERAGE`'s keys, and the set-equality case
-  // below stays green over exactly the hole it exists to close.
-  const diagnoseMentions = (diagnose.match(/\bvp run \S/g) ?? []).length;
+  // Same silence, by the other route. The shape is attested in a SIBLING step
+  // rather than in this one — measured 2026-09-12, `Regenerate the derived
+  // artifacts` writes five `vp run` invocations of which the anchored pattern
+  // sees three, the other two being `run_check <name> vp run <name>`
+  // (cfn-schema-refresh.yml:365-366) — so it is a spelling this workflow
+  // demonstrably uses, not one this fence has already met. Unparsed, a NEW
+  // graded critic here leaves this population equal to `CI_COVERAGE`'s keys,
+  // and the set-equality case below stays green over exactly the hole it
+  // exists to close.
+  //
+  // `\s+`, not a literal space, and for the reason the sibling above already
+  // uses `\s+`: a tab-separated `vp\trun x` is invisible to the ANCHORED
+  // pattern too, so a literal space here would make the two counts trivially
+  // equal and the guard silently vacuous on exactly that spelling.
+  const diagnoseMentions = (diagnose.match(/\bvp\s+run\s+\S/g) ?? []).length;
   expect(
     fromDiagnose.length,
     `${diagnoseMentions} \`vp run\` invocation(s) in the ${JSON.stringify(DIAGNOSE_STEP)} step, but ` +

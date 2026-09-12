@@ -3165,9 +3165,15 @@ function main() {
     } catch (/** @type {any} */ error) {
       process.stderr.write(
         `could not read ${tolerancePath} (${error?.message ?? error}) — no removal will be ` +
-          `treated as settled, so this report OVER-counts rather than hiding a decision. The ` +
-          `${autoTolerated.length} write(s) this cycle recorded are dropped from the report ` +
-          `with them, for the same reason.\n`
+          'treated as settled, so this report OVER-counts rather than hiding a decision.' +
+          // Gated, like the absent-file arm below: a by-hand run passes no
+          // `--auto-tolerated` record, and "The 0 write(s) … are dropped" reads
+          // as a second, invented failure.
+          (autoTolerated.length > 0
+            ? ` The ${autoTolerated.length} write(s) this cycle recorded are dropped from the ` +
+              'report with them, for the same reason.'
+            : '') +
+          '\n'
       );
     }
   } else if (autoTolerated.length > 0) {
@@ -3178,18 +3184,13 @@ function main() {
     // SETTLED itself" section, so the state is announced rather than left to be
     // read as "this cycle settled nothing".
     //
-    // NO unit case, and the reason is recorded rather than left to look like an
-    // oversight: `tolerancePath` is pinned to REPO_ROOT on purpose (the three
-    // readers must name ONE file, which is why it does not follow the
-    // `--fixtures-dir` seam), so the only way to reach this arm is to move a
-    // TRACKED file out of the working tree — a probe that edits the repo to
-    // observe a stderr line. Of the two facts this arm rests on, one IS covered
-    // and the other is NOT, which is the half worth writing down: that
-    // `writeAutoTolerated` reads the file before writing is pinned by "NEVER
-    // overwrites an entry a human already wrote", while the cross-check filter
-    // below lives inside `main()` and has no case of its own — it is reachable
-    // only by spawning, and the same REPO_ROOT pin puts its input out of a
-    // test's reach.
+    // Covered, by `main()`'s tolerance-file arms — and the route there is worth
+    // naming, because an earlier revision of this comment claimed the arm was
+    // unreachable without editing the repo and was WRONG. `REPO_ROOT` is
+    // `join(__dirname, '..')`, so a COPY of this script under a scratch root
+    // relocates the pin with it; the case spawns that copy with the tolerance
+    // file absent. The same seam covers the catch arm above and the
+    // cross-check filter below, which that revision also wrote off.
     process.stderr.write(
       `${tolerancePath} does not exist, but the auto-tolerated record names ` +
         `${autoTolerated.length} write(s) — dropping them from the report; nothing is treated ` +

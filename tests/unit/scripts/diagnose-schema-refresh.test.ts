@@ -31,6 +31,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -4887,6 +4888,9 @@ describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () 
     // diagnosis would die before anything was written — the exact outcome the
     // tolerance-read try/catch exists to prevent, one layer in. Unsettled is
     // the safe verdict: the property stays counted.
+    // One `typeof` arm decides all four, so these are not four distinct
+    // failures — they are the shapes a hand edit plausibly leaves behind, kept
+    // as a table so a future guard narrowed to `null` fails here.
     for (const bad of [null, 42, { why: 'an object' }, ['a list']]) {
       const tolerance = { 'AWS::EC2::Instance': { Tenancy: bad } } as unknown as Parameters<
         typeof partitionSettledRemovals
@@ -4897,14 +4901,19 @@ describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () 
       const { remaining, settled } = partitionSettledRemovals(entries, tolerance);
       expect(settled, `a ${typeof bad} rationale was treated as a settlement`).toEqual([]);
       expect(countDecisions({ removed: remaining, divergences: [] })).toBe(1);
-      // ...and the report still renders, which is the half a bare "not settled"
-      // assertion cannot see.
+      // ...and the report still renders. `alreadyTolerated: settled` is what
+      // makes this arm discriminate: without it `renderDiagnosis` only ever
+      // sees `remaining`, the bad value never reaches `renderDetail`, and the
+      // assertion is green on both trees — measured, and the reason it is
+      // written this way. Under the reverted guard `settled` carries the bad
+      // rationale and the render dies with "Cannot read properties of null".
       expect(() =>
         renderDiagnosis({
           removed: remaining,
           writableAdded: [],
           skipped: [],
           divergences: [],
+          alreadyTolerated: settled,
         })
       ).not.toThrow();
     }
@@ -4953,6 +4962,133 @@ describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () 
     expect((md.match(/DefaultCooldown/g) ?? []).length).toBe(1);
   });
 });
+
+describe('main()’s tolerance-file arms (issue #3005)', () => {
+  // Both stderr arms of the tolerance read, exercised for real rather than
+  // exempted. An earlier revision of this PR recorded them as unreachable
+  // without editing the repo and was WRONG: `REPO_ROOT` is
+  // `join(__dirname, '..')`, so a COPY of the script under a scratch root
+  // relocates the pin with it. What made the false exemption tempting is that
+  // the read deliberately does NOT follow the `--fixtures-dir` seam (the three
+  // readers must name ONE file) — true, and it says nothing about where
+  // `__dirname` is.
+  //
+  // The same seam covers the `autoTolerated`-vs-`liveTolerance` cross-check
+  // that the withdrawn comment also wrote off: in both arms `liveTolerance`
+  // stays `{}`, so the filter empties the record and the job-settled section
+  // disappears, which is the state each message exists to announce.
+  const withRelocatedScript = (
+    tolerance: string | undefined,
+    run: (root: string) => { stdout: string; stderr: string }
+  ): { stdout: string; stderr: string } => {
+    // REALPATH, not the bare mkdtemp path. On macOS `tmpdir()` is `/var/...`
+    // while git resolves the same directory to `/private/var/...`, so
+    // `committedOf` reports every fixture "outside repository", `removed` comes
+    // back empty and the tolerance read is never reached — a VACUOUS pass that
+    // looks identical to a clean one (measured: stdout and stderr both empty,
+    // exit 0).
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-tolerance-arm-')));
+    try {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      mkdirSync(join(root, 'fx'), { recursive: true });
+      mkdirSync(join(root, 'tests/fixtures/cfn-schemas'), { recursive: true });
+      // The whole of `scripts/` — the diagnosis imports sibling helpers, and a
+      // partial copy dies in the loader with a message that reads like a
+      // broken case rather than like the arm under test.
+      for (const name of readdirSync(join(REPO_ROOT, 'scripts'))) {
+        const from = join(REPO_ROOT, 'scripts', name);
+        if (statSync(from).isFile()) cpSync(from, join(root, 'scripts', name));
+      }
+      symlinkSync(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'));
+      symlinkSync(join(REPO_ROOT, 'src'), join(root, 'src'));
+      // The real fixture set: the diagnosis REFUSES to report from a listing
+      // short of the coverage table, so a one-file scratch dir never reaches
+      // the tolerance read at all.
+      cpSync(join(REPO_ROOT, 'tests/fixtures/cfn-schemas'), join(root, 'fx'), { recursive: true });
+      if (tolerance !== undefined) {
+        writeFileSync(join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json'), tolerance);
+      }
+      // `committedOf` shells out to git; without a repository here every
+      // fixture reports "could not read" and `removed` is empty.
+      execFileSync('git', ['init', '-q', root]);
+      execFileSync('git', ['-C', root, 'add', '-A'], { stdio: 'ignore' });
+      execFileSync(
+        'git',
+        ['-C', root, '-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-qm', 'seed'],
+        { stdio: 'ignore' }
+      );
+      return run(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  const AUTO_RECORD = JSON.stringify({
+    written: [
+      {
+        resourceType: 'AWS::SQS::Queue',
+        property: 'ContentBasedDeduplication',
+        rationale: 'settled on an earlier cycle',
+      },
+    ],
+  });
+
+  const diagnose = (root: string): { stdout: string; stderr: string } => {
+    const auto = join(root, 'auto-tolerated.json');
+    writeFileSync(auto, AUTO_RECORD);
+    const out = spawnSync(
+      'node',
+      [
+        join(root, 'scripts/diagnose-schema-refresh.mjs'),
+        '--fixtures-dir',
+        join(root, 'fx'),
+        '--auto-tolerated',
+        auto,
+      ],
+      { encoding: 'utf8' }
+    );
+    expect(out.error, 'the relocated diagnosis failed to spawn').toBeUndefined();
+    return { stdout: out.stdout ?? '', stderr: out.stderr ?? '' };
+  };
+
+  it('announces an ABSENT tolerance file that the write record contradicts', () => {
+    const { stdout, stderr } = withRelocatedScript(undefined, diagnose);
+    expect(stderr).toContain('does not exist, but the auto-tolerated record names 1 write(s)');
+    expect(stderr).toContain('dropping them from the report');
+    // The cross-check really did empty the record: the job-settled section is
+    // absent rather than claiming a write the file does not carry.
+    expect(stdout).not.toContain('the job SETTLED itself');
+    // ...and the report was still written, which is what the fallback buys.
+    expect(stdout).toContain('## What changed, and what needs a decision');
+  });
+
+  it('announces an UNPARSEABLE tolerance file and names what goes with it', () => {
+    const { stdout, stderr } = withRelocatedScript('{ not json', diagnose);
+    expect(stderr).toContain('no removal will be treated as settled');
+    // The count in the message is the number actually dropped — the filter
+    // below it has `liveTolerance` at its `{}` initializer, so all of them are.
+    expect(stderr).toContain('The 1 write(s) this cycle recorded are dropped');
+    expect(stdout).not.toContain('the job SETTLED itself');
+    expect(stdout).toContain('## What changed, and what needs a decision');
+  });
+
+  it('does not invent a zero when no write record was passed', () => {
+    // The by-hand shape: an unreadable file and nothing written this cycle.
+    // Ungated, the same sentence reads "The 0 write(s) … are dropped", which is
+    // a second, invented failure on top of the real one.
+    const { stderr } = withRelocatedScript('{ not json', (root) => {
+      const out = spawnSync(
+        'node',
+        [join(root, 'scripts/diagnose-schema-refresh.mjs'), '--fixtures-dir', join(root, 'fx')],
+        { encoding: 'utf8' }
+      );
+      expect(out.error, 'the relocated diagnosis failed to spawn').toBeUndefined();
+      return { stdout: out.stdout ?? '', stderr: out.stderr ?? '' };
+    });
+    expect(stderr).toContain('no removal will be treated as settled');
+    expect(stderr).not.toContain('write(s) this cycle recorded');
+  });
+}, 180_000);
 
 describe('main()’s tolerance read (issue #3005)', () => {
   const SCRIPT_PATH = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
