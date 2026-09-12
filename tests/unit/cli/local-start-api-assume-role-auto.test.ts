@@ -207,13 +207,13 @@ describe('createLocalStartApiCommand --assume-role-auto flag plumbing', () => {
 
   it('--assume-role-auto defaults to false', () => {
     const cmd = freshCommand();
-    const parsed = cmd.parse(['node', 'cdkd'], { from: 'user' });
+    const parsed = cmd.parse([], { from: 'user' });
     expect(parsed.opts().assumeRoleAuto).toBe(false);
   });
 
   it('parses bare --assume-role-auto as assumeRoleAuto=true', () => {
     const cmd = freshCommand();
-    const parsed = cmd.parse(['node', 'cdkd', '--assume-role-auto'], { from: 'user' });
+    const parsed = cmd.parse(['--assume-role-auto'], { from: 'user' });
     expect(parsed.opts().assumeRoleAuto).toBe(true);
   });
 });

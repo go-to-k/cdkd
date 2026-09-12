@@ -83,14 +83,14 @@ describe('createLocalStartAgentCoreCommand', () => {
   it('parses --from-state as a flag (no value)', () => {
     const fresh = createLocalStartAgentCoreCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'My/Agent', '--from-state'], { from: 'user' });
+    const parsed = fresh.parse(['My/Agent', '--from-state'], { from: 'user' });
     expect(parsed.opts().fromState).toBe(true);
   });
 
   it('parses --state-bucket <bucket>', () => {
     const fresh = createLocalStartAgentCoreCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'My/Agent', '--state-bucket', 'my-bucket'], {
+    const parsed = fresh.parse(['My/Agent', '--state-bucket', 'my-bucket'], {
       from: 'user',
     });
     expect(parsed.opts().stateBucket).toBe('my-bucket');

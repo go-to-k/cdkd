@@ -95,7 +95,7 @@ describe('createLocalStartAlbCommand', () => {
   it('parses --from-state as a flag (no value)', () => {
     const fresh = createLocalStartAlbCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'My/Alb', '--from-state'], { from: 'user' });
+    const parsed = fresh.parse(['My/Alb', '--from-state'], { from: 'user' });
     expect(parsed.opts().fromState).toBe(true);
   });
 
@@ -103,7 +103,7 @@ describe('createLocalStartAlbCommand', () => {
     const fresh = createLocalStartAlbCommand();
     fresh.action(() => {});
     const parsed = fresh.parse(
-      ['node', 'cdkd', 'My/Alb', '--state-bucket', 'cdkd-state-123'],
+      ['My/Alb', '--state-bucket', 'cdkd-state-123'],
       { from: 'user' }
     );
     expect(parsed.opts().stateBucket).toBe('cdkd-state-123');
@@ -113,7 +113,7 @@ describe('createLocalStartAlbCommand', () => {
     const fresh = createLocalStartAlbCommand();
     fresh.action(() => {});
     const parsed = fresh.parse(
-      ['node', 'cdkd', 'My/Alb', '--lb-port', '80=8080', '443=8443'],
+      ['My/Alb', '--lb-port', '80=8080', '443=8443'],
       { from: 'user' }
     );
     expect(parsed.opts().lbPort).toEqual(['80=8080', '443=8443']);
@@ -122,7 +122,7 @@ describe('createLocalStartAlbCommand', () => {
   it('parses --tls as a boolean flag (no value)', () => {
     const fresh = createLocalStartAlbCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'My/Alb', '--tls'], { from: 'user' });
+    const parsed = fresh.parse(['My/Alb', '--tls'], { from: 'user' });
     expect(parsed.opts().tls).toBe(true);
   });
 });

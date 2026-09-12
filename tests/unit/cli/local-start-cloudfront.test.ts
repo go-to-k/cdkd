@@ -83,7 +83,7 @@ describe('createLocalStartCloudFrontCommand', () => {
   it('parses --tls as a boolean flag (no value)', () => {
     const fresh = createLocalStartCloudFrontCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'My/Dist', '--tls'], { from: 'user' });
+    const parsed = fresh.parse(['My/Dist', '--tls'], { from: 'user' });
     expect(parsed.opts().tls).toBe(true);
   });
 
@@ -91,7 +91,7 @@ describe('createLocalStartCloudFrontCommand', () => {
     const fresh = createLocalStartCloudFrontCommand();
     fresh.action(() => {});
     const parsed = fresh.parse(
-      ['node', 'cdkd', 'My/Dist', '--origin', 'O1=./dist', '--origin', 'O2=./admin'],
+      ['My/Dist', '--origin', 'O1=./dist', '--origin', 'O2=./admin'],
       { from: 'user' }
     );
     expect(parsed.opts().origin).toEqual(['O1=./dist', 'O2=./admin']);
@@ -100,7 +100,7 @@ describe('createLocalStartCloudFrontCommand', () => {
   it('parses --port <port>', () => {
     const fresh = createLocalStartCloudFrontCommand();
     fresh.action(() => {});
-    const parsed = fresh.parse(['node', 'cdkd', 'My/Dist', '--port', '8080'], { from: 'user' });
+    const parsed = fresh.parse(['My/Dist', '--port', '8080'], { from: 'user' });
     expect(parsed.opts().port).toBe('8080');
   });
 });

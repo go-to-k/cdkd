@@ -47,20 +47,20 @@ describe('createLocalRunTaskCommand', () => {
   });
 
   it('parses bare --assume-task-role as boolean true', () => {
-    const parsed = cmd.parse(['node', 'cdkd', 'TD', '--assume-task-role'], { from: 'user' });
+    const parsed = cmd.parse(['TD', '--assume-task-role'], { from: 'user' });
     expect(parsed.opts().assumeTaskRole).toBe(true);
   });
 
   it('parses --assume-task-role <arn> as the ARN string', () => {
     const parsed = cmd.parse(
-      ['node', 'cdkd', 'TD', '--assume-task-role', 'arn:aws:iam::123:role/foo'],
+      ['TD', '--assume-task-role', 'arn:aws:iam::123:role/foo'],
       { from: 'user' }
     );
     expect(parsed.opts().assumeTaskRole).toBe('arn:aws:iam::123:role/foo');
   });
 
   it('parses --no-pull as pull=false', () => {
-    const parsed = cmd.parse(['node', 'cdkd', 'TD', '--no-pull'], { from: 'user' });
+    const parsed = cmd.parse(['TD', '--no-pull'], { from: 'user' });
     expect(parsed.opts().pull).toBe(false);
   });
 
@@ -74,19 +74,19 @@ describe('createLocalRunTaskCommand', () => {
 
   it('parses --from-state as fromState=true', () => {
     const fresh = createLocalRunTaskCommand();
-    const parsed = fresh.parse(['node', 'cdkd', 'TD', '--from-state'], { from: 'user' });
+    const parsed = fresh.parse(['TD', '--from-state'], { from: 'user' });
     expect(parsed.opts().fromState).toBe(true);
   });
 
   it('defaults --from-state to false', () => {
     const fresh = createLocalRunTaskCommand();
-    const parsed = fresh.parse(['node', 'cdkd', 'TD'], { from: 'user' });
+    const parsed = fresh.parse(['TD'], { from: 'user' });
     expect(parsed.opts().fromState).toBe(false);
   });
 
   it('parses --stack-region <region> as stackRegion=<region>', () => {
     const fresh = createLocalRunTaskCommand();
-    const parsed = fresh.parse(['node', 'cdkd', 'TD', '--stack-region', 'us-west-2'], {
+    const parsed = fresh.parse(['TD', '--stack-region', 'us-west-2'], {
       from: 'user',
     });
     expect(parsed.opts().stackRegion).toBe('us-west-2');

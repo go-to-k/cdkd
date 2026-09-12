@@ -458,7 +458,13 @@ describe('cli/options.ts', () => {
       cmd.action(() => {
         // no-op; we read opts off the parsed command below
       });
-      cmd.parse(['node', 'cdkd', ...args], { from: 'user' });
+      // `from: 'user'` means the array is USER arguments — it carries no
+      // argv[0]/argv[1] prefix. An `['node', 'cdkd', ...]` prefix made those
+      // two excess operands on a command declaring no `.argument()`.
+      // Measured: commander 12 accepted them (they landed in `cmd.args`),
+      // commander 14 rejects with "too many arguments. Expected 0 arguments
+      // but got 2" — with or without an action handler.
+      cmd.parse(args, { from: 'user' });
       return cmd.opts<{ resourceTimeout?: ResourceTimeoutOption }>().resourceTimeout;
     }
 
