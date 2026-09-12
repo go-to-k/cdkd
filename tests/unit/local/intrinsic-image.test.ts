@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vite-plus/test';
 
 import { derivePseudoParametersFromRegion } from '../../../src/local/intrinsic-image.js';
+import { derivePartitionAndUrlSuffix } from '../../../src/utils/aws-partition.js';
 
 /**
  * Issue #1814: `derivePseudoParametersFromRegion` is cdk-local's, and cdk-local
@@ -76,26 +77,38 @@ describe('derivePseudoParametersFromRegion (issue #1814 canonicalizing boundary)
     });
 
     /**
-     * Surfaced while writing the row above: canonicalizing the region is only
-     * half the agreement between the two tables. cdk-local's partition table
-     * predates the three rows cdkd's issue #1764 added, so for these regions the
-     * shim delegates a perfectly canonical region and STILL gets a commercial
-     * answer. That is a table-COVERAGE divergence, orthogonal to case, and it is
-     * not something this wrapper can fix — filed as issue #1821.
+     * The table-COVERAGE divergence issue #1821 pinned, now CLOSED. cdk-local's
+     * partition table used to predate the three rows cdkd's issue #1764 added,
+     * so for these regions the shim delegated a perfectly canonical region and
+     * still got a commercial answer. The old cases asserted that wrong answer on
+     * purpose, so that the day cdk-local gained the rows they would fail and
+     * point at #1821 rather than let the divergence be re-discovered — which is
+     * exactly what cdk-local 0.148.4 did.
      *
-     * Pinned rather than left latent so the day cdk-local gains the rows, this
-     * test fails and points at #1821 instead of the divergence being
-     * re-discovered from scratch.
+     * What replaces them is the invariant #1821 actually wanted: the two tables
+     * AGREE. Both halves are asserted, because they fail for different reasons —
+     * the literals catch either table moving, and the cross-table comparison
+     * catches them moving apart even if some future edit changes both. The
+     * expectation is deliberately NOT derived from the subject's own table.
      */
-    it.each(['us-isof-south-1', 'eu-isoe-west-1', 'eusc-de-east-1'])(
-      '%s is a KNOWN cdk-local table gap, not a case bug (issue #1821)',
-      (region: string) => {
+    it.each([
+      ['us-isof-south-1', 'aws-iso-f', 'csp.hci.ic.gov'],
+      ['eu-isoe-west-1', 'aws-iso-e', 'cloud.adc-e.uk'],
+      ['eusc-de-east-1', 'aws-eusc', 'amazonaws.eu'],
+    ])(
+      '%s resolves %s / %s — cdk-local now carries the issue #1764 rows (closes #1821)',
+      (region: string, partition: string, urlSuffix: string) => {
         expect(derivePseudoParametersFromRegion(region)).toEqual({
           accountId: undefined,
           region,
-          partition: 'aws',
-          urlSuffix: 'amazonaws.com',
+          partition,
+          urlSuffix,
         });
+
+        // cdkd's OWN table, reached without going through the shim. #1821 was
+        // about these two disagreeing, so the agreement is the assertion.
+        expect(derivePartitionAndUrlSuffix(region)).toEqual({ partition, urlSuffix });
+
         // Case-folding is still applied — the wrapper does its job here.
         expect(derivePseudoParametersFromRegion(region.toUpperCase())?.region).toBe(region);
       },

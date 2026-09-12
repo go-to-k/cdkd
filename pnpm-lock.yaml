@@ -192,8 +192,8 @@ importers:
         specifier: ^8.0.0
         version: 8.0.0
       cdk-local:
-        specifier: ^0.147.7
-        version: 0.147.7(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.2.0)(aws-cdk-lib@2.268.0(constructs@10.6.0))(constructs@10.6.0)
+        specifier: ^0.148.4
+        version: 0.148.4(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.22.0)(aws-cdk-lib@2.268.0(constructs@10.6.0))(constructs@10.6.0)
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -304,13 +304,6 @@ packages:
     engines: {node: '>= 18.0.0'}
     peerDependencies:
       '@aws-cdk/cloud-assembly-schema': '>=53.28.0'
-
-  '@aws-cdk/cloud-assembly-schema@54.2.0':
-    resolution: {integrity: sha512-u3lFXmiXSBozxGBmKTCVD/2mTDsaXzLZH3KYiIQKcB+zPldXOeE5TnooBgKV9ih2jVTo8ML0HpkhfAq2eiv0eQ==}
-    engines: {node: '>= 18.0.0'}
-    bundledDependencies:
-      - jsonschema
-      - semver
 
   '@aws-cdk/cloud-assembly-schema@54.22.0':
     resolution: {integrity: sha512-vsOuFw4+UC5+m2YZLhCecxt6wibIOmXCszA4uXaBcde2tZWx06vp1z5ByHnJeLS83A11XpAkW/TiIBGCL6jxuQ==}
@@ -1974,10 +1967,6 @@ packages:
     resolution: {integrity: sha512-495/V2I15SHgedSJoDPD23JuSfKAp726ZI1V0wtjB07Wh7q/0tri/0e0DLefZCHgxZonrGKt/OCTpAtP1wE1kQ==}
     engines: {node: '>=18.0.0'}
 
-  '@smithy/signature-v4@5.6.12':
-    resolution: {integrity: sha512-I6KLtq3H0qqSuV9vLglfi8puHqzygzWHOnI4z/Rdoo+q50vvo18vBRdPAvvEtcaKROz7Zn6qnPa14kRfPH6PcQ==}
-    engines: {node: '>=18.0.0'}
-
   '@smithy/signature-v4@5.7.3':
     resolution: {integrity: sha512-7ImGm+FkHRLcBaRttIAMZ6bzJZWb2cJGoYjq46F2UjycujWzrL9GEN9h4w7eQyXJYnltrUhxbbieBAIRrdqpow==}
     engines: {node: '>=18.0.0'}
@@ -2790,8 +2779,8 @@ packages:
   cdk-from-cfn@0.302.0:
     resolution: {integrity: sha512-jbwwzl9yXhCpuOacrQ/jDXnsEnWE7n5UqhfnCdpGOvLhy2FqWlbk1Wd7mDwNsT/QfL3AYZqIyjYSsSLxYVjPlA==}
 
-  cdk-local@0.147.7:
-    resolution: {integrity: sha512-Omke5a2Ps+os9R7itOPopm07OO18O43gl2+BNLSJ23pgl8/BJeLaL5LbWg1ojGS6q+OqNrDtBoqixTGiMdXzxg==}
+  cdk-local@0.148.4:
+    resolution: {integrity: sha512-ZjAKGTQJLk6En3IDmMkp4s575a35JQjrZWut/IuktwKQjbsXAXSs1WkL2vHp0ZzzUmK2J/zgHW6C4o1VWVrNgg==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
@@ -3784,10 +3773,6 @@ packages:
     resolution: {integrity: sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA==}
     engines: {node: '>=8.6'}
 
-  picomatch@4.0.5:
-    resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
-    engines: {node: '>=12'}
-
   picomatch@4.0.7:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
@@ -4417,8 +4402,8 @@ snapshots:
 
   '@aws-cdk/cdk-assets-lib@1.4.8':
     dependencies:
-      '@aws-cdk/cloud-assembly-api': 2.2.4(@aws-cdk/cloud-assembly-schema@54.2.0)
-      '@aws-cdk/cloud-assembly-schema': 54.2.0
+      '@aws-cdk/cloud-assembly-api': 2.2.4(@aws-cdk/cloud-assembly-schema@54.22.0)
+      '@aws-cdk/cloud-assembly-schema': 54.22.0
       '@aws-sdk/client-ecr': 3.1126.0
       '@aws-sdk/client-s3': 3.1129.0
       '@aws-sdk/client-secrets-manager': 3.1126.0
@@ -4430,7 +4415,7 @@ snapshots:
       archiver: 7.0.1
       fast-glob: 3.3.3
       mime: 2.6.0
-      picomatch: 4.0.5
+      picomatch: 4.0.7
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -4438,19 +4423,17 @@ snapshots:
 
   '@aws-cdk/cli-plugin-contract@2.182.2': {}
 
-  '@aws-cdk/cloud-assembly-api@2.2.4(@aws-cdk/cloud-assembly-schema@54.2.0)':
+  '@aws-cdk/cloud-assembly-api@2.2.4(@aws-cdk/cloud-assembly-schema@54.22.0)':
     dependencies:
-      '@aws-cdk/cloud-assembly-schema': 54.2.0
+      '@aws-cdk/cloud-assembly-schema': 54.22.0
       jsonschema: 1.5.0
       semver: 7.8.1
 
-  '@aws-cdk/cloud-assembly-api@2.2.5(@aws-cdk/cloud-assembly-schema@54.2.0)':
+  '@aws-cdk/cloud-assembly-api@2.2.5(@aws-cdk/cloud-assembly-schema@54.22.0)':
     dependencies:
-      '@aws-cdk/cloud-assembly-schema': 54.2.0
+      '@aws-cdk/cloud-assembly-schema': 54.22.0
       jsonschema: 1.5.0
       semver: 7.8.1
-
-  '@aws-cdk/cloud-assembly-schema@54.2.0': {}
 
   '@aws-cdk/cloud-assembly-schema@54.22.0': {}
 
@@ -4465,9 +4448,9 @@ snapshots:
       string-width: 4.2.3
       table: 6.9.0
 
-  '@aws-cdk/cx-api@2.257.0(@aws-cdk/cloud-assembly-schema@54.2.0)':
+  '@aws-cdk/cx-api@2.257.0(@aws-cdk/cloud-assembly-schema@54.22.0)':
     dependencies:
-      '@aws-cdk/cloud-assembly-schema': 54.2.0
+      '@aws-cdk/cloud-assembly-schema': 54.22.0
 
   '@aws-cdk/service-spec-types@0.0.237':
     dependencies:
@@ -4481,10 +4464,10 @@ snapshots:
     dependencies:
       '@aws-cdk/cdk-assets-lib': 1.4.8
       '@aws-cdk/cli-plugin-contract': 2.182.2
-      '@aws-cdk/cloud-assembly-api': 2.2.5(@aws-cdk/cloud-assembly-schema@54.2.0)
-      '@aws-cdk/cloud-assembly-schema': 54.2.0
+      '@aws-cdk/cloud-assembly-api': 2.2.5(@aws-cdk/cloud-assembly-schema@54.22.0)
+      '@aws-cdk/cloud-assembly-schema': 54.22.0
       '@aws-cdk/cloudformation-diff': 2.187.1(@aws-sdk/client-cloudformation@3.1126.0)
-      '@aws-cdk/cx-api': 2.257.0(@aws-cdk/cloud-assembly-schema@54.2.0)
+      '@aws-cdk/cx-api': 2.257.0(@aws-cdk/cloud-assembly-schema@54.22.0)
       '@aws-sdk/client-appsync': 3.1126.0
       '@aws-sdk/client-bedrock-agentcore-control': 3.1126.0
       '@aws-sdk/client-cloudcontrol': 3.1126.0
@@ -4520,7 +4503,7 @@ snapshots:
       fast-glob: 3.3.3
       fs-extra: 11.3.4
       p-limit: 3.1.0
-      picomatch: 4.0.5
+      picomatch: 4.0.7
       semver: 7.8.1
       split2: 4.2.0
       wrap-ansi: 7.0.0
@@ -4690,8 +4673,8 @@ snapshots:
     dependencies:
       '@aws-crypto/sha256-browser': 5.2.0
       '@aws-crypto/sha256-js': 5.2.0
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/credential-provider-node': 3.972.82
+      '@aws-sdk/core': 3.978.0
+      '@aws-sdk/credential-provider-node': 3.972.83
       '@aws-sdk/signature-v4-multi-region': 3.996.46
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -4782,8 +4765,8 @@ snapshots:
     dependencies:
       '@aws-crypto/sha256-browser': 5.2.0
       '@aws-crypto/sha256-js': 5.2.0
-      '@aws-sdk/core': 3.977.9
-      '@aws-sdk/credential-provider-node': 3.972.82
+      '@aws-sdk/core': 3.978.0
+      '@aws-sdk/credential-provider-node': 3.972.83
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/fetch-http-handler': 5.8.0
@@ -5237,7 +5220,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-cognito-identity@3.972.37':
     dependencies:
-      '@aws-sdk/nested-clients': 3.997.44
+      '@aws-sdk/nested-clients': 3.997.45
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/types': 4.18.0
@@ -5313,7 +5296,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-login@3.972.77':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/nested-clients': 3.997.44
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -5414,17 +5397,17 @@ snapshots:
   '@aws-sdk/credential-providers@3.1054.0':
     dependencies:
       '@aws-sdk/client-cognito-identity': 3.1054.0
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/credential-provider-cognito-identity': 3.972.37
-      '@aws-sdk/credential-provider-env': 3.972.70
-      '@aws-sdk/credential-provider-http': 3.972.72
-      '@aws-sdk/credential-provider-ini': 3.973.15
-      '@aws-sdk/credential-provider-login': 3.972.77
-      '@aws-sdk/credential-provider-node': 3.972.82
-      '@aws-sdk/credential-provider-process': 3.972.70
-      '@aws-sdk/credential-provider-sso': 3.973.14
-      '@aws-sdk/credential-provider-web-identity': 3.972.76
-      '@aws-sdk/nested-clients': 3.997.44
+      '@aws-sdk/credential-provider-env': 3.972.71
+      '@aws-sdk/credential-provider-http': 3.972.73
+      '@aws-sdk/credential-provider-ini': 3.973.16
+      '@aws-sdk/credential-provider-login': 3.972.78
+      '@aws-sdk/credential-provider-node': 3.972.83
+      '@aws-sdk/credential-provider-process': 3.972.71
+      '@aws-sdk/credential-provider-sso': 3.973.15
+      '@aws-sdk/credential-provider-web-identity': 3.972.77
+      '@aws-sdk/nested-clients': 3.997.45
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/credential-provider-imds': 4.5.2
@@ -5527,7 +5510,7 @@ snapshots:
 
   '@aws-sdk/nested-clients@3.997.44':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/signature-v4-multi-region': 3.996.46
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -5570,7 +5553,7 @@ snapshots:
 
   '@aws-sdk/token-providers@3.1116.0':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/nested-clients': 3.997.44
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -6555,12 +6538,6 @@ snapshots:
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
-  '@smithy/signature-v4@5.6.12':
-    dependencies:
-      '@smithy/core': 3.33.3
-      '@smithy/types': 4.18.0
-      tslib: 2.8.1
-
   '@smithy/signature-v4@5.7.3':
     dependencies:
       '@smithy/core': 3.33.3
@@ -6570,7 +6547,7 @@ snapshots:
   '@smithy/signature-v4a@3.2.7':
     dependencies:
       '@smithy/core': 3.33.3
-      '@smithy/signature-v4': 5.6.12
+      '@smithy/signature-v4': 5.7.3
       '@smithy/types': 4.18.0
       tslib: 2.8.1
 
@@ -7268,9 +7245,9 @@ snapshots:
 
   cdk-from-cfn@0.302.0: {}
 
-  cdk-local@0.147.7(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.2.0)(aws-cdk-lib@2.268.0(constructs@10.6.0))(constructs@10.6.0):
+  cdk-local@0.148.4(@aws-cdk/cli-plugin-contract@2.182.2)(@aws-cdk/cloud-assembly-schema@54.22.0)(aws-cdk-lib@2.268.0(constructs@10.6.0))(constructs@10.6.0):
     dependencies:
-      '@aws-cdk/cloud-assembly-api': 2.2.5(@aws-cdk/cloud-assembly-schema@54.2.0)
+      '@aws-cdk/cloud-assembly-api': 2.2.5(@aws-cdk/cloud-assembly-schema@54.22.0)
       '@aws-cdk/toolkit-lib': 1.28.0(@aws-cdk/cli-plugin-contract@2.182.2)
       '@aws-crypto/sha256-js': 5.2.0
       '@aws-sdk/client-bedrock-agentcore-control': 3.1126.0
@@ -7288,16 +7265,23 @@ snapshots:
       '@aws-sdk/client-sqs': 3.1126.0
       '@aws-sdk/client-ssm': 3.1126.0
       '@aws-sdk/client-sts': 3.1126.0
+      '@aws-sdk/credential-provider-node': 3.972.83
       '@aws-sdk/signature-v4a': 3.1059.0
       '@clack/core': 1.3.1
       '@clack/prompts': 1.4.0
-      '@smithy/signature-v4': 5.6.12
+      '@smithy/node-http-handler': 4.12.1
+      '@smithy/signature-v4': 5.7.3
+      '@smithy/types': 4.18.0
+      agent-base: 9.0.0
       aws-cdk-lib: 2.268.0(constructs@10.6.0)
       chokidar: 5.0.0
       commander: 12.1.0
       constructs: 10.6.0
       fflate: 0.8.3
       graphlib: 2.1.8
+      http-proxy-agent: 9.1.0
+      https-proxy-agent: 9.1.0
+      proxy-from-env: 2.1.0
       ws: 8.21.3
     transitivePeerDependencies:
       - '@aws-cdk/cli-plugin-contract'
@@ -7305,7 +7289,9 @@ snapshots:
       - bare-abort-controller
       - bare-buffer
       - bufferutil
+      - kerberos
       - react-native-b4a
+      - supports-color
       - utf-8-validate
 
   chai@6.2.2: {}
@@ -8290,8 +8276,6 @@ snapshots:
   picocolors@1.1.1: {}
 
   picomatch@2.3.2: {}
-
-  picomatch@4.0.5: {}
 
   picomatch@4.0.7: {}
 

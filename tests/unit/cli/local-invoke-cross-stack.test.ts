@@ -204,9 +204,20 @@ describe('substituteEnvVarsFromStateAsync — cross-stack wiring used by --from-
     expect(audit.unresolved[0]!.reason).toContain('NotDeployedYet');
   });
 
-  it('passes through a resolver-thrown error as an audit entry without aborting the pass', async () => {
+  it('passes through a resolver-thrown error as an audit entry without aborting the pass, with the message WITHHELD', async () => {
+    // A canary rather than a plausible message: the load-bearing assertion
+    // below is that this text does NOT reach the audit entry, and a generic
+    // string could coincide with wording the reason legitimately carries.
+    //
+    // cdk-local 0.148.x stopped interpolating a resolver error's `message` into
+    // the reason, substituting a length and a pointer to `--verbose`. That is
+    // the same hazard cdkd's own issue #2803 closed on the import path: the
+    // thrown text can carry an assembled secret, and an audit entry is rendered
+    // to the user. The old expectation asserted the raw message was present,
+    // so the upgrade correctly failed it; withholding is the behaviour to pin.
+    const CANARY = 'CANARY-S3-DENIED-8f2b';
     const resolver = makeResolver({
-      resolveImport: vi.fn().mockRejectedValue(new Error('S3 access denied')),
+      resolveImport: vi.fn().mockRejectedValue(new Error(CANARY)),
     });
     const context: SubstitutionContext = {
       resources: {},
@@ -227,7 +238,19 @@ describe('substituteEnvVarsFromStateAsync — cross-stack wiring used by --from-
     expect(env).toEqual({ LITERAL_A: 'preserved' });
     expect(audit.unresolved).toHaveLength(1);
     expect(audit.unresolved[0]!.key).toBe('OTHER_BUCKET');
-    expect(audit.unresolved[0]!.reason).toContain('S3 access denied');
+
+    const reason = audit.unresolved[0]!.reason;
+    // Still diagnosable without the message: WHICH export, and WHAT stage.
+    expect(reason).toContain('OtherStack-Bucket');
+    expect(reason).toContain('lookup failed');
+    // The throw's own text never reaches the entry.
+    expect(reason).not.toContain(CANARY);
+    // And the user is told where the detail went, rather than being left with
+    // a reason that reads as though nothing more is known. The LENGTH is
+    // derived from the canary, not hardcoded, so renaming the canary cannot
+    // leave this assertion pinning a stale figure.
+    expect(reason).toContain(`${CANARY.length}-character message withheld`);
+    expect(reason).toContain('--verbose');
   });
 
   // Closes the cross-region asymmetry test (Gap 2 of the test reviewer's
