@@ -141,9 +141,11 @@ vi.mock('p-limit', () => ({
  * and the foreign-bag count from one to three; the "two" here was wrong
  * before that too.) THIS file covers the first of the three: its engine is
  * built with no exports-index store and it asserts `saveState` alone, so the
- * persist walk is the site it exercises. The other two are covered by
- * `intrinsic-resolver-concurrent-drain.test.ts` and
- * `deploy-engine-outputs-only-change.test.ts`.
+ * persist walk is the site it exercises. The no-change summary's re-redaction
+ * of the previous bag is asserted by
+ * `intrinsic-resolver-concurrent-drain.test.ts`; the no-change index's arm is
+ * reached by `deploy-engine-outputs-only-change.test.ts`, but its re-redaction
+ * is the fail-safe one no case pins — see the comment at that call site.
  * `descendArrays` is the one flag `TEMPLATE_DERIVED_RULES` and
  * `TEMPLATE_SOURCED_RULES` differ on, and it is exactly that claim.
  */

@@ -1527,11 +1527,13 @@ export class DeployEngine {
    * A single entry point because SEVEN call sites redact this same bag — the
    * state-persist choke point, the no-change re-check, that path's exports
    * index and deploy summary, the changes path's index and summary, and the
-   * outputs pass itself — and before this they each spelled the value-only
-   * redaction separately. Two outputs resolving one secret collapsed onto
-   * whichever expression was recorded last at every one of them. (Three at
-   * the time this was written; issue #2814 split the post-deploy publish into
-   * a separate index and summary on each path, each redacting when it reads.)
+   * outputs pass itself. THREE of those are the ones issue #1910 unified —
+   * the persist choke point, the re-check, and the outputs pass, which the
+   * list above ends on rather than opens with: before it they each spelled
+   * the value-only redaction separately, and two outputs resolving one secret
+   * collapsed onto whichever expression was recorded last at all three. The
+   * other FOUR are issue #2814's, both paths' index and summary: each read
+   * the bag unredacted until then, and now redacts at the moment it reads.
    */
   /**
    * Record the plaintext behind every output {@link redactOutputs} just masked,
