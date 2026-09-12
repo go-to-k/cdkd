@@ -1524,12 +1524,14 @@ export class DeployEngine {
    * Redact the resolved stack OUTPUTS bag, positioned by the unresolved
    * template `Outputs` values (issue #1910).
    *
-   * A single entry point because THREE call sites redact this same bag — the
-   * state-persist choke point, the no-change re-check, and the post-deploy
-   * publish that feeds the exports index / deploy summary — and before this
-   * they each spelled the value-only redaction separately. Two outputs
-   * resolving one secret collapsed onto whichever expression was recorded last
-   * at all three.
+   * A single entry point because SEVEN call sites redact this same bag — the
+   * state-persist choke point, the no-change re-check, that path's exports
+   * index and deploy summary, the changes path's index and summary, and the
+   * outputs pass itself — and before this they each spelled the value-only
+   * redaction separately. Two outputs resolving one secret collapsed onto
+   * whichever expression was recorded last at every one of them. (Three at
+   * the time this was written; issue #2814 split the post-deploy publish into
+   * a separate index and summary on each path, each redacting when it reads.)
    */
   /**
    * Record the plaintext behind every output {@link redactOutputs} just masked,
@@ -1543,9 +1545,11 @@ export class DeployEngine {
    * is no plaintext behind it to remember.
    *
    * Called only from the REAL-DEPLOY outputs pass. Of the six other
-   * `redactOutputs` callers, three hand it a bag from a previous generation —
-   * the persist walk, and the no-change path's exports index and summary —
-   * where a mask is already unrecoverable and pretending otherwise would
+   * `redactOutputs` callers, three CAN hand it a bag from a previous
+   * generation — the persist walk always may, and the no-change path's
+   * exports index and summary do on the arms where that path keeps the
+   * previous bag — and there a mask is already unrecoverable, so pretending
+   * otherwise would
    * serve a stale value. The other three are not this pass either: the
    * no-change path performs the FIRST redaction of its own resolution there,
    * and the changes path's index and summary re-redact the bag this pass
@@ -1626,7 +1630,8 @@ export class DeployEngine {
     // index and summary. (Both numbers are recounted, not incremented: issue
     // #2814 took the callers from three to seven, and the "two" was already
     // wrong before it — of the base's three sites only the persist walk took
-    // a foreign bag.) `redactStateForPersist` walks whatever `state.outputs` holds, and on
+    // a foreign bag.) `redactStateForPersist` walks whatever `state.outputs`
+    // holds, and on
     // the no-change path that is `persistedOutputs`, the PREVIOUS deploy's bag,
     // while `outputsTemplateSource` is TODAY's template. Positional descent
     // there does not merely mis-redact: `redactByPath` returns a known-secret
@@ -4098,7 +4103,8 @@ export class DeployEngine {
       // `buildDisplayOutputs` each redact this bag again when they read it
       // (issue #2814). `redactOutputs` folds the outputs pass map into
       // `this.outputSecrets` — the outputs' own substituted references — and
-      // `resolveOutputs` filled `this.outputsTemplateSource` with the unresolved values that position
+      // `resolveOutputs` filled `this.outputsTemplateSource` with the
+      // unresolved values that position
       // them (#1910).
       const resolvedOutputsBeforeRedaction = outputs;
       outputs = this.redactOutputs(outputs);

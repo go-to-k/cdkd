@@ -139,7 +139,12 @@ vi.mock('p-limit', () => ({
  * disables both flags guarding the index write, so the index never runs on
  * the failure path). (Issue #2814 took the site count from three to seven,
  * and the foreign-bag count from one to three; the "two" here was wrong
- * before that too.) `descendArrays` is the one flag `TEMPLATE_DERIVED_RULES` and
+ * before that too.) THIS file covers the first of the three: its engine is
+ * built with no exports-index store and it asserts `saveState` alone, so the
+ * persist walk is the site it exercises. The other two are covered by
+ * `intrinsic-resolver-concurrent-drain.test.ts` and
+ * `deploy-engine-outputs-only-change.test.ts`.
+ * `descendArrays` is the one flag `TEMPLATE_DERIVED_RULES` and
  * `TEMPLATE_SOURCED_RULES` differ on, and it is exactly that claim.
  */
 describe('secret-redaction - the two outputs rules constants on a cross-generation bag', () => {
