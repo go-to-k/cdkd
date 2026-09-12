@@ -183,8 +183,15 @@ fi
 # is this file's stated tie-break: a false positive costs an integ run, a false
 # negative costs a broken main.
 if [ -n "$diff_base" ]; then
-  if ! changed_files=$(git diff --name-only "$diff_base"...HEAD 2>/dev/null); then
-    changed_files=""
+  # `--no-renames`, and it is load-bearing rather than tidy. With rename
+  # detection ON -- git's default -- `--name-only` prints only the DESTINATION
+  # path, so `git mv src/deployment/rollback-executor.ts <anywhere>` produces a
+  # changed-file list with no strict path in it: `delete_touch` stays 0 and the
+  # hook exits 0 having never consulted markgate, on a branch markgate would
+  # have called stale. Measured. It also aligns this list with what markgate
+  # actually digests -- its `DiffFrom` runs `--no-renames` too, so without the
+  # flag the gate and the marker disagree about which files moved.
+  if ! changed_files=$(git diff --name-only --no-renames "$diff_base"...HEAD 2>/dev/null); then
     diff_base=""
   fi
 fi
@@ -244,6 +251,13 @@ if [ -n "$diff_base" ]; then
       # `Delete`/`DELETE` (mixed case in CFN-style constants) match the
       # lowercase patterns. Word boundaries (\b) keep matches scoped to
       # whole words / camelCase boundaries; `EnigmaFoo` is safe.
+      # No `--no-renames` here, unlike the name list above, and that asymmetry
+      # is measured rather than an oversight: this diff is restricted to ONE
+      # path, so git has no destination to pair the rename with and reports the
+      # removed lines either way. Adding the flag changed no verdict in the
+      # suite, including the renamed-provider case below it -- an unfenced flag
+      # whose comment claims it is load-bearing is the defect this file keeps
+      # finding, so it is left off.
       if git diff "$diff_base"...HEAD -- "$f" \
          | grep -vE "$comment_line_pattern" \
          | grep -qiE "$delete_symbol_pattern"; then

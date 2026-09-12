@@ -951,6 +951,71 @@ git -C "$nohist_repo" -c user.email=t@t -c user.name=t commit -q -m unrelated
 run_case "unrelated history falls through to markgate, not through the gate" 2 stale "$nohist_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$nohist_repo")"
 
+# --- A RENAME must not make a strict file disappear ---
+#
+# git's rename detection is ON by default, and `--name-only` then prints only
+# the DESTINATION path. Measured: `git mv src/deployment/rollback-executor.ts`
+# to a new name left the changed-file list with no strict path, `delete_touch`
+# stayed 0, and the hook exited 0 WITHOUT consulting markgate -- on a branch
+# markgate calls stale, since its own `DiffFrom` runs `--no-renames` and sees
+# the deletion. Adding `--no-renames` to the hook takes this fixture 0 -> 2 and
+# leaves the rest of the suite untouched, which is also the proof that nothing
+# else covered it.
+#
+# The file body is long and repetitive on purpose: git scores similarity, and a
+# one-line file is not detected as a rename at all, so a short fixture would
+# pass for the wrong reason.
+ren_repo="$TMPDIR/rename-repo"
+git init -q -b main "$ren_repo"
+declare_gate "$ren_repo" integ-destroy
+mkdir -p "$ren_repo/src/deployment"
+i=1
+while [ "$i" -le 40 ]; do
+  echo "export const line$i = $i;" >> "$ren_repo/src/deployment/rollback-executor.ts"
+  i=$((i + 1))
+done
+git -C "$ren_repo" add -A
+git -C "$ren_repo" -c user.email=t@t -c user.name=t commit -q -m base
+git -C "$ren_repo" update-ref refs/remotes/origin/main "$(git -C "$ren_repo" rev-parse HEAD)"
+git -C "$ren_repo" checkout -q -b feature/rename
+git -C "$ren_repo" mv src/deployment/rollback-executor.ts src/deployment/rollback-runner.ts
+git -C "$ren_repo" -c user.email=t@t -c user.name=t commit -q -m rename
+run_case "renaming a strict file still consults the marker" 2 stale "$ren_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$ren_repo")"
+
+# A renamed PROVIDER, which travels a different route: the destination path
+# still matches `provider_pattern`, so it reaches the hunk filter and arms on
+# the symbols the move carried.
+#
+# This case is a REGRESSION GUARD, not a fence, and saying so is the point: NO
+# mutation of the current hook reddens it. Dropping `--no-renames` from the name
+# list leaves it green (the destination alone is enough), and adding
+# `--no-renames` to the hunk diff changes nothing either, because that diff is
+# restricted to one path and git has no destination to pair the rename with. It
+# is kept because the next person to touch rename handling -- the defect above
+# is exactly that -- would otherwise have nothing asserting that a renamed
+# provider still reaches markgate.
+ren2_repo="$TMPDIR/rename-provider-repo"
+git init -q -b main "$ren2_repo"
+declare_gate "$ren2_repo" integ-destroy
+mkdir -p "$ren2_repo/src/provisioning/providers"
+echo "  async deleteResource(id: string) { return this.client.send(id); }" \
+  > "$ren2_repo/src/provisioning/providers/old-provider.ts"
+i=1
+while [ "$i" -le 40 ]; do
+  echo "export const line$i = $i;" >> "$ren2_repo/src/provisioning/providers/old-provider.ts"
+  i=$((i + 1))
+done
+git -C "$ren2_repo" add -A
+git -C "$ren2_repo" -c user.email=t@t -c user.name=t commit -q -m base
+git -C "$ren2_repo" update-ref refs/remotes/origin/main "$(git -C "$ren2_repo" rev-parse HEAD)"
+git -C "$ren2_repo" checkout -q -b feature/rename-provider
+git -C "$ren2_repo" mv src/provisioning/providers/old-provider.ts \
+  src/provisioning/providers/new-provider.ts
+git -C "$ren2_repo" -c user.email=t@t -c user.name=t commit -q -m rename-provider
+run_case "renaming a provider carrying a delete symbol arms the gate" 2 stale "$ren2_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$ren2_repo")"
+
 x2236_case "target declaring integ-destroy consults that marker" 2 stale CALLED - "$x2236_declares"
 x2236_case "sibling declaring only its own gate is NOT accepted on it" 2 fresh NOT_CALLED "declares no gate" "$x2236_other"
 x2236_case "checkout with no .markgate.yml refuses actionably" 2 fresh NOT_CALLED "GATE_MARKER_ALIASES" "$x2236_bare"
