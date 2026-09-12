@@ -2824,10 +2824,18 @@ export class DeployEngine {
       // info-log that cdkd is auto-routing it via Cloud Control (which
       // forwards the full property map). For each resource explicitly
       // opted out via `--allow-unsupported-properties Type:Prop`, warn
-      // that the silent drop has been accepted. No throw — the legacy
-      // PR #608 fail-fast was reversed by #614 to a default-on
-      // auto-route. Skips AWS::CDK::Metadata (filtered by the same
-      // predicate as the type set).
+      // that the silent drop has been accepted. Neither of those throws —
+      // the legacy PR #608 fail-fast was reversed by #614 to a default-on
+      // auto-route — but this step CAN still refuse, and the comment said
+      // it could not until issue #3028. A drop on a type the Cloud Control
+      // route cannot serve (`isNonProvisionable`, or a provider declaring
+      // `disableCcApiFallback`) has nowhere to be auto-routed, so
+      // `ProviderRegistry.reportSilentDropDecisions` throws rather than
+      // letting the route fail later with an opaque error. That refusal
+      // lands HERE — ahead of the DAG at step 4 and the diff at step 5 —
+      // so the deploy ends having provisioned nothing. Skips
+      // AWS::CDK::Metadata (filtered by the same predicate as the type
+      // set).
       const resourcesForPropertyCheck = Object.entries(effectiveTemplate.Resources || {})
         .filter(([, r]) => r.Type !== 'AWS::CDK::Metadata')
         .map(([logicalId, r]) => ({
