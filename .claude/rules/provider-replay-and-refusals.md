@@ -43,6 +43,20 @@ the 100% claim — an unconditional refusal with no such note reads as an
 oversight, and the next reader cannot tell the two apart. Do NOT generalize
 this to "my guard is probably right anyway": the measurement is the licence.
 
+**A second, narrower shape refuses on a replay that COULD succeed, and its
+licence is that every downgrade is a SILENT failure** (issue
+[#3048](https://github.com/go-to-k/cdkd/issues/3048),
+`SecretsManagerSecretProvider.create`'s malformed `GenerateSecretString`).
+Proceeding mints a bare password and stages it RAW as `AWSCURRENT`; skipping
+creates a secret with NO version. Both leave a resource that exists and breaks
+every consumer with nothing in the run saying so, where the refusal fails the
+rollback loudly with a hand-edit of the record as its remedy. The test here is
+not "could the replay succeed" but "does any downgrade leave the user better
+off than the failure" — and it is stated AT the refusal, like the exception
+above, with the two outcomes it weighed. Its update-path sibling answers
+differently (SKIP + retain the previous block via `effectiveProperties`),
+because there a live value exists to keep.
+
 Consumers today come in THREE shapes, and
 the count is worth knowing because the spread is exactly the drift the shared
 helper exists to stop:

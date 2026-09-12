@@ -106,8 +106,15 @@ export interface EffectivePropertiesResult {
   /**
    * The properties actually delivered. Recorded verbatim in place of the
    * desired bag, so it must be a COMPLETE replacement, not a patch.
+   *
+   * An EXPLICIT `undefined` is accepted (and means the same as absent) so a
+   * provider can spell the decision as one always-present key --
+   * `effectiveProperties: skipped ? bag : undefined` -- where a conditional
+   * spread would hide the key from a source-shape fence that reads return
+   * literals (`tests/unit/scripts/integ-secret-fixture-sweep.test.ts`). Every
+   * consumer already gates on truthiness or `=== undefined`.
    */
-  effectiveProperties?: Record<string, unknown>;
+  effectiveProperties?: Record<string, unknown> | undefined;
 }
 
 /**

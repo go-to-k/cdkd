@@ -660,11 +660,22 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // The premise: `effectiveProperties` is returned only on the SKIP path,
     // which is exactly the path where `generateSecretString` was never called,
     // so no generated value exists to carry. The two are mutually exclusive by
-    // construction rather than by inspection.
+    // construction rather than by inspection -- and the round-2 review
+    // measured what "by construction" needs pinned for that to stay true:
+    //   - the ELSE arm must be `undefined` (a `{ ...properties, ...updateParams }`
+    //     there carries the wire bag, `SecretString` included, and was GREEN
+    //     under a pattern that stopped at the helper's opening paren);
+    //   - the helper must not reach a THIRD path to the minted value: no
+    //     `this.` other than the logger (a `this.mintAgain(properties)`
+    //     delegate was GREEN), exactly the two known `generateSecretString`
+    //     call sites, and no instance-field assignment outside the
+    //     constructor (a `this.minted = secretString` stash read back inside
+    //     the helper was GREEN). The provider is a registered SINGLETON, so
+    //     any such stash is a cross-resource bug regardless of this fence.
     // A regex LITERAL, not a string: in a quoted string `\s` collapses to a
     // bare `s` and the pattern silently stops matching (measured).
     const EFFECTIVE_PROPS_RE =
-      /effectiveProperties:\s*skippedGenerate\s*\?\s*this\.retainPreviousGenerateBlock\(/;
+      /effectiveProperties:\s*skippedGenerate\s*\?\s*this\.retainPreviousGenerateBlock\([^)]*\)\s*:\s*undefined\s*,/;
     const ALLOWED_RETURN_KEYS = new Set([
       'physicalId',
       'attributes',
@@ -686,6 +697,21 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
           `the generated secret into state; re-open #2212`
       ).toBe(false);
     }
+    expect(
+      /\bthis\.(?!logger\.)/.exec(retainBody)?.[0],
+      'retainPreviousGenerateBlock now reaches the instance beyond the logger — a delegate or a ' +
+        'field can route the minted value into the bag it builds; re-open #2212'
+    ).toBeUndefined();
+    expect(
+      code.match(/\bthis\.generateSecretString\(/g)?.length,
+      'generateSecretString gained a call site — trace where its value goes before changing this'
+    ).toBe(2);
+    const fieldWrites = (s: string): number => (s.match(/\bthis\.\w+\s*=(?!=)/g) ?? []).length;
+    expect(
+      fieldWrites(code),
+      'an instance field is assigned outside the constructor — a stash can carry the minted value ' +
+        'across methods (and across resources: the provider is a singleton); re-open #2212'
+    ).toBe(fieldWrites(methodBody(code, 'constructor')));
     for (const method of ['create', 'update']) {
       // Comment-STRIPPED: a comment inside a return literal was otherwise read
       // as a key (measured on issue #3048's `effectiveProperties` note).

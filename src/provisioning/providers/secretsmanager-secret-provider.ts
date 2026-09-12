@@ -103,11 +103,13 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     try {
       // Build the secret value from GenerateSecretString or SecretString
       let secretString: string | undefined;
-      const generateConfig = properties['GenerateSecretString'] as
-        | Record<string, unknown>
-        | undefined;
+      const rawGenerate = properties['GenerateSecretString'];
 
-      if (generateConfig) {
+      // `!= null`, NOT truthiness — the same gate `changedSecretValue` uses.
+      // A FALSY malformed container (`''`, `0`) would otherwise fall through
+      // to the literal read and, with no literal declared, create a secret
+      // with NO version in silence (the #1493 gate-bug shape).
+      if (rawGenerate != null) {
         // DELIBERATE DEVIATION from the replay downgrade, recorded rather than
         // left implicit (`.claude/rules/provider-replay-and-refusals.md`
         // requires it to be stated). `create()` declares no `CreateContext`,
@@ -122,9 +124,15 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         // ignoring every declared member and returns it RAW instead of the
         // declared JSON document, and skipping the value creates a secret with
         // NO version at all — a resource that exists and breaks every consumer
-        // silently. A failed rollback is loud and retryable; neither of those
-        // is. Threading the context and choosing between them is issue #3048's
-        // residual, not this arm's to decide.
+        // silently. A failed rollback is loud; its remedy is a hand-edit of
+        // the record in `state.json` (the value cannot be fixed from the
+        // template), which is still a remedy where the two silent outcomes
+        // have none. Threading the context would not change that answer, so
+        // the refusal stands on a replay too — a decision, not a gap.
+        const generateConfig = requireConfigObject(
+          rawGenerate,
+          'AWS::SecretsManager::Secret GenerateSecretString'
+        );
         secretString = this.generateSecretString(generateConfig);
       } else if (properties['SecretString'] !== undefined && properties['SecretString'] !== '') {
         // `''` is skipped: a `SecretString: ''` creates a secret with NO
@@ -136,6 +144,17 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         // that would trip that refusal on every later update can no longer
         // be created.
         secretString = requireSecretStringShape(properties['SecretString']);
+      }
+      if (secretString === undefined) {
+        // Legal (neither property is required by the schema) but almost never
+        // meant, and on the reverse-replacement replay-create it is the shape
+        // a record whose block `update()` DROPPED arrives in (issue #3048,
+        // `retainPreviousGenerateBlock`) — so it must not pass in silence.
+        this.logger.warn(
+          `AWS::SecretsManager::Secret ${logicalId} declares no secret value (neither ` +
+            `GenerateSecretString nor a non-empty SecretString); the secret is created with NO ` +
+            `version. Consumers reading it will fail until a value is set.`
+        );
       }
 
       const createParams: import('@aws-sdk/client-secrets-manager').CreateSecretCommandInput = {
@@ -437,8 +456,57 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   }
 
   /**
-   * The `SecretString` an in-place update must send, or `undefined` when the
-   * value's SOURCE is unchanged (issue #2472).
+   * The bag to RECORD when the generate block was skipped: the desired
+   * properties with `GenerateSecretString` restored to the previously-applied
+   * value, or with the key dropped when the previous side cannot be vouched
+   * for either.
+   *
+   * Validated through `requireConfigObject` — the same predicate the wire read
+   * runs — rather than a hand-written `typeof` twin, so the two cannot
+   * disagree about a blank string, an explicit null or an intrinsic. The
+   * retained block is COPIED, not aliased: both engine consumers spread the
+   * answer one level deep only (the #1653 review rule).
+   *
+   * The DROP is announced rather than silent (the #1654 rule: dropping a key
+   * moves a hazard unless something still says so). A record carrying
+   * neither value source later reaches the reverse-replacement replay-create,
+   * where `create()` — which cannot see the record's history — would create
+   * the secret with NO version; the warning here is what makes that record
+   * diagnosable, and `create()` warns again when it meets one.
+   */
+  private retainPreviousGenerateBlock(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Record<string, unknown> {
+    const previous = previousProperties['GenerateSecretString'];
+    const usablePrevious =
+      previous == null
+        ? undefined
+        : requireConfigObject(previous, 'AWS::SecretsManager::Secret GenerateSecretString', {
+            // No-op: the drop warning below is the one announcement, naming
+            // BOTH sides; a second line about the previous block would name a
+            // value the user did not just write.
+            onUnusable: () => {},
+          });
+    const effective = { ...properties };
+    if (usablePrevious === undefined) {
+      delete effective['GenerateSecretString'];
+      this.logger.warn(
+        `AWS::SecretsManager::Secret GenerateSecretString is dropped from the recorded ` +
+          `properties: neither the desired nor the previously recorded block is usable. The ` +
+          `record now carries no value source; fix the template so the next deploy records one.`
+      );
+    } else {
+      effective['GenerateSecretString'] = { ...usablePrevious };
+    }
+    return effective;
+  }
+
+  /**
+   * The `SecretString` an in-place update must send (as `value`), or
+   * `undefined` when the value's SOURCE is unchanged (issue #2472) or when a
+   * malformed `GenerateSecretString` block was SKIPPED (issue #3048,
+   * `skippedGenerate: true` — the caller records the previous block instead).
    *
    * The source is `GenerateSecretString` when present (CloudFormation gives it
    * precedence over a literal) and `SecretString` otherwise. A generated value
@@ -510,36 +578,6 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * unrequested re-roll) for an edit that puts a secret's plaintext into a
    * template.
    */
-  /**
-   * The bag to RECORD when the generate block was skipped: the desired
-   * properties with `GenerateSecretString` restored to the previously-applied
-   * value, or with the key dropped when the previous side cannot be vouched
-   * for either.
-   *
-   * Validated through `requireConfigObject` — the same predicate the wire read
-   * runs — rather than a hand-written `typeof` twin, so the two cannot
-   * disagree about a blank string, an explicit null or an intrinsic. The
-   * callback is a no-op because this is a RECORDING decision: the user has
-   * already been warned once about the desired side, and warning again about
-   * the PREVIOUS side would name a value they did not just write.
-   */
-  private retainPreviousGenerateBlock(
-    properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
-  ): Record<string, unknown> {
-    const previous = previousProperties['GenerateSecretString'];
-    const usablePrevious =
-      previous == null
-        ? undefined
-        : requireConfigObject(previous, 'AWS::SecretsManager::Secret GenerateSecretString', {
-            onUnusable: () => {},
-          });
-    const effective = { ...properties };
-    if (usablePrevious === undefined) delete effective['GenerateSecretString'];
-    else effective['GenerateSecretString'] = usablePrevious;
-    return effective;
-  }
-
   private changedSecretValue(
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
@@ -558,9 +596,12 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       if (unchanged) return { value: undefined, skippedGenerate: false };
       // A malformed container SKIPS the value rather than throwing (issue
       // #3048). `update()` is reached by the rollback executor's revert arms
-      // and by `cdkd drift --revert` with a cdkd STATE record as the desired
-      // bag, which the user cannot edit from the template — so a throw here
-      // leaves the secret un-rollbackable (the #1544 hazard).
+      // with a cdkd STATE record as the desired bag, which the user cannot
+      // edit from the template — so a throw here leaves the secret
+      // un-rollbackable (the #1544 hazard). `cdkd drift --revert` is NOT a
+      // caller of this arm: its bag is seeded from the AWS readback plus the
+      // DRIFTED keys only, and `getDriftUnknownPaths` keeps this key out of
+      // the comparison, so the block never rides a revert.
       //
       // The downgrade is a SKIP and NOT `onUnusable`, because at this site
       // proceeding is the harm: `generateSecretString` reads every member off
