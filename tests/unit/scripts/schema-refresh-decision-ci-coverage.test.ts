@@ -820,27 +820,35 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // still fail its job. This re-derives that verdict here, so a wrong
     // predicate or a wrongly threaded body shows up in two places.
     //
-    // TWO WIRINGS ARE NOT FENCED, and saying so is the point rather than an
-    // omission — three instruments were tried on them and each fell in one
-    // line, which is this repo's signal to state the bound instead of
-    // modelling it again:
+    // ONE WIRING IS NOT FENCED, and saying so is the point rather than an
+    // omission — three instruments were tried on it and each fell in one line,
+    // which is this repo's signal to state the bound instead of modelling it
+    // again:
     //
-    //  - that `decisionTerms` READS the shipped `countDecisions`. A value
-    //    comparison is satisfied by a literal holding today's six names in
-    //    order; a source-text fence is satisfied by keeping the call and
-    //    discarding it (`void countDecisions.toString();` above a literal
-    //    return — measured green). What protects the claim is WHEN it matters:
-    //    a literal is indistinguishable from the real call until
-    //    `countDecisions` changes, and at that moment it goes stale and the
-    //    floor, the anchors and the classification case all red. The scenario
-    //    this would fence — a seventh term arriving — is exactly the one a
-    //    stale literal cannot survive, which is why its probes are run against
-    //    the real function and recorded in the commit.
     //  - that the coverage case CALLS `neutralised`. A text fence over this
     //    file caught deleting the call but was satisfied by moving it into a
     //    `//` comment or by appending `|| true`. This file strips comments in
     //    three other places precisely because a text search cannot tell code
-    //    from commentary, so an unstripped one was the wrong instrument.
+    //    from commentary, so an unstripped one was the wrong instrument. What
+    //    remains is the "a test can be gutted" class, which no assertion inside
+    //    the same file catches — the verdict is reproduced below instead, so a
+    //    wrong predicate or a wrongly threaded body shows up twice.
+    //
+    // The TERM SOURCE is fenced, and it took four attempts to find an
+    // instrument that is not a tautology. The subject is `decisionTerms`, so it
+    // must be on the LEFT; the right side reads the shipped function HERE,
+    // directly, which is what a literal cannot follow. Measured: a literal
+    // returning today's six names passes while they are still today's six —
+    // harmless, and indistinguishable by construction — and reds the moment
+    // `countDecisions` gains or loses one, which is the only moment the claim
+    // does any work. A stated residual said that happened anyway; it did not
+    // (15/15 green with a seventh term added), which is why this assertion
+    // exists rather than a paragraph.
+    expect(
+      decisionTerms(),
+      'decisionTerms no longer follows the shipped countDecisions'
+    ).toEqual(extractTerms(countDecisions.toString()).names);
+
     const lines = ciCommandsWithStep(CI_CHECK_JOB);
     // One predicate for both the selection and the attribution — an earlier
     // revision selected on `command + ' '` and attributed with a bare
