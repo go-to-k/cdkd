@@ -142,9 +142,9 @@ Index of every area: [code-layout.md](code-layout.md).
     expressions resolving to the SAME value collapse (last write wins) and
     every site is rewritten to the survivor — a permanent spurious UPDATE
     (#1904). The value scan stays for every leaf the source cannot position
-    (diverged shape, missing key, a leaf that embeds a secret through an
-    INTRINSIC source or a literal one `positionByEmbeddedSpan` below refuses,
-    a cross-stack leaf the source does not literally spell).
+    (diverged shape, missing key, an embedding leaf `positionByEmbeddedSpan` /
+    `positionByIntrinsicFrame` below refuse, a cross-stack leaf the source
+    does not literally spell).
   - **`positionByEmbeddedSpan`** (issue #2485) positions a LITERAL leaf that
     EMBEDS one token (`postgres://u:{{resolve:...}}@h`) by the span its source
     states — the other shape the value scan collapses. Gated on PASS-LOCAL
@@ -159,7 +159,7 @@ Index of every area: [code-layout.md](code-layout.md).
     embedded 1-3 character secret sits BELOW the scan's needle floor, where
     the scan makes no claim, so the arm writes it as its token ONLY on a bag
     whose generation the ENGINE proved (issue #2516): `markSameGenerationBag`
-    marks the object — a `WeakSet`, the shape of the pair side table — at five
+    marks the object — a `WeakSet`, the shape of the pair side table — at six
     sites whose CONDITIONS differ per site; the function's own docstring is the
     authority and this is the index (`propertiesToRecord`, on the resolved bag
     or on the SUBSET of it the SDK route writes -- taken AFTER that narrowing,
@@ -175,10 +175,11 @@ Index of every area: [code-layout.md](code-layout.md).
     outputs changed) and on two never-installed COPIES
     of the resolver's own output (the update arm's no-change re-check, marked
     BEFORE a provider call it may skip, or a stored token would read as a
-    change on every deploy; a failed op's journaled `attemptedProperties`),
+    change on every deploy; a failed op's journaled `attemptedProperties`);
+    and `cdkd import`'s own resolution bag (#2745, per the docstring)),
     and `redactSecretsForState` reads the
     mark for the object it is handed and threads it down the walk. A previous
-    generation's record, a scrub / import / drift walk, a sub-bag walked on
+    generation's record, a scrub / drift walk, a sub-bag walked on
     its own and any copy stay unmarked and keep the plaintext the scan
     leaves. Residuals, in full on the arm's own docstring: the
     `effectiveProperties` bag; a coinciding readback; an interference refusal
@@ -189,22 +190,24 @@ Index of every area: [code-layout.md](code-layout.md).
     one);
     `maskSecretsInText`, whose substring arm shares the floor, so a warn line
     can still print the plaintext (#2453); `cdkd scrub`, walking a STORED bag
-    no deploy marked; and the `Fn::Join` / `Fn::Sub` source shape -- all
-    tracked, with the nested-stack and `cdkd import` twins, by #2745.
+    no deploy marked; a NONLITERAL intrinsic frame; and the nested-stack
+    twin, still #2745.
   - **`positionByIntrinsicSkeleton`** (issue #1916) positions `Fn::Join` /
     `Fn::Sub` source leaves — the DOMINANT CDK shape
     (`secret.secretValueFromJson(...)` renders the ARN as a `Ref`, so every
     L2-reached secret is a join): literal parts escaped, non-literal parts
     wildcarded (`[^}]*`, cannot cross a token terminator), matched against the
     recorded secret expressions. Persists a match only when THREE conditions
-    hold: the bag leaf's WHOLE value is a recorded secret plaintext (an
-    embedded secret keeps going to the substring scan), EXACTLY ONE candidate
+    hold: the bag leaf's WHOLE value is a recorded secret plaintext, EXACTLY
+    ONE candidate
     matches, and the match is not DEMONSTRABLY another value's expression per
     the pass's own map (fence against bag/source misalignment). Every refusal
-    degrades to the value scan, so no case gets worse. Deliberately NO
+    falls to `positionByIntrinsicFrame` (#2745, `positionByEmbeddedSpan`'s
+    intrinsic twin; its docstring is the authority), then to the value
+    scan, so no case gets worse. Deliberately NO
     `isKnownSecretExpression` test on this arm: candidates come only from
-    proven-secret stores, so the test could never answer `false`, and an
-    unfalsifiable guard fences nothing.
+    stores of references treated as secret, so the test could never answer
+    `false`, and an unfalsifiable guard fences nothing.
   - **`positionByCrossStackSource`** (issue #2059, consulted BEFORE the
     skeleton pass) handles `Fn::ImportValue` / `Fn::GetStackOutput` source
     leaves. Extending the skeleton could not work (measured and refuted

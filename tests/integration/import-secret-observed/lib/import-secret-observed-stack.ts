@@ -19,6 +19,17 @@ export const SECRET_PLAINTEXT = 'cdkd-integ-2828-DECRYPTED-NEEDLE';
 export const SECRET_JSON_KEY = 'pw';
 
 /**
+ * A SECOND key holding a TWO-character value (issue #2745, third site): below
+ * the redaction value scan's four-character needle floor, where the scan makes
+ * no claim, so only the span arms on a bag whose provenance is proven can
+ * persist a leaf EMBEDDING it as its token. Letters rather than digits so it
+ * cannot coincide with a numeric field of a readback; the framed form
+ * `port:q7` is what `verify.sh` refuses anywhere in `state.json`.
+ */
+export const SUB_FLOOR_JSON_KEY = 'pin';
+export const SUB_FLOOR_PLAINTEXT = 'q7';
+
+/**
  * Integ probe for issue #2828: `cdkd import`'s `observedProperties` capture.
  *
  * covers: AWS::SecretsManager::Secret
@@ -61,7 +72,10 @@ export class ImportSecretObservedStack extends cdk.Stack {
     const secret = new secretsmanager.Secret(this, 'Secret', {
       description: 'cdkd integ 2828: the secret whose decrypted value must never reach state.json',
       secretStringValue: cdk.SecretValue.unsafePlainText(
-        JSON.stringify({ [SECRET_JSON_KEY]: SECRET_PLAINTEXT })
+        JSON.stringify({
+          [SECRET_JSON_KEY]: SECRET_PLAINTEXT,
+          [SUB_FLOOR_JSON_KEY]: SUB_FLOOR_PLAINTEXT,
+        })
       ),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -75,7 +89,23 @@ export class ImportSecretObservedStack extends cdk.Stack {
     });
     param.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // Issue #2745, third site: a leaf EMBEDDING the two-character reference in
+    // the dominant CDK shape -- `secretValueFromJson` renders the ARN as a
+    // `Ref`, so this synthesizes as an `Fn::Join` with the prefix fused into
+    // the token's opening part (`["port:{{resolve:secretsmanager:", {Ref},
+    // ":SecretString:pin::}}"]`). CloudFormation resolves it to `port:q7` at
+    // deploy; `cdkd import` re-resolves the template itself and must persist
+    // `port:{{resolve:secretsmanager:<ARN>:SecretString:pin::}}`. Before the
+    // fix its own resolution bag was never marked, so below the needle floor
+    // the plaintext `port:q7` was persisted.
+    const subFloorParam = new ssm.StringParameter(this, 'SubFloorParam', {
+      stringValue: `port:${secret.secretValueFromJson(SUB_FLOOR_JSON_KEY).unsafeUnwrap()}`,
+      description: 'cdkd integ 2745: Value embeds a two-character dynamic reference',
+    });
+    subFloorParam.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     new cdk.CfnOutput(this, 'ParameterName', { value: param.parameterName });
+    new cdk.CfnOutput(this, 'SubFloorParameterName', { value: subFloorParam.parameterName });
     new cdk.CfnOutput(this, 'SecretArn', { value: secret.secretArn });
   }
 }

@@ -164,6 +164,16 @@ function resolvedPlaintextOf(
 }
 
 /**
+ * Every expression the pass that owns `secrets` resolved — the pair table's
+ * keys, a CONFLICTING one included (it is still an expression this pass saw,
+ * and a second sighting is what a uniqueness rule must count). The map's own
+ * values name only the SURVIVOR per plaintext; this names the losers too.
+ */
+function resolvedExpressionsOf(secrets: RecordedSecretValues): string[] {
+  return [...(resolvedPairsOf.get(secrets)?.keys() ?? [])];
+}
+
+/**
  * The bag OBJECTS a deploy pass produced ITSELF and installed on a success
  * path — the fact the resolved-pair evidence above cannot state (issue
  * [#2516](https://github.com/go-to-k/cdkd/issues/2516)).
@@ -181,8 +191,9 @@ function resolvedPlaintextOf(
  * is carried on the object: {@link markSameGenerationBag} at the moment the
  * successful result is installed, consulted by {@link redactSecretsForState}
  * for the object it is handed. A copy of the bag, a derived needle map, a
- * previous generation's record, a scrub / import / drift walk and a bag the
- * engine did not mark all answer `false` and keep the fall-through.
+ * previous generation's record, a scrub / drift walk and a bag nobody marked
+ * all answer `false` and keep the fall-through. `cdkd import` marks the one
+ * bag its own resolver produced (the sixth site below, issue #2745).
  *
  * A `WeakSet` for the reason {@link resolvedPairsOf} is a `WeakMap`: the mark
  * dies with the object it is on, and nothing has to clear it.
@@ -206,9 +217,11 @@ const sameGenerationBags = new WeakSet<object>();
  * be written as the token this pass recorded. What never qualifies is a bag of
  * MIXED provenance: a provider's `effectiveProperties` replacement may carry
  * previous-state values IN, so an object-level mark on it would prove nothing
- * for those leaves — it stays unmarked and keeps the residual. Nor does the
- * object the resolver produced, marked at resolution time: it is not
- * necessarily the object state ends up holding.
+ * for those leaves — it stays unmarked and keeps the residual. Nor does an
+ * object marked INSIDE the resolver, at resolution time: whether that object,
+ * a narrowed copy of it or a provider's replacement is what gets redacted and
+ * stored is the CALLER's decision, so the mark is taken by the caller at the
+ * redaction call — the engine's five sites, and `cdkd import`'s one.
  *
  * The CONDITIONS are per SITE, not global, and stating them globally is what
  * this paragraph kept getting wrong (PR 2753, rounds 3 and 4). "After the
@@ -216,9 +229,9 @@ const sameGenerationBags = new WeakSet<object>();
  * and may skip it entirely. "Every leaf this pass produced" is false for the
  * auto-refresh readback of an UNCHANGED resource, where nothing was resolved
  * at all — there the safety comes from the empty secrets map, not from the
- * mark. Read the per-site list below rather than a rule over all five.
+ * mark. Read the per-site list below rather than a rule over all six.
  *
- * The five call sites, and which of them the record HOLDS, because the earlier
+ * The six call sites, and which of them the record HOLDS, because the earlier
  * "two never-installed copies" reading of this paragraph was false once the
  * third copy arrived:
  * - `propertiesToRecord` — the record's `properties`, installed. The resolved
@@ -252,6 +265,17 @@ const sameGenerationBags = new WeakSet<object>();
  * - the rollback journal's FAILED-op `attemptedProperties` — a marked copy, so
  *   that persisted artifact does not carry the plaintext on exactly the
  *   failure path. NOT installed on the record.
+ * - `cdkd import`'s `resolveImportedProperties` (issue #2745) — the bag
+ *   import's OWN resolver produced from the imported template, marked as the
+ *   redaction input; the record holds the redacted COPY, unmarked. Not a
+ *   deploy pass, and the mark does not say it is: what it claims is PAIR
+ *   PROVENANCE — this bag was produced from this source, in this pass, by the
+ *   resolver that recorded these pairs — which import's resolve satisfies
+ *   exactly as the create arm's does, since `unresolvedProperties` is the
+ *   template bag it resolved and its per-resource map holds the pairs. What
+ *   it does NOT claim is that AWS holds the value: `observedProperties` is
+ *   captured separately, against the redacted record, and is never marked
+ *   here.
  */
 export function markSameGenerationBag<T extends object>(bag: T): T {
   sameGenerationBags.add(bag);
@@ -2413,6 +2437,48 @@ function joinSkeletonSegments(segments: readonly string[]): string | undefined {
  * choice, not the only option.
  */
 export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | undefined {
+  const segments = intrinsicSkeletonSegments(source);
+  if (segments === undefined) return undefined;
+  return anchoredSkeletonPattern(
+    segments.map((segment) =>
+      segment === UNKNOWN_PART ? SKELETON_WILDCARD : escapeRegExp(segment)
+    )
+  );
+}
+
+/**
+ * {@link joinSkeletonSegments} anchored at both ends, or `undefined` where the
+ * wildcard cap refused it. The one place the skeleton's regex is built, for
+ * both readers of the segment form.
+ */
+function anchoredSkeletonPattern(segments: readonly string[]): RegExp | undefined {
+  const body = joinSkeletonSegments(segments);
+  return body === undefined ? undefined : new RegExp(`^${body}$`);
+}
+
+/**
+ * A source part the skeleton cannot know — an `Fn::Join` element that is
+ * itself an intrinsic, or an `Fn::Sub` `${...}` variable. The segment form of
+ * {@link SKELETON_WILDCARD}: what a part IS, before either reader decides how
+ * to spell it.
+ */
+const UNKNOWN_PART = Symbol('unknown intrinsic part');
+
+/**
+ * The text of an `Fn::Join` / `Fn::Sub` source in order: a literal part as its
+ * RAW text, an unknowable part as {@link UNKNOWN_PART}. ONE parser for the two
+ * readers of that shape — {@link intrinsicSkeletonPattern}, which spells every
+ * segment into a regex, and {@link positionByIntrinsicFrame}, which needs the
+ * literal text VERBATIM to know where a token's frame begins and ends — so
+ * the two cannot disagree about what a source says (issue #2745).
+ *
+ * `undefined` for any source this cannot describe, per the pattern reader's
+ * doc: a delimiter that is itself an intrinsic, a non-array `Fn::Join`, a
+ * non-string `Fn::Sub` template, an object that is not a single-key intrinsic.
+ */
+function intrinsicSkeletonSegments(
+  source: Record<string, unknown>
+): Array<string | typeof UNKNOWN_PART> | undefined {
   const keys = Object.keys(source);
   if (keys.length !== 1) return undefined;
   const key = keys[0]!;
@@ -2424,14 +2490,12 @@ export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegEx
     // A non-string delimiter is unknowable, and it sits BETWEEN every pair of
     // parts, so wildcarding it would erase most of the skeleton's specificity.
     if (typeof delimiter !== 'string' || !Array.isArray(parts)) return undefined;
-    const separator = escapeRegExp(delimiter);
-    const segments: string[] = [];
+    const segments: Array<string | typeof UNKNOWN_PART> = [];
     parts.forEach((part, index) => {
-      if (index > 0) segments.push(separator);
-      segments.push(typeof part === 'string' ? escapeRegExp(part) : SKELETON_WILDCARD);
+      if (index > 0) segments.push(delimiter);
+      segments.push(typeof part === 'string' ? part : UNKNOWN_PART);
     });
-    const body = joinSkeletonSegments(segments);
-    return body === undefined ? undefined : new RegExp(`^${body}$`);
+    return segments;
   }
 
   if (key === 'Fn::Sub') {
@@ -2441,23 +2505,20 @@ export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegEx
     // intrinsic, so only the `${...}` POSITIONS are reliably knowable.
     const template = typeof args === 'string' ? args : Array.isArray(args) ? args[0] : undefined;
     if (typeof template !== 'string') return undefined;
-    const segments: string[] = [];
+    const segments: Array<string | typeof UNKNOWN_PART> = [];
     let cursor = 0;
     const variable = /\$\{([^}]*)\}/g;
     let hit: RegExpExecArray | null;
     while ((hit = variable.exec(template)) !== null) {
-      segments.push(escapeRegExp(template.slice(cursor, hit.index)));
+      segments.push(template.slice(cursor, hit.index));
       const inner = hit[1]!;
       // `${!Foo}` is CloudFormation's escape for a LITERAL `${Foo}`, so it is
       // known text rather than a substitution point.
-      segments.push(
-        inner.startsWith('!') ? escapeRegExp(`\${${inner.slice(1)}}`) : SKELETON_WILDCARD
-      );
+      segments.push(inner.startsWith('!') ? `\${${inner.slice(1)}}` : UNKNOWN_PART);
       cursor = hit.index + hit[0].length;
     }
-    segments.push(escapeRegExp(template.slice(cursor)));
-    const body = joinSkeletonSegments(segments);
-    return body === undefined ? undefined : new RegExp(`^${body}$`);
+    segments.push(template.slice(cursor));
+    return segments;
   }
 
   return undefined;
@@ -2679,8 +2740,9 @@ function associationForSource(
  * leaf identity; the arm fires only for the spellings
  * {@link crossStackSourceKey} can key; and
  * condition 1 still demands that the bag leaf be a plaintext this pass
- * resolved. Every rejection degrades to {@link positionByIntrinsicSkeleton} and
- * then to the value scan, i.e. to today's behavior.
+ * resolved. Every rejection degrades to {@link positionByIntrinsicSkeleton},
+ * {@link positionByIntrinsicFrame} and then to the value scan, i.e. to today's
+ * behavior.
  */
 function positionByCrossStackSource(
   bag: string,
@@ -2715,7 +2777,8 @@ function positionByCrossStackSource(
  * 1. The bag leaf's WHOLE value is a recorded secret plaintext. The skeleton
  *    describes ONE complete `{{resolve:...}}` token, so a leaf that merely
  *    EMBEDS a secret (a join with surrounding text) is not this shape at all
- *    and must keep going to the value scan, which rewrites just the substring.
+ *    and goes on to {@link positionByIntrinsicFrame} (issue #2745), and only
+ *    where that refuses to the value scan, which rewrites just the substring.
  * 2. EXACTLY ONE candidate matches. Two matching candidates mean the skeleton
  *    genuinely cannot separate them (`{Ref}` in the position that differs), and
  *    guessing would be the collapse this fix exists to remove, one step over.
@@ -2727,8 +2790,9 @@ function positionByCrossStackSource(
  *    candidate absent from that map is a collapsed LOSER, which is the case
  *    this whole function exists to serve, so it is accepted.
  *
- * Every rejection degrades to the value scan, i.e. to today's behavior, so no
- * case gets worse than it is without this pass.
+ * Every rejection falls to {@link positionByIntrinsicFrame} (issue #2745) and,
+ * where that arm refuses too, to the value scan, i.e. to today's behavior, so
+ * no case gets worse than it is without this pass.
  *
  * One residual is worth naming rather than leaving to be rediscovered: a single
  * WRONG candidate can win only when this leaf's own expression is in NEITHER
@@ -2902,32 +2966,28 @@ function singleSpanFrame(
  * for a 4+ character coincidence in a readback. Every refusal of this arm
  * returns the scan's answer, so a leaf refused for interference (a frame
  * that is itself a recorded plaintext, say) has its frame rewritten and its
- * sub-floor middle left in plaintext. And this arm positions a LITERAL
- * source leaf only: an `Fn::Join` / `Fn::Sub` source rendering the same
- * `port:` + token goes to {@link positionByIntrinsicSkeleton}, which refuses
- * unless the WHOLE bag is a recorded plaintext, so a sub-floor secret
- * embedded through an intrinsic — the dominant CDK shape — still falls to
- * the value scan and persists in plaintext. `cdkd scrub`, the documented
- * repair tool for a pre-GHSA record, cannot repair a sub-floor embedded leaf
- * either: it walks a STORED bag, which no deploy marked, so the arm is
- * unreachable from it by construction and the leaf keeps the scan's answer.
- * The MASKING channel keeps the residual whole: `maskSecretsInText`'s
- * substring arm carries the same four-character floor, so once this arm has
- * put `port:{{resolve:...}}` in state, a warn line quoting an AWS message can
- * still print `port:q7`. Pre-existing and not a regression -- the #2453 class,
- * and the reason the list would otherwise read as complete when it is not
- * (maintainer review of PR 2753, round 2).
+ * sub-floor middle left in plaintext. This arm positions a LITERAL source
+ * leaf; an `Fn::Join` / `Fn::Sub` source rendering the same `port:` + token
+ * — the dominant CDK shape — is {@link positionByIntrinsicFrame}'s (issue
+ * #2745), which shares this arm's bound and mark and refuses a frame that is
+ * not wholly literal (a region `Ref` OUTSIDE the token), where a sub-floor
+ * secret still falls to the value scan and persists in plaintext. `cdkd
+ * scrub`, the documented repair tool for a pre-GHSA record, cannot repair a
+ * sub-floor embedded leaf: it walks a STORED bag, which no deploy marked, so
+ * both arms are unreachable from it by construction and the leaf keeps the
+ * scan's answer. The MASKING channel keeps the residual whole:
+ * `maskSecretsInText`'s substring arm carries the same four-character floor,
+ * so once this arm has put `port:{{resolve:...}}` in state, a warn line
+ * quoting an AWS message can still print `port:q7`. Pre-existing and not a
+ * regression -- the #2453 class, and the reason the list would otherwise
+ * read as complete when it is not (maintainer review of PR 2753, round 2).
  *
- * The next DEPLOY of that resource repairs the leaves this arm is eligible
- * for — a LITERAL source leaf on a bag the engine marks — because the
- * re-check compares unequal against a record holding the plaintext and the
- * resource is written again from a bag this pass produced. The residuals
- * named above (an `effectiveProperties` substitution, an intrinsic source
- * shape) are not repaired by that deploy either; they stay tracked by
- * #2745. Tracked, with the sub-floor
- * residuals of a nested-stack child's inherited parameter and of `cdkd
- * import`'s own resolution, by issue
- * [#2745](https://github.com/go-to-k/cdkd/issues/2745).
+ * The next DEPLOY of that resource repairs the leaves the two arms are
+ * eligible for — a literal-frame source leaf on a bag the engine marks —
+ * because the re-check compares unequal against a record holding the
+ * plaintext and the resource is written again from a bag this pass produced.
+ * The residuals named above (an `effectiveProperties` substitution, a
+ * nonliteral frame) are not repaired by that deploy either.
  *
  * One shape reaches this arm that a reader may not expect: a WHOLE-token
  * source that FAILED the whole-token arm's `isKnownSecretExpression` gate (an
@@ -2961,12 +3021,43 @@ function positionByEmbeddedSpan(
   secrets: RecordedSecretValues,
   bagIsSameGeneration: boolean
 ): string {
-  const scanned = redactSecretsForState(bag, secrets);
   const frame = singleSpanFrame(bag, source);
-  if (frame === undefined) return scanned;
+  if (frame === undefined) return redactSecretsForState(bag, secrets);
+  const recorded = resolvedPlaintextOf(secrets, frame.token);
+  if (recorded === undefined || recorded !== frame.middle) {
+    return redactSecretsForState(bag, secrets);
+  }
+  return writeFramedTokenWithinScanBound(bag, secrets, frame, bagIsSameGeneration);
+}
+
+/**
+ * Write `prefix + token + suffix` for a framed leaf whose pass-local pair the
+ * CALLER has already verified (`token` resolved to `middle` in the pass that
+ * owns `secrets`), and ONLY where that stays within the value scan's own class
+ * of answer — or, below the scan's floor, on a bag the engine marked. Returns
+ * the scan's answer on every refusal.
+ *
+ * ONE helper for {@link positionByEmbeddedSpan} (a literal source, issue
+ * #2485) and {@link positionByIntrinsicFrame} (an `Fn::Join` / `Fn::Sub`
+ * source, issue #2745), for the reason {@link singleSpanFrame} is one: the
+ * bound and the mark are the two claims this module makes about a FRAMED
+ * leaf, and two copies are two places for one of them to be relaxed alone.
+ *
+ * THE SCAN IS COMPUTED HERE, for `(bag, secrets)` — the bound below compares
+ * against it, and every fall-through IS it — so the compared value provably
+ * comes from the same bag and map the token is written into. An earlier
+ * revision of the literal arm took the scan as a parameter, which left the
+ * bound one wrong caller away from comparing against a scan of some other
+ * bag with no type error.
+ */
+function writeFramedTokenWithinScanBound(
+  bag: string,
+  secrets: RecordedSecretValues,
+  frame: { token: string; prefix: string; suffix: string; middle: string },
+  bagIsSameGeneration: boolean
+): string {
+  const scanned = redactSecretsForState(bag, secrets);
   const { token, prefix, suffix, middle } = frame;
-  const recorded = resolvedPlaintextOf(secrets, token);
-  if (recorded === undefined || recorded !== middle) return scanned;
   // THE SAME CLASS OF ANSWER AS THE VALUE SCAN, proven rather than argued: on
   // a bag whose generation is NOT proven the arm accepts only a leaf the scan
   // itself would rewrite to `prefix + <the map's survivor for the middle> +
@@ -2975,41 +3066,189 @@ function positionByEmbeddedSpan(
   // claim: where another recorded plaintext matches the WHOLE leaf, or starts
   // in the prefix and overlaps the middle, the scan's whole-value / leftmost
   // precedence picks that needle instead (so does this arm, by falling
-  // through to it). See the generation note in the docstring for why this
-  // bound matters, and for the one relaxation below it.
+  // through to it). See the generation note in `positionByEmbeddedSpan`'s
+  // docstring for why this bound matters, and for the one relaxation below it.
   const survivor = secrets.get(middle);
-  // A type-narrowing formality, not a reachable refusal: `recorded === middle`
-  // already implies an entry for `middle` — both resolver seams `set` the
-  // entry beside `recordResolvedPair`, the one `mergeResolvedPairs` caller
+  // A type-narrowing formality, not a reachable refusal: the caller's pair
+  // check already implies an entry for `middle` — both resolver seams `set`
+  // the entry beside `recordResolvedPair`, the one `mergeResolvedPairs` caller
   // copies the entries first, and nothing deletes from a `RecordedSecretValues`
   // map. Kept in the fail-closed shape rather than as a non-null assertion.
   if (survivor === undefined) return scanned;
   if (scanned === prefix + survivor + suffix) return prefix + token + suffix;
   // Below the scan's needle floor the scan leaves the middle alone, and its
   // silence is accepted as equivalence ONLY on a bag whose generation the
-  // engine proved (issue #2516) — see "BELOW THE NEEDLE FLOOR" in the
-  // docstring. `scanned === bag` rather than a length test on the middle: an
-  // interference case whose OTHER needle is 4+ characters makes the scan
-  // rewrite SOMETHING, so it stays refused here exactly as it is refused one
-  // line up, and a sub-floor middle in a leaf the scan otherwise left
-  // untouched is what reaches the return. The claim is not universal
-  // (maintainer review of PR 2753, round 2): it holds for SUBSTRING
-  // interference by a 4+ character needle. An interfering needle that is
-  // itself sub-floor leaves the scan silent too, so such a leaf reaches this
-  // arm. A sub-floor needle matching the WHOLE leaf is rewritten by the
-  // scan's own exact-match arm, which has no floor, and where that happens
-  // splits on the FRAME (rounds 2 and 3 of the same review each corrected
-  // this sentence): with an EMPTY frame -- leaf === middle -- `scanned`
-  // equals the survivor, so the equality one line up ACCEPTS the leaf and it
-  // never reaches here, which is the right answer and this pass's own token
-  // either way; with a NONEMPTY frame the scan's answer is the other
-  // secret's expression, that equality fails, and the leaf is refused here.
-  // What the silent case costs is the OTHER secret's
+  // engine proved (issue #2516) — see "BELOW THE NEEDLE FLOOR" in
+  // `positionByEmbeddedSpan`'s docstring. `scanned === bag` rather than a
+  // length test on the middle: an interference case whose OTHER needle is 4+
+  // characters makes the scan rewrite SOMETHING, so it stays refused here
+  // exactly as it is refused one line up, and a sub-floor middle in a leaf
+  // the scan otherwise left untouched is what reaches the return. The claim
+  // is not universal (maintainer review of PR 2753, round 2): it holds for
+  // SUBSTRING interference by a 4+ character needle. An interfering needle
+  // that is itself sub-floor leaves the scan silent too, so such a leaf
+  // reaches this arm. A sub-floor needle matching the WHOLE leaf is rewritten
+  // by the scan's own exact-match arm, which has no floor, and where that
+  // happens splits on the FRAME (rounds 2 and 3 of the same review each
+  // corrected this sentence): with an EMPTY frame -- leaf === middle --
+  // `scanned` equals the survivor, so the equality one line up ACCEPTS the
+  // leaf and it never reaches here, which is the right answer and this
+  // pass's own token either way; with a NONEMPTY frame the scan's answer is
+  // the other secret's expression, that equality fails, and the leaf is
+  // refused here. What the silent case costs is the OTHER secret's
   // under-redaction — the value scan's own pre-existing residual below the
   // floor — never a fabricated expression, because the returned token is
   // still the one THIS pass recorded resolving to this leaf's middle.
   if (bagIsSameGeneration && scanned === bag) return prefix + token + suffix;
   return scanned;
+}
+
+/**
+ * Stands in, while a source is RENDERED to text, for a part the skeleton cannot
+ * know. A single character so the rendered string keeps the literal parts at
+ * their true offsets, and NOT `}` so {@link dynamicReferenceSpans} reads it as
+ * a token's INNER text (the resolver's `[^}]+`) rather than as its terminator —
+ * which is exactly how a `{Ref}` sitting inside a `{{resolve:...}}` opening
+ * must read. A NUL, RESERVED here as the placeholder: a template string can
+ * carry one (CDK preserves it), so a source whose literal text does is refused
+ * outright rather than rendered with one unknowable part too many.
+ */
+const UNKNOWN_PART_PLACEHOLDER = '\u0000';
+
+/**
+ * Position a bag leaf whose `Fn::Join` / `Fn::Sub` source EMBEDS exactly one
+ * `{{resolve:...}}` token inside LITERAL surrounding text — `port:` + token —
+ * by writing that token into the frame the source states (issue
+ * [#2745](https://github.com/go-to-k/cdkd/issues/2745)).
+ *
+ * This is the intrinsic twin of {@link positionByEmbeddedSpan}, and the shape
+ * is the DOMINANT one rather than a corner: `'port:' + secret.secretValueFromJson('pin')`
+ * renders the secret ARN as a `Ref`, so CDK emits
+ * `{"Fn::Join": ["", ["port:{{resolve:secretsmanager:", {"Ref": ...}, ":SecretString:pin::}}"]]}`
+ * — the prefix FUSED into the token's opening part, the `Ref` INSIDE the
+ * token. Before this arm such a leaf had no positioning route at all:
+ * {@link positionByIntrinsicSkeleton} refuses unless the WHOLE bag is a
+ * recorded plaintext (its condition 1), and {@link positionByEmbeddedSpan}
+ * needs a source STRING to copy its frame from. So it fell to the value scan,
+ * which for a 4+ character middle writes the map's SURVIVOR (a same-plaintext
+ * sibling's spelling, the #1904 / #2485 class) and for a 1-3 character middle
+ * writes NOTHING — {@link buildNeedleRegex} drops it from the alternation —
+ * and `port:q7` was persisted in plaintext.
+ *
+ * HOW THE FRAME IS FOUND. The source is rendered to text by
+ * {@link intrinsicSkeletonSegments} — the same parser the skeleton arm reads —
+ * with each unknowable part as one {@link UNKNOWN_PART_PLACEHOLDER}, and
+ * {@link singleSpanFrame} then finds the ONE token in that text exactly as it
+ * does for a literal source. The prefix and suffix must be wholly literal: a
+ * placeholder OUTSIDE the token (a region `Ref` after it, the `DB_URL` shape
+ * of the `secrets-dynamic-ref` fixture) means the source cannot establish
+ * where the middle ends, and the leaf is REFUSED — the nonliteral-frame shape
+ * #2745 deliberately defers. Inside the token a placeholder becomes a
+ * {@link SKELETON_WILDCARD}, capped by {@link MAX_SKELETON_WILDCARDS} through
+ * the same {@link joinSkeletonSegments}, so the token pattern is the skeleton
+ * arm's pattern restricted to the token's own extent.
+ *
+ * THE EVIDENCE, three checks and each removes a different way of being wrong:
+ *
+ * 1. EXACTLY ONE candidate expression matches the token pattern, and is not
+ *    DEMONSTRABLY another value's — the skeleton arm's conditions 2 and 3,
+ *    over its two candidate stores PLUS the pass-local pair table
+ *    ({@link resolvedExpressionsOf}; the code says why), and the same
+ *    {@link plaintextIndexOf} poisoning rule, with `middle` in the role the
+ *    whole bag plays there.
+ * 2. THIS PASS resolved that candidate to the middle ({@link recordResolvedPair},
+ *    per map instance) — the literal arm's evidence, and what a
+ *    shape-plausible expression from another resource cannot satisfy.
+ * 3. The write stays within the value scan's class of answer, or — below the
+ *    scan's floor — the bag carries the engine's same-generation mark:
+ *    {@link writeFramedTokenWithinScanBound}, shared with the literal arm.
+ *
+ * One shape reaches this arm that a reader may not expect, the literal arm's
+ * own: a WHOLE-token source, i.e. an EMPTY frame, where the leaf IS the
+ * middle. {@link positionByIntrinsicSkeleton} runs first and answers for
+ * every such leaf it can; what falls through is its REFUSAL, and this arm
+ * re-asks over a wider candidate set — the pair table names a token this pass
+ * resolved but never pinned (an `ssm` reference whose type came back
+ * unclassifiable, #1901) and which lost the map slot to a sibling, a token
+ * neither of the skeleton's stores can see. With the pair and the bound that
+ * leaf is written back as ITSELF, where the scan wrote the survivor: the
+ * leaf's own expression, never another's. Where the skeleton refused for two
+ * matches, so does this arm (same pattern, a superset of candidates, same
+ * rule); where it refused for want of one — nothing matched, or its only
+ * match was skipped as another plaintext's — this arm may find the leaf's
+ * own token in the pair table. Either way the whole-token answer changes ONLY
+ * where the skeleton had none.
+ *
+ * Every refusal before the bound returns `undefined` and the walk falls to the
+ * value scan; the bound's own refusals return that scan directly — the same
+ * answer either way, today's behavior, so no case gets worse. What stays: the
+ * nonliteral frame above; a source with more than one token; an `Fn::Join`
+ * whose delimiter is itself an intrinsic (the parser refuses it); and
+ * everything the shared bound refuses, listed on the literal arm.
+ */
+function positionByIntrinsicFrame(
+  bag: string,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues,
+  secretExpressions: ReadonlySet<string>,
+  bagIsSameGeneration: boolean
+): string | undefined {
+  const segments = intrinsicSkeletonSegments(source);
+  if (segments === undefined) return undefined;
+  if (segments.some((s) => s !== UNKNOWN_PART && s.includes(UNKNOWN_PART_PLACEHOLDER))) {
+    return undefined;
+  }
+  const rendered = segments
+    .map((s) => (s === UNKNOWN_PART ? UNKNOWN_PART_PLACEHOLDER : s))
+    .join('');
+  const frame = singleSpanFrame(bag, rendered);
+  if (frame === undefined) return undefined;
+  const { token, prefix, suffix, middle } = frame;
+  if (prefix.includes(UNKNOWN_PART_PLACEHOLDER) || suffix.includes(UNKNOWN_PART_PLACEHOLDER)) {
+    return undefined;
+  }
+  const pattern = anchoredSkeletonPattern(
+    token
+      .split(UNKNOWN_PART_PLACEHOLDER)
+      .flatMap((literal, i) =>
+        i === 0 ? [escapeRegExp(literal)] : [SKELETON_WILDCARD, escapeRegExp(literal)]
+      )
+  );
+  if (pattern === undefined) return undefined;
+
+  const plaintextOf = plaintextIndexOf(secrets);
+  let matched: string | undefined;
+  // The skeleton arm's two stores PLUS the pass-local pair table. The map's
+  // values hold one survivor per plaintext and the process-wide set holds only
+  // PINNED expressions, so the one this leaf actually resolved — a collapsed
+  // loser, or an `ssm` token whose type came back unclassifiable and is
+  // recorded as a pair but never pinned (#1901) — can be absent from both.
+  // Absent from the CANDIDATES it is absent from the uniqueness count too, and
+  // the arm would then write the sibling's expression over a leaf whose own
+  // token it never saw: the #1910 wrong-reference class, measured on this
+  // arm's first draft. The pair table is exactly "what this pass resolved",
+  // which is also the population check 2 below accepts from.
+  for (const candidate of new Set([
+    ...secretExpressions,
+    ...recordedSecretExpressions,
+    ...resolvedExpressionsOf(secrets),
+  ])) {
+    if (candidate.length > MAX_SKELETON_CANDIDATE_LENGTH) return undefined;
+    if (!pattern.test(candidate)) continue;
+    const recordedPlaintext = plaintextOf.get(candidate);
+    if (recordedPlaintext !== undefined && recordedPlaintext !== middle) continue;
+    if (matched !== undefined) return undefined;
+    matched = candidate;
+  }
+  if (matched === undefined || resolvedPlaintextOf(secrets, matched) !== middle) {
+    return undefined;
+  }
+  return writeFramedTokenWithinScanBound(
+    bag,
+    secrets,
+    { token: matched, prefix, suffix, middle },
+    bagIsSameGeneration
+  );
 }
 
 /**
@@ -3192,7 +3431,7 @@ function positionListByCrossStackSource(
  * fetch and no value matching.
  *
  * A source leaf that is an intrinsic OBJECT has no string to copy, so it goes
- * through two positioning passes before the value scan, in this order:
+ * through three positioning passes before the value scan, in this order:
  *
  * - {@link positionByCrossStackSource} (issue #2059), for the two CROSS-STACK
  *   spellings `Fn::ImportValue` / `Fn::GetStackOutput`. Those carry no text
@@ -3203,6 +3442,11 @@ function positionListByCrossStackSource(
  *   `Fn::Sub`: when the intrinsic's literal parts describe exactly one of the
  *   recorded secret expressions, THAT is persisted. This is the dominant CDK
  *   shape — an L2 secret token renders the ARN as a `Ref`, hence a join.
+ * - {@link positionByIntrinsicFrame} (issue #2745), for the same two spellings
+ *   when their literal parts FRAME one token (`port:` +
+ *   `secretValueFromJson(...)`): the one candidate this pass resolved to the
+ *   framed middle is written into the frame, under the literal span arm's
+ *   bound and mark.
  *
  * An ARRAY leaf beside such an intrinsic OBJECT — the shape a
  * `CommaDelimitedList` nested-stack parameter produces once the child has
@@ -3212,9 +3456,10 @@ function positionListByCrossStackSource(
  * is aligned against a source array that does not exist; see that function for
  * the two shapes it refuses.
  *
- * The value scan is still applied wherever none can answer: a leaf that merely
- * EMBEDS a secret inside surrounding text, an intrinsic whose skeleton matches
- * zero or several candidates, a cross-stack leaf whose identity is not
+ * The value scan is still applied wherever none can answer: an embedding leaf
+ * the span arms refuse (a nonliteral frame, a middle no pair of this pass
+ * vouches for), an intrinsic whose skeleton matches several candidates (or
+ * none, the pair table included), a cross-stack leaf whose identity is not
  * literally computable, a diverged shape, a key the source lacks. So the passes
  * are complementary rather than alternatives — path where position is knowable,
  * association where the position is a cross-stack read, skeleton where it is a
@@ -3301,14 +3546,22 @@ function redactByPath(
     // The source leaf is an intrinsic OBJECT, so there is no string to copy —
     // the residual #1904 left and #1916 closes. Deliberately NOT gated on
     // `rules`: `descendArrays` is about walking a LIST, `trustAnyExpression`
-    // relaxes a check this arm does not make, and `sourceIsSameGeneration` is
-    // already implied — condition 1 requires the bag leaf to be a plaintext
-    // THIS pass recorded, which a previous generation's persisted expression
-    // can never be, so the generation hazard cannot reach here. The candidates come only from
-    // stores the resolver populates on a proven-secret verdict, so none can be
-    // a public ssm reference (the perpetual-UPDATE hazard of issue #1901) —
-    // see `positionByIntrinsicSkeleton`'s own doc, which explains why it holds
-    // NO `isKnownSecretExpression` check.
+    // relaxes a check this arm does not make, and `sourceIsSameGeneration`
+    // answers a question neither arm below asks. The skeleton arm requires the
+    // bag leaf to be a plaintext THIS pass recorded (its condition 1), which a
+    // previous generation's persisted expression can never be. The frame arm
+    // (issue #2745) accepts a leaf that merely EMBEDS one, so its generation
+    // claim comes from the same two places the literal arm's does: the value
+    // scan's own bound, and — for a middle below the scan's floor — the
+    // ENGINE's object-level mark, `bagIsSameGeneration`, never the rules
+    // constant. The candidates come only from stores the resolver populates
+    // for a reference it treated as SECRET — a proven verdict, or, in the
+    // pair table the frame arm also reads, an `ssm` type that came back
+    // unclassifiable and was resolved as secret for THIS pass and left
+    // unpinned (#1901) — never a definitively PUBLIC parameter, so none can
+    // be a public ssm reference (the perpetual-UPDATE hazard of that issue)
+    // — see `positionByIntrinsicSkeleton`'s own doc, which explains why it
+    // holds NO `isKnownSecretExpression` check.
     //
     // The CROSS-STACK arm runs FIRST (issue #2059). It answers for the
     // spellings the skeleton pass structurally cannot describe
@@ -3322,6 +3575,19 @@ function redactByPath(
     if (certified !== undefined) return certified;
     const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
     if (positioned !== undefined) return positioned;
+    // The FRAME arm LAST (issue #2745): a leaf that EMBEDS one token inside
+    // the intrinsic's literal text, which the skeleton arm declines — and a
+    // whole-token leaf the skeleton arm REFUSED, answered here only on
+    // pass-local pair evidence the skeleton's stores cannot hold (its
+    // docstring names the one shape).
+    const framed = positionByIntrinsicFrame(
+      bag,
+      source,
+      secrets,
+      secretExpressions,
+      bagIsSameGeneration
+    );
+    if (framed !== undefined) return framed;
     // Fall through to the value scan below on any refusal.
   }
   if (Array.isArray(bag) && isPlainObject(source)) {

@@ -178,6 +178,28 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // would show. ORDER IS LOAD-BEARING for the same reason as
         // DB_DSN_LITERAL: keep this key above SECRET_PIN_STAGED.
         DB_PORT_LITERAL: `port:{{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`,
+        // The same `port:` + two-character reference through an `Fn::Sub`
+        // (issue #2745, first site). An intrinsic source has no string for
+        // the literal span arm to copy, and the skeleton arm positions only a
+        // WHOLE-token leaf, so before the frame arm this leaf persisted
+        // `port:<pin>` in plaintext with or without a sibling. `cdk.Fn.sub`
+        // with no `${}` placeholder synthesizes as an `Fn::Sub` OBJECT rather
+        // than folding to a string (an all-literal `cdk.Fn.join` DOES fold,
+        // which is why the join shape below is the L2 one); verify.sh guards
+        // the premise by asserting the synthesized shape. ORDER IS
+        // LOAD-BEARING as for DB_PORT_LITERAL: keep this key and the next one
+        // above SECRET_PIN_STAGED.
+        DB_PORT_SUB: cdk.Fn.sub(`port:{{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`),
+        // The DOMINANT CDK shape (issue #2745): `secretValueFromJson` renders
+        // the secret ARN as a `Ref`, so this synthesizes as an `Fn::Join` with
+        // the prefix FUSED into the token's opening part and the `Ref` INSIDE
+        // the token — `["port:{{resolve:secretsmanager:", {Ref}, ":SecretString:pin::}}"]`
+        // — and resolves to the ARN-form token. verify.sh derives the
+        // expected expression from the live secret's ARN and asserts the
+        // synthesized shape. `unsafeUnwrap()` is what renders the reference as
+        // a token string CDK will concatenate (the `import-secret-observed`
+        // fixture's spelling).
+        DB_PORT_JOIN: `port:${secret.secretValueFromJson('pin').unsafeUnwrap()}`,
         // The whole-value sibling of DB_PORT_LITERAL on the STAGED spelling.
         // Persisted by the whole-token arm regardless of the fix; its job is
         // to be the map's survivor for the two-character plaintext.
@@ -371,6 +393,13 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // purpose: an exported secret-bearing output is a different arm.
     new cdk.CfnOutput(this, 'PortLiteral', {
       value: `port:{{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`,
+    });
+    // The L2 join shape as an OUTPUT (issue #2745): the same `Fn::Join` as
+    // DB_PORT_JOIN, walked by the outputs redaction against the template's
+    // `Outputs` on the bag this pass resolved. verify.sh asserts
+    // `state.outputs.PortJoin` holds the ARN-form expression.
+    new cdk.CfnOutput(this, 'PortJoin', {
+      value: `port:${secret.secretValueFromJson('pin').unsafeUnwrap()}`,
     });
   }
 }
