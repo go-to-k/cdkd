@@ -135,6 +135,72 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     );
   });
 
+  it('a SKIPPED generate block RETAINS the previous one in the recorded bag', async () => {
+    // The blocker both reviewers found. Without this, the engine records the
+    // DESIRED (malformed) bag, so the next deploy of the same broken template
+    // compares desired == previous, takes the `unchanged` early return, and
+    // the secret sits un-regenerated with NO warning — a loud repeating
+    // failure converted into a silent one. The poisoned record then reaches
+    // the reverse-replacement replay-create, which refuses it.
+    const prev = generated();
+    const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
+
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(result.effectiveProperties?.['GenerateSecretString']).toEqual(
+      prev['GenerateSecretString']
+    );
+    // Every other key rides through untouched — `effectiveProperties` REPLACES
+    // the desired bag wholesale, so it has to be complete.
+    expect(result.effectiveProperties?.['Name']).toBe('my-secret');
+  });
+
+  it('a SKIP with an unusable PREVIOUS block drops the key rather than recording junk', async () => {
+    // #1653's rule: with neither side vouchable there is no value to record,
+    // and an explicitly-`undefined` key survives `structuredClone` where a
+    // dropped one does not — so the key is removed, not set to undefined.
+    const prev = { ...generated(), GenerateSecretString: 'also-broken' };
+    const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
+
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(result.effectiveProperties).toBeDefined();
+    expect('GenerateSecretString' in result.effectiveProperties!).toBe(false);
+  });
+
+  it.each([
+    ['an empty string', ''],
+    ['zero', 0],
+  ])('a FALSY malformed GenerateSecretString (%s) still reaches the guard', async (_l, bad) => {
+    // The #1493 gate-bug shape. Under the old truthiness gate these fell
+    // straight through to the `SecretString` branch, so a declared generate
+    // block was ignored in silence — and with no `SecretString` either, the
+    // update sent no value at all and nothing said why. `!= null` routes them
+    // to the guard, which skips and warns like any other malformed container.
+    const prev = generated();
+    const next = { ...generated(), GenerateSecretString: bad };
+
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('GenerateSecretString must be an object')
+    );
+    expect(updateInput().SecretString).toBeUndefined();
+    // ...and it takes the same retention as any other skip.
+    expect(result.effectiveProperties?.['GenerateSecretString']).toEqual(
+      prev['GenerateSecretString']
+    );
+  });
+
+  it('an ORDINARY update records nothing — effectiveProperties is absent', async () => {
+    // The engine gates on `??`, so ABSENT is the contract for "record the
+    // desired bag". An implementation that always returned a bag would be
+    // indistinguishable by value here but would rewrite the record on every
+    // deploy.
+    const result = await provider.update('L', SECRET_ARN, TYPE, generated({ Description: 'x' }), generated());
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
   it('create() still REFUSES a malformed GenerateSecretString — no live value to keep', async () => {
     // The skip is scoped to `changedSecretValue`; `generateSecretString` is
     // shared with `create()`, where there is no existing secret to fall back

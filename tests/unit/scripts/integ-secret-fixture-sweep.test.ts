@@ -548,7 +548,13 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
    * ones that can hand a freshly minted value back to the engine.
    */
   function methodBody(src: string, name: string): string {
-    const m = new RegExp(`async ${name}\\(`).exec(src);
+    // `async` and `private` are both optional so a SYNC private helper can be
+    // read too (issue #3048 needs `retainPreviousGenerateBlock`). The existing
+    // `async create(` / `async update(` matches are unaffected.
+    // Anchored to a DECLARATION line (`^\s*` + the `m` flag): unanchored, the
+    // optional prefixes let a bare `create(` elsewhere in the file win, and
+    // the fence then reads the wrong body and passes vacuously (measured).
+    const m = new RegExp(`^\\s*(?:private\\s+)?(?:async\\s+)?${name}\\(`, 'm').exec(src);
     expect(m, `${name}() not found in the provider — this fence reads a shape that has changed`).not.toBeNull();
     let i = src.indexOf('{', m!.index);
     let depth = 0;
@@ -641,9 +647,49 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     //    secret. Anything else -- `effectiveProperties`, `properties`, a new
     //    field invented later -- is persisted by the engine and must fail here
     //    rather than be enumerated as a denylist.
-    const ALLOWED_RETURN_KEYS = new Set(['physicalId', 'attributes', 'wasReplaced']);
+    // `effectiveProperties` is allowed on ONE construction only, and the
+    // constraint below is what keeps that from being a blanket widening
+    // (issue #3048). It is NOT enumerated as "safe because we checked once":
+    // the value expression must be a call to `retainPreviousGenerateBlock`,
+    // and that helper is separately asserted never to mention the generated
+    // value or the wire field it travels in. Anything else -- a spread, a
+    // literal, a different helper -- still fails, including the
+    // `{ ...properties, SecretString: secretString }` spelling this test's
+    // header records as having slipped through an earlier cut.
+    //
+    // The premise: `effectiveProperties` is returned only on the SKIP path,
+    // which is exactly the path where `generateSecretString` was never called,
+    // so no generated value exists to carry. The two are mutually exclusive by
+    // construction rather than by inspection.
+    // A regex LITERAL, not a string: in a quoted string `\s` collapses to a
+    // bare `s` and the pattern silently stops matching (measured).
+    const EFFECTIVE_PROPS_RE =
+      /effectiveProperties:\s*skippedGenerate\s*\?\s*this\.retainPreviousGenerateBlock\(/;
+    const ALLOWED_RETURN_KEYS = new Set([
+      'physicalId',
+      'attributes',
+      'wasReplaced',
+      'effectiveProperties',
+    ]);
+
+    expect(
+      EFFECTIVE_PROPS_RE.test(code),
+      'effectiveProperties is no longer built by retainPreviousGenerateBlock — it may now be able ' +
+        'to carry the generated secret; re-open #2212 rather than editing this expectation'
+    ).toBe(true);
+
+    const retainBody = methodBody(code, 'retainPreviousGenerateBlock');
+    for (const forbidden of ['generateSecretString', 'SecretString:', 'secretString']) {
+      expect(
+        retainBody.includes(forbidden),
+        `retainPreviousGenerateBlock now mentions \`${forbidden}\` — the bag it builds may carry ` +
+          `the generated secret into state; re-open #2212`
+      ).toBe(false);
+    }
     for (const method of ['create', 'update']) {
-      const body = methodBody(src, method);
+      // Comment-STRIPPED: a comment inside a return literal was otherwise read
+      // as a key (measured on issue #3048's `effectiveProperties` note).
+      const body = methodBody(code, method);
       const objs = returnedObjects(body);
       expect(objs.length, `${method}() returns no object literal — shape changed`).toBeGreaterThanOrEqual(1);
       for (const obj of objs) {
