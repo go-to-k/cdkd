@@ -525,8 +525,9 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       // equals the middle, and the marked bag takes its expression: a wrong
       // REFERENCE (the whole-value scan's own class for a whole-leaf
       // coincidence), never a plaintext in the STORED artifact — the live
-      // consequences (`resolveReplayProps` on rollback, `drift --revert`) are
-      // on the arm's docstring. Pinned so a change that closes it is noticed,
+      // consequences (`resolveReplayProps` on rollback, `drift --revert`, a
+      // consumer stack's cross-stack read of a marked output) are on the
+      // arm's docstring. Pinned so a change that closes it is noticed,
       // and so the docstring's residual stays a measured one.
       const SECURE = '{{resolve:ssm:/secure/x}}';
       const secrets = resolvedAlone(SECURE, PIN);

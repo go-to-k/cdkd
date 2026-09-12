@@ -3199,15 +3199,26 @@ function writeFramedTokenWithinScanBound(
  *    the sibling's expression and writes its CURRENT plaintext into the live
  *    property — the transformed-value-meets-inverse-transform shape of
  *    GHSA-p5qg-v9gv-hc7w's consumer, reached here through a wrong reference
- *    rather than a wrong value (maintainer review of PR 3052). `cdkd drift
- *    --revert` (`resolveStateSecretExpressions`, `drift.ts`) is the second
- *    live consumer, with no failed deploy required: once the sibling rotates,
- *    the re-resolved baseline diverges from AWS, drift fires, and `--revert`
- *    pushes the sibling's plaintext to the live property. Stated rather
- *    than closed, and pinned by the unit file: nothing records a public
- *    resolution, so this arm cannot tell "absent because public" from
- *    "absent because collapsed"; the PR that closes #2745's nested-stack site
- *    weighs this consumer rather than re-deriving it.
+ *    rather than a wrong value (maintainer review of PR 3052). THREE live
+ *    consumers re-resolve a stored expression this way, each with a weaker
+ *    precondition than the last. `cdkd drift --revert`
+ *    (`resolveStateSecretExpressions`, `drift.ts`) needs no failed deploy:
+ *    once the sibling rotates, the re-resolved baseline diverges from AWS,
+ *    drift fires, and `--revert` pushes the sibling's plaintext to the live
+ *    property — and `--accept` is no way out there, since the AWS-side value
+ *    of a secret-classified path is masked and `runAccept` refuses to persist
+ *    the mask, leaving `--revert` (the harmful button) or a redeploy. A
+ *    consumer stack's cross-stack read (`reresolveCrossStackValue`,
+ *    `intrinsic-function-resolver.ts`: `Fn::ImportValue`, `Fn::GetStackOutput`,
+ *    a parent's `Fn::GetAtt Nested.Outputs.X`) needs nothing at all: the
+ *    outputs bag is marked, so a sub-floor write reaches `state.outputs`, and
+ *    an ORDINARY deploy of the consumer after the sibling rotates hands the
+ *    sibling's current plaintext to the consumer's `provider.create` /
+ *    `update`. Stated rather than closed, and pinned by the unit file:
+ *    nothing records a public resolution, so this arm cannot tell "absent
+ *    because public" from "absent because collapsed"; the PR that closes
+ *    #2745's nested-stack site weighs these consumers rather than re-deriving
+ *    them.
  * 3. The write stays within the value scan's class of answer, or — below the
  *    scan's floor — the bag carries the engine's same-generation mark:
  *    {@link writeFramedTokenWithinScanBound}, shared with the literal arm.

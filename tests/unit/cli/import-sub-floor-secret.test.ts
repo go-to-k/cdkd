@@ -148,7 +148,10 @@ function expectResolved(
   // The mark goes on the redaction INPUT; the record holds the redacted COPY,
   // unmarked. A refactor assigning the marked resolved bag to `properties`
   // would hand every later reader an object that claims same-generation
-  // provenance it no longer has (maintainer review of PR 3052).
+  // provenance it no longer has (maintainer review of PR 3052). The mutation
+  // THIS line isolates is `markSameGenerationBag(redactSecretsForState(...))`
+  // — redaction kept, output marked — which reds here alone; dropping the
+  // redaction is caught first by each case's `toEqual` on the value.
   expect(isSameGenerationBag(run.properties)).toBe(false);
 }
 
