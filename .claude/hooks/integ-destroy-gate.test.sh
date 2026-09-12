@@ -1077,6 +1077,17 @@ run_case "a non-ASCII path still reaches the patterns (3047)" 2 stale "$filter_r
 # of this comment said the two spellings were "byte-identical" -- measured on a
 # fixture with no sibling for the glob to match, so it could not discriminate.
 # `:(literal)` was added, measured to change no verdict, and removed.
+# `core.quotePath=false` covers bytes >= 0x80 and nothing else: a path holding
+# `"`, `\`, a tab or a newline still comes back C-quoted, reaches the buckets
+# with a leading `"`, matches no `^src/` anchor, and skips the gate. The hook
+# arms on any quoted path rather than letting that happen -- an integ run on a
+# filename this repo does not have, versus a merge with no destroy verification.
+# Correctly BUCKETING such a path is the `-z` work left on issue 3047.
+stage_filter_hunk 'src/provisioning/providers/qu"ote-provider.ts' \
+  "  async deleteResource(id: string) { return this.client.send(id); }"
+run_case "a C-quoted path arms the gate rather than skipping it (3047)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 stage_filter_hunk "src/provisioning/providers/a[b]-provider.ts" \
   "  async deleteResource(id: string) { return this.client.send(id); }"
 run_case "a glob-magic path reaches the hunk filter (3047, regression guard)" 2 stale "$filter_repo" \

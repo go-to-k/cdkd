@@ -271,6 +271,25 @@ if [ -n "$diff_base" ]; then
 
   while IFS= read -r f; do
     [ -z "$f" ] && continue
+    # A path git hands back C-QUOTED arms the gate outright. `core.quotePath`
+    # is off above, which covers bytes >= 0x80, but git still quotes a path
+    # containing `"`, `\`, a tab or a newline -- measured on 2.49 with the flag
+    # set. Such a name reaches the buckets with a leading `"`, matches no
+    # `^src/` anchor, and the gate skips WITHOUT consulting markgate: the
+    # fail-open direction. Arming instead costs an integ run on a filename this
+    # repo does not have (`git ls-files | grep -cE '["\\]'` is 0), which is the
+    # trade this file declares everywhere else.
+    #
+    # This is the safe half of the remaining work on issue 3047, not the fix:
+    # correctly BUCKETING such a path needs `-z` and a NUL-delimited read,
+    # which bash cannot do through a variable and which restructures the rc
+    # handling above. That stays with the cross-gate sweep on that issue.
+    case "$f" in
+      '"'*)
+        delete_touch=1
+        break
+        ;;
+    esac
     # Strict-delete files: any change at all is delete-touching.
     if printf '%s' "$f" | grep -qE "$strict_delete"; then
       delete_touch=1
@@ -311,7 +330,25 @@ if [ -n "$diff_base" ]; then
       # glob could match, so it could not discriminate.) `:(literal)` was added,
       # measured to change no verdict, and left off rather than shipped as an
       # unfenced flag.
-      if git diff "$diff_base"...HEAD -- "$f" \
+      # The diff is CAPTURED before it is filtered, so its exit status is
+      # readable. Inside the pipeline it was not: `if` tests the last command,
+      # so a failed `git diff` and a clean one were the same verdict --
+      # `delete_touch` stays 0 and markgate is never consulted. Exactly the
+      # defect this file fixed for the name list above ("A FAILED diff and an
+      # empty one are the same string"), one call later. `PIPESTATUS[0]` is NOT
+      # the fix: `grep -q` exits on its first match and SIGPIPEs git to 141 on
+      # the very path where the gate should arm.
+      #
+      # No case constructs a failing per-file diff, and the comment says so
+      # rather than implying one: once the name-list diff has succeeded, this
+      # one fails only under conditions that would have failed that one too,
+      # which the earlier rc check already routes to markgate. It is
+      # defence-in-depth on the fail-CLOSED side.
+      if ! hunk_diff=$(git diff "$diff_base"...HEAD -- "$f" 2>/dev/null); then
+        delete_touch=1
+        break
+      fi
+      if printf '%s\n' "$hunk_diff" \
          | grep -vE "$header_line_pattern" \
          | grep -vE "$comment_line_pattern" \
          | grep -qiE "$delete_symbol_pattern"; then
