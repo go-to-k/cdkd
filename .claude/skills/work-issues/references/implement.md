@@ -362,17 +362,17 @@ regression sit in the "intended repair" bucket, fence green); and **carry a
 floor per class** (the walk reaches a class only if the input pool contains
 it — a pool that quietly stops covering one passes as "no regressions").
 
-**When a fence must read another tool's CONFIG — or a SOURCE file — parse it
-with a real parser and fail CLOSED on anything unmodelled — never hand-roll a
+**When a fence must read another tool's CONFIG or a SOURCE file, parse it
+with a real parser and fail CLOSED on anything unmodelled: never hand-roll a
 scanner, never patch one per spelling.** Measured across three sibling fences
 over `.markgate.yml` (go-to-k/cdkd#2383, go-to-k/cdk-real-drift#1838,
 go-to-k/cdk-local#631): the unused key (`exclude` — read the tool's OWN
 schema from the pinned binary, not its `init` template); then the spelling
 treadmill — four spellings across four rounds, each patch moving the hole.
-**Three spellings in three rounds is the signal to change instrument — count
-them in the commit subjects**: go-to-k/cdkd#3029 reached SIX regex spellings
-of one TS function's term list before the compiler API (`typescript-v6`)
-ended it. Parse for real (`yaml`'s `parse(text, { merge: true })`),
+**Three spellings in three rounds is the signal to change instrument — and a
+table-driven regex is the SAME instrument**: go-to-k/cdkd#3029 counted three,
+cited this rule, tabled the regex, and reached SIX before the compiler API
+(`typescript-v6`) ended it. Parse for real (`yaml`'s `parse(text, { merge: true })`),
 allow-list the tool's own keys, fail closed outside them — or REFUSE the
 construct rather than model it
 (refusal is the stricter option: an unmodelled shape stops the fence instead
@@ -398,7 +398,7 @@ normalization layer sits exactly where a fence goes green-but-inert).
 `realpath` a scratch ROOT — macOS `tmpdir()` says `/var/…`, git
 `/private/var/…`, and three spawn cases under the raw root passed with stdout,
 stderr and rc identical to a clean run, caught only by a vacuity probe
-(go-to-k/cdkd#3029; second occurrence).
+(go-to-k/cdkd#3029).
 
 ### 5-g. Fan-out mechanics
 

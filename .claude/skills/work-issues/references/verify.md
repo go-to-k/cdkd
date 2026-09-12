@@ -325,7 +325,7 @@ false claim a review round had read past:
   ("X is load-bearing: deleting it would hard-fail" — X probed, the consequence
   never). Measured 2026-09-09 (go-to-k/cdkd#2842 / go-to-k/cdkd#2873): ten
   rounds, nine reassurances falsified — running caught all, re-reading none,
-  two past a security reviewer. Deleting a whole CLAIM cannot introduce a new
+  two endorsed by a security reviewer. Deleting a whole CLAIM cannot introduce a new
   false one; deleting a clause from INSIDE a sentence can falsify the survivor.
 - **A claim outlives the sweep that corrected it. Sweep by CLAIM, over
   NORMALISED text** — every TRACKED file, comment leaders stripped, whitespace
