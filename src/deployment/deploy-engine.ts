@@ -8255,7 +8255,8 @@ export class DeployEngine {
         // threshold, and no coincidental match against a sibling's secret.
         //
         // The isolation is for the DECISION only, and the RECORDING side
-        // effect is written through to the pass map — do not re-isolate it. Every plaintext
+        // effect is written through to the pass map — do not re-isolate it.
+        // Every plaintext
         // this resolution records must stay a needle of the PASS map: for the
         // exposure refusal masked right below, and for every later consumer
         // that never resolves the reference itself (a value re-using the

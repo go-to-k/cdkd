@@ -90,7 +90,8 @@ describe('check-resolver-mask-coverage', () => {
       });
       // ...and the counts are pinned EXACTLY, from a separate measurement
       // (2026-09-10: 131 / 155 / 98; issue #2814's drain warning then added one
-      // log site and its two notes). This subsumes the band check on the real tree and is meant
+      // log site and its two notes). This subsumes the band check on the real
+      // tree and is meant
       // to: a change to this file's throw/log population is a decision, and the
       // three numbers moving in a diff is how it gets read. The band still earns
       // its place — it is what the SHIPPED binary enforces in CI, where this

@@ -3265,8 +3265,10 @@ export class IntrinsicFunctionResolver {
   private warnAbandonedParts(pending: number): void {
     const capSeconds = (concurrentDrainCap.ms ?? DRAIN_AFTER_REJECTION_MS) / 1000;
     const parts = pending === 1 ? '1 concurrent part was' : `${pending} concurrent parts were`;
-    // not-in-class(parts): a COUNT of the drain's still-pending inputs in fixed wording, never a resolved value.
-    // not-in-class(capSeconds): the drain cap in seconds -- a constant, or the `concurrentDrainCap` test seam.
+    // not-in-class(parts): a COUNT of the drain's still-pending inputs in
+    // fixed wording, never a resolved value.
+    // not-in-class(capSeconds): the drain cap in seconds -- a constant, or
+    // the `concurrentDrainCap` test seam.
     this.logger.warn(
       `A resolution failed while ${parts} still running, and cdkd stopped waiting ` +
         `because the wait after a failure (capped at ${capSeconds}s) was used up. ` +

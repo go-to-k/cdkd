@@ -12,7 +12,8 @@
  *   arm threads (a masked CLONE that still carries the non-retryable marker),
  *   the alias pass (whose name map writes each entry through to the pass map
  *   as it is recorded, so the catch sees them; issue #2814 replaced the
- *   `finally` that copied them), a plaintext known only to the INHERITED bag (a nested-stack
+ *   `finally` that copied them), a plaintext known only to the INHERITED bag
+ *   (a nested-stack
  *   child's parent-decrypted parameter), a non-`Error` thrown value, and the
  *   control that an unrecorded value is left alone (the mask is a needle set,
  *   not a blanket).
