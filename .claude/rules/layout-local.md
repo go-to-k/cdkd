@@ -262,10 +262,14 @@ Index of every area: [code-layout.md](code-layout.md).
       structurally could not reach this fourth derivation and an upper-cased
       `--region CN-NORTH-1` still synthesized a wrong ECR host. The wrapper
       stays correct if cdk-local later canonicalizes (the fold is
-      idempotent). It fixes CASE only — cdk-local's table also predates
+      idempotent) — which is what happened: it fixes CASE only, and the
+      table-COVERAGE divergence beside it (cdk-local's table predating
       cdkd's #1764 rows, so `us-isof-` / `eu-isoe-` / `eusc-` regions
-      resolve COMMERCIAL there even spelled canonically (table-COVERAGE
-      divergence, issue #1821, pinned by a unit case).
+      resolved COMMERCIAL there even spelled canonically) was issue #1821,
+      CLOSED by cdk-local 0.148.4. The unit case that pinned the wrong
+      answer on purpose now pins the right one, plus the agreement between
+      the two tables — which is the invariant #1821 was about, and the one
+      thing a future divergence in EITHER table would break.
     - Slice 9 (0.24.0): `state-resolver` (the `--from-state` /
       `--from-cfn-stack` substituter over `Ref` / `Fn::GetAtt` / `Fn::Sub` /
       `Fn::Join` / `Fn::Select` / `Fn::Split` plus async `Fn::ImportValue` /
@@ -273,7 +277,13 @@ Index of every area: [code-layout.md](code-layout.md).
       types). Clean superset; cdk-local genericized
       the USER-VISIBLE per-key unresolved-reason wording, and cdkd's two
       consumer-test reason-string assertions were flipped to the new
-      wording.
+      wording. 0.148.4 went further and stopped interpolating a resolver
+      error's `message` into the reason at all, substituting a character
+      count and a pointer to `--verbose` — the same hazard cdkd's #2803
+      closed on the import path, since a thrown message can carry an
+      assembled secret and the audit entry is rendered to the user. So an
+      assertion here must pin the WITHHOLDING, not the text: the consumer
+      test drives a canary message and asserts it is absent.
     - Slice 10 (0.29.0): `websocket-body` — NOT a bare re-export but a thin
       spy-friendly LOCAL wrapper (`bufferToBody` delegating to the cdk-local
       impl): the still-local `websocket-server.ts` imports it as a namespace
