@@ -3142,8 +3142,12 @@ function main() {
   // reports all 134 fixtures "could not read", because `committedOf` follows
   // the seam too and git cannot resolve such a path, so `removed` is empty
   // there and this map is never consulted for a subtraction. The qualifier is
-  // load-bearing: inside one — which is how the tolerance-file arm cases reach
-  // this read, by relocating the SCRIPT — the fixtures resolve and it is.
+  // load-bearing because the fixtures RESOLVE inside one — which is how the
+  // tolerance-file arm cases reach this read at all, by relocating the SCRIPT.
+  // They reach the read with `removed` still empty, though: their scratch repo
+  // commits the fixtures verbatim, so the committed and working-tree sides
+  // agree and the report says "additions only" (measured 2026-09-12). A cycle
+  // carrying a real removal is what consults the map.
   const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
   /** @type {Record<string, Record<string, string>>} */
   let liveTolerance = {};
