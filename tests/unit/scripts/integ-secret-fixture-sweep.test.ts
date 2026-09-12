@@ -675,7 +675,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // A regex LITERAL, not a string: in a quoted string `\s` collapses to a
     // bare `s` and the pattern silently stops matching (measured).
     const EFFECTIVE_PROPS_RE =
-      /effectiveProperties:\s*skippedGenerate\s*\?\s*this\.retainPreviousGenerateBlock\([^)]*\)\s*:\s*undefined\s*,/;
+      /effectiveProperties:\s*skippedGenerate\s*\?\s*this\.retainPreviousGenerateBlock\(\s*logicalId,\s*properties,\s*previousProperties\s*\)\s*:\s*undefined\s*,/;
     const ALLOWED_RETURN_KEYS = new Set([
       'physicalId',
       'attributes',
@@ -690,18 +690,33 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     ).toBe(true);
 
     const retainBody = methodBody(code, 'retainPreviousGenerateBlock');
-    for (const forbidden of ['generateSecretString', 'SecretString:', 'secretString']) {
+    // The argument list is PINNED above (round-3 review): a third argument is
+    // the one-line edit that hands the helper the minted value, and the
+    // body-side check below would not see it under bracket access
+    // (`effective['SecretString'] = v` carries no `SecretString:`), which is
+    // why that check is a lookbehind regex rather than the colon spelling.
+    for (const forbidden of [/generateSecretString/, /(?<!Generate)SecretString/, /\bsecretString\b/]) {
       expect(
-        retainBody.includes(forbidden),
-        `retainPreviousGenerateBlock now mentions \`${forbidden}\` — the bag it builds may carry ` +
-          `the generated secret into state; re-open #2212`
-      ).toBe(false);
+        forbidden.exec(retainBody)?.[0],
+        `retainPreviousGenerateBlock now mentions \`${forbidden.source}\` — the bag it builds may ` +
+          `carry the generated secret into state; re-open #2212`
+      ).toBeUndefined();
     }
     expect(
-      /\bthis\.(?!logger\.)/.exec(retainBody)?.[0],
-      'retainPreviousGenerateBlock now reaches the instance beyond the logger — a delegate or a ' +
-        'field can route the minted value into the bag it builds; re-open #2212'
+      /\bthis\b(?!\.logger\.)/.exec(retainBody)?.[0],
+      'retainPreviousGenerateBlock now reaches the instance beyond the logger — a delegate, a ' +
+        'field or a bracket access can route the minted value into the bag it builds; re-open #2212'
     ).toBeUndefined();
+    // Routes AROUND the instance are refused by absence: none of these tokens
+    // appears in the provider today, so a mutant that stashes the value in
+    // module or static state, or writes the instance reflectively, reds here.
+    for (const escape of [/^(?:let|var)\s/m, /\bstatic\s/, /\bglobalThis\b/, /\bReflect\./, /Object\.assign\(\s*this\b/]) {
+      expect(
+        escape.exec(code)?.[0],
+        `the secret provider now contains \`${escape.source}\` — a value can travel outside the ` +
+          `method it was minted in; re-open #2212`
+      ).toBeUndefined();
+    }
     expect(
       code.match(/\bthis\.generateSecretString\(/g)?.length,
       'generateSecretString gained a call site — trace where its value goes before changing this'

@@ -396,7 +396,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         // assignment after the literal would evade the fence entirely -- the
         // failure mode that fence's own header records.
         effectiveProperties: skippedGenerate
-          ? this.retainPreviousGenerateBlock(properties, previousProperties)
+          ? this.retainPreviousGenerateBlock(logicalId, properties, previousProperties)
           : undefined,
       };
     } catch (error) {
@@ -473,8 +473,18 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * where `create()` — which cannot see the record's history — would create
    * the secret with NO version; the warning here is what makes that record
    * diagnosable, and `create()` warns again when it meets one.
+   *
+   * One shape is announced rather than reconciled: a secret created from a
+   * LITERAL whose template then switches to a malformed generate block. The
+   * previous side has no block, so the key is dropped, and the record then
+   * carries neither source while AWS still holds the literal. Restoring the
+   * previous `SecretString` would be the #1612 answer, but it re-records a
+   * literal the template has REMOVED; the drop keeps the next deploy of the
+   * same template an announced UPDATE (desired block vs absent), which is the
+   * loud outcome this arm exists for.
    */
   private retainPreviousGenerateBlock(
+    logicalId: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Record<string, unknown> {
@@ -492,9 +502,10 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     if (usablePrevious === undefined) {
       delete effective['GenerateSecretString'];
       this.logger.warn(
-        `AWS::SecretsManager::Secret GenerateSecretString is dropped from the recorded ` +
-          `properties: neither the desired nor the previously recorded block is usable. The ` +
-          `record now carries no value source; fix the template so the next deploy records one.`
+        `AWS::SecretsManager::Secret ${logicalId}: GenerateSecretString is dropped from the ` +
+          `recorded properties. The desired block is unusable and the previously recorded one ` +
+          `is absent or unusable, so the record now carries no GenerateSecretString; fix the ` +
+          `template so the next deploy records one.`
       );
     } else {
       effective['GenerateSecretString'] = { ...usablePrevious };

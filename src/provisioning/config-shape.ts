@@ -670,7 +670,8 @@ const NAMEABLE_INTRINSIC_KEYS: ReadonlySet<string> = new Set([
  * through `mapProperties`). `secretsmanager-secret-provider.ts` was on this
  * list until issue #3048 moved its update path to a SKIP (the container is
  * refused by `requireConfigObject` before `generateSecretString` reads it;
- * `create()` still throws). Not a count, for the same
+ * `create()` still throws, and so does the MEMBER-level `ExcludeCharacters`
+ * read inside a well-formed container -- issue #3056). Not a count, for the same
  * reason as the near-copy list below: two successive reviews each found
  * another. Re-derive with
  * `grep -rn 'readConfigString(' src/provisioning/providers/`.

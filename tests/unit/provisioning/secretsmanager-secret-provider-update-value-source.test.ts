@@ -181,6 +181,27 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('dropped from the recorded properties')
     );
+    // Names the resource: a stack with two secrets must be able to tell them
+    // apart from the warning alone.
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Secret L:'));
+  });
+
+  it('a SKIP with an ABSENT previous block (secret created from a literal) drops the key too', async () => {
+    // The `previous == null` arm: the previous record carries a literal and no
+    // block, the template switched to a malformed block. Nothing to retain,
+    // so the key is dropped and the drop announced; the literal is NOT
+    // restored (the template removed it), see the helper's JSDoc.
+    const prev = literal();
+    const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
+
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(updateInput().SecretString).toBeUndefined();
+    expect('GenerateSecretString' in result.effectiveProperties!).toBe(false);
+    expect('SecretString' in result.effectiveProperties!).toBe(false);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('dropped from the recorded properties')
+    );
   });
 
   it.each([
@@ -526,6 +547,10 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const created = mockSend.mock.calls.find((c) => c[0] instanceof CreateSecretCommand);
     expect(created).toBeDefined();
     expect((created![0].input as { SecretString?: string }).SecretString).toBeUndefined();
+    // ...and since issue #3048 the valueless create is ANNOUNCED.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('created with NO version')
+    );
   });
 
   it('a null SecretString is refused as "null"', async () => {
