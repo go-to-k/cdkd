@@ -1377,9 +1377,10 @@ export class S3StateBackend {
       // Sanitized for the same reason `probeLegacyState` sanitizes its own
       // `JSON.parse` failure: V8's `SyntaxError` quotes the offending INPUT,
       // so this message carries bytes of the state body — a file anyone with
-      // `s3:PutObject` on the bucket can write. `state show` joins its rows
-      // with newlines, so an unsanitized newline here forges a row in the very
-      // diagnostic a reader trusts most (issue #3003).
+      // `s3:PutObject` on the bucket can write. cdkd's output is
+      // line-oriented, so an unsanitized newline here invents a line that
+      // reads like a row of the very diagnostic a reader trusts most
+      // (issue #3003).
       // ASCII allowlist. V8's `SyntaxError` says its own words in ASCII and
       // QUOTES the offending input, so the non-ASCII content here is body
       // bytes from a file anyone with `s3:PutObject` can write -- the value

@@ -553,7 +553,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // string that never reached the rendered row reached the diagnostic
       // instead — and cdkd's output is line-oriented.
       const bad = {
-        version: '2\n  PhysicalID: arn:forged',
+        version: '2\n  PhysicalID: arn\u200b:forged',
         stackName: 'X',
         resources: {},
         outputs: {},
@@ -568,7 +568,10 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const message = (caught as Error).message;
       expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
       // Not vacuous: the refusal still NAMES the offending value, flattened.
-      expect(message).toContain('PhysicalID: arn:forged');
+      expect(message).toContain('PhysicalID: arn :forged');
+      // The CLASS as well as the guard: a zero-width space survives the
+      // denylist and only the allowlist removes it.
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
     });
 
     it('sanitizes the REGION in getState\'s own refusals (issue #3003)', async () => {
@@ -706,7 +709,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // Every case reaching them passed the benign name 'X'.
       childLoggerMock.debug.mockClear();
       childLoggerMock.warn.mockClear();
-      const hostile = 'Ghost\n  StackForged: yes';
+      const hostile = 'Ghost\n  Stack\u200bForged: yes';
 
       // (a) `Failed to get state`, whose DETAIL is an AWS message here.
       s3Client.send.mockRejectedValueOnce(
@@ -714,7 +717,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       );
       const failed = await backend.getState(hostile, 'us-east-1').catch((e: unknown) => e);
       expect((failed as Error).message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect((failed as Error).message).toContain('StackForged: yes');
+      expect((failed as Error).message).toContain('Stack Forged: yes');
       expect((failed as Error).message).toContain('DetailForged: yes');
 
       // (b) `has no ETag`.
@@ -723,7 +726,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       });
       const noEtag = await backend.getState(hostile, 'us-east-1').catch((e: unknown) => e);
       expect((noEtag as Error).message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect((noEtag as Error).message).toContain('StackForged: yes');
+      expect((noEtag as Error).message).toContain('Stack Forged: yes');
 
       // (c) `Retrieved state`, on the success path.
       const good = { version: 2, stackName: 'S', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 };
@@ -736,7 +739,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         .map((c: unknown[]) => String(c[0]))
         .find((c) => c.includes('Retrieved state'));
       expect(retrieved).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(retrieved).toContain('StackForged: yes');
+      expect(retrieved).toContain('Stack Forged: yes');
 
       // (d) the legacy-loaded WARN, whose NAME and KEY are both interpolated.
       const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
@@ -755,7 +758,10 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(warned).toContain('Loaded legacy state');
       expect(warned).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
       // The name appears twice: on its own and inside the printed KEY.
-      expect(warned.match(/StackForged: yes/g)).toHaveLength(2);
+      expect(warned.match(/Stack Forged: yes/g)).toHaveLength(2);
+      // The KEY takes the allowlist too, which nothing pinned: the name
+      // reaches it through `getLegacyStateKey`.
+      expect(warned).not.toMatch(/[\u200b-\u200f\ufeff]/);
     });
 
     it('sanitizes the legacy region-mismatch DEBUG line (issue #3003)', async () => {
@@ -773,7 +779,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
               JSON.stringify({
                 version: 1,
                 stackName: 'S',
-                region: 'eu-west-1\n  PhysicalID: arn:forged',
+                region: 'eu-west-1\n  PhysicalID: arn\u200b:forged',
                 resources: {},
                 outputs: {},
                 lastModified: 1,
@@ -787,7 +793,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // values and a case driving only two left the third reddening nothing.
       const result = await backend.getState(
         'Ghost\n  StackForged: yes',
-        'us-east-1\n  CallerForged: yes'
+        'us-east-1\n  Caller\u200bForged: yes'
       );
       expect(result).toBeNull();
 
@@ -804,9 +810,10 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
       }
       const mismatch = debugCalls.find((c) => c.includes('skipping legacy fallback'));
-      expect(mismatch).toContain('PhysicalID: arn:forged');
+      expect(mismatch).toContain('PhysicalID: arn :forged');
+      expect(mismatch).not.toMatch(/[\u200b-\u200f\ufeff]/);
       expect(mismatch).toContain('StackForged: yes');
-      expect(mismatch).toContain('CallerForged: yes');
+      expect(mismatch).toContain('Caller Forged: yes');
     });
 
     it('sanitizes the LEGACY-key read failure, on getState\'s own fallback (issue #3003)', async () => {
@@ -815,7 +822,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKey);
       s3Client.send.mockRejectedValueOnce(
-        Object.assign(new Error('InvalidObjectState\n  DetailForged: yes'), {
+        Object.assign(new Error('InvalidObjectState\n  Detail\u200bForged: yes'), {
           name: 'InvalidObjectState',
         })
       );
@@ -830,7 +837,8 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(message).toContain('PhysicalID: arn:forged');
       // The DETAIL half, which was guarded and fenced by nothing: its twin in
       // `Failed to get state` is covered, this one was not.
-      expect(message).toContain('DetailForged: yes');
+      expect(message).toContain('Detail Forged: yes');
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
     });
 
     it('sanitizes BOTH the stack name and the region in the has-no-body refusal (issue #3003)', async () => {
@@ -902,7 +910,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // removed, proving nothing. An array opener reaches the quoting form.
       s3Client.send.mockResolvedValueOnce({
         Body: {
-          transformToString: () => Promise.resolve('[1,2,\n  PhysicalID: arn:forged]'),
+          transformToString: () => Promise.resolve('[1,2,\n  Phys\u200bicalID: arn:forged]'),
         },
         ETag: '"e"',
       });
@@ -918,7 +926,9 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // case was rewritten to escape. `PhysicalID` can only have come FROM the
       // body.
       expect(message).toContain('is not valid JSON');
-      expect(message).toContain('PhysicalID');
+      // The needle fits V8's quote window, which truncates mid-word.
+      expect(message).toContain('Phys ical');
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
     });
 
     it('sanitizes the STACK NAME in the invalid-JSON refusal (issue #3003)', async () => {

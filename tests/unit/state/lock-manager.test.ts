@@ -321,6 +321,25 @@ describe('LockManager', () => {
 
       await expect(lockManager.acquireLock('test-stack', 'us-east-1')).rejects.toThrow(LockError);
     });
+
+    it('cannot forge a line with the S3 error text it quotes (issue #3003)', async () => {
+      // S3 error text echoes the KEY, which embeds the stack name, so this
+      // detail is attacker-reachable even though the two interpolations before
+      // it are sanitized. The zero-width space pins the CLASS as well as the
+      // hole: a control byte alone is in both sanitiser classes.
+      const s3Error = new Error('AccessDenied\n  Owner: nob\u200body');
+      s3Error.name = 'AccessDenied';
+      s3Client.send.mockRejectedValueOnce(s3Error);
+
+      const caught = await lockManager
+        .acquireLock('test-stack', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message.split('\n')).toHaveLength(1);
+      expect(message).toContain('Owner: nob ody');
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+    });
   });
 
   describe('getLockInfo', () => {
@@ -425,9 +444,10 @@ describe('LockManager', () => {
     });
 
     it('uses the ASCII ALLOWLIST for the error detail, not the denylist (issue #3003)', async () => {
-      // The class, which nothing pinned: every other hostile byte in this file
-      // is in both classes. A zero-width space and a bidi mark are in neither
-      // denylist and only the allowlist removes them.
+      // The class, which nothing pinned: a control byte is in BOTH sanitiser
+      // classes, so a case carrying only one cannot tell them apart. A
+      // zero-width space and a bidi mark are in neither denylist, and only the
+      // allowlist removes them.
       s3Client.send.mockRejectedValueOnce(new Error('Denied\u200b\u200e at key'));
 
       const caught = await lockManager
@@ -444,7 +464,7 @@ describe('LockManager', () => {
       // Debug is quieter than warn, not a different terminal. `getLockRecord`
       // writes four such lines and they reach three different branches, so
       // one fixture cannot drive them all -- an earlier version of this case
-      // drove two and its name said four.
+      // drove two while this comment claimed all four.
       const hostile = 'Ghost\n  PhysicalID: arn:forged';
       const clean = (calls: string[]): void => {
         for (const call of calls) {
@@ -493,7 +513,8 @@ describe('LockManager', () => {
 
     it('uses the ASCII ALLOWLIST in `safeSegment`, not the denylist (issue #3003)', async () => {
       // The class on the SEGMENT helper, the twin of the two class fences on
-      // the S3 side. Every other hostile byte in this file is in both classes.
+      // the S3 side. A zero-width space discriminates for the same reason as
+      // in the `Failed to read lock` case above.
       s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
       childLoggerMock.debug.mockClear();
 

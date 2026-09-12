@@ -213,8 +213,8 @@ they print as untrusted text:
   is malformed enough that the view refuses instead of rendering, the message is
   where the record's own text appears — an unreadable `state.json` or `lock.json` is quoted back by
   the JSON parser, an ambiguous stack has its regions listed, and a nested-stack
-  walk names the child it could not find. Those views join their rows with
-  newlines, so the same removal applies there: the diagnostic reports the bad
+  walk names the child it could not find. cdkd's output is line-oriented, so
+  the same removal applies there: the diagnostic reports the bad
   value flattened onto one line rather than letting it invent a row. Anything
   that strips to nothing is reported as an explicit placeholder rather than an
   empty slot, and the underlying cause a refusal reports is flattened the same
