@@ -96,6 +96,13 @@ export interface DiagnosisInput {
   unreadable?: string[];
   /** Removed properties the job settled itself, rendered in their own section. */
   autoTolerated?: Array<{ resourceType: string; property: string; rationale: string }>;
+  /**
+   * Removed properties a STANDING `bogusTolerated` entry already settles —
+   * written by an earlier cycle or by hand, so they are in no `written` list.
+   * Subtracted from the count and rendered in their own section, because
+   * subtracting alone made the removal invisible (issue go-to-k/cdkd#3005).
+   */
+  alreadyTolerated?: Array<{ resourceType: string; property: string; rationale: string }>;
   /** Removed properties the job REFUSED to settle, with the test that failed. */
   autoEscalated?: Array<{ resourceType: string; property: string; reason: string }>;
   /** Divergences a pending dependency bump resolves, rendered in their own section. */
@@ -125,6 +132,24 @@ export declare function countDecisions(
       >
     >
 ): number;
+/**
+ * Split `removed` on what `bogusTolerated` already settles, so the count and
+ * `property-coverage` agree about what SETTLED means, and the settled half
+ * still reaches the report (issue https://github.com/go-to-k/cdkd/issues/3005).
+ */
+export declare function partitionSettledRemovals(
+  removed: readonly RemovedEntry[],
+  bogusTolerated: Record<string, Record<string, string> | undefined> | undefined,
+  /**
+   * What THIS run wrote. Kept out of `settled` only — the Settle step writes
+   * into the same file before the diagnosis reads it, so without this every
+   * auto-settled property renders in both sections.
+   */
+  settledThisCycle?: ReadonlyArray<{ resourceType: string; property: string }>
+): {
+  remaining: RemovedEntry[];
+  settled: Array<{ resourceType: string; property: string; rationale: string }>;
+};
 export declare function parseDefinitionMemberMissing(
   detail: string
 ): { definition: string; member: string } | undefined;

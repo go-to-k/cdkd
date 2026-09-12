@@ -31,6 +31,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -52,6 +53,7 @@ import {
   buildSdkLag,
   classifyRemovedProperty,
   countDecisions,
+  partitionSettledRemovals,
   parseDefinitionMemberMissing,
   partitionPendingSdkBump,
   pendingBumpGroups,
@@ -75,6 +77,11 @@ import {
   sdkModelsMember,
   sdkVersionLag,
 } from '../../../scripts/diagnose-schema-refresh.mjs';
+// The OTHER reader of `bogusTolerated`, imported so the confluence case below
+// asserts against the real oracle rather than a restatement of it: the #3005
+// defect was two definitions of "settled", and a second copy here would be a
+// third.
+import { classifyCoverage } from '../provisioning/_property-coverage-utils.js';
 import {
   providerWiresProperty,
   typedSdkMember,
@@ -895,6 +902,14 @@ describe('the render guards, at every site that reaches Markdown', () => {
       // The failed-check HEADING is a twelfth site; without an entry here it
       // was pinned only against the wrong-guard swap, not against no guard.
       failedChecks: [POISON_TYPE],
+      // The two SETTLED sections render a type, a property and a rationale
+      // each. They were added by go-to-k/cdkd#3005 and did not join this input,
+      // so four render sites were outside the only case that watches them —
+      // which is precisely what the comment above forbids.
+      autoTolerated: [{ resourceType: POISON_TYPE, property: POISON, rationale: 'SDK has `X`' }],
+      alreadyTolerated: [
+        { resourceType: POISON_TYPE, property: POISON, rationale: 'SDK has `X`' },
+      ],
       skipped: [POISON],
       sdkLag: [
         {
@@ -927,10 +942,10 @@ describe('the render guards, at every site that reaches Markdown', () => {
     //
     // Sites, in render order: the removal's type heading and its property
     // bullet, the rename bullet, the divergence line's type and its key, the
-    // writable-added type and its property list, the lag row's type, and the
-    // skipped list.
+    // writable-added type and its property list, the lag row's type, the
+    // skipped list, and the two SETTLED sections' type + property (two each).
     const rejections = (md.match(/\[(?:name|key) rejected: unexpected characters\]/g) ?? []).length;
-    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(12);
+    expect(rejections, 'a call site is interpolating a bundle-derived name raw').toBe(16);
     // `renderDetail` strips rather than rejects, so it needs its own witness:
     // the backtick it removes cannot appear in the rendered detail.
     expect(md, 'renderDetail was bypassed at its call site').not.toContain('SDK has `X`');
@@ -2451,7 +2466,7 @@ describe('countDecisions', () => {
   // the property under test — a second, agreeing copy is what goes stale.
   const none = { removed: [], divergences: [] };
 
-  it('counts each of the five inputs, including the two with no section', () => {
+  it('counts each of the six inputs, including the two with no section', () => {
     // `nestedKeyUnparsed` and `unreadable` render no `### … a decision is
     // needed` heading of their own, which is exactly why a hand-written second
     // copy forgets them: an unparsed checker log and an unreadable fixture are
@@ -2472,6 +2487,24 @@ describe('countDecisions', () => {
     expect(countDecisions({ ...none, nestedKeyUnparsed: true })).toBe(1);
     expect(countDecisions({ ...none, failedChecks: ['property-coverage'] })).toBe(1);
     expect(countDecisions({ ...none, unreadable: ['A'] })).toBe(1);
+    // The sixth input had no arm of its own — the title said "five" for as long
+    // as `pendingSdkBump` existed. Counted per BUMP, so two findings sharing a
+    // client are ONE decision, which is the property a per-finding copy loses.
+    const bump = {
+      resourceType: 'A',
+      nestedKey: 'k',
+      bucket: 'definition-member-missing',
+      detail: 'd',
+      client: '@aws-sdk/client-glue',
+      installed: '1.0.0',
+      latest: '2.0.0',
+      definition: 'I',
+      member: 'm',
+    };
+    expect(countDecisions({ ...none, pendingSdkBump: [bump] })).toBe(1);
+    expect(countDecisions({ ...none, pendingSdkBump: [bump, { ...bump, nestedKey: 'k2' }] })).toBe(
+      1
+    );
   });
 
   it('counts a multi-property removal ONCE — the unit is the judgement', () => {
@@ -3615,6 +3648,17 @@ describe('the decision labels and the count cannot disagree', () => {
             rationale: 'settled by the job',
           },
         ],
+        // The standing-tolerance section is a non-decision section too, added
+        // here with the others: it was introduced without joining this list, so
+        // a stray label in it would not have broken the sequence (issue
+        // go-to-k/cdkd#3005).
+        alreadyTolerated: [
+          {
+            resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+            property: 'DefaultCooldown',
+            rationale: 'settled by a standing entry',
+          },
+        ],
         autoEscalated: [
           { resourceType: 'AWS::SQS::Queue', property: 'DelaySeconds', reason: 'could not tell' },
         ],
@@ -4558,4 +4602,541 @@ describe('the divergence procedure and the unknown SDK-lag reading', () => {
     expect(md).not.toContain('   - `AWS::Glue::Connection`: `AuthorizationCodeProperties`');
     expect(md).toContain('AuthorizationCodeProperties');
   });
+});
+
+describe('partitionSettledRemovals (issue #3005)', () => {
+  /**
+   * One tolerance map serving every case, holding a settled property and NOT
+   * holding a sibling. Every assertion therefore carries its own control: a
+   * partition that settled everything, or nothing, fails at least one arm of
+   * each case rather than passing half of them.
+   */
+  const TOLERANCE = {
+    'AWS::SQS::Queue': { ContentBasedDeduplication: 'settled on an earlier cycle' },
+    'AWS::Logs::LogGroup': { LogGroupClass: 'a second type, to catch per-entry cross-talk' },
+  };
+  const entry = (resourceType: string, properties: string[]) => ({
+    resourceType,
+    properties,
+    candidates: {},
+  });
+
+  it('subtracts a property the tolerance file ALREADY settles — the counted-but-green case', () => {
+    // The defect: `writeAutoTolerated` SKIPS an already-tolerated property, so
+    // it reaches neither `written` nor `escalated`, and subtracting `written`
+    // alone left it in the count while `property-coverage` stayed green. The PR
+    // was titled "1 decision needed" with no check red and nothing to do.
+    const { remaining, settled } = partitionSettledRemovals(
+      [entry('AWS::SQS::Queue', ['ContentBasedDeduplication'])],
+      TOLERANCE
+    );
+    expect(remaining).toEqual([]);
+    expect(countDecisions({ removed: remaining, divergences: [] })).toBe(0);
+    // And it is still VISIBLE. Trading a wrong decision for an invisible
+    // removal is the regression the two-half return exists to prevent.
+    expect(settled).toEqual([
+      {
+        resourceType: 'AWS::SQS::Queue',
+        property: 'ContentBasedDeduplication',
+        rationale: 'settled on an earlier cycle',
+      },
+    ]);
+  });
+
+  it('KEEPS a removal the tolerance file does not settle, and reports it as settling nothing', () => {
+    // The discriminating control: without it, a partition that settled
+    // everything would pass the case above, and the count could never report a
+    // real removal again.
+    const removed = [entry('AWS::SQS::Queue', ['CdkdNotToleratedName'])];
+    const { remaining, settled } = partitionSettledRemovals(removed, TOLERANCE);
+    expect(remaining).toEqual(removed);
+    expect(settled).toEqual([]);
+    expect(countDecisions({ removed: remaining, divergences: [] })).toBe(1);
+  });
+
+  it('keeps only the unsettled properties of a mixed entry, and preserves its other fields', () => {
+    const { remaining, settled } = partitionSettledRemovals(
+      [
+        {
+          resourceType: 'AWS::SQS::Queue',
+          properties: ['ContentBasedDeduplication', 'CdkdNotToleratedName'],
+          candidates: { CdkdNotToleratedName: ['CdkdRenameCandidate'] },
+        },
+      ],
+      TOLERANCE
+    );
+    expect(remaining).toEqual([
+      {
+        resourceType: 'AWS::SQS::Queue',
+        properties: ['CdkdNotToleratedName'],
+        candidates: { CdkdNotToleratedName: ['CdkdRenameCandidate'] },
+      },
+    ]);
+    expect(settled.map((s) => s.property)).toEqual(['ContentBasedDeduplication']);
+  });
+
+  it('drops one entry and keeps its sibling, per TYPE, without cross-talk', () => {
+    // Two entries in one call: per-entry independence, order preservation, and
+    // the emptied-row drop, none of which a single-element array can show.
+    // `countDecisions` counts ENTRIES, so an emptied row left in place would
+    // still count 1 — the defect surviving its own fix.
+    const { remaining, settled } = partitionSettledRemovals(
+      [
+        entry('AWS::SQS::Queue', ['ContentBasedDeduplication']),
+        entry('AWS::Logs::LogGroup', ['CdkdNotToleratedName']),
+        entry('AWS::SNS::Topic', ['ContentBasedDeduplication']),
+      ],
+      TOLERANCE
+    );
+    // The SNS entry survives although its property name is settled under a
+    // DIFFERENT type — the lookup is per type, not per name.
+    expect(remaining.map((e) => e.resourceType)).toEqual(['AWS::Logs::LogGroup', 'AWS::SNS::Topic']);
+    expect(countDecisions({ removed: remaining, divergences: [] })).toBe(2);
+    expect(settled).toEqual([
+      {
+        resourceType: 'AWS::SQS::Queue',
+        property: 'ContentBasedDeduplication',
+        rationale: 'settled on an earlier cycle',
+      },
+    ]);
+  });
+
+  it('settles nothing when the tolerance map is absent or empty — the safe direction', () => {
+    // An unreadable or missing tolerance file must OVER-count, never under: a
+    // decision wrongly shown is a wasted read, a decision wrongly hidden is the
+    // silent merge this whole issue is about. `main()` falls back to `{}` on an
+    // unparseable file for exactly this reason.
+    const removed = [entry('AWS::SQS::Queue', ['ContentBasedDeduplication'])];
+    for (const empty of [undefined, {}, { 'AWS::SQS::Queue': {} }]) {
+      const { remaining, settled } = partitionSettledRemovals(removed, empty);
+      expect(remaining).toEqual(removed);
+      expect(settled).toEqual([]);
+    }
+  });
+
+  it('agrees with classifyCoverage about what SETTLED means, both ways', () => {
+    // The confluence the defect broke: `classifyCoverage` decides `bogus`
+    // membership from `bogusTolerated`, and the count decided it from this
+    // cycle's `written` list. Two definitions of one word is what let a counted
+    // decision sit next to a green check, so this pins them to ONE input — and
+    // asserts BOTH polarities, since agreeing only on the settled side is also
+    // satisfied by a partition that settles everything.
+    const schemaProperties = ['QueueName']; // both names have LEFT the schema
+    const handledProperties = new Set([
+      'QueueName',
+      'ContentBasedDeduplication',
+      'CdkdNotToleratedName',
+    ]);
+    for (const property of ['ContentBasedDeduplication', 'CdkdNotToleratedName']) {
+      const coverage = classifyCoverage({
+        resourceType: 'AWS::SQS::Queue',
+        schemaProperties,
+        readOnlyProperties: [],
+        handledProperties,
+        unhandledByDesign: undefined,
+        backfillProperties: undefined,
+        bogusTolerated: TOLERANCE['AWS::SQS::Queue'],
+      });
+      const ciWouldBeRed = coverage.bogus.some((b) => b.endsWith(`:${property}`));
+      const counted =
+        partitionSettledRemovals([entry('AWS::SQS::Queue', [property])], TOLERANCE).remaining
+          .length > 0;
+      expect(
+        counted,
+        `${property}: the count says ${counted ? 'decision' : 'settled'} while property-coverage ` +
+          `would be ${ciWouldBeRed ? 'RED' : 'GREEN'} — the two must agree, or a counted decision ` +
+          'merges on a green check (issue #3005)'
+      ).toBe(ciWouldBeRed);
+    }
+  });
+
+  it('renders a standing-tolerance removal instead of dropping it from the report', () => {
+    // The regression the two-half return closes. Subtracting alone made the
+    // removal render NOWHERE — `writeAutoTolerated` skipped it, so it earns no
+    // "the job settled this" entry either — and the body then said "additions
+    // only" over a property AWS had removed.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      skipped: [],
+      divergences: [],
+      alreadyTolerated: [
+        {
+          resourceType: 'AWS::SQS::Queue',
+          property: 'ContentBasedDeduplication',
+          rationale: 'settled on an earlier cycle',
+        },
+      ],
+    });
+    expect(md).toContain('a STANDING tolerance already settles (1)');
+    expect(md).toContain('ContentBasedDeduplication');
+    expect(md).toContain('settled on an earlier cycle');
+    // Still a zero-decision report, and the opening sentence must not claim
+    // something the section below contradicts.
+    expect(md).toContain('Nothing in this refresh needs a decision');
+    expect(md).not.toContain('additions only');
+  });
+
+  it('does not say "additions only" when THIS run settled the removal either', () => {
+    // The sibling of the case above, and the one the first fix missed: keying
+    // the sentence on `alreadyTolerated` alone left it contradicting the
+    // job-settled section, which the 73%-auto-settleable figure makes the
+    // common path rather than the rare one.
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      skipped: [],
+      divergences: [],
+      autoTolerated: [
+        {
+          resourceType: 'AWS::Route53::RecordSet',
+          property: 'GeoProximityLocation',
+          rationale: 'settled by the job',
+        },
+      ],
+    });
+    expect(md).toContain('Nothing in this refresh needs a decision');
+    expect(md).not.toContain('additions only');
+    expect(md).toContain('the job SETTLED itself (1)');
+  });
+
+  it('still says "additions only" when nothing was removed at all', () => {
+    // The control for the case above: without it, deleting the conditional and
+    // always using the longer sentence would pass.
+    const md = renderDiagnosis({ removed: [], writableAdded: [], skipped: [], divergences: [] });
+    expect(md).toContain('Nothing in this refresh needs a decision — additions only.');
+    expect(md).not.toContain('a STANDING tolerance already settles');
+  });
+});
+
+describe('partitionSettledRemovals vs the job’s own writes (issue #3005)', () => {
+  // The Settle step runs BEFORE Diagnose and writes into the very file the
+  // diagnosis then reads, so `bogusTolerated` already carries this cycle's
+  // entries. Without `settledThisCycle` every auto-settled property lands in
+  // BOTH report sections, the second under prose asserting an earlier cycle
+  // wrote it — and that is the designed happy path, not a corner.
+  //
+  // The fixture is deliberately NOT four unrelated pairs. The subtraction is a
+  // CONJUNCTION (`w.resourceType === e.resourceType && w.property === p`), and
+  // over pairwise-distinct data either half alone decides every case, so each
+  // conjunct is individually deletable with the suite green. Two of the four
+  // entries exist only to discriminate: `HealthCheckId` shares its TYPE with
+  // the write (dropping the property test would wrongly exclude it), and
+  // `AWS::EC2::Instance.GeoProximityLocation` shares its PROPERTY NAME with the
+  // write (dropping the type test would wrongly exclude that one).
+  const TOLERANCE = {
+    'AWS::Route53::RecordSet': {
+      GeoProximityLocation: 'written by THIS run',
+      HealthCheckId: 'standing, and shares its TYPE with this run’s write',
+    },
+    'AWS::AutoScaling::AutoScalingGroup': { DefaultCooldown: 'written long ago' },
+    'AWS::EC2::Instance': {
+      GeoProximityLocation: 'standing, and shares its PROPERTY NAME with this run’s write',
+    },
+  };
+  const WRITTEN_THIS_CYCLE = [
+    { resourceType: 'AWS::Route53::RecordSet', property: 'GeoProximityLocation' },
+  ];
+  const removed = [
+    {
+      resourceType: 'AWS::Route53::RecordSet',
+      properties: ['GeoProximityLocation', 'HealthCheckId'],
+      candidates: {},
+    },
+    {
+      resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+      properties: ['DefaultCooldown'],
+      candidates: {},
+    },
+    { resourceType: 'AWS::EC2::Instance', properties: ['GeoProximityLocation'], candidates: {} },
+  ];
+
+  it('leaves this run’s OWN writes out of the standing-tolerance list', () => {
+    const { remaining, settled } = partitionSettledRemovals(
+      removed,
+      TOLERANCE,
+      WRITTEN_THIS_CYCLE
+    );
+    // Both are settled, so neither is counted...
+    expect(remaining).toEqual([]);
+    expect(countDecisions({ removed: remaining, divergences: [] })).toBe(0);
+    // ...but only the one nobody wrote this cycle is attributed to a STANDING
+    // entry. The other already has its own section.
+    expect(settled.map((s) => `${s.resourceType}.${s.property}`)).toEqual([
+      'AWS::Route53::RecordSet.HealthCheckId',
+      'AWS::AutoScaling::AutoScalingGroup.DefaultCooldown',
+      'AWS::EC2::Instance.GeoProximityLocation',
+    ]);
+  });
+
+  it('claims BOTH when nothing was written this cycle — the discriminating control', () => {
+    // Without this, dropping every property from `settled` would pass the case
+    // above and silently restore "the removal renders nowhere".
+    const { settled } = partitionSettledRemovals(removed, TOLERANCE);
+    expect(settled.map((s) => `${s.resourceType}.${s.property}`)).toEqual([
+      'AWS::Route53::RecordSet.GeoProximityLocation',
+      'AWS::Route53::RecordSet.HealthCheckId',
+      'AWS::AutoScaling::AutoScalingGroup.DefaultCooldown',
+      'AWS::EC2::Instance.GeoProximityLocation',
+    ]);
+  });
+
+  it('refuses a NON-STRING rationale rather than killing the report', () => {
+    // `_todo-backfill.json` is hand-edited by design and `classifyCoverage`
+    // reads only `Object.keys`, so a `"Prop": null` typo is GREEN on CI. If it
+    // reached the report, `renderDetail` would call `.replace` on it and the
+    // diagnosis would die before anything was written — the exact outcome the
+    // tolerance-read try/catch exists to prevent, one layer in. Unsettled is
+    // the safe verdict: the property stays counted.
+    // One `typeof` arm decides all four, so these are not four distinct
+    // failures — they are the shapes a hand edit plausibly leaves behind, kept
+    // as a table so a future guard narrowed to `null` fails here.
+    for (const bad of [null, 42, { why: 'an object' }, ['a list']]) {
+      const tolerance = { 'AWS::EC2::Instance': { Tenancy: bad } } as unknown as Parameters<
+        typeof partitionSettledRemovals
+      >[1];
+      const entries = [
+        { resourceType: 'AWS::EC2::Instance', properties: ['Tenancy'], candidates: {} },
+      ];
+      const { remaining, settled } = partitionSettledRemovals(entries, tolerance);
+      expect(settled, `a ${typeof bad} rationale was treated as a settlement`).toEqual([]);
+      expect(countDecisions({ removed: remaining, divergences: [] })).toBe(1);
+      // ...and the report still renders. `alreadyTolerated: settled` is what
+      // makes this arm discriminate: without it `renderDiagnosis` only ever
+      // sees `remaining`, the bad value never reaches `renderDetail`, and the
+      // assertion is green on both trees — measured, and the reason it is
+      // written this way. Under the reverted guard `settled` carries the bad
+      // rationale and the render dies with "Cannot read properties of null".
+      expect(() =>
+        renderDiagnosis({
+          removed: remaining,
+          writableAdded: [],
+          skipped: [],
+          divergences: [],
+          alreadyTolerated: settled,
+        })
+      ).not.toThrow();
+    }
+  });
+
+  it('renders each settled property in exactly ONE section', () => {
+    // Its own minimal pair: the discriminating fixture above deliberately
+    // repeats `GeoProximityLocation` across two types, which would make the
+    // per-name occurrence counts below say nothing about double-rendering.
+    const { settled } = partitionSettledRemovals(
+      [
+        {
+          resourceType: 'AWS::Route53::RecordSet',
+          properties: ['GeoProximityLocation'],
+          candidates: {},
+        },
+        {
+          resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+          properties: ['DefaultCooldown'],
+          candidates: {},
+        },
+      ],
+      TOLERANCE,
+      WRITTEN_THIS_CYCLE
+    );
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      skipped: [],
+      divergences: [],
+      autoTolerated: [
+        {
+          resourceType: 'AWS::Route53::RecordSet',
+          property: 'GeoProximityLocation',
+          rationale: 'written by THIS run',
+        },
+      ],
+      alreadyTolerated: settled,
+    });
+    // The section headings must not both count it, and the property name must
+    // appear once per section it legitimately belongs to — `GeoProximityLocation`
+    // only under the job-settled heading.
+    expect(md).toContain('the job SETTLED itself (1)');
+    expect(md).toContain('a STANDING tolerance already settles (1)');
+    expect((md.match(/GeoProximityLocation/g) ?? []).length).toBe(1);
+    expect((md.match(/DefaultCooldown/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('main()’s tolerance-file arms (issue #3005)', () => {
+  // Both stderr arms of the tolerance read, exercised for real rather than
+  // exempted. An earlier revision of this PR recorded them as unreachable
+  // without editing the repo and was WRONG: `REPO_ROOT` is
+  // `join(__dirname, '..')`, so a COPY of the script under a scratch root
+  // relocates the pin with it. What made the false exemption tempting is that
+  // the read deliberately does NOT follow the `--fixtures-dir` seam (the three
+  // readers must name ONE file) — true, and it says nothing about where
+  // `__dirname` is.
+  //
+  // The same seam covers the `autoTolerated`-vs-`liveTolerance` cross-check
+  // that the withdrawn comment also wrote off: in both arms `liveTolerance`
+  // stays `{}`, so the filter empties the record and the job-settled section
+  // disappears, which is the state each message exists to announce.
+  const withRelocatedScript = (
+    tolerance: string | undefined,
+    run: (root: string) => { stdout: string; stderr: string }
+  ): { stdout: string; stderr: string } => {
+    // REALPATH, not the bare mkdtemp path. On macOS `tmpdir()` is `/var/...`
+    // while git resolves the same directory to `/private/var/...`, so
+    // `committedOf` reports every fixture "outside repository", `removed` comes
+    // back empty and the tolerance read is never reached — a VACUOUS pass that
+    // looks identical to a clean one (measured: stdout and stderr both empty,
+    // exit 0).
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkd-tolerance-arm-')));
+    try {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      mkdirSync(join(root, 'fx'), { recursive: true });
+      mkdirSync(join(root, 'tests/fixtures/cfn-schemas'), { recursive: true });
+      // The whole of `scripts/` — the diagnosis imports sibling helpers, and a
+      // partial copy dies in the loader with a message that reads like a
+      // broken case rather than like the arm under test.
+      for (const name of readdirSync(join(REPO_ROOT, 'scripts'))) {
+        const from = join(REPO_ROOT, 'scripts', name);
+        if (statSync(from).isFile()) cpSync(from, join(root, 'scripts', name));
+      }
+      symlinkSync(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'));
+      symlinkSync(join(REPO_ROOT, 'src'), join(root, 'src'));
+      // The real fixture set: the diagnosis REFUSES to report from a listing
+      // short of the coverage table, so a one-file scratch dir never reaches
+      // the tolerance read at all.
+      cpSync(join(REPO_ROOT, 'tests/fixtures/cfn-schemas'), join(root, 'fx'), { recursive: true });
+      if (tolerance !== undefined) {
+        writeFileSync(join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json'), tolerance);
+      }
+      // `committedOf` shells out to git; without a repository here every
+      // fixture reports "could not read" and `removed` is empty.
+      execFileSync('git', ['init', '-q', root]);
+      execFileSync('git', ['-C', root, 'add', '-A'], { stdio: 'ignore' });
+      execFileSync(
+        'git',
+        ['-C', root, '-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-qm', 'seed'],
+        { stdio: 'ignore' }
+      );
+      return run(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  const AUTO_RECORD = JSON.stringify({
+    written: [
+      {
+        resourceType: 'AWS::SQS::Queue',
+        property: 'ContentBasedDeduplication',
+        rationale: 'settled on an earlier cycle',
+      },
+    ],
+  });
+
+  const diagnose = (root: string): { stdout: string; stderr: string } => {
+    const auto = join(root, 'auto-tolerated.json');
+    writeFileSync(auto, AUTO_RECORD);
+    const out = spawnSync(
+      'node',
+      [
+        join(root, 'scripts/diagnose-schema-refresh.mjs'),
+        '--fixtures-dir',
+        join(root, 'fx'),
+        '--auto-tolerated',
+        auto,
+      ],
+      { encoding: 'utf8' }
+    );
+    expect(out.error, 'the relocated diagnosis failed to spawn').toBeUndefined();
+    // The STATUS too: a future non-zero exit carrying the same stderr would
+    // otherwise go unseen, and the point of these arms is that the report is
+    // still written.
+    expect(out.status, `the relocated diagnosis exited ${out.status}: ${out.stderr}`).toBe(0);
+    return { stdout: out.stdout ?? '', stderr: out.stderr ?? '' };
+  };
+
+  it('announces an ABSENT tolerance file that the write record contradicts', () => {
+    const { stdout, stderr } = withRelocatedScript(undefined, diagnose);
+    expect(stderr).toContain('does not exist, but the auto-tolerated record names 1 write(s)');
+    expect(stderr).toContain('dropping them from the report');
+    // The cross-check really did empty the record: the job-settled section is
+    // absent rather than claiming a write the file does not carry.
+    expect(stdout).not.toContain('the job SETTLED itself');
+    // ...and the report was still written, which is what the fallback buys.
+    expect(stdout).toContain('## What changed, and what needs a decision');
+  });
+
+  it('announces an UNPARSEABLE tolerance file and names what goes with it', () => {
+    const { stdout, stderr } = withRelocatedScript('{ not json', diagnose);
+    expect(stderr).toContain('no removal will be treated as settled');
+    // The count in the message is the number actually dropped — the filter
+    // below it has `liveTolerance` at its `{}` initializer, so all of them are.
+    expect(stderr).toContain('The 1 write(s) this cycle recorded are dropped');
+    expect(stdout).not.toContain('the job SETTLED itself');
+    expect(stdout).toContain('## What changed, and what needs a decision');
+  });
+
+  it('does not invent a zero when no write record was passed', () => {
+    // The by-hand shape: an unreadable file and nothing written this cycle.
+    // Ungated, the same sentence reads "The 0 write(s) … are dropped", which is
+    // a second, invented failure on top of the real one.
+    const { stderr } = withRelocatedScript('{ not json', (root) => {
+      const out = spawnSync(
+        'node',
+        [join(root, 'scripts/diagnose-schema-refresh.mjs'), '--fixtures-dir', join(root, 'fx')],
+        { encoding: 'utf8' }
+      );
+      expect(out.error, 'the relocated diagnosis failed to spawn').toBeUndefined();
+      expect(out.status, `the relocated diagnosis exited ${out.status}: ${out.stderr}`).toBe(0);
+      return { stdout: out.stdout ?? '', stderr: out.stderr ?? '' };
+    });
+    expect(stderr).toContain('no removal will be treated as settled');
+    expect(stderr).not.toContain('write(s) this cycle recorded');
+  });
+}, 180_000);
+
+describe('main()’s tolerance read (issue #3005)', () => {
+  const SCRIPT_PATH = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  it('resolves the tolerance file to the SAME path its writer and CI use', () => {
+    // A SOURCE-shape assertion, and what it buys is NARROWER than an earlier
+    // revision of this comment claimed. That revision said the behaviour was
+    // unreachable at runtime and that "a spawn case would pass with any
+    // spelling"; both are false — `main()`'s tolerance-file arms above reach
+    // the read, and re-pointing `tolerancePath` at the `--fixtures-dir` seam
+    // reds all three of them (measured 2026-09-12).
+    //
+    // It stays because the two instruments pin different things: the spawn
+    // cases exercise the DIAGNOSIS side alone, while what is pinned here is
+    // that all THREE readers name one file. The map became
+    // the whole subtraction oracle in go-to-k/cdkd#3005, and "settled" meaning
+    // different things in different places is the defect that issue turned out
+    // to carry. Pointing this read at the `--fixtures-dir` seam was tried and
+    // reverted: `writeAutoTolerated` takes a `repoRoot` seam and is called with
+    // the default, so the seam would have had the Settle step write one file
+    // while the diagnosis read another.
+    const source = readFileSync(SCRIPT_PATH, 'utf8');
+    expect(
+      source,
+      'the diagnosis no longer resolves the tolerance file the way its writer does'
+    ).toContain("const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');");
+    // The writer's own spelling, so a change to either side fails here rather
+    // than letting the two drift apart silently.
+    expect(
+      source,
+      'writeAutoTolerated no longer resolves the tolerance file the way the diagnosis does'
+    ).toContain("const path = join(repoRoot, 'tests/fixtures/cfn-schemas/_todo-backfill.json');");
+    // ...and the writer is still called WITHOUT a repoRoot override, which is
+    // what makes the two resolve equal on every real run.
+    expect(source).toContain('writeAutoTolerated(removed, providerFiles)');
+  });
+
+  // The `try/catch` around that read IS covered, by `main()`'s tolerance-file
+  // arms above. An earlier revision of this comment said it had no case and
+  // could not have one — reasoning that a `--fixtures-dir` scratch tree is not
+  // where the diagnosis reads (true) and concluding that only an unparseable
+  // COMMITTED file could reach it (false). The missing step is that
+  // `REPO_ROOT` is `join(__dirname, '..')`: relocating the SCRIPT relocates the
+  // pin, so the arm is reachable with the committed file untouched. Measured on
+  // the cases above: removing the wrap now reds two of the three.
 });

@@ -127,6 +127,40 @@ pull request does not change that. So a decision-carrying PR does not show a
 red check; it shows no check at all. Before this marking existed it was
 indistinguishable, in every list view, from a refresh that needed nothing.
 
+**Two classes aside, you cannot merge one by mistake, and the marking is not
+what stops you.** `ci-ok` is a required status check on `main`, so the held state
+above already blocks the merge button — a required check that has not reported
+is not a pass. Approve the workflows and the block holds for the opposite
+reason: nearly every decision the count can carry also reddens a check that
+`ci-ok` waits on (a nested key leaves `audit:nested-key-coverage:check` at exit
+1, an unsettled removal leaves a declaration `property-coverage` fails, and the
+rest of the count IS that family of checks). So the label and the title are
+there to tell you the work exists, not to hold the gate.
+
+**Unsettled** is the load-bearing word in that sentence, and it was wrong until
+issue [#3005](https://github.com/go-to-k/cdkd/issues/3005). A property listed in
+`_todo-backfill.json`'s `bogusTolerated` is settled — that is what the entry's
+rationale says — so `property-coverage` is green for it, and AWS removing it
+again is not a decision. The count used to disagree, because it subtracted only
+what the CURRENT cycle wrote: a tolerance committed on an earlier cycle left the
+removal counted, and the PR was titled "1 decision needed" with nothing red and
+nothing to do. Both sides now read the tolerance FILE, so they cannot disagree.
+
+Two classes are still counted without reddening anything, and they are the two
+exceptions to "you cannot merge one by mistake" above — approve the workflows on
+such a cycle and CI goes green with the count non-zero, so there the marking is
+the only signal. Both mean the RUN is broken rather than that AWS moved:
+
+- a fixture the diagnosis could not read from `HEAD`. The PR body names them.
+  The narrowness is the point — an unparseable fixture in the WORKING TREE is
+  counted the same way but does redden CI, because every fixture-reading check
+  fails to load it.
+- a check the refresh run could not EXECUTE — an empty log, a missing task, a
+  killed process. Two of the counted classes read a refresh-side exit code, so
+  CI running the same tasks independently is green while the refresh's failure
+  is what was counted. The run log says which check and why. (A check that ran
+  and genuinely failed is not this: that reddens CI too.)
+
 The marking is **cleared by the next run** once you have committed the
 classifications: the job recomputes the count while the PR is open, even on a
 day AWS changed nothing, then drops the label, restores the plain title and

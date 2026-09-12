@@ -804,7 +804,7 @@ export const CHECK_GUIDANCE = {
  * from — `renderDiagnosis` calls it rather than restating the condition — so
  * the count a PR is marked with and the prose inside that PR cannot disagree.
  * The pair had to be one function rather than two agreeing ones: the condition
- * has five terms and two of them (`nestedKeyUnparsed`, `unreadable`) are the
+ * has six terms and two of them (`nestedKeyUnparsed`, `unreadable`) are the
  * ones a second copy forgets, since neither renders a `### … a decision is
  * needed` heading of its own — an unparsed checker log and an unreadable
  * fixture are decisions with no section to remind a reader they exist.
@@ -819,7 +819,8 @@ export const CHECK_GUIDANCE = {
  * `property-coverage` rendered as clean, on the ordinary refresh shape.
  *
  * @param {Pick<DiagnosisInput, 'removed' | 'divergences'> &
- *   Partial<Pick<DiagnosisInput, 'nestedKeyUnparsed' | 'failedChecks' | 'unreadable'>>} input
+ *   Partial<Pick<DiagnosisInput,
+ *     'nestedKeyUnparsed' | 'failedChecks' | 'unreadable' | 'pendingSdkBump'>>} input
  * @returns {number}
  */
 export function countDecisions({
@@ -844,6 +845,109 @@ export function countDecisions({
     failedChecks.length +
     unreadable.length
   );
+}
+
+/**
+ * Drop from `removed` every property the tolerance file already SETTLES, so the
+ * decision count describes work a reader can actually do.
+ *
+ * Membership is read off the `bogusTolerated` MAP — the same input
+ * `classifyCoverage` decides `bogus` from — and deliberately NOT off this
+ * cycle's `written` list. The two are not the same set, and taking the smaller
+ * one counted a decision nothing could act on (issue
+ * [#3005](https://github.com/go-to-k/cdkd/issues/3005)).
+ *
+ * `writeAutoTolerated` SKIPS a property whose entry is already there
+ * (`already !== undefined` → `continue`), so it lands in neither `written` nor
+ * `escalated` — the behaviour `diagnose-schema-refresh.test.ts` pins as
+ * "Skipped outright". Subtracting `written` alone therefore left an
+ * ALREADY-tolerated removal in the count while `property-coverage` stayed
+ * GREEN, so the pull request was titled "1 decision needed" over a property
+ * whose rationale is committed, with no check red and nothing for a reader to
+ * do. A decision class that merges cleanly is the shape #3005 calls worse than
+ * a red one, and this was its one live instance.
+ *
+ * Reachable on the standing bot pull request with nothing unusual: AWS adds a
+ * name that is in `bogusTolerated` (the coverage test's staleness arm reds that
+ * cycle, by design), AWS drops it again, and now HEAD carries the name while
+ * the working tree does not. Measured 2026-09-12, 12 of the file's 13 entries
+ * name a property the generated `handled` map declares — so 12 names are one
+ * add/remove pair away from it.
+ *
+ * Reading the FILE also KEEPS the protection the caller's `written` cross-check
+ * was added for rather than weakening it: a `written` claim the branch does not
+ * carry is still excluded, because the file is what is consulted either way.
+ *
+ * BOTH halves are returned, and that is not a convenience. Subtracting alone
+ * made the settled removal render NOWHERE: `writeAutoTolerated` skipped it, so
+ * it is in no `written` list and gets no "the job settled this" section, and
+ * with it gone from `removed` the report said "additions only" over a property
+ * AWS had actually removed. Trading a wrong decision for an invisible removal
+ * is not a fix. The caller renders `settled` in its own section.
+ *
+ * What that section does NOT carry is the RENAME hint: `settled` is name +
+ * rationale, and the hint is rendered from the `removed` loop. That is a
+ * deliberate bound rather than an oversight — a property with a standing
+ * tolerance has already been judged, and re-offering a rename candidate for it
+ * would re-open a settled question every cycle.
+ *
+ * `settledThisCycle` is what keeps the report from saying two things about one
+ * property. The workflow runs `Settle the removals…` BEFORE `Diagnose`, and
+ * that step WRITES into the very file read here — so by diagnosis time the map
+ * already contains this cycle's own writes, and every auto-settled property
+ * would otherwise appear both in the job-settled section and in the standing
+ * one, whose prose says "written by an earlier cycle or by hand, not by this
+ * run". That is the designed happy path rather than a corner: the rule file
+ * measures 73% of declared properties as auto-settleable.
+ *
+ * @param {ReadonlyArray<import('./diagnose-schema-refresh.d.mts').RemovedEntry>} removed
+ * @param {Record<string, Record<string, string> | undefined> | undefined} bogusTolerated the
+ *   tolerance file's `bogusTolerated` map; `{}` when the file is absent, which
+ *   settles nothing and so over-counts — the safe direction.
+ * @param {ReadonlyArray<{resourceType: string, property: string}>} [settledThisCycle]
+ *   what THIS run wrote (the `written` record). Subtracted from `settled` only,
+ *   never from the count: it is settled either way, it simply belongs in the
+ *   other section.
+ * @returns {{remaining: import('./diagnose-schema-refresh.d.mts').RemovedEntry[],
+ *   settled: Array<{resourceType: string, property: string, rationale: string}>}}
+ *   `remaining` is the entries minus settled properties, emptied ones dropped —
+ *   what the count is taken over. `settled` carries each property settled by a
+ *   STANDING entry, with the rationale the file holds for it, so the report can
+ *   show what was removed and why nobody has to look at it.
+ */
+export function partitionSettledRemovals(removed, bogusTolerated, settledThisCycle = []) {
+  // Looked up two levels deep in the map rather than through a flattened
+  // `type|property` key set: this is the same `?.[type]?.[property] !==
+  // undefined` test `writeAutoTolerated` and `classifyCoverage` already use, so
+  // all three agree on what SETTLED means, and there is no separator that has
+  // to be chosen not to collide with a name.
+  /** @type {Array<{resourceType: string, property: string, rationale: string}>} */
+  const settled = [];
+  const remaining = removed
+    .map((e) => ({
+      ...e,
+      properties: e.properties.filter((p) => {
+        const rationale = bogusTolerated?.[e.resourceType]?.[p];
+        // A non-STRING value is not a settlement. The file is hand-edited by
+        // design, `classifyCoverage` reads only `Object.keys` so a `"Prop": null`
+        // typo is GREEN on CI, and the value reaches `renderDetail`, which calls
+        // `.replace` on it — killing the diagnosis before the report is written,
+        // the outcome the tolerance-read catch two screens up exists to prevent.
+        // Treated as unsettled: the property stays COUNTED, the over-count
+        // direction, and the report still renders.
+        if (typeof rationale !== 'string') return true;
+        // Settled either way — it leaves `remaining` and so leaves the count.
+        // It only stays OUT of `settled` when this run wrote the entry, because
+        // the job-settled section already renders it with its own rationale.
+        const byThisRun = settledThisCycle.some(
+          (w) => w.resourceType === e.resourceType && w.property === p
+        );
+        if (!byThisRun) settled.push({ resourceType: e.resourceType, property: p, rationale });
+        return false;
+      }),
+    }))
+    .filter((e) => e.properties.length > 0);
+  return { remaining, settled };
 }
 
 /**
@@ -1122,6 +1226,7 @@ export function renderDiagnosis(input) {
     failedChecks = [],
     unreadable = [],
     autoTolerated = [],
+    alreadyTolerated = [],
     autoEscalated = [],
     pendingSdkBump = [],
     unresolvedSdkLag = [],
@@ -1139,7 +1244,19 @@ export function renderDiagnosis(input) {
     pendingSdkBump,
   });
   if (decisionTotal === 0) {
-    lines.push('Nothing in this refresh needs a decision — additions only.', '');
+    // "additions only" is FALSE whenever a removal was SETTLED — AWS did remove
+    // something, it just needs no judgement. BOTH no-decision sections count:
+    // keying on `alreadyTolerated` alone left the sentence contradicting the
+    // job-settled section, which is the one the 73% figure says is the common
+    // path. The sections below list them; this sentence must not contradict
+    // either.
+    lines.push(
+      alreadyTolerated.length > 0 || autoTolerated.length > 0
+        ? 'Nothing in this refresh needs a decision. AWS did remove a property the provider ' +
+            'declares, but it is already settled — see the section(s) below.'
+        : 'Nothing in this refresh needs a decision — additions only.',
+      ''
+    );
   } else {
     lines.push(
       `**${decisionTotal} ${decisionTotal === 1 ? 'decision needs' : 'decisions need'} your ` +
@@ -1180,6 +1297,38 @@ export function renderDiagnosis(input) {
     for (const w of autoTolerated) {
       lines.push(`- ${renderName(w.resourceType)}: ${renderName(w.property)}`);
       lines.push(`  - ${renderDetail(w.rationale)}`);
+    }
+    lines.push('');
+  }
+
+  if (alreadyTolerated.length > 0) {
+    // A SEPARATE section from the one above, not an append to it. That one's
+    // prose says the job settled these itself, on two structural facts, in THIS
+    // cycle — none of which is true of an entry a human or an earlier cycle
+    // wrote, so folding them together would make a correct paragraph describe
+    // the wrong thing.
+    //
+    // It exists because subtracting these from the count (issue
+    // go-to-k/cdkd#3005) removed them from the report entirely: the removal
+    // rendered nowhere and the body said "additions only" over a property AWS
+    // really had removed. No decision is needed, but a removal a reader cannot
+    // see is how a wrong standing rationale survives forever.
+    lines.push(
+      `### Properties AWS removed that a STANDING tolerance already settles (${alreadyTolerated.length}) — no decision needed`,
+      '',
+      'Each was removed from the CFn schema while the provider still declares it, and',
+      '`_todo-backfill.json` already carries a rationale for that declaration — written by an',
+      'earlier cycle or by hand, not by this run. `property-coverage` is green for them, so',
+      'nothing here is outstanding.',
+      '',
+      'They are listed because the removal is real and the rationale is the only thing',
+      'standing in for a decision. If one no longer convinces you, delete the entry: the next',
+      'cycle reports the property as needing a decision again.',
+      ''
+    );
+    for (const t of alreadyTolerated) {
+      lines.push(`- ${renderName(t.resourceType)}: ${renderName(t.property)}`);
+      lines.push(`  - ${renderDetail(t.rationale)}`);
     }
     lines.push('');
   }
@@ -2980,18 +3129,92 @@ function main() {
   // from an earlier run — or one naming a property this cycle did not settle —
   // would otherwise hide a live decision behind a write that is not on the
   // branch.
+  // REPO_ROOT, deliberately, and NOT the `--fixtures-dir` seam. The three
+  // readers of this file must name one path or "settled" means different
+  // things in different places, which is the whole defect go-to-k/cdkd#3005
+  // turned out to carry: `writeAutoTolerated` takes a `repoRoot` seam and is
+  // called here with the default, and the CI-side oracle
+  // (`tests/unit/provisioning/_property-coverage-utils.ts`) resolves it from
+  // its own location. Pointing this read at `fixturesDir` was tried and
+  // REVERTED: it would have had the Settle step write one file while the
+  // diagnosis read another. It changed nothing observable either way —
+  // measured 2026-09-12, a `--fixtures-dir` run pointed OUTSIDE a repository
+  // reports all 134 fixtures "could not read", because `committedOf` follows
+  // the seam too and git cannot resolve such a path, so `removed` is empty
+  // there and this map is never consulted for a subtraction. The qualifier is
+  // load-bearing because the fixtures RESOLVE inside one — which is how the
+  // tolerance-file arm cases reach this read at all, by relocating the SCRIPT.
+  // They reach the read with `removed` still empty, though: their scratch repo
+  // commits the fixtures verbatim, so the committed and working-tree sides
+  // agree and the report says "additions only" (measured 2026-09-12). A cycle
+  // carrying a real removal is what consults the map.
   const tolerancePath = join(REPO_ROOT, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
-  if (autoTolerated.length > 0 && existsSync(tolerancePath)) {
-    const live = JSON.parse(readFileSync(tolerancePath, 'utf8')).bogusTolerated ?? {};
-    autoTolerated = autoTolerated.filter((w) => live[w.resourceType]?.[w.property] !== undefined);
+  /** @type {Record<string, Record<string, string>>} */
+  let liveTolerance = {};
+  if (existsSync(tolerancePath)) {
+    // Wrapped, and the empty fallback is the SAFE direction: settling nothing
+    // OVER-counts, while throwing here would kill the run before
+    // `renderDiagnosis` writes anything — and the report going out is the
+    // priority this file argues for at the render call below, because the pull request
+    // is how the human finds out at all. An unparseable tolerance file also
+    // reds `property-coverage` on its own, so the state is reported rather than
+    // swallowed.
+    //
+    // On the WORKFLOW path this guard is inert and the comment should not
+    // pretend otherwise: `writeAutoTolerated` parses the same file UNWRAPPED in
+    // the Settle step, which runs first under the same `if:` and
+    // `set -euo pipefail`, so an unparseable file fails there and Diagnose is
+    // skipped. What this covers is the by-hand invocation and any future
+    // ordering where Diagnose reaches the file first.
+    try {
+      liveTolerance = JSON.parse(readFileSync(tolerancePath, 'utf8')).bogusTolerated ?? {};
+    } catch (/** @type {any} */ error) {
+      process.stderr.write(
+        `could not read ${tolerancePath} (${error?.message ?? error}) — no removal will be ` +
+          'treated as settled, so this report OVER-counts rather than hiding a decision.' +
+          // Gated, like the absent-file arm below: a by-hand run passes no
+          // `--auto-tolerated` record, and "The 0 write(s) … are dropped" reads
+          // as a second, invented failure.
+          (autoTolerated.length > 0
+            ? ` The ${autoTolerated.length} write(s) this cycle recorded are dropped from the ` +
+              'report with them, for the same reason.'
+            : '') +
+          '\n'
+      );
+    }
+  } else if (autoTolerated.length > 0) {
+    // An ABSENT file with a non-empty `written` record is contradictory —
+    // `writeAutoTolerated` reads the file before writing it, so it cannot have
+    // written to one that is not there. The cross-check below empties
+    // `autoTolerated` in that state, which silently removes the whole "the job
+    // SETTLED itself" section, so the state is announced rather than left to be
+    // read as "this cycle settled nothing".
+    //
+    // Covered, by `main()`'s tolerance-file arms — and the route there is worth
+    // naming, because an earlier revision of this comment claimed the arm was
+    // unreachable without editing the repo and was WRONG. `REPO_ROOT` is
+    // `join(__dirname, '..')`, so a COPY of this script under a scratch root
+    // relocates the pin with it; the case spawns that copy with the tolerance
+    // file absent. The same seam covers the catch arm above and the
+    // cross-check filter below, which that revision also wrote off.
+    process.stderr.write(
+      `${tolerancePath} does not exist, but the auto-tolerated record names ` +
+        `${autoTolerated.length} write(s) — dropping them from the report; nothing is treated ` +
+        'as settled, so this report OVER-counts rather than hiding a decision\n'
+    );
   }
-  const settled = new Set(autoTolerated.map((w) => `${w.resourceType}\u0000${w.property}`));
-  const removedForReport = removed
-    .map((e) => ({
-      ...e,
-      properties: e.properties.filter((p) => !settled.has(`${e.resourceType}\u0000${p}`)),
-    }))
-    .filter((e) => e.properties.length > 0);
+  autoTolerated = autoTolerated.filter(
+    (w) => liveTolerance[w.resourceType]?.[w.property] !== undefined
+  );
+  // `autoTolerated` is passed so the two sections cannot both claim a property:
+  // the Settle step wrote this cycle's entries into the file this map was read
+  // from, so without it every auto-settled property renders twice, the second
+  // time under prose saying an earlier cycle wrote it.
+  const { remaining: removedForReport, settled: alreadyTolerated } = partitionSettledRemovals(
+    removed,
+    liveTolerance,
+    autoTolerated
+  );
 
   const failedChecks = readArgValue('--failed-checks')
     .split(',')
@@ -3056,6 +3279,7 @@ function main() {
     renderDiagnosis({
       removed: removedForReport,
       autoTolerated,
+      alreadyTolerated,
       autoEscalated,
       writableAdded,
       readOnlyAddedCount,
