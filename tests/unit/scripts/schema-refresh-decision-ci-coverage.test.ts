@@ -269,7 +269,8 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'docs/schema-refresh-runbook.md names as one of the two exceptions to "you cannot merge one ' +
       'by mistake". (An earlier revision of this sentence called it "the OVER-count direction, ' +
       'which blocks a merge rather than allowing one". Nothing converts a non-zero count into a ' +
-      'block: it drives the title, the label and the assignment, and the decision-count job that ' +
+      'block: it drives the title, the body verdict line, the label and the assignment, and the ' +
+      'decision-count job that ' +
       'would have blocked is the one go-to-k/cdkd#3005 asked for and did not get. The clause ' +
       'contradicted the clause before it.) It is stated because this file refuses over-claims, ' +
       'and \'both disjuncts need the critic to be red\' was one.',
@@ -297,7 +298,7 @@ const UNCOVERED_TERMS: Record<string, string> = {
     'check fails to load it. So the exemption is needed for both producers. Accepted rather',
     'than mechanised because its arms break the refresh run as a whole rather than describing',
     'anything about a schema: git absent, a broken repository, or the 32 MB `maxBuffer` — which the',
-    'corpus is three orders of magnitude short of (largest fixture 68,594 B over the 134 files the diagnosis reads,',
+    'corpus is ~490x short of (largest fixture 68,594 B over the 134 files the diagnosis reads,',
     'measured 2026-09-12). It is also loud where it happens: the diagnosis renders the unreadable',
     'fixtures by name in the PR body it is counted in. Recorded on go-to-k/cdkd#3005 as the',
     'residual of closing it.',
