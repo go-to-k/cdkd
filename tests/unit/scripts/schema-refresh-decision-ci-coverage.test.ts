@@ -310,31 +310,19 @@ const UNCOVERED_TERMS: Record<string, string> = {
 //    generator, not this relation.
 
 /**
- * The decision terms, parsed out of the SHIPPED `countDecisions` with the
- * TypeScript compiler API.
+ * The ONE extraction. `decisionTerms` and the probe cases below both call it,
+ * so the corpus that justifies the parser exercises the code that ships — a
+ * hand-written second copy would be a seventh spelling to get wrong, and round
+ * 9 measured exactly that: with the walk duplicated, five arms of the real one
+ * could each be deleted with every case still green.
  *
- * `countDecisions` destructures its input, so the parameter names ARE the
- * terms. A seventh term added there lands in this set with no entry in
- * `CI_COVERAGE`'s `covers` and fails — which is the point: a decision class
- * nothing reddens is the exact defect #3005 reports.
+ * The reasoning for parsing at all, and what each refusal is for, lives on
+ * `decisionTerms` below — ONE copy, because a duplicated paragraph is what this
+ * commit is about. (The duplicate that stood here was already stale: it named
+ * two refusals after a third had been added.)
  *
- * WHY A PARSER, and why that is not over-engineering. This derivation was a
- * regex over the destructuring text, and it was wrong SIX times: counting
- * commas (false red on a default holding one, false green on `a, b`); a
- * position pattern that consumed its own separator; one that missed a rest
- * element and a key position; one that missed a computed key carrying its own
- * `]`; a whole-line refusal on surviving brackets that still missed a
- * surviving QUOTE, where the strip had swallowed the separating comma. Each
- * fix was correct on the shape the previous one got wrong, which is the
- * signature `.claude/skills/work-issues/references/implement.md` names: three
- * spellings in three rounds means change instrument, parse for real, and
- * REFUSE what the model does not cover.
- *
- * So it parses, and refuses. A REST element or a COMPUTED key is reported as a
- * refusal rather than skipped: both mean a decision term can exist that this
- * fence cannot name — a rest element lets one arrive with no signature change
- * at all — and a fence that silently classifies a subset is the defect this
- * file is about, one level up.
+ * Returns names AND refusals rather than throwing, so the caller decides what a
+ * refusal means: fatal for the shipped signature, expected for a probe.
  */
 /**
  * The ONE extraction. `decisionTerms` and the probe cases below both call it,
@@ -427,8 +415,12 @@ const extractTerms = (functionSource: string): { names: string[]; refusals: stri
  * change at all — and a fence that silently classifies a subset is the defect
  * this file is about, one level up.
  */
-const decisionTerms = (): string[] => {
-  const { names, refusals } = extractTerms(countDecisions.toString());
+const termsOrFail = (functionSource: string): string[] => {
+  const { names, refusals } = extractTerms(functionSource);
+  // Factored out of `decisionTerms` so a CASE can drive it. Left inline, this
+  // was the one arm with no red: today's `countDecisions` yields no refusals,
+  // so neutering the assertion restored silent-subset classification — the
+  // defect this file exists to refuse — with every case green.
   expect(
     refusals,
     `countDecisions is shaped so this fence cannot name every term (${JSON.stringify(refusals)}). ` +
@@ -438,6 +430,8 @@ const decisionTerms = (): string[] => {
   return names;
 };
 
+const decisionTerms = (): string[] => termsOrFail(countDecisions.toString());
+
 /**
  * The commands a `ci.yml` job runs, one per line, comments stripped.
  *
@@ -446,6 +440,58 @@ const decisionTerms = (): string[] => {
  * it, and a whole-block `includes` would also match a task named only in that
  * block's error message.
  */
+/**
+ * The same lines, each paired with the SHELL of the step it came from — a
+ * neutralising tail can be armed or disarmed by something earlier in the step
+ * (`set -o pipefail`), which a flattened line list cannot see.
+ */
+const ciCommandsWithStep = (job: string): Array<{ line: string; body: string }> =>
+  stepsOf(ci, job).flatMap((s) => {
+    const body = s.run ?? '';
+    return body
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith('#'))
+      .map((line) => ({ line, body }));
+  });
+
+/**
+ * Whether a matched command line can still FAIL its job.
+ *
+ * Module scope so a CASE can drive it: the pipe arm below has no line in
+ * ci.yml today, so left as a closure it was the one arm with no red.
+ */
+// A matched line must also be able to FAIL the job. `vp run x || true` and
+// `vp run x || echo …` satisfy a plain prefix match while the step exits 0,
+// as does backgrounding with a trailing `&`. Step-level `if:` and
+// `continue-on-error` are the same lever one level up and are fenced by
+// ci-ok-gate.test.ts; the shell tail is the half nothing else watches.
+//
+// `&&` and `;` are deliberately NOT here, and an earlier revision of this
+// comment claimed they were neutralisers, which is false: under `bash -e`
+// (the GitHub default) `a && b` propagates `a`'s status and `a; b` aborts
+// at `a`. Rejecting them would fire on correct lines, and a fence that reds
+// correct code teaches the next author to work around it.
+const neutralised = (line: string, command: string, stepBody: string): boolean => {
+  const tail = line.slice(command.length);
+  // `&&$` is a line continuation, not backgrounding — the comment above
+  // says `&&` is deliberately not a neutraliser, so the pattern must not
+  // catch it through the backgrounding arm. The `^&` alternative an earlier
+  // revision carried was DEAD: `matches` accepts only `l === command` or
+  // `command + ' '`, so a tail is either empty or starts with a space.
+  //
+  // A PIPE is the arm that was missing, and it is not theoretical: under
+  // `bash -e` a pipeline reports its LAST stage, so `vp run <check> | tee x`
+  // exits 0 on failure. The one real pipeline in check-build-test is armed
+  // by `set -o pipefail`, which the ordering case below asserts — for THAT
+  // step. A piped check in any other step would pass here and redden
+  // nothing, so the pipe is rejected unless the same step sets pipefail.
+  // A SINGLE pipe, not `||`: `/\|/` matches both, so the pipe arm swallowed the
+  // `||` arm and that one stopped discriminating — measured.
+  if (/(^|[^|])\|($|[^|])/.test(tail) && !/^\s*set -o pipefail/m.test(stepBody)) return true;
+  return /(\|\||[^&]&\s*$)/.test(tail);
+};
+
 const ciCommandLines = (job: string): string[] =>
   stepsOf(ci, job)
     .flatMap((s) => (s.run ?? '').split('\n'))
@@ -533,6 +579,32 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(extractTerms('function countDecisions({ removed ) { }').refusals).toEqual([
       'the source did not parse',
     ]);
+    // Shapes that are refused LOUDLY rather than read as a subset. Each was
+    // measured un-probed before this list existed.
+    expect(extractTerms('42').refusals).toEqual(['no parameters']);
+    expect(extractTerms('function countDecisions(bag) { return 1; }').refusals).toEqual([
+      'the parameter is not an object binding pattern',
+    ]);
+    // ...and the shapes a rewritten `countDecisions` could legitimately take.
+    expect(extract('removed, 0: zero').names).toEqual(['removed', '0']);
+    expect(extractTerms('({ removed, divergences }) => 1').names).toEqual([
+      'removed',
+      'divergences',
+    ]);
+    // Every refusal `extractTerms` can return must be FATAL where the shipped
+    // signature is read. Without this the assertion could be neutered and a
+    // rest element, a computed key or a second parameter would be silently
+    // dropped from the term set with every other case green.
+    for (const refusing of [
+      'function countDecisions({ removed, ...rest }) { return 1; }',
+      'function countDecisions({ removed, [k]: schemaGaps }) { return 1; }',
+      'function countDecisions({ removed }, schemaGaps = []) { return 1; }',
+      'function countDecisions(bag) { return 1; }',
+      '42',
+      'function countDecisions({ removed ) { }',
+    ]) {
+      expect(() => termsOrFail(refusing), `a refusal was not fatal: ${refusing}`).toThrow();
+    }
   });
 
   it('derives a real decision-term population from the shipped countDecisions', () => {
@@ -555,27 +627,9 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
   });
 
   it('runs every mapped command inside check-build-test', () => {
-    const lines = ciCommandLines(CI_CHECK_JOB);
-    // A matched line must also be able to FAIL the job. `vp run x || true` and
-    // `vp run x || echo …` satisfy a plain prefix match while the step exits 0,
-    // as does backgrounding with a trailing `&`. Step-level `if:` and
-    // `continue-on-error` are the same lever one level up and are fenced by
-    // ci-ok-gate.test.ts; the shell tail is the half nothing else watches.
-    //
-    // `&&` and `;` are deliberately NOT here, and an earlier revision of this
-    // comment claimed they were neutralisers, which is false: under `bash -e`
-    // (the GitHub default) `a && b` propagates `a`'s status and `a; b` aborts
-    // at `a`. Rejecting them would fire on correct lines, and a fence that reds
-    // correct code teaches the next author to work around it.
-    const neutralised = (line: string, command: string): boolean => {
-      const tail = line.slice(command.length);
-      // `&&$` is a line continuation, not backgrounding — the comment above
-      // says `&&` is deliberately not a neutraliser, so the pattern must not
-      // catch it through the backgrounding arm.
-      return /(\|\||[^&]&\s*$|^&\s*$)/.test(tail);
-    };
+    const lines = ciCommandsWithStep(CI_CHECK_JOB);
     for (const [check, { command }] of Object.entries(CI_COVERAGE)) {
-      const matches = lines.filter((l) => l === command || l.startsWith(`${command} `));
+      const matches = lines.filter((e) => e.line === command || e.line.startsWith(`${command} `));
       expect(
         matches.length,
         `${CI_CHECK_JOB} no longer runs ${JSON.stringify(command)}, so the refresh's ` +
@@ -583,12 +637,40 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
           'would leave ci-ok green and the merge button live'
       ).toBeGreaterThan(0);
       expect(
-        matches.some((l) => !neutralised(l, command)),
+        matches.some((e) => !neutralised(e.line, command, e.body)),
         `every ${JSON.stringify(command)} invocation in ${CI_CHECK_JOB} has a tail that swallows ` +
-          `its failure (${JSON.stringify(matches)}), so the refresh's ${JSON.stringify(check)} ` +
-          'grading is present but cannot redden the job'
+          `its failure (${JSON.stringify(matches.map((e) => e.line))}), so the refresh's ` +
+          `${JSON.stringify(check)} grading is present but cannot redden the job`
       ).toBe(true);
     }
+  });
+
+  it('reads a neutralising tail in both directions — the guard itself', () => {
+    // `neutralised`'s own cases, because ci.yml exercises only ONE of its arms:
+    // there is a single tailed line in check-build-test and no piped check, so
+    // the pipe arm had no red until this existed.
+    const CMD = 'vp run audit:x:check';
+    const plain = `${CMD}\n`;
+    // Can still fail the job.
+    expect(neutralised(CMD, CMD, plain)).toBe(false);
+    expect(neutralised(`${CMD} --flag`, CMD, plain)).toBe(false);
+    // `&&` and `;` propagate under `bash -e`; rejecting them would red correct
+    // code, which is the trap this guard has already fallen into once.
+    expect(neutralised(`${CMD} && echo ok`, CMD, plain)).toBe(false);
+    expect(neutralised(`${CMD} ; echo ok`, CMD, plain)).toBe(false);
+    // Cannot.
+    // `||` is decided by its OWN arm: the pipe arm used to match `||` too and
+    // masked it, so these say nothing unless the two are separable.
+    expect(neutralised(`${CMD} || true`, CMD, plain)).toBe(true);
+    expect(neutralised(`${CMD} || echo skipped`, CMD, plain)).toBe(true);
+    expect(neutralised(`${CMD} || true`, CMD, `set -o pipefail\n${CMD} || true\n`)).toBe(true);
+    expect(neutralised(`${CMD} &`, CMD, plain)).toBe(true);
+    // A PIPE reports its LAST stage under `bash -e`, so it swallows the check
+    // unless the same step armed pipefail.
+    expect(neutralised(`${CMD} | tee /tmp/x.log`, CMD, `${CMD} | tee /tmp/x.log\n`)).toBe(true);
+    expect(
+      neutralised(`${CMD} | tee /tmp/x.log`, CMD, `set -o pipefail\n${CMD} | tee /tmp/x.log\n`)
+    ).toBe(false);
   });
 
   it('runs the unit suite UNFILTERED, which is what reaches the unnamed suites', () => {
