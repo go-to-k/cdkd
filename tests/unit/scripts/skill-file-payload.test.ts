@@ -299,9 +299,18 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // count to that set -- it selects issues whose body gained a `- [ ] ` row,
     // which after a sync is every generated sub-issue -- and widened the fence's
     // population to both files.
-    corpusBytes: 184_953,
-    largest: { file: 'verify.md', bytes: 29_928 },
-    runnerUp: { file: 'implement.md', bytes: 29_915 },
+    //
+    // The go-to-k/cdkd#3005 / go-to-k/cdkd#3029 retro then grew it by 1,113 B
+    // and swapped the leaders again (implement.md ahead by 5 B). Its two
+    // leader-file additions were each paid for in the same file -- a probe
+    // rule restated from `.claude/rules/testing.md` became a pointer, a
+    // placement-proven citation and a four-spelling narrative were dropped, a
+    // dated measurement was compressed -- and the three non-leader additions
+    // (triage.md, gotchas.md, gates-and-pr.md) are what moved the floor; see
+    // beside MIN_REFERENCE_CORPUS_BYTES.
+    corpusBytes: 186_066,
+    largest: { file: 'implement.md', bytes: 29_982 },
+    runnerUp: { file: 'verify.md', bytes: 29_977 },
   },
 };
 
@@ -733,7 +742,20 @@ const MIN_REFERENCE_FILES = 6;
 // headroom is quoted here: the caps' own failure messages print it live, and
 // the figure an earlier draft stated went stale in the very next retro (the
 // go-to-k/cdkd#2911 one, which moved a leader without moving either bound).
-const MIN_REFERENCE_CORPUS_BYTES = 155_410;
+// RE-DERIVED UPWARD 155_410 -> 156_450 by the go-to-k/cdkd#3005 /
+// go-to-k/cdkd#3029 retro (+1,113 B, corpus 184,953 -> 186,066), which landed
+// six amendments across five stage files. The growth is in the non-leader
+// files (triage.md, gotchas.md, gates-and-pr.md); in the two leaders each
+// addition was funded by a cut in the same file and both still ended net
+// larger, so the leaders SWAPPED — implement.md now leads verify.md by 5 B —
+// which is why MEASURED asserts the slots rather than this comment naming
+// them. Inputs at this date: corpus 186,066, largest 29,982, runner-up 29,977,
+// so the two thresholds are 156,084 (largest-side) and 156,089 (runner-up
+// side, binding); 156_450 clears the binding one by 361 B, the same slack the
+// derivations above carried. Both leaders are at the per-file cap's doorstep
+// (the cap's failure message prints the live headroom), so the next edit to
+// EITHER opens with a compression pass.
+const MIN_REFERENCE_CORPUS_BYTES = 156_450;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

@@ -240,8 +240,12 @@ Reading candidate bodies:
   first and whose staleness reads as "already fixed" (2026-08-26: THREE of
   six claimed issues had a false premise, each still worth doing as a
   DIFFERENT change; go-to-k/cdkd#2286 named the wrong file and its lines had
-  drifted ~290). Write what you found in the claim
-  comment and correct the issue body. The not-yet-true direction is commoner:
+  drifted ~290). **A body PROPOSING a mechanism has no symbol to grep — resolve
+  its EFFECT: what on `origin/main` already produces it** (go-to-k/cdkd#3005
+  asked for a decision-count gate; go-to-k/cdkd#2999's `ci-ok` already blocked
+  five of its six terms, and the run's triage comment read that PR as merely
+  removing an obstacle — the closure surfaced only at claim time). Write what
+  you found in the claim comment and correct the issue body. The not-yet-true direction is commoner:
   a body written from an unmerged branch describes THAT branch — on an empty
   grep, `gh pr list --state all --search <symbol>` separates "premise wrong"
   (post a correction) from "premise on an unmerged branch" (rebase and carry

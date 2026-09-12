@@ -48,7 +48,11 @@
   tests vs 143) — an unexpectedly clean or short result is a `pwd` check, not
   a pass. **A BACKGROUNDED call starts from the session cwd**, not the
   `cd` of an earlier call — make every long-running call print its own `pwd`
-  first. **When a stray main-tree edit has already happened, both obvious
+  first. **The drift runs FORWARD too: a `cd` into a scratch copy persists
+  into the next call**, so a RELATIVE-path edit there lands on the COPY and
+  `node --check` reports the copy's syntax ok; only a later relative path
+  failing revealed it (go-to-k/cdkd#3029) — absolute paths for every EDIT,
+  not only for verification commands. **When a stray main-tree edit has already happened, both obvious
   repairs are refused** (`git checkout -- <path>` trips
   `dirty-path-restore-gate`; writing the file back trips
   `main-tree-edit-gate`): re-apply the edit in the worktree with an ABSOLUTE

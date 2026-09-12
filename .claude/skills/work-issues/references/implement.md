@@ -7,8 +7,7 @@ issue, so its diffs, test output and review round-trips stay out of the parent
 context. Every rule below holds unchanged there: hooks fire on the lane's tool
 calls, markgate markers land in the lane's own tree. Two actions stay with the
 parent's serialization turn: a real-AWS integ run and the merge (§9). A lane
-stops at merge-ready. (Placement live-proven 2026-08-28: two skill-split PRs
-built end-to-end by lane subagents with every hook firing inside the lanes.)
+stops at merge-ready.
 
 ### 5-a. The tree
 
@@ -231,8 +230,8 @@ every character and rewrote an 11 KB file to 838 KB, scoring the three probes
 after it against a corrupted subject.
 
 **Probe the CALLER too, and the WAY IN** — `.claude/rules/testing.md` →
-"Mutation probes" owns both: wiring, and the vacuity a normalising entrypoint
-causes.
+"Mutation probes" owns both — wiring, and the vacuity a normalising entrypoint
+causes — plus the one-mutation-per-probe rule.
 
 **A mutation probe proves a test discriminates only if it changes the value
 the test READS.** Four vacuous tests shipped in one day, all one shape: the
@@ -363,22 +362,21 @@ regression sit in the "intended repair" bucket, fence green); and **carry a
 floor per class** (the walk reaches a class only if the input pool contains
 it — a pool that quietly stops covering one passes as "no regressions").
 
-**When a fence must read another tool's CONFIG, parse it with a real parser
-and fail CLOSED on anything unmodelled — never hand-roll a scanner, never
-patch one per spelling.** Measured across three sibling fences over
-`.markgate.yml` (go-to-k/cdkd#2383, go-to-k/cdk-real-drift#1838,
+**When a fence must read another tool's CONFIG — or a SOURCE file — parse it
+with a real parser and fail CLOSED on anything unmodelled — never hand-roll a
+scanner, never patch one per spelling.** Measured across three sibling fences
+over `.markgate.yml` (go-to-k/cdkd#2383, go-to-k/cdk-real-drift#1838,
 go-to-k/cdk-local#631): the unused key (`exclude` — read the tool's OWN
 schema from the pinned binary, not its `init` template); then the spelling
-treadmill — four spellings across four rounds (flow lists, quoted keys, a
-two-space comment ending a block scan, the YAML merge key splicing an
-`exclude` from a sibling gate), each patch moving the hole. **Three spellings
-in three rounds is the signal to change instrument**: parse for real
-(`yaml`'s `parse(text, { merge: true })`), allow-list the tool's own keys,
-fail closed outside them — or REFUSE the construct rather than model it
+treadmill — four spellings across four rounds, each patch moving the hole.
+**Three spellings in three rounds is the signal to change instrument — count
+them in the commit subjects**: go-to-k/cdkd#3029 reached SIX regex spellings
+of one TS function's term list before the compiler API (`typescript-v6`)
+ended it. Parse for real (`yaml`'s `parse(text, { merge: true })`),
+allow-list the tool's own keys, fail closed outside them — or REFUSE the
+construct rather than model it
 (refusal is the stricter option: an unmodelled shape stops the fence instead
-of passing through). And a probe establishing any of this must move ONE
-variable (an early draft's published probe had re-`set` the marker in
-between, making its headline sentence false).
+of passing through).
 
 **The general shape: a fence is not evidence until you have watched it go red
 on something you had not already counted.**
@@ -397,6 +395,10 @@ the second catches an over-tightening fix); **is it hermetic, and on WHICH
 axis?** (enumerate git history, environment, cwd, clock, locale, user; pin
 each or record a measured negative — prefer PINNING over normalizing, since a
 normalization layer sits exactly where a fence goes green-but-inert).
+`realpath` a scratch ROOT — macOS `tmpdir()` says `/var/…`, git
+`/private/var/…`, and three spawn cases under the raw root passed with stdout,
+stderr and rc identical to a clean run, caught only by a vacuity probe
+(go-to-k/cdkd#3029; second occurrence).
 
 ### 5-g. Fan-out mechanics
 

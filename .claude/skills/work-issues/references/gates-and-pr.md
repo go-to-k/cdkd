@@ -98,7 +98,11 @@ produces `Test timed out in <N>ms` and ZERO `AssertionError`s (measured: 14
 failures, 12 timeouts, 0 assertions, at load 73+). **Past a certain load no
 local re-run settles it and CI is the authority** (at load 137-201 with 40
 peer vitest processes, `--maxWorkers=4` AND single-file isolation both still
-failed; the PR merged on a green dedicated-runner CI). **Do not use the stash
+failed; the PR merged on a green dedicated-runner CI). **A run KILLED under
+load has NO verdict — not red, not green, not "flaky" — so do not re-run into
+the same load**: gate the re-run on `uptime`'s load falling (two full suites
+killed at load 225-285 with no tally; a load-gated wrapper waited 30 minutes
+and ran clean at 110, go-to-k/cdkd#3029). **Do not use the stash
 test to decide this** — the stashed and unstashed runs are minutes apart, so a
 load spike ending in between reads as "the diff caused it" (drawn and
 falsified within the hour, 2026-09-02).
