@@ -15,7 +15,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-secrets-manager';
 import { getLogger } from '../../utils/logger.js';
-import { readConfigString } from '../config-shape.js';
+import { readConfigString, requireConfigObject } from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -479,7 +479,39 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       const unchanged =
         isDeepStrictEqual(asJson(generateConfig), asJson(previous)) ||
         isDeepStrictEqual(asJson(this.asPersisted(generateConfig)), asJson(previous));
-      return unchanged ? undefined : this.generateSecretString(generateConfig);
+      if (unchanged) return undefined;
+      // A malformed container SKIPS the value rather than throwing (issue
+      // #3048). `update()` is reached by the rollback executor's revert arms
+      // and by `cdkd drift --revert` with a cdkd STATE record as the desired
+      // bag, which the user cannot edit from the template — so a throw here
+      // leaves the secret un-rollbackable (the #1544 hazard).
+      //
+      // The downgrade is a SKIP and NOT `onUnusable`, because at this site
+      // proceeding is the harm: `generateSecretString` reads every member off
+      // this container, so a malformed one indexes them all to `undefined` and
+      // mints a bare default-charset password — and with `GenerateStringKey` /
+      // `SecretStringTemplate` gone too, it returns that password RAW instead
+      // of the JSON document the template declared. That value becomes the new
+      // `AWSCURRENT`, breaking every consumer reading `{"username":…}`.
+      // Omitting `SecretString` instead leaves `UpdateSecret`'s merge
+      // semantics to keep the value AWS already holds.
+      //
+      // The guard lives HERE and not in `generateSecretString`, which
+      // `create()` also calls (there is no live secret to fall back to on a
+      // create, so it must keep refusing).
+      const usable = requireConfigObject(
+        generateConfig,
+        'AWS::SecretsManager::Secret GenerateSecretString',
+        {
+          onUnusable: (m) =>
+            this.logger.warn(
+              `${m} No new secret value is generated; the secret keeps the value AWS ` +
+                `currently holds. The same value is REFUSED on a template-path create.`
+            ),
+        }
+      );
+      if (usable === undefined) return undefined;
+      return this.generateSecretString(usable);
     }
     const literal = properties['SecretString'];
     if (literal === undefined) return undefined;

@@ -9,14 +9,21 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
-vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
+// Hoisted so a test can assert on it: the provider's warn is the ONLY thing
+// that distinguishes a SKIPPED secret value from an UNCHANGED one (issue
+// #3048) — both send no `SecretString`.
+const { childLogger } = vi.hoisted(() => ({
+  childLogger: {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
+    child: vi.fn(),
+  },
+}));
+
+vi.mock('../../../src/utils/logger.js', () => {
+  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -73,6 +80,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
 
   beforeEach(() => {
     vi.clearAllMocks();
+    childLogger.child.mockReturnValue(childLogger);
     mockSend.mockResolvedValue({});
     provider = new SecretsManagerSecretProvider();
   });
@@ -86,28 +94,54 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     expect(updateInput().SecretString).toBeUndefined();
   });
 
-  it('refuses an UNRESOLVED INTRINSIC GenerateSecretString rather than generating from it', async () => {
-    // Issue #3032 widened `readConfigString`'s CONTAINER gate to the intrinsic
-    // shape, and `generateSecretString` reads `ExcludeCharacters` through it —
-    // so this site's behaviour changed and was, until this case, unwatched in
-    // BOTH directions (measured: adding an `onUnusable` downgrade there left
-    // the entire suite green).
+  it('SKIPS the value for a malformed GenerateSecretString instead of throwing', async () => {
+    // Issue #3048. `update()` is reached by the rollback executor's revert
+    // arms and by `cdkd drift --revert` with a cdkd STATE record as the
+    // desired bag, which the user cannot edit from the template — so throwing
+    // here left the secret un-rollbackable (the #1544 hazard).
     //
-    // The refusal is the right answer for the same reason as the module's
-    // other no-downgrade sites: the `''` fallback means "exclude nothing", so
-    // cdkd would mint a LIVE secret whose character set ignores what the
-    // template declared — a weaker-than-declared substitution, and one the
-    // user cannot see afterwards because the value is generated.
-    //
-    // It only fires when the block CHANGED (`changedSecretValue` returns early
-    // when the config is unchanged), which is why `prev` differs here.
+    // The remedy is a SKIP, not an `onUnusable` downgrade, because proceeding
+    // is the harm: `generateSecretString` reads every member off the
+    // container, so a malformed one mints a bare default-charset password and
+    // — with `GenerateStringKey` / `SecretStringTemplate` also gone —
+    // returns it RAW instead of the JSON document the template declared.
     const prev = generated();
     const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
 
-    await expect(provider.update('L', SECRET_ARN, TYPE, next, prev)).rejects.toThrow(
-      /GenerateSecretString must be an object \(got an unresolved Ref intrinsic/
+    await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    // The UpdateSecret still goes out (other members may have changed), but
+    // carries NO SecretString — `UpdateSecret`'s merge semantics then leave
+    // the value AWS already holds untouched.
+    expect(updateInput().SecretString).toBeUndefined();
+  });
+
+  it('distinguishes a SKIPPED value from an UNCHANGED one by its warning', async () => {
+    // Both return `undefined` from `changedSecretValue` and both send no
+    // `SecretString`, so a regression that ALWAYS skips looks correct on the
+    // wire. The warning is the only thing that tells them apart, which is why
+    // it is asserted rather than the payload alone.
+    await provider.update('L', SECRET_ARN, TYPE, generated(), generated());
+    expect(childLogger.warn).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await provider.update('L', SECRET_ARN, TYPE, { ...generated(), GenerateSecretString: 'nope' }, generated());
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('GenerateSecretString must be an object')
     );
-    expect(mockSend).not.toHaveBeenCalled();
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('keeps the value AWS currently holds')
+    );
+  });
+
+  it('create() still REFUSES a malformed GenerateSecretString — no live value to keep', async () => {
+    // The skip is scoped to `changedSecretValue`; `generateSecretString` is
+    // shared with `create()`, where there is no existing secret to fall back
+    // to, so a skip there would create a secret with no version at all.
+    await expect(
+      provider.create('L', TYPE, { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } })
+    ).rejects.toThrow(/GenerateSecretString must be an object \(got an unresolved Ref intrinsic/);
   });
 
   it('a Description-only update of a GenerateSecretString secret sends NO SecretString', async () => {
