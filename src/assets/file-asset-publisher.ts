@@ -135,12 +135,15 @@ export class FileAssetPublisher {
     bucket: string,
     key: string
   ): Promise<void> {
-    const archiver = await import('archiver');
+    // archiver v8 is native ESM and dropped the `archiver(format, options)`
+    // factory: the per-format archives are classes now, so the entry point
+    // exposes no default export to call.
+    const { ZipArchive } = await import('archiver');
 
     // Collect all archive data into a buffer before uploading
     const body = await new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = [];
-      const archive = archiver.default('zip', { zlib: { level: 9 } });
+      const archive = new ZipArchive({ zlib: { level: 9 } });
 
       archive.on('data', (chunk: Buffer) => chunks.push(chunk));
       archive.on('end', () => resolve(Buffer.concat(chunks)));
@@ -154,7 +157,10 @@ export class FileAssetPublisher {
         archive.file(dirPath, { name: basename(dirPath) });
       }
 
-      void archive.finalize();
+      // `finalize()` rejects on a module error, and `_onModuleError` ALSO
+      // emits 'error'. Discarding the promise left that rejection unhandled
+      // even though the outer promise was already settling.
+      archive.finalize().catch(reject);
     });
 
     await client.send(

@@ -18,9 +18,13 @@ vi.mock('node:fs', () => ({
   statSync: vi.fn().mockReturnValue({ size: 1024, isDirectory: () => false }),
 }));
 
-// Mock archiver - emits data/end events like a real archive stream
+// Mock archiver - emits data/end events like a real archive stream.
+// v8 dropped the factory export, so the shape mocked here is the `ZipArchive`
+// CLASS the publisher now constructs. A mock cannot see the real package's
+// export shape at all, which is why `file-asset-publisher-zip-real.test.ts`
+// exercises the unmocked archiver alongside this file.
 vi.mock('archiver', () => ({
-  default: vi.fn().mockImplementation(() => {
+  ZipArchive: vi.fn().mockImplementation(() => {
     const handlers: Record<string, ((...args: unknown[]) => void)[]> = {};
     const archive = {
       on: vi.fn().mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
@@ -35,6 +39,13 @@ vi.mock('archiver', () => ({
         const dataChunk = Buffer.from('mock-zip-data');
         for (const h of handlers['data'] ?? []) h(dataChunk);
         for (const h of handlers['end'] ?? []) h();
+        // The real `finalize()` returns a PROMISE, and the publisher chains
+        // `.catch(reject)` onto it. Returning undefined here made that chain
+        // throw `Cannot read properties of undefined (reading 'catch')` on
+        // every zip case — invisible only because the synchronous `'end'`
+        // above had already resolved the executor's promise, so the line
+        // under test was dead in this file.
+        return Promise.resolve();
       }),
     };
     return archive;
@@ -77,6 +88,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { createReadStream, statSync } from 'node:fs';
 import { HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { ZipArchive } from 'archiver';
 import { FileAssetPublisher } from '../../../src/assets/file-asset-publisher.js';
 import type { FileAsset } from '../../../src/types/assets.js';
 
@@ -184,13 +196,77 @@ describe('FileAssetPublisher', () => {
       'us-east-1'
     );
 
-    // Should use archiver for zip packaging (PutObjectCommand called with Buffer body)
+    // Should use archiver for zip packaging
     expect(PutObjectCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         Bucket: 'cdk-assets-123456789012-us-east-1',
         Key: 'assets/abc123.js',
+        Body: expect.any(Buffer),
       })
     );
+
+    // Pin the constructor argument. `ZipArchive` takes the options the v7
+    // factory took as its SECOND argument, so dropping them is the quiet
+    // failure mode of this migration: uploads inflate ~2.2x under an
+    // already-minted content hash (measured 2504 B vs 1143 B on the real
+    // archiver) and every other assertion still passes.
+    expect(ZipArchive).toHaveBeenCalledWith({ zlib: { level: 9 } });
+  });
+
+  it('rejects when finalize() rejects without the archive emitting an error', async () => {
+    // The case that discriminates `archive.finalize().catch(reject)` from the
+    // `void archive.finalize()` it replaced.
+    //
+    // In the real archiver the two coincide: `finalize()`'s promise rejects
+    // from `self._module.on('error')`, and `_modulePipe` registers
+    // `_onModuleError` on that SAME emitter, which re-emits to
+    // `archive.on('error', reject)`. So the outer promise is already settling
+    // and the discarded rejection was an UNHANDLED one — fatal on current
+    // Node — rather than a lost failure.
+    //
+    // A mock can separate them, which is the only way to get a case that
+    // fails without the fix instead of merely not-crashing with it: finalize
+    // rejects, nothing emits `'error'`, so without the `.catch` the publish
+    // promise never settles and the test times out.
+    vi.mocked(ZipArchive).mockImplementationOnce(
+      () =>
+        ({
+          on: vi.fn().mockReturnThis(),
+          directory: vi.fn(),
+          file: vi.fn(),
+          finalize: vi.fn().mockRejectedValue(new Error('zip module failed')),
+        }) as unknown as InstanceType<typeof ZipArchive>
+    );
+
+    mockS3Send.mockImplementation((cmd: { _type?: string }) => {
+      if (cmd._type === 'HeadObject') {
+        const err = new Error('Not Found') as Error & {
+          name: string;
+          $metadata: { httpStatusCode: number };
+        };
+        err.name = 'NotFound';
+        err.$metadata = { httpStatusCode: 404 };
+        throw err;
+      }
+      return {};
+    });
+
+    vi.mocked(statSync).mockReturnValue({
+      size: 2048,
+      isDirectory: () => true,
+    } as ReturnType<typeof statSync>);
+
+    await expect(
+      publisher.publish(
+        'zip123',
+        makeFileAsset({ source: { path: 'asset.zip123', packaging: 'zip' } }),
+        '/tmp/cdk.out',
+        '123456789012',
+        'us-east-1'
+      )
+    ).rejects.toThrow('zip module failed');
+
+    expect(PutObjectCommand).not.toHaveBeenCalled();
   });
 
   it('should resolve placeholders', async () => {

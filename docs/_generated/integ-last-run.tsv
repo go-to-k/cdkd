@@ -20,7 +20,7 @@ appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 appsync	2026-08-13T03:27:44Z	PASS	700	verify.sh	1657 re-run after review round 2; 24 del 0 err, orph clean
 asset-auto-create	2026-09-01T14:49:24Z	PASS	300	verify.sh	PR#2398 proxy no-op regression arm 1/6: auto-create+opt-out in ca-central-1, rc 0, 0 orphans (unproxied path byte-identical claim)
 asset-bootstrap	2026-08-26T06:51:55Z	PASS	136	verify.sh	issue 2240 live arm; new phase 1b proves the cross-region --asset-bucket refusal names both regions and leaves no marker/policy on the foreign bucket; eu-west-1 (us-east-1/us-west-2/ap-northeast-1 all carry cdkd markers); destroy 2 deleted 0 errors, 0 orphans
-asset-migration	2026-08-12T08:18:17Z	PASS	600	verify.sh	us-east-2; final script post-review-round-3; rc ok, orph clean
+asset-migration	2026-09-11T17:36:03Z	PASS	600	verify.sh	archiver 7->8 lane, us-east-2 (us-east-1 holds a cdkd bootstrap marker this fixture refuses). All assertions green, destroy 6 deleted / 0 errors. The harness 600s Bash cap killed the post-success cleanup sweep mid-run, leaving the region bootstrap storage; removed with bootstrap --destroy --region us-east-2 and re-verified: 0 state.json, no marker, no asset bucket, no ECR repo.
 aws-custom-resource	2026-08-12T08:12:11Z	PASS	77	verify.sh	#1674 lane; CR invoke path, 4 del/0 err, 0 orph
 backup	2026-09-04T17:28:05Z	PASS	248	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean; 4 phases, both polarities of the stateful guard (#2553)
 basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 0 orphans
