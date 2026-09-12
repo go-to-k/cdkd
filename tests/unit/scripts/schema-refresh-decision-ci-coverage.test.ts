@@ -226,7 +226,8 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'suite rather than a task of its own. CAVEAT shared by every `failedChecks` entry: the ' +
       'refresh records a check as failed from its EXIT CODE, so an invocation that never ran ' +
       '(an OOM, a task runner that died) counts a decision while CI, running the same task ' +
-      'itself, is green — the over-count direction. The link holds only because ' +
+      'itself, is green. Same disposition as the nested-key entry below: a merge this fence does ' +
+      'not stop, named in the runbook as one of the two exceptions. The link holds only because ' +
       '`partitionSettledRemovals` ' +
       'decides SETTLED from the same tolerance FILE that `classifyCoverage` reads: subtracting ' +
       'only the current cycle\'s `written` list left an already-tolerated removal counted while ' +
@@ -264,9 +265,14 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'zero-divergence one requires a non-zero rc, and that is the REFRESH run\'s rc, not CI\'s: ' +
       'ci.yml runs the task itself, so an ENVIRONMENTAL failure of the refresh invocation (an ' +
       'empty log, a missing task, an OOM kill — the three that disjunct exists for) counts a ' +
-      'decision while CI is green. That is the OVER-count direction, which blocks a merge rather ' +
-      'than allowing one, so it does not reopen go-to-k/cdkd#3005 — but it is stated because this ' +
-      'file refuses over-claims, and \'both disjuncts need the critic to be red\' was one.',
+      'decision while CI is green — which is a merge this fence does not stop, the same state ' +
+      'docs/schema-refresh-runbook.md names as one of the two exceptions to "you cannot merge one ' +
+      'by mistake". (An earlier revision of this sentence called it "the OVER-count direction, ' +
+      'which blocks a merge rather than allowing one". Nothing converts a non-zero count into a ' +
+      'block: it drives the title, the label and the assignment, and the decision-count job that ' +
+      'would have blocked is the one go-to-k/cdkd#3005 asked for and did not get. The clause ' +
+      'contradicted the clause before it.) It is stated because this file refuses over-claims, ' +
+      'and \'both disjuncts need the critic to be red\' was one.',
   },
 };
 
