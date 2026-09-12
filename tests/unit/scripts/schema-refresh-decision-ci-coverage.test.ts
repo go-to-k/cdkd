@@ -815,15 +815,14 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(neutralised(piped, CMD, `set -o pipefail\nsomething else\n`)).toBe(true);
   });
 
-  it('reproduces the coverage verdict over the real workflow lines', () => {
+  it('derives the terms from the SHIPPED countDecisions, and reproduces the coverage verdict', () => {
     // The coverage case asks `neutralised` whether each mapped command can
     // still fail its job. This re-derives that verdict here, so a wrong
     // predicate or a wrongly threaded body shows up in two places.
     //
     // ONE WIRING IS NOT FENCED, and saying so is the point rather than an
-    // omission — three instruments were tried on it and each fell in one line,
-    // which is this repo's signal to state the bound instead of modelling it
-    // again:
+    // omission. One instrument was tried on it — a text fence over this file —
+    // and it fell in one line:
     //
     //  - that the coverage case CALLS `neutralised`. A text fence over this
     //    file caught deleting the call but was satisfied by moving it into a
@@ -834,16 +833,24 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     //    the same file catches — the verdict is reproduced below instead, so a
     //    wrong predicate or a wrongly threaded body shows up twice.
     //
-    // The TERM SOURCE is fenced, and it took four attempts to find an
-    // instrument that is not a tautology. The subject is `decisionTerms`, so it
-    // must be on the LEFT; the right side reads the shipped function HERE,
-    // directly, which is what a literal cannot follow. Measured: a literal
-    // returning today's six names passes while they are still today's six —
-    // harmless, and indistinguishable by construction — and reds the moment
-    // `countDecisions` gains or loses one, which is the only moment the claim
-    // does any work. A stated residual said that happened anyway; it did not
-    // (15/15 green with a seventh term added), which is why this assertion
-    // exists rather than a paragraph.
+    // The TERM SOURCE is fenced, by an assertion this file ALREADY HAD and then
+    // lost. It stood as `expect(decisionTerms()).toEqual(extractTerms(
+    // DECISION_TERMS_SOURCE()).names)` — the same shape through a one-line
+    // alias — and was deleted along with that alias when the alias was
+    // (correctly) judged a tautology in its OTHER two assertions. Replacing an
+    // instrument silently removed reach it already had, and the surviving
+    // suite could not tell: that is the lesson here, not anything about which
+    // side an expression belongs on.
+    //
+    // What makes it work is that the subject is on the LEFT and the right side
+    // reads the shipped function AT the assertion, which a literal cannot
+    // follow. Measured: a literal returning today's six names passes while they
+    // are still today's six — harmless, and indistinguishable by construction —
+    // and reds the moment `countDecisions` gains or loses one, which is the
+    // only moment the claim does any work. The revision before this one removed
+    // the assertion and explained in prose that a literal would red anyway; it
+    // does not (15/15 green with a seventh term added), which is why this is an
+    // assertion and not a paragraph.
     expect(
       decisionTerms(),
       'decisionTerms no longer follows the shipped countDecisions'
@@ -889,7 +896,9 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     // The body each line was paired WITH is the step it came from. This catches
     // an EMPTY or foreign body; it does not catch the call site substituting a
     // constant "armed" one, which was measured green — the same un-fenceable
-    // class as the two above.
+    // class as the `neutralised` call above. (The term source, also above, IS
+    // fenced; an earlier revision of this sentence said "the two above" when
+    // both were unfenced and was left standing after one of them was.)
     for (const e of tailed) {
       expect(e.body, 'the step body threaded into neutralised is not the step it came from')
         .toContain(e.line);
