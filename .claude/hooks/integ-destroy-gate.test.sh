@@ -993,6 +993,67 @@ for delete_word in hyperplane DependencyViolation ENI; do
     "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
 done
 
+# --- Two jobs in one regex: the column-0 pair (issue 3046) ---
+#
+# `^[-+][^-+]` skipped the `+++` / `---` headers by CONSUMING the first content
+# character, so a delete symbol at column 0 was invisible to the symbol grep and
+# a column-0 `//` was invisible to the comment filter. Measured before the fix:
+# `+deleteStack(name);` scored 0 while `+  deleteStack(name);` scored 2. The
+# header skip is its own `grep -v` pass now, and both content patterns start at
+# the first content character.
+#
+# Both directions, because the two patterns broke in OPPOSITE directions: the
+# symbol one fails open (gate skipped), the comment one fails closed (an
+# unrelated doc comment arms the gate, the PR-73 false positive the filter was
+# added for).
+stage_filter_hunk "src/cli/commands/destroy.ts" "deleteStack({ stackName });"
+run_case "hunk filter: a column-0 delete symbol arms the gate (3046)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_hunk "src/cli/commands/destroy.ts" "// deleteStack is documented here, not called"
+run_case "hunk filter: a column-0 comment does NOT arm the gate (3046)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# The header-skipping pass is now separate, so it needs its own case -- and the
+# case has to be a file whose PATH carries delete vocabulary, because that is
+# the only way a `+++ b/<path>` line can match the content pattern. Content is
+# symbol-free (staged through the guard that enforces it), so the ONLY thing
+# that could arm this is the header line.
+stage_filter_change "src/provisioning/providers/delete-marker-provider.ts" \
+  "  private readonly label = 'marker';"
+run_case "hunk filter: the +++ header is not read as content (3046)" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# --- Paths git does not hand back verbatim (issue 3047) ---
+#
+# Two mechanisms, one consequence: the changed-file list names a file the
+# patterns cannot match, so the gate is skipped without consulting markgate.
+#
+# `core.quotePath` defaults to TRUE, so a non-ASCII path comes back C-quoted
+# and the leading `"` defeats every `^src/` anchor. Note this case depends on
+# git's DEFAULT, which is exactly what the config isolation at the top of this
+# file makes reliable -- without it, a maintainer with `core.quotePath=false`
+# globally would see it pass with the fix absent.
+stage_filter_hunk "src/provisioning/providers/café-provider.ts" \
+  "  async deleteResource(id: string) { return this.client.send(id); }"
+run_case "a non-ASCII path still reaches the patterns (3047)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# A path carrying glob metacharacters is kept as a case even though it fences
+# nothing, because the measurement behind it is worth not repeating: the review
+# that found the quoting defect also reported that the per-file `-- "$f"`
+# pathspec would fail to match `a[b]-provider.ts` and give an empty diff. It
+# does not. Measured for `[`, `*` and `?` against git 2.49: the diff is
+# byte-identical with and without `:(literal)`, because a pathspec equal to the
+# path matches it literally; the `git ls-files -- 'kee[p].ts'` demo behind the
+# report shows a glob matching a DIFFERENT file, which this call cannot do since
+# `$f` comes from git's own changed-file list. `:(literal)` was added, measured
+# to change no verdict, and removed.
+stage_filter_hunk "src/provisioning/providers/a[b]-provider.ts" \
+  "  async deleteResource(id: string) { return this.client.send(id); }"
+run_case "a glob-magic path reaches the hunk filter (3047, regression guard)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 # --- A FAILED diff is not an empty one ---
 #
 # `origin/main` can resolve while sharing no history with HEAD: a shallow clone,
