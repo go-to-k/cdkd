@@ -22,12 +22,15 @@ import { renderLikeLogger } from '../../render-like-logger.js';
  * mock `src/utils/logger.js`, which is what makes the comparison possible.
  */
 describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', () => {
-  let debugSpy: ReturnType<typeof vi.spyOn>;
-  let infoSpy: ReturnType<typeof vi.spyOn>;
+  let spies: Record<string, ReturnType<typeof vi.spyOn>>;
 
   beforeEach(() => {
-    debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
-    infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    spies = {
+      debug: vi.spyOn(console, 'debug').mockImplementation(() => {}),
+      info: vi.spyOn(console, 'info').mockImplementation(() => {}),
+      warn: vi.spyOn(console, 'warn').mockImplementation(() => {}),
+      error: vi.spyOn(console, 'error').mockImplementation(() => {}),
+    };
   });
 
   afterEach(() => {
@@ -35,47 +38,68 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
   });
 
   /**
-   * The real logger's line, with the timestamp / level prefix removed. At
-   * `debug` level `formatMessage` prepends `<ts> DEBUG ` (with ANSI colour),
-   * and the mirror deliberately reproduces only the part after it.
+   * One entry per `return` in `formatMessage`. There are SIX, and each splices
+   * `${formattedArgs}` in separately, so a change confined to one is invisible
+   * to every case driving another -- measured: deleting `${formattedArgs}`
+   * from the compact `error` and `warn` returns reddened ZERO while nine cases
+   * drove the verbose arm and nine more drove the compact PLAIN one.
+   *
+   * `level` selects the verbose (`debug`) or compact branch; `useColors` splits
+   * each of those; and within compact-with-colours the emitted LEVEL picks
+   * between the red `error`, yellow `warn` and uncoloured returns.
+   *
+   * The two live extra-arg call sites outside the verbose arm --
+   * `src/cli/commands/destroy-runner.ts`'s two `logger.error(msg, detail)` --
+   * run through the global logger, i.e. `info` level with colours, so they take
+   * the compact-colour-error arm specifically.
+   */
+  const ARMS = [
+    { name: 'verbose, colours', loggerLevel: 'debug', emit: 'debug', colors: true },
+    { name: 'verbose, no colours', loggerLevel: 'debug', emit: 'debug', colors: false },
+    { name: 'compact, colours, error', loggerLevel: 'info', emit: 'error', colors: true },
+    { name: 'compact, colours, warn', loggerLevel: 'info', emit: 'warn', colors: true },
+    { name: 'compact, colours, info', loggerLevel: 'info', emit: 'info', colors: true },
+    { name: 'compact, no colours', loggerLevel: 'info', emit: 'info', colors: false },
+  ] as const;
+
+  /**
+   * The real logger's line for one arm, reduced to the part the mirror claims
+   * to reproduce: ANSI removed, and the verbose arm's `<ts> LEVEL ` prefix
+   * sliced off.
    *
    * The ANSI strip is asymmetric, deliberately: it removes escapes from the
    * whole line, MESSAGE included, while `renderLikeLogger` sanitizes only the
    * args and passes the message through. No case here carries an
    * escape-bearing message; one would false-FAIL, which is the safe direction.
    */
-  const realTail = (call: readonly unknown[]): string => {
-    debugSpy.mockClear();
-    new ConsoleLogger('debug').debug(...(call as [string, ...unknown[]]));
-    const line = String(debugSpy.mock.calls[0]?.[0] ?? '');
+  const realLine = (arm: (typeof ARMS)[number], call: readonly unknown[]): string => {
+    const spy = spies[arm.emit]!;
+    spy.mockClear();
+    const logger = new ConsoleLogger(arm.loggerLevel, arm.colors);
+    (logger[arm.emit] as (m: string, ...a: unknown[]) => void)(
+      ...(call as [string, ...unknown[]])
+    );
+    // Exactly one line, so a routing change (the stdout reservation sends
+    // `info` to `console.error`) fails loudly instead of comparing against ''.
+    expect(spy.mock.calls).toHaveLength(1);
     // eslint-disable-next-line no-control-regex
-    const stripped = line.replace(/\u001b\[[0-9;]*m/g, '');
-    const marker = ' DEBUG ';
+    const stripped = String(spy.mock.calls[0]![0]).replace(/\u001b\[[0-9;]*m/g, '');
+    if (arm.loggerLevel !== 'debug') return stripped;
+    const marker = ` ${arm.emit.toUpperCase().padEnd(5)} `;
     const at = stripped.indexOf(marker);
     return at === -1 ? stripped : stripped.slice(at + marker.length);
   };
 
-  /**
-   * The same line from the COMPACT arm -- a logger BELOW `debug` level, which
-   * emits no timestamp and no level word, so the whole line is the tail.
-   *
-   * This arm needs its own cases because `formatMessage` re-splices
-   * `formattedArgs` into each of its four returns. Sanitizing only inside the
-   * verbose branch reddened ZERO cases, because every #3003 case built a
-   * `debug`-level logger -- while the two live extra-arg call sites outside
-   * debug (`src/cli/commands/destroy-runner.ts`'s two `logger.error(msg,
-   * detail)`) run at the DEFAULT level, i.e. only through this arm.
-   */
-  const realCompact = (call: readonly unknown[]): string => {
-    infoSpy.mockClear();
-    new ConsoleLogger('info').info(...(call as [string, ...unknown[]]));
-    const line = String(infoSpy.mock.calls[0]?.[0] ?? '');
-    // eslint-disable-next-line no-control-regex
-    return line.replace(/\u001b\[[0-9;]*m/g, '');
-  };
-
   const CSI = String.fromCodePoint(0x9b);
 
+  /**
+   * The shapes the mirror's two stale spellings disagreed with production
+   * about, plus the control byte the sanitiser exists for.
+   *
+   * `undefined as the only arg` is deliberately kept even though it can never
+   * discriminate the sanitiser -- `[undefined].join(' ')` is already `''` --
+   * because it DOES discriminate the `args.length > 0` guard and the separator.
+   */
   const CASES: ReadonlyArray<readonly [string, readonly unknown[]]> = [
     ['no extra args', ['plain message']],
     ['one object arg', ['Lock info:', { owner: 'ok' }]],
@@ -94,13 +118,13 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
     ['a benign non-ASCII value', ['Lock info:', { owner: 'José-café' }]],
   ];
 
-  for (const [name, call] of CASES) {
-    it(`renders the same line as the real logger: ${name}`, () => {
-      expect(renderLikeLogger(call)).toBe(realTail(call));
-    });
-
-    it(`renders the same line in COMPACT mode: ${name}`, () => {
-      expect(renderLikeLogger(call)).toBe(realCompact(call));
+  for (const arm of ARMS) {
+    describe(`${arm.name}`, () => {
+      for (const [name, call] of CASES) {
+        it(`renders the same line as the real logger: ${name}`, () => {
+          expect(renderLikeLogger(call)).toBe(realLine(arm, call));
+        });
+      }
     });
   }
 
