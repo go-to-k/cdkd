@@ -512,9 +512,10 @@ describe('LockManager', () => {
     });
 
     it('uses the ASCII ALLOWLIST in `safeSegment`, not the denylist (issue #3003)', async () => {
-      // The class on the SEGMENT helper, the twin of the two class fences on
-      // the S3 side. A zero-width space discriminates for the same reason as
-      // in the `Failed to read lock` case above.
+      // The class on the SEGMENT helper, the twin of the class fences on the
+      // S3 side. A zero-width space discriminates for the same reason as in
+      // `uses the ASCII ALLOWLIST for the error detail` above: a control byte
+      // is in both sanitiser classes and cannot tell them apart.
       s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
       childLoggerMock.debug.mockClear();
 

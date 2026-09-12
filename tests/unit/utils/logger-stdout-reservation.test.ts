@@ -134,3 +134,55 @@ describe('ConsoleLogger stdout reservation (issue #2230)', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Issue [#3003](https://github.com/go-to-k/cdkd/issues/3003): an EXTRA logger
+ * argument reaches the terminal through `JSON.stringify`, which is not a
+ * terminal-safety boundary.
+ *
+ * The live caller is `LockManager.getLockRecord`, which logs the parsed
+ * `lock.json` as an extra arg. That object is an unchecked cast of a file
+ * anyone with `s3:PutObject` on the state bucket can write, and only its
+ * `owner` and `operation` are sanitized -- so any OTHER key carried whatever
+ * bytes the attacker put there. `cdkd state show --verbose` renders it.
+ *
+ * The fixture is deliberately split by escape class, because the two halves
+ * fail for opposite reasons and a single case cannot say which one regressed:
+ * `JSON.stringify` already escapes C0 (so `\n` was never the hole), while
+ * `U+0085`, the C1 range and `U+2028`/`U+2029` pass through it untouched.
+ */
+describe('ConsoleLogger sanitizes EXTRA arguments (issue #3003)', () => {
+  let debugSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const rendered = (): string => (debugSpy.mock.calls[0]?.[0] as string) ?? '';
+
+  it('strips the escapes `JSON.stringify` passes through', () => {
+    const logger = new ConsoleLogger('debug');
+
+    // U+009B is CSI in a UTF-8 terminal, U+0085 is NEL, U+2028 is a line
+    // separator to every JSON and web log viewer that re-renders this text.
+    logger.debug('Lock info:', { owner: 'ok', x: '\u009b31mFAKE', y: 'a\u0085b', z: 'c\u2028d' });
+
+    expect(rendered()).not.toMatch(/[\u0085\u009b\u2028\u2029]/);
+    // Removal, not censorship -- the surrounding text still reads.
+    expect(rendered()).toContain('31mFAKE');
+    expect(rendered()).toContain('owner');
+  });
+
+  it('leaves an ordinary extra argument intact', () => {
+    const logger = new ConsoleLogger('debug');
+
+    logger.debug('Lock info:', { owner: 'user@host:123', operation: 'deploy' });
+
+    expect(rendered()).toContain('"owner":"user@host:123"');
+    expect(rendered()).toContain('"operation":"deploy"');
+  });
+});

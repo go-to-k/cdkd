@@ -191,9 +191,9 @@ they print as untrusted text:
   needs it: the lock row's `owner` and `operation` are sanitized where the
   lock record is read, before `cdkd state show` sees them, and `Version` is
   refused where the state record is read unless it is a known schema number or
-  absent. The rows of these views are joined by newlines, so a newline inside
-  a field would not merely colour the output — it would invent a row that
-  reads exactly like a real one. The escape BYTE is removed and the characters
+  absent. cdkd's output is line-oriented, so a newline inside a field would not
+  merely colour the output — it would invent a line that reads exactly like a
+  real row. The escape BYTE is removed and the characters
   around it are kept, so a name carrying `ESC[31m` prints as `[31m`: the
   sequence is broken, the name is not censored.
 - **A value whose type the record got wrong still prints, rather than ending the
