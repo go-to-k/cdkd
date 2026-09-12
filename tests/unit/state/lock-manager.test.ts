@@ -521,7 +521,9 @@ describe('LockManager', () => {
       const infoCall = childLoggerMock.debug.mock.calls.find((c: unknown[]) =>
         String(c[0]).includes('Lock info for stack:')
       );
-      expect(typeof infoCall?.[1]).toBe('object');
+      // `toEqual(objectContaining)` rather than `typeof === 'object'`, which
+      // also accepts `null`.
+      expect(infoCall?.[1]).toEqual(expect.objectContaining({ owner: 'u@h:1' }));
     });
 
     it('uses the ASCII ALLOWLIST in `safeSegment`, not the denylist (issue #3003)', async () => {
