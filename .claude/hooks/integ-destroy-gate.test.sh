@@ -694,6 +694,36 @@ stage_filter_change() {
   printf '%s\n' "$line" > "$filter_repo/$rel"
   git -C "$filter_repo" add -A
   git -C "$filter_repo" -c user.email=t@t -c user.name=t commit -q -m "change $rel"
+  assert_single_file_delta stage_filter_change "$rel"
+}
+
+# Both staging helpers share `filter_repo` and rely on `reset --hard` to carry
+# nothing from the previous case. Nothing asserted that, and the failure would be
+# INVISIBLE: a leftover file can only ADD to the changed-file list, which can
+# only ARM the gate, and every case staged after the first pass-through control
+# expects exit 2. A contaminated fixture would pass for the wrong reason and the
+# tally would stay green.
+#
+# So each staging call proves its own delta is exactly the one file it staged.
+# Cheap, and it covers every case at once rather than one suspicious pair.
+#
+# It asserts the COUNT, not the name. Comparing names was the first spelling and
+# it failed on the two fixtures that matter most: git hands back
+# `"src/…/caf\303\251-provider.ts"` and `"src/…/qu\"ote-provider.ts"` C-quoted,
+# which is the defect those cases exist for -- so a name comparison would have
+# to re-implement git's unquoting to say anything, and would red for the reason
+# under test rather than for contamination.
+assert_single_file_delta() {
+  local helper="$1"; local rel="$2"; local got
+  got=$(git -C "$filter_repo" diff --name-only --no-renames \
+          refs/remotes/origin/main...HEAD | grep -c . || true)
+  if [ "$got" != "1" ]; then
+    fail=$((fail + 1))
+    fail_log+="FAIL $helper left a delta of $got files, not 1, after staging "
+    fail_log+="[$rel] -- a case reading this fixture may arm on the leftover "
+    fail_log+="rather than on what it stages\n"
+    printf 'FAIL %s fixture delta is %s files, not 1 (staged %s)\n' "$helper" "$got" "$rel"
+  fi
 }
 
 # Control: an out-of-scope file must pass through. If this ever blocks, the
@@ -879,6 +909,7 @@ stage_filter_hunk() {
   printf '%s\n' "$line" > "$filter_repo/$rel"
   git -C "$filter_repo" add -A
   git -C "$filter_repo" -c user.email=t@t -c user.name=t commit -q -m "hunk $rel"
+  assert_single_file_delta stage_filter_hunk "$rel"
 }
 
 # A provider whose diff ADDS a delete symbol: the hunk filter must arm the gate.
