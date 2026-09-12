@@ -183,13 +183,15 @@ describe('ConsoleLogger sanitizes EXTRA arguments (issue #3003)', () => {
     // to `asciiOnly`. The mode is a real decision (`display-safe.ts` exposes
     // both, and the state layer picks the allowlist for its known-charset
     // values), so the one realistic over-sanitizing regression needs a value
-    // the two classes disagree about: the denylist keeps a Japanese name, the
-    // allowlist would render it as spaces.
+    // the two classes disagree about: the denylist keeps an accented name, the
+    // allowlist would render it as spaces. An accented LATIN name rather
+    // than a CJK one only because `scripts/check-pr-non-english-text.ts`
+    // rejects CJK in the diff; any non-ASCII character discriminates.
     const logger = new ConsoleLogger('debug');
 
-    logger.debug('Lock info:', { owner: 'ユーザー@host:123', operation: 'deploy' });
+    logger.debug('Lock info:', { owner: 'José-café@host:123', operation: 'deploy' });
 
-    expect(rendered()).toContain('"owner":"ユーザー@host:123"');
+    expect(rendered()).toContain('"owner":"José-café@host:123"');
     expect(rendered()).toContain('"operation":"deploy"');
   });
 

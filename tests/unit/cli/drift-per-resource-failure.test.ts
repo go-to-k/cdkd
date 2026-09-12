@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
-import { displaySafe } from '../../../src/utils/display-safe.js';
+import { renderLikeLogger } from '../../render-like-logger.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -199,27 +199,18 @@ async function runDrift(args: string[]): Promise<{ output: string; error: unknow
 }
 
 /**
- * Every debug arg the command emitted, rendered the way `ConsoleLogger` renders
- * them -- extra args through `JSON.stringify`, then through the `displaySafe`
- * denylist that issue [#3003](https://github.com/go-to-k/cdkd/issues/3003)
- * added in `formatMessage`. That is the whole point: a spy that merely RECORDS
- * an argument cannot see that the real logger would print `{}` for it, or throw
- * on it. Anything this helper cannot stringify is a crash in production at
- * `--verbose`.
+ * Every debug arg the command emitted, rendered the way the REAL
+ * `ConsoleLogger` would render it. That is the whole point: a spy that merely
+ * RECORDS an argument cannot see that the real logger would print `{}` for it,
+ * or throw on it. Anything `renderLikeLogger` cannot stringify is a crash in
+ * production at `--verbose`.
  *
- * This is a hand-written MIRROR of `ConsoleLogger.formatMessage`, so it goes
- * stale silently when that function changes -- as it did when #3003 landed.
- * It is kept rather than replaced by the real logger because these cases need
- * the per-CALL arg list, which the formatted line has already joined away.
+ * The formula lives in `tests/render-like-logger.ts` — it is a mirror of a
+ * PRIVATE method, so it can go stale in silence, and that file carries the
+ * fence that stops it.
  */
 function debugRendered(): string {
-  return debugSpy.mock.calls
-    .map((call: unknown[]) =>
-      call
-        .map((a) => (typeof a === 'string' ? a : displaySafe(JSON.stringify(a))))
-        .join(' ')
-    )
-    .join('\n');
+  return debugSpy.mock.calls.map((call: unknown[]) => renderLikeLogger(call)).join('\n');
 }
 
 /** Every line the command logged at info level, in one string. */
@@ -637,7 +628,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
    * The first version of this line passed the Error OBJECT to `logger.debug`.
    * A spy records that happily and every suite stayed green, but
    * `ConsoleLogger.formatMessage` renders extra args with `JSON.stringify`
- * (and, since issue #3003, sanitizes the result), and
+   * (and, since issue #3003, sanitizes the result), and
    * an Error's `message` / `stack` are non-enumerable -- `maskSecretsInError`
    * re-defines them that way itself -- so the real logger printed `{}` for
    * exactly the population the line exists for. Asserting the RENDERED form is
