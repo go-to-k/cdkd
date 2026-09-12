@@ -317,20 +317,10 @@ const UNCOVERED_TERMS: Record<string, string> = {
  * could each be deleted with every case still green.
  *
  * The reasoning for parsing at all, and what each refusal is for, lives on
- * `decisionTerms` below — ONE copy, because a duplicated paragraph is what this
- * commit is about. (The duplicate that stood here was already stale: it named
- * two refusals after a third had been added.)
- *
- * Returns names AND refusals rather than throwing, so the caller decides what a
- * refusal means: fatal for the shipped signature, expected for a probe.
- */
-/**
- * The ONE extraction. `decisionTerms` and the probe cases below both call it,
- * so the corpus that justifies the parser actually exercises the code that
- * ships — a hand-written second copy would be a seventh spelling to get wrong,
- * and round 9 measured exactly that: with the walk duplicated, five arms of the
- * real one (both refusals, the quoted/numeric key arms and `propertyName`)
- * could each be deleted with every case still green.
+ * `termsOrFail` below — ONE copy. The previous attempt at this sentence
+ * REPLACED the stranded docblock with a near-copy of its neighbour instead of
+ * deleting it, so the paragraph announcing the de-duplication was itself the
+ * duplicate.
  *
  * Returns names AND refusals rather than throwing, so the caller decides what a
  * refusal means: fatal for the shipped signature, expected for a probe.
@@ -433,17 +423,19 @@ const termsOrFail = (functionSource: string): string[] => {
 const decisionTerms = (): string[] => termsOrFail(countDecisions.toString());
 
 /**
- * The commands a `ci.yml` job runs, one per line, comments stripped.
- *
- * Lines rather than whole `run:` blocks: most checks are a single-line step,
- * but `vp run test` sits inside a multi-line block with a pipefail guard around
- * it, and a whole-block `includes` would also match a task named only in that
- * block's error message.
+ * The file's headline claim is that the term names "come out of the shipped
+ * function itself". `decisionTerms` reading correctly is fenced by the cases
+ * below; that it reads `countDecisions` AT ALL was not — replacing the argument
+ * with a literal holding today's six names left every case green, which is the
+ * silent-subset defect one level out from the one this file is about.
  */
+const DECISION_TERMS_SOURCE = () => countDecisions.toString();
+
 /**
- * The same lines, each paired with the SHELL of the step it came from — a
- * neutralising tail can be armed or disarmed by something earlier in the step
- * (`set -o pipefail`), which a flattened line list cannot see.
+ * Every command line a `ci.yml` job runs, each paired with the SHELL of the
+ * step it came from — a neutralising tail can be armed or disarmed by
+ * something earlier in the step (`set -o pipefail`), which the flattened
+ * `ciCommandLines` below cannot see.
  */
 const ciCommandsWithStep = (job: string): Array<{ line: string; body: string }> =>
   stepsOf(ci, job).flatMap((s) => {
@@ -456,10 +448,35 @@ const ciCommandsWithStep = (job: string): Array<{ line: string; body: string }> 
   });
 
 /**
+ * Whether `set -o pipefail` is in force at `line` — the option, in any spelling,
+ * on a line ABOVE it in the same step.
+ *
+ * Both halves were wrong in the first cut and both were measured. The spelling:
+ * `/^\s*set -o pipefail/` misses `set -euo pipefail`, which is the MAJORITY
+ * form in `ci.yml` (2 occurrences against 1), so a correctly armed step running
+ * a check through a pipe was a false RED — the failure mode this file says
+ * teaches the next author to work around it. The ORDER: without it,
+ * `x | tee y` followed by `set -o pipefail` counted as armed, which is the
+ * direction that lets a merge through.
+ *
+ * A subshell is NOT modelled and that is a known bound: `( set -o pipefail; … )`
+ * on its own line exempts the rest of the step although the option does not
+ * escape the subshell. Stated rather than guessed at, because modelling shell
+ * scoping with a regex is how this file's other guard was wrong six times.
+ */
+const pipefailArmedBefore = (line: string, stepBody: string): boolean => {
+  const lines = stepBody.split('\n');
+  const at = lines.findIndex((l) => l.trim() === line.trim());
+  const before = at === -1 ? lines : lines.slice(0, at);
+  return before.some((l) => /^\s*set\s+-[a-z]*o[a-z]*\s+pipefail\b/.test(l));
+};
+
+/**
  * Whether a matched command line can still FAIL its job.
  *
- * Module scope so a CASE can drive it: the pipe arm below has no line in
- * ci.yml today, so left as a closure it was the one arm with no red.
+ * Module scope so a CASE can drive it: ci.yml has ONE tailed line, so the
+ * `||` arm, the backgrounding arm and the pipe arm's rejecting side had
+ * nothing to fire on and no red.
  */
 // A matched line must also be able to FAIL the job. `vp run x || true` and
 // `vp run x || echo …` satisfy a plain prefix match while the step exits 0,
@@ -486,12 +503,22 @@ const neutralised = (line: string, command: string, stepBody: string): boolean =
   // by `set -o pipefail`, which the ordering case below asserts — for THAT
   // step. A piped check in any other step would pass here and redden
   // nothing, so the pipe is rejected unless the same step sets pipefail.
-  // A SINGLE pipe, not `||`: `/\|/` matches both, so the pipe arm swallowed the
-  // `||` arm and that one stopped discriminating — measured.
-  if (/(^|[^|])\|($|[^|])/.test(tail) && !/^\s*set -o pipefail/m.test(stepBody)) return true;
+  // A SINGLE pipe, not `||`: `/\|/` matches both, and while that is a no-op for
+  // the VERDICT (the `||` arm returns the same answer), it makes the `||` arm
+  // undiscoverable — deleting it stays green. Kept separate so each arm is
+  // answerable on its own.
+  if (/(^|[^|])\|($|[^|])/.test(tail) && !pipefailArmedBefore(line, stepBody)) return true;
   return /(\|\||[^&]&\s*$)/.test(tail);
 };
 
+/**
+ * The commands a `ci.yml` job runs, one per line, comments stripped.
+ *
+ * Lines rather than whole `run:` blocks: most checks are a single-line step,
+ * but `vp run test` sits inside a multi-line block with a pipefail guard around
+ * it, and a whole-block `includes` would also match a task named only in that
+ * block's error message.
+ */
 const ciCommandLines = (job: string): string[] =>
   stepsOf(ci, job)
     .flatMap((s) => (s.run ?? '').split('\n'))
@@ -646,9 +673,12 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
   });
 
   it('reads a neutralising tail in both directions — the guard itself', () => {
-    // `neutralised`'s own cases, because ci.yml exercises only ONE of its arms:
-    // there is a single tailed line in check-build-test and no piped check, so
-    // the pipe arm had no red until this existed.
+    // `neutralised`'s own cases, because ci.yml drives only part of it. The one
+    // tailed line in check-build-test IS a piped check
+    // (`vp run test 2>&1 | tee …`, which two CI_COVERAGE entries ride), so the
+    // pipe arm's REJECTING side and the `||` and backgrounding arms had no line
+    // to fire on. An earlier version of this comment said "no piped check",
+    // which is the opposite of what the one tailed line is.
     const CMD = 'vp run audit:x:check';
     const plain = `${CMD}\n`;
     // Can still fail the job.
@@ -671,6 +701,66 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
     expect(
       neutralised(`${CMD} | tee /tmp/x.log`, CMD, `set -o pipefail\n${CMD} | tee /tmp/x.log\n`)
     ).toBe(false);
+
+    // The exemption's own two halves, both wrong in the first cut and both
+    // measured. SPELLING: `set -euo pipefail` is the MAJORITY form in ci.yml,
+    // and missing it made a correctly armed step a false RED.
+    const piped = `${CMD} | tee /tmp/x.log`;
+    for (const arm of ['set -o pipefail', 'set -euo pipefail', 'set -eo pipefail']) {
+      expect(neutralised(piped, CMD, `${arm}\n${piped}\n`), `${arm} not recognised`).toBe(false);
+    }
+    // ...and a `set` that does NOT enable pipefail is not an exemption.
+    expect(neutralised(piped, CMD, `set -eux\n${piped}\n`)).toBe(true);
+    // ORDER: pipefail AFTER the line arms nothing. This is the direction that
+    // lets a merge through.
+    expect(neutralised(piped, CMD, `${piped}\nset -o pipefail\n`)).toBe(true);
+  });
+
+  it('derives the terms from the SHIPPED function, and the fence CALLS its guards', () => {
+    // Three wirings, each measured un-fenced: the term source, the
+    // `neutralised` call, and the step body threaded into it. A probed callee
+    // says nothing about its wiring (`.claude/rules/testing.md`), and all three
+    // could be replaced with a constant while every other case stayed green.
+    //
+    // The source: `decisionTerms` must read `countDecisions`, not a literal.
+    expect(DECISION_TERMS_SOURCE()).toBe(countDecisions.toString());
+    expect(DECISION_TERMS_SOURCE()).toContain('countDecisions');
+    expect(decisionTerms()).toEqual(extractTerms(DECISION_TERMS_SOURCE()).names);
+
+    // The call: re-run the predicate over the real lines here, so the coverage
+    // case's verdict is reproduced independently.
+    //
+    // BOUND, stated because chasing it further would be theatre: replacing that
+    // case's `neutralised(...)` with a literal `true` leaves this green, and no
+    // in-process test can fence another test's own call — that is what review
+    // is for. What IS fenced is that the predicate is correct (its own cases),
+    // that the real lines satisfy it (below), and that the body threaded into
+    // it is the step's.
+    const lines = ciCommandsWithStep(CI_CHECK_JOB);
+    const tailed = lines.filter((e) =>
+      Object.values(CI_COVERAGE).some(
+        ({ command }) => e.line !== command && e.line.startsWith(`${command} `)
+      )
+    );
+    expect(
+      tailed.length,
+      'no mapped command in check-build-test carries a tail any more, so the coverage case ' +
+        'below exercises none of `neutralised` against the real workflow'
+    ).toBeGreaterThan(0);
+    for (const e of tailed) {
+      expect(
+        neutralised(e.line, Object.values(CI_COVERAGE).find((c) => e.line.startsWith(c.command))!.command, e.body),
+        `${JSON.stringify(e.line)} is a tailed invocation of a mapped command that cannot fail ` +
+          'its job'
+      ).toBe(false);
+    }
+
+    // The body: threading it is what the pipefail exemption reads. A constant
+    // "armed" body would disarm the pipe arm for every real line.
+    for (const e of tailed) {
+      expect(e.body, 'the step body threaded into neutralised is not the step it came from')
+        .toContain(e.line);
+    }
   });
 
   it('runs the unit suite UNFILTERED, which is what reaches the unnamed suites', () => {

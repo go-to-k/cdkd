@@ -155,11 +155,11 @@ the only signal. Both mean the RUN is broken rather than that AWS moved:
   The narrowness is the point — an unparseable fixture in the WORKING TREE is
   counted the same way but does redden CI, because every fixture-reading check
   fails to load it.
-- ANY of the checks failing in the refresh run for an environmental reason — an
-  empty log, a missing task, a killed process. The refresh grades by running
-  them itself, and CI runs the same tasks independently, so CI's own result is
-  green while the refresh's exit code is what was counted. The run log says
-  which check and why.
+- a check the refresh run could not EXECUTE — an empty log, a missing task, a
+  killed process. Two of the counted classes read a refresh-side exit code, so
+  CI running the same tasks independently is green while the refresh's failure
+  is what was counted. The run log says which check and why. (A check that ran
+  and genuinely failed is not this: that reddens CI too.)
 
 The marking is **cleared by the next run** once you have committed the
 classifications: the job recomputes the count while the PR is open, even on a
