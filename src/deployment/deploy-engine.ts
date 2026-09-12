@@ -3257,14 +3257,15 @@ export class DeployEngine {
                     this.stackRegion,
                     // Redacted again as the save above redacts it (issue
                     // #2814), so this path's index cannot diverge from what
-                    // state holds. It CANNOT differ today, for two reasons
-                    // that cover different needles. An ORDINARY one is
-                    // already in the bag: `refreshedState.outputs` is itself
-                    // a `redactOutputs` product, and a second pass over one
-                    // is idempotent. A LATE one cannot arrive at all here: a
+                    // state holds. It cannot differ today for one reason: a
+                    // LATE needle cannot arrive here at all, because a
                     // released drain leaves an output unresolved, so
                     // `resolutionFailed` is true and both flags guarding this
-                    // block are false. The call is still the right shape
+                    // block are false. (Not because the bag is already
+                    // redacted — on the `exportSetChanged`-only arm it is
+                    // `persistedOutputs`, the PREVIOUS deploy's bag, and a
+                    // second pass is not unconditionally idempotent either;
+                    // see `absorbOutputsPassSecrets`.) The call is still the right shape
                     // rather than redundant — it is the FAIL-SAFE direction.
                     // If a swallow above a drain ever appears, the index ends
                     // up more redacted than state, never less; and a reader
@@ -4099,6 +4100,12 @@ export class DeployEngine {
       // template that deployed before this feature. See
       // `recoverableMaskedOutputs` for why the key is a COORDINATE and not a
       // bare plaintext.
+      // ONE call site, and it is here: an output that a LATER `redactOutputs`
+      // newly masks — one folding in a needle a part recorded after this
+      // point (issue #2814) — never enters the recoverable store. An
+      // in-process cross-stack consumer of that output is then refused on
+      // `***` instead of being served the plaintext, which is the fail-safe
+      // direction and the reason this is stated rather than fixed.
       this.rememberRecoverableMaskedOutputs(stackName, resolvedOutputsBeforeRedaction, outputs);
     } catch (outputError) {
       await this.persistStateAfterOutputFailure(
@@ -8151,8 +8158,14 @@ export class DeployEngine {
     const outputsPassSecrets = context.recordedSecretValues ?? EMPTY_SECRETS;
     const outputsPassInherited = context.inheritedSecrets ?? EMPTY_SECRETS;
     // Kept for every later redaction of the outputs bag (issue #2814); see
-    // `absorbOutputsPassSecrets`, which only reads it.
-    this.outputsPassSecretMaps.push(outputsPassSecrets);
+    // `absorbOutputsPassSecrets`, which only reads it. The GUARD rather than
+    // `outputsPassSecrets`: that `??` fallback is `EMPTY_SECRETS`, a
+    // process-wide singleton, and a per-deploy needle list is no place for a
+    // cross-deploy object — inert today (nothing writes it), wrong the moment
+    // anything does.
+    if (context.recordedSecretValues) {
+      this.outputsPassSecretMaps.push(context.recordedSecretValues);
+    }
 
     // The names this deploy PUBLISHES. Owns keys in both this bag and the
     // position-source bag below, and is the set an export alias must not land

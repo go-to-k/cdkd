@@ -2158,6 +2158,8 @@ describe('a drain the cap releases reports the parts it stopped waiting for (iss
 describe('a record the drain cap stopped waiting for still reaches the engine readers after it (issue #2814)', () => {
   const stackName = 'drain-late-record-stack';
   const SPACER_ID = 'cdkd-drain-spacer';
+  /** Resolves CLEANLY during the outputs pass, so the needle bag is not empty. */
+  const CLEAN_ID = 'cdkd-drain-clean';
 
   /**
    * `existing` switches the engine onto the NO-CHANGE path: the stack is
@@ -2354,6 +2356,79 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
     const indexed = exportIndex.updateForStack.mock.calls.at(-1)![2] as Record<string, unknown>;
     expect(indexed['lit-export'], 'the export is INDEXED, and redacted').toBe(`lit-${ref(SLOW_ID)}-tail`);
     expect(result.outputs, 'the summary prints the redacted literal').toEqual({
+      Literal: `lit-${ref(SLOW_ID)}-tail`,
+    });
+    expect(
+      [...warn.mock.calls, ...engineWarn.mock.calls].flat().join('\n'),
+      'no warning, resolver or engine, carries the plaintext'
+    ).not.toContain(valueOf(SLOW_ID));
+  });
+
+  it('folds the pass map in AGAIN when the needle bag is already non-empty', async () => {
+    // The REFOLD, not the first fold, and no other case here can see it —
+    // for two different reasons, neither of which is "the fold never runs".
+    // The late-record cases resolve no secret SUCCESSFULLY, so their bag is
+    // empty until the late needle arrives and the first fold carries it; the
+    // export-name case above does record (both its parts settle before the
+    // pass ends), but those recordings land BEFORE the first fold. Either
+    // way a `redactOutputs` folding only on an empty bag serves them all
+    // (measured by the maintainer on PR 3044: 6414 tests, zero new
+    // failures). Here a clean secret output fills the bag DURING the pass and
+    // the late needle arrives after the first fold, so it can reach the save,
+    // the index and the summary only through a LATER one.
+    concurrentDrainCap.ms = 20;
+    const slow = gate();
+    const capture = gate();
+    control.holds.set(SLOW_ID, slow.promise);
+    control.fails.add(FAIL_ID);
+    const { engine, provider, stateBackend, exportIndex, warn, engineWarn } = buildEngine(() =>
+      capture.promise.then(() => undefined)
+    );
+    const redactOutputs = vi.spyOn(
+      engine as unknown as { redactOutputs: (o: Record<string, unknown>) => Record<string, unknown> },
+      'redactOutputs'
+    );
+    const needleBag = (): Map<string, string> =>
+      (engine as unknown as { outputSecrets: Map<string, string> }).outputSecrets;
+
+    const literal = `lit-${valueOf(SLOW_ID)}-tail`;
+    const template: CloudFormationTemplate = {
+      Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
+      Outputs: {
+        // Resolves cleanly, so its plaintext is a needle before the drain
+        // releases — this is what makes the fold below a REfold.
+        Clean: { Value: ref(CLEAN_ID) },
+        Failing: { Value: { 'Fn::Join': ['', [ref(SLOW_ID), ref(FAIL_ID)]] } },
+        Literal: { Value: literal, Export: { Name: 'lit-export' } },
+      },
+    };
+
+    const run = engine.deploy(stackName, template);
+    await until(() => redactOutputs.mock.calls.length > 0, 'the outputs pass to redact its bag');
+    expect(
+      needleBag().get(valueOf(CLEAN_ID)),
+      'the clean secret must already be a needle — otherwise the first fold is the only fold and this case proves nothing'
+    ).toBe(ref(CLEAN_ID));
+    expect(abandonedReports(warn), 'the cap must have released the Failing output').toHaveLength(1);
+    expect(control.events, 'the held part must not have recorded yet').not.toContain(
+      `record:${SLOW_ID}`
+    );
+    expect(provider.readCurrentState, 'the capture drain must be what holds the save').toHaveBeenCalled();
+    slow.open();
+    await until(() => control.events.includes(`record:${SLOW_ID}`), 'the late recording');
+    await settleTurn();
+    capture.open();
+    const result = await run;
+
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs['Clean'], 'the clean secret persists as its expression').toBe(ref(CLEAN_ID));
+    expect(saved.outputs['Literal'], 'the LATE needle redacted the literal too').toBe(
+      `lit-${ref(SLOW_ID)}-tail`
+    );
+    const indexed = exportIndex.updateForStack.mock.calls.at(-1)![2] as Record<string, unknown>;
+    expect(indexed['lit-export'], 'the export is INDEXED, and redacted').toBe(`lit-${ref(SLOW_ID)}-tail`);
+    expect(result.outputs, 'the summary prints both, redacted').toEqual({
+      Clean: ref(CLEAN_ID),
       Literal: `lit-${ref(SLOW_ID)}-tail`,
     });
     expect(

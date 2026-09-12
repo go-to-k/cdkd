@@ -1731,13 +1731,16 @@ async function allSettledKeepingFirstRejection<T>(
       // budget spent, warns once rather than once per drain. Counted now, not
       // when the timer fired: an input can settle in the turn between.
       const pending = promises.length - settled;
-      // Keyed by the budget. A drain with no store -- the fallback above,
-      // which no public entry point reaches -- keys a fresh object, and so
-      // reports on its own.
-      const reportKey: object = shared ?? {};
-      if (pending > 0 && !abandonReported.has(reportKey)) {
-        abandonReported.add(reportKey);
-        onAbandoned(pending);
+      if (pending > 0) {
+        // Reported once per BUDGET. A drain with no store -- the fallback
+        // above, which no public entry point reaches -- has no budget to key,
+        // so it reports on its own rather than joining a set nothing could
+        // ever look it up in again.
+        if (shared === undefined) onAbandoned(pending);
+        else if (!abandonReported.has(shared)) {
+          abandonReported.add(shared);
+          onAbandoned(pending);
+        }
       }
       throw rejection.error;
     }
