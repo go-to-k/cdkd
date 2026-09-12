@@ -3167,15 +3167,20 @@ const UNKNOWN_PART_PLACEHOLDER = '\u0000';
  *    (another resource's, typically) cannot satisfy. What it does NOT prove
  *    is that the candidate is THIS leaf's token. A leaf
  *    whose own reference resolved PUBLIC (an `ssm` `String`, which nothing
- *    records) beside a same-service SECRET sibling whose value coincides
- *    with the middle passes all three checks and takes the sibling's
+ *    records) and carries an unknowable part INSIDE its token (a `Ref` in the
+ *    parameter name — a wholly literal public token matches no candidate and
+ *    refuses), beside a same-service SECRET sibling whose value coincides
+ *    with the middle, passes all three checks and takes the sibling's
  *    expression — a wrong REFERENCE, not a disclosure, the class the
- *    floorless whole-value scan already accepts for a whole-leaf coincidence:
- *    for a 4+ character middle the value scan writes that same sibling
- *    expression on its own, so what this arm ADDS is the sub-floor case on a
- *    marked bag. Stated rather than closed, and pinned by
- *    the unit file: nothing records a public resolution, so this arm cannot
- *    tell "absent because public" from "absent because collapsed".
+ *    floorless whole-value scan already accepts for a whole-leaf coincidence.
+ *    Against the value scan: the scan writes the map's SURVIVOR for a 4+
+ *    character middle and nothing below the floor, while this arm writes the
+ *    same-service candidate — the two coincide only when that candidate is
+ *    the survivor, so at 4+ the arm can change WHICH wrong reference is
+ *    taken, and below the floor on a marked bag it adds one where the scan
+ *    wrote nothing. Stated rather than closed, and pinned by the unit file:
+ *    nothing records a public resolution, so this arm cannot tell "absent
+ *    because public" from "absent because collapsed".
  * 3. The write stays within the value scan's class of answer, or — below the
  *    scan's floor — the bag carries the engine's same-generation mark:
  *    {@link writeFramedTokenWithinScanBound}, shared with the literal arm.
@@ -4663,7 +4668,8 @@ function learnMixedLeafNeedle(
 ): void {
   // The frame — one span, prefix / suffix anchored at the ends, a non-empty
   // middle that is not itself a complete token — is `singleSpanFrame`, shared
-  // with `positionByEmbeddedSpan` so the two refusals cannot drift. The token
+  // with `positionByEmbeddedSpan` and `positionByIntrinsicFrame` so the three
+  // refusals cannot drift. The token
   // refusal it carries is the one this function used to spell out here: a
   // slice that is ITSELF a complete `{{resolve:...}}` token is not a
   // plaintext, it is an already-redacted record (a re-scrub, a second
