@@ -282,6 +282,12 @@ export function markSameGenerationBag<T extends object>(bag: T): T {
   return bag;
 }
 
+/**
+ * Exported for `cdkd import`'s unit test, which asserts that the STORED record
+ * is not the marked object (maintainer review of PR 3052). Read-only over the
+ * `WeakSet`: no behavior in this module changes with the export, and the only
+ * writer, {@link markSameGenerationBag}, was exported already.
+ */
 export function isSameGenerationBag(bag: unknown): boolean {
   // `WeakSet.has` answers `false` for a primitive or `null` without throwing,
   // so no type guard sits in front of it: one that did would be inert.
@@ -2465,8 +2471,8 @@ function anchoredSkeletonPattern(
 /**
  * A source part the skeleton cannot know — an `Fn::Join` element that is
  * itself an intrinsic, or an `Fn::Sub` `${...}` variable. The segment form of
- * {@link SKELETON_WILDCARD}: what a part IS, before either reader decides how
- * to spell it.
+ * {@link SKELETON_WILDCARD}: what a part IS, before {@link anchoredSkeletonPattern}
+ * — the one speller — turns it into the wildcard.
  */
 const UNKNOWN_PART = Symbol('unknown intrinsic part');
 
@@ -2485,8 +2491,9 @@ const UNKNOWN_PART_PLACEHOLDER = '\u0000';
 /**
  * The text of an `Fn::Join` / `Fn::Sub` source in order: a literal part as its
  * RAW text, an unknowable part as {@link UNKNOWN_PART}. ONE parser for the two
- * readers of that shape — {@link intrinsicSkeletonPattern}, which spells every
- * segment into a regex, and {@link positionByIntrinsicFrame}, which needs the
+ * readers of that shape — {@link intrinsicSkeletonPattern}, which hands every
+ * segment to {@link anchoredSkeletonPattern} to spell as a regex, and
+ * {@link positionByIntrinsicFrame}, which needs the
  * literal text VERBATIM to know where a token's frame begins and ends — so
  * the two cannot disagree about what a source says (issue #2745).
  *
@@ -3192,7 +3199,11 @@ function writeFramedTokenWithinScanBound(
  *    the sibling's expression and writes its CURRENT plaintext into the live
  *    property — the transformed-value-meets-inverse-transform shape of
  *    GHSA-p5qg-v9gv-hc7w's consumer, reached here through a wrong reference
- *    rather than a wrong value (maintainer review of PR 3052). Stated rather
+ *    rather than a wrong value (maintainer review of PR 3052). `cdkd drift
+ *    --revert` (`resolveStateSecretExpressions`, `drift.ts`) is the second
+ *    live consumer, with no failed deploy required: once the sibling rotates,
+ *    the re-resolved baseline diverges from AWS, drift fires, and `--revert`
+ *    pushes the sibling's plaintext to the live property. Stated rather
  *    than closed, and pinned by the unit file: nothing records a public
  *    resolution, so this arm cannot tell "absent because public" from
  *    "absent because collapsed"; the PR that closes #2745's nested-stack site
