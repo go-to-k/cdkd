@@ -2302,6 +2302,21 @@ if [ "${RB_STATE_PORT}" != "${EXPECTED_DB_PORT_LITERAL_EXPR}" ]; then
   exit 1
 fi
 echo "    OK: post-rollback state kept DB_PORT_LITERAL's OWN embedded expression (two-character secret)"
+# Issue #2745: the two intrinsic-source twins of that leaf ride the same
+# journaled record, so each must come back as its OWN expression here too --
+# a replay that re-persisted a resolved bag through the value scan alone would
+# leave `port:` + the two-character secret in PLAINTEXT, below the scan's
+# needle floor (maintainer review of PR 3052).
+RB_STATE_PORT_SUB=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.DB_PORT_SUB // empty')
+RB_STATE_PORT_JOIN=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.DB_PORT_JOIN // empty')
+for pair in "DB_PORT_SUB|${RB_STATE_PORT_SUB}|${EXPECTED_DB_PORT_SUB_EXPR}" "DB_PORT_JOIN|${RB_STATE_PORT_JOIN}|${EXPECTED_DB_PORT_JOIN_EXPR}"; do
+  rb_key="${pair%%|*}"; rb_rest="${pair#*|}"; rb_got="${rb_rest%%|*}"; rb_want="${rb_rest#*|}"
+  if [ "${rb_got}" != "${rb_want}" ]; then
+    echo "FAIL: post-rollback state ${rb_key} is not its own embedded expression (#2745): $(mask "${rb_got}")" >&2
+    exit 1
+  fi
+  echo "    OK: post-rollback state kept ${rb_key}'s OWN embedded expression (intrinsic source, two-character secret)"
+done
 if grep -qF "${EXPECTED_DB_PORT_LITERAL}" <<< "${RB_STATE}"; then
   echo "FAIL: post-rollback state carries the framed two-character secret (#2516)" >&2
   exit 1
@@ -2978,6 +2993,23 @@ else
   echo "FAIL: re-captured DB_PORT_LITERAL is not its embedded expression: $(mask "${G_PORT_LITERAL}")" >&2
   deploy_redaction_fail=1
 fi
+# The two intrinsic-source twins on the same EMPTY-map readback path (issue
+# #2745). The readback is positioned against the record's own `properties`,
+# where both already hold their expression STRING, so the positional refusal
+# substitutes each whole exactly as it does the literal leaf above. Not a
+# #2745 fence either; pinned so the invariant holds for the arm's own leaves
+# (maintainer review of PR 3052).
+G_PORT_SUB=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_PORT_SUB // empty')
+G_PORT_JOIN=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_PORT_JOIN // empty')
+for pair in "DB_PORT_SUB|${G_PORT_SUB}|${EXPECTED_DB_PORT_SUB_EXPR}" "DB_PORT_JOIN|${G_PORT_JOIN}|${EXPECTED_DB_PORT_JOIN_EXPR}"; do
+  g_key="${pair%%|*}"; g_rest="${pair#*|}"; g_got="${g_rest%%|*}"; g_want="${g_rest#*|}"
+  if [ "${g_got}" = "${g_want}" ]; then
+    echo "    OK: re-captured ${g_key} kept its embedded expression (empty-map positional invariant, intrinsic source)"
+  else
+    echo "FAIL: re-captured ${g_key} is not its embedded expression: $(mask "${g_got}")" >&2
+    deploy_redaction_fail=1
+  fi
+done
 
 # CONTROL 1: the persisted bag must still be AWS's READBACK, not a copy of the
 # record's own `properties`. This is the control that catches a blanket

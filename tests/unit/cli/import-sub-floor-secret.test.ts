@@ -79,6 +79,7 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
 
 const { resolveImportedProperties } = await import('../../../src/cli/commands/import.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
+const { isSameGenerationBag } = await import('../../../src/deployment/secret-redaction.js');
 
 /** The literal leaf: the name-form token embedded in surrounding text. */
 const LITERAL_LEAF = `port:{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin}}`;
@@ -136,10 +137,19 @@ async function runImport(properties: Record<string, unknown>): Promise<{
   return { properties: state.resources['Param']!.properties, refused, asked: [...askedSecretIds] };
 }
 
-function expectResolved(run: { refused: Set<string> }, fetchedAs: string, asked: string[]): void {
+function expectResolved(
+  run: { properties: Record<string, unknown>; refused: Set<string> },
+  fetchedAs: string,
+  asked: string[]
+): void {
   expect(run.refused.has('Param')).toBe(false);
   expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Failed to resolve intrinsics'));
   expect(asked).toContain(fetchedAs);
+  // The mark goes on the redaction INPUT; the record holds the redacted COPY,
+  // unmarked. A refactor assigning the marked resolved bag to `properties`
+  // would hand every later reader an object that claims same-generation
+  // provenance it no longer has (maintainer review of PR 3052).
+  expect(isSameGenerationBag(run.properties)).toBe(false);
 }
 
 describe('cdkd import persists a sub-floor embedded secret as its expression (issue #2745)', () => {

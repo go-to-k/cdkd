@@ -111,16 +111,43 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       });
     }
 
-    for (const middle of ['a', 'abc'] as const) {
-      it(`for a ${middle.length}-character middle`, () => {
+    // The INVARIANT across the sub-floor range, not one length: for every
+    // middle below MIN_NEEDLE_LENGTH the scan is silent, an unmarked bag keeps
+    // the plaintext, and the mark is what writes the token. A floor lowered to
+    // 3 makes the scan write the survivor for `abc` and reds the premise here,
+    // where a two-character-only premise stays green (maintainer-proxy pass).
+    for (const middle of ['a', 'q7', 'abc'] as const) {
+      it(`for a ${middle.length}-character middle: scan silent, unmarked kept, marked written`, () => {
         const secrets = resolvedAlone(TOKEN_L2, middle);
-        const bag = markSameGenerationBag({ Dsn: `port:${middle}` });
+        const leaf = `port:${middle}`;
+        expect(redactSecretsForState(leaf, secrets)).toBe(leaf);
+        expect(redactSecretsForState({ Dsn: leaf }, secrets, { Dsn: L2_JOIN })).toEqual({ Dsn: leaf });
+
+        const bag = markSameGenerationBag({ Dsn: leaf });
 
         expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN })).toEqual({
           Dsn: `port:${TOKEN_L2}`,
         });
       });
     }
+
+    it('through a token carrying exactly the cap of unknowable parts (three), which pins that only the token\'s OWN parts are counted', () => {
+      // Three `${}` variables inside the token: at the cap, so the pattern is
+      // built and the leaf positioned. A mutant that renders a wildcard ahead
+      // of the first literal (the `i === 0` arm) makes it four, over the cap,
+      // and refuses — inert for a one-wildcard shape, visible here.
+      const source = {
+        'Fn::Sub': [
+          'port:{{resolve:secretsmanager:arn:aws:secretsmanager:${Region}:${Account}:secret:${Name}:SecretString:pin::}}',
+          { Region: { Ref: 'AWS::Region' }, Account: { Ref: 'AWS::AccountId' }, Name: { Ref: 'Secret' } },
+        ],
+      };
+      const bag = markSameGenerationBag({ Dsn: `port:${PIN}` });
+
+      expect(redactSecretsForState(bag, resolvedAlone(TOKEN_L2, PIN), { Dsn: source })).toEqual({
+        Dsn: `port:${TOKEN_L2}`,
+      });
+    });
 
     it('past a matching candidate this pass recorded under a DIFFERENT plaintext, which is skipped rather than counted', () => {
       // A second ARN-form token matches the wildcarded pattern but resolved
@@ -315,6 +342,21 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
         },
       ],
       [
+        'a matching competitor is known only through the map\'s survivor slot (no pair, not pinned), beside a valid pass-local candidate — counted, so the match is not unique',
+        () => {
+          // The survivor for `q7` was written without a pair (a seeded or
+          // derived map), so only the map's VALUES know it; it still matches
+          // the wildcarded pattern and its plaintext IS the middle, so the
+          // poisoning rule does not skip it. Counting it is what refuses: a
+          // mutant dropping the map's values from the candidates sees one
+          // match (the pair-table token) and positions the leaf.
+          const other = `{{resolve:secretsmanager:${ARN.replace('AbCdEf', 'GhIjKl')}:SecretString:pin::}}`;
+          const secrets: RecordedSecretValues = new Map([[PIN, other]]);
+          recordResolvedPair(secrets, TOKEN_L2, PIN);
+          return { bag: { Dsn: `port:${PIN}` }, source: { Dsn: SUB_2ARG }, secrets };
+        },
+      ],
+      [
         'the matched candidate has a valid pair for a DIFFERENT middle (a collapsed loser of another value) while the map holds a survivor for this one',
         () => {
           // The join's own token resolved to `zz` and lost that slot; `q7`
@@ -482,8 +524,10 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       // the sibling is the ONE candidate matching the token pattern, its pair
       // equals the middle, and the marked bag takes its expression: a wrong
       // REFERENCE (the whole-value scan's own class for a whole-leaf
-      // coincidence), never a disclosure. Pinned so a change that closes it
-      // is noticed, and so the docstring's residual stays a measured one.
+      // coincidence), never a plaintext in the STORED artifact — the live
+      // consequence, `resolveReplayProps` re-resolving it on rollback, is on
+      // the arm's docstring. Pinned so a change that closes it is noticed,
+      // and so the docstring's residual stays a measured one.
       const SECURE = '{{resolve:ssm:/secure/x}}';
       const secrets = resolvedAlone(SECURE, PIN);
       const source = { 'Fn::Join': ['', ['port:{{resolve:ssm:', { Ref: 'PublicParam' }, '}}']] };

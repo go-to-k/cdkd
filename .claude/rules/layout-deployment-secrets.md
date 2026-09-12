@@ -176,7 +176,7 @@ Index of every area: [code-layout.md](code-layout.md).
     of the resolver's own output (the update arm's no-change re-check, marked
     BEFORE a provider call it may skip, or a stored token would read as a
     change on every deploy; a failed op's journaled `attemptedProperties`);
-    and `cdkd import`'s own resolution bag (#2745, per the docstring)),
+    and `cdkd import`'s own resolution bag (#2745, per the docstring),
     and `redactSecretsForState` reads the
     mark for the object it is handed and threads it down the walk. A previous
     generation's record, a scrub / drift walk, a sub-bag walked on

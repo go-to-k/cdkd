@@ -282,7 +282,7 @@ export function markSameGenerationBag<T extends object>(bag: T): T {
   return bag;
 }
 
-function isSameGenerationBag(bag: unknown): boolean {
+export function isSameGenerationBag(bag: unknown): boolean {
   // `WeakSet.has` answers `false` for a primitive or `null` without throwing,
   // so no type guard sits in front of it: one that did would be inert.
   return sameGenerationBags.has(bag as object);
@@ -2439,20 +2439,26 @@ function joinSkeletonSegments(segments: readonly string[]): string | undefined {
 export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | undefined {
   const segments = intrinsicSkeletonSegments(source);
   if (segments === undefined) return undefined;
-  return anchoredSkeletonPattern(
-    segments.map((segment) =>
-      segment === UNKNOWN_PART ? SKELETON_WILDCARD : escapeRegExp(segment)
-    )
-  );
+  return anchoredSkeletonPattern(segments);
 }
 
 /**
  * {@link joinSkeletonSegments} anchored at both ends, or `undefined` where the
  * wildcard cap refused it. The one place the skeleton's regex is built, for
- * both readers of the segment form.
+ * both readers of the segment form — and the one place a literal segment is
+ * ESCAPED: it takes the segment form itself (literal text, or
+ * {@link UNKNOWN_PART}), never pre-built regex text, so a third caller cannot
+ * hand it raw template text and get a pattern with live metacharacters and no
+ * type error (maintainer review of PR 3052).
  */
-function anchoredSkeletonPattern(segments: readonly string[]): RegExp | undefined {
-  const body = joinSkeletonSegments(segments);
+function anchoredSkeletonPattern(
+  segments: ReadonlyArray<string | typeof UNKNOWN_PART>
+): RegExp | undefined {
+  const body = joinSkeletonSegments(
+    segments.map((segment) =>
+      segment === UNKNOWN_PART ? SKELETON_WILDCARD : escapeRegExp(segment)
+    )
+  );
   return body === undefined ? undefined : new RegExp(`^${body}$`);
 }
 
@@ -2463,6 +2469,18 @@ function anchoredSkeletonPattern(segments: readonly string[]): RegExp | undefine
  * to spell it.
  */
 const UNKNOWN_PART = Symbol('unknown intrinsic part');
+
+/**
+ * Stands in, while a source is RENDERED to text, for a part the skeleton cannot
+ * know. A single character so the rendered string keeps the literal parts at
+ * their true offsets, and NOT `}` so {@link dynamicReferenceSpans} reads it as
+ * a token's INNER text (the resolver's `[^}]+`) rather than as its terminator —
+ * which is exactly how a `{Ref}` sitting inside a `{{resolve:...}}` opening
+ * must read. A NUL, RESERVED here as the placeholder: a template string can
+ * carry one (CDK preserves it), so a source whose literal text does is refused
+ * outright rather than rendered with one unknowable part too many.
+ */
+const UNKNOWN_PART_PLACEHOLDER = '\u0000';
 
 /**
  * The text of an `Fn::Join` / `Fn::Sub` source in order: a literal part as its
@@ -2560,10 +2578,11 @@ const CONFLICTING_PLAINTEXT = Symbol('conflicting plaintext');
  * iterating it never yields one plaintext twice and a second sighting of an
  * expression is always a DIFFERENT plaintext.
  *
- * SHARED by {@link positionByIntrinsicSkeleton} and
- * {@link positionByCrossStackSource} (issue #2059) rather than copied into the
- * second: the poisoning rule is the subtle half of condition 3, and two copies
- * are two places for it to be relaxed independently.
+ * SHARED by {@link positionByIntrinsicSkeleton},
+ * {@link positionByCrossStackSource} (issue #2059) and
+ * {@link positionByIntrinsicFrame} (issue #2745) rather than copied: the
+ * poisoning rule is the subtle half of condition 3, and every copy is another
+ * place for it to be relaxed independently.
  */
 function plaintextIndexOf(secrets: RecordedSecretValues): Map<string, string | symbol> {
   const plaintextOf = new Map<string, string | symbol>();
@@ -3109,18 +3128,6 @@ function writeFramedTokenWithinScanBound(
 }
 
 /**
- * Stands in, while a source is RENDERED to text, for a part the skeleton cannot
- * know. A single character so the rendered string keeps the literal parts at
- * their true offsets, and NOT `}` so {@link dynamicReferenceSpans} reads it as
- * a token's INNER text (the resolver's `[^}]+`) rather than as its terminator —
- * which is exactly how a `{Ref}` sitting inside a `{{resolve:...}}` opening
- * must read. A NUL, RESERVED here as the placeholder: a template string can
- * carry one (CDK preserves it), so a source whose literal text does is refused
- * outright rather than rendered with one unknowable part too many.
- */
-const UNKNOWN_PART_PLACEHOLDER = '\u0000';
-
-/**
  * Position a bag leaf whose `Fn::Join` / `Fn::Sub` source EMBEDS exactly one
  * `{{resolve:...}}` token inside LITERAL surrounding text — `port:` + token —
  * by writing that token into the frame the source states (issue
@@ -3178,9 +3185,18 @@ const UNKNOWN_PART_PLACEHOLDER = '\u0000';
  *    same-service candidate — the two coincide only when that candidate is
  *    the survivor, so at 4+ the arm can change WHICH wrong reference is
  *    taken, and below the floor on a marked bag it adds one where the scan
- *    wrote nothing. Stated rather than closed, and pinned by the unit file:
- *    nothing records a public resolution, so this arm cannot tell "absent
- *    because public" from "absent because collapsed".
+ *    wrote nothing. "Not a disclosure" is a claim about the STORED artifact
+ *    only: `resolveReplayProps` (`rollback-executor.ts`) re-resolves every
+ *    `{{resolve:` token in a replayed bag without regard to which reference
+ *    the leaf named, so a later failed deploy plus `cdkd rollback` resolves
+ *    the sibling's expression and writes its CURRENT plaintext into the live
+ *    property — the transformed-value-meets-inverse-transform shape of
+ *    GHSA-p5qg-v9gv-hc7w's consumer, reached here through a wrong reference
+ *    rather than a wrong value (maintainer review of PR 3052). Stated rather
+ *    than closed, and pinned by the unit file: nothing records a public
+ *    resolution, so this arm cannot tell "absent because public" from
+ *    "absent because collapsed"; the PR that closes #2745's nested-stack site
+ *    weighs this consumer rather than re-deriving it.
  * 3. The write stays within the value scan's class of answer, or — below the
  *    scan's floor — the bag carries the engine's same-generation mark:
  *    {@link writeFramedTokenWithinScanBound}, shared with the literal arm.
@@ -3234,9 +3250,7 @@ function positionByIntrinsicFrame(
   const pattern = anchoredSkeletonPattern(
     token
       .split(UNKNOWN_PART_PLACEHOLDER)
-      .flatMap((literal, i) =>
-        i === 0 ? [escapeRegExp(literal)] : [SKELETON_WILDCARD, escapeRegExp(literal)]
-      )
+      .flatMap((literal, i) => (i === 0 ? [literal] : [UNKNOWN_PART, literal]))
   );
   if (pattern === undefined) return undefined;
 
