@@ -300,11 +300,18 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
     });
 
     it.each([
-      ['an unresolved intrinsic', { Ref: 'SomeDb' }],
-      ['an empty block', {}],
+      // The two rows are refused at DIFFERENT layers since issue #3032, and
+      // the expected message is per-row for exactly that reason. An
+      // unresolved intrinsic no longer reaches this provider's member check:
+      // `requireConfigObject` refuses it at the boundary, naming the CAUSE
+      // ("nothing substituted it") rather than the symptom. A genuinely empty
+      // block is still Glue's own to refuse -- it is a readable container that
+      // happens to declare nothing.
+      ['an unresolved intrinsic', { Ref: 'SomeDb' }, /got an unresolved Ref intrinsic/],
+      ['an empty block', {}, /declares no member cdkd can send/],
     ])(
       'create() refuses a TargetDatabase that is a plain object but UNREADABLE (%s)',
-      async (_label, bad) => {
+      async (_label, bad, expected) => {
         // A plain object passes the shape guard, so this is the second half of
         // the class: every member read yields `undefined` and the pre-guard code
         // put an empty `TargetDatabase: {}` on the wire.
@@ -312,7 +319,7 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
           provider.create('L', 'AWS::Glue::Database', {
             DatabaseInput: { Name: 'db', TargetDatabase: bad },
           })
-        ).rejects.toThrow(/declares no member cdkd can send/);
+        ).rejects.toThrow(expected);
         expect(mockSend).not.toHaveBeenCalled();
       }
     );
@@ -370,6 +377,33 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
       expect(databaseInputOf(call![0])).toStrictEqual({ Name: 'db' });
+    });
+
+    it('create() DOWNGRADES an UNRESOLVED INTRINSIC on a state replay too', async () => {
+      // Issue #3032: the case above uses a STRING, which fails the shape test.
+      // An intrinsic PASSES it, so it reaches the replay downgrade by a
+      // different route and needs its own row -- a replayed create must not
+      // hard-fail on a record the user cannot edit from the template.
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create(
+        'L',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'db', TargetDatabase: { Ref: 'LinkedDb' } } },
+        { replayingState: true }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({ Name: 'db' });
+      // The SENT bag is identical with and without the guard -- both routes
+      // reach `{ Name: 'db' }`, because pre-guard `namesSendable` was false and
+      // the same skip followed. So asserting it alone is VACUOUS (measured:
+      // this case was green under a mutation that deleted the guard). The
+      // warning TEXT is the only observable difference, so that is what pins
+      // which layer refused.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('got an unresolved Ref intrinsic')
+      );
     });
 
     it('update() RETAINS the previous block instead of erasing a live resource link', async () => {
@@ -620,10 +654,27 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('create() refuses a readable-but-empty FederatedDatabase', async () => {
+    it('create() refuses an UNRESOLVED INTRINSIC FederatedDatabase at the boundary', async () => {
+      // This case carried the name "readable-but-empty" while its fixture was
+      // an intrinsic, so it was really testing the intrinsic arm all along.
+      // Since issue #3032 that arm is refused by `requireConfigObject` before
+      // the member check, with a message naming the cause; the genuinely empty
+      // block is the separate case below.
       await expect(
         provider.create('L', 'AWS::Glue::Database', {
           DatabaseInput: { Name: 'db', FederatedDatabase: { Ref: 'Conn' } },
+        })
+      ).rejects.toThrow(/got an unresolved Ref intrinsic/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('create() refuses a readable-but-empty FederatedDatabase', async () => {
+      // The coverage the case above used to be mis-named for: a container that
+      // IS readable and simply declares nothing cdkd can send. It stays Glue's
+      // own refusal -- the boundary guard has no complaint about it.
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: { Name: 'db', FederatedDatabase: {} },
         })
       ).rejects.toThrow(/FederatedDatabase declares no member cdkd can send/);
       expect(mockSend).not.toHaveBeenCalled();

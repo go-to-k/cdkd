@@ -94,7 +94,7 @@ describe('WAFv2WebACLProvider', () => {
             SampledRequestsEnabled: true,
           },
         })
-      ).rejects.toThrow(/AWS::WAFv2::WebACL Scope must be a non-empty string \(got an object\)/);
+      ).rejects.toThrow(/AWS::WAFv2::WebACL Scope must be a non-empty string \(got an unresolved Ref intrinsic/);
 
       // Load-bearing: refused BEFORE the ACL is created in the wrong scope.
       expect(mockSend).not.toHaveBeenCalled();

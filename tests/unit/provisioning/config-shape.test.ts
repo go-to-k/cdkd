@@ -92,7 +92,7 @@ describe('readConfigString', () => {
     it('refuses an unresolved intrinsic left as an object', () => {
       expect(() =>
         readConfigString({ Status: { Ref: 'SomeParam' } }, 'Status', 'Suspended', PATH)
-      ).toThrow(/Status must be a non-empty string \(got an object\)/);
+      ).toThrow(/Status must be a non-empty string \(got an unresolved Ref intrinsic/);
     });
 
     it('names the fallback so the user knows how to opt into the default', () => {
@@ -143,7 +143,9 @@ describe('requireConfigString', () => {
       /Scope must be a non-empty string \(got null\)/
     );
     expect(() => requireConfigString('  ', 'REGIONAL', PATH)).toThrow(/got a blank string/);
-    expect(() => requireConfigString({ Ref: 'P' }, 'REGIONAL', PATH)).toThrow(/got an object/);
+    expect(() => requireConfigString({ Ref: 'P' }, 'REGIONAL', PATH)).toThrow(
+      /got an unresolved Ref intrinsic/
+    );
   });
 
   it('agrees with readConfigString on the field rules', () => {
@@ -220,7 +222,7 @@ describe('coerceNumber (issue #1513)', () => {
       /got a blank string/
     );
     expect(() => requireConfigString({ Ref: 'P' }, '-1', PATH, { coerceNumber: true })).toThrow(
-      /got an object/
+      /got an unresolved Ref intrinsic/
     );
     expect(() => requireConfigString(true, '-1', PATH, { coerceNumber: true })).toThrow(
       /got a boolean/
@@ -255,7 +257,9 @@ describe('onUnusable (issue #1513)', () => {
     const warn = vi.fn();
     requireConfigString({ Ref: 'P' }, 'Active', PATH, { onUnusable: warn });
     const message = warn.mock.calls[0][0] as string;
-    expect(message).toMatch(/AWS::IAM::AccessKey Status must be a non-empty string \(got an object\)/);
+    expect(message).toMatch(
+      /AWS::IAM::AccessKey Status must be a non-empty string \(got an unresolved Ref intrinsic/
+    );
     // Issue #1735: the helper describes what IT returned, never an OUTCOME a
     // caller's appended clause may override. "Ignoring it and using the
     // default" claimed the latter and contradicted DynamoDBTableProvider's
@@ -357,6 +361,137 @@ describe('requireConfigArray', () => {
 
 describe('requireConfigObject (issue #1581)', () => {
   const CONTAINER_PATH = 'AWS::S3::Bucket LifecycleConfiguration.Rules[].Filter';
+
+  // Issue #3032, sibling-gate half. Every CONTAINER gate in this module had the
+  // hole, not just `requireConfigObject` -- and these three are the ones whose
+  // failure is a SUBSTITUTED default rather than an empty block, which is the
+  // #1471 headline. Measured before these cases existed: reverting any one of
+  // the three sibling gates left the ENTIRE provisioning suite green.
+  describe('the SIBLING container gates refuse an intrinsic too', () => {
+    const INTRINSIC = { 'Fn::If': ['C', { Status: 'Enabled' }, { Status: 'Suspended' }] };
+    const VERSIONING = 'AWS::S3::Bucket VersioningConfiguration';
+
+    it('readConfigString does not substitute the fallback for an intrinsic container', () => {
+      // The module header's own motivating case. Pre-fix this returned
+      // 'Suspended' -- versioning turned OFF on a live bucket, from a template
+      // that asked for nothing of the sort.
+      expect(() => readConfigString(INTRINSIC, 'Status', 'Suspended', VERSIONING)).toThrow(
+        /got an unresolved Fn::If intrinsic/
+      );
+    });
+
+    it('readConfigString warns instead of throwing under onUnusable', () => {
+      const warn = vi.fn();
+      readConfigString(INTRINSIC, 'Status', 'Suspended', VERSIONING, { onUnusable: warn });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('got an unresolved Fn::If intrinsic'));
+    });
+
+    it('configStringRefusal reports an intrinsic container as unusable', () => {
+      expect(configStringRefusal(INTRINSIC, 'Status', 'Enabled', VERSIONING)).toMatch(
+        /got an unresolved Fn::If intrinsic/
+      );
+    });
+
+    it('configBooleanRefusal reports an intrinsic container as unusable', () => {
+      expect(configBooleanRefusal({ Ref: 'P' }, 'Enabled', VERSIONING)).toMatch(
+        /got an unresolved Ref intrinsic/
+      );
+    });
+
+    it('all three still accept an ordinary container', () => {
+      const ok = { Status: 'Enabled', Enabled: true };
+      expect(readConfigString(ok, 'Status', 'Suspended', VERSIONING)).toBe('Enabled');
+      expect(configStringRefusal(ok, 'Status', 'Enabled', VERSIONING)).toBeUndefined();
+      expect(configBooleanRefusal(ok, 'Enabled', VERSIONING)).toBeUndefined();
+    });
+  });
+
+  // Issue #3032. The other guards in this module refuse an intrinsic by TYPE
+  // (it is not a string, not an array), so this was the only one with the
+  // hole: an intrinsic IS a plain object, so it passed the shape test, every
+  // member probe indexed to `undefined`, and the block read as EMPTY -- the
+  // silent DROP this module exists to refuse, reached through a value the
+  // shape test cannot see. Reach is the STATE-borne replay paths, where a
+  // record written by an older binary can still carry the raw intrinsic.
+  describe('an unresolved intrinsic is NOT a usable container', () => {
+    // Each row carries its own EXPECTED string rather than deriving one: an
+    // earlier revision built the pattern with `key.replace('::', '::')`, a
+    // no-op wearing the shape of regex escaping, which would have silently
+    // produced a wrong pattern for any key carrying a metacharacter.
+    it.each([
+      ['Ref', { Ref: 'SomeParam' }, 'got an unresolved Ref intrinsic'],
+      [
+        'Fn::If',
+        { 'Fn::If': ['C', { Prefix: 'a/' }, { Prefix: 'b/' }] },
+        'got an unresolved Fn::If intrinsic',
+      ],
+      ['Fn::ImportValue', { 'Fn::ImportValue': 'x' }, 'got an unresolved Fn::ImportValue intrinsic'],
+    ])('refuses a single-key %s container on create', (_key, value, expected) => {
+      expect(() => requireConfigObject(value, CONTAINER_PATH)).toThrow(expected);
+    });
+
+    it.each([
+      ['Fn::RequestThrottled', 'a key carrying a RETRYABLE substring'],
+      ['Fn::Bogus', 'a key no resolver defines'],
+    ])('does NOT interpolate %s (%s)', (key) => {
+      // The SAFETY half of issue #3032's message bound, and it had no witness
+      // at all: forcing `NAMEABLE_INTRINSIC_KEYS.has(key)` to `true` left the
+      // whole suite green, so the mechanism could have been deleted silently.
+      //
+      // Why it matters: `cdkd import` writes the raw intrinsic shape into
+      // state when it cannot resolve one, so a record can carry ANY key, and
+      // this message reaches the SUBSTRING-matching classifiers in
+      // `retryable-errors.ts`. `RequestThrottled` is one of their literals, so
+      // interpolating that key verbatim would make a deterministic refusal
+      // read as transient and burn the whole backoff schedule.
+      const message = (() => {
+        try {
+          requireConfigObject({ [key]: 'x' }, CONTAINER_PATH);
+          return '';
+        } catch (e) {
+          return (e as Error).message;
+        }
+      })();
+      expect(message).toContain('got an unresolved intrinsic');
+      expect(message).not.toContain(key);
+    });
+
+    it('warns and returns undefined under onUnusable, so the caller skips', () => {
+      const warn = vi.fn();
+      expect(requireConfigObject({ Ref: 'P' }, CONTAINER_PATH, { onUnusable: warn })).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('got an unresolved Ref intrinsic')
+      );
+    });
+
+    it('names the cause instead of repeating the generic hint', () => {
+      // "(got an object) — check for an unresolved intrinsic" restates itself
+      // once the value IS a recognized intrinsic.
+      const warn = vi.fn();
+      requireConfigObject({ Ref: 'P' }, CONTAINER_PATH, { onUnusable: warn });
+      const message = warn.mock.calls[0]![0] as string;
+      expect(message).toMatch(/nothing substituted it before this call/);
+      expect(message).not.toMatch(/check for an unresolved intrinsic/);
+    });
+
+    it.each([
+      ['a multi-key object that merely CONTAINS Ref', { Ref: 'P', Prefix: 'logs/' }],
+      // THE boundary row, and UNREACHABLE in practice -- a real intrinsic node
+      // is always single-key, so this asserts where the line sits rather than
+      // endorsing the value. Every key here is intrinsic-shaped, so it is the
+      // only shape that separates this predicate's `keys.length === 1` from
+      // `dynamodb-globaltable-provider.ts`'s deliberately broader
+      // `keys.every(...)` — which asks "is this block ENTIRELY intrinsic", a
+      // different question. Without it, widening this predicate to that
+      // spelling leaves the whole suite green (measured).
+      ['an object whose keys are ALL intrinsic-shaped', { Ref: 'A', 'Fn::If': ['C', 1, 2] }],
+      ['a member legitimately named Refs', { Refs: 'P' }],
+      ['a member named Fn', { Fn: 'P' }],
+      ['an empty block', {}],
+    ])('still accepts %s — the test is single-key Ref / Fn::*', (_label, value) => {
+      expect(requireConfigObject(value, CONTAINER_PATH)).toBe(value);
+    });
+  });
 
   it('passes a plain object through unchanged, with and without options', () => {
     const container = { Prefix: 'logs/' };

@@ -345,6 +345,26 @@ describe('Route53Provider', () => {
         expect(mockSend).not.toHaveBeenCalled();
       });
 
+      it('refuses an UNRESOLVED INTRINSIC container on update for the same reason', async () => {
+        // Issue #3032. A string fails the SHAPE test; an intrinsic PASSES it,
+        // so the row below cannot reach this arm. The refusal is the same
+        // deliberate decision (#1493) -- the fallback is `''`, which wipes the
+        // live comment -- and a review round proposed downgrading it to a
+        // warning. This case is what reds if anyone does.
+        await expect(
+          provider.update(
+            'MyZone',
+            'Z1234567890',
+            'AWS::Route53::HostedZone',
+            { Name: 'example.com', HostedZoneConfig: { Ref: 'CommentParam' } },
+            { Name: 'example.com' }
+          )
+        ).rejects.toThrow(
+          /AWS::Route53::HostedZone HostedZoneConfig must be an object \(got an unresolved Ref intrinsic/
+        );
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
       it('refuses a string container on update instead of wiping the live comment', async () => {
         await expect(
           provider.update(
