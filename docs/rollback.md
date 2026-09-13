@@ -8,10 +8,29 @@ description: cdkd's automatic rollback on deploy failure, the --no-rollback esca
 When a deploy fails mid-stack (e.g. a resource hits a validation error
 or AWS rejects the request), cdkd by default **rolls back the
 already-completed resources in the same deploy** so the stack state
-stays consistent — every resource cdkd just created in this run is
-deleted in reverse dependency order, the state record is updated to
-match, and the CLI exits non-zero. Resources that existed before this
-deploy are NOT touched.
+stays consistent:
+
+- Every resource this run created is deleted, in reverse dependency
+  order. `DeletionPolicy` decides the exceptions
+  ([full table](cli-rollback.md#deletionpolicy-on-a-rolled-back-create)):
+  `Retain` leaves the resource in AWS, and `Snapshot` takes a final
+  snapshot before deleting.
+- A `Retain`ed resource moves out of the record's resources into a
+  rollback-orphan record. The next deploy re-adopts it — rather than
+  colliding with the name it still holds — provided its template still
+  declares that resource with the same type, leaves the physical name for
+  cdkd to derive, and no other cdkd stack records the same resource. A
+  type cdkd will not re-adopt is reported instead and left for you to
+  delete.
+- Every resource this run updated is reverted to the properties cdkd had
+  recorded for it — its last deployed template values, not a live read,
+  so drift is not restored. A replacement is undone by reversing the
+  replacement rather than by reverting properties.
+- A resource this run had already deleted cannot be brought back. The
+  rollback warns and moves on.
+- Resources this run did not touch are left alone.
+
+The state record is updated to match, and the CLI exits non-zero.
 
 Pass `cdkd deploy --no-rollback` to skip the rollback (Terraform-style:
 the partial state is preserved so you can `cdkd state show <stack>`,
@@ -57,10 +76,19 @@ leave the resource alone during replay, like `cdk rollback --orphan`),
 FAILED mid-deploy — off by default because its remote state is unknown; its
 delete honors `DeletionPolicy` the same way a completed CREATE's does),
 `--stack-region <region>` (disambiguate a same-named stack across
-regions), `--role-arn`, `--state-bucket`. A **replacement** is reverted
-by reversing it: the old resource is re-created from its journaled
-pre-deploy state and the new one deleted (for a stateful type the old
-data is unrecoverable — warned loudly). Exit codes: `0` = fully clean
+regions), `--role-arn`, `--state-bucket`.
+
+A **replacement** is reverted by reversing it: the old resource is
+re-created from its journaled pre-deploy state and the new one deleted
+(for a stateful type the old resource's data is not recovered by this
+rollback and the re-created one starts empty — warned loudly). The new
+copy escapes that delete when `UpdateReplacePolicy: Retain` applies to
+it: cdkd leaves it running, drops it from state and warns. When the
+deploy had retained the *old* resource under that same attribute, the
+old one is re-adopted with its data instead and the new copy is again
+left running and untracked.
+
+Exit codes: `0` = fully clean
 (journal deleted), `2` = partial (some ops failed / were skipped — the
 journal is kept so you can re-run), `1` = hard error. See
 [`cdkd rollback`](cli-rollback.md) for the

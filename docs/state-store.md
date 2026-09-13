@@ -64,5 +64,5 @@ warning and `cdkd state info` point at.
 
 See **[`cdkd state`](cli-state.md)** for the full reference: every subcommand,
 its flags, the confirmation and lock behavior, and the exit codes. The record
-schema itself — every field, the v1 → v9 history, and the lock mechanism — is
+schema itself — every field, the v1 → v10 history, and the lock mechanism — is
 documented in [State Management](state-management.md).

@@ -805,7 +805,7 @@ deploy re-resolves the output.
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9   // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[]
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10  // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[], 10 = +observedBaselineRefused on ResourceState
   stackName: string                        // Stack name
   region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
@@ -814,6 +814,7 @@ interface StackState {
   outputReads?: StateOutputReadEntry[]     // v8+: Fn::GetStackOutput refs (informational — weak reference, never destroy-blocking)
   exportNames?: string[]                   // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy; [] = exports nothing)
   skippedOutputs?: Record<string, string>  // informational, no version bump: Outputs keys the last deploy could not resolve and skipped → digest of their template inputs (issue #2740); absent = nothing skipped, or a record older than the field
+  orphans?: StackOrphanRecord[]            // no version bump: resources a rollback retained under `Retain` and moved out of `resources`, kept so a later deploy can re-adopt one instead of colliding with the name it holds; absent = none
   parentStack?: string                     // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -847,7 +848,7 @@ unresolved output is dropped from the block entirely rather than printed as
 
 ```json
 {
-  "version": 9,
+  "version": 10,
   "stackName": "MyAppStack",
   "region": "us-east-1",
   "resources": {
@@ -1483,6 +1484,17 @@ Expiry is decided by the lock's own `expiresAt` field, not by its age: a live
 holder keeps pushing that field forward, so "old" and "abandoned" are different
 questions and only the second one frees the lock.
 
+### What the lock covers
+
+A lock covers one stack in one region, and it is held for as long as the
+command is working on that stack — in a multi-stack run each stack's lock is
+released as that stack finishes, not at the end of the command. Either way it
+is released when the work finishes, not when the resources it touched finish
+provisioning, so a second `cdkd deploy` on the same stack can start while
+resources the first one created are still coming up.
+[`cdkd deploy`](cli-deploy.md#what-the-stack-lock-covers-and-when-a-second-deploy-can-start)
+covers what that second deploy runs into.
+
 ### Lock TTL (Time To Live)
 
 Default: **30 minutes**
@@ -1974,7 +1986,7 @@ function computeDeletionOrder(resources: Record<string, ResourceState>): string[
 
 ### Cleanup Options
 
-cdkd ships three commands that touch state during cleanup. Choose based on
+cdkd ships four commands that touch state during cleanup. Choose based on
 whether the CDK app is available, and whether you also want to delete the
 underlying AWS resources:
 
@@ -1982,8 +1994,8 @@ underlying AWS resources:
 | --- | --- | --- | --- |
 | `cdkd destroy <stack>` | Yes (synth) | Yes | Yes |
 | `cdkd state destroy <stack>` | No | Yes | Yes |
-| `cdkd orphan <stack>` | Yes (synth) | **No** | Yes |
-| `cdkd state orphan <stack>` | No | **No** | Yes |
+| `cdkd orphan <constructPath>...` | Yes (synth) | **No** | Only the named resources' entries |
+| `cdkd state orphan <stack>` | No | **No** | Yes, the whole record |
 
 `cdkd destroy` is the canonical path when you have the CDK source — it synths
 the app, intersects against state, and deletes resources in reverse dependency
@@ -1992,14 +2004,22 @@ into `src/cli/commands/destroy-runner.ts` and shared by both commands), but
 sourced from the state record instead of synth output, so it works from any
 working directory given access to the state bucket. Use it for cleanup from a
 machine without the CDK source, CI cleanup jobs after the source repo is gone,
-or a forgotten stack referenced only by name. `cdkd orphan` and `cdkd state
-orphan` only forget the state record — the AWS resources stay alive — and are
-the right tools when you intentionally want cdkd to stop tracking a stack
-without touching its resources. The naming mirrors aws-cdk-cli's new `cdk
-orphan` command. Choose the synth-driven `cdkd orphan` when you have the CDK
-source and want the same stack-pattern routing as `deploy` / `destroy`; choose
-`cdkd state orphan` when you don't have the CDK app or want to operate on the
-bucket alone.
+or a forgotten stack referenced only by name.
+
+`cdkd orphan` and `cdkd state orphan` only forget state — the AWS resources
+stay alive — and are the right tools when you want cdkd to stop tracking
+something without touching it. The naming mirrors aws-cdk-cli's new `cdk
+orphan` command. They differ in granularity, which is what decides between
+them:
+
+- `cdkd orphan <constructPath>...` takes CDK **construct paths**
+  (`MyStack/MyTable`) and drops those resources from the record, leaving the
+  rest of the stack tracked. It synthesizes, so it also rewrites the sibling
+  references to each orphan and needs the CDK source.
+- `cdkd state orphan <stack>` removes the entire record for a stack and
+  operates on the bucket alone, with no CDK app.
+
+[Orphan vs Destroy](orphan-vs-destroy.md) compares all four side by side.
 
 ## Security and Best Practices
 
