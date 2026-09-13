@@ -2,6 +2,10 @@ import { defineConfig } from 'vite-plus';
 import { defineTheme, oxContent } from '@ox-content/vite-plugin';
 import type { SsgNavigationGroup } from '@ox-content/vite-plugin';
 import swiss from '@ox-content/theme-swiss';
+import { homeTitlePlugin } from './docs-site/home-title.js';
+
+const SITE_NAME = 'cdkd';
+const SITE_OUT_DIR = 'dist/site';
 
 
 // Documentation site config (https://cdkd.dev), separate from the root
@@ -281,7 +285,7 @@ const theme = defineTheme({
 export default defineConfig({
   publicDir: 'docs-site/public',
   build: {
-    outDir: 'dist/site',
+    outDir: SITE_OUT_DIR,
     // The site is fully static; Ox Content emits every page during this
     // build's closeBundle. Vite still demands a client entry, so feed it an
     // empty module instead of an index.html.
@@ -292,7 +296,7 @@ export default defineConfig({
   plugins: [
     oxContent({
       srcDir: 'docs',
-      outDir: 'dist/site',
+      outDir: SITE_OUT_DIR,
       highlight: true,
       gfm: true,
       toc: true,
@@ -311,7 +315,7 @@ export default defineConfig({
       // its CLI, documented by hand in cli-reference.md.
       docs: false,
       ssg: {
-        siteName: 'cdkd',
+        siteName: SITE_NAME,
         siteUrl: 'https://cdkd.dev',
         lastUpdated: true,
         generateOgImage: true,
@@ -328,6 +332,18 @@ export default defineConfig({
         navigation,
         theme: [swiss, theme],
       },
+    }),
+    // After the SSG: give the home page a search-result headline instead of
+    // the bare site name (see docs-site/home-title.ts for why the SSG cannot
+    // be configured to do this). Its `enforce: 'post'` is what orders it
+    // after the plugins `oxContent()` returns (none carry `enforce`; the
+    // separate `oxContentCustomHost()` entry point does ship a `post` one,
+    // so switching to it would make array order load-bearing). The position
+    // here only mirrors that for the reader.
+    homeTitlePlugin({
+      siteName: SITE_NAME,
+      outDir: SITE_OUT_DIR,
+      indexMarkdownPath: 'docs/index.md',
     }),
   ],
 });
