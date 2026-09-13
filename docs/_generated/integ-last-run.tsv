@@ -140,7 +140,7 @@ iam-role-prefixed-name-update	2026-07-26T16:45:28Z	PASS	71	verify.sh	#1160 iam-r
 import-attributes	2026-08-10T05:19:05Z	PASS	39	verify.sh	0810 P2 sweep b6; attr reconstruct + destroy clean, 1 del 0 err
 import-auto-mode	2026-08-12T05:44:00Z	PASS	269	verify.sh	final source incl. #1672 message; rc ok, orph clean
 import-nested-stack	2026-08-10T04:45:42Z	PASS	133	verify.sh	0810 sweep b3; 1st attempt failed on stale global cdk CLI 2.1120.0 (schema 54 needs >=2.1135.1, not a cdkd bug); PASS after vp update -g aws-cdk, 14 steps, 3 del 0 err
-import-secret-observed	2026-09-12T08:39:33Z	PASS	202	verify.sh	lane 2745 (arms 1+3); rc0, 20 assertions, SubFloorParam L2 join persisted as the ARN-form expression, 0 surviving state versions
+import-secret-observed	2026-09-13T03:18:25Z	PASS	140	verify.sh	maintainer-side gating run for the PR 3052 merge at 9463a63b (import mark, #2745 site 3): rc0, 20 assertions, SubFloorParam persisted as the ARN-form expression in properties and observedProperties, 3 del 0 err, 0 surviving state versions
 import-value-strong-ref	2026-08-20T11:02:34Z	PASS	118	verify.sh	#2057 lane: regression check on state.imports[] and the destroy-time strong-ref refusal, the pre-existing bug this lane's union fix repairs; all state files removed, 0 orphans
 importvalue-chain	2026-08-10T05:50:57Z	PASS	76	verify.sh	0810 P2 sweep b10; 3-stack A->B->C ImportValue chain, exports index purged, 0 orph
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
@@ -268,7 +268,7 @@ schema-v9-to-v10-migration	2026-09-11T10:27:16Z	PASS	158	verify.sh	re-run after 
 sdk-ccapi-crossref	2026-08-10T04:23:28Z	PASS	85	verify.sh	0810 sweep b2; post-#1355 CC snapshot path, heterogeneous routing, 4 del 0 err, 0 orph
 sdk-to-cc-autoroute	2026-09-11T18:26:05Z	PASS	168	verify.sh	maintainer-side run gating PR 3020 at e67d273; phases 4b/4c rendered 'updated (metadata)'; 1 del 0 err 0 orph
 secrets-array-nested	2026-09-10T08:15:35Z	PASS	90	verify.sh	rc0 after fixture retired the plaintext residual (#2852); first run FAILed on the old assertion
-secrets-dynamic-ref	2026-09-12T17:17:08Z	PASS	553	verify.sh	lane 2745 (PR 3052 maintainer round 1: DB_PORT_SUB / DB_PORT_JOIN re-asserted in Phase 1e and 1g); Guard 3d OK; 0 surviving state versions
+secrets-dynamic-ref	2026-09-13T03:24:24Z	PASS	500	verify.sh	maintainer-side gating run for the PR 3052 merge at 9463a63b (frame arm, #2745 sites 1+3): Guard 3d DB_PORT_SUB / DB_PORT_JOIN / PortJoin OK in properties, observedProperties, outputs, post-rollback and re-capture; 4 del 0 err, 0 surviving state versions
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-09-04T00:49:00Z	PASS	70	verify.sh	rc ok, orph clean, versions swept (maintainer merge-gate rerun of PR 2476)
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
