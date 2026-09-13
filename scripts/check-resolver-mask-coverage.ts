@@ -377,7 +377,8 @@ export interface Site {
  * and 3 to 10 masked expressions each, and the slack under the old floors
  * covered all of them.
  *
- * The bands are TIGHT on purpose (measured 131 / 155 / 98). Changing the
+ * The bands are TIGHT on purpose (measured 131 / 155 / 98 on 2026-09-10; 132 /
+ * 155 / 100 after issue #2814's drain warning). Changing the
  * population of throw/log sites in this file is a decision, and a band that
  * makes it a decision is the point; widen the number in the same commit that
  * widens the population.
