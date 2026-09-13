@@ -902,16 +902,20 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   look-ahead and swallows the commands in between; the scan is QUOTE-AWARE
   with a per-depth STACK — `$(` and a bare `(` push the enclosing quote state
   and the matching `)` restores it, a backtick saves and restores across its
-  own span, `${…}` / `$((…))` / a `#` comment (after a space OR a `)`) are
+  own span, `${…}` / `$((…))` / a `#` comment (after a space, a `)` or an opening backtick) are
   skipped whole — and it BAILS to "no opener" on any line it cannot read to
   the end: an unbalanced quote, a new `$(` opened after the delimiter, or the
   opener's OWN frame closing on that line (`y=$(cat <<'EOF') ; z=$(` — which
   shell reads the next line as body and which as the new substitution is
   version-dependent, measured across bash 3.2 / 5 / zsh, so it is not
   modelled), so a `'<<X'` mention plus a bare `X` later is prose; and the
-  latch is **QUOTED-DELIMITER ONLY**, where an unquoted opener ANYWHERE on
-  the line is itself a bail — `cat <<A <<'B'` reads the A body first and
-  EXPANDS it, so recording only B dropped the body a verb runs in. A
+  latch is **QUOTED-DELIMITER ONLY**, where an unquoted opener ANYWHERE in
+  the substitution is itself a bail, sticky to its close — `cat <<A <<'B'`
+  reads the A body first and EXPANDS it, so recording only B dropped the
+  body a verb runs in. That lexer state (quote, backtick, frame depth, the
+  bail) CARRIES across the physical lines of one `$( )` and resets when it
+  closes: a fresh per-line scan latched five shapes bash reads as carried
+  data (security round 4). A
   `<<EOF` body is expanded by bash — `$(git commit)` on a body line runs —
   and two review rounds each measured a shape (a multi-line `$(` spanning
   body lines, a literal `<<Y` on a fallen-through line) that a body-line

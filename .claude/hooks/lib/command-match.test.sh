@@ -288,6 +288,13 @@ r2_case "\${...} (quoted): a <<'X' inside a parameter expansion is not an opener
   'x="$(echo ${y:-<<'"'"'X'"'"'}' 'git commit -m y' 'X' ')"'
 r2_case "\$((...)) (quoted): a <<\"2\" inside arithmetic is a shift, not an opener" 0 \
   'x="$(echo $((1<<"2"))' 'git commit -m y' '2' ')"'
+# The `$((` skip's fail-open twin is now caught by the frame-close bail (round
+# 3: a `)` at or below the opener frame), so what the arm still decides is the
+# REFUSING direction: a bare `<<` shift inside arithmetic ahead of a real
+# quoted opener must not trip the unquoted-opener bail and turn the body
+# back into commands. Deleting the arm reds this case alone.
+check "\$((...)) (bare shift): \$((1<<2)) before a quoted opener is arithmetic, not an unquoted opener" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="$(echo $((1<<2)); cat <<'"'"'EOF'"'"'' 'gh pr merge 1 was refused' 'EOF' ')"')"
 r2_case "\$'a' (quoted): \$' inside double quotes is literal, so the <<'X' after it is still quoted" 0 \
   'x="$(echo "$'"'"'a'"'"' <<'"'"'X'"'"'" # the comment holds one "' 'git commit -m y' 'X' ')"'
 check "stack pop: the ) of a nested \$( ) inside dq restores the dq, so the ; cat <<'X' after the closing quote is a real opener" 1 "$MERGE" \
@@ -331,8 +338,10 @@ r3_case "c1b: opener frame closes, a new \$( opens -- backtick form" 0 "$COMMIT"
   'y=`cat <<'"'"'EOF'"'"'` ; z=$(' 'git commit -m y' 'EOF' ')'
 r3_case "c1c: a NESTED opener frame closes while the outer stays open" 0 "$COMMIT" \
   'x=$(echo $(cat <<'"'"'X'"'"')' 'git commit -m y' 'X' ')'
-# Code review: `)#` starts a comment in bash exactly as ` #` does; the
-# preceding-character class had every separator but `)`.
+# Code review: `)#` starts a comment like ` #` does -- in bash 5 and zsh;
+# inside `$( )` bash 3.2 makes it a syntax error and runs nothing, so
+# reading it as a comment is right on the shells that run it and safe on
+# the one that does not. The class had every separator but `)`.
 r3_case "c2: a # right after ) is a comment, so the quoted <<X in it is not an opener" 0 "$COMMIT" \
   'x="$( (echo a)# <<'"'"'X'"'"'' 'git commit -m y' 'X' ')"'
 # Code review: two arms that existed and were fenced by nothing -- the `<<<`
@@ -347,6 +356,49 @@ r3_case "c3b: a quoted opener followed by an UNBALANCED double quote is a bail" 
 # opener, and a trailing `# '` re-synced the parity so the line did not bail.
 r3_case "t1: \$'a\\'' is ANSI-C, so the '<<' after it is a quoted span, not an opener" 0 "$COMMIT" \
   'x="$(echo $'"'"'a\'"'"''"'"' '"'"'<<'"'"'X'"'"' # '"'"'' 'git commit -m y' 'X' ')"'
+
+# --- Round 4 (security review): the scan must CARRY state across lines -----
+# Round 3 scanned each physical line of an open `$( )` on its own, so every
+# bail it added held for one line only. bash carries the lexer state across
+# lines: an unquoted opener on line 1 makes line 2 onward its EXPANDED body;
+# a quote or backtick left open at the end of line 1 makes a `<<'X'` on line
+# 2 data; a nested `$(` opened on line 1 is what the `)` on line 2 closes.
+# Each of these latched from the fresh line-2 scan and dropped a verb bash
+# runs (measured through a stub `git`; origin/main matched all five). The
+# scan now reads every physical line of the open substitution and records an
+# opener only from the LAST one.
+r3_case "s1: an unquoted opener on line 1 -- the quoted opener on line 2 is inside its expanded body" 0 "$COMMIT" \
+  'x=$(cat <<A' 'cat <<'"'"'B'"'"'' '$(git commit -m y)' 'A' 'B' ')'
+r3_case "s2: same, a backtick push in the A body" 0 "$GATE_RE_GIT_PUSH" \
+  'x=$(cat <<A' 'cat <<'"'"'B'"'"'' '`git push origin main`' 'A' 'B' ')'
+r3_case "s3: a double quote left open on line 1 makes the <<'X' on line 2 data" 0 "$COMMIT" \
+  'x=$(echo "abc' '<<'"'"'X'"'"' "a"' '" ; git commit -m y ; echo "' 'X' '")'
+r3_case "s4: a single quote left open on line 1 makes the <<\"X\" on line 2 data" 0 "$COMMIT" \
+  'x=$(echo '"'"'abc' '<<"X" '"'"'a'"'"'' ''"'"' ; git commit -m y ; echo '"'"'' 'X' ''"'"')'
+r3_case "s5: a backtick left open on line 1 makes the <<'X' on line 2 data" 0 "$COMMIT" \
+  'x=$(echo `abc' '<<'"'"'X'"'"' `a`' '` ; git commit -m y ; echo `' 'X' '`)'
+r3_case "s6: a nested \$( opened on line 1 is closed by the ) after the opener on line 2" 0 "$COMMIT" \
+  'x=$(echo $(cat' '<<'"'"'X'"'"')' 'git commit -m y' 'X' ')'
+# Controls for the carried scan: an earlier line's `#` comment ends at ITS
+# newline, so the quoted opener on the next line still latches; and a quoted
+# heredoc that already closed on an earlier line is not re-found by the scan
+# of the accumulated text (the round-1 S2 shape, kept green here on purpose).
+check "s7: a # comment on line 1 of the substitution does not swallow line 2's real opener" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(echo a # not an opener' "cat <<'EOF'" 'gh pr merge 1 was refused' 'EOF' ')')"
+check "s8: a quoted heredoc closed on an earlier line is not re-found -- the push after it is a segment" 0 "$GATE_RE_GIT_PUSH" \
+  "$(printf '%s\n' 'out=$(' "cat <<'EOF'" 'm1' 'EOF' 'git push origin HEAD' ')')"
+
+# Code review round 4: the `#` class had `)` (round 3) but not the backtick,
+# so `` x=`#<<'X' `` read the comment as an opener inside the backtick frame
+# and, the frame never closing on that line, latched it -- all three shells
+# run the commit (origin/main matched). Same defect one separator over.
+r3_case "s10: a # right after an opening backtick is a comment, not an opener in the backtick frame" 0 "$COMMIT" \
+  'x=`#<<'"'"'X'"'"'' 'git commit -m y' 'X' '`'
+# The carried state is per SUBSTITUTION: it resets when a line closes one, so
+# the sticky unquoted-opener bail from a first `$( )` does not leak into a
+# later one and turn its quoted body back into commands.
+check "s11: the sticky bail from a closed substitution does not leak into the next one" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<A' 'body' 'A' ')' "y=\$(cat <<'B'" 'gh pr merge 1 was refused' 'B' ')')"
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

@@ -592,37 +592,59 @@ gate_segments_raw() {
     # `y=$(cat <<\047EOF\047) ; z=$(` or `x=$(echo $(cat <<\047X\047)`, where
     # bash 3.2 and zsh run the next line as the new substitution and bash 5
     # reads it as the body -- version-dependent, so it is not modelled
-    # (round 3, code review); and a `#` after a `)` is a comment like one
-    # after a space (round 3). Third, an UNQUOTED opener ANYWHERE on the line
+    # (round 3, code review); and a `#` after a `)` or an opening backtick
+    # is a comment like one after a space (rounds 3 and 4 -- `)#` is bash 5
+    # and zsh; bash 3.2 makes it a syntax error inside `$( )`, which runs
+    # nothing, so the comment reading is safe there too). Third, an
+    # UNQUOTED opener ANYWHERE on the line
     # is a bail too, not merely "not latched": in `cat <<A <<\047B\047` bash
     # reads the A body FIRST and expands it, so recording only the quoted B
     # dropped the expanded body a verb runs in (round 3, security).
-    function last_heredoc_opener(text,   j, n, c, d, iq, depth, bt, btq, OQ, rest, out, ol, of, ob, k) {
-      out = ""; iq = ""; depth = 0; bt = 0; btq = ""; ol = 0; of = 0; ob = 0
+    #
+    # THE LEXER STATE CARRIES ACROSS THE LINES OF ONE SUBSTITUTION. Round 3
+    # scanned each physical line from a fresh state, and security round 4
+    # measured five shapes where that lost what bash carries: an unquoted
+    # opener on line 1 whose expanded body is line 2 onward, a quote or
+    # backtick left open at the end of line 1 that makes a `<<\047X\047` on
+    # line 2 DATA, and a nested `$(` opened on line 1 whose `)` on line 2
+    # closes the opener frame. Each latched from the fresh line-2 scan. So the
+    # quote, backtick and frame state live in `lho_*` globals that run()
+    # resets when a substitution closes; each physical line is scanned ONCE
+    # (linear in the substitution, where re-reading the accumulated text was
+    # quadratic and measured 1.5x the already-quadratic join at 200 lines).
+    # The unquoted-opener bail is STICKY for the rest of the substitution --
+    # its expanded body has no modelled end -- while the per-line answers
+    # (an opener recorded on THIS line, its frame, the end-of-line checks)
+    # are locals, so an earlier opener whose body run() already dropped is
+    # never re-found (the round-1 joined-scan fail-open, S2).
+    function lho_reset() { lho_iq = ""; lho_depth = 0; lho_bt = 0; lho_btq = ""; lho_bail = 0; split("", lho_OQ) }
+    function last_heredoc_opener(text,   j, n, c, d, rest, out, ol, of, ob, k) {
+      if (lho_bail) return ""
+      out = ""; ol = 0; of = 0; ob = 0
       n = length(text)
       for (j = 1; j <= n; j++) {
         c = substr(text, j, 1)
-        if (iq == "A") { if (c == "\\") { j++; continue }
-                         if (c == "\047") iq = ""; continue }
-        if (iq == "\047") { if (c == iq) iq = ""; continue }
+        if (lho_iq == "A") { if (c == "\\") { j++; continue }
+                             if (c == "\047") lho_iq = ""; continue }
+        if (lho_iq == "\047") { if (c == lho_iq) lho_iq = ""; continue }
         if (c == "\\") { j++; continue }
         if (c == "$") { d = substr(text, j + 1, 1)
                         if (d == "$") { j++; continue }
-                        if (d == "\047" && iq == "") { iq = "A"; j++; continue }
+                        if (d == "\047" && lho_iq == "") { lho_iq = "A"; j++; continue }
                         if (d == "(" && substr(text, j + 2, 1) == "(") {
                           k = index(substr(text, j + 3), "))"); if (k == 0) return ""
-                          j = j + 2 + k; continue }
-                        if (d == "(") { depth++; OQ[depth] = iq; iq = ""; j++; continue }
+                          j = j + 3 + k; continue }
+                        if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_iq = ""; j++; continue }
                         if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) return ""
                           j = j + 1 + k; continue }
                         continue }
-        if (c == "`" && (iq == "" || iq == "\"")) { if (!bt) { btq = iq; iq = ""; bt = 1 }
-                                                    else { if (out != "" && ob) return ""; bt = 0; iq = btq }; continue }
-        if (iq != "") { if (c == iq) iq = ""; continue }
-        if (c == "\"" || c == "\047") { iq = c; continue }
-        if (c == "(") { depth++; OQ[depth] = ""; continue }
-        if (c == ")") { if (depth > 0) { if (out != "" && depth <= of) return ""; iq = OQ[depth]; depth-- }; continue }
-        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|()]/)) break
+        if (c == "`" && (lho_iq == "" || lho_iq == "\"")) { if (!lho_bt) { lho_btq = lho_iq; lho_iq = ""; lho_bt = 1 }
+                                                            else { if (out != "" && ob) return ""; lho_bt = 0; lho_iq = lho_btq }; continue }
+        if (lho_iq != "") { if (c == lho_iq) lho_iq = ""; continue }
+        if (c == "\"" || c == "\047") { lho_iq = c; continue }
+        if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""; continue }
+        if (c == ")") { if (lho_depth > 0) { if (out != "" && lho_depth <= of) return ""; lho_iq = lho_OQ[lho_depth]; lho_depth-- }; continue }
+        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|()`]/)) break
         if (c == "<" && substr(text, j + 1, 1) == "<") {
           if (substr(text, j + 2, 1) == "<") { j += 2; continue }
           rest = substr(text, j)
@@ -630,14 +652,14 @@ gate_segments_raw() {
             d = substr(rest, RSTART, RLENGTH)
             sub(/^<<-?[ \t]*/, "", d)
             gsub(/["\047]/, "", d)
-            if (d != "") { out = d; ol = depth + bt; of = depth; ob = bt }
+            if (d != "") { out = d; ol = lho_depth + lho_bt; of = lho_depth; ob = lho_bt }
             j += RLENGTH - 1
-          } else if (match(rest, /^<<-?[ \t]*[^ \t<]/)) return ""
+          } else if (match(rest, /^<<-?[ \t]*[^ \t<]/)) { lho_bail = 1; return "" }
           continue
         }
       }
-      if (iq != "") return ""
-      if (out != "" && depth + bt > ol) return ""
+      if (lho_iq != "") return ""
+      if (out != "" && lho_depth + lho_bt > ol) return ""
       return out
     }
     # `q` is deliberately GLOBAL across lines: a quoted span survives a newline,
@@ -822,7 +844,7 @@ gate_segments_raw() {
     }
     # One full pass. Runs twice at most: see the END rule.
     function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub, ptag, pd, phys) {
-      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""; ptag = ""; phys = ""
+      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""; ptag = ""; phys = ""; lho_reset()
       __bodies = ""; __pend_seg = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
@@ -893,10 +915,15 @@ gate_segments_raw() {
           # delimiter only when the terminator really arrives as a bare later
           # line -- the same fail-open guard the top-level `tag` uses, so a
           # `<<X` in prose with no terminator blanks nothing.
+          # The scan keeps its lexer state across the lines of ONE substitution
+          # (security round 4: an unquoted opener, an open quote or backtick, a
+          # nested frame all carry from line 1 to line 2); it is reset below
+          # the moment a line does not continue one.
           pd = last_heredoc_opener(phys)
           if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd
           continue
         }
+        lho_reset()
         # A line that ends INSIDE a quoted span is not a segment boundary: the
         # span continues. Emitting "\n" here promoted every line of a quoted
         # `--body "…"` to a segment START, so prose in a PR body or an issue
