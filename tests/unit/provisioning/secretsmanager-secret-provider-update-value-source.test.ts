@@ -769,3 +769,73 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     });
   });
 });
+
+/**
+ * The RUNTIME half of the #2212 fence (round-6 security review of
+ * go-to-k/cdkd#3058). `tests/unit/scripts/integ-secret-fixture-sweep.test.ts`
+ * reads the provider's SOURCE and refuses every spelling by which the minted
+ * value could reach the recorded bag; six review rounds each found one more
+ * spelling. This block asks the question by VALUE instead, which no spelling
+ * can dodge: mint a value through the real code, then look for it in every
+ * object the engine records -- the desired bag it was handed (the SDK route
+ * records that very object) and the `effectiveProperties` a later SKIP
+ * returns, with a usable and with an absent previous block, after a mint
+ * from `update()` AND from `create()` (a cross-resource stash on the
+ * singleton would surface on the second resource).
+ */
+describe('the minted secret value reaches nothing the engine records (#2212, runtime half)', () => {
+  const ARN = 'arn:aws:secretsmanager:us-east-1:0:secret:my-secret-AbCdEf';
+  const TYPE = 'AWS::SecretsManager::Secret';
+  const gen = (len: number): Record<string, unknown> => ({
+    Name: 'my-secret',
+    GenerateSecretString: { PasswordLength: len, ExcludePunctuation: true },
+  });
+  /** The value the LAST mutating call actually sent. */
+  const minted = (command: typeof UpdateSecretCommand | typeof CreateSecretCommand): string => {
+    const calls = mockSend.mock.calls.filter((c) => c[0] instanceof command);
+    const v = (calls.at(-1)![0].input as { SecretString?: string }).SecretString;
+    expect(v, 'the priming call must have minted a value').toBeDefined();
+    expect(v!.length).toBeGreaterThanOrEqual(16);
+    return v!;
+  };
+  let provider: SecretsManagerSecretProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({ ARN });
+    provider = new SecretsManagerSecretProvider();
+  });
+
+  it('the desired bag handed to update() is not mutated', async () => {
+    const next = gen(32);
+    const before = JSON.stringify(next);
+    await provider.update('L', ARN, TYPE, next, gen(16));
+    const v = minted(UpdateSecretCommand);
+    expect(JSON.stringify(next)).toBe(before);
+    expect(before).not.toContain(v);
+  });
+
+  it.each([
+    ['USABLE', (): Record<string, unknown> => gen(32)],
+    ['ABSENT', (): Record<string, unknown> => ({ Name: 'my-secret', SecretString: 'lit' })],
+  ])(
+    'a later SKIP with a %s previous block carries no value minted by an earlier update()',
+    async (_l, previous) => {
+      await provider.update('L', ARN, TYPE, gen(32), gen(16)); // prime: mints
+      const v = minted(UpdateSecretCommand);
+      const desired = { ...gen(32), GenerateSecretString: 'bad' };
+      const result = await provider.update('L', ARN, TYPE, desired, previous());
+      expect(JSON.stringify(result)).not.toContain(v);
+      expect(JSON.stringify(desired)).not.toContain(v);
+    }
+  );
+
+  it('a SKIP on a SECOND resource carries no value minted by create() on the first', async () => {
+    await provider.create('A', TYPE, gen(32)); // prime: mints, on another resource
+    const v = minted(CreateSecretCommand);
+    const desired = { ...gen(32), Name: 'other', GenerateSecretString: 'bad' };
+    const result = await provider.update('B', ARN, TYPE, desired, { ...gen(32), Name: 'other' });
+    expect(JSON.stringify(result)).not.toContain(v);
+    expect(JSON.stringify(desired)).not.toContain(v);
+  });
+});

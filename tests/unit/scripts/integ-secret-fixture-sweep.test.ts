@@ -691,8 +691,8 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
 
     const retainBody = methodBody(code, 'retainPreviousGenerateBlock');
     // String literals are prose; a template literal keeps the CODE in its
-    // \`${...}\` holes. Used by every arm below that reads a NAME, so a future
-    // warning saying "fix this template" is not read as \`this\`.
+    // `${...}` holes. Used by every arm below that reads a NAME, so a future
+    // warning saying "fix this template" is not read as `this`.
     const stripStrings = (src: string): string =>
       src
         .replace(/\`(?:[^\`\\]|\\.)*\`/g, (t) =>
@@ -725,13 +725,36 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // `(getLogger() as any).x = v` with no `this` at all. Every one of them
     // needs a NAME inside this helper that is not on this list, so the list is
     // what closes the class rather than one more spelling. A stash read
-    // inside the warning's \`${...}\` interpolation was measured GREEN when the
-    // whole template literal was blanked, which is why \`stripStrings\` keeps
+    // inside the warning's `${...}` interpolation was measured GREEN when the
+    // whole template literal was blanked, which is why `stripStrings` keeps
     // the holes; member accesses are not free identifiers; and an object KEY is one only
-    // at object-literal position (after \`{\` or \`,\`) -- the first cut stripped
-    // every \`name :\`, which is also the consequent of a ternary, and
-    // \`cond ? stash : x\` walked through (round-5 security review, both
+    // at object-literal position (after `{` or `,`) -- the first cut stripped
+    // every `name :`, which is also the consequent of a ternary, and
+    // `cond ? stash : x` walked through (round-5 security review, both
     // proven to land the minted value in the recorded bag).
+    //
+    // WHAT THE LIST CLOSES IS NAMES, NOT THE VALUE RETURNED BY THE ONE NAME IT
+    // ALLOWS. `this.logger.warn(` is a CALL, and a call has a return value:
+    // round 6 measured a field initializer whose `warn` returns a closure's
+    // stash, read by the helper as `Seed: this.logger.warn('')`, GREEN under
+    // everything above. So the initializer is pinned VERBATIM and every
+    // `this.logger.warn(` in the helper must sit at STATEMENT position, where
+    // its return value is discarded. The value-based twin of all of this --
+    // mint through the real code, then look for the value in what the engine
+    // records -- lives in
+    // `tests/unit/provisioning/secretsmanager-secret-provider-update-value-source.test.ts`
+    // ("runtime half"), and is the check no spelling can dodge.
+    expect(
+      /private logger = getLogger\(\)\.child\('SecretsManagerSecretProvider'\);/.test(src),
+      'the logger field is no longer the verbatim getLogger().child(...) — a custom logger can ' +
+        'return a stash through the one call the helper may make; re-open #2212'
+    ).toBe(true);
+    const strippedRetainBody = stripStrings(retainBody);
+    expect(
+      strippedRetainBody.match(/^\s*this\.logger\.warn\(/gm)?.length ?? 0,
+      'a this.logger.warn( in retainPreviousGenerateBlock is in a VALUE position — its return ' +
+        'value can carry a stash into the bag; re-open #2212'
+    ).toBe(strippedRetainBody.match(/this\.logger\.warn\(/g)?.length ?? 0);
     const freeIdentifiers = (body: string): string[] => {
       const stripped = stripStrings(body)
         .replace(/\.{3}/g, ' ')
@@ -758,8 +781,8 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       'undefined',
       'usablePrevious',
     ]);
-    // A name on the list can be SHADOWED: a local \`const requireConfigObject =
-    // (properties = previousProperties) => ...\` spells only allow-listed names
+    // A name on the list can be SHADOWED: a local `const requireConfigObject =
+    // (properties = previousProperties) => ...` spells only allow-listed names
     // and reads whatever it likes (measured). So the helper's own bindings
     // and its one arrow are pinned too.
     expect(
@@ -773,15 +796,15 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     ).toBe(1);
     // Routes AROUND the instance are refused by absence, on the STRING-STRIPPED
     // source (a future warning saying "fix this template" is prose, not a
-    // \`this\`): none of these tokens appears in the provider today, so a mutant
-    // that stashes the value in module or static state (\`export const\` too --
-    // the first cut anchored on the keyword and \`export\` walked past it),
+    // `this`): none of these tokens appears in the provider today, so a mutant
+    // that stashes the value in module or static state (`export const` too --
+    // the first cut anchored on the keyword and `export` walked past it),
     // writes the instance reflectively, writes the minted value INTO the
-    // desired bag the helper spreads by ANY assignment operator (\`||=\` /
-    // \`??=\` were measured to land in state with no flag flip: the engine
-    // records the same object it hands the provider), or reaches \`this\` by
-    // any spelling other than a dotted member (\`this!\`, \`<any>this\`,
-    // \`(this)\`, \`this['x']\`, \`this satisfies\`, \`= this\`) reds here.
+    // desired bag the helper spreads by ANY assignment operator (`||=` /
+    // `??=` were measured to land in state with no flag flip: the engine
+    // records the same object it hands the provider), or reaches `this` by
+    // any spelling other than a dotted member (`this!`, `<any>this`,
+    // `(this)`, `this['x']`, `this satisfies`, `= this`) reds here.
     const codeNoStrings = stripStrings(code);
     for (const escape of [
       /^(?:export\s+)?(?:const|let|var)\s/m,
@@ -803,8 +826,13 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // an indented module statement is still module state): every statement
     // that opens at depth 0 is an import, one of the two known free
     // functions, or the class. Anything else is module state a method can
-    // write -- the \`export const stash\` the keyword arm above walked past
-    // until it learned \`export\`.
+    // write -- the `export const stash` the keyword arm above walked past
+    // until it learned `export`. RECORDED BOUND: the walk counts brackets
+    // inside REGEX LITERALS too, so a `/\{/` early and a `/\}/` late would
+    // hide a module statement between them at "depth 1" while depth still
+    // returns to 0 (measured, round 6) -- and it was still RED, because the
+    // helper has to NAME the stash. Not hardened: round 6 also showed a stash
+    // needs no module state at all, so the walk's job is the cheap half.
     const topLevel: string[] = [];
     let depth = 0;
     for (const rawLine of codeNoStrings.split('\n')) {
@@ -840,6 +868,30 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       code.match(/\bthis\.generateSecretString\(/g)?.length,
       'generateSecretString gained a call site — trace where its value goes before changing this'
     ).toBe(2);
+    // Provenance of the allow-listed names: `requireConfigObject` and
+    // `getLogger` come from the modules they always came from. An
+    // `import { requireConfigObject } from './leaky.js'` is an allowed
+    // top-level statement and a second file this fence cannot read, so the
+    // import block's SOURCES are pinned instead (recorded bound: the modules
+    // themselves are trusted as the rest of the tree is).
+    expect(
+      [...src.matchAll(/^import\b[\s\S]*?\bfrom\s+'([^']+)';/gm)].map((m) => m[1]).sort(),
+      'the secret provider imports from a module it did not before — trace what it brings in'
+    ).toEqual([
+      '../../deployment/resource-secrets-scope.js',
+      '../../deployment/secret-redaction.js',
+      '../../types/resource.js',
+      '../../utils/aws-clients.js',
+      '../../utils/error-handler.js',
+      '../../utils/logger.js',
+      '../config-shape.js',
+      '../import-helpers.js',
+      '../region-check.js',
+      '../resource-name.js',
+      '../update-removal.js',
+      '@aws-sdk/client-secrets-manager',
+      'node:util',
+    ]);
     // Dotted CHAINS count (`this.logger.minted = v` is a write through the
     // one member the helper may read). Every non-dotted spelling of `this` --
     // a cast, bracket access, `this!`, `<any>this`, an alias -- is refused
