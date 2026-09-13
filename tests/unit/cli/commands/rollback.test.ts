@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
 import { setStdinIsTty } from '../../../stdin-tty.js';
 
 vi.mock('../../../../src/utils/logger.js', () => {
@@ -1542,5 +1543,94 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(rows.some((l) => /^\s*- delete\s+Vic tim/.test(l))).toBe(true);
     expect(rows.some((l) => /^\s*- skip\s+Vic tim .*no longer in state/.test(l))).toBe(true);
     expect(rows.some((l) => /^\s*- revert\s+Vic tim/.test(l))).toBe(false);
+  });
+
+  it('the REGION reaches the plan header and the prompt sanitized', async () => {
+    // Every other fixture in this file uses `us-east-1`, so un-sanitizing the
+    // REGION half of a `${safe(stackName)} (${safe(region)})` pair reddened
+    // nothing while the stack-name half was fenced. The region is an S3 key
+    // segment on the no-arg path exactly as the stack name is.
+    const hostileRegion = 'us-\u200beast-1\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('n');
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: hostileRegion }]),
+      listRawKeys: vi.fn().mockResolvedValue([`cdkd/S/${hostileRegion}/rollback-journal.json`]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: hostileRegion,
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: hostileRegion,
+        segments: [
+          { timestamp: 1, reason: 'auto-rollback-clean', initialDeploy: false, operations: [] },
+        ],
+      }),
+    });
+    await rollbackCommand(undefined, { ...baseOpts, force: false, yes: false }).catch(
+      () => undefined
+    );
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    const prompt = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
+
+    expect(forgedRowCount(lines)).toBe(0);
+    expect(lines.some((l) => l.includes("Rollback plan for 'S' (us- east-1"))).toBe(true);
+    expect(prompt).not.toMatch(CTRL);
+    expect(prompt).not.toMatch(INVISIBLE);
+    expect(prompt).toContain("(us- east-1");
+  });
+
+  it('the multi-journal CANDIDATE LIST cannot inject a row', async () => {
+    // Reached with no argument when more than one stack has a journal. The
+    // names and regions come straight from a raw key scan.
+    const a = 'Al\u200bpha\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    const b = 'Be\u200bta';
+    installSetup({
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${a}/us-east-1/rollback-journal.json`,
+        `cdkd/${b}/eu-\u200bwest-1/rollback-journal.json`,
+      ]),
+    });
+    const caught = await rollbackCommand(undefined, { ...baseOpts }).catch((e: unknown) => e);
+    const message = (caught as Error).message;
+
+    expect(message).toContain('Multiple stacks have a rollback journal');
+    // The list's own newlines are structural; the forged row must not be one.
+    expect(message.split('\n').filter((l) => /^\s*- delete\s+Real/.test(l))).toHaveLength(0);
+    expect(message).not.toMatch(INVISIBLE);
+    expect(message).toContain('- Al pha');
+    expect(message).toContain('(eu- west-1)');
+  });
+
+  it('SOURCE SHAPE: no plan-label arm interpolates a journal field bare', () => {
+    // The per-arm wiring fence. `safe()` itself is pinned above, but each of
+    // the ~20 label arms wires it separately, and a hostile fixture reaches
+    // only the arms its classification lands on. Reading the source closes the
+    // rest at once: a bare `${op.logicalId}` / `${op.resourceType}` /
+    // `${op.changeType}` / `${fop.*}` anywhere in this file is a rendered
+    // journal field that escaped the predicate. The `previewState[op.logicalId]`
+    // LOOKUPS are bracket access, not `${...}`, so they are not matched -- and
+    // must not be.
+    const src = readFileSync(
+      new URL('../../../../src/cli/commands/rollback.ts', import.meta.url),
+      'utf8'
+    );
+    const bare = src.match(/\$\{(?:op|fop)\.(?:logicalId|resourceType|changeType)\}/g) ?? [];
+
+    expect(bare).toEqual([]);
+    // The fence sees its input: the wrapped form must be present in numbers.
+    expect((src.match(/\$\{safe\((?:op|fop)\.(?:logicalId|resourceType|changeType)\)\}/g) ?? []).length)
+      .toBeGreaterThan(20);
   });
 });

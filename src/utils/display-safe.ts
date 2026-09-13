@@ -40,20 +40,6 @@
  * -- widening this helper would alter every caller that merely wants a
  * terminal-safe string.
  */
-/**
- * Stand-in for a value with nothing renderable left after sanitization. Named
- * rather than inlined so two messages cannot disagree about what
- * "unrenderable" looks like.
- *
- * Homed HERE, in the leaf, since issue #3064: it used to live in
- * `src/state/lock-contention-message.ts`, which meant `src/utils/` and
- * `src/types/` could not use it without inverting the layering -- so
- * `formatError` dropped a clause instead, and a `src/types/` parser rendered
- * an unrenderable field as EMPTY, which reads as absent. That file re-exports
- * it, so its existing importers are unchanged.
- */
-export const UNRENDERABLE = '<unrenderable>';
-
 export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): string {
   // ABSENT means nothing to display, not the WORD. `String(undefined)` is
   // `'undefined'` — a truthy string — so a caller keying its
@@ -114,3 +100,17 @@ export function truncateCodePoints(
   if (codePoints.length <= maxCodePoints) return { text, truncated: false };
   return { text: codePoints.slice(0, maxCodePoints).join(''), truncated: true };
 }
+
+/**
+ * Stand-in for a value with nothing renderable left after sanitization. Named
+ * rather than inlined so two messages cannot disagree about what
+ * "unrenderable" looks like.
+ *
+ * Homed HERE, in the leaf, since issue #3064: it used to live in
+ * `src/state/lock-contention-message.ts`, which meant `src/utils/` and
+ * `src/types/` could not use it without inverting the layering -- so
+ * `formatError` dropped a clause instead, and a `src/types/` parser rendered
+ * an unrenderable field as EMPTY, which reads as absent. That file re-exports
+ * it, so its existing importers are unchanged.
+ */
+export const UNRENDERABLE = '<unrenderable>';

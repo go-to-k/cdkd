@@ -140,6 +140,11 @@ function snapshotNote(
  * NOT for a value that is about to be USED rather than shown -- the preview
  * indexes `previewState` by the RAW `op.logicalId`, and sanitising a lookup
  * key silently mismatches the record it is meant to find.
+ *
+ * NOT for free-form error text either. An SDK or provider message legitimately
+ * carries non-ASCII (a resource name, AWS's own wording), so the two sites that
+ * render one call `displaySafe()` directly and take the DENYLIST -- the same
+ * class `formatError` picks for a `cause`, and for the same reason.
  */
 function safe(value: unknown): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -506,7 +511,7 @@ export async function rollbackCommand(
             });
           } catch (retryError) {
             logger.warn(
-              `Failed to persist state after a rollback operation: ${retryError instanceof Error ? retryError.message : String(retryError)}. ` +
+              `Failed to persist state after a rollback operation: ${displaySafe(retryError instanceof Error ? retryError.message : String(retryError))}. ` +
                 `The resource was reverted in AWS; re-run 'cdkd rollback ${safe(stackName)}' to reconcile state.`
             );
           }
@@ -726,7 +731,7 @@ export async function rollbackCommand(
       try {
         await setup.lockManager.releaseLock(stackName, region).catch((err) => {
           logger.warn(
-            `Failed to release lock for '${safe(stackName)}' (${safe(region)}): ${safe(err instanceof Error ? err.message : String(err))}`
+            `Failed to release lock for '${safe(stackName)}' (${safe(region)}): ${displaySafe(err instanceof Error ? err.message : String(err))}`
           );
         });
       } finally {
