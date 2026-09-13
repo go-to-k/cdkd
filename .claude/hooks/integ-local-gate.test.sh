@@ -178,6 +178,21 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
 fi
 if [ "${1:-} ${2:-}" = "pr diff" ]; then
   if [ "${GH_DIFF_FAIL:-}" = "1" ]; then exit 1; fi
+  # Real `gh pr diff` defaults to `--color auto` and colours its output when
+  # it believes stdout is a terminal (`GH_FORCE_TTY`). Emulate the SGR shape
+  # git itself emits (measured: `\e[1m` on the header, `\e[31m` / `\e[32m` on
+  # the changed lines, `\e[m` resets) unless the caller pinned `--color never`.
+  pinned=0; prev=""
+  for a in "$@"; do
+    if [ "$prev" = "--color" ] && [ "$a" = "never" ]; then pinned=1; fi
+    if [ "$a" = "--color=never" ]; then pinned=1; fi
+    prev="$a"
+  done
+  if [ "${GH_FORCE_TTY:-}" != "" ] && [ "$pinned" -eq 0 ]; then
+    esc=$(printf '\033')
+    sed -e "s/^diff --git /${esc}[1mdiff --git /" -e "s/^-/${esc}[31m-/" -e "s/^+/${esc}[32m+/" -e "s/\$/${esc}[m/" "$GH_DIFF_PAYLOAD"
+    exit 0
+  fi
   cat "$GH_DIFF_PAYLOAD"
   exit 0
 fi
@@ -246,6 +261,50 @@ diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
 +        version: 0.148.4
 DIFF_EOF
 GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: a cdk-local bump in package.json engages the gate" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 3053 --squash"}}' "$fixture_repo")"
+
+# 20b2. `in_pkg` must be RESET at every file header, not only set at a
+#       package.json one: a manifest block that bumps an UNRELATED dep,
+#       followed by a docs block quoting the `-`/`+` `"cdk-local":` pair
+#       -> 0. With `in_pkg` sticky (`/package\.json/ { in_pkg = 1 }` and no
+#       reset), the docs block inherits the manifest's flag and this fires.
+#       20c2 cannot see that mutation: its docs block is the FIRST header.
+cat > "$GH_DIFF_PAYLOAD" <<'DIFF_EOF'
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -101,7 +101,7 @@
+-    "archiver": "^7.0.0",
++    "archiver": "^8.0.0",
+     "cdk-local": "^0.148.4",
+diff --git a/docs/local-emulation.md b/docs/local-emulation.md
+--- a/docs/local-emulation.md
++++ b/docs/local-emulation.md
+@@ -10,7 +10,7 @@
+ ```json
+-    "cdk-local": "^0.147.7",
++    "cdk-local": "^0.148.4",
+ ```
+DIFF_EOF
+GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: a docs block AFTER a manifest block does not inherit in_pkg" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
+
+# 20g. `gh pr diff` under `GH_FORCE_TTY` colours its output unless the hook
+#      pins `--color never`: the stub wraps the header and the changed lines
+#      in the SGR escapes git emits, and the anchored keys then match
+#      nothing. Same bump as 20b -> must still be 2. Dropping the pin from
+#      the hook reds this case alone (20b's stub path is uncoloured).
+cat > "$GH_DIFF_PAYLOAD" <<'DIFF_EOF'
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -101,7 +101,7 @@
+     "archiver": "^8.0.0",
+-    "cdk-local": "^0.147.7",
++    "cdk-local": "^0.148.4",
+     "chokidar": "^5.0.0",
+DIFF_EOF
+GH_STUB_FAIL="" GH_DIFF_FAIL="" GH_FORCE_TTY=1 run_case "gh pr merge <N>: a cdk-local bump still engages when gh would colour the diff" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 3053 --squash"}}' "$fixture_repo")"
 
 # 20c. Only the LOCKFILE carries cdk-local rows (a transitive re-resolve,
@@ -442,16 +501,28 @@ run_case "git merge <cdk-local-bump range> gate fires" 2 \
 run_case "git merge <other-dep-bump range> passes through" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-other-dep"}}' "$merge_repo")"
 
-# 26d. The user has `diff.noprefix=true` (or mnemonicPrefix): a bare
-#      `git diff` then emits `diff --git package.json package.json`, and the
-#      `a/…b/…` header test in bumps_cdk_local never matches -- measured, this
-#      branch alone went fail-open (code review of go-to-k/cdkd#3040). The
-#      hook pins `--src-prefix=a/ --dst-prefix=b/`, so 26b must still fire
-#      under that config. Set REPO-locally so no other suite inherits it.
+# 26d. The user has `diff.noprefix=true`: a bare `git diff` then emits
+#      `diff --git package.json package.json`, and the `a/…b/…` header test
+#      in bumps_cdk_local never matches -- measured, this branch alone went
+#      fail-open (code review of go-to-k/cdkd#3040). The hook pins
+#      `--src-prefix=a/ --dst-prefix=b/`, so 26b must still fire under that
+#      config. (`diff.mnemonicPrefix` is NOT a second arm of this case: it
+#      leaves a commit-range header at `a/ b/` and only re-labels a worktree
+#      diff `i/ w/` -- measured, so it is not listed as a threat.) Set
+#      REPO-locally so no other suite inherits it.
 git -C "$merge_repo" config diff.noprefix true
 run_case "git merge <cdk-local-bump range> still fires under diff.noprefix=true" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-cdklocal-bump"}}' "$merge_repo")"
 git -C "$merge_repo" config --unset diff.noprefix
+
+# 26e. The user has `color.ui=always`: git colours a diff EVEN INTO A PIPE
+#      (measured: `\e[1m` on the header, `\e[31m` / `\e[32m` on the changed
+#      lines), so both keys in bumps_cdk_local miss and this branch alone
+#      goes fail-open. The hook pins `--no-color`; 26b must still fire.
+git -C "$merge_repo" config color.ui always
+run_case "git merge <cdk-local-bump range> still fires under color.ui=always" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-cdklocal-bump"}}' "$merge_repo")"
+git -C "$merge_repo" config --unset color.ui
 
 # --- CROSS-REPO GATE NAMING (go-to-k/cdkd#2236) ---
 #

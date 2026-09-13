@@ -550,29 +550,45 @@ gate_segments_raw() {
       }
       return 0
     }
-    # The delimiter of the LAST heredoc opener in <text> that sits in COMMAND
-    # context, or "" when there is none; sets the global `lho_quoted` to 1 when
-    # that delimiter was quoted (`<<\047EOF\047` / `<<"EOF"`), else 0. Same
-    # opener grammar flush_line uses (`<<`, optional `-`, a quoted or bare
-    # word; `<<<` is a here-string and not an opener), applied to a PHYSICAL
+    # The delimiter of the LAST QUOTED heredoc opener (`<<\047EOF\047` /
+    # `<<"EOF"`, optional `-`) that sits in COMMAND context on <text>, or ""
+    # when there is none OR when the scan cannot be sure. Applied to a PHYSICAL
     # line that has not been through flush_line yet -- the line run() is about
     # to join into a still-open `$(` body, where a heredoc opened here is
     # followed by BODY lines that must not be joined as commands.
     #
-    # QUOTE-AWARE, and the first cut was not. Security review of
-    # go-to-k/cdkd#3040 measured `x="$(echo \047<<X\047` / `git commit -m y` /
-    # `X` / `)"`: bash runs that commit, the blind scan took the quoted `<<X`
-    # as an opener, the bare `X` two lines down satisfied the look-ahead, and
-    # the commit line was dropped as heredoc body -- a NEW fail-open against
-    # origin/main, which never stripped inside a substitution at all. The
-    # guard "only latches when the terminator arrives" is not enough on its
-    # own, because a bare word line is ordinary prose. So this walks the same
-    # three quote states close_paren does, with one addition close_paren does
-    # not need: a `$(` or backtick RESETS the quoting (a substitution starts a
-    # fresh parse, which is why `"$(cat <<\047EOF\047` opens a heredoc inside
-    # a double-quoted argument), and the matching `)` restores it.
-    function last_heredoc_opener(text,   j, n, c, d, iq, depth, bt, outer, rest, out) {
-      out = ""; iq = ""; depth = 0; bt = 0; outer = ""; lho_quoted = 0
+    # WHY ONLY A QUOTED DELIMITER, and why "" on doubt. Two review rounds of
+    # go-to-k/cdkd#3040 each measured shapes bash EXECUTES that the previous
+    # cut dropped as heredoc body -- a new fail-open in the matcher every
+    # blocking gate sources, and the class this file exists to avoid. Nearly
+    # all of them lived in the UNQUOTED-delimiter arm, where bash expands the
+    # body and a `$(` inside it runs: a body line carrying `$(`, a multi-line
+    # `$(` spanning body lines, a literal `<<Y` on such a line overwriting the
+    # latch. The rest were quoting-state slips on the opener line itself. So
+    # this function answers a NARROWER question than "is there an opener":
+    # it latches only where bash provably performs NO expansion (a quoted
+    # delimiter), and it returns "" -- meaning run() treats the following
+    # lines as commands, exactly as origin/main did -- the moment the line
+    # holds anything it does not model. An unquoted `<<EOF` body is therefore
+    # still read as commands: a prose body in that spelling can still refuse a
+    # command falsely, which is a LOUD, fixable outcome (write the delimiter
+    # quoted, or use --body-file), while every miss here is silent.
+    #
+    # The quoting walk is the three states close_paren keeps, with a
+    # PER-DEPTH STACK rather than one saved outer state: a `$(` and a bare `(`
+    # push the enclosing quote and start fresh, the matching `)` pops it, and
+    # a backtick saves and restores across its own span. A single `outer`
+    # restored only at depth 0 lost the `"` on the way out of a nested
+    # `"$(echo "$(a)" "<<X"` and read the quoted `<<X` as an opener (code
+    # review round 2, 1c2 / 1d2 / 1e3b). `$\047` is ANSI-C only OUTSIDE double
+    # quotes, as close_paren has it. `${...}` and `$((...))` are skipped whole,
+    # and a `#` at word start ends the scan, because a `<<` inside any of them
+    # is not an opener. Finally the depth at the opener is recorded, and an
+    # opener followed by a NEW `$(` still open at end of line is discarded:
+    # bash defers that body until the substitution closes, so the next lines
+    # are commands (round 2, 1g).
+    function last_heredoc_opener(text,   j, n, c, d, iq, depth, bt, btq, OQ, rest, out, ol, k) {
+      out = ""; iq = ""; depth = 0; bt = 0; btq = ""; ol = 0
       n = length(text)
       for (j = 1; j <= n; j++) {
         c = substr(text, j, 1)
@@ -582,27 +598,35 @@ gate_segments_raw() {
         if (c == "\\") { j++; continue }
         if (c == "$") { d = substr(text, j + 1, 1)
                         if (d == "$") { j++; continue }
-                        if (d == "\047") { iq = "A"; j++; continue }
-                        if (d == "(") { if (depth == 0 && !bt) outer = iq; iq = ""; depth++; j++; continue }
+                        if (d == "\047" && iq == "") { iq = "A"; j++; continue }
+                        if (d == "(" && substr(text, j + 2, 1) == "(") {
+                          k = index(substr(text, j + 3), "))"); if (k == 0) return ""
+                          j = j + 2 + k; continue }
+                        if (d == "(") { depth++; OQ[depth] = iq; iq = ""; j++; continue }
+                        if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) return ""
+                          j = j + 1 + k; continue }
                         continue }
-        if (c == "`" && (iq == "" || iq == "\"")) { if (!bt) { if (depth == 0) outer = iq; iq = ""; bt = 1 } else { bt = 0; if (depth == 0) iq = outer }; continue }
+        if (c == "`" && (iq == "" || iq == "\"")) { if (!bt) { btq = iq; iq = ""; bt = 1 } else { bt = 0; iq = btq }; continue }
         if (iq != "") { if (c == iq) iq = ""; continue }
         if (c == "\"" || c == "\047") { iq = c; continue }
-        if (c == ")" && depth > 0) { depth--; if (depth == 0 && !bt) iq = outer; continue }
+        if (c == "(") { depth++; OQ[depth] = ""; continue }
+        if (c == ")") { if (depth > 0) { iq = OQ[depth]; depth-- }; continue }
+        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|(]/)) break
         if (c == "<" && substr(text, j + 1, 1) == "<") {
           if (substr(text, j + 2, 1) == "<") { j += 2; continue }
           rest = substr(text, j)
-          if (match(rest, /^<<-?[ \t]*("[^"]+"|\047[^\047]+\047|[A-Za-z_][A-Za-z0-9_]*)/)) {
+          if (match(rest, /^<<-?[ \t]*("[^"]+"|\047[^\047]+\047)/)) {
             d = substr(rest, RSTART, RLENGTH)
             sub(/^<<-?[ \t]*/, "", d)
-            lho_quoted = (d ~ /^["\047]/) ? 1 : 0
             gsub(/["\047]/, "", d)
-            if (d != "") out = d
+            if (d != "") { out = d; ol = depth + bt }
             j += RLENGTH - 1
           }
           continue
         }
       }
+      if (iq != "") return ""
+      if (out != "" && depth + bt > ol) return ""
       return out
     }
     # `q` is deliberately GLOBAL across lines: a quoted span survives a newline,
@@ -786,8 +810,8 @@ gate_segments_raw() {
       return res
     }
     # One full pass. Runs twice at most: see the END rule.
-    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub, ptag, pd, phys, ptag_quoted) {
-      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""; ptag = ""; ptag_quoted = 0; phys = ""
+    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub, ptag, pd, phys) {
+      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""; ptag = ""; phys = ""
       __bodies = ""; __pend_seg = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
@@ -814,22 +838,23 @@ gate_segments_raw() {
         # pre-existing (origin/main has it) and is go-to-k/cdkd#3066, not
         # something this latch introduces or fixes.
         #
-        # EXCEPT a body line that bash itself would RUN. With an UNQUOTED
-        # delimiter (`<<EOF`) the body undergoes expansion, so a `$(git commit
-        # -m y)` or a backtick inside it executes. origin/main never stripped
-        # inside a substitution, so it matched that shape by accident; dropping
-        # it here would be a new fail-open (security review of
-        # go-to-k/cdkd#3040, S1). Such a line falls through to the join below
-        # and is scanned like any other command line -- over-approximating in
-        # the refusing direction, which is the direction this file prefers.
-        # The top-level `tag` branch above keeps its pre-existing policy of
-        # dropping every body line; that gap is accepted and documented in
-        # hooks.md, and it is not widened here.
+        # Every line under the latch is dropped, and that is safe ONLY because
+        # last_heredoc_opener latches on a QUOTED delimiter alone: bash performs
+        # no expansion in that body, so nothing in it runs. An UNQUOTED
+        # `<<EOF` body is expanded -- a `$(git commit)` in it executes -- and a
+        # first cut that let such lines fall through to the join was broken
+        # twice over (a multi-line `$(` spanning body lines, a literal `<<Y`
+        # on a fallen-through line overwriting this latch; security review of
+        # go-to-k/cdkd#3040, rounds 1 and 2). So an unquoted body is not
+        # latched at all and is read as commands, exactly as origin/main read
+        # it. The top-level `tag` branch above keeps its own pre-existing
+        # policy of dropping every body line whatever the delimiter; that gap
+        # is accepted and documented in hooks.md, and it is not widened here.
         if (ptag != "") {
           t = line
           gsub(/^[ \t]+|[ \t]+$/, "", t)
-          if (t == ptag) { ptag = ""; continue }
-          if (ptag_quoted || (index(line, "$(") == 0 && index(line, "`") == 0)) continue
+          if (t == ptag) ptag = ""
+          continue
         }
         if (pending != "") { line = pending line; pending = "" }
         if (line ~ /\\$/) {               # `\`-continuation: join with the next line
@@ -858,7 +883,7 @@ gate_segments_raw() {
           # line -- the same fail-open guard the top-level `tag` uses, so a
           # `<<X` in prose with no terminator blanks nothing.
           pd = last_heredoc_opener(phys)
-          if (pd != "" && terminated(pd, i + 1) > 0) { ptag = pd; ptag_quoted = lho_quoted }
+          if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd
           continue
         }
         # A line that ends INSIDE a quoted span is not a segment boundary: the

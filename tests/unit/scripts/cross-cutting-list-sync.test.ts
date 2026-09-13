@@ -1049,8 +1049,11 @@ function localHookPathScope(): string[] {
 /**
  * Map one include glob to the regex alternative that activates on it. The
  * three path globs and the three alternatives are hand-paired here on purpose:
- * a generic glob-to-ERE translation would be a fourth parser to keep honest,
- * and the pairing is what a reader checks when one side changes.
+ * a generic glob-to-ERE translation would be a fourth parser to keep honest.
+ * Only the two MEMBERSHIP sets are asserted — the include list equals the
+ * table's globs, the hook regex equals the table's alternatives — so a glob
+ * moved onto a different row would still pass; the row layout is a reading
+ * aid for whoever edits one side, not something the test enforces.
  */
 const LOCAL_PATH_PAIRS: ReadonlyArray<readonly [glob: string, ereAlternative: string]> = [
   ['src/local/**', '^src/local/'],

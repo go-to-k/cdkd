@@ -137,9 +137,10 @@ check "an unterminated opener inside \$( ) does not swallow" 0 "$MERGE" "$subst_
 # --- and the first cut answered NO MATCH -- a NEW fail-open.             ---
 #
 # S1: with an UNQUOTED delimiter the body undergoes expansion, so the `$( )`
-# inside it executes. The body-skip now lets a body line carrying `$(` or a
-# backtick fall through to the join, so its substitution is scanned. The
-# quoted twin (S1q) is the control: no expansion, so still dropped.
+# inside it executes. Round 2 settled HOW this stays matched: an unquoted
+# delimiter is never latched at all (see the block further down), so the body
+# is read as commands and the substitution is scanned on the ordinary path.
+# The quoted twin (S1q) is the control: no expansion, so dropped.
 subst_unquoted_expands=$(printf '%s\n' \
   'x="$(cat <<EOF' \
   '$(git commit -m y)' \
@@ -198,19 +199,105 @@ subst_quoted_mention_dq=$(printf '%s\n' \
   ')"')
 check "S3d: a double-quoted <<X mention on the opener line is not an opener" 0 "$COMMIT" "$subst_quoted_mention_dq"
 
-# --- Test review of go-to-k/cdkd#3040: the opener GRAMMAR was unfenced. -----
-# Every case above spells the delimiter `<<'EOF'`, so deleting the BARE-word
-# alternative from the opener regex (`[A-Za-z_][A-Za-z0-9_]*`) left the suite
-# at 660/0 while the live bug -- the most common spelling, `$(cat <<EOF` --
-# came straight back. Same for the `-` in `<<-`. One case per alternative,
-# each on a plain prose body (no `$(`, no backtick, so the unquoted-delimiter
-# fall-through above does not apply and the body must be dropped outright).
+# --- Round 2 (security + code review): the quote walk needs a STACK. ---------
+# A single saved outer state, restored only at depth 0, lost the `"` on the way
+# out of a NESTED substitution -- so a `"<<X"` still inside bash's double-quoted
+# string read as an opener, and with a bare `X` later the commit between was
+# dropped. Each below: bash runs the commit, origin/main matched, the round-1
+# cut did not. The quoting is now pushed per `$(` / bare `(` and popped at the
+# matching `)`; a backtick saves and restores across its own span; `$'` is
+# ANSI-C only outside double quotes; `${...}` / `$((...))` are skipped whole;
+# a `#` at word start ends the scan; and an opener followed by a NEW `$(` still
+# open at end of line is discarded, because bash defers that body until the
+# substitution closes (1g).
+r2_case() { # <label> <expect> <line1> [line2...]  -- lines joined by newline
+  local label="$1" want="$2"; shift 2
+  check "$label" "$want" "$COMMIT" "$(printf '%s\n' "$@")"
+}
+r2_case "1c2: a backtick inside double quotes before \"<<X\" keeps the dq state" 0 \
+  'x="$(echo "`echo hi`" "<<X"' 'git commit -m y' 'X' ')"'
+r2_case "1d2: a nested \$( ) inside double quotes before \"<<X\" keeps the dq state" 0 \
+  'x="$(echo "$(echo a)" "<<X"' 'git commit -m y' 'X' ')"'
+r2_case "1e3b: a bare subshell ( ) inside \$( ) does not close the substitution early" 0 \
+  'x="$( (echo a); echo "<<X"' 'git commit -m y' 'X' ')"'
+r2_case "1g: a quoted opener followed by a NEW \$( open at end of line is not latched" 0 \
+  'a=$(echo a) && cat <<'"'"'X'"'"' && b=$(' 'git commit -m y' 'X' 'echo b)'
+r2_case "q2i: a backtick substitution whose dq text holds \$(true) <<X" 0 \
+  'x=`echo "$(true) <<X"' 'git commit -m y' 'X' '`'
+r2_case "q2j: \$'a' inside double quotes is not ANSI-C, so the later \"<<X\" is still quoted" 0 \
+  'x="$(echo "$'"'"'a'"'"'" "<<X"' 'git commit -m y' 'X' ')"'
+r2_case "q3c: a multi-line \$( inside an UNQUOTED body is scanned (body not latched)" 0 \
+  'x="$(cat <<EOF' '$(' 'git commit -m y' ')' 'EOF' ')"'
+r2_case "4a: a literal <<Y on an unquoted body line cannot become the latch" 0 \
+  'x="$(cat <<EOF' 'see $(true) <<Y' 'EOF' 'git commit -m y' 'Y' ')"'
+r2_case "#-comment: a <<X after # on the opener line is not an opener" 0 \
+  'x="$(echo a # <<X' 'git commit -m y' 'X' ')"'
+r2_case "\${...}: a <<X inside a parameter expansion is not an opener" 0 \
+  'x="$(echo ${y:-<<X}' 'git commit -m y' 'X' ')"'
+r2_case "\$((...)): a <<X inside arithmetic is not an opener" 0 \
+  'x="$(echo $((1<<X))' 'git commit -m y' 'X' ')"'
+# C1 (test review round 2): the `)` of a CLOSED substitution must restore the
+# enclosing double quote, so the `<<X` after it is still quoted text and the
+# NEW `$(cat` at end of line is where the next lines belong. The one survivor
+# of the author's own mutation set: with the restore arm deleted the commit
+# was dropped -- a fail-open -- and no case saw it.
+r2_case "C1: a <<X after a closed \$( ) inside double quotes is still quoted" 0 \
+  'x="$(true) <<X $(cat' 'git commit -m y' 'X' ')"'
+# B1 (test review round 2): the backtick arm. A heredoc opened inside a
+# BACKTICK substitution that itself sits inside double quotes is a real
+# heredoc (bash yields x = the body); with the arm deleted the opener read as
+# quoted text and the body was scanned as commands -- the refusing direction,
+# but the arm was unfenced.
+check "B1: a quoted heredoc inside a backtick substitution inside double quotes is stripped" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="`cat <<'"'"'EOF'"'"'' 'gh pr merge 1 was refused' 'EOF' '`"')"
+
+# --- The QUOTED-delimiter twins of the arms above (round 2, author's matrix) --
+# Once the latch became quoted-only, every bare `<<X` case above answers 0
+# whatever the scan does -- a bare word is never an opener -- so seven of the
+# nine arms survived deletion with the suite green. Each arm below is fenced by
+# the spelling it actually decides: a QUOTED delimiter that bash does NOT read
+# as a heredoc (comment / `${}` / `$(( ))` / `$'` inside dq -- verified by
+# running each shape), where the deleted arm latches and drops the commit; and
+# for the stack arms, a REAL heredoc after a `)` that must restore the outer
+# quoting, where the deleted arm reads `; cat <<'X'` as quoted text and scans
+# the body as commands. Deleting an arm reds exactly its case.
+# The `$'` twin carries a trailing `# ... "` on purpose: with the arm deleted
+# the scan leaves the string one `"` early, so every later `"` flips parity and
+# the line ends inside a quote -- which the bail-on-doubt answers with "no
+# opener", the same verdict as the intact arm. Only a `#` the intact scan stops
+# at, holding one `"` the deleted arm keeps reading, re-syncs the two and
+# makes the fail-open observable (bash runs the commit: verified).
+r2_case "#-comment (quoted): a <<'X' after # on the opener line is not an opener" 0 \
+  'x="$(echo a # <<'"'"'X'"'"'' 'git commit -m y' 'X' ')"'
+r2_case "\${...} (quoted): a <<'X' inside a parameter expansion is not an opener" 0 \
+  'x="$(echo ${y:-<<'"'"'X'"'"'}' 'git commit -m y' 'X' ')"'
+r2_case "\$((...)) (quoted): a <<\"2\" inside arithmetic is a shift, not an opener" 0 \
+  'x="$(echo $((1<<"2"))' 'git commit -m y' '2' ')"'
+r2_case "\$'a' (quoted): \$' inside double quotes is literal, so the <<'X' after it is still quoted" 0 \
+  'x="$(echo "$'"'"'a'"'"' <<'"'"'X'"'"'" # the comment holds one "' 'git commit -m y' 'X' ')"'
+check "stack pop: the ) of a nested \$( ) inside dq restores the dq, so the ; cat <<'X' after the closing quote is a real opener" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="$(echo "$(true)" ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')"')"
+check "stack push: a bare ( ) inside \$( ) pushes its own frame, so its ) does not pop the \$( frame" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="$( (echo a); cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')"')"
+
+# --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
+# Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes
+# that the unquoted-delimiter arm dropped: a `$(git commit)` on a body line, a
+# multi-line `$(` spanning body lines, a literal `<<Y` on a fallen-through line
+# overwriting the latch. bash EXPANDS an unquoted body, so nothing short of a
+# full parse can say what runs in it. The latch therefore fires on a QUOTED
+# delimiter alone, and an unquoted prose body is read as commands exactly as
+# origin/main read it -- a LOUD false refusal (write the delimiter quoted, or
+# use --body-file), never a silent miss. This case pins that decision: it
+# MATCHES, and a "fix" making it not match has to re-answer the review rounds.
 subst_bare_delim=$(printf '%s\n' \
   'gh issue create --body "$(cat <<EOF' \
   'gh pr merge 1 was refused' \
   'EOF' \
   ')"')
-check "a BARE-word delimiter (<<EOF) inside \$( ) opens a heredoc too" 1 "$MERGE" "$subst_bare_delim"
+check "an UNQUOTED delimiter (<<EOF) inside \$( ) is NOT latched: origin/main parity" 0 "$MERGE" "$subst_bare_delim"
+# The `-` of `<<-` is its own grammar arm and was unfenced (test review):
+# deleting it left the suite green.
 subst_dash_delim=$(printf '%s\n' \
   'x="$(cat <<-'"'"'EOF'"'"'' \
   "$(printf '\tgh pr merge 1 was refused')" \
@@ -219,12 +306,12 @@ subst_dash_delim=$(printf '%s\n' \
 check "<<- with an indented terminator inside \$( ) is stripped" 1 "$MERGE" "$subst_dash_delim"
 
 # The opener on the line AFTER the `$(` -- the shape an agent most often writes
-# (`--body "$(` newline `cat <<EOF` ...) -- and a heredoc inside a BACKTICK
+# (`--body "$(` newline `cat <<'EOF'` ...) -- and a heredoc inside a BACKTICK
 # substitution. Both were false positives on origin/main and are fixed by the
 # same latch; neither had a case.
 subst_opener_next_line=$(printf '%s\n' \
   'gh issue create --body "$(' \
-  '  cat <<EOF' \
+  '  cat <<'"'"'EOF'"'"'' \
   'gh pr merge 1 was refused' \
   'EOF' \
   ')"')

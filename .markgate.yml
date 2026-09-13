@@ -623,10 +623,11 @@ gates:
       # hook says the merge is in scope. What the entry buys is the other
       # direction: without it a cdk-local bump would be judged by a marker a
       # previous local integ left fresh -- the hook-only FAIL-OPEN shape
-      # hooks.md names under "Scope is TWO lists per gate". No test fences
-      # this gate's two lists against each other (cross-cutting-list-sync
-      # covers integ-destroy / integ-broad only), so this comment and
-      # integ-local-gate.test.sh are the controls.
+      # hooks.md names under "Scope is TWO lists per gate". The two lists are
+      # fenced BY MECHANISM in tests/unit/scripts/cross-cutting-list-sync.test.ts
+      # (integ-local section): the three globs above against the hook's
+      # LOCAL_SCOPE_REGEX alternatives, and this entry present IFF the hook
+      # still carries `bumps_cdk_local`.
       - "package.json"
 
   integ-schema-migration:

@@ -894,21 +894,28 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   leaves `pending_tag` set and the top-level latch swallows the verb up to
   that later terminator — go-to-k/cdkd#3066, present on `origin/main` too.
   **Three things about
-  that latch are load-bearing, each a security-review finding on the first
-  cut that bash executes and origin/main matched**: the opener scan reads
-  the PHYSICAL line, never the joined `$(` text — the join re-finds an opener
-  whose heredoc already closed, and any bare delimiter still ahead (a second
-  same-delimiter heredoc in the substitution, a top-level one after the `)`)
-  satisfies the look-ahead and swallows the commands in between; the scan is
-  QUOTE-AWARE with `$(` and backtick resetting the quoting, so a `'<<X'`
-  mention plus a bare `X` later is prose, not a heredoc; and under an
-  UNQUOTED delimiter a body line carrying `$(` or a backtick falls through
-  to the join, because bash expands it. The top-level `tag` keeps its
-  pre-existing drop-everything policy: a `$(git commit)` inside an
-  unquoted-delimiter heredoc at TOP level is run by bash and matched by
-  nothing, on origin/main and here alike — a known fail-open that predates
-  this work and is NOT widened by it, stated here so the two heredoc paths
-  are not read as equivalent.
+  that latch are load-bearing, each measured against shapes bash executes
+  and origin/main matched**: the opener scan reads the PHYSICAL line, never
+  the joined `$(` text — the join re-finds an opener whose heredoc already
+  closed, and any bare delimiter still ahead (a second same-delimiter
+  heredoc in the substitution, a top-level one after the `)`) satisfies the
+  look-ahead and swallows the commands in between; the scan is QUOTE-AWARE
+  with a per-depth STACK — `$(` and a bare `(` push the enclosing quote state
+  and the matching `)` restores it, a backtick saves and restores across its
+  own span, `${…}` / `$((…))` / a `#` comment are skipped whole — and it
+  BAILS to "no opener" on any line it cannot read to the end (an unbalanced
+  quote, a new `$(` opened after the delimiter), so a `'<<X'` mention plus a
+  bare `X` later is prose; and the latch is **QUOTED-DELIMITER ONLY**. A
+  `<<EOF` body is expanded by bash — `$(git commit)` on a body line runs —
+  and two review rounds each measured a shape (a multi-line `$(` spanning
+  body lines, a literal `<<Y` on a fallen-through line) that a body-line
+  fall-through still dropped, so under an unquoted delimiter the body is
+  read as commands, exactly as origin/main read it: a false REFUSAL of prose,
+  never a miss. The top-level `tag` keeps its pre-existing drop-everything
+  policy: a `$(git commit)` inside an unquoted-delimiter heredoc at TOP
+  level is run by bash and matched by nothing, on origin/main and here alike
+  — a known fail-open that predates this work and is NOT widened by it,
+  stated here so the two heredoc paths are not read as equivalent.
 - The `cd <path> &&` special case disappears — it is just a verb after `&&`.
 
 **Two gaps in the old anchor — issue

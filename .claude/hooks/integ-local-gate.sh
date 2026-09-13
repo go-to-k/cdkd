@@ -244,9 +244,13 @@ EOF_FILES
     # question the path list cannot answer: does the diff bump `cdk-local`?
     # Same infra fail-open as the file list above -- an unrelated gh outage
     # must not block merges -- but a diff that IS readable and carries the bump
-    # arms the gate exactly as a `src/local/**` edit would.
+    # arms the gate exactly as a `src/local/**` edit would. `--color never`
+    # is pinned: `gh pr diff` defaults to `--color auto`, and under
+    # `GH_FORCE_TTY` (or a real terminal) the header and every `-`/`+` line
+    # arrive wrapped in SGR escapes, so the anchored `^diff --git ` and
+    # `^[-+]` keys in `bumps_cdk_local` match nothing -- a silent fail-open.
     if [ "$touches_local" -eq 0 ]; then
-      if pr_diff=$(gh pr diff "$pr_number" 2>/dev/null); then
+      if pr_diff=$(gh pr diff "$pr_number" --color never 2>/dev/null); then
         if bumps_cdk_local "$pr_diff"; then
           touches_local=1
         fi
@@ -353,13 +357,20 @@ EOF_INCOMING
       # range's own diff. A `git diff` that fails leaves `touches_local` at 0,
       # which is the existing pass-through for an unreadable range.
       if [ "$touches_local" -eq 0 ]; then
-        # The prefixes are PINNED: `bumps_cdk_local` keys on the
-        # `diff --git a/... b/...` header, and a user with `diff.noprefix` or
-        # `diff.mnemonicPrefix` set gets `diff --git package.json package.json`
-        # or `i/ w/` from a bare `git diff` -- the header never matches and
-        # this branch alone goes fail-open (code review of go-to-k/cdkd#3040).
-        # `gh pr diff` is API output and carries no such setting.
-        if incoming_diff=$(git diff --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "HEAD...${merge_ref}" 2>/dev/null) \
+        # The prefixes and the colour are PINNED, because `bumps_cdk_local`
+        # keys on the `diff --git a/... b/...` header and on `^-` / `^+`, and
+        # a bare `git diff` inherits the user's config. Measured on git
+        # 2.x (code review of go-to-k/cdkd#3040): `diff.noprefix=true`
+        # prints `diff --git package.json package.json` for a commit range;
+        # `diff.mnemonicPrefix=true` does NOT touch a commit-range header
+        # (its `i/ w/` prefixes are for a worktree diff), so it is not the
+        # threat here, but `--src-prefix` / `--dst-prefix` cost nothing and
+        # settle both; and `color.ui=always` (or `color.diff=always`) wraps
+        # the header and every changed line in SGR escapes EVEN INTO A PIPE,
+        # so without `--no-color` this branch alone goes fail-open. `gh pr
+        # diff` is API output with no git config behind it; its own colour
+        # flag is pinned at the call above.
+        if incoming_diff=$(git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "HEAD...${merge_ref}" 2>/dev/null) \
           && bumps_cdk_local "$incoming_diff"; then
           touches_local=1
         fi
