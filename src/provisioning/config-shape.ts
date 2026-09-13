@@ -577,7 +577,7 @@ export function configBooleanRefusal(
  * `(x as number) || 32` cannot read a malformed member as its default. The
  * string grammar is exactly what CloudFormation's own validator accepts,
  * MEASURED (us-east-1, 2026-09-13, `AWS::SecretsManager::Secret
- * GenerateSecretString.PasswordLength`): `"+12"` passes, `" 12 "` fails
+ * GenerateSecretString.PasswordLength`): `"+12"` and `"007"` pass, `" 12 "` fails
  * `expected type: Integer, found: String`, `"1e1"` fails `found: Float` —
  * so a padded string is refused HERE rather than minted from a template the
  * service rejects, and a signed one is accepted. Both branches use

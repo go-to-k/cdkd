@@ -813,6 +813,7 @@ describe('configIntegerRefusal (issue #3056)', () => {
       expect(coerceCfnInteger(value), JSON.stringify(value)).toBeUndefined();
       expect(configIntegerRefusal({ N: value }, 'N', P, 1), JSON.stringify(value)).toBeDefined();
     }
+    // `"007"` and `"+12"` both measured CREATE_COMPLETE on CloudFormation.
     for (const value of ['+5', '-0', '007']) {
       expect(coerceCfnInteger(value), value).toBeDefined();
     }

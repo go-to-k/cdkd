@@ -844,9 +844,14 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       /\b(?:properties|previousProperties)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
       // A FUNCTION OBJECT is a stash too (`generateMemberRefusal.cache = v`,
       // measured GREEN under every arm above -- the write sits at depth > 0
-      // and `.cache` is a member access); the runtime half catches the READ,
-      // this refuses the write on every name the module binds.
-      /\b(?:asJson|requireSecretStringShape|generateMemberRefusal|requireConfigObject|configStringRefusal|configBooleanRefusal|configIntegerRefusal|coerceCfnBoolean|coerceCfnInteger|getLogger|getAwsClients|redactSecretsForState|getCurrentResourceSecrets|assertRegionMatch|generateResourceName|normalizeAwsTagsToCfn|clearOnUpdateRemoval|isDeepStrictEqual|ProvisioningError|SecretsManagerClient)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
+      // and `.cache` is a member access). This refuses the write on every
+      // VALUE binding the module holds: the three free functions, the class,
+      // and every import (the SDK command classes included). RECORDED BOUND:
+      // a parenthesised cast, `(generateMemberRefusal as any).cache = v`,
+      // puts a paren between the name and the member and walks past; the
+      // runtime half catches the READ of any such stash (measured, round 3),
+      // which is the closer -- this arm is the cheap write-side half.
+      /\b(?:asJson|requireSecretStringShape|generateMemberRefusal|SecretsManagerSecretProvider|requireConfigObject|configStringRefusal|configBooleanRefusal|configIntegerRefusal|coerceCfnBoolean|coerceCfnInteger|getLogger|getAwsClients|redactSecretsForState|getCurrentResourceSecrets|assertRegionMatch|generateResourceName|normalizeAwsTagsToCfn|clearOnUpdateRemoval|isDeepStrictEqual|ProvisioningError|SecretsManagerClient|CreateSecretCommand|DeleteSecretCommand|DescribeSecretCommand|UpdateSecretCommand|TagResourceCommand|UntagResourceCommand|ReplicateSecretToRegionsCommand|RemoveRegionsFromReplicationCommand|ResourceNotFoundException)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
       /\bthis\b(?!\.)/,
     ]) {
       expect(
