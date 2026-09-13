@@ -47,40 +47,37 @@ describe('docs-site home title', () => {
     expect(homeTitleOf(SITE_NAME, INDEX_MD)).toBe('cdkd - The fastest way to deploy AWS CDK.');
   });
 
-  it('reads hero.text and not another block\'s text key', () => {
+  it('reads hero.text as YAML, not by line shape', () => {
+    // Another block's `text` key, quoting, blank lines and comments — every
+    // shape a hand-rolled walk misread in review, now the parser's problem.
     const md = '---\ntitle: x\nfeatures:\n  - text: wrong\nhero:\n  name: x\n  text:   The right one.  \n---\n';
     expect(heroTextOf(md)).toBe('The right one.');
     expect(heroTextOf('---\nhero:\n  text: "Quoted: yes."\n---\n')).toBe('Quoted: yes.');
-    // A blank line inside the mapping is legal YAML and must not end the block
-    // (round-2 probe: the regex form returned undefined here).
     expect(heroTextOf('---\nhero:\n\n  name: x\n\n  text: After blanks.\nfeatures: []\n---\n')).toBe(
       'After blanks.'
     );
     const withBlank = INDEX_MD.replace('hero:\n  name: cdkd\n', 'hero:\n  name: cdkd\n\n');
     expect(withBlank).not.toBe(INDEX_MD); // or the next line re-checks the plain derivation
     expect(heroTextOf(withBlank)).toBe('The fastest way to deploy AWS CDK.');
-    // The walk must STOP at the next top-level key (round-3 mutant: `break`
-    // -> `continue` survived every case above).
     expect(heroTextOf('---\nhero:\n  name: x\nother:\n  text: wrong\n---\n')).toBeUndefined();
-    // Key-line trailing whitespace / comment, and a comment or whitespace-only
-    // line at a foreign indent ahead of the first child.
-    expect(heroTextOf('---\nhero: \n  text: a\n---\n')).toBe('a');
     expect(heroTextOf('---\nhero: # why\n  text: b\n---\n')).toBe('b');
-    expect(heroTextOf('---\nhero:\n    # c\n    \n  text: c\n---\n')).toBe('c');
-    // A column-0 comment inside the block is legal YAML and must not end it.
     expect(heroTextOf('---\nhero:\n  name: x\n# note\n  text: d\n---\n')).toBe('d');
-    // `hero:#c` is a plain scalar, not the key.
-    expect(heroTextOf('---\nhero:#c\n  text: z\n---\n')).toBeUndefined();
-    expect(heroTextOf('---\ntitle: x\n---\n')).toBeUndefined();
-    expect(() => homeTitleOf(SITE_NAME, '---\ntitle: x\n---\n')).toThrow(/hero\.text/);
-    // A whitespace-only value is ABSENT, not a one-space headline (3-axis
-    // probe: `.+?` backtracked to capture ' ' and shipped `cdkd -  `).
-    expect(heroTextOf('---\nhero:\n  text:   \n---\n')).toBeUndefined();
-    expect(() => homeTitleOf(SITE_NAME, '---\nhero:\n  text:   \n---\n')).toThrow(/hero\.text/);
-    // A trailing YAML comment on the value is not part of the headline; a
-    // quoted value keeps its `#`.
     expect(heroTextOf('---\nhero:\n  text: Fast. # todo\n---\n')).toBe('Fast.');
     expect(heroTextOf('---\nhero:\n  text: "C# fast" # todo\n---\n')).toBe('C# fast');
+    expect(heroTextOf('---\nhero:\n  text: C#fast\n---\n')).toBe('C#fast');
+    expect(heroTextOf("---\nhero:\n  text: 'it''s'\n---\n")).toBe("it's");
+    expect(heroTextOf('---\nhero:\n  text: "a\\u0041b"\n---\n')).toBe('aAb');
+    // Absent / not a string / blank — bare, quoted, comment-only, null.
+    expect(heroTextOf('---\ntitle: x\n---\n')).toBeUndefined();
+    expect(heroTextOf('no frontmatter at all\n')).toBeUndefined();
+    expect(heroTextOf('---\nhero: plain scalar\n---\n')).toBeUndefined();
+    expect(heroTextOf('---\nhero:\n  text: 42\n---\n')).toBeUndefined();
+    for (const v of ['  ', '" "', "' '", '# todo', '#only', '~']) {
+      expect(heroTextOf(`---\nhero:\n  text: ${v}\n---\n`), v).toBeUndefined();
+      expect(() => homeTitleOf(SITE_NAME, `---\nhero:\n  text: ${v}\n---\n`), v).toThrow(/hero\.text/);
+    }
+    // Malformed YAML is the parser's error, not a silently wrong headline.
+    expect(() => heroTextOf('---\nhero:\n  text: "a" b "c"\n---\n')).toThrow();
   });
 
   it('does not fall through to hero.actions[].text when hero.text is removed', () => {
@@ -135,7 +132,7 @@ describe('docs-site home title', () => {
   });
 
   describe('plugin', () => {
-    const run = (html: string, markdown = INDEX_MD): string => {
+    const run = (html: string, markdown = INDEX_MD, bundleError?: Error): string => {
       const dir = mkdtempSync(join(tmpdir(), 'home-title-'));
       try {
         mkdirSync(join(dir, 'site'));
@@ -150,7 +147,7 @@ describe('docs-site home title', () => {
           closeBundle: (error?: Error) => void;
         };
         plugin.configResolved({ root: dir });
-        plugin.closeBundle(undefined);
+        plugin.closeBundle(bundleError);
         return readFileSync(join(dir, 'site/index.html'), 'utf8');
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -162,12 +159,9 @@ describe('docs-site home title', () => {
     });
 
     it('stands down when the bundle itself failed', () => {
-      // The bundle's own error must stay the verdict; touching a site that
-      // was never written would replace it with an ENOENT.
-      const p = homeTitlePlugin({ siteName: 'x', outDir: 'o', indexMarkdownPath: 'i' }) as unknown as {
-        closeBundle: (error?: Error) => void;
-      };
-      expect(() => p.closeBundle(new Error('bundle failed'))).not.toThrow();
+      // The bundle's own error must stay the verdict: the page is left
+      // exactly as found, even one that would otherwise be rewritten.
+      expect(run(HOME_HEAD, INDEX_MD, new Error('bundle failed'))).toBe(HOME_HEAD);
     });
 
     it('fails the build when ANY of the four surfaces stops matching', () => {

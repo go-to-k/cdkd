@@ -21,46 +21,25 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Plugin } from 'vite-plus';
+import { parse as parseYaml } from 'yaml';
 
 /**
- * `hero.text` from an entry page's frontmatter, or undefined when absent.
- * The key must sit at the `hero:` block's own child indent: a looser match
- * would fall through to `hero.actions[].text` ("Get Started") when
- * `hero.text` is removed, and ship that as the headline instead of failing.
+ * `hero.text` from an entry page's frontmatter, or undefined when absent,
+ * not a string, or blank. Parsed with the `yaml` package cdkd already ships
+ * (src/cli/yaml-cfn.ts) — five review rounds of a hand-rolled walk each
+ * found one more YAML shape it misread (`hero.actions[].text` taken for
+ * `hero.text`, blank lines and comments ending the block, `\n` / `\uXXXX`
+ * escapes), which is the signal to use the real parser. A frontmatter the
+ * parser rejects throws, and that is the right outcome: the SSG would have
+ * refused the same page.
  */
 export function heroTextOf(markdown: string): string | undefined {
   const fm = /^---\n([\s\S]*?)\n---/.exec(markdown);
   if (!fm) return undefined;
-  const lines = fm[1].split('\n');
-  // Tolerate trailing whitespace / a comment on the key line: docs/**/*.md is
-  // outside the formatter, so nothing strips them.
-  // A `#` must be preceded by whitespace to be a comment (`hero:#c` is a plain
-  // scalar in YAML, not the `hero` key).
-  const start = lines.findIndex((l) => /^hero:(?:[ \t]+#.*|[ \t]*)$/.test(l));
-  if (start === -1) return undefined;
-  // The block runs while lines are indented, blank, or a column-0 comment —
-  // all legal inside a YAML mapping, so none may end the block.
-  const block: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (line !== '' && !/^[ \t#]/.test(line)) break;
-    block.push(line);
-  }
-  // First CONTENT line sets the child indent — not a whitespace-only line or a
-  // comment, which may sit at any indent.
-  const first = block.find((l) => l.trim() !== '' && !l.trim().startsWith('#'));
-  const indent = /^[ \t]+/.exec(first ?? '')?.[0];
-  if (!indent) return undefined;
-  // `\S` refuses a whitespace-only value (backtracking on `.+?` captured a
-  // single space and shipped `cdkd -  `). A trailing ` # comment` is stripped
-  // from a plain scalar; a quoted scalar keeps its `#` and loses its quotes.
-  const key = new RegExp(`^${indent}text:[ \\t]*(\\S.*?)[ \\t]*$`);
-  for (const line of block) {
-    const m = key.exec(line);
-    if (!m) continue;
-    const quoted = /^(["'])(.*)\1(?:[ \t]+#.*)?$/.exec(m[1]);
-    return quoted ? quoted[2] : m[1].replace(/[ \t]+#.*$/, '');
-  }
-  return undefined;
+  const doc: unknown = parseYaml(fm[1]);
+  const hero = (doc as { hero?: unknown } | null)?.hero;
+  const text = (hero as { text?: unknown } | null | undefined)?.text;
+  return typeof text === 'string' && text.trim() !== '' ? text : undefined;
 }
 
 /** `<siteName> - <hero.text>` — what the home page's `<title>` should read. */
