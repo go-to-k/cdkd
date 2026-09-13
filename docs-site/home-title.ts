@@ -18,7 +18,7 @@
 // so the hero headline and the search-result headline cannot drift apart —
 // tests/unit/scripts/docs-site-home-title.test.ts fences the derivation and
 // the rewrite.
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Plugin } from 'vite-plus';
 
@@ -31,13 +31,20 @@ import type { Plugin } from 'vite-plus';
 export function heroTextOf(markdown: string): string | undefined {
   const fm = /^---\n([\s\S]*?)\n---/.exec(markdown);
   if (!fm) return undefined;
-  const block = /^hero:\n((?:[ \t]+.*\n?)*)/m.exec(fm[1]);
-  if (!block) return undefined;
-  const lines = block[1].split('\n');
-  const indent = /^[ \t]+/.exec(lines[0] ?? '')?.[0];
+  const lines = fm[1].split('\n');
+  const start = lines.indexOf('hero:');
+  if (start === -1) return undefined;
+  // The block runs while lines are indented or blank (a blank line inside a
+  // YAML mapping is legal, so it must not end the block).
+  const block: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line !== '' && !/^[ \t]/.test(line)) break;
+    block.push(line);
+  }
+  const indent = /^[ \t]+/.exec(block.find((l) => l !== '') ?? '')?.[0];
   if (!indent) return undefined;
   const key = new RegExp(`^${indent}text:[ \\t]*(.+?)[ \\t]*$`);
-  for (const line of lines) {
+  for (const line of block) {
     const m = key.exec(line);
     // A plain scalar today; strip a matching pair of YAML quotes should one be added.
     if (m) return m[1].replace(/^(["'])(.*)\1$/, '$2');
@@ -121,16 +128,20 @@ export function homeTitlePlugin(options: HomeTitlePluginOptions): Plugin {
       root = config.root;
     },
     closeBundle() {
+      // No existence guard on purpose: ox-content logs and swallows most SSG
+      // failures, so a missing index.html after a build is exactly the case
+      // that must fail loudly rather than no-op on an empty site.
       const indexHtml = join(resolve(root, options.outDir), 'index.html');
-      if (!existsSync(indexHtml)) return;
       const homeTitle = homeTitleOf(
         options.siteName,
         readFileSync(resolve(root, options.indexMarkdownPath), 'utf8')
       );
       const before = readFileSync(indexHtml, 'utf8');
       const after = rewriteHomeTitle(before, options.siteName, homeTitle);
+      // "Rewritten", not "rewritten somewhere": the long form must be present
+      // AND the bare form gone (String.replace touches the first match only).
       const missing = titleNeedles(options.siteName, homeTitle)
-        .filter(([, to]) => !after.includes(to))
+        .filter(([from, to]) => !after.includes(to) || after.includes(from))
         .map(([from]) => from);
       if (missing.length > 0) {
         throw new Error(

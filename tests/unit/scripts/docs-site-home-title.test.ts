@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import {
@@ -7,8 +8,6 @@ import {
   homeTitlePlugin,
   rewriteHomeTitle,
 } from '../../../docs-site/home-title.js';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync as readFile, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 
 // cdkd.dev's home page shipped `<title>cdkd</title>`, so a Google result for
 // the site read "cdkd" and nothing else. docs-site/home-title.ts patches the
@@ -52,6 +51,14 @@ describe('docs-site home title', () => {
     const md = '---\ntitle: x\nfeatures:\n  - text: wrong\nhero:\n  name: x\n  text:   The right one.  \n---\n';
     expect(heroTextOf(md)).toBe('The right one.');
     expect(heroTextOf('---\nhero:\n  text: "Quoted: yes."\n---\n')).toBe('Quoted: yes.');
+    // A blank line inside the mapping is legal YAML and must not end the block
+    // (round-2 probe: the regex form returned undefined here).
+    expect(heroTextOf('---\nhero:\n\n  name: x\n\n  text: After blanks.\nfeatures: []\n---\n')).toBe(
+      'After blanks.'
+    );
+    expect(heroTextOf(INDEX_MD.replace('hero:\n  name: cdkd\n', 'hero:\n  name: cdkd\n\n'))).toBe(
+      'The fastest way to deploy AWS CDK.'
+    );
     expect(heroTextOf('---\ntitle: x\n---\n')).toBeUndefined();
     expect(() => homeTitleOf(SITE_NAME, '---\ntitle: x\n---\n')).toThrow(/hero\.text/);
   });
@@ -125,7 +132,7 @@ describe('docs-site home title', () => {
         };
         plugin.configResolved({ root: dir });
         plugin.closeBundle();
-        return readFile(join(dir, 'site/index.html'), 'utf8');
+        return readFileSync(join(dir, 'site/index.html'), 'utf8');
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -146,6 +153,13 @@ describe('docs-site home title', () => {
       expect(() => run(HOME_HEAD.replace('<title>cdkd</title>', '<title>CDKD</title>'))).toThrow(
         /<title>cdkd<\/title>/
       );
+      // A duplicated tag: the first is rewritten, the second survives bare —
+      // "rewritten somewhere" is not "rewritten".
+      const duplicated = HOME_HEAD.replace(
+        '  <meta name="twitter:title" content="cdkd">',
+        '  <meta name="twitter:title" content="cdkd">\n  <meta name="twitter:title" content="cdkd">'
+      );
+      expect(() => run(duplicated)).toThrow(/twitter:title/);
     });
 
     it('is a no-op on an already-patched page and build-only', () => {
