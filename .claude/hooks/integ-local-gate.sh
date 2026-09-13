@@ -353,7 +353,13 @@ EOF_INCOMING
       # range's own diff. A `git diff` that fails leaves `touches_local` at 0,
       # which is the existing pass-through for an unreadable range.
       if [ "$touches_local" -eq 0 ]; then
-        if incoming_diff=$(git diff "HEAD...${merge_ref}" 2>/dev/null) \
+        # The prefixes are PINNED: `bumps_cdk_local` keys on the
+        # `diff --git a/... b/...` header, and a user with `diff.noprefix` or
+        # `diff.mnemonicPrefix` set gets `diff --git package.json package.json`
+        # or `i/ w/` from a bare `git diff` -- the header never matches and
+        # this branch alone goes fail-open (code review of go-to-k/cdkd#3040).
+        # `gh pr diff` is API output and carries no such setting.
+        if incoming_diff=$(git diff --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "HEAD...${merge_ref}" 2>/dev/null) \
           && bumps_cdk_local "$incoming_diff"; then
           touches_local=1
         fi

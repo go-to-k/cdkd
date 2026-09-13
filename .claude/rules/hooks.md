@@ -887,9 +887,28 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   terminator look-ahead the top-level `tag` uses and drops the body lines,
   terminator included; a verb AFTER the terminator, inside the substitution
   or after it closes, is still a segment, and an opener with no terminator
-  latches nothing — the fail-closed half, pinned as three of the five
-  `SUBST_HEREDOC` cases in `command-match.test.sh` and priced as a class in
-  the differential.
+  latches nothing — the fail-closed half, pinned in `command-match.test.sh`
+  and priced as `SUBST_HEREDOC` in the differential. One qualification,
+  pre-existing and NOT this change's: when a LATER top-level heredoc reuses
+  the same delimiter, the substitution body's re-flush in `drain_extra`
+  leaves `pending_tag` set and the top-level latch swallows the verb up to
+  that later terminator — go-to-k/cdkd#3066, present on `origin/main` too.
+  **Three things about
+  that latch are load-bearing, each a security-review finding on the first
+  cut that bash executes and origin/main matched**: the opener scan reads
+  the PHYSICAL line, never the joined `$(` text — the join re-finds an opener
+  whose heredoc already closed, and any bare delimiter still ahead (a second
+  same-delimiter heredoc in the substitution, a top-level one after the `)`)
+  satisfies the look-ahead and swallows the commands in between; the scan is
+  QUOTE-AWARE with `$(` and backtick resetting the quoting, so a `'<<X'`
+  mention plus a bare `X` later is prose, not a heredoc; and under an
+  UNQUOTED delimiter a body line carrying `$(` or a backtick falls through
+  to the join, because bash expands it. The top-level `tag` keeps its
+  pre-existing drop-everything policy: a `$(git commit)` inside an
+  unquoted-delimiter heredoc at TOP level is run by bash and matched by
+  nothing, on origin/main and here alike — a known fail-open that predates
+  this work and is NOT widened by it, stated here so the two heredoc paths
+  are not read as equivalent.
 - The `cd <path> &&` special case disappears — it is just a verb after `&&`.
 
 **Two gaps in the old anchor — issue

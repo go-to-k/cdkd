@@ -131,6 +131,111 @@ subst_unterminated=$(printf '%s\n' \
   'gh pr merge 1)"')
 check "an unterminated opener inside \$( ) does not swallow" 0 "$MERGE" "$subst_unterminated"
 
+# --- Security review of go-to-k/cdkd#3040: three shapes bash RUNS that the ---
+# --- first cut of the body-skip swallowed. Each was measured with a stub  ---
+# --- `git` on PATH: real bash executes the verb, origin/main matched it,  ---
+# --- and the first cut answered NO MATCH -- a NEW fail-open.             ---
+#
+# S1: with an UNQUOTED delimiter the body undergoes expansion, so the `$( )`
+# inside it executes. The body-skip now lets a body line carrying `$(` or a
+# backtick fall through to the join, so its substitution is scanned. The
+# quoted twin (S1q) is the control: no expansion, so still dropped.
+subst_unquoted_expands=$(printf '%s\n' \
+  'x="$(cat <<EOF' \
+  '$(git commit -m y)' \
+  'EOF' \
+  ')"')
+check "S1: \$( ) in an UNQUOTED-delimiter body inside \$( ) is run, so it matches" 0 "$COMMIT" "$subst_unquoted_expands"
+subst_quoted_no_expand=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  '$(git commit -m y)' \
+  'EOF' \
+  ')"')
+check "S1q: the same body under a QUOTED delimiter is not expanded, so it does not" 1 "$COMMIT" "$subst_quoted_no_expand"
+
+# S2 / S2b: the opener scan must see the PHYSICAL line, not the joined `$(`
+# text. Scanning the join re-found an opener whose heredoc had already closed,
+# and any bare delimiter line still ahead -- a second same-delimiter heredoc in
+# the substitution, or a top-level one after the `)` -- satisfied the
+# look-ahead, so the latch swallowed the real commands in between.
+subst_two_heredocs=$(printf '%s\n' \
+  'out=$(' \
+  'cat <<'"'"'EOF'"'"'' \
+  'm1' \
+  'EOF' \
+  'echo start' \
+  'git push origin HEAD' \
+  'cat <<'"'"'EOF'"'"'' \
+  'm2' \
+  'EOF' \
+  ')')
+check "S2: a verb between two same-delimiter heredocs in one \$( ) is caught" 0 "$GATE_RE_GIT_PUSH" "$subst_two_heredocs"
+subst_then_toplevel_heredoc=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  'a' \
+  'EOF' \
+  'echo start' \
+  'git commit -m y' \
+  ')"' \
+  'cat <<'"'"'EOF'"'"'' \
+  'b' \
+  'EOF')
+check "S2b: a verb inside \$( ) is caught when a top-level heredoc follows the )" 0 "$COMMIT" "$subst_then_toplevel_heredoc"
+
+# S3 / S3d: the opener scan is quote-aware. A `<<X` INSIDE a quoted span on the
+# opener line plus a bare `X` line later is prose, not a heredoc, and the verb
+# between them runs.
+subst_quoted_mention_sq=$(printf '%s\n' \
+  'x="$(echo '"'"'<<X'"'"'' \
+  'git commit -m y' \
+  'X' \
+  ')"')
+check "S3: a single-quoted <<X mention on the opener line is not an opener" 0 "$COMMIT" "$subst_quoted_mention_sq"
+subst_quoted_mention_dq=$(printf '%s\n' \
+  'x="$(echo "see <<X"' \
+  'git commit -m y' \
+  'X' \
+  ')"')
+check "S3d: a double-quoted <<X mention on the opener line is not an opener" 0 "$COMMIT" "$subst_quoted_mention_dq"
+
+# --- Test review of go-to-k/cdkd#3040: the opener GRAMMAR was unfenced. -----
+# Every case above spells the delimiter `<<'EOF'`, so deleting the BARE-word
+# alternative from the opener regex (`[A-Za-z_][A-Za-z0-9_]*`) left the suite
+# at 660/0 while the live bug -- the most common spelling, `$(cat <<EOF` --
+# came straight back. Same for the `-` in `<<-`. One case per alternative,
+# each on a plain prose body (no `$(`, no backtick, so the unquoted-delimiter
+# fall-through above does not apply and the body must be dropped outright).
+subst_bare_delim=$(printf '%s\n' \
+  'gh issue create --body "$(cat <<EOF' \
+  'gh pr merge 1 was refused' \
+  'EOF' \
+  ')"')
+check "a BARE-word delimiter (<<EOF) inside \$( ) opens a heredoc too" 1 "$MERGE" "$subst_bare_delim"
+subst_dash_delim=$(printf '%s\n' \
+  'x="$(cat <<-'"'"'EOF'"'"'' \
+  "$(printf '\tgh pr merge 1 was refused')" \
+  "$(printf '\tEOF')" \
+  ')"')
+check "<<- with an indented terminator inside \$( ) is stripped" 1 "$MERGE" "$subst_dash_delim"
+
+# The opener on the line AFTER the `$(` -- the shape an agent most often writes
+# (`--body "$(` newline `cat <<EOF` ...) -- and a heredoc inside a BACKTICK
+# substitution. Both were false positives on origin/main and are fixed by the
+# same latch; neither had a case.
+subst_opener_next_line=$(printf '%s\n' \
+  'gh issue create --body "$(' \
+  '  cat <<EOF' \
+  'gh pr merge 1 was refused' \
+  'EOF' \
+  ')"')
+check "an opener on the line after the \$( is caught by the latch" 1 "$MERGE" "$subst_opener_next_line"
+subst_backtick_heredoc=$(printf '%s\n' \
+  'x=`cat <<'"'"'EOF'"'"'' \
+  'gh pr merge 1 was refused' \
+  'EOF' \
+  '`')
+check "a heredoc inside a BACKTICK substitution is stripped too" 1 "$MERGE" "$subst_backtick_heredoc"
+
 # --- Reviewer-found regressions of the FIRST cut (all must MATCH) ---------
 #
 # The first stripper treated `<<<`, a `<<EOF` mentioned in prose, and an

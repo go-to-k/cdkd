@@ -249,9 +249,11 @@ GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: a cdk-local bump in p
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 3053 --squash"}}' "$fixture_repo")"
 
 # 20c. Only the LOCKFILE carries cdk-local rows (a transitive re-resolve,
-#      no manifest change) -> still out of scope -> 0. Pins the
-#      package.json restriction: the lockfile spelling is `cdk-local:`
-#      unquoted, and it must not count.
+#      no manifest change) -> still out of scope -> 0. A CONTROL, not the
+#      fence for the package.json restriction: the lockfile spelling is
+#      `cdk-local:` unquoted, so it misses the `"cdk-local":` regex on its
+#      own and would pass with the file restriction deleted (test review of
+#      go-to-k/cdkd#3040 measured exactly that). 20c2 is the fence.
 cat > "$GH_DIFF_PAYLOAD" <<'DIFF_EOF'
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
 --- a/pnpm-lock.yaml
@@ -266,8 +268,26 @@ DIFF_EOF
 GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: lockfile-only cdk-local rows stay out of scope" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
 
+# 20c2. A NON-manifest file carrying the exact `-`/`+` `"cdk-local":` pair
+#       (docs quoting a manifest fragment) -> 0. THIS pins the package.json
+#       file-block restriction: drop `in_pkg &&` from the awk and it fires.
+cat > "$GH_DIFF_PAYLOAD" <<'DIFF_EOF'
+diff --git a/docs/local-emulation.md b/docs/local-emulation.md
+--- a/docs/local-emulation.md
++++ b/docs/local-emulation.md
+@@ -10,7 +10,7 @@
+ ```json
+-    "cdk-local": "^0.147.7",
++    "cdk-local": "^0.148.4",
+ ```
+DIFF_EOF
+GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: the cdk-local pair inside a NON-manifest file stays out of scope" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
+
 # 20d. package.json changes but NOT the cdk-local line (an unrelated dep
-#      bump with cdk-local as context) -> 0. Pins the both-polarities test.
+#      bump with cdk-local as context) -> 0. A CONTROL for the context-line
+#      shape; it does not discriminate the both-polarities rule, because a
+#      context line matches NEITHER polarity. 20d2 does.
 cat > "$GH_DIFF_PAYLOAD" <<'DIFF_EOF'
 diff --git a/package.json b/package.json
 --- a/package.json
@@ -279,6 +299,25 @@ diff --git a/package.json b/package.json
      "chokidar": "^5.0.0",
 DIFF_EOF
 GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: an unrelated dep bump beside cdk-local stays out of scope" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
+
+# 20d2. ONE polarity only: a `+` line adding `"cdk-local":` with no `-` line
+#       (the dependency appearing where it was absent) -> 0. THIS pins the
+#       both-polarities rule: `(minus && plus)` -> `(plus)` fires it. The
+#       rule is deliberate -- a CHANGE to the pinned version is what moves
+#       local-execution behaviour under an existing install -- and the
+#       add-only / remove-only shapes are not ones this repo produces, so
+#       pinning 0 here records the decision rather than a preference.
+cat > "$GH_DIFF_PAYLOAD" <<'DIFF_EOF'
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -101,6 +101,7 @@
+     "archiver": "^8.0.0",
++    "cdk-local": "^0.148.4",
+     "chokidar": "^5.0.0",
+DIFF_EOF
+GH_STUB_FAIL="" GH_DIFF_FAIL="" run_case "gh pr merge <N>: a +-only cdk-local line (no - line) stays out of scope" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
 
 # 20e. `gh pr diff` FAILS while the file list is readable and out of scope
@@ -293,7 +332,12 @@ GH_STUB_FAIL="" GH_DIFF_FAIL="1" run_case "gh pr merge <N>: gh pr diff failure f
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 999 --squash"}}' "$fixture_repo")"
 
 # 20f. A file-list HIT still engages regardless of the diff (the second
-#      question is only asked when the first says no) -> 2.
+#      question is only asked when the first says no) -> 2. `GH_DIFF_FAIL=1`
+#      is INERT on this path -- `gh pr diff` is never called once the file
+#      list says in-scope -- so this case documents the ordering rather than
+#      exercising a failure branch; the fallback branch itself is reached by
+#      20e (test review of go-to-k/cdkd#3040 confirmed it by flipping the
+#      fallback to fail-closed and watching only 20e go red).
 printf '{"files":[{"path":"src/local/docker-runner.ts"}]}' > "$GH_FILES_PAYLOAD"
 : > "$GH_DIFF_PAYLOAD"
 GH_STUB_FAIL="" GH_DIFF_FAIL="1" run_case "gh pr merge <N>: a src/local hit engages even when gh pr diff fails" 2 \
@@ -397,6 +441,17 @@ run_case "git merge <cdk-local-bump range> gate fires" 2 \
 #      alone must not fire it.
 run_case "git merge <other-dep-bump range> passes through" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-other-dep"}}' "$merge_repo")"
+
+# 26d. The user has `diff.noprefix=true` (or mnemonicPrefix): a bare
+#      `git diff` then emits `diff --git package.json package.json`, and the
+#      `a/…b/…` header test in bumps_cdk_local never matches -- measured, this
+#      branch alone went fail-open (code review of go-to-k/cdkd#3040). The
+#      hook pins `--src-prefix=a/ --dst-prefix=b/`, so 26b must still fire
+#      under that config. Set REPO-locally so no other suite inherits it.
+git -C "$merge_repo" config diff.noprefix true
+run_case "git merge <cdk-local-bump range> still fires under diff.noprefix=true" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-cdklocal-bump"}}' "$merge_repo")"
+git -C "$merge_repo" config --unset diff.noprefix
 
 # --- CROSS-REPO GATE NAMING (go-to-k/cdkd#2236) ---
 #

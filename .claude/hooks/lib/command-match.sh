@@ -550,30 +550,57 @@ gate_segments_raw() {
       }
       return 0
     }
-    # The delimiter of the LAST heredoc opener in <text>, or "" when there is
-    # none. Same opener grammar flush_line uses (`<<`, optional `-`, a quoted or
-    # bare word; `<<<` is a here-string and not an opener), applied to text that
-    # has NOT been through flush_line yet -- the still-open `$(` body run()
-    # joins line by line, where a heredoc opened on one line is followed by
-    # BODY lines that must not be joined as commands. Not quote-aware on
-    # purpose: a `<<X` mentioned in prose inside that body is harmless here,
-    # because the caller only latches onto the tag when the terminator really
-    # arrives as a bare later line, the same fail-open guard run() applies at
-    # top level.
-    function last_heredoc_opener(text,   d, rest, pos, out) {
-      out = ""
-      rest = text
-      while ((pos = index(rest, "<<")) > 0) {
-        if (substr(rest, pos + 2, 1) == "<") { rest = substr(rest, pos + 3); continue }
-        rest = substr(rest, pos)
-        if (match(rest, /^<<-?[ \t]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
-          d = substr(rest, RSTART, RLENGTH)
-          sub(/^<<-?[ \t]*/, "", d)
-          gsub(/["'"'"']/, "", d)
-          if (d != "") out = d
-          rest = substr(rest, RLENGTH + 1)
-        } else {
-          rest = substr(rest, 3)
+    # The delimiter of the LAST heredoc opener in <text> that sits in COMMAND
+    # context, or "" when there is none; sets the global `lho_quoted` to 1 when
+    # that delimiter was quoted (`<<\047EOF\047` / `<<"EOF"`), else 0. Same
+    # opener grammar flush_line uses (`<<`, optional `-`, a quoted or bare
+    # word; `<<<` is a here-string and not an opener), applied to a PHYSICAL
+    # line that has not been through flush_line yet -- the line run() is about
+    # to join into a still-open `$(` body, where a heredoc opened here is
+    # followed by BODY lines that must not be joined as commands.
+    #
+    # QUOTE-AWARE, and the first cut was not. Security review of
+    # go-to-k/cdkd#3040 measured `x="$(echo \047<<X\047` / `git commit -m y` /
+    # `X` / `)"`: bash runs that commit, the blind scan took the quoted `<<X`
+    # as an opener, the bare `X` two lines down satisfied the look-ahead, and
+    # the commit line was dropped as heredoc body -- a NEW fail-open against
+    # origin/main, which never stripped inside a substitution at all. The
+    # guard "only latches when the terminator arrives" is not enough on its
+    # own, because a bare word line is ordinary prose. So this walks the same
+    # three quote states close_paren does, with one addition close_paren does
+    # not need: a `$(` or backtick RESETS the quoting (a substitution starts a
+    # fresh parse, which is why `"$(cat <<\047EOF\047` opens a heredoc inside
+    # a double-quoted argument), and the matching `)` restores it.
+    function last_heredoc_opener(text,   j, n, c, d, iq, depth, bt, outer, rest, out) {
+      out = ""; iq = ""; depth = 0; bt = 0; outer = ""; lho_quoted = 0
+      n = length(text)
+      for (j = 1; j <= n; j++) {
+        c = substr(text, j, 1)
+        if (iq == "A") { if (c == "\\") { j++; continue }
+                         if (c == "\047") iq = ""; continue }
+        if (iq == "\047") { if (c == iq) iq = ""; continue }
+        if (c == "\\") { j++; continue }
+        if (c == "$") { d = substr(text, j + 1, 1)
+                        if (d == "$") { j++; continue }
+                        if (d == "\047") { iq = "A"; j++; continue }
+                        if (d == "(") { if (depth == 0 && !bt) outer = iq; iq = ""; depth++; j++; continue }
+                        continue }
+        if (c == "`" && (iq == "" || iq == "\"")) { if (!bt) { if (depth == 0) outer = iq; iq = ""; bt = 1 } else { bt = 0; if (depth == 0) iq = outer }; continue }
+        if (iq != "") { if (c == iq) iq = ""; continue }
+        if (c == "\"" || c == "\047") { iq = c; continue }
+        if (c == ")" && depth > 0) { depth--; if (depth == 0 && !bt) iq = outer; continue }
+        if (c == "<" && substr(text, j + 1, 1) == "<") {
+          if (substr(text, j + 2, 1) == "<") { j += 2; continue }
+          rest = substr(text, j)
+          if (match(rest, /^<<-?[ \t]*("[^"]+"|\047[^\047]+\047|[A-Za-z_][A-Za-z0-9_]*)/)) {
+            d = substr(rest, RSTART, RLENGTH)
+            sub(/^<<-?[ \t]*/, "", d)
+            lho_quoted = (d ~ /^["\047]/) ? 1 : 0
+            gsub(/["\047]/, "", d)
+            if (d != "") out = d
+            j += RLENGTH - 1
+          }
+          continue
         }
       }
       return out
@@ -759,8 +786,8 @@ gate_segments_raw() {
       return res
     }
     # One full pass. Runs twice at most: see the END rule.
-    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub, ptag, pd) {
-      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""; ptag = ""
+    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub, ptag, pd, phys, ptag_quoted) {
+      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""; ptag = ""; ptag_quoted = 0; phys = ""
       __bodies = ""; __pend_seg = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
@@ -778,14 +805,31 @@ gate_segments_raw() {
         # body written as `--body "$(cat <<EOF ... EOF)"` matched
         # GATE_RE_GH_PR_MERGE and integ-local-gate refused `gh issue create`
         # (go-to-k/cdkd#3040). The terminator line is dropped with the body:
-        # the joined line then carries an opener with no terminator, and the
-        # top-level `tag` latch below never fires for it because terminated()
-        # searches only lines AFTER the one being flushed.
+        # the joined line then carries an opener with no terminator, so the
+        # top-level `tag` latch below does not fire for it FROM THIS LINE --
+        # terminated() searches only lines AFTER the one being flushed. It CAN
+        # still fire through a different route: drain_extra() re-flushes the
+        # body and leaves `pending_tag` set, and a bare delimiter belonging to
+        # some LATER top-level heredoc then satisfies the look-ahead. That is
+        # pre-existing (origin/main has it) and is go-to-k/cdkd#3066, not
+        # something this latch introduces or fixes.
+        #
+        # EXCEPT a body line that bash itself would RUN. With an UNQUOTED
+        # delimiter (`<<EOF`) the body undergoes expansion, so a `$(git commit
+        # -m y)` or a backtick inside it executes. origin/main never stripped
+        # inside a substitution, so it matched that shape by accident; dropping
+        # it here would be a new fail-open (security review of
+        # go-to-k/cdkd#3040, S1). Such a line falls through to the join below
+        # and is scanned like any other command line -- over-approximating in
+        # the refusing direction, which is the direction this file prefers.
+        # The top-level `tag` branch above keeps its pre-existing policy of
+        # dropping every body line; that gap is accepted and documented in
+        # hooks.md, and it is not widened here.
         if (ptag != "") {
           t = line
           gsub(/^[ \t]+|[ \t]+$/, "", t)
-          if (t == ptag) ptag = ""
-          continue
+          if (t == ptag) { ptag = ""; continue }
+          if (ptag_quoted || (index(line, "$(") == 0 && index(line, "`") == 0)) continue
         }
         if (pending != "") { line = pending line; pending = "" }
         if (line ~ /\\$/) {               # `\`-continuation: join with the next line
@@ -793,6 +837,17 @@ gate_segments_raw() {
           pending = line
           continue
         }
+        # The PHYSICAL line, before the join below. The opener scan must see
+        # only this line: scanning the JOINED text re-finds an opener whose
+        # heredoc already closed, and with any bare delimiter line still ahead
+        # -- a second heredoc with the same delimiter inside the substitution,
+        # or a top-level one after the `)` -- terminated() satisfies the
+        # look-ahead and the latch swallows the real commands in between.
+        # Measured (security review of go-to-k/cdkd#3040, S2 / S2b): a
+        # `git push` between two `<<\047EOF\047` bodies in one `$( )`, and a
+        # `git commit` before a `)` that a LATER top-level heredoc followed,
+        # both run by bash and both NOMATCH with the joined scan.
+        phys = line
         # A `$(` still open at end of line CONTINUES on the next one; join so
         # close_paren can see the closer. See subst_open above.
         if (psub != "") { line = psub ";" line; psub = "" }
@@ -802,8 +857,8 @@ gate_segments_raw() {
           # delimiter only when the terminator really arrives as a bare later
           # line -- the same fail-open guard the top-level `tag` uses, so a
           # `<<X` in prose with no terminator blanks nothing.
-          pd = last_heredoc_opener(line)
-          if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd
+          pd = last_heredoc_opener(phys)
+          if (pd != "" && terminated(pd, i + 1) > 0) { ptag = pd; ptag_quoted = lho_quoted }
           continue
         }
         # A line that ends INSIDE a quoted span is not a segment boundary: the
