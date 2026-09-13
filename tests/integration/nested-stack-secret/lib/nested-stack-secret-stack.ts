@@ -18,7 +18,10 @@ import { Construct } from 'constructs';
  * and [#2291](https://github.com/go-to-k/cdkd/issues/2291) (two parameters
  * resolving to ONE plaintext keep DISTINCT expressions across the handoff) and
  * [#2327](https://github.com/go-to-k/cdkd/issues/2327) (the same, for
- * LIST-typed parameters, whose values are ARRAYS by the time redaction runs).
+ * LIST-typed parameters, whose values are ARRAYS by the time redaction runs)
+ * and [#2745](https://github.com/go-to-k/cdkd/issues/2745) (a 1-3 character
+ * secret the parent embeds in a parameter through a LITERAL frame reaches the
+ * child below the carry's needle floor).
  *
  * Nothing here creates the secret or the SecureString parameter: `verify.sh`
  * puts both in place out of band and deletes them again. CloudFormation cannot
@@ -34,7 +37,7 @@ import { Construct } from 'constructs';
  * receives PLAINTEXT and the child's own template spells the consumption as
  * `{Ref: <ParamName>}` — an intrinsic OBJECT, never a `{{resolve:` string.
  *
- * THE EIGHT RESOURCES, and what each one discriminates:
+ * THE TEN RESOURCES, and what each one discriminates:
  *
  *  - `StageParam` (child) — consumes the secretsmanager-backed parameter. Its
  *    persisted `Value` must be the EXPRESSION while the live SSM parameter
@@ -66,6 +69,17 @@ import { Construct } from 'constructs';
  *    per parameter and left this side on the survivor, so the two halves
  *    disagreed forever: a perpetual UPDATE, caught here by the
  *    `cdkd diff --recursive --fail` exit code as well as by its persisted value.
+ *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
+ *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
+ *    the time redaction runs, beside a PUBLIC list-typed negative control.
+ *  - `PinParam` (child) — THE #2745 ARM. Consumes a parameter the parent
+ *    built as a LITERAL frame around a 2-character secret
+ *    (`port:{{resolve:...:pin::}}` -> `port:q7`). The value is not a whole
+ *    key of the inherited bag and its middle sits below `MIN_NEEDLE_LENGTH`,
+ *    so neither arm of the child's carry could see it and the child persisted
+ *    `port:q7` in the clear -- a perpetual `cdkd diff --recursive` change as
+ *    well as a disclosure. The parent's recorder now hands the framed pair
+ *    down as a whole-value entry; `ChildPinOutput` is the outputs-pass twin.
  *  - `ParentConsumer` (parent) — reads the child's OUTPUT through
  *    `Fn::GetAtt: [Child, 'Outputs.ChildSecretOutput']`. Since PR #1899 the
  *    child persists that output REDACTED, so before #2055 the parent shipped
@@ -105,6 +119,8 @@ class SecretBearingChild extends cdk.NestedStack {
       unrelatedParamName: string;
       handoffParamName: string;
       handoffSubParamName: string;
+      pinParamName: string;
+      pinParamDescription: string;
       listRuleName: string;
       unrelatedLiteral: string;
       handoffAllowedPattern?: string;
@@ -169,6 +185,16 @@ class SecretBearingChild extends cdk.NestedStack {
     // mean "certified" rather than "rewritten".
     const listPublic = new cdk.CfnParameter(this, 'ListPublic', { type: 'CommaDelimitedList' });
     listPublic.overrideLogicalId('ListPublic');
+
+    // THE #2745 ARM's input. The PARENT resolves a LITERAL frame around a
+    // 2-character secret (`port:{{resolve:...:pin::}}` -> `port:q7`): the
+    // value is not a whole key of the inherited bag and its middle sits below
+    // `MIN_NEEDLE_LENGTH`, so neither arm of `inheritedSecretsCarriedBy` could
+    // see it. `recordNestedStackParameterExpressions` now records the framed
+    // pair on the parent's bag as a WHOLE-VALUE entry, which the carry reads
+    // at any length.
+    const subFloorPin = new cdk.CfnParameter(this, 'SubFloorPin', { type: 'String' });
+    subFloorPin.overrideLogicalId('SubFloorPin');
 
     const stageParam = new ssm.StringParameter(this, 'StageParam', {
       parameterName: names.stageParamName,
@@ -335,6 +361,35 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     listPair.overrideLogicalId('ListPair');
 
+    // THE #2745 ARM. A bare `{Ref: SubFloorPin}` leaf carries no expression
+    // text for the position pass, so what redacts it is the inherited carry
+    // of the framed pair -- whole-value, and at seven characters the substring
+    // arm too; a resource of its own because the destination bag is scoped
+    // per logical id.
+    const pinParam = new ssm.StringParameter(this, 'PinParam', {
+      parameterName: names.pinParamName,
+      stringValue: subFloorPin.valueAsString,
+      // VARIES BY `CDKD_TEST_UPDATE`, for the reason `StageParam`'s does:
+      // phase 2c must make this resource a real UPDATE so the child genuinely
+      // re-resolves the leaf off the UPDATE call site's recorder, or the
+      // phase asserts over a state.json nothing rewrote.
+      description: names.pinParamDescription,
+    });
+    ((pinParam.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('PinParam');
+
+    // The OUTPUTS-pass twin of `PinParam`: the child's outputs walk carries
+    // the same inherited bag, so a `{Ref: SubFloorPin}` output persists the
+    // frame through the same whole-value entry. Deliberately NOT consumed by
+    // the parent: a parent `Fn::GetAtt` over it re-resolves to `port:q7`,
+    // where the cross-stack seam refuses a non-token and the consumer's own
+    // record persists the plaintext -- residual (d) on the recorder's
+    // docstring, stated there rather than pinned as behaviour here.
+    const pinOutput = new cdk.CfnOutput(this, 'ChildPinOutput', {
+      value: subFloorPin.valueAsString,
+      description: 'cdkd nested-stack-secret integ - sub-floor framed child output (issue #2745)',
+    });
+    pinOutput.overrideLogicalId('ChildPinOutput');
+
     const output = new cdk.CfnOutput(this, 'ChildSecretOutput', {
       value: stage.valueAsString,
       description: 'cdkd nested-stack-secret integ - secret-derived child output (issue #2055)',
@@ -436,6 +491,11 @@ export class NestedStackSecretStack extends cdk.Stack {
     const stageParamDescription = updateMode.includes('child-property')
       ? 'cdkd nested-stack-secret integ - child consumer of the secretsmanager parameter (updated)'
       : 'cdkd nested-stack-secret integ - child consumer of the secretsmanager parameter';
+    // The #2745 arm's own phase-2c change, on the same token, for the same
+    // reason: `PinParam` must genuinely become an UPDATE in that phase.
+    const pinParamDescription = updateMode.includes('child-property')
+      ? 'cdkd nested-stack-secret integ - #2745 sub-floor framed parameter (updated)'
+      : 'cdkd nested-stack-secret integ - #2745 sub-floor framed parameter';
 
     // Fixed, account-scoped names so verify.sh can build the `{{resolve:...}}`
     // strings and read every resource back deterministically. Simple
@@ -470,6 +530,12 @@ export class NestedStackSecretStack extends cdk.Stack {
     // Handed to the child as LIST-typed `Parameters`.
     const listReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:list::}}`;
     const listReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:list:AWSCURRENT:}}`;
+    // THE #2745 FRAME. A FIFTH JSON key holding a 2-character value, spelled
+    // as a LITERAL string that embeds the token: `port:` + the reference. The
+    // parent resolves it to `port:q7` before the child exists. A literal on
+    // purpose -- issue #2745 scopes its nested-stack site to this spelling;
+    // the `cdk.Fn.join` spelling of the same frame is issue #3062.
+    const pinReference = `port:{{resolve:secretsmanager:${secretName}:SecretString:pin::}}`;
     const secureReference = `{{resolve:ssm:${secureParamName}}}`;
 
     const child = new SecretBearingChild(
@@ -481,6 +547,8 @@ export class NestedStackSecretStack extends cdk.Stack {
         unrelatedParamName: `cdkd-nested-child-unrelated-${account}`,
         handoffParamName: `cdkd-nested-child-handoff-${account}`,
         handoffSubParamName: `cdkd-nested-child-handoffsub-${account}`,
+        pinParamName: `cdkd-nested-child-pin-${account}`,
+        pinParamDescription,
         listRuleName: `cdkd-nested-child-listpair-${account}`,
         listRuleDescription,
         ...(handoffAllowedPattern !== undefined && { handoffAllowedPattern }),
@@ -508,6 +576,8 @@ export class NestedStackSecretStack extends cdk.Stack {
           ListSecretB: listReferenceB,
           // Kept in sync with verify.sh's LIST_PUBLIC_VALUE.
           ListPublic: 'listpublic2327',
+          // The #2745 frame: ONE parameter, a literal `port:` + token.
+          SubFloorPin: pinReference,
         },
       }
     );

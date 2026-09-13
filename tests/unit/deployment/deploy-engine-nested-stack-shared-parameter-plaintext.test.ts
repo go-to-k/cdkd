@@ -101,9 +101,11 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
       'sh4red-h4ndoff-pl4intext-2291',
     [`{{resolve:secretsmanager:${'prod/db/cred'}:SecretString:handoff:AWSCURRENT:}}`]:
       'sh4red-h4ndoff-pl4intext-2291',
+    // The #2745 sub-floor middle: two characters, below MIN_NEEDLE_LENGTH.
+    [`{{resolve:secretsmanager:${'prod/db/cred'}:SecretString:pin::}}`]: 'q7',
   };
 
-  const { inheritedParameterExpression } = await import(
+  const { inheritedParameterExpression, recordResolvedPair } = await import(
     '../../../src/deployment/secret-redaction.js'
   );
 
@@ -144,12 +146,22 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
 
   const resolveOne = (value: unknown, ctx: ResolverContext): unknown => {
     if (typeof value === 'string') {
-      const plaintext = SECRET_VALUES[value];
-      if (plaintext === undefined) return value;
-      // The GHSA recording: keyed by PLAINTEXT, so the second token of a
-      // coinciding pair OVERWRITES the first.
-      ctx.recordedSecretValues?.set(plaintext, value);
-      return plaintext;
+      // Each token resolves IN PLACE, like the real `resolveDynamicReferences`
+      // -- a whole-token leaf is the empty-frame case, a LITERAL frame around
+      // one (`port:{{resolve:...}}`, issue #2745) keeps its frame -- and each
+      // resolution records the pair beside the map entry, which is what the
+      // parent's position pass reads. Mirrored, not fenced, as above.
+      return value.replace(/\{\{resolve:[^}]*\}\}/g, (token) => {
+        const plaintext = SECRET_VALUES[token];
+        if (plaintext === undefined) return token;
+        // The GHSA recording: keyed by PLAINTEXT, so the second token of a
+        // coinciding pair OVERWRITES the first.
+        if (ctx.recordedSecretValues) {
+          ctx.recordedSecretValues.set(plaintext, token);
+          recordResolvedPair(ctx.recordedSecretValues, token, plaintext);
+        }
+        return plaintext;
+      });
     }
     if (Array.isArray(value)) return value.map((v) => resolveOne(v, ctx));
     if (value && typeof value === 'object') {
@@ -403,6 +415,114 @@ describe('DeployEngine — two child Parameters resolving to ONE plaintext (#229
     ) as Record<string, unknown>;
     expect(persisted['Value']).toBe(EXPR_A);
     expect(persisted['Description']).toBe(EXPR_B);
+  });
+
+  // ----- the #2745 SUB-FLOOR CARRY through the same two call sites -----
+
+  const PIN_EXPR = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin::}}`;
+  const FRAMED_EXPR = `port:${PIN_EXPR}`;
+  const FRAMED = 'port:q7';
+  const PIN_PROPS = {
+    TemplateURL: 'https://s3.amazonaws.com/bucket/child.json',
+    Parameters: { Pin: FRAMED_EXPR },
+  };
+  const pinTemplate: CloudFormationTemplate = {
+    Resources: { Child: { Type: 'AWS::CloudFormation::Stack', Properties: PIN_PROPS } },
+  };
+
+  /** What a child resource consuming `Pin` persists, off the bound bag. */
+  function childPinLeaf(bound: RecordedSecretValues): unknown {
+    const childBag: RecordedSecretValues = new Map(bound);
+    inheritNestedStackParameterAssociations(childBag, bound);
+    const persisted = redactSecretsForState({ Value: FRAMED }, childBag, {
+      Value: { Ref: 'Pin' },
+    }) as Record<string, unknown>;
+    return persisted['Value'];
+  }
+
+  it('records a sub-floor LITERAL frame as a WHOLE-VALUE entry on the bag the provider is handed, from the CREATE site (#2745)', async () => {
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Child',
+          {
+            logicalId: 'Child',
+            changeType: 'CREATE',
+            resourceType: 'AWS::CloudFormation::Stack',
+            desiredProperties: PIN_PROPS,
+          },
+        ],
+      ])
+    );
+
+    await makeEngine({}).deploy('Parent', pinTemplate);
+
+    // AWS gets the framed PLAINTEXT.
+    const created = mockProvider.create!.mock.calls[0]![2] as { Parameters: Record<string, unknown> };
+    expect(created.Parameters['Pin']).toBe(FRAMED);
+    // The bound bag holds the pair's own entry AND the carry beside it.
+    expect(boundSecrets).toBeDefined();
+    expect(boundSecrets!.get('q7')).toBe(PIN_EXPR);
+    expect(boundSecrets!.get(FRAMED)).toBe(FRAMED_EXPR);
+    // The parent's OWN record of the row is framed (the #2516 literal arm on
+    // the marked bag) -- the premise the carry has to match.
+    const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    const savedParams = saved.resources['Child']!.properties['Parameters'] as Record<string, unknown>;
+    expect(savedParams['Pin']).toBe(FRAMED_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(FRAMED);
+    // ...and a child resource's bag built off that object persists the frame.
+    expect(childPinLeaf(boundSecrets!)).toBe(FRAMED_EXPR);
+  });
+
+  it('records the same carry from the UPDATE site (#2745)', async () => {
+    mockStateBackend.getState!.mockResolvedValue({
+      state: {
+        version: 9,
+        stackName: 'Parent',
+        region: 'us-east-1',
+        resources: {
+          Child: {
+            physicalId: 'phys-1',
+            resourceType: 'AWS::CloudFormation::Stack',
+            properties: {
+              TemplateURL: 'https://s3.amazonaws.com/bucket/old.json',
+              Parameters: { Pin: FRAMED_EXPR },
+            },
+          },
+        },
+        outputs: {},
+        lastModified: 1,
+      } as unknown as StackState,
+      etag: 'e',
+    });
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Child',
+          {
+            logicalId: 'Child',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::CloudFormation::Stack',
+            desiredProperties: PIN_PROPS,
+            currentProperties: {
+              TemplateURL: 'https://s3.amazonaws.com/bucket/old.json',
+              Parameters: { Pin: FRAMED_EXPR },
+            },
+          },
+        ],
+      ])
+    );
+    mockProvider.update!.mockImplementation(() => {
+      boundSecrets = getCurrentResourceSecrets();
+      return Promise.resolve({ physicalId: 'phys-1' });
+    });
+
+    await makeEngine({}).deploy('Parent', pinTemplate);
+
+    expect(mockProvider.update!.mock.calls.length).toBe(1);
+    expect(boundSecrets).toBeDefined();
+    expect(boundSecrets!.get(FRAMED)).toBe(FRAMED_EXPR);
+    expect(childPinLeaf(boundSecrets!)).toBe(FRAMED_EXPR);
   });
 
   it('records nothing for a row that is not a nested stack', async () => {

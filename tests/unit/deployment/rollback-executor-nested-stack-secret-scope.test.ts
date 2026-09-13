@@ -407,6 +407,152 @@ function childLeavesFromBoundScope(): { value: unknown; description: unknown; si
 }
 
 describe('rollback-executor keeps colliding child Parameters apart on replay (#2291)', () => {
+  /**
+   * THE SUB-FLOOR CARRY on replay (issue #2745), at all THREE recorder sites.
+   *
+   * The replay re-resolves the journaled row to plaintext and hands the child
+   * the same kind of bag the deploy does, through the same recorder under
+   * STATE_DERIVED_RULES. A journaled `Parameters.Pin` of
+   * `port:{{resolve:...:pin::}}` resolves to `port:q7`, whose middle is below
+   * `MIN_NEEDLE_LENGTH`: without the recorder's carry the bound bag holds only
+   * `q7`, the child's `{Ref: Pin}` leaf finds no whole-value key, and a
+   * `cdkd rollback` of the child re-persists `port:q7` in the clear.
+   *
+   * ONE CASE PER SITE, because the carry needs what the #2291 associations do
+   * not: condition (i) reads pass-local PAIRS off the bag (`recordResolvedPair`,
+   * which `resolveReplayProps` writes), while refusal 2b is a plain equality
+   * that certifies without them. An arm whose bag ever lacked the pairs would
+   * keep the associations and silently drop the carry, so each arm's bag is
+   * measured here rather than inferred from the docstring's provenance claim.
+   */
+  const PIN_EXPR = '{{resolve:secretsmanager:prod/child/db:SecretString:pin::}}';
+  const CHILD_ARN = 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child';
+  function pinRow(templateUrl: string, physicalId = CHILD_ARN): ResourceState {
+    return res({
+      physicalId,
+      properties: { Parameters: { Pin: `port:${PIN_EXPR}` }, TemplateURL: templateUrl },
+    });
+  }
+  /** What a child leaf `{Ref: Pin}` persists off the bag currently bound, plus the bag's shape. */
+  function pinLeafFromBoundScope(): { value: unknown; carried: unknown; size: number } {
+    const bound = getCurrentResourceSecrets();
+    if (!bound) return { value: undefined, carried: undefined, size: -1 };
+    const childBag: RecordedSecretValues = new Map(bound);
+    inheritNestedStackParameterAssociations(childBag, bound);
+    const persisted = redactSecretsForState({ Value: 'port:q7' }, childBag, {
+      Value: { Ref: 'Pin' },
+    }) as Record<string, unknown>;
+    return { value: persisted['Value'], carried: bound.get('port:q7'), size: bound.size };
+  }
+  async function withPinSecret(run: () => Promise<void>): Promise<void> {
+    const original = mockSMSend.getMockImplementation()!;
+    mockSMSend.mockImplementation(
+      async () =>
+        ({ SecretString: JSON.stringify({ password: SECRET_PLAINTEXT, pin: 'q7' }) }) as never
+    );
+    try {
+      await run();
+    } finally {
+      mockSMSend.mockImplementation(original);
+    }
+  }
+  function expectCarried(seen: ReadonlyArray<ReturnType<typeof pinLeafFromBoundScope>>): void {
+    expect(seen.length).toBeGreaterThan(0);
+    for (const observed of seen) {
+      // The premise first: the replay really resolved the pin to a sub-floor
+      // middle, and the bag holds the whole-value carry BESIDE it.
+      expect(observed.size).toBe(2);
+      expect(observed.carried).toBe(`port:${PIN_EXPR}`);
+      expect(observed.value).toBe(`port:${PIN_EXPR}`);
+    }
+  }
+
+  it('carries a sub-floor LITERAL frame to the child as a WHOLE-VALUE entry on the revert-UPDATE arm (#2745)', async () => {
+    await withPinSecret(async () => {
+      const seen: Array<ReturnType<typeof pinLeafFromBoundScope>> = [];
+      const update = vi.fn(async () => {
+        seen.push(pinLeafFromBoundScope());
+        return { physicalId: CHILD_ARN };
+      });
+      const ctx = makeCtx({ update, disableOuterRetry: true });
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'Child',
+          changeType: 'UPDATE',
+          resourceType: NESTED,
+          physicalId: CHILD_ARN,
+          previousState: pinRow('child.json'),
+        },
+      ];
+      const state: Record<string, ResourceState> = { Child: pinRow('child-v2.json') };
+
+      await replayRollback(ops, state, 'Parent', ctx);
+
+      expect(update).toHaveBeenCalledOnce();
+      expectCarried(seen);
+    });
+  });
+
+  it('carries it on the --revert-failed arm, whose bag also resolved the attempted row (#2745)', async () => {
+    await withPinSecret(async () => {
+      const seen: Array<ReturnType<typeof pinLeafFromBoundScope>> = [];
+      const update = vi.fn(async () => {
+        seen.push(pinLeafFromBoundScope());
+        return { physicalId: CHILD_ARN };
+      });
+      const ctx = makeCtx({ update });
+      const failed: FailedOperation[] = [
+        {
+          logicalId: 'Child',
+          changeType: 'UPDATE',
+          resourceType: NESTED,
+          physicalId: CHILD_ARN,
+          previousState: pinRow('child.json'),
+          attemptedProperties: { Parameters: { Pin: `port:${PIN_EXPR}` }, TemplateURL: 'child-v2.json' },
+        },
+      ];
+      const state: Record<string, ResourceState> = { Child: pinRow('child-v2.json') };
+
+      await replayFailedOperations(failed, state, 'Parent', ctx);
+
+      expect(update).toHaveBeenCalledOnce();
+      expectCarried(seen);
+    });
+  });
+
+  it('carries it on the reverse-replacement replay-CREATE arm, on every attempt (#2745)', async () => {
+    await withPinSecret(async () => {
+      const seen: Array<ReturnType<typeof pinLeafFromBoundScope>> = [];
+      let attempts = 0;
+      const create = vi.fn(async () => {
+        seen.push(pinLeafFromBoundScope());
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('The role defined for the function cannot be assumed by Lambda.');
+        }
+        return { physicalId: 'old-child' };
+      });
+      const del = vi.fn().mockResolvedValue(undefined);
+      const ctx = makeCtx({ create, delete: del });
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'Child',
+          changeType: 'UPDATE',
+          resourceType: NESTED,
+          physicalId: 'new-child',
+          previousState: pinRow('child.json', 'old-child'),
+        },
+      ];
+      const state: Record<string, ResourceState> = { Child: res({ physicalId: 'new-child' }) };
+
+      const result = await replayRollback(ops, state, 'Parent', ctx);
+
+      expect(result.failures).toBe(0);
+      expect(create).toHaveBeenCalledTimes(2);
+      expectCarried(seen);
+    });
+  });
+
   it('revert UPDATE, SINGLE-SHOT branch (the one NestedStackProvider takes)', async () => {
     const seen: Array<ReturnType<typeof childLeavesFromBoundScope>> = [];
     const update = vi.fn(async () => {

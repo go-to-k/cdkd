@@ -211,7 +211,10 @@ describe('DeployEngine — nested-stack child inherits the parent secrets map (#
     },
   };
 
-  function makeChildEngine(inherited?: Map<string, string>): DeployEngine {
+  function makeChildEngine(
+    inherited?: Map<string, string>,
+    parameters: Record<string, string> = { [PARAM]: SECRET_PLAINTEXT }
+  ): DeployEngine {
     return new DeployEngine(
       mockStateBackend as never,
       mockLockManager as never,
@@ -222,7 +225,7 @@ describe('DeployEngine — nested-stack child inherits the parent secrets map (#
         dryRun: false,
         // What `NestedStackProvider.runChildDeploy` forwards: the parent's
         // ALREADY-RESOLVED parameter values, i.e. plaintext.
-        parameters: { [PARAM]: SECRET_PLAINTEXT },
+        parameters,
         ...(inherited && { inheritedSecrets: inherited }),
         parentStackInfo: {
           parentStack: 'Parent',
@@ -270,6 +273,81 @@ describe('DeployEngine — nested-stack child inherits the parent secrets map (#
     // ...and the child record is still stamped as a nested child (the seed must
     // not have displaced the v6 parent identity).
     expect(saved.parentStack).toBe('Parent');
+  });
+
+  // ----- the #2745 SUB-FLOOR CARRY, seen from the child -----
+  //
+  // The parent's recorder hands down `'q7' -> token` AND
+  // `'port:q7' -> 'port:' + token`, the latter the whole-value entry the child
+  // reads floorless. The seeding below is exactly that shape.
+  const PIN_EXPR = '{{resolve:secretsmanager:prod/child/db:SecretString:pin::}}';
+  const FRAMED_EXPR = `port:${PIN_EXPR}`;
+  const FRAMED = 'port:q7';
+  const carriedSeed = (): Map<string, string> =>
+    new Map([
+      ['q7', PIN_EXPR],
+      [FRAMED, FRAMED_EXPR],
+    ]);
+
+  it('persists a sub-floor LITERAL frame the parent carried as a WHOLE value, while AWS gets the framed plaintext (#2745)', async () => {
+    primeCreate();
+    const engine = makeChildEngine(carriedSeed(), { [PARAM]: FRAMED });
+
+    const result = await engine.deploy(childStackName, childTemplate);
+    expect(result.created).toBe(1);
+
+    const createdProps = mockProvider.create!.mock.calls[0]![2] as Record<string, unknown>;
+    expect(createdProps['Value']).toBe(FRAMED);
+    const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['ChildRes']!.properties['Value']).toBe(FRAMED_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(FRAMED);
+  });
+
+  it('WITHOUT the carry -- the pre-#2745 seed, holding only the bare middle -- the child persists the framed plaintext (the discriminator)', async () => {
+    primeCreate();
+    const engine = makeChildEngine(new Map([['q7', PIN_EXPR]]), { [PARAM]: FRAMED });
+
+    await engine.deploy(childStackName, childTemplate);
+
+    const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    // `q7` is below MIN_NEEDLE_LENGTH: neither the carry's substring arm nor
+    // the persist walk's value scan touches it, so the plaintext lands.
+    expect(saved.resources['ChildRes']!.properties['Value']).toBe(FRAMED);
+  });
+
+  it('binds the DIFF pass to the framed expression, so an unchanged child reports no change (#2745)', async () => {
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(new Map<string, ResourceChange>());
+    mockDiffCalculator.hasChanges!.mockReturnValue(false);
+    mockStateBackend.getState!.mockResolvedValue({
+      state: {
+        version: 8,
+        stackName: childStackName,
+        region: 'us-east-1',
+        resources: {
+          ChildRes: {
+            physicalId: 'child-res-phys',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Type: 'String', Value: FRAMED_EXPR },
+          },
+        },
+        outputs: {},
+        lastModified: 1,
+      } as StackState,
+      etag: 'e',
+    });
+
+    const engine = makeChildEngine(carriedSeed(), { [PARAM]: FRAMED });
+    await engine.deploy(childStackName, childTemplate);
+
+    // `redactParametersForDiff` reads the PARENT's bag: no association for
+    // `Pin`, so its fallback's whole-value arm yields the framed expression,
+    // which is what the stored side holds.
+    const diffResolveFn = mockDiffCalculator.calculateDiff!.mock.calls.at(-1)![2] as (
+      v: unknown
+    ) => Promise<unknown>;
+    await expect(diffResolveFn({ Ref: PARAM })).resolves.toBe(FRAMED_EXPR);
+    // The CONDITION pass keeps the real value, as for every other shape.
+    expect((seen.conditions.at(-1)!.parameters as Record<string, unknown>)[PARAM]).toBe(FRAMED);
   });
 
   it('scopes the inherited pair to the resource that REFERENCED the parameter, leaving an unrelated literal that merely contains the plaintext verbatim (#2087)', async () => {
