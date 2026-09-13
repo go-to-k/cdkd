@@ -1707,16 +1707,21 @@ describe('.claude/rules payload fence', () => {
     //
     // The floor's slack is `corpus - CORPUS_BYTES_MIN`. A deletion or gutting
     // SMALLER than that slack is invisible to it -- arithmetic, not calibration.
-    // Measured 2026-09-13 against the merge that ships this line: 33,993 B of
+    // Measured 2026-09-13 against the merge that ships this line: 34,064 B of
     // slack, and 47 of the 54 rule files (644,259 B of the corpus) are small
     // enough to be gutted to `SUBSTANTIVE_MIN_BYTES` with this floor still
-    // green. Review demonstrated exactly that, twice, on a 28,726 B file.
+    // green. Review demonstrated exactly that, twice, on a 28,726 B file. The
+    // slack figure drifts on every merge into this branch, by construction --
+    // it is `corpus - CORPUS_BYTES_MIN` and the corpus is what every lane
+    // appends to. Read it as a dated measurement, not an invariant.
     //
-    // Closing it with this bound is IMPOSSIBLE, which is why the claim is narrow
-    // rather than the number being nudged: catching the SMALLEST file
-    // (`layout-build.md`, 2,864 B) needs the floor at 1,038,629 -- the assertion
-    // is `>=`, so 1,038,628 would still ACCEPT that corpus -- leaving 1,364 B of
-    // compression tolerance, which any ordinary reflow would red. A single corpus-wide sum cannot both
+    // Closing it with this bound is IMPOSSIBLE, which is why the claim is
+    // narrow rather than the number being nudged: catching the SMALLEST file
+    // (`layout-build.md`, 2,864 B) needs the floor at 1,038,701. The assertion
+    // is `>=`, so the floor has to EXCEED the gutted corpus of 1,038,700 --
+    // hence the `+ 1`, which is also how the 1,002,384 above was derived --
+    // leaving 1,363 B of compression tolerance, which any ordinary reflow
+    // would red. A single corpus-wide sum cannot both
     // permit compression and detect a small deletion; only a PER-FILE floor can,
     // and that is go-to-k/cdkd#2810, not this case.
     //
