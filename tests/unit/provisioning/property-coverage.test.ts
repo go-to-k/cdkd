@@ -297,11 +297,13 @@ describe('SDK Provider property coverage', () => {
     // Synthetic providers, one per arm, each declaring `P` through that arm
     // ALONE — so dropping any one arm from `declaredFor` reds here even while
     // the live entries (all handled-backed today) keep the case above green.
-    // Shapes mirror `ResourceProvider`'s optional maps; nothing else on the
-    // provider is consulted.
+    // The parameter is typed against the two maps `declaredFor` reads, so a
+    // shape change in `ResourceProvider` fails here at compile time rather
+    // than leaving a synthetic literal silently un-matched.
     const T = 'AWS::Synthetic::Thing';
-    const asProvider = (p: object): ReturnType<typeof registry.getProvider> =>
-      p as ReturnType<typeof registry.getProvider>;
+    type Provider = ReturnType<typeof registry.getProvider>;
+    const asProvider = (p: Pick<Provider, 'handledProperties' | 'unhandledByDesign'>): Provider =>
+      p as Provider;
     const handledOnly = asProvider({ handledProperties: new Map([[T, new Set(['P'])]]) });
     const byDesignOnly = asProvider({
       unhandledByDesign: new Map([[T, new Map([['P', 'a rationale']])]]),
