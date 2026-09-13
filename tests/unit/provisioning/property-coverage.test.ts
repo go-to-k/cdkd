@@ -227,10 +227,42 @@ describe('SDK Provider property coverage', () => {
     }
   });
 
-  // Bogus-tolerance entries must (a) reference a registered type and
-  // (b) carry a non-empty rationale. The rationale is what makes the
-  // tolerance auditable — without it the entry is indistinguishable
-  // from a bug nobody investigated.
+  // Bogus-tolerance entries must (a) reference a registered type, (b) carry
+  // a non-empty rationale, and (c) name a property the type actually
+  // DECLARES. The rationale is what makes the tolerance auditable — without
+  // it the entry is indistinguishable from a bug nobody investigated. (c) is
+  // the direction that was missing (issue #3034): an entry says "the provider
+  // declares this and the schema no longer has it", and every reader keys on
+  // that premise — `classifyCoverage` consults it only while walking the
+  // three declaration sets below, `partitionSettledRemovals` only for a
+  // property in the generated `handled` map. A name in none of them is a
+  // rationale asserting nothing: it reads as protection and is inert, and if
+  // the declaration was MEANT to exist it is masking a silent drop. Measured
+  // 2026-09-12: 13 entries, 12 declared, 1 not (`AWS::EC2::NetworkAclEntry.
+  // IcmpTypeCode`, left over from #408 after #623 renamed the declaration to
+  // `Icmp`; deleted with this fence).
+  //
+  // The sets are read from the REGISTERED provider's runtime maps, exactly as
+  // the per-type case above hands them to `classifyCoverage` — not from the
+  // generated module — so this fence cannot disagree with the reader it
+  // exists to protect.
+  //
+  // ONE helper, two callers: the live case below and the synthetic one after
+  // it. Measured 2026-09-12, every remaining entry is `handledProperties`-
+  // backed, so the other two arms of this union have no witness in the real
+  // data and were individually deletable with the live case green; the
+  // synthetic case is what gives each arm a red.
+  const declaredFor = (
+    provider: ReturnType<typeof registry.getProvider>,
+    type: string,
+    backfillProps: readonly string[] | undefined
+  ): Set<string> =>
+    new Set<string>([
+      ...(provider.handledProperties?.get(type) ?? []),
+      ...(provider.unhandledByDesign?.get(type)?.keys() ?? []),
+      ...(backfillProps ?? []),
+    ]);
+
   it('every bogus-tolerated entry is well-formed', () => {
     const registeredSet = new Set(registeredTypes);
     const problems: string[] = [];
@@ -243,13 +275,53 @@ describe('SDK Provider property coverage', () => {
         problems.push(`bogusTolerated.${type}: must be an object`);
         continue;
       }
+      const declared = declaredFor(registry.getProvider(type), type, backfill[type]);
       for (const [propName, rationale] of Object.entries(entries)) {
         if (typeof rationale !== 'string' || rationale.trim().length === 0) {
           problems.push(`bogusTolerated.${type}.${propName}: rationale must be a non-empty string`);
         }
+        if (!declared.has(propName)) {
+          problems.push(
+            `bogusTolerated.${type}.${propName}: no declaration names this property ` +
+              '(not in handledProperties, unhandledByDesign, or the backfill list), so no ' +
+              'reader ever consults the entry. Delete it, or restore the declaration it was ' +
+              'written for.'
+          );
+        }
       }
     }
     expect(problems, problems.join('\n')).toEqual([]);
+  });
+
+  it('the declaration union reaches each of the three sets classifyCoverage walks', () => {
+    // Synthetic providers, one per arm, each declaring `P` through that arm
+    // ALONE — so dropping any one arm from `declaredFor` reds here even while
+    // the live entries (all handled-backed today) keep the case above green.
+    // The parameter is typed against the two maps `declaredFor` reads, so a
+    // shape change in `ResourceProvider` fails here at compile time rather
+    // than leaving a synthetic literal silently un-matched.
+    const T = 'AWS::Synthetic::Thing';
+    type Provider = ReturnType<typeof registry.getProvider>;
+    const asProvider = (p: Pick<Provider, 'handledProperties' | 'unhandledByDesign'>): Provider =>
+      p as Provider;
+    const handledOnly = asProvider({ handledProperties: new Map([[T, new Set(['P'])]]) });
+    const byDesignOnly = asProvider({
+      unhandledByDesign: new Map([[T, new Map([['P', 'a rationale']])]]),
+    });
+    const bare = asProvider({});
+
+    expect(declaredFor(handledOnly, T, undefined).has('P'), 'handledProperties arm').toBe(true);
+    expect(declaredFor(byDesignOnly, T, undefined).has('P'), 'unhandledByDesign arm').toBe(true);
+    expect(declaredFor(bare, T, ['P']).has('P'), 'backfill arm').toBe(true);
+    // ...and the control: a name in none of the three is NOT declared, which
+    // is the verdict the live case turns into a problem line.
+    expect(declaredFor(bare, T, undefined).has('P'), 'no arm').toBe(false);
+    // A declaration under a DIFFERENT type must not vouch — the maps are
+    // keyed by resource type and the lookup must be too.
+    expect(
+      declaredFor(asProvider({ handledProperties: new Map([['AWS::Other::Type', new Set(['P'])]]) }), T, undefined).has('P'),
+      'a sibling type\'s declaration'
+    ).toBe(false);
   });
 
   // Staleness guard: when AWS later adds a property previously listed in
