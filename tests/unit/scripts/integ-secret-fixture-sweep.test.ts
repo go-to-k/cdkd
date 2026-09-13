@@ -792,6 +792,13 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       'delete',
       'effective',
       'else',
+      // `generateMemberRefusal` (issue #3056): the MEMBER predicate the wire
+      // runs, so the retention drops a previous block whose members are
+      // malformed (the #1653 same-predicate rule). A module-level FREE
+      // FUNCTION so the helper reaches it without `this`; it receives the
+      // previous block only and returns a sentence or undefined, and it is
+      // itself on the module's top-level allow-list below.
+      'generateMemberRefusal',
       'if',
       'logicalId',
       'previousProperties',
@@ -800,6 +807,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       'return',
       'this',
       'undefined',
+      'usableContainer',
       'usablePrevious',
     ]);
     // A name on the list can be SHADOWED: a local `const requireConfigObject =
@@ -810,7 +818,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       [...stripStrings(retainBody).matchAll(/\bconst\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]).sort(),
       'retainPreviousGenerateBlock declares a binding it did not before — a local can shadow an ' +
         'allow-listed name; trace it before widening this'
-    ).toEqual(['effective', 'usablePrevious']);
+    ).toEqual(['effective', 'usableContainer', 'usablePrevious']);
     expect(
       stripStrings(retainBody).match(/=>/g)?.length,
       'retainPreviousGenerateBlock gained a closure beyond the no-op onUnusable; re-open #2212'
@@ -866,7 +874,10 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     }
     expect(depth, 'the brace walk did not return to depth 0 — the stripper mis-read the source').toBe(0);
     const unexpectedTopLevel = topLevel.filter(
-      (line) => !/^(?:import\b|export\s+class\s+SecretsManagerSecretProvider\b|function\s+(?:asJson|requireSecretStringShape)\()/.test(line)
+      (line) =>
+        !/^(?:import\b|export\s+class\s+SecretsManagerSecretProvider\b|function\s+(?:asJson|requireSecretStringShape|generateMemberRefusal)\()/.test(
+          line
+        )
     );
     expect(topLevel.length, 'the top-level walk saw no statements — it attests to nothing').toBeGreaterThanOrEqual(5);
     expect(

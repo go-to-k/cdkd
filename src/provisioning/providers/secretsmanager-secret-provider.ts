@@ -68,6 +68,69 @@ function requireSecretStringShape(literal: unknown): string {
  * WHY: CreateSecret is synchronous - the CC API adds unnecessary polling overhead
  * (1s->2s->4s->8s) for an operation that completes immediately.
  */
+/**
+ * The refusal for the MEMBERS of a `GenerateSecretString` block whose container
+ * has already passed `requireConfigObject` (issue #3056), or `undefined` when
+ * every member is usable. ONE predicate for two readers — the generator, which
+ * mints from the block, and `retainPreviousGenerateBlock`, which decides
+ * whether the PREVIOUS block is worth recording — per the #1653 rule that the
+ * retention runs the same predicate the wire does. A module-level function
+ * rather than a method so the recording helper can call it without reaching
+ * `this`, which the #2212 fence confines to one logger call.
+ *
+ * Per member, the shared `config-shape.ts` predicate for its type: CFn is
+ * stringly typed, so `PasswordLength: "32"` and `ExcludePunctuation: "true"`
+ * coerce, while `null`, a blank, a non-numeric string, an object or an
+ * unresolved intrinsic refuse. `PasswordLength` is capped at 4096, the
+ * service's documented maximum, so a runaway length is refused before
+ * `new Uint8Array` allocates it. `GenerateStringKey` / `SecretStringTemplate`
+ * must be declared TOGETHER — measured on CloudFormation (us-east-1,
+ * 2026-09-13): a template with `SecretStringTemplate` alone fails with
+ * `SecretStringTemplate and GenerateStringKey must both be set or removed`,
+ * so this pair rule is the service's, in both directions — the template must
+ * parse to a JSON OBJECT (an array or a scalar parses and cannot take a key),
+ * and the key may not be `__proto__`, which `template[key] = password` would
+ * hand to the prototype setter, silently dropping the password from the
+ * document. The messages name shapes only, never a value: the template can
+ * carry a secret.
+ */
+function generateMemberRefusal(config: Record<string, unknown>): string | undefined {
+  const P = 'AWS::SecretsManager::Secret GenerateSecretString';
+  const shape =
+    configIntegerRefusal(config, 'PasswordLength', P, 1, 4096) ??
+    configBooleanRefusal(config, 'ExcludeUppercase', P) ??
+    configBooleanRefusal(config, 'ExcludeLowercase', P) ??
+    configBooleanRefusal(config, 'ExcludeNumbers', P) ??
+    configBooleanRefusal(config, 'ExcludePunctuation', P) ??
+    // A blank fallback is what lets a declared `''` pass (legitimate: exclude
+    // nothing); the non-blank sentinel on the next two is never TAKEN — it
+    // only makes a blank value refuse, since a blank key or template is not
+    // a declaration.
+    configStringRefusal(config, 'ExcludeCharacters', '', P) ??
+    configStringRefusal(config, 'GenerateStringKey', 'required', P) ??
+    configStringRefusal(config, 'SecretStringTemplate', 'required', P);
+  if (shape !== undefined) return shape;
+  const key = config['GenerateStringKey'];
+  const template = config['SecretStringTemplate'];
+  if (key === undefined && template === undefined) return undefined;
+  if (key === undefined || template === undefined) {
+    return `${P}.GenerateStringKey and ${P}.SecretStringTemplate must be declared together (got only ${key === undefined ? 'SecretStringTemplate' : 'GenerateStringKey'})`;
+  }
+  if (key === '__proto__') {
+    return `${P}.GenerateStringKey must not be __proto__ (the password would be written to the prototype, not the document)`;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(template as string);
+  } catch {
+    return `${P}.SecretStringTemplate must be a JSON object (got a string that does not parse as JSON)`;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return `${P}.SecretStringTemplate must be a JSON object (got JSON that is not an object)`;
+  }
+  return undefined;
+}
+
 export class SecretsManagerSecretProvider implements ResourceProvider {
   private smClient: SecretsManagerClient;
   private logger = getLogger().child('SecretsManagerSecretProvider');
@@ -468,11 +531,14 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * value, or with the key dropped when the previous side cannot be vouched
    * for either.
    *
-   * Validated through `requireConfigObject` — the same predicate the wire read
-   * runs — rather than a hand-written `typeof` twin, so the two cannot
-   * disagree about a blank string, an explicit null or an intrinsic. The
-   * retained block is COPIED, not aliased: both engine consumers spread the
-   * answer one level deep only (the #1653 review rule).
+   * Validated through `requireConfigObject` AND `generateMemberRefusal` — the
+   * same two predicates the wire read runs, container then members — rather
+   * than a hand-written twin, so the two cannot disagree about a blank string,
+   * an explicit null, an intrinsic, or (since issue #3056) a malformed member
+   * inside a well-formed block: a pre-#3056 record holding
+   * `PasswordLength: 'abc'` is dropped, not retained. The retained block is
+   * COPIED, not aliased: both engine consumers spread the answer one level
+   * deep only (the #1653 review rule).
    *
    * The DROP is announced rather than silent (the #1654 rule: dropping a key
    * moves a hazard unless something still says so). A record carrying
@@ -498,7 +564,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     // An ABSENT previous (`undefined` / `null`) takes the same road as an
     // unusable one: the guard answers `undefined` for both, and the drop
     // below is the right answer for both.
-    const usablePrevious = requireConfigObject(
+    const usableContainer = requireConfigObject(
       previousProperties['GenerateSecretString'],
       'AWS::SecretsManager::Secret GenerateSecretString',
       {
@@ -508,6 +574,10 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         onUnusable: () => {},
       }
     );
+    const usablePrevious =
+      usableContainer !== undefined && generateMemberRefusal(usableContainer) === undefined
+        ? usableContainer
+        : undefined;
     const effective = { ...properties };
     if (usablePrevious === undefined) {
       delete effective['GenerateSecretString'];
@@ -709,10 +779,10 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * bare password RAW where the template declared a JSON document — as the
    * new `AWSCURRENT`.
    *
-   * `GenerateStringKey` and `SecretStringTemplate` must be declared TOGETHER
-   * (Secrets Manager rejects one without the other), the template must parse
-   * to a JSON object, and the key is written into it; both absent means a bare
-   * password, which is what the service does.
+   * The member rules themselves live in `generateMemberRefusal` (shared with
+   * the recording helper); both present means the key is written into the
+   * parsed template, both absent means a bare password, which is what the
+   * service does.
    *
    * With no `onUnusable` a refusal THROWS (the create path, where the block
    * is template-borne). With one, the message is handed over and `undefined`
@@ -726,17 +796,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     config: Record<string, unknown>,
     options?: { onUnusable?: (message: string) => void }
   ): string | undefined {
-    const PATH = 'AWS::SecretsManager::Secret GenerateSecretString';
-    const refusal =
-      configIntegerRefusal(config, 'PasswordLength', PATH, 1) ??
-      configBooleanRefusal(config, 'ExcludeUppercase', PATH) ??
-      configBooleanRefusal(config, 'ExcludeLowercase', PATH) ??
-      configBooleanRefusal(config, 'ExcludeNumbers', PATH) ??
-      configBooleanRefusal(config, 'ExcludePunctuation', PATH) ??
-      configStringRefusal(config, 'ExcludeCharacters', '', PATH) ??
-      configStringRefusal(config, 'GenerateStringKey', 'required', PATH) ??
-      configStringRefusal(config, 'SecretStringTemplate', 'required', PATH) ??
-      this.templateRefusal(config, PATH);
+    const refusal = generateMemberRefusal(config);
     if (refusal !== undefined) {
       if (options?.onUnusable) {
         options.onUnusable(
@@ -788,32 +848,6 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     const template = JSON.parse(secretStringTemplate) as Record<string, unknown>;
     template[generateStringKey] = password;
     return JSON.stringify(template);
-  }
-
-  /**
-   * The refusal for the `GenerateStringKey` / `SecretStringTemplate` PAIR,
-   * after each member's own shape has passed: declared together or not at
-   * all, and the template a JSON OBJECT (an array or a scalar parses and
-   * cannot take a key; the old `catch` arm returned the bare password for a
-   * template that did not parse, RAW, with no warning).
-   */
-  private templateRefusal(config: Record<string, unknown>, path: string): string | undefined {
-    const key = config['GenerateStringKey'];
-    const template = config['SecretStringTemplate'];
-    if (key === undefined && template === undefined) return undefined;
-    if (key === undefined || template === undefined) {
-      return `${path}.GenerateStringKey and ${path}.SecretStringTemplate must be declared together (got only ${key === undefined ? 'SecretStringTemplate' : 'GenerateStringKey'})`;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(template as string);
-    } catch {
-      return `${path}.SecretStringTemplate must be a JSON object (got a string that does not parse as JSON)`;
-    }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return `${path}.SecretStringTemplate must be a JSON object (got JSON that is not an object)`;
-    }
-    return undefined;
   }
 
   /**

@@ -799,7 +799,30 @@ describe('configIntegerRefusal (issue #3056)', () => {
     for (const container of ['32', 42, [], true, { Ref: 'Cfg' }]) {
       const refusal = configIntegerRefusal(container, 'PasswordLength', P, 1);
       expect(refusal).toContain(`${P} must be an object`);
+      // The shared detail clause, as the boolean sibling asserts; an intrinsic
+      // container names ITS shape instead (`an unresolved Ref intrinsic`).
+      expect(refusal).toMatch(/check for an unresolved intrinsic|an unresolved Ref intrinsic/);
     }
+  });
+
+  it('refuses the NON-DECIMAL spellings Number() would coerce (CFn refuses them too)', () => {
+    for (const value of ['1e2', '0x10', '0b11', '0o7', '1_000', '32px', 'Infinity']) {
+      expect(coerceCfnInteger(value), value).toBeUndefined();
+      expect(configIntegerRefusal({ N: value }, 'N', P, 1), value).toBeDefined();
+    }
+    // A sign and surrounding whitespace are the decimal-literal grammar.
+    for (const value of ['+5', '-0', ' 7 ', '\t8\n']) {
+      expect(coerceCfnInteger(value), value).toBeDefined();
+    }
+  });
+
+  it('refuses above the caller\'s max, and words the range', () => {
+    expect(configIntegerRefusal({ N: 4096 }, 'N', P, 1, 4096)).toBeUndefined();
+    expect(configIntegerRefusal({ N: 4097 }, 'N', P, 1, 4096)).toContain('must be an integer between 1 and 4096');
+    expect(configIntegerRefusal({ N: '70000' }, 'N', P, 1, 4096)).toBeDefined();
+    // No max: the floor alone is worded.
+    expect(configIntegerRefusal({ N: 70000 }, 'N', P, 1)).toBeUndefined();
+    expect(configIntegerRefusal({ N: 0 }, 'N', P, 1)).toContain('must be an integer >= 1');
   });
 
   it('refuses a present-but-unusable value, naming the FIELD path and the floor', () => {

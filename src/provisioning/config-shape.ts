@@ -570,21 +570,23 @@ export function configBooleanRefusal(
  *
  * Same reason as {@link coerceCfnBoolean}: CloudFormation is stringly typed, so
  * an imported or hand-written template legitimately spells `PasswordLength:
- * "32"`. A finite whole number, or a string that parses to one, is the value;
- * anything else — `null`, `''`, `'abc'`, `3.5`, an object, an unresolved
- * intrinsic — is `undefined`, so a caller that indexed `(x as number) || 32`
- * cannot read a malformed member as its default.
+ * "32"`. A finite whole number, or a string that is a DECIMAL INTEGER LITERAL
+ * (optional sign, digits, surrounding whitespace), is the value; anything
+ * else — `null`, `''`, `'abc'`, `3.5`, `'1e2'`, `'0x10'`, an object, an
+ * unresolved intrinsic — is `undefined`, so a caller that indexed
+ * `(x as number) || 32` cannot read a malformed member as its default. The
+ * string grammar is deliberately narrower than `Number()`: CloudFormation's
+ * own integer parser refuses `'1e2'` / `'0x10'` / `'0b11'`, and accepting
+ * them here would mint from a template CloudFormation rejects (review of
+ * issue #3056 measured all three coerced under `Number()`).
  *
  * @returns the integer, or `undefined` when the value is not one.
  */
 export function coerceCfnInteger(value: unknown): number | undefined {
-  const n =
-    typeof value === 'number'
-      ? value
-      : typeof value === 'string' && value.trim() !== ''
-        ? Number(value)
-        : undefined;
-  return n !== undefined && Number.isInteger(n) ? n : undefined;
+  if (typeof value === 'number') return Number.isInteger(value) ? value : undefined;
+  if (typeof value !== 'string' || !/^[+-]?\d+$/.test(value.trim())) return undefined;
+  const n = Number(value.trim());
+  return Number.isSafeInteger(n) ? n : undefined;
 }
 
 /**
@@ -598,6 +600,10 @@ export function coerceCfnInteger(value: unknown): number | undefined {
  * @param min the smallest integer that is usable (a generated-password length
  *   of `0` is a value, not a refusal, to `Number.isInteger`, and it mints an
  *   empty secret); pass `1` for a count, `0` where zero is legitimate.
+ * @param max the largest, when the API documents one — a value the service
+ *   would reject is refused HERE, before a local consumer spends the work
+ *   (`new Uint8Array(1e9)` allocates and spins before AWS ever sees the
+ *   length). Omit when the API states no cap.
  * @returns The refusal sentence (`<path> must be …`), or `undefined` when the
  *   value is usable — including the ABSENT container / ABSENT key cases, which
  *   legitimately take the caller's default.
@@ -606,7 +612,8 @@ export function configIntegerRefusal(
   container: unknown,
   key: string,
   containerPath: string,
-  min: number
+  min: number,
+  max?: number
 ): string | undefined {
   if (container === undefined || container === null) return undefined;
   if (!isPlainObject(container) || isUnresolvedIntrinsicContainer(container)) {
@@ -615,8 +622,9 @@ export function configIntegerRefusal(
   const value = container[key];
   if (value === undefined) return undefined;
   const n = coerceCfnInteger(value);
-  if (n !== undefined && n >= min) return undefined;
-  return `${containerPath}.${key} must be an integer >= ${min} ${malformedShapeDetail(value)}`;
+  if (n !== undefined && n >= min && (max === undefined || n <= max)) return undefined;
+  const range = max === undefined ? `>= ${min}` : `between ${min} and ${max}`;
+  return `${containerPath}.${key} must be an integer ${range} ${malformedShapeDetail(value)}`;
 }
 
 /** The FIELD half of {@link configStringRefusal}, shared with {@link requireConfigString}. */
