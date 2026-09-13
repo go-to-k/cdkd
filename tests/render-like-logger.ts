@@ -19,11 +19,12 @@ import { displaySafe } from '../src/utils/display-safe.js';
  * `ConsoleLogger`, so the class is unreachable from that suite. A suite that
  * does NOT mock the module can recover the line — `formatMessage` is private,
  * but spying on `console.debug` and slicing past the level prefix gets it, and
- * `logger-formatter-mirror.test.ts`'s `realTail` does exactly that. What it
+ * `logger-formatter-mirror.test.ts`'s `realLine` does exactly that. What it
  * costs is a spy plus a prefix strip per call, which is why the drift suite's
- * `debugRendered` helper reads this function instead: one call site for this
- * function, three invocations of `debugRendered`, and five assertions on what
- * they return -- four reading the string, one asserting it does not THROW.
+ * `debugRendered` helper reads this function instead: one call site in THAT
+ * suite (the fence suite has its own), three invocations of `debugRendered`,
+ * and five assertions on what they return -- four reading the string, one
+ * asserting it does not THROW.
  *
  * A mirror goes stale in SILENCE, and this one already did. #3003 added the
  * sanitiser to production while the mirror kept rendering raw; the re-sync then

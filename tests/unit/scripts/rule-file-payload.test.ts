@@ -1428,7 +1428,7 @@ const CORPUS_BYTES_MIN = 1_006_000; // RE-DERIVED UPWARD 966_000 -> 1_006_000 (2
                                     // can never again exceed the LARGEST file -- which is what
                                     // stops the floor going wholly vacuous, and is strictly less
                                     // than "never misses a deletion": a deletion smaller than the
-                                    // slack stays invisible, today 45 of the 51 files. That
+                                    // slack stays invisible, today 47 of the 54 files. That
                                     // residual is go-to-k/cdkd#2810 and no value of this constant
                                     // closes it. It is NOT a twin of the `tests/setup.ts` gutting
                                     // case, which does catch gutting for its one budgeted row.
@@ -1707,16 +1707,16 @@ describe('.claude/rules payload fence', () => {
     //
     // The floor's slack is `corpus - CORPUS_BYTES_MIN`. A deletion or gutting
     // SMALLER than that slack is invisible to it -- arithmetic, not calibration.
-    // Measured on the tree that ships this line: 37,542 B of slack, and 45 of
-    // the 51 rule files (658,337 B of the corpus) are small enough to be gutted
-    // to `SUBSTANTIVE_MIN_BYTES` with this floor still green. Review demonstrated
-    // exactly that, twice, on a 28,726 B file.
+    // Measured 2026-09-13 against the merge that ships this line: 33,993 B of
+    // slack, and 47 of the 54 rule files (644,259 B of the corpus) are small
+    // enough to be gutted to `SUBSTANTIVE_MIN_BYTES` with this floor still
+    // green. Review demonstrated exactly that, twice, on a 28,726 B file.
     //
     // Closing it with this bound is IMPOSSIBLE, which is why the claim is narrow
-    // rather than the number being nudged: catching the SMALLEST file (2,659 B)
-    // needs the floor at 1,002,384 -- the assertion is `>=`, so 1,002,383 would
-    // still ACCEPT that corpus -- leaving 1,158 B of compression tolerance --
-    // any ordinary reflow would red it. A single corpus-wide sum cannot both
+    // rather than the number being nudged: catching the SMALLEST file
+    // (`layout-build.md`, 2,864 B) needs the floor at 1,038,629 -- the assertion
+    // is `>=`, so 1,038,628 would still ACCEPT that corpus -- leaving 1,364 B of
+    // compression tolerance, which any ordinary reflow would red. A single corpus-wide sum cannot both
     // permit compression and detect a small deletion; only a PER-FILE floor can,
     // and that is go-to-k/cdkd#2810, not this case.
     //

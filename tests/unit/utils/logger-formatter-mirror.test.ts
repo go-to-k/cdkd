@@ -57,8 +57,12 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
    * run through the GLOBAL logger, so which arm they take depends on the flag:
    * at the default level they are compact-with-colours-and-`error`, and under
    * `cdkd destroy --verbose` (`destroy.ts` calls `logger.setLevel('debug')` on
-   * that same object) they move to the verbose-colour arm. Both are in `ARMS`,
-   * which is the point of enumerating the returns rather than picking one.
+   * that same object) they move to the verbose-colour RETURN. That live triple
+   * is `(debug, error, colours)`, which no ARM spells -- but `formatMessage`
+   * branches on `this.level`, not on the emitted level, so ARM 1 drives the
+   * same return and `realLine` strips the only part that differs. Both returns
+   * are covered, which is the point of enumerating them rather than picking
+   * one.
    */
   const ARMS = [
     { name: 'verbose, colours', loggerLevel: 'debug', emit: 'debug', colors: true },
