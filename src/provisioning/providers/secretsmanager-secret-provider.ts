@@ -488,16 +488,19 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Record<string, unknown> {
-    const previous = previousProperties['GenerateSecretString'];
-    const usablePrevious =
-      previous == null
-        ? undefined
-        : requireConfigObject(previous, 'AWS::SecretsManager::Secret GenerateSecretString', {
-            // No-op: the drop warning below is the one announcement, naming
-            // BOTH sides; a second line about the previous block would name a
-            // value the user did not just write.
-            onUnusable: () => {},
-          });
+    // An ABSENT previous (`undefined` / `null`) takes the same road as an
+    // unusable one: the guard answers `undefined` for both, and the drop
+    // below is the right answer for both.
+    const usablePrevious = requireConfigObject(
+      previousProperties['GenerateSecretString'],
+      'AWS::SecretsManager::Secret GenerateSecretString',
+      {
+        // No-op: the drop warning below is the one announcement, naming BOTH
+        // sides; a second line about the previous block would name a value
+        // the user did not just write.
+        onUnusable: () => {},
+      }
+    );
     const effective = { ...properties };
     if (usablePrevious === undefined) {
       delete effective['GenerateSecretString'];

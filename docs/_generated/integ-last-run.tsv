@@ -270,7 +270,7 @@ sdk-to-cc-autoroute	2026-09-11T18:26:05Z	PASS	168	verify.sh	maintainer-side run 
 secrets-array-nested	2026-09-10T08:15:35Z	PASS	90	verify.sh	rc0 after fixture retired the plaintext residual (#2852); first run FAILed on the old assertion
 secrets-dynamic-ref	2026-09-11T06:24:07Z	PASS	461	verify.sh	gating PR 2945; RE-RUN after the harness killed the first attempt mid-deploy, which left state+secret+2 ssm+lambda+role orphans; the re-run cleaned them and verified 0 surviving versions
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
-secretsmanager-update-value-source	2026-09-12T19:19:26Z	PASS	111	verify.sh	rc ok, orph clean, 0 surviving versions (#3048 live test)
+secretsmanager-update-value-source	2026-09-12T19:19:26Z	PASS	111	verify.sh	rc ok, orph clean, 0 surviving versions (PR 3058: ordinary paths only, the skip/retain arms are state-replay-only)
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 servicediscovery	2026-08-20T11:10:22Z	PASS	110	verify.sh	#2053: 4 threaded sites incl. the 5.5-min DeleteNamespace backoff; clean destroy, 0 orphans
 servicediscovery-namespaces	2026-08-20T03:39:32Z	PASS	136	verify.sh	issues 2058/2063 maskSecrets threading, re-run after rebase onto 0.284.17; six namespace arms + pollOperation via async operation-based create/update/delete; destroy 2 deleted 0 errors, hosted zone gone, 0 orphans

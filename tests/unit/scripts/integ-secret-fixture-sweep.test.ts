@@ -721,12 +721,25 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       code.match(/\bthis\.generateSecretString\(/g)?.length,
       'generateSecretString gained a call site — trace where its value goes before changing this'
     ).toBe(2);
-    const fieldWrites = (s: string): number => (s.match(/\bthis\.\w+\s*=(?!=)/g) ?? []).length;
+    // Dotted CHAINS count (`this.logger.minted = v` is a write through the
+    // one member the helper may read), and the two spellings that dodge the
+    // dot -- a cast (`(this as any).x =`) and bracket access (`this['x'] =`)
+    // -- are refused outright, anywhere in the file: the provider never casts
+    // or indexes `this`, so a mutant that starts to is the stash (test-review
+    // round of go-to-k/cdkd#3058, both measured GREEN under the dot-only form).
+    const fieldWrites = (s: string): number => (s.match(/\bthis\.[\w.]+\s*=(?!=)/g) ?? []).length;
     expect(
       fieldWrites(code),
       'an instance field is assigned outside the constructor — a stash can carry the minted value ' +
         'across methods (and across resources: the provider is a singleton); re-open #2212'
     ).toBe(fieldWrites(methodBody(code, 'constructor')));
+    for (const dodge of [/\bthis\s+as\b/, /\bthis\s*\[/]) {
+      expect(
+        dodge.exec(code)?.[0],
+        `the secret provider now spells \`${dodge.source}\` — a cast or bracket access on \`this\` ` +
+          `is the field-write spelling the dot check cannot see; re-open #2212`
+      ).toBeUndefined();
+    }
     for (const method of ['create', 'update']) {
       // Comment-STRIPPED: a comment inside a return literal was otherwise read
       // as a key (measured on issue #3048's `effectiveProperties` note).

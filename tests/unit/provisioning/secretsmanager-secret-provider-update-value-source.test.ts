@@ -187,10 +187,11 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
   });
 
   it('a SKIP with an ABSENT previous block (secret created from a literal) drops the key too', async () => {
-    // The `previous == null` arm: the previous record carries a literal and no
-    // block, the template switched to a malformed block. Nothing to retain,
-    // so the key is dropped and the drop announced; the literal is NOT
-    // restored (the template removed it), see the helper's JSDoc.
+    // The ABSENT previous: the record carries a literal and no block, the
+    // template switched to a malformed block. The guard answers `undefined`
+    // for an absent value exactly as for an unusable one, so the key is
+    // dropped and the drop announced; the literal is NOT restored (the
+    // template removed it), see the helper's JSDoc.
     const prev = literal();
     const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
 
@@ -228,8 +229,37 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     );
   });
 
+  it.each([
+    ['update', 'sends nothing and records the desired bag'],
+    ['create', 'creates a valueless secret and says so'],
+  ])('an explicit GenerateSecretString: null on %s is ABSENT, not malformed (%s)', async (path) => {
+    // `config-shape.ts` rule 1: `undefined` / `null` mean "the template
+    // omitted the block", so the `!= null` gate must let a declared `null`
+    // fall through to the literal read WITHOUT the malformed-container
+    // warning -- the one falsy value that gate and `requireConfigObject`
+    // would otherwise disagree about (test-review round of go-to-k/cdkd#3058).
+    const props = { Name: 'my-secret', Description: 'app secret', GenerateSecretString: null };
+    if (path === 'update') {
+      const result = await provider.update('L', SECRET_ARN, TYPE, props, generated());
+      expect(updateInput().SecretString).toBeUndefined();
+      expect(result.effectiveProperties).toBeUndefined();
+      expect(childLogger.warn).not.toHaveBeenCalled();
+    } else {
+      mockSend.mockResolvedValue({ ARN: SECRET_ARN });
+      await provider.create('L', TYPE, props);
+      const created = mockSend.mock.calls.find((c) => c[0] instanceof CreateSecretCommand);
+      expect(created![0].input.SecretString).toBeUndefined();
+      expect(childLogger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('must be an object')
+      );
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('created with NO version')
+      );
+    }
+  });
+
   it('an ORDINARY update records nothing — effectiveProperties is absent', async () => {
-    // The engine gates on `??`, so ABSENT is the contract for "record the
+    // Every engine reader gates on truthiness or `=== undefined`, so ABSENT is the contract for "record the
     // desired bag". An implementation that always returned a bag would be
     // indistinguishable by value here but would rewrite the record on every
     // deploy.

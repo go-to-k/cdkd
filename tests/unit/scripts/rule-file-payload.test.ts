@@ -1381,7 +1381,18 @@ const CORPUS_FILE_COUNT = 54; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#271
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 966_000;   // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
+const CORPUS_BYTES_MIN = 1_006_000; // RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, PR
+                                    // go-to-k/cdkd#3058): the mechanical occasion below fired for
+                                    // the first time. CI measured 1,040,248 B on the MERGE of that
+                                    // PR (origin/main 1,039,322 B + the PR's 926 B rule paragraph),
+                                    // so `corpus - hooks.md` = 966,642 B cleared the 966_000 floor
+                                    // by 642 B and the floor could no longer see the largest file
+                                    // being emptied. Set against the merge measurement -- 34,248 B
+                                    // of slack, the same ~34 KB every previous setting used -- not
+                                    // against the branch's own 1,036,316 B, which is 3,006 B behind
+                                    // main and would have shipped 31 KB while claiming 34.
+                                    //
+                                    // 966_000 was: // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
                                     // go-to-k/cdkd#2310): measured 1,003,542 B on the tree that
                                     // ships this line -- 37,542 B of slack. The constant was set
                                     // against a 999,957 B corpus (~34 KB, the margin every previous

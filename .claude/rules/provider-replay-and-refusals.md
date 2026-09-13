@@ -49,8 +49,9 @@ can read** (issue [#3048](https://github.com/go-to-k/cdkd/issues/3048),
 `SecretsManagerSecretProvider.create`'s malformed `GenerateSecretString`).
 Proceeding mints a bare password and stages it RAW as `AWSCURRENT`; skipping
 creates a secret with NO version. A warning beside either is still a green
-rollback, and the remedy — a hand-edit of the record — is the same one the
-refusal's loud failure points at. The test here is not "could the replay
+rollback, while the refusal fails it loudly; the remedy — a hand-edit of
+the record — is the same either way, and the refusal's comment records it
+(the thrown message names only the shape). The test here is not "could the replay
 succeed" but "does any downgrade leave the user better off than the failure"
 — and it is stated AT the refusal, like the exception above, with the two
 outcomes it weighed. Its update-path sibling answers
