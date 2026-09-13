@@ -307,7 +307,8 @@ Reach for it only when all three hold, or it becomes a way to hide losses:
   derivation, which reads that side;
 - it REPLACES the desired bag wholesale rather than patching it, so it must be
   complete. An absent field (the normal case) means "record the desired
-  properties", which is why the engine gates on `??` and not on truthiness — an
+  properties", and every engine reader gates on presence (truthiness or
+  `=== undefined`; an explicit `undefined` reads as absent) — an
   empty object is a legitimate answer.
 
 **It is not the only narrowing the record takes.** A property absent from

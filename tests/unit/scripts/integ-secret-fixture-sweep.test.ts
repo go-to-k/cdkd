@@ -703,43 +703,94 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       ).toBeUndefined();
     }
     expect(
-      /\bthis\b(?!\.logger\.)/.exec(retainBody)?.[0],
-      'retainPreviousGenerateBlock now reaches the instance beyond the logger — a delegate, a ' +
+      /\bthis\b(?!\.logger\.warn\()/.exec(retainBody)?.[0],
+      'retainPreviousGenerateBlock now reaches the instance beyond logger.warn — a delegate, a ' +
         'field or a bracket access can route the minted value into the bag it builds; re-open #2212'
     ).toBeUndefined();
+    // THE READ SIDE IS AN ALLOW-LIST (round-4 security review). A write-side
+    // denylist loses the race: eight stash spellings were measured GREEN under
+    // the previous arms, two of them proven to land the minted value in the
+    // recorded bag -- a module-level `const cache = new Map()` written from
+    // `create()` and read back here (`const` is not `let`/`var`), and
+    // `(getLogger() as any).x = v` with no `this` at all. Every one of them
+    // needs a NAME inside this helper that is not on this list, so the list is
+    // what closes the class rather than one more spelling. Strings and
+    // template literals are stripped (the warning text is prose), member
+    // accesses and object keys are not free identifiers.
+    const freeIdentifiers = (body: string): string[] => {
+      const stripped = body
+        .replace(/`(?:[^`\\]|\\.)*`/g, ' ')
+        .replace(/'(?:[^'\\]|\\.)*'/g, ' ')
+        .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+        .replace(/\.{3}/g, ' ')
+        .replace(/\.[A-Za-z_$][\w$]*/g, ' ')
+        .replace(/\b[A-Za-z_$][\w$]*\s*:(?!:)/g, ' ');
+      return [...new Set(stripped.match(/\b[A-Za-z_$][\w$]*\b/g) ?? [])].sort();
+    };
+    expect(
+      freeIdentifiers(retainBody),
+      'retainPreviousGenerateBlock now names an identifier outside its allow-list — a new name is a ' +
+        'new route by which the minted value can reach the bag it builds; trace it before widening this'
+    ).toEqual([
+      'const',
+      'delete',
+      'effective',
+      'else',
+      'if',
+      'previousProperties',
+      'properties',
+      'requireConfigObject',
+      'return',
+      'this',
+      'undefined',
+      'usablePrevious',
+    ]);
     // Routes AROUND the instance are refused by absence: none of these tokens
     // appears in the provider today, so a mutant that stashes the value in
-    // module or static state, or writes the instance reflectively, reds here.
-    for (const escape of [/^(?:let|var)\s/m, /\bstatic\s/, /\bglobalThis\b/, /\bReflect\./, /Object\.assign\(\s*this\b/]) {
+    // module or static state, writes the instance reflectively, writes the
+    // minted value INTO the desired bag the helper spreads (`properties['X'] =`),
+    // or reaches `this` by any spelling other than a dotted member (`this!`,
+    // `<any>this`, `(this)`, `this['x']`, `this satisfies`, `= this`) reds here.
+    for (const escape of [
+      /^(?:const|let|var)\s/m,
+      /\bstatic\s/,
+      /\bglobalThis\b/,
+      /\bReflect\./,
+      /Object\.(?:assign|defineProperty|defineProperties)\(/,
+      /\b(?:properties|previousProperties)(?:\.\w+|\[[^\]]*\])\s*=(?!=)/,
+      /\bthis\b(?!\.)/,
+    ]) {
       expect(
         escape.exec(code)?.[0],
         `the secret provider now contains \`${escape.source}\` — a value can travel outside the ` +
           `method it was minted in; re-open #2212`
       ).toBeUndefined();
     }
+    // The SKIP flag is what routes `update()` to the helper, so its true arm is
+    // pinned to the one site that also returns NO value: a flipped flag beside
+    // a minted value would hand the helper a bag the wire is about to carry.
+    expect(
+      code.match(/skippedGenerate:\s*true/g)?.length,
+      'skippedGenerate: true appears at more than one site — each must be the { value: undefined } arm'
+    ).toBe(1);
+    expect(
+      code.match(/\{\s*value:\s*undefined,\s*skippedGenerate:\s*true\s*\}/g)?.length,
+      'the skippedGenerate: true arm no longer returns value: undefined; re-open #2212'
+    ).toBe(1);
     expect(
       code.match(/\bthis\.generateSecretString\(/g)?.length,
       'generateSecretString gained a call site — trace where its value goes before changing this'
     ).toBe(2);
     // Dotted CHAINS count (`this.logger.minted = v` is a write through the
-    // one member the helper may read), and the two spellings that dodge the
-    // dot -- a cast (`(this as any).x =`) and bracket access (`this['x'] =`)
-    // -- are refused outright, anywhere in the file: the provider never casts
-    // or indexes `this`, so a mutant that starts to is the stash (test-review
-    // round of go-to-k/cdkd#3058, both measured GREEN under the dot-only form).
+    // one member the helper may read). Every non-dotted spelling of `this` --
+    // a cast, bracket access, `this!`, `<any>this`, an alias -- is refused
+    // above by the `this` followed by anything but a dot arm.
     const fieldWrites = (s: string): number => (s.match(/\bthis\.[\w.]+\s*=(?!=)/g) ?? []).length;
     expect(
       fieldWrites(code),
       'an instance field is assigned outside the constructor — a stash can carry the minted value ' +
         'across methods (and across resources: the provider is a singleton); re-open #2212'
     ).toBe(fieldWrites(methodBody(code, 'constructor')));
-    for (const dodge of [/\bthis\s+as\b/, /\bthis\s*\[/]) {
-      expect(
-        dodge.exec(code)?.[0],
-        `the secret provider now spells \`${dodge.source}\` — a cast or bracket access on \`this\` ` +
-          `is the field-write spelling the dot check cannot see; re-open #2212`
-      ).toBeUndefined();
-    }
     for (const method of ['create', 'update']) {
       // Comment-STRIPPED: a comment inside a return literal was otherwise read
       // as a key (measured on issue #3048's `effectiveProperties` note).
