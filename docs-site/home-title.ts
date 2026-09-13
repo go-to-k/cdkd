@@ -50,11 +50,15 @@ export function heroTextOf(markdown: string): string | undefined {
   const first = block.find((l) => l.trim() !== '' && !l.trim().startsWith('#'));
   const indent = /^[ \t]+/.exec(first ?? '')?.[0];
   if (!indent) return undefined;
-  const key = new RegExp(`^${indent}text:[ \\t]*(.+?)[ \\t]*$`);
+  // `\S` refuses a whitespace-only value (backtracking on `.+?` captured a
+  // single space and shipped `cdkd -  `). A trailing ` # comment` is stripped
+  // from a plain scalar; a quoted scalar keeps its `#` and loses its quotes.
+  const key = new RegExp(`^${indent}text:[ \\t]*(\\S.*?)[ \\t]*$`);
   for (const line of block) {
     const m = key.exec(line);
-    // A plain scalar today; strip a matching pair of YAML quotes should one be added.
-    if (m) return m[1].replace(/^(["'])(.*)\1$/, '$2');
+    if (!m) continue;
+    const quoted = /^(["'])(.*)\1(?:[ \t]+#.*)?$/.exec(m[1]);
+    return quoted ? quoted[2] : m[1].replace(/[ \t]+#.*$/, '');
   }
   return undefined;
 }
@@ -134,7 +138,10 @@ export function homeTitlePlugin(options: HomeTitlePluginOptions): Plugin {
     configResolved(config) {
       root = config.root;
     },
-    closeBundle() {
+    closeBundle(error) {
+      // A failed bundle: leave its own error as the build's verdict rather
+      // than replacing it with an ENOENT on a site that was never written.
+      if (error) return;
       // No existence guard on purpose: ox-content logs and swallows most SSG
       // failures, so a missing index.html after a build is exactly the case
       // that must fail loudly rather than no-op on an empty site.

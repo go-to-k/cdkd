@@ -335,8 +335,9 @@ export default defineConfig({
     }),
     // After the SSG: give the home page a search-result headline instead of
     // the bare site name (see docs-site/home-title.ts for why the SSG cannot
-    // be configured to do this). Must stay AFTER oxContent — closeBundle
-    // hooks run in plugin order and this one patches what that one wrote.
+    // be configured to do this). Its `enforce: 'post'` is what orders it
+    // after oxContent's plugins (which carry no `enforce`); the array
+    // position only mirrors that for the reader.
     homeTitlePlugin({
       siteName: SITE_NAME,
       outDir: SITE_OUT_DIR,

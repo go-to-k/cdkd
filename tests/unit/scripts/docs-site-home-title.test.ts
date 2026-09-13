@@ -20,10 +20,10 @@ const ROOT = resolve(import.meta.dirname, '../../..');
 const INDEX_MD = readFileSync(join(ROOT, 'docs/index.md'), 'utf8');
 const SITE_NAME = 'cdkd';
 
-// Head of dist/site/index.html as Ox Content 3.0.0-beta.11 emits it, cut to
-// the lines the rewrite reads. Keep it a verbatim capture: the plugin's
-// build-time guard is what catches a shape change, this fence what the
-// rewrite does to the shape it knows.
+// Lines of dist/site/index.html as Ox Content 3.0.0-beta.11 emits them (each
+// line verbatim; unrelated head lines cut). The plugin's build-time guard is
+// what catches a shape change, this fence what the rewrite does to the shape
+// it knows.
 const HOME_HEAD = [
   '<!doctype html>',
   '<html lang="en">',
@@ -31,7 +31,7 @@ const HOME_HEAD = [
   '  <title>cdkd</title>',
   '  <meta name="description" content="Deploy AWS CDK apps directly via AWS APIs — up to 15x faster, no CloudFormation.">',
   '  <meta property="og:title" content="cdkd">',
-  '  <meta property="og:site_name" content="cdkd">',
+  '  <meta name="twitter:card" content="summary_large_image">',
   '  <meta name="twitter:title" content="cdkd">',
   '  <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","name":"cdkd","url":"https://cdkd.dev","@id":"https://cdkd.dev#website"},{"@type":"TechArticle","headline":"cdkd","description":"Deploy AWS CDK apps directly via AWS APIs — up to 15x faster, no CloudFormation.","url":"https://cdkd.dev/","@id":"https://cdkd.dev/#article","isPartOf":{"@id":"https://cdkd.dev#website"}}]}</script>',
   '</head>',
@@ -56,9 +56,9 @@ describe('docs-site home title', () => {
     expect(heroTextOf('---\nhero:\n\n  name: x\n\n  text: After blanks.\nfeatures: []\n---\n')).toBe(
       'After blanks.'
     );
-    expect(heroTextOf(INDEX_MD.replace('hero:\n  name: cdkd\n', 'hero:\n  name: cdkd\n\n'))).toBe(
-      'The fastest way to deploy AWS CDK.'
-    );
+    const withBlank = INDEX_MD.replace('hero:\n  name: cdkd\n', 'hero:\n  name: cdkd\n\n');
+    expect(withBlank).not.toBe(INDEX_MD); // or the next line re-checks the plain derivation
+    expect(heroTextOf(withBlank)).toBe('The fastest way to deploy AWS CDK.');
     // The walk must STOP at the next top-level key (round-3 mutant: `break`
     // -> `continue` survived every case above).
     expect(heroTextOf('---\nhero:\n  name: x\nother:\n  text: wrong\n---\n')).toBeUndefined();
@@ -73,6 +73,14 @@ describe('docs-site home title', () => {
     expect(heroTextOf('---\nhero:#c\n  text: z\n---\n')).toBeUndefined();
     expect(heroTextOf('---\ntitle: x\n---\n')).toBeUndefined();
     expect(() => homeTitleOf(SITE_NAME, '---\ntitle: x\n---\n')).toThrow(/hero\.text/);
+    // A whitespace-only value is ABSENT, not a one-space headline (3-axis
+    // probe: `.+?` backtracked to capture ' ' and shipped `cdkd -  `).
+    expect(heroTextOf('---\nhero:\n  text:   \n---\n')).toBeUndefined();
+    expect(() => homeTitleOf(SITE_NAME, '---\nhero:\n  text:   \n---\n')).toThrow(/hero\.text/);
+    // A trailing YAML comment on the value is not part of the headline; a
+    // quoted value keeps its `#`.
+    expect(heroTextOf('---\nhero:\n  text: Fast. # todo\n---\n')).toBe('Fast.');
+    expect(heroTextOf('---\nhero:\n  text: "C# fast" # todo\n---\n')).toBe('C# fast');
   });
 
   it('does not fall through to hero.actions[].text when hero.text is removed', () => {
@@ -94,7 +102,6 @@ describe('docs-site home title', () => {
     expect(out).toContain('<meta name="twitter:title" content="cdkd - The fastest way to deploy AWS CDK.">');
     expect(out).toContain('"headline":"cdkd - The fastest way to deploy AWS CDK."');
     // The site's own name stays the site's name everywhere else.
-    expect(out).toContain('<meta property="og:site_name" content="cdkd">');
     expect(out).toContain('"@type":"WebSite","name":"cdkd"');
     expect(out).toContain('aria-label="cdkd"');
     expect(out).toContain('<h1 class="hero-name">cdkd</h1>');
@@ -140,10 +147,10 @@ describe('docs-site home title', () => {
           indexMarkdownPath: 'index.md',
         }) as unknown as {
           configResolved: (c: { root: string }) => void;
-          closeBundle: () => void;
+          closeBundle: (error?: Error) => void;
         };
         plugin.configResolved({ root: dir });
-        plugin.closeBundle();
+        plugin.closeBundle(undefined);
         return readFileSync(join(dir, 'site/index.html'), 'utf8');
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -152,6 +159,15 @@ describe('docs-site home title', () => {
 
     it('patches index.html under the resolved Vite root', () => {
       expect(run(HOME_HEAD)).toContain('<title>cdkd - The fastest way to deploy AWS CDK.</title>');
+    });
+
+    it('stands down when the bundle itself failed', () => {
+      // The bundle's own error must stay the verdict; touching a site that
+      // was never written would replace it with an ENOENT.
+      const p = homeTitlePlugin({ siteName: 'x', outDir: 'o', indexMarkdownPath: 'i' }) as unknown as {
+        closeBundle: (error?: Error) => void;
+      };
+      expect(() => p.closeBundle(new Error('bundle failed'))).not.toThrow();
     });
 
     it('fails the build when ANY of the four surfaces stops matching', () => {
@@ -177,9 +193,11 @@ describe('docs-site home title', () => {
     it('is a no-op on an already-patched page and build-only', () => {
       const patched = rewriteHomeTitle(HOME_HEAD, SITE_NAME, homeTitleOf(SITE_NAME, INDEX_MD));
       expect(run(patched)).toBe(patched);
-      expect(homeTitlePlugin({ siteName: 'x', outDir: 'o', indexMarkdownPath: 'i' }).apply).toBe(
-        'build'
-      );
+      const p = homeTitlePlugin({ siteName: 'x', outDir: 'o', indexMarkdownPath: 'i' });
+      expect(p.apply).toBe('build');
+      // Sorts it after oxContent's plugins (which carry no `enforce`) whatever
+      // the array order — the docstring calls it load-bearing, so pin it.
+      expect(p.enforce).toBe('post');
     });
   });
 });
