@@ -1494,6 +1494,49 @@ describe('cdkd state show', () => {
     expect(out.split('The last deploy could not resolve the keys listed').length - 1).toBe(1);
   });
 
+  it('sanitizes the command\'s OWN refusals, not only resolveSingleRegion\'s (issue #3003)', async () => {
+    // `ref.region` is a raw `listStacks` key segment and reaches these two
+    // refusals ~430 lines from the ones the first cut of issue #3003 guarded,
+    // in the same file and on the same call path.
+    const hostile = 'us-east-1\n  PhysicalID: arn:forged';
+    mockListStacks.mockResolvedValue([{ stackName: 'GhostStack', region: hostile }]);
+    mockGetState.mockResolvedValue(null);
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const caught = await runStateShow(['show', 'GhostStack']).catch((e: unknown) => e);
+    // `errorSpy` alone: `process.exit` is mocked to throw, so `String(caught)`
+    // is always the exit-mock noise, and concatenating it glued that noise to
+    // the last logged line where a line-oriented assertion reads it.
+    const message = errorSpy.mock.calls.map(String).join('\n');
+
+    expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    expect(message).toContain('PhysicalID: arn:forged');
+  });
+
+  it('sanitizes the legacy-record refusal (issue #3003)', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Ghost\n  PhysicalID: arn:forged', region: undefined },
+    ]);
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const caught = await runStateShow(['show', 'Ghost\n  PhysicalID: arn:forged']).catch(
+      (e: unknown) => e
+    );
+    const message = errorSpy.mock.calls.map(String).join('\n');
+
+    // The forged-LINE assertion is what carries this case. Its sibling above
+    // has one; a first cut of this case did not, and its control class
+    // excludes `\n` (the separator `formatError` owns), so with the guard
+    // neutered both of its assertions still passed -- the round-1 finding
+    // ("an anti-vacuity guard asserting template words present either way")
+    // reintroduced at a new site.
+    expect(message).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+    expect(message).toContain('only a legacy state record');
+    expect(message).toContain('PhysicalID: arn:forged');
+  });
+
   it('emits a `{state, lock}` JSON object with --json', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('JsonStack', 'us-west-2'));
     const stateRecord = makeState({

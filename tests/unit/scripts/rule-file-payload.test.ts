@@ -1381,7 +1381,24 @@ const CORPUS_FILE_COUNT = 54; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#271
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 966_000;   // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
+const CORPUS_BYTES_MIN = 1_006_000; // RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, issue
+                                    // go-to-k/cdkd#3003's PR): the "discriminates the deletion of
+                                    // the LARGEST satellite" case went RED IN CI, which is the
+                                    // mechanical occasion this constant's own note below promises.
+                                    // Measured 1,039,993 B on the MERGE of that PR with main --
+                                    // 33,993 B of slack, the ~34 KB margin every previous setting
+                                    // used, and well under `hooks.md`'s 73,606 B so the case it
+                                    // failed now passes with room.
+                                    //
+                                    // Derived against the MERGE, not the branch: the branch tree
+                                    // measures 1,035,794 B because it sits 30 commits behind main,
+                                    // and a floor derived there would have shipped 4,199 B low and
+                                    // gone red again on the first CI run. `.claude/rules/**` is a
+                                    // corpus every lane appends to, so the number to derive against
+                                    // is the one CI will see, which is `origin/main` plus this
+                                    // branch's own rule-file delta.
+                                    //
+                                    // 966_000 was: // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
                                     // go-to-k/cdkd#2310): measured 1,003,542 B on the tree that
                                     // ships this line -- 37,542 B of slack. The constant was set
                                     // against a 999,957 B corpus (~34 KB, the margin every previous
@@ -1411,7 +1428,7 @@ const CORPUS_BYTES_MIN = 966_000;   // RE-DERIVED UPWARD 895_000 -> 966_000 (202
                                     // can never again exceed the LARGEST file -- which is what
                                     // stops the floor going wholly vacuous, and is strictly less
                                     // than "never misses a deletion": a deletion smaller than the
-                                    // slack stays invisible, today 45 of the 51 files. That
+                                    // slack stays invisible, today 47 of the 54 files. That
                                     // residual is go-to-k/cdkd#2810 and no value of this constant
                                     // closes it. It is NOT a twin of the `tests/setup.ts` gutting
                                     // case, which does catch gutting for its one budgeted row.
@@ -1690,16 +1707,21 @@ describe('.claude/rules payload fence', () => {
     //
     // The floor's slack is `corpus - CORPUS_BYTES_MIN`. A deletion or gutting
     // SMALLER than that slack is invisible to it -- arithmetic, not calibration.
-    // Measured on the tree that ships this line: 37,542 B of slack, and 45 of
-    // the 51 rule files (658,337 B of the corpus) are small enough to be gutted
-    // to `SUBSTANTIVE_MIN_BYTES` with this floor still green. Review demonstrated
-    // exactly that, twice, on a 28,726 B file.
+    // Measured 2026-09-13 against the merge that ships this line: 34,064 B of
+    // slack, and 47 of the 54 rule files (644,259 B of the corpus) are small
+    // enough to be gutted to `SUBSTANTIVE_MIN_BYTES` with this floor still
+    // green. Review demonstrated exactly that, twice, on a 28,726 B file. The
+    // slack figure drifts on every merge into this branch, by construction --
+    // it is `corpus - CORPUS_BYTES_MIN` and the corpus is what every lane
+    // appends to. Read it as a dated measurement, not an invariant.
     //
-    // Closing it with this bound is IMPOSSIBLE, which is why the claim is narrow
-    // rather than the number being nudged: catching the SMALLEST file (2,659 B)
-    // needs the floor at 1,002,384 -- the assertion is `>=`, so 1,002,383 would
-    // still ACCEPT that corpus -- leaving 1,158 B of compression tolerance --
-    // any ordinary reflow would red it. A single corpus-wide sum cannot both
+    // Closing it with this bound is IMPOSSIBLE, which is why the claim is
+    // narrow rather than the number being nudged: catching the SMALLEST file
+    // (`layout-build.md`, 2,864 B) needs the floor at 1,038,701. The assertion
+    // is `>=`, so the floor has to EXCEED the gutted corpus of 1,038,700 --
+    // hence the `+ 1`, which is also how the 1,002,384 above was derived --
+    // leaving 1,363 B of compression tolerance, which any ordinary reflow
+    // would red. A single corpus-wide sum cannot both
     // permit compression and detect a small deletion; only a PER-FILE floor can,
     // and that is go-to-k/cdkd#2810, not this case.
     //

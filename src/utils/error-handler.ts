@@ -1,4 +1,5 @@
 import { markNonRetryable } from '../deployment/retryable-errors.js';
+import { displaySafe } from './display-safe.js';
 import { getLogger } from './logger.js';
 
 /**
@@ -768,7 +769,41 @@ export function formatError(error: unknown): string {
   if (isCdkdError(error)) {
     let message = `${error.name}: ${error.message}`;
     if (error.cause) {
-      message += `\nCaused by: ${error.cause.message}`;
+      // Sanitized HERE, at the one place every cause is printed, rather than at
+      // each thrower (issue #3003). A cause is routinely an underlying
+      // `SyntaxError` from `JSON.parse`, and V8 quotes the offending INPUT in
+      // that message — so a `state.json` or `lock.json` anyone with
+      // `s3:PutObject` on the state bucket can write reaches the terminal
+      // through this line. cdkd's output is line-oriented, so an injected
+      // newline invents a line that reads like a row -- and it did so one line
+      // BELOW a message the thrower had already sanitized.
+      //
+      // The DENYLIST class, not `asciiOnly`: a cause is free-form text from an
+      // arbitrary error (AWS's own wording included), and the ascii allowlist
+      // is for values with a known charset — `display-safe.ts`'s header draws
+      // that line.
+      //
+      // FLATTENED, and the cost is accepted deliberately. Some causes are
+      // multi-line on purpose — `CloudControlProvider`'s unsupported-type
+      // diagnostic is three lines, re-wrapped as a `cause` by the deploy
+      // engine — and they now print as one long line. No character is lost,
+      // only the shape.
+      //
+      // The obvious repair is to split on `\n`, sanitize each line and rejoin.
+      // It was considered and REFUSED: it cannot tell cdkd's own newline from
+      // an injected one, so it preserves exactly the newline this guard exists
+      // to remove and reopens the row forging. A structure-preserving version
+      // would need the thrower to say which newlines are its own, which is a
+      // wider change than this line.
+      //
+      // A cause that sanitizes to NOTHING drops its whole line rather than
+      // printing a placeholder. It carried no readable information, and
+      // `Caused by:` with an empty tail reads as a formatting bug. The
+      // `UNRENDERABLE` stand-in the state layer uses is deliberately not
+      // imported here: `src/utils` sits BELOW `src/state`, and this one line
+      // does not justify moving the constant.
+      const cause = displaySafe(error.cause.message);
+      if (cause) message += `\nCaused by: ${cause}`;
     }
     return message;
   }

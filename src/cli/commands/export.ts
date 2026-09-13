@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Command } from 'commander';
+import { displaySafe } from '../../utils/display-safe.js';
+import { UNRENDERABLE } from '../../state/lock-contention-message.js';
 import {
   CreateChangeSetCommand,
   DescribeChangeSetCommand,
@@ -3315,6 +3317,23 @@ export interface CdkdStateStackTree {
 }
 
 /**
+ * One spelling of "this value came from an S3 key or a state record, and is
+ * about to be interpolated into a message a terminal will render" (issue
+ * #3003). `cdkd state show --show-nested` reaches the walker's refusals below,
+ * and cdkd's output is line-oriented, so an unsanitized value invents a line
+ * that reads like a row. A `logicalId` is a KEY of the record body -- CloudFormation
+ * constrains a logical id, but nothing enforces that on a record read back
+ * from S3, and it is half of the child stack name derived from it.
+ *
+ * Module-scoped rather than local to the walker: the first cut of this change
+ * guarded the walker's two refusals and left the root one, which is the shape
+ * the issue is about.
+ */
+function safeSegment(value: string | undefined): string {
+  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
  * Recursively load the cdkd-state tree rooted at `(rootStackName, region)`.
  * For every `AWS::CloudFormation::Stack` row in each level's
  * `state.resources`, derives the child's v6 state key
@@ -3357,8 +3376,14 @@ export async function buildCdkdStateStackTree(
   } else {
     const rootResult = await stateBackend.getState(rootStackName, region);
     if (!rootResult) {
+      // Guarded like the walker's refusals below, but DEFENSIVE rather than
+      // reached: both production callers pass `prefetchedRootState`
+      // (`state.ts`'s `--show-nested` branch and this file's own orchestrator),
+      // so nothing today takes this arm. A caller that stops prefetching
+      // inherits the guard instead of having to remember it (issue #3003).
       throw new Error(
-        `No cdkd state found for stack '${rootStackName}' (${region}). ` +
+        `No cdkd state found for stack '${safeSegment(rootStackName)}' ` +
+          `(${safeSegment(region)}). ` +
           `Cannot build nested-stack tree.`
       );
     }
@@ -3380,12 +3405,12 @@ async function walkCdkdStateStackTree(
     const childResult = await stateBackend.getState(childStackName, region);
     if (!childResult) {
       throw new Error(
-        `cdkd state is missing nested-child '${childStackName}' (${region}). ` +
-          `Parent stack '${stackName}' lists '${logicalId}' as an ` +
+        `cdkd state is missing nested-child '${safeSegment(childStackName)}' (${safeSegment(region)}). ` +
+          `Parent stack '${safeSegment(stackName)}' lists '${safeSegment(logicalId)}' as an ` +
           `${NESTED_STACK_RESOURCE_TYPE} row but no child state file exists at ` +
-          `'cdkd/${childStackName}/${region}/state.json'. The cdkd state tree is ` +
+          `'cdkd/${safeSegment(childStackName)}/${safeSegment(region)}/state.json'. The cdkd state tree is ` +
           `inconsistent — re-deploy the parent stack to refresh, or run ` +
-          `'cdkd state orphan ${stackName}' and re-import.`
+          `'cdkd state orphan ${safeSegment(stackName)}' and re-import.`
       );
     }
     // Sanity-check the child's recorded region against the walker's
@@ -3398,9 +3423,9 @@ async function walkCdkdStateStackTree(
     // we cannot guarantee.
     if (childResult.state.region !== undefined && childResult.state.region !== region) {
       throw new Error(
-        `cdkd state region mismatch: nested-child '${childStackName}' has ` +
-          `state.region='${childResult.state.region}' but its parent '${stackName}' ` +
-          `is being walked against region='${region}'. AWS does not support ` +
+        `cdkd state region mismatch: nested-child '${safeSegment(childStackName)}' has ` +
+          `state.region='${safeSegment(childResult.state.region)}' but its parent '${safeSegment(stackName)}' ` +
+          `is being walked against region='${safeSegment(region)}'. AWS does not support ` +
           `cross-region nested stacks; the state tree appears corrupt — ` +
           `re-deploy the parent stack to refresh.`
       );
