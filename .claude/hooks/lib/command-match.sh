@@ -550,6 +550,34 @@ gate_segments_raw() {
       }
       return 0
     }
+    # The delimiter of the LAST heredoc opener in <text>, or "" when there is
+    # none. Same opener grammar flush_line uses (`<<`, optional `-`, a quoted or
+    # bare word; `<<<` is a here-string and not an opener), applied to text that
+    # has NOT been through flush_line yet -- the still-open `$(` body run()
+    # joins line by line, where a heredoc opened on one line is followed by
+    # BODY lines that must not be joined as commands. Not quote-aware on
+    # purpose: a `<<X` mentioned in prose inside that body is harmless here,
+    # because the caller only latches onto the tag when the terminator really
+    # arrives as a bare later line, the same fail-open guard run() applies at
+    # top level.
+    function last_heredoc_opener(text,   d, rest, pos, out) {
+      out = ""
+      rest = text
+      while ((pos = index(rest, "<<")) > 0) {
+        if (substr(rest, pos + 2, 1) == "<") { rest = substr(rest, pos + 3); continue }
+        rest = substr(rest, pos)
+        if (match(rest, /^<<-?[ \t]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
+          d = substr(rest, RSTART, RLENGTH)
+          sub(/^<<-?[ \t]*/, "", d)
+          gsub(/["'"'"']/, "", d)
+          if (d != "") out = d
+          rest = substr(rest, RLENGTH + 1)
+        } else {
+          rest = substr(rest, 3)
+        }
+      }
+      return out
+    }
     # `q` is deliberately GLOBAL across lines: a quoted span survives a newline,
     # and a `--body "…multi-line…"` argument is ONE span. Resetting it per line
     # split a PR body into segments and matched a `&& git commit` inside the
@@ -731,8 +759,8 @@ gate_segments_raw() {
       return res
     }
     # One full pass. Runs twice at most: see the END rule.
-    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub) {
-      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""
+    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub, ptag, pd) {
+      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""; ptag = ""
       __bodies = ""; __pend_seg = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
@@ -741,6 +769,22 @@ gate_segments_raw() {
           gsub(/^[ \t]+|[ \t]+$/, "", t)
           if (t == tag) tag = ""
           acc = acc "\n"
+          continue
+        }
+        # Inside a heredoc body that opened INSIDE a still-open `$(`: data too.
+        # The join below turns each body line into a `;`-separated command of
+        # the substitution, and drain_extra then flushes those as commands in
+        # their own right -- so a `gh pr merge` quoted in the prose of an issue
+        # body written as `--body "$(cat <<EOF ... EOF)"` matched
+        # GATE_RE_GH_PR_MERGE and integ-local-gate refused `gh issue create`
+        # (go-to-k/cdkd#3040). The terminator line is dropped with the body:
+        # the joined line then carries an opener with no terminator, and the
+        # top-level `tag` latch below never fires for it because terminated()
+        # searches only lines AFTER the one being flushed.
+        if (ptag != "") {
+          t = line
+          gsub(/^[ \t]+|[ \t]+$/, "", t)
+          if (t == ptag) ptag = ""
           continue
         }
         if (pending != "") { line = pending line; pending = "" }
@@ -752,7 +796,16 @@ gate_segments_raw() {
         # A `$(` still open at end of line CONTINUES on the next one; join so
         # close_paren can see the closer. See subst_open above.
         if (psub != "") { line = psub ";" line; psub = "" }
-        if (subst_open(line)) { psub = line; continue }
+        if (subst_open(line)) {
+          psub = line
+          # Did THIS line open a heredoc inside the substitution? Latch onto its
+          # delimiter only when the terminator really arrives as a bare later
+          # line -- the same fail-open guard the top-level `tag` uses, so a
+          # `<<X` in prose with no terminator blanks nothing.
+          pd = last_heredoc_opener(line)
+          if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd
+          continue
+        }
         # A line that ends INSIDE a quoted span is not a segment boundary: the
         # span continues. Emitting "\n" here promoted every line of a quoted
         # `--body "…"` to a segment START, so prose in a PR body or an issue

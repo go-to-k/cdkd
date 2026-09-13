@@ -614,6 +614,20 @@ gates:
       - "src/local/**"
       - "src/cli/commands/local-*.ts"
       - "tests/integration/local-*/**"
+      # The manifest, because cdk-local IS the local-execution engine and a
+      # version bump moves what `cdkd local` does with no line under the
+      # three globs above (go-to-k/cdkd#3040; measured on go-to-k/cdkd#3053).
+      # The HOOK fires only on a CHANGE to the `"cdk-local":` line, so an
+      # unrelated dependency bump stales this marker without engaging the
+      # gate -- harmless, since a stale marker is consulted only when the
+      # hook says the merge is in scope. What the entry buys is the other
+      # direction: without it a cdk-local bump would be judged by a marker a
+      # previous local integ left fresh -- the hook-only FAIL-OPEN shape
+      # hooks.md names under "Scope is TWO lists per gate". No test fences
+      # this gate's two lists against each other (cross-cutting-list-sync
+      # covers integ-destroy / integ-broad only), so this comment and
+      # integ-local-gate.test.sh are the controls.
+      - "package.json"
 
   integ-schema-migration:
     # Records the last cdkd state-schema migration integ run. cdkd's

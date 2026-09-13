@@ -778,15 +778,29 @@ three integ gates first check whether the merged PR's diff touches their
 scope (via `gh pr view <N> --json files`) before consulting the marker —
 `integ-destroy-gate` against its delete-logic patterns, `integ-broad-gate`
 against `CROSS_CUTTING_REGEX`, `integ-local-gate` against
-`^src/local/|^src/cli/commands/local-*\.ts$|^tests/integration/local-`. A PR
-touching none of a gate's scope passes even with a stale marker — the integ
-markers carry a 14d TTL, so without the guard an expired marker would block
-EVERY merge. The three are scoped by different mechanisms: `integ-destroy` by
-this branch's delta against `origin/main` (markgate 0.4 `hash: diff`);
-`integ-local` by its file-scope content; `integ-broad` by a sentinel file a
-pull cannot touch. `integ-local-gate` — the only gate also firing on
-`git merge` — additionally scope-checks `git merge [flags] <ref>` (issue
-#1204) via `git diff --name-only HEAD...<ref>`, so the routine post-squash
+`^src/local/|^src/cli/commands/local-*\.ts$|^tests/integration/local-` **plus
+a second question a path list cannot answer** (go-to-k/cdkd#3040): when no
+path matches, the PR's diff (`gh pr diff <N>`) is read for a CHANGE to the
+`"cdk-local":` line of a `package.json` — a `-` and a `+` line both, inside a
+`package.json` file block. cdk-local IS the local-execution engine
+(`src/local/**` is largely shims over it), so a version bump moves what
+`cdkd local` does with zero lines under any scope path — measured on
+go-to-k/cdkd#3053, two user-visible deltas in a diff of manifest + lockfile +
+tests, merged ungated. The test is deliberately that narrow: a lockfile-only
+re-resolve (its rows are spelled `cdk-local:` unquoted), an unrelated dep
+bump beside the line, and prose in a README all stay out of scope, because
+`^package\.json$` in the regex would fire on every dependabot PR, which is the
+shape that gets a gate disabled rather than obeyed. `gh pr diff` failing
+decides scope from the file list alone (the sibling gates' infra fail-open).
+A PR touching none of a gate's scope passes even with a stale marker — the
+integ markers carry a 14d TTL, so without the guard an expired marker would
+block EVERY merge. The three are scoped by different mechanisms:
+`integ-destroy` by this branch's delta against `origin/main` (markgate 0.4
+`hash: diff`); `integ-local` by its file-scope content; `integ-broad` by a
+sentinel file a pull cannot touch. `integ-local-gate` — the only gate also
+firing on `git merge` — additionally scope-checks `git merge [flags] <ref>`
+(issue #1204) via `git diff --name-only HEAD...<ref>` and the same cdk-local
+question over `git diff HEAD...<ref>`, so the routine post-squash
 `git merge --ff-only origin/main` passes even with a stale marker; the
 merge-ref parse is a token walk and bails to the unconditional verify on
 `--abort` / `--continue` / `--quit`, octopus (2+ refs), or an unresolvable
@@ -862,7 +876,20 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   introducing the helper was itself blocked by `integ-broad-gate` because its
   `git commit -F -` body quoted a chained merge command. The stripper keeps
   the OPENING line and drops through the terminator, handling `<<-` and
-  quoted / unquoted delimiters.
+  quoted / unquoted delimiters. **A heredoc INSIDE a `$( )` was not covered
+  until go-to-k/cdkd#3040**: a `$(` still open at end of line makes the
+  segmenter JOIN the following lines with `;` into one logical line BEFORE any
+  heredoc is recognised, so the body of `--body "$(cat <<'EOF' … EOF)"`
+  arrived in the substitution drain as `;`-separated commands, and prose
+  quoting `gh pr merge` refused `gh issue create` under `integ-local-gate`
+  (the backtick spans in that prose were then taken as nested substitutions
+  too). The join now latches onto the opener's delimiter under the same
+  terminator look-ahead the top-level `tag` uses and drops the body lines,
+  terminator included; a verb AFTER the terminator, inside the substitution
+  or after it closes, is still a segment, and an opener with no terminator
+  latches nothing — the fail-closed half, pinned as three of the five
+  `SUBST_HEREDOC` cases in `command-match.test.sh` and priced as a class in
+  the differential.
 - The `cd <path> &&` special case disappears — it is just a verb after `&&`.
 
 **Two gaps in the old anchor — issue

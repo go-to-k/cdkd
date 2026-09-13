@@ -83,6 +83,54 @@ check "real invocation on a line AFTER the heredoc is still caught" 0 "$MERGE" "
 # The heredoc-opening line itself carries a real command and must be kept.
 check "the heredoc-opening line's own verb is still seen" 0 "$COMMIT" "$heredoc_msg"
 
+# --- Heredoc bodies INSIDE a command substitution (go-to-k/cdkd#3040) -------
+#
+# The top-level `tag` latch never saw these: a `$(` still open at end of line
+# makes run() JOIN the following lines with `;` into one logical line BEFORE
+# any heredoc is recognised, so the body lines arrived in drain_extra as
+# `;`-separated commands of the substitution. Measured live: `gh issue create
+# --body "$(cat <<'EOF' ... EOF)"` whose prose quoted `gh pr merge` was refused
+# by integ-local-gate, and the issue could only be filed via `--body-file`.
+subst_heredoc_prose=$(printf '%s\n' \
+  'gh issue create --repo o/r --title "t" --body "$(cat <<'"'"'EOF'"'"'' \
+  '## What happened' \
+  'so `gh pr merge` is not gated by the scope regex.' \
+  'EOF' \
+  ')"')
+check "a heredoc body inside \$( ) is data, not commands" 1 "$MERGE" "$subst_heredoc_prose"
+
+# The body was extracted as commands AND its backtick spans were then taken as
+# nested substitutions -- two segments reading `gh pr merge`. Both gone.
+subst_heredoc_bt=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  'run `gh pr merge 1` then `gh pr merge 2`' \
+  'EOF' \
+  ')"')
+check "backticks inside that body are not substitutions either" 1 "$MERGE" "$subst_heredoc_bt"
+
+# The fail-CLOSED half, each the direction that would silently disarm a gate:
+# a real verb AFTER the terminator inside the same substitution is still seen,
+# a real verb on the SAME line after the substitution closes is still seen, and
+# an opener with NO terminator latches nothing (the prose after it is scanned).
+subst_heredoc_then_real=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  'prose' \
+  'EOF' \
+  'gh pr merge 7 --squash)"')
+check "a verb after the terminator, still inside \$( ), is caught" 0 "$MERGE" "$subst_heredoc_then_real"
+
+subst_heredoc_same_line=$(printf '%s\n' \
+  'x="$(cat <<'"'"'EOF'"'"'' \
+  'prose' \
+  'EOF' \
+  ')" && gh pr merge 1')
+check "a verb after the substitution closes is caught" 0 "$MERGE" "$subst_heredoc_same_line"
+
+subst_unterminated=$(printf '%s\n' \
+  'x="$(echo <<EOF is prose' \
+  'gh pr merge 1)"')
+check "an unterminated opener inside \$( ) does not swallow" 0 "$MERGE" "$subst_unterminated"
+
 # --- Reviewer-found regressions of the FIRST cut (all must MATCH) ---------
 #
 # The first stripper treated `<<<`, a `<<EOF` mentioned in prose, and an

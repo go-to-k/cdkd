@@ -350,6 +350,12 @@ Z2l0IC1DICQoZWNobyAkJ2FcJ2InKSBjb21taXQgLW0geA==
 Y2RcIC90bXAgOyBnaXQgY29tbWl0IC1tIHg=
 Y2RcXCAvdG1wIDsgZ2l0IGNvbW1pdCAtbSB4
 Z2l0IGNvbW1pdFwgLW0geA==
+Z2ggaXNzdWUgY3JlYXRlIC0tcmVwbyBvL3IgLS10aXRsZSAidCIgLS1ib2R5ICIkKGNhdCA8PCdFT0YnCnNvIGBnaCBwciBtZXJnZWAgaXMgbm90IGdhdGVkLgpFT0YKKSI=
+eD0iJChjYXQgPDwnRU9GJwpnaXQgY29tbWl0IC1tIHkKRU9GCiki
+eD0iJChjYXQgPDwnRU9GJwpwcm9zZQpFT0YKZ2ggcHIgbWVyZ2UgNyAtLXNxdWFzaCki
+eD0iJChjYXQgPDwnRU9GJwpwcm9zZQpFT0YKKSIgJiYgZ2ggcHIgbWVyZ2UgMQ==
+eD0iJChlY2hvIDw8RU9GIGlzIHByb3NlCmdoIHByIG1lcmdlIDEpIg==
+
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -581,6 +587,32 @@ ALLOWED="$TMPDIR/allowed.tsv"
 # marking corpus (process substitution, a quoted `)` in a subshell, an
 # `if (...)` compound, a `bash -c` body); what actually fences their behaviour
 # is `main-tree-edit-gate.test.sh`, where reverting each one turns cases red.
+# --- go-to-k/cdkd#3040: a heredoc BODY inside `$( )` (ids 240-244) -----------
+#   SUBST_HEREDOC  run() joins the lines of a `$(` still open at end of line
+#                 with `;` into one logical line BEFORE any heredoc is
+#                 recognised, so a `cat <<'EOF' ... EOF` inside the substitution
+#                 arrived in drain_extra as `;`-separated COMMANDS and every
+#                 prose line became a segment. Measured live: `gh issue create
+#                 --body "$(cat <<'EOF' ... EOF)"` whose prose quoted
+#                 `gh pr merge` was refused by integ-local-gate. run() now
+#                 latches onto the opener's delimiter while the substitution is
+#                 open and drops the body lines, terminator included, under the
+#                 same look-ahead guard the top-level `tag` uses.
+#                 THE FALSE POSITIVE ITSELF IS NOT A CELL, and that is worth
+#                 knowing before reading id 240: the vendored baseline predates
+#                 the per-line drain, so it never scanned a substitution body
+#                 and answered NO MATCH there too. The defect lived only between
+#                 the baseline and origin/main -- measured, origin/main answers
+#                 MATCH on id 240 and this branch does not -- so what the table
+#                 can see is the segment-count correction on 240, 242 and 243,
+#                 and on 241 the verb that appears ONLY inside the body going
+#                 unmatched. `command-match.test.sh` carries the `m:` half.
+# Ids 242 and 243 are the fail-CLOSED controls: the verb AFTER the terminator,
+# inside the substitution and after it closes, must still be a segment and
+# still match -- a cell on their `m:` observables would mean the body-skip ate
+# a real command. Id 244 is the third control, an opener with NO terminator:
+# it declares NO cell, because the look-ahead guard must leave the line alone
+# and the verb after the prose must still be scanned.
 cat > "$ALLOWED" <<'ALLOWED_EOF'
 26	segcount	2	SEGCOUNT	git -C subst-quoted commit
 27	segcount	2	SEGCOUNT	gh -C subst-quoted pr merge
@@ -859,6 +891,12 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 230	segcount	2	QUOTED_PAREN	a quoted ) in a substitution before the verb
 236	m:GATE_RE_GIT_COMMIT	1	ANSI_C	an escaped quote in a $' ' span no longer ends the substitution early
 236	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	ANSI_C	an escaped quote in a $' ' span no longer ends the substitution early
+240	segcount	2	SUBST_HEREDOC	a heredoc body inside $( ) is data: its prose lines are no longer segments
+241	segcount	1	SUBST_HEREDOC	the same with a verb as the body: one segment, not three
+241	m:GATE_RE_GIT_COMMIT	0	SUBST_HEREDOC	a verb that appears ONLY inside the heredoc body no longer matches
+241	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	SUBST_HEREDOC	a verb that appears ONLY inside the heredoc body no longer matches
+242	segcount	2	SUBST_HEREDOC	body dropped; the verb after the terminator inside $( ) is still a segment
+243	segcount	2	SUBST_HEREDOC	body dropped; the verb after the substitution closes is still a segment
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -897,7 +935,7 @@ fi
 # so the "undeclared" arm is blind to it and these floors are the only thing
 # that sees it. Raise them with the measurement whenever the corpus grows; do
 # not leave slack "for headroom", which is precisely what defeated them.
-for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2"; do
+for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2" "SUBST_HEREDOC:6"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"
