@@ -2074,6 +2074,8 @@ A property in `handledProperties` (or `unhandledByDesign`) that is NOT in the CF
 
 The test reports these — but fixing each requires per-provider investigation that often touches the safety-net's runtime behavior. As a stopgap, the tolerance list at `tests/fixtures/cfn-schemas/_todo-backfill.json` under `bogusTolerated[<type>][<prop>]` accepts a one-line rationale per entry, the test stays green, and follow-up PRs investigate one at a time. Day-1 of issue #391 the test surfaced 10 such entries — see the rationale strings in that file for the canonical examples.
 
+An entry is a claim about a DECLARATION — "the provider declares `<prop>`, the schema no longer has it, and here is why the declaration stays" — and every reader keys on that premise: the coverage test consults it only while walking `handledProperties` / `unhandledByDesign` / the backfill list, and the schema-refresh diagnosis only for a property in the generated `handled` map. So when the declaration itself is renamed or removed (the usual fix), **retire the entry in the same change**: the test fails an entry that names a property no declaration on that type carries, because such an entry is inert while reading as protection — and if the declaration was meant to exist, it is masking a silent drop (issue [#3034](https://github.com/go-to-k/cdkd/issues/3034), where a `NetworkAclEntry.IcmpTypeCode` entry written on 2026-05-16 outlived the 2026-05-27 rename to `Icmp` until 2026-09-13). The other staleness direction — AWS re-adds the property — is reported by its own case.
+
 ## Admitting a type to the sticky-CC exemption
 
 Closing the last silent-drop gap for a type is not the end of the story for
