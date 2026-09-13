@@ -142,6 +142,21 @@ interface HeldLock {
 }
 
 /**
+ * One spelling of "this value came from an S3 key or a lock record, and is
+ * about to be interpolated into a message a terminal will render". A stack
+ * name and an AWS region both have a known charset, so the ASCII allowlist is
+ * a no-op on every legitimate input while an S3 key admits any UTF-8.
+ *
+ * Call it for a stack name or a region. Not every value in this file goes
+ * through it, and this comment does not say which do: three revisions of that
+ * sentence carried a count or a scope claim and each was wrong.
+ * `grep safeSegment` answers it exactly.
+ */
+function safeSegment(value: string | undefined): string {
+  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
  * S3-based lock manager using conditional writes (If-None-Match)
  *
  * Implements distributed locking using S3's If-None-Match: "*" condition
@@ -475,16 +490,15 @@ export class LockManager {
       // which of the two threw.
       throw new LockError(
         `Failed to acquire lock for stack ` +
-          `'${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' ` +
-          `(${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}): ` +
-          // The DENYLIST form for the SDK's own text (the allowlist would mangle
-          // a legitimate non-ASCII message). Sanitized rather than left raw
+          `'${safeSegment(stackName)}' ` +
+          `(${safeSegment(region)}): ` +
+          // Sanitized rather than left raw
           // because S3 error text echoes the KEY, which embeds the stack name --
           // so the value this line just sanitized twice would otherwise walk
           // back in through the third interpolation, into the terminal and into
           // `deployments/*.jsonl`. Two-of-three is the exact shape
           // `custom-resource-provider.ts`'s cleanup line argues against.
-          `${displaySafe(error instanceof Error ? error.message : String(error))}`,
+          `${displaySafe(error instanceof Error ? error.message : String(error), { asciiOnly: true }) || UNRENDERABLE}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -544,8 +558,12 @@ export class LockManager {
 
     const key = this.getLockKey(stackName, region);
 
+    // Debug is quieter than warn, not a different terminal (issue #3003).
+    // Above the `try` because the catch logs it too.
+    const shownStack = safeSegment(stackName);
+
     try {
-      this.logger.debug(`Getting lock info for stack: ${stackName}`);
+      this.logger.debug(`Getting lock info for stack: ${shownStack}`);
 
       const response = await this.s3Client.send(
         new GetObjectCommand({
@@ -556,7 +574,9 @@ export class LockManager {
       );
 
       if (!response.Body) {
-        throw new LockError(`Lock file for stack '${stackName}' has no body`);
+        // A `LockError` is rethrown UNCHANGED by the catch below, so this one
+        // does not reach the guard there — it needs its own (issue #3003).
+        throw new LockError(`Lock file for stack '${shownStack}' has no body`);
       }
 
       const bodyString = await response.Body.transformToString();
@@ -571,7 +591,7 @@ export class LockManager {
       // to remove a record whose lock.json is `null`.
       const raw: unknown = JSON.parse(bodyString);
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-        this.logger.debug(`Lock file for stack ${stackName} is not an object; treating as absent`);
+        this.logger.debug(`Lock file for stack ${shownStack} is not an object; treating as absent`);
         return null;
       }
       const parsed = raw as LockInfo;
@@ -591,12 +611,12 @@ export class LockManager {
         ...(parsed.operation !== undefined && { operation: displaySafe(parsed.operation) }),
       };
 
-      this.logger.debug(`Lock info for stack: ${stackName}:`, lockInfo);
+      this.logger.debug(`Lock info for stack: ${shownStack}:`, lockInfo);
 
       return { info: lockInfo, etag: response.ETag };
     } catch (error) {
       if (error instanceof NoSuchKey) {
-        this.logger.debug(`No lock exists for stack: ${stackName}`);
+        this.logger.debug(`No lock exists for stack: ${shownStack}`);
         return null;
       }
 
@@ -604,8 +624,14 @@ export class LockManager {
         throw error;
       }
 
+      // `cdkd state show` surfaces this message as its fatal error (issue
+      // #3003).
+      const detail =
+        displaySafe(error instanceof Error ? error.message : String(error), {
+          asciiOnly: true,
+        }) || UNRENDERABLE;
       throw new LockError(
-        `Failed to get lock info for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to get lock info for stack '${shownStack}': ${detail}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -1411,8 +1437,8 @@ export class LockManager {
           // nothing anywhere, being sanitized at their single source,
           // `getLockRecord`.
           this.logger.info(
-            `Stack '${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' ` +
-              `(${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE}) is locked by ${lockInfo.owner}` +
+            `Stack '${safeSegment(stackName)}' ` +
+              `(${safeSegment(region)}) is locked by ${lockInfo.owner}` +
               `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
               `. Lock expires in ${this.formatDuration(remainingMs)}.` +
               ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
@@ -1464,8 +1490,8 @@ export class LockManager {
     // persisted `deployments/*.jsonl`. `buildLockContentionMessage` already
     // renders its own head this way; this site had adopted only the
     // suppression half of that precedent.
-    const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
-    const safeRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
+    const safeStack = safeSegment(stackName);
+    const safeRegion = safeSegment(region);
     throw new LockError(
       `Failed to acquire lock for stack '${safeStack}' (${safeRegion}) after ${maxRetries + 1} attempts. ` +
         (lockInfo

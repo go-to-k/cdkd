@@ -1,4 +1,5 @@
 import type { Logger, LogLevel } from '../types/config.js';
+import { displaySafe } from './display-safe.js';
 import { getLiveRenderer } from './live-renderer.js';
 import { getCurrentStackOutputBuffer } from './stack-context.js';
 
@@ -162,7 +163,19 @@ export class ConsoleLogger implements Logger {
   }
 
   private formatMessage(level: LogLevel, message: string, ...args: unknown[]): string {
-    const formattedArgs = args.length > 0 ? ' ' + args.map((a) => JSON.stringify(a)).join(' ') : '';
+    // Sanitized because `JSON.stringify` is NOT a terminal-safety boundary.
+    // It escapes `\n` and the rest of C0, so an extra arg cannot forge a LINE
+    // -- but `U+0085` (NEL), the C1 range xterm reads as CSI, and
+    // `U+2028`/`U+2029` all survive it verbatim (measured on Node 24). Every
+    // caller passing a parsed record as an extra arg therefore put raw
+    // attacker bytes on the terminal: `getLockRecord` logs the whole
+    // `lock.json`, of which only `owner` and `operation` are sanitized, so any
+    // other key carried them through. Fixing it HERE rather than at that call
+    // site is the same argument `display-safe.ts` makes in its own header --
+    // widening the rule by hand, one reader at a time, is what missed four of
+    // five readers in issue #2170 (issue #3003).
+    const formattedArgs =
+      args.length > 0 ? ' ' + displaySafe(args.map((a) => JSON.stringify(a)).join(' ')) : '';
 
     // Verbose mode: full timestamps and level
     if (this.level === 'debug') {

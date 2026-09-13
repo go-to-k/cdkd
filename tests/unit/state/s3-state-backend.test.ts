@@ -546,6 +546,407 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         expect((caught as Error).message).toMatch(/Unsupported state schema version/);
       }
     });
+
+    it('the version refusal cannot forge a row with the value it refuses (issue #3003)', async () => {
+      // The case above proves the record is REFUSED. What it does not cover is
+      // what the refusal SAYS: the message interpolated the raw value, so the
+      // string that never reached the rendered row reached the diagnostic
+      // instead — and cdkd's output is line-oriented.
+      const bad = {
+        version: '2\n  PhysicalID: arn\u200b:forged',
+        stackName: 'X',
+        resources: {},
+        outputs: {},
+        lastModified: 0,
+      };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(bad)) },
+        ETag: '"e"',
+      });
+
+      const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      const message = (caught as Error).message;
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      // Not vacuous: the refusal still NAMES the offending value, flattened.
+      expect(message).toContain('PhysicalID: arn :forged');
+      // The CLASS as well as the guard: a zero-width space survives the
+      // denylist and only the allowlist removes it.
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+    });
+
+    it('sanitizes the REGION in getState\'s own refusals (issue #3003)', async () => {
+      // The region here is a raw `listStacks` key segment, and this refusal is
+      // the deterministically reachable one: a planted object whose storage
+      // class makes GetObject fail with something other than NoSuchKey lands
+      // the segment in the message. A first cut of issue #3003 guarded the two
+      // `parseStateBody` refusals and left these three, in the same function.
+      const denied = Object.assign(new Error('InvalidObjectState: storage class'), {
+        name: 'InvalidObjectState',
+      });
+      s3Client.send.mockRejectedValueOnce(denied);
+
+      const caught = await backend
+        .getState('X', 'us-east-1\n  PhysicalID: arn:forged')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('Failed to get state');
+      expect(message).toContain('PhysicalID: arn:forged');
+    });
+
+    it('sanitizes the has-no-ETag refusal (issue #3003)', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('{}') },
+      });
+
+      const caught = await backend
+        .getState('X', 'us-east-1\n  PhysicalID: arn:forged')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('has no ETag');
+      expect(message).toContain('PhysicalID: arn:forged');
+    });
+
+    it('sanitizes the REGION in every debug line of the success path (issue #3003)', async () => {
+      // The region holes of `Getting state for stack` / `Retrieved state` were
+      // guarded and fenced by nothing: the only case reaching them passed a
+      // benign `us-east-1`. This drives the SUCCESS path, which is the one
+      // that reaches `Retrieved state` at all.
+      childLoggerMock.debug.mockClear();
+      const good = { version: 2, stackName: 'S', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(good)) },
+        ETag: '"e"',
+      });
+
+      const result = await backend.getState('S', 'us-east-1\n  PhysicalID: arn:forged');
+      expect(result).not.toBeNull();
+
+      const calls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(calls.some((c) => c.includes('Retrieved state'))).toBe(true);
+      for (const call of calls) {
+        expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      }
+      // Bound to the line this case exists for, not to the joined blob: a
+      // joined `toContain` is satisfied by `Getting state for stack` alone, so
+      // dropping the region from `Retrieved state` would leave it green.
+      expect(calls.find((c) => c.includes('Retrieved state'))).toContain('PhysicalID: arn:forged');
+      expect(calls.find((c) => c.includes('Getting state for stack'))).toContain(
+        'PhysicalID: arn:forged'
+      );
+    });
+
+    it('sanitizes the REGION on the MISS path too (issue #3003)', async () => {
+      // The success path returns before `No state at new key`, so the case
+      // above cannot reach that line. This one takes the miss path. It does
+      // NOT reach the legacy region-mismatch line -- both sends reject
+      // `NoSuchKey`, so `tryGetLegacy` returns before the region gate -- and
+      // an earlier revision of this comment said it did.
+      childLoggerMock.debug.mockClear();
+      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+
+      const result = await backend.getState('S', 'us-east-1\n  PhysicalID: arn:forged');
+      expect(result).toBeNull();
+
+      const calls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(calls.some((c) => c.includes('No state at new key'))).toBe(true);
+      for (const call of calls) {
+        expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      }
+      expect(calls.find((c) => c.includes('No state at new key'))).toContain(
+        'PhysicalID: arn:forged'
+      );
+    });
+
+    it('uses the ASCII ALLOWLIST for the NAME and the REGION too (issue #3003)', async () => {
+      // The class was pinned at one site per file, so `displayName` and the
+      // region carried none: flipping `asciiOnly` off at either left every
+      // case green. A zero-width space and a bidi mark are what discriminate.
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('{}') },
+      });
+
+      const caught = await backend
+        .getState('Gho\u200bst', 'us-\u200eeast-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      // Not vacuous: both values are still reported, with the invisible gone.
+      expect(message).toContain('Gho st');
+      expect(message).toContain('us- east-1');
+    });
+
+    it('uses the ASCII ALLOWLIST, not the denylist, for the error detail (issue #3003)', async () => {
+      // The class itself, which nothing pinned: every hostile byte in the
+      // cases around this one is in BOTH classes, so flipping `asciiOnly` off
+      // left them all green. A zero-width space and a bidi MARK are in
+      // neither denylist -- `display-safe.ts` names them as its residual --
+      // and only the allowlist removes them. They matter here because both
+      // can hide or reorder text inside a row a reader is trying to trust.
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('Denied\u200b\u200e at region'), { name: 'AccessDenied' })
+      );
+
+      const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      // Not vacuous: the surrounding words are still reported.
+      expect(message).toContain('Denied');
+      expect(message).toContain('at region');
+    });
+
+    it('sanitizes the STACK NAME in every remaining refusal and warning (issue #3003)', async () => {
+      // Six interpolations were guarded and fenced by nothing: the stack half
+      // of `has no ETag`, `Retrieved state`, `Failed to get state` and the
+      // legacy-loaded WARN, plus that warning's KEY and that refusal's DETAIL.
+      // Every case reaching them passed the benign name 'X'.
+      childLoggerMock.debug.mockClear();
+      childLoggerMock.warn.mockClear();
+      const hostile = 'Ghost\n  Stack\u200bForged: yes';
+
+      // (a) `Failed to get state`, whose DETAIL is an AWS message here.
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('Denied\n  DetailForged: yes'), { name: 'AccessDenied' })
+      );
+      const failed = await backend.getState(hostile, 'us-east-1').catch((e: unknown) => e);
+      expect((failed as Error).message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect((failed as Error).message).toContain('Stack Forged: yes');
+      expect((failed as Error).message).toContain('DetailForged: yes');
+
+      // (b) `has no ETag`.
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('{}') },
+      });
+      const noEtag = await backend.getState(hostile, 'us-east-1').catch((e: unknown) => e);
+      expect((noEtag as Error).message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect((noEtag as Error).message).toContain('Stack Forged: yes');
+
+      // (c) `Retrieved state`, on the success path.
+      const good = { version: 2, stackName: 'S', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(good)) },
+        ETag: '"e"',
+      });
+      expect(await backend.getState(hostile, 'us-east-1')).not.toBeNull();
+      const retrieved = childLoggerMock.debug.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((c) => c.includes('Retrieved state'));
+      expect(retrieved).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(retrieved).toContain('Stack Forged: yes');
+
+      // (d) the legacy-loaded WARN, whose NAME and KEY are both interpolated.
+      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ version: 1, stackName: 'S', resources: {}, outputs: {}, lastModified: 1 })
+            ),
+        },
+        ETag: '"e"',
+      });
+      expect(await backend.getState(hostile, 'us-east-1')).not.toBeNull();
+      const warned = childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+      expect(warned).toContain('Loaded legacy state');
+      expect(warned).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      // The name appears twice: on its own and inside the printed KEY.
+      expect(warned.match(/Stack Forged: yes/g)).toHaveLength(2);
+      // The KEY takes the allowlist too, which nothing pinned: the name
+      // reaches it through `getLegacyStateKey`.
+      expect(warned).not.toMatch(/[\u200b-\u200f\ufeff]/);
+    });
+
+    it('sanitizes the legacy region-mismatch DEBUG line (issue #3003)', async () => {
+      // A debug line, but debug is quieter than warn -- not a different
+      // terminal -- and this one carries both a stack name and state-BODY
+      // content. Its sibling in `probeLegacyState` has been sanitized since
+      // issue #1926; this one had not.
+      childLoggerMock.debug.mockClear();
+      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                version: 1,
+                stackName: 'S',
+                region: 'eu-west-1\n  PhysicalID: arn\u200b:forged',
+                resources: {},
+                outputs: {},
+                lastModified: 1,
+              })
+            ),
+        },
+        ETag: '"e"',
+      });
+
+      // The CALLER's region is hostile too: that line interpolates three
+      // values and a case driving only two left the third reddening nothing.
+      const result = await backend.getState(
+        'Ghost\n  StackForged: yes',
+        'us-east-1\n  Caller\u200bForged: yes'
+      );
+      expect(result).toBeNull();
+
+      // PER CALL, not over a joined blob: joining and then splitting on `\n`
+      // is blind to the very newline under test, and a blob also drags in
+      // sibling lines this case does not own. Each call's own string still
+      // contains an injected newline if one survived.
+      const debugCalls = childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+      const debugText = debugCalls.join('\n');
+      expect(debugText).toContain('skipping legacy fallback');
+      // Every captured call, so a sibling line on this same read path that
+      // stayed raw fails here too -- which is how this case found two.
+      for (const call of debugCalls) {
+        expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      }
+      const mismatch = debugCalls.find((c) => c.includes('skipping legacy fallback'));
+      expect(mismatch).toContain('PhysicalID: arn :forged');
+      expect(mismatch).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      expect(mismatch).toContain('StackForged: yes');
+      expect(mismatch).toContain('Caller Forged: yes');
+    });
+
+    it('sanitizes the LEGACY-key read failure, on getState\'s own fallback (issue #3003)', async () => {
+      // `getState` falls back to the legacy key when the region-scoped one is
+      // absent, so `tryGetLegacy`'s refusal is on the `state show` path too.
+      const noSuchKey = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKey);
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('InvalidObjectState\n  Detail\u200bForged: yes'), {
+          name: 'InvalidObjectState',
+        })
+      );
+
+      const caught = await backend
+        .getState('Ghost\n  PhysicalID: arn:forged', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('legacy state');
+      expect(message).toContain('PhysicalID: arn:forged');
+      // The DETAIL half, which was guarded and fenced by nothing: its twin in
+      // `Failed to get state` is covered, this one was not.
+      expect(message).toContain('Detail Forged: yes');
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+    });
+
+    it('sanitizes BOTH the stack name and the region in the has-no-body refusal (issue #3003)', async () => {
+      // Both halves, in one case, because they come from the same S3 key and
+      // a case that hardened only the region left the name unfenced --
+      // neutering `this.displayName(stackName)` there reddened no injection
+      // case anywhere in the suite.
+      s3Client.send.mockResolvedValueOnce({ ETag: '"e"' });
+
+      const caught = await backend
+        .getState('Ghost\n  StackForged: yes', 'us-east-1\n  PhysicalID: arn:forged')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('has no body');
+      expect(message).toContain('PhysicalID: arn:forged');
+      expect(message).toContain('StackForged: yes');
+    });
+
+    it('sanitizes the STACK NAME in the VERSION refusal too (issue #3003)', async () => {
+      // The invalid-JSON case below covers the other arm. This one is separate
+      // because the two refusals are separate templates: a first cut named one
+      // case "in both refusals" and drove only the parse arm, so reverting
+      // `this.displayName(stackName)` in the VERSION message left every case
+      // green.
+      const bad = { version: 99, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(bad)) },
+        ETag: '"e"',
+      });
+
+      const caught = await backend
+        .getState('Ghost\n  PhysicalID: arn:forged', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('Unsupported state schema version 99');
+      expect(message).toContain('Ghost');
+    });
+
+    it('reports a null VERSION as the word rather than the unrenderable stand-in (issue #3003)', async () => {
+      // `displaySafe` maps `null` to the empty string, so passing the value
+      // straight in would replace a precise, already-safe word with the
+      // stand-in. Coercing first keeps it.
+      const bad = { version: null, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(bad)) },
+        ETag: '"e"',
+      });
+
+      const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      expect((caught as Error).message).toContain('Unsupported state schema version null');
+    });
+
+    it('the invalid-JSON refusal cannot forge a row with the body it quotes (issue #3003)', async () => {
+      // V8's `SyntaxError` quotes the offending INPUT, so this message carries
+      // bytes of a file anyone with `s3:PutObject` on the bucket can write.
+      // `probeLegacyState` has sanitized its own copy of this failure since
+      // issue #1926; this arm was the sibling that did not.
+      //
+      // The body shape is load-bearing and was MEASURED rather than assumed.
+      // V8 quotes the input only for its `Unexpected token 'X', "..." is not
+      // valid JSON` message; the `Expected double-quoted property name ...` and
+      // `Unexpected non-whitespace character ...` forms carry a POSITION and no
+      // input at all. A first draft of this case used `{"version":1,<newline>`,
+      // which takes the position-only form — so it passed with the guard
+      // removed, proving nothing. An array opener reaches the quoting form.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve('[1,2,\n  Phys\u200bicalID: arn:forged]'),
+        },
+        ETag: '"e"',
+      });
+
+      const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
+      expect(caught).toBeInstanceOf(StateError);
+      const message = (caught as Error).message;
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      // Not vacuous, and specifically about the QUOTING form: `is not valid
+      // JSON` is in the production template whether or not V8 quoted the body,
+      // so asserting only that would let a Node upgrade flip this fixture back
+      // to the position-only message and silently restore the vacuity this
+      // case was rewritten to escape. `PhysicalID` can only have come FROM the
+      // body.
+      expect(message).toContain('is not valid JSON');
+      // The needle fits V8's quote window, which truncates mid-word.
+      expect(message).toContain('Phys ical');
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+    });
+
+    it('sanitizes the STACK NAME in the invalid-JSON refusal (issue #3003)', async () => {
+      // The name reaches here from a raw S3 key segment on the `state show`
+      // path, so it is the same untrusted class as the body. `displayName`
+      // already existed in this class for exactly this; the two refusals did
+      // not use it.
+      const hostile = 'Ghost\n  PhysicalID: arn:forged';
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('not json at all {') },
+        ETag: '"e"',
+      });
+
+      const caught = await backend.getState(hostile, 'us-east-1').catch((e: unknown) => e);
+      const message = (caught as Error).message;
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('Ghost');
+    });
   });
 
   describe('saveState', () => {

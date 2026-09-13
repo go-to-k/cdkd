@@ -42,14 +42,20 @@ vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
 });
 
 // Mock logger to suppress output during tests
+// A STABLE child logger, not a fresh object per `child()` call: the manager
+// takes its child once at construction, and a per-call object makes every
+// debug line it writes uncapturable -- which is why four sanitised debug lines
+// here were fenced by nothing (issue #3003).
+const childLoggerMock = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    child: () => ({
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
+    child: () => childLoggerMock,
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
@@ -315,6 +321,25 @@ describe('LockManager', () => {
 
       await expect(lockManager.acquireLock('test-stack', 'us-east-1')).rejects.toThrow(LockError);
     });
+
+    it('cannot forge a line with the S3 error text it quotes (issue #3003)', async () => {
+      // S3 error text echoes the KEY, which embeds the stack name, so this
+      // detail is attacker-reachable even though the two interpolations before
+      // it are sanitized. The zero-width space pins the CLASS as well as the
+      // hole: a control byte alone is in both sanitiser classes.
+      const s3Error = new Error('AccessDenied\n  Owner: nob\u200body');
+      s3Error.name = 'AccessDenied';
+      s3Client.send.mockRejectedValueOnce(s3Error);
+
+      const caught = await lockManager
+        .acquireLock('test-stack', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message.split('\n')).toHaveLength(1);
+      expect(message).toContain('Owner: nob ody');
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+    });
   });
 
   describe('getLockInfo', () => {
@@ -416,6 +441,170 @@ describe('LockManager', () => {
       const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
 
       expect(result).toBeNull();
+    });
+
+    it('uses the ASCII ALLOWLIST for the error detail, not the denylist (issue #3003)', async () => {
+      // The class, which nothing pinned: a control byte is in BOTH sanitiser
+      // classes, so a case carrying only one cannot tell them apart. A
+      // zero-width space and a bidi mark are in neither denylist, and only the
+      // allowlist removes them.
+      s3Client.send.mockRejectedValueOnce(new Error('Denied\u200b\u200e at key'));
+
+      const caught = await lockManager
+        .getLockInfo('test-stack', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      expect(message).toContain('Denied');
+      expect(message).toContain('at key');
+    });
+
+    it('sanitizes the STACK NAME in all four of its DEBUG lines (issue #3003)', async () => {
+      // Debug is quieter than warn, not a different terminal. `getLockRecord`
+      // writes four such lines and they reach three different branches, so
+      // one fixture cannot drive them all -- an earlier version of this case
+      // drove two while this comment claimed all four.
+      const hostile = 'Ghost\n  PhysicalID: arn:forged';
+      const clean = (calls: string[]): void => {
+        for (const call of calls) {
+          expect(call, call).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        }
+      };
+      const debugCalls = (): string[] =>
+        childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0]));
+
+      // (a) the absent branch: `Getting lock info` + `No lock exists`.
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      expect(await lockManager.getLockInfo(hostile, 'us-east-1')).toBeNull();
+      let calls = debugCalls();
+      clean(calls);
+      expect(calls.find((c) => c.includes('Getting lock info'))).toContain('PhysicalID: arn:forged');
+      expect(calls.find((c) => c.includes('No lock exists'))).toContain('PhysicalID: arn:forged');
+
+      // (b) the non-object branch: `is not an object`.
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('null') },
+      });
+      expect(await lockManager.getLockInfo(hostile, 'us-east-1')).toBeNull();
+      calls = debugCalls();
+      clean(calls);
+      expect(calls.find((c) => c.includes('is not an object'))).toContain('PhysicalID: arn:forged');
+
+      // (c) the happy branch: `Lock info for stack:`.
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ owner: 'u@h:1', timestamp: 1, expiresAt: Date.now() + 1000 })
+            ),
+        },
+      });
+      expect(await lockManager.getLockInfo(hostile, 'us-east-1')).not.toBeNull();
+      calls = debugCalls();
+      clean(calls);
+      expect(calls.find((c) => c.includes('Lock info for stack:'))).toContain(
+        'PhysicalID: arn:forged'
+      );
+
+      // The record travels as an EXTRA ARGUMENT, not interpolated into the
+      // message. That is load-bearing rather than stylistic: `formatMessage`
+      // sanitizes only the extra args, never the message, so the issue #3003
+      // guard covers this record ONLY while it stays in argument position.
+      // Pre-stringifying it at this call site -- the obvious "just interpolate
+      // it" refactor -- reopens the hole and reddened zero cases before this
+      // assertion existed. `lockInfo` is a cast of an attacker-writable
+      // `lock.json`, of which only `owner` and `operation` are sanitized here.
+      const infoCall = childLoggerMock.debug.mock.calls.find((c: unknown[]) =>
+        String(c[0]).includes('Lock info for stack:')
+      );
+      // `toEqual(objectContaining)` rather than `typeof === 'object'`, which
+      // also accepts `null`.
+      expect(infoCall?.[1]).toEqual(expect.objectContaining({ owner: 'u@h:1' }));
+    });
+
+    it('uses the ASCII ALLOWLIST in `safeSegment`, not the denylist (issue #3003)', async () => {
+      // The class on the SEGMENT helper, the twin of the class fences on the
+      // S3 side. A zero-width space discriminates for the same reason as in
+      // `uses the ASCII ALLOWLIST for the error detail` above: a control byte
+      // is in both sanitiser classes and cannot tell them apart.
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      childLoggerMock.debug.mockClear();
+
+      expect(await lockManager.getLockInfo('Gho\u200bst', 'us-east-1')).toBeNull();
+
+      const line = childLoggerMock.debug.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((c) => c.includes('Getting lock info'));
+      expect(line).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      expect(line).toContain('Gho st');
+    });
+
+    it('a malformed lock body cannot forge a row through the thrown message (issue #3003)', async () => {
+      // The case above sanitizes the lock's DISPLAY fields at the source. This
+      // is the other half: when the body does not parse at all, there are no
+      // fields to sanitize and the catch wraps V8's `SyntaxError` — which
+      // quotes the offending INPUT, so a `lock.json` anyone with
+      // `s3:PutObject` can write reaches the terminal through the error.
+      // `cdkd state show` surfaces this, and cdkd's output is line-oriented.
+      //
+      // The body takes the array-opener shape deliberately: V8 quotes the
+      // input only for `Unexpected token 'X', "..." is not valid JSON`, while
+      // an object-shaped truncation yields a position and no input, which
+      // would make this case pass with the guard removed.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve('[1,2,\n  PhysicalID: arn:forged]'),
+        },
+      });
+
+      const caught = await lockManager
+        .getLockInfo('test-stack', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message.split('\n').some((l) => l.startsWith('  PhysicalID:'))).toBe(false);
+      // Not vacuous: it is still the lock-read failure carrying the parser's
+      // own words, flattened rather than dropped.
+      expect(message).toContain('Failed to get lock info');
+      expect(message).toContain('PhysicalID');
+    });
+
+    it('sanitizes the has-no-body refusal, which the catch rethrows UNCHANGED (issue #3003)', async () => {
+      // A `LockError` is rethrown as-is by the catch below, so it never reaches
+      // the guard there and needs its own -- the sibling the first cut missed.
+      s3Client.send.mockResolvedValueOnce({});
+
+      const caught = await lockManager
+        .getLockInfo('Ghost\n  PhysicalID: arn:forged', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('has no body');
+      expect(message).toContain('PhysicalID: arn:forged');
+    });
+
+    it('sanitizes the STACK NAME in the lock-read failure (issue #3003)', async () => {
+      // The name reaches here from an S3 key segment on the `state show` path,
+      // so it is the same untrusted class as the body.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve('[1,2,\n  PhysicalID: arn:forged]'),
+        },
+      });
+
+      const caught = await lockManager
+        .getLockInfo('Ghost\n  PhysicalID: arn:forged', 'us-east-1')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(message).toContain('Ghost');
     });
   });
 
