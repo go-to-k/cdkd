@@ -360,6 +360,12 @@ gates:
       # entries and asserts each points at an existing docs/ page, so an
       # edit to the sidebar must stale a marker recorded before it.
       - "vite.docs.config.ts"
+      # docs-site/** holds the site's build-time TypeScript (the OG-image
+      # template and the home-title plugin the docs config imports).
+      # tests/unit/scripts/docs-site-home-title.test.ts imports
+      # docs-site/home-title.ts as its subject, so an edit there must stale a
+      # marker recorded before it — the #1592 shape once more.
+      - "docs-site/**"
       # plugins/** is the DISTRIBUTED plugin surface (the cdkd-skills
       # marketplace skill). The same test asserts its pages carry no
       # issue/PR references -- the maintainer policy already enforced for
