@@ -31,6 +31,7 @@ import {
   isUnboundTemplateParameter,
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
+  markSameGenerationBag,
   maskSecretsInText,
   redactSecretsForState,
   STATE_SOURCED_BASELINE_RULES,
@@ -1780,9 +1781,22 @@ export async function resolveImportedProperties(
         ...baseContext,
         recordedSecretValues,
       })) as Record<string, unknown>;
+      // MARKED same-generation (issue #2745): a 1-3 character secret embedded
+      // in a leaf sits below the value scan's needle floor, and the span arms
+      // write it as its token only on a bag whose provenance is proven. This
+      // bag is import's own resolution of `unresolvedProperties` by the
+      // resolver that recorded the pairs in `recordedSecretValues` — the same
+      // evidence the deploy engine's create arm has — so the mark's claim
+      // (see `markSameGenerationBag`) holds here. The mark goes on the
+      // redaction INPUT; the record holds the redacted copy, unmarked, and
+      // the observed capture below never sees the marked object.
       resource.properties =
         recordedSecretValues.size > 0
-          ? redactSecretsForState(resolved, recordedSecretValues, unresolvedProperties)
+          ? redactSecretsForState(
+              markSameGenerationBag(resolved),
+              recordedSecretValues,
+              unresolvedProperties
+            )
           : resolved;
     } catch (err) {
       // Intrinsic referenced a resource not in the importable set

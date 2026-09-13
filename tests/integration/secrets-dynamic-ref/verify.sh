@@ -150,6 +150,15 @@ EXPECTED_SSM="cdkd-known-ssm-value"
 # embedding it as their token. Never printed, even masked -- `mask` withholds
 # the head of a value this short.
 EXPECTED_PIN="q7"
+# THE INVARIANT behind Guards 3c / 3d (#2516 / #2745), not the instance: the
+# value must sit BELOW the redaction value scan's four-character needle floor,
+# or the scan alone would redact every framed leaf and the span arms would
+# pass with or without the mark. A stack and script edited together to a
+# longer value would keep every equality green.
+case "${#EXPECTED_PIN}" in
+  1|2|3) ;;
+  *) echo "FAIL: premise: EXPECTED_PIN must be 1-3 characters (got ${#EXPECTED_PIN}) -- above the needle floor Guards 3c / 3d prove nothing" >&2; exit 1 ;;
+esac
 # The version-stage reference reads the SAME json key as SECRET_PASSWORD, so
 # both resolve to EXPECTED_PASSWORD. That collision is deliberate and is what
 # makes the state-expression + `diff --fail` assertions below discriminating:
@@ -235,10 +244,10 @@ mask() {
 # length arm, which the containment arm never reaches, pinned at its four-
 # character boundary from both sides), and a long value the helper must still
 # abbreviate rather than withhold.
-if [ "$(mask "${EXPECTED_PIN}")" != "***(len=2)" ] \
-  || [ "$(mask "${EXPECTED_PIN}-extra")" != "***(len=8)" ] \
-  || [ "$(mask "extra-${EXPECTED_PIN}")" != "***(len=8)" ] \
-  || [ "$(mask "ab${EXPECTED_PIN}cd")" != "***(len=6)" ] \
+if [ "$(mask "${EXPECTED_PIN}")" != "***(len=${#EXPECTED_PIN})" ] \
+  || [ "$(mask "${EXPECTED_PIN}-extra")" != "***(len=$(( ${#EXPECTED_PIN} + 6 )))" ] \
+  || [ "$(mask "extra-${EXPECTED_PIN}")" != "***(len=$(( ${#EXPECTED_PIN} + 6 )))" ] \
+  || [ "$(mask "ab${EXPECTED_PIN}cd")" != "***(len=$(( ${#EXPECTED_PIN} + 4 )))" ] \
   || [ "$(mask "zz")" != "***(len=2)" ] \
   || [ "$(mask "abcd")" != "***(len=4)" ] \
   || [ "$(mask "abcde")" != "ab***(len=5)" ] \
@@ -847,7 +856,26 @@ ENV_SSM_SECURE_VALUE=$(get_env SSM_SECURE_VALUE)
 ENV_DB_URL=$(get_env DB_URL)
 ENV_DB_DSN_LITERAL=$(get_env DB_DSN_LITERAL)
 ENV_DB_PORT_LITERAL=$(get_env DB_PORT_LITERAL)
+ENV_DB_PORT_SUB=$(get_env DB_PORT_SUB)
+ENV_DB_PORT_JOIN=$(get_env DB_PORT_JOIN)
 ENV_SECRET_PIN_STAGED=$(get_env SECRET_PIN_STAGED)
+
+# The secret's ARN, for the ARN-form expression the L2 join assembles (issue
+# #2745): `secretValueFromJson` renders the ARN as a `Ref`, so the token the
+# resolver records -- and state must hold -- is
+# `{{resolve:secretsmanager:<ARN>:SecretString:pin::}}`, which only the live
+# secret can spell. A strict capture, guarded on the ARN prefix: an empty or
+# `None` value would make every equality below compare against a string no
+# state could ever hold, which reads as a FAIL rather than a vacuous pass, but
+# the guard names the cause instead.
+SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
+  --region "${REGION}" --query 'ARN' --output text)
+case "${SECRET_ARN}" in
+  arn:aws:secretsmanager:*) ;;
+  *) echo "FAIL: premise: could not read the secret's ARN (got '${SECRET_ARN}')" >&2; exit 1 ;;
+esac
+EXPECTED_DB_PORT_SUB_EXPR="${EXPECTED_DB_PORT_LITERAL_EXPR}"
+EXPECTED_DB_PORT_JOIN_EXPR="port:{{resolve:secretsmanager:${SECRET_ARN}:SecretString:pin::}}"
 ENV_SSM_SECURE_COPY=$(get_env SSM_SECURE_COPY)
 ENV_PUBLIC_URL=$(get_env PUBLIC_URL)
 
@@ -885,6 +913,8 @@ check_not_literal SSM_SECURE_VALUE "${ENV_SSM_SECURE_VALUE}"
 check_not_literal DB_URL "${ENV_DB_URL}"
 check_not_literal DB_DSN_LITERAL "${ENV_DB_DSN_LITERAL}"
 check_not_literal DB_PORT_LITERAL "${ENV_DB_PORT_LITERAL}"
+check_not_literal DB_PORT_SUB "${ENV_DB_PORT_SUB}"
+check_not_literal DB_PORT_JOIN "${ENV_DB_PORT_JOIN}"
 check_not_literal SECRET_PIN_STAGED "${ENV_SECRET_PIN_STAGED}"
 check_not_literal SSM_SECURE_COPY "${ENV_SSM_SECURE_COPY}"
 check_not_literal PUBLIC_URL "${ENV_PUBLIC_URL}"
@@ -910,6 +940,13 @@ check_equals "DB_DSN_LITERAL (literal string embedding :SecretString:<jsonkey>)"
 # state assertions are about a value that exists.
 check_equals "DB_PORT_LITERAL (literal string embedding a TWO-character :SecretString:<jsonkey>)" \
   "${ENV_DB_PORT_LITERAL}" "${EXPECTED_DB_PORT_LITERAL}"
+# The PREMISE of Guard 3d (issue #2745): both intrinsic shapes reach AWS with
+# the two-character value spliced in, exactly like the literal leaf, so the
+# state assertions on them are about a value the resource holds.
+check_equals "DB_PORT_SUB (Fn::Sub embedding a TWO-character :SecretString:<jsonkey>)" \
+  "${ENV_DB_PORT_SUB}" "${EXPECTED_DB_PORT_LITERAL}"
+check_equals "DB_PORT_JOIN (L2 Fn::Join embedding a TWO-character :SecretString:<jsonkey> by ARN)" \
+  "${ENV_DB_PORT_JOIN}" "${EXPECTED_DB_PORT_LITERAL}"
 check_equals "SECRET_PIN_STAGED (the two-character value, whole, :AWSCURRENT)" \
   "${ENV_SECRET_PIN_STAGED}" "${EXPECTED_PIN}"
 # The MIXED leaf must reach AWS with the reference SUBSTITUTED INTO the
@@ -1074,12 +1111,18 @@ esac
 # with its own delimiter, nested joins included) rather than its JSON text, so
 # a join splitting the reference across parts still counts (issue #2516 review).
 # FAIL CLOSED on a value the premise checker cannot render: `rendered` knows a
-# string, an `Fn::Join` (joined with its own delimiter, nested) and a `Ref` to
-# an `AWS::*` pseudo parameter (contributes no reference text); anything else
-# -- an `Fn::Sub`, whose variables it would have to substitute, or a `Ref` to
-# a template parameter whose default could spell part of the reference --
-# marks the value UNRENDERABLE, and a template carrying one cannot have its
-# "last key resolving the reference" computed.
+# string, an `Fn::Join` (joined with its own delimiter, nested), a
+# PLACEHOLDER-FREE `Fn::Sub` (its template string verbatim -- issue #2745's
+# DB_PORT_SUB), and a `Ref` to an `AWS::*` pseudo parameter or to one of the
+# template's `AWS::SecretsManager::Secret` resources (either contributes no
+# reference text: a secret's `Ref` is its ARN, and a secret NAME cannot carry
+# a colon, so the ARN cannot spell any part of `:SecretString:` -- issue
+# #2745's DB_PORT_JOIN carries the ARN that way; a `Ref` to ANY OTHER resource
+# stays unrenderable, since a physical name can spell part of the reference);
+# anything else -- an `Fn::Sub` with variables it would have to substitute, or
+# a `Ref` to a template parameter whose default could spell part of the
+# reference -- marks the value UNRENDERABLE, and a template carrying one
+# cannot have its "last key resolving the reference" computed.
 # ...and the survivor is decided by EVERY property the resolver walks, not by
 # the env alone: a reference to the same key anywhere else in the Lambda's
 # properties (a `Description`, say) would resolve after the env and move the
@@ -1103,15 +1146,17 @@ if [ "${OUTSIDE_ENV_PASSWORD}" != "false" ]; then
   exit 1
 fi
 UNRENDERABLE_PASSWORD=$(jq -r '
-  def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Ref") and (.Ref | startswith("AWS::")) then "" else "UNRENDERABLE" end;
+  (.Resources | to_entries | map(select(.value.Type=="AWS::SecretsManager::Secret")) | map(.key)) as $secretRefs
+  | def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Fn::Sub") and (.["Fn::Sub"] | type=="string" and (test("\\$\\{") | not)) then .["Fn::Sub"] elif type=="object" and has("Ref") and (.Ref | startswith("AWS::") or IN($secretRefs[])) then "" else "UNRENDERABLE" end;
   [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
   | to_entries | map(select((.value | rendered) | contains("UNRENDERABLE"))) | map(.key) | join(",")' "${SYNTH_TEMPLATE}")
 if [ -n "${UNRENDERABLE_PASSWORD}" ]; then
-  echo "FAIL: premise: Guard 3a-literal's ordering check cannot render env key(s) ${UNRENDERABLE_PASSWORD} (not a string / Fn::Join / AWS::* Ref) -- extend \`rendered\` before relying on the survivor premise" >&2
+  echo "FAIL: premise: Guard 3a-literal's ordering check cannot render env key(s) ${UNRENDERABLE_PASSWORD} (not a string / Fn::Join / placeholder-free Fn::Sub / AWS::* or secret-resource Ref) -- extend \`rendered\` before relying on the survivor premise" >&2
   exit 1
 fi
 MAX_PW_IDX=$(jq -r '
-  def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Ref") and (.Ref | startswith("AWS::")) then "" else "UNRENDERABLE" end;
+  (.Resources | to_entries | map(select(.value.Type=="AWS::SecretsManager::Secret")) | map(.key)) as $secretRefs
+  | def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Fn::Sub") and (.["Fn::Sub"] | type=="string" and (test("\\$\\{") | not)) then .["Fn::Sub"] elif type=="object" and has("Ref") and (.Ref | startswith("AWS::") or IN($secretRefs[])) then "" else "UNRENDERABLE" end;
   [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
   | to_entries | to_entries
   | map(select((.value.value | rendered) | contains(":SecretString:password")))
@@ -1156,8 +1201,9 @@ fi
 # so a fix writing the survivor rather than the token shows here.
 #
 # PREMISE GUARD first, the same two facts Guard 3a-literal needs: the leaf
-# synthesized as a plain STRING (a `Fn::Join` takes the skeleton arm, which
-# cannot fix this), and it precedes SECRET_PIN_STAGED, the LAST key resolving
+# synthesized as a plain STRING (an `Fn::Join` takes the intrinsic arms --
+# Guard 3d's subject, #2745 -- not the literal one this guard is about), and
+# it precedes SECRET_PIN_STAGED, the LAST key resolving
 # `:SecretString:pin`, so the survivor is the staged spelling. "Resolving" is
 # matched on each value RENDERED the way the resolver assembles it (an
 # `Fn::Join` joined with its own delimiter, nested joins included), not on
@@ -1175,12 +1221,18 @@ case "${PORT_IDX}${PIN_STAGED_IDX}" in *null*|"")
   exit 1 ;;
 esac
 # FAIL CLOSED on a value the premise checker cannot render: `rendered` knows a
-# string, an `Fn::Join` (joined with its own delimiter, nested) and a `Ref` to
-# an `AWS::*` pseudo parameter (contributes no reference text); anything else
-# -- an `Fn::Sub`, whose variables it would have to substitute, or a `Ref` to
-# a template parameter whose default could spell part of the reference --
-# marks the value UNRENDERABLE, and a template carrying one cannot have its
-# "last key resolving the reference" computed.
+# string, an `Fn::Join` (joined with its own delimiter, nested), a
+# PLACEHOLDER-FREE `Fn::Sub` (its template string verbatim -- issue #2745's
+# DB_PORT_SUB), and a `Ref` to an `AWS::*` pseudo parameter or to one of the
+# template's `AWS::SecretsManager::Secret` resources (either contributes no
+# reference text: a secret's `Ref` is its ARN, and a secret NAME cannot carry
+# a colon, so the ARN cannot spell any part of `:SecretString:` -- issue
+# #2745's DB_PORT_JOIN carries the ARN that way; a `Ref` to ANY OTHER resource
+# stays unrenderable, since a physical name can spell part of the reference);
+# anything else -- an `Fn::Sub` with variables it would have to substitute, or
+# a `Ref` to a template parameter whose default could spell part of the
+# reference -- marks the value UNRENDERABLE, and a template carrying one
+# cannot have its "last key resolving the reference" computed.
 # ...and the survivor is decided by EVERY property the resolver walks, not by
 # the env alone: a reference to the same key anywhere else in the Lambda's
 # properties (a `Description`, say) would resolve after the env and move the
@@ -1204,15 +1256,17 @@ if [ "${OUTSIDE_ENV_PIN}" != "false" ]; then
   exit 1
 fi
 UNRENDERABLE_PIN=$(jq -r '
-  def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Ref") and (.Ref | startswith("AWS::")) then "" else "UNRENDERABLE" end;
+  (.Resources | to_entries | map(select(.value.Type=="AWS::SecretsManager::Secret")) | map(.key)) as $secretRefs
+  | def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Fn::Sub") and (.["Fn::Sub"] | type=="string" and (test("\\$\\{") | not)) then .["Fn::Sub"] elif type=="object" and has("Ref") and (.Ref | startswith("AWS::") or IN($secretRefs[])) then "" else "UNRENDERABLE" end;
   [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
   | to_entries | map(select((.value | rendered) | contains("UNRENDERABLE"))) | map(.key) | join(",")' "${SYNTH_TEMPLATE}")
 if [ -n "${UNRENDERABLE_PIN}" ]; then
-  echo "FAIL: premise: Guard 3c's ordering check cannot render env key(s) ${UNRENDERABLE_PIN} (not a string / Fn::Join / AWS::* Ref) -- extend \`rendered\` before relying on the survivor premise" >&2
+  echo "FAIL: premise: Guard 3c's ordering check cannot render env key(s) ${UNRENDERABLE_PIN} (not a string / Fn::Join / placeholder-free Fn::Sub / AWS::* or secret-resource Ref) -- extend \`rendered\` before relying on the survivor premise" >&2
   exit 1
 fi
 MAX_PIN_IDX=$(jq -r '
-  def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Ref") and (.Ref | startswith("AWS::")) then "" else "UNRENDERABLE" end;
+  (.Resources | to_entries | map(select(.value.Type=="AWS::SecretsManager::Secret")) | map(.key)) as $secretRefs
+  | def rendered: if type=="string" then . elif type=="object" and has("Fn::Join") then (.["Fn::Join"][0] as $d | .["Fn::Join"][1] | map(rendered) | join($d)) elif type=="object" and has("Fn::Sub") and (.["Fn::Sub"] | type=="string" and (test("\\$\\{") | not)) then .["Fn::Sub"] elif type=="object" and has("Ref") and (.Ref | startswith("AWS::") or IN($secretRefs[])) then "" else "UNRENDERABLE" end;
   [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
   | to_entries | to_entries
   | map(select((.value.value | rendered) | contains(":SecretString:pin")))
@@ -1285,6 +1339,116 @@ if grep -qF "${EXPECTED_DB_PORT_LITERAL}" <<< "${STATE_JSON}"; then
   redaction_fail=1
 else
   echo "    OK: the framed two-character secret is absent from the WHOLE state document"
+fi
+
+# Guard 3d (issue #2745, first site): the same `port:` + two-character
+# reference through an INTRINSIC source. The literal span arm needs a source
+# string to copy its frame from and the skeleton arm positions only a
+# WHOLE-token leaf, so before the frame arm both leaves fell to the value scan
+# and persisted `port:<pin>` -- which the whole-document grep above already
+# refuses; what these assertions add is the POSITIVE half, exact equality with
+# each leaf's OWN expression: the `Fn::Sub`'s name-form spelling, and the L2
+# join's ARN-form one, never the staged sibling's (the collapsed map's
+# survivor, which a fix writing the survivor would show).
+#
+# PREMISE GUARD first, per shape. DB_PORT_SUB must have synthesized as an
+# `Fn::Sub` OBJECT whose template string is exactly the expected expression (a
+# fold to a plain string would exercise the LITERAL arm, #2516, not this one);
+# DB_PORT_JOIN as the L2 `Fn::Join` -- empty delimiter, three parts, the prefix
+# FUSED into the token's opening part, a `Ref` to the stack's secret INSIDE
+# the token, the closing part ending the 6-field token -- a join whose
+# non-literal part lands OUTSIDE the token is the nonliteral frame the arm
+# refuses (#2745's deferred shape), and a join that folded to a string is the
+# literal arm's. Both must precede SECRET_PIN_STAGED for the same survivor
+# premise Guard 3c states. On a shape failure the value is printed through
+# `diag_output`, which withholds it if it carries a secret.
+SUB_SHAPE=$(jq -r --arg expected "${EXPECTED_DB_PORT_SUB_EXPR}" '
+  [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables.DB_PORT_SUB] | first
+  | if type=="object" and has("Fn::Sub") and (.["Fn::Sub"] == $expected) then "fn-sub" else tojson end' "${SYNTH_TEMPLATE}")
+if [ "${SUB_SHAPE}" != "fn-sub" ]; then
+  echo "FAIL: premise: DB_PORT_SUB synthesized as '$(diag_output "${SUB_SHAPE}")', not an Fn::Sub over the expected expression -- the intrinsic frame arm (#2745) is not what this deploy exercised" >&2
+  exit 1
+fi
+JOIN_SHAPE=$(jq -r '
+  (.Resources | to_entries | map(select(.value.Type=="AWS::SecretsManager::Secret")) | map(.key)) as $secrets
+  | [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables.DB_PORT_JOIN] | first
+  | if type=="object" and has("Fn::Join") and (.["Fn::Join"][0] == "") and ((.["Fn::Join"][1] | length) == 3)
+       and (.["Fn::Join"][1][0] == "port:{{resolve:secretsmanager:")
+       and ((.["Fn::Join"][1][1] | type) == "object" and (.["Fn::Join"][1][1] | has("Ref")) and (.["Fn::Join"][1][1].Ref | IN($secrets[])))
+       and (.["Fn::Join"][1][2] == ":SecretString:pin::}}")
+    then "l2-join" else tojson end' "${SYNTH_TEMPLATE}")
+if [ "${JOIN_SHAPE}" != "l2-join" ]; then
+  echo "FAIL: premise: DB_PORT_JOIN synthesized as '$(diag_output "${JOIN_SHAPE}")', not the L2 Fn::Join [\"port:{{resolve:secretsmanager:\", {Ref: <secret>}, \":SecretString:pin::}}\"] -- the intrinsic frame arm (#2745) is not what this deploy exercised" >&2
+  exit 1
+fi
+# The OUTPUT twin must carry the SAME L2 shape: an output folded to the
+# literal expression would pass the persisted-equality assertion below
+# through the literal arm (#2516) and prove nothing about this one.
+OUTPUT_JOIN_SHAPE=$(jq -r '
+  (.Resources | to_entries | map(select(.value.Type=="AWS::SecretsManager::Secret")) | map(.key)) as $secrets
+  | .Outputs.PortJoin.Value
+  | if type=="object" and has("Fn::Join") and (.["Fn::Join"][0] == "") and ((.["Fn::Join"][1] | length) == 3)
+       and (.["Fn::Join"][1][0] == "port:{{resolve:secretsmanager:")
+       and ((.["Fn::Join"][1][1] | type) == "object" and (.["Fn::Join"][1][1] | has("Ref")) and (.["Fn::Join"][1][1].Ref | IN($secrets[])))
+       and (.["Fn::Join"][1][2] == ":SecretString:pin::}}")
+    then "l2-join" else tojson end' "${SYNTH_TEMPLATE}")
+if [ "${OUTPUT_JOIN_SHAPE}" != "l2-join" ]; then
+  echo "FAIL: premise: Outputs.PortJoin synthesized as '$(diag_output "${OUTPUT_JOIN_SHAPE}")', not the L2 Fn::Join -- the outputs-bag arm of #2745 is not what this deploy exercised" >&2
+  exit 1
+fi
+PORT_SUB_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("DB_PORT_SUB")] | first' "${SYNTH_TEMPLATE}")
+PORT_JOIN_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("DB_PORT_JOIN")] | first' "${SYNTH_TEMPLATE}")
+case "${PORT_SUB_IDX}${PORT_JOIN_IDX}" in *null*|"")
+  echo "FAIL: premise: could not locate DB_PORT_SUB / DB_PORT_JOIN in the synthesized env (${PORT_SUB_IDX} / ${PORT_JOIN_IDX})" >&2
+  exit 1 ;;
+esac
+if [ "${PORT_SUB_IDX}" -ge "${PIN_STAGED_IDX}" ] || [ "${PORT_JOIN_IDX}" -ge "${PIN_STAGED_IDX}" ]; then
+  echo "FAIL: premise: DB_PORT_SUB (index ${PORT_SUB_IDX}) and DB_PORT_JOIN (index ${PORT_JOIN_IDX}) must precede SECRET_PIN_STAGED (index ${PIN_STAGED_IDX}); otherwise the survivor is not the staged spelling and Guard 3d cannot tell the token from the survivor" >&2
+  exit 1
+fi
+echo "    OK: premise: DB_PORT_SUB is an Fn::Sub (index ${PORT_SUB_IDX}) and DB_PORT_JOIN the L2 Fn::Join (index ${PORT_JOIN_IDX}), both before SECRET_PIN_STAGED"
+
+STATE_DB_PORT_SUB=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.DB_PORT_SUB // empty')
+STATE_DB_PORT_JOIN=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.DB_PORT_JOIN // empty')
+for pair in "DB_PORT_SUB|${STATE_DB_PORT_SUB}|${EXPECTED_DB_PORT_SUB_EXPR}" "DB_PORT_JOIN|${STATE_DB_PORT_JOIN}|${EXPECTED_DB_PORT_JOIN_EXPR}"; do
+  key="${pair%%|*}"; rest="${pair#*|}"; got="${rest%%|*}"; want="${rest#*|}"
+  if [ "${got}" = "${want}" ]; then
+    echo "    OK: state ${key} kept its OWN embedded expression (two-character secret through an intrinsic, #2745): ${got}"
+  else
+    case "${got}" in
+      "${EXPECTED_DB_PORT_LITERAL}")
+        echo "FAIL: state ${key} holds the two-character secret in PLAINTEXT -- the intrinsic-source residual is open (#2745)" >&2 ;;
+      *':AWSCURRENT}}')
+        echo "FAIL: state ${key} took the STAGED sibling's expression -- the arm wrote the survivor, not the token (#2745)" >&2 ;;
+      *)
+        echo "FAIL: state ${key} is not the expected embedded form: $(mask "${got}")" >&2 ;;
+    esac
+    redaction_fail=1
+  fi
+done
+# The READBACK of the same two leaves: the observed bag is marked by the
+# capture drain, and the frame arm reads the mark for that object exactly as
+# the literal arm does (Guard 3c's observed assertion, one arm over).
+for pair in "DB_PORT_SUB|${EXPECTED_DB_PORT_SUB_EXPR}" "DB_PORT_JOIN|${EXPECTED_DB_PORT_JOIN_EXPR}"; do
+  key="${pair%%|*}"; want="${pair#*|}"
+  got=$(printf '%s' "${STATE_JSON}" \
+    | jq -r --arg k "${key}" '[.state.resources[] | select(.resourceType=="AWS::Lambda::Function")
+               | .observedProperties.Environment.Variables[$k] // empty] | first // empty')
+  if [ "${got}" = "${want}" ]; then
+    echo "    OK: observedProperties ${key} holds the embedded expression (#2745)"
+  else
+    echo "FAIL: observedProperties ${key} is not the embedded expression: $(mask "${got}")" >&2
+    redaction_fail=1
+  fi
+done
+# The L2 join as an OUTPUT, walked by the outputs redaction against the
+# template's `Outputs` on the bag this pass resolved (PortLiteral's twin).
+STATE_PORT_JOIN_OUTPUT=$(printf '%s' "${STATE_JSON}" | jq -r '.state.outputs.PortJoin // empty')
+if [ "${STATE_PORT_JOIN_OUTPUT}" = "${EXPECTED_DB_PORT_JOIN_EXPR}" ]; then
+  echo "    OK: state.outputs.PortJoin holds the ARN-form embedded expression (#2745)"
+else
+  echo "FAIL: state.outputs.PortJoin is not the embedded expression: $(mask "${STATE_PORT_JOIN_OUTPUT}")" >&2
+  redaction_fail=1
 fi
 
 # Guard 3b (issue #1901): an ssm reference to a SECURESTRING parameter is a
@@ -2138,6 +2302,21 @@ if [ "${RB_STATE_PORT}" != "${EXPECTED_DB_PORT_LITERAL_EXPR}" ]; then
   exit 1
 fi
 echo "    OK: post-rollback state kept DB_PORT_LITERAL's OWN embedded expression (two-character secret)"
+# Issue #2745: the two intrinsic-source twins of that leaf ride the same
+# journaled record, so each must come back as its OWN expression here too --
+# a replay that re-persisted a resolved bag through the value scan alone would
+# leave `port:` + the two-character secret in PLAINTEXT, below the scan's
+# needle floor (maintainer review of PR 3052).
+RB_STATE_PORT_SUB=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.DB_PORT_SUB // empty')
+RB_STATE_PORT_JOIN=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.DB_PORT_JOIN // empty')
+for pair in "DB_PORT_SUB|${RB_STATE_PORT_SUB}|${EXPECTED_DB_PORT_SUB_EXPR}" "DB_PORT_JOIN|${RB_STATE_PORT_JOIN}|${EXPECTED_DB_PORT_JOIN_EXPR}"; do
+  rb_key="${pair%%|*}"; rb_rest="${pair#*|}"; rb_got="${rb_rest%%|*}"; rb_want="${rb_rest#*|}"
+  if [ "${rb_got}" != "${rb_want}" ]; then
+    echo "FAIL: post-rollback state ${rb_key} is not its own embedded expression (#2745): $(mask "${rb_got}")" >&2
+    exit 1
+  fi
+  echo "    OK: post-rollback state kept ${rb_key}'s OWN embedded expression (intrinsic source, two-character secret)"
+done
 if grep -qF "${EXPECTED_DB_PORT_LITERAL}" <<< "${RB_STATE}"; then
   echo "FAIL: post-rollback state carries the framed two-character secret (#2516)" >&2
   exit 1
@@ -2814,6 +2993,23 @@ else
   echo "FAIL: re-captured DB_PORT_LITERAL is not its embedded expression: $(mask "${G_PORT_LITERAL}")" >&2
   deploy_redaction_fail=1
 fi
+# The two intrinsic-source twins on the same EMPTY-map readback path (issue
+# #2745). The readback is positioned against the record's own `properties`,
+# where both already hold their expression STRING, so the positional refusal
+# substitutes each whole exactly as it does the literal leaf above. Not a
+# #2745 fence either; pinned so the invariant holds for the arm's own leaves
+# (maintainer review of PR 3052).
+G_PORT_SUB=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_PORT_SUB // empty')
+G_PORT_JOIN=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_PORT_JOIN // empty')
+for pair in "DB_PORT_SUB|${G_PORT_SUB}|${EXPECTED_DB_PORT_SUB_EXPR}" "DB_PORT_JOIN|${G_PORT_JOIN}|${EXPECTED_DB_PORT_JOIN_EXPR}"; do
+  g_key="${pair%%|*}"; g_rest="${pair#*|}"; g_got="${g_rest%%|*}"; g_want="${g_rest#*|}"
+  if [ "${g_got}" = "${g_want}" ]; then
+    echo "    OK: re-captured ${g_key} kept its embedded expression (empty-map positional invariant, intrinsic source)"
+  else
+    echo "FAIL: re-captured ${g_key} is not its embedded expression: $(mask "${g_got}")" >&2
+    deploy_redaction_fail=1
+  fi
+done
 
 # CONTROL 1: the persisted bag must still be AWS's READBACK, not a copy of the
 # record's own `properties`. This is the control that catches a blanket

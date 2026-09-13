@@ -24,6 +24,14 @@
 # scenario and matching `import-auto-mode`; `cdkd import` is run with NEITHER
 # `--resource` NOR `--migrate-from-cloudformation`, so the physical id comes
 # from the CloudFormation lookup rather than a short-circuit.
+#
+# A SECOND ARM (issue #2745, third site): a parameter whose `Value` EMBEDS a
+# TWO-character reference in the L2 `Fn::Join` shape. Below the redaction value
+# scan's needle floor only a span arm on a bag whose provenance is proven can
+# persist the leaf as its token, and import's own resolution bag was never
+# marked -- so `properties.Value` persisted `port:q7`. The framed plaintext is
+# refused anywhere in `state.json`, and the leaf must hold the ARN-form
+# expression exactly.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -75,6 +83,18 @@ LOCAL_DIST="$(cd ../../../dist && pwd)/cli.js"
 # lib/import-secret-observed-stack.ts -- PHASE 2 fails loudly if it drifts,
 # rather than letting a stale needle turn every leak assertion vacuous.
 SECRET_PLAINTEXT='cdkd-integ-2828-DECRYPTED-NEEDLE'
+# The two-character value and its framed form (issue #2745). MUST stay in sync
+# with `SUB_FLOOR_PLAINTEXT` in the stack; PHASE 2 fails loudly if it drifts.
+SUB_FLOOR_PLAINTEXT='q7'
+SUB_FLOOR_FRAMED="port:${SUB_FLOOR_PLAINTEXT}"
+# THE INVARIANT, not the instance: the value must sit BELOW the redaction value
+# scan's four-character needle floor, or the scan alone would redact the leaf
+# and the arm would pass with or without import's mark. A stack and script
+# edited together to a longer value would keep every equality below green.
+case "${#SUB_FLOOR_PLAINTEXT}" in
+  1|2|3) ;;
+  *) echo "FAIL: premise: SUB_FLOOR_PLAINTEXT must be 1-3 characters (got ${#SUB_FLOOR_PLAINTEXT}) -- above the needle floor this arm proves nothing" >&2; exit 1 ;;
+esac
 
 # Bumped by each substantive assertion; floored at the end (see the floor).
 ASSERTIONS_RUN=0
@@ -206,7 +226,44 @@ if [ -z "${SECRET_ARN}" ] || [ "${SECRET_ARN}" = "None" ]; then
   exit 1
 fi
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # SecretArn captured (cleanup can force-delete)
-echo "==> Phase 1 ok: deployed, parameter=${PARAM_NAME}"
+SUB_FLOOR_PARAM_NAME="$(aws cloudformation describe-stacks --stack-name "${STACK}" \
+  --region "${REGION}" \
+  --query "Stacks[0].Outputs[?OutputKey=='SubFloorParameterName'].OutputValue" \
+  --output text)"
+if [ -z "${SUB_FLOOR_PARAM_NAME}" ] || [ "${SUB_FLOOR_PARAM_NAME}" = "None" ]; then
+  echo "FAIL: could not read the SubFloorParameterName output" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # SubFloorParameterName captured
+# The expression `cdkd import` must persist for the framed leaf: the L2 join
+# resolves the secret's `Ref` to its ARN, so the token is the ARN-form,
+# 6-field spelling with empty version stage / id.
+EXPECTED_SUB_FLOOR_EXPR="port:{{resolve:secretsmanager:${SECRET_ARN}:SecretString:pin::}}"
+# PREMISE: the sub-floor parameter's Value SYNTHESIZED as the L2 `Fn::Join`
+# (empty delimiter; the prefix fused into the token's opening part; a `Ref` to
+# the stack's secret INSIDE the token; the closing part ending the 6-field
+# token). Folded to the literal expression it would exercise the LITERAL arm
+# and pass the same persisted-equality assertion below while proving nothing
+# about the intrinsic one. Read from the assembly `cdk deploy` just wrote.
+SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
+if [ ! -f "${SYNTH_TEMPLATE}" ]; then
+  echo "FAIL: premise: no synthesized template at ${SYNTH_TEMPLATE} after cdk deploy" >&2
+  exit 1
+fi
+SUB_FLOOR_SHAPE=$(jq -r '
+  (.Resources | to_entries | map(select(.value.Type=="AWS::SecretsManager::Secret")) | map(.key)) as $secrets
+  | [.Resources[] | select(.Type=="AWS::SSM::Parameter") | select(.Properties.Description == "cdkd integ 2745: Value embeds a two-character dynamic reference") | .Properties.Value] | first
+  | if type=="object" and has("Fn::Join") and (.["Fn::Join"][0] == "") and ((.["Fn::Join"][1] | length) == 3)
+       and (.["Fn::Join"][1][0] == "port:{{resolve:secretsmanager:")
+       and ((.["Fn::Join"][1][1] | type) == "object" and (.["Fn::Join"][1][1] | has("Ref")) and (.["Fn::Join"][1][1].Ref | IN($secrets[])))
+       and (.["Fn::Join"][1][2] == ":SecretString:pin::}}")
+    then "l2-join" else (type) end' "${SYNTH_TEMPLATE}")
+if [ "${SUB_FLOOR_SHAPE}" != "l2-join" ]; then
+  echo "FAIL: premise: the sub-floor parameter's Value synthesized as a '${SUB_FLOOR_SHAPE}', not the L2 Fn::Join -- the intrinsic arm (#2745) is not what this import exercises" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # premise: the sub-floor leaf is the L2 Fn::Join
+echo "==> Phase 1 ok: deployed, parameter=${PARAM_NAME}, sub-floor parameter=${SUB_FLOOR_PARAM_NAME}"
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 2: PREMISE -- the live parameter really holds the PLAINTEXT"
@@ -220,13 +277,27 @@ LIVE_VALUE="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" 
   --query 'Parameter.Value' --output text)"
 if [ "${LIVE_VALUE}" != "${SECRET_PLAINTEXT}" ]; then
   echo "FAIL: the live parameter does not hold the expected plaintext." >&2
-  echo "      This fixture's needle must match SECRET_PLAINTEXT in the stack." >&2
-  echo "      expected: ${SECRET_PLAINTEXT}" >&2
-  echo "      got     : ${LIVE_VALUE}" >&2
+  echo "      This fixture's needle must match SECRET_PLAINTEXT in the stack;" >&2
+  echo "      neither value is printed (got ${#LIVE_VALUE} characters, expected ${#SECRET_PLAINTEXT})." >&2
   exit 1
 fi
 echo "==> Phase 2 ok: AWS holds the decrypted value, the template holds the token"
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # premise: live value is the plaintext
+# The same premise for the framed leaf (issue #2745): the live parameter holds
+# `port:q7`, so import's readback and its own resolution both carry the
+# two-character value at that offset. Without this, an unresolved reference
+# would leave nothing sub-floor to mishandle and the arm would pass vacuously.
+# Neither side is printed on a mismatch: the expected value IS the framed
+# plaintext.
+SUB_FLOOR_LIVE="$(aws ssm get-parameter --name "${SUB_FLOOR_PARAM_NAME}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)"
+if [ "${SUB_FLOOR_LIVE}" != "${SUB_FLOOR_FRAMED}" ]; then
+  echo "FAIL: the live sub-floor parameter does not hold the expected framed two-character value." >&2
+  echo "      This fixture's SUB_FLOOR_PLAINTEXT must match the stack's; neither side is printed." >&2
+  exit 1
+fi
+echo "==> Phase 2 ok: the sub-floor parameter holds the framed two-character value"
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # premise: live sub-floor value is the framed plaintext
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 3: adopt with cdkd import (auto mode, no short-circuit flags)"
@@ -237,9 +308,13 @@ IMPORT_LOG="$(mktemp)"
 AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --yes \
-  --verbose 2>&1 | tee "${IMPORT_LOG}"
+  --verbose 2>&1 | tee "${IMPORT_LOG}" \
+  | sed -e "s/${SECRET_PLAINTEXT}/<needle>/g" -e "s/${SUB_FLOOR_FRAMED}/port:**/g" -e "s/\"pin\":\"${SUB_FLOOR_PLAINTEXT}\"/\"pin\":\"**\"/g"
 # `set -o pipefail` is on AND `cleanup` re-arms `set -eu`, so a non-zero import
-# really does abort here despite the tee. Before the re-arm it did not.
+# really does abort here despite the tee. Before the re-arm it did not. The
+# `sed` masks the two known values on the TERMINAL only; the log FILE the
+# checks below read is the raw one, so a leak is still detected -- and is
+# not echoed by the tee that detected it.
 
 # EMPTINESS FIRST, and the order is the whole point. Every check below is a
 # `grep` that a zero-byte log satisfies for the wrong reason, so this must
@@ -264,18 +339,20 @@ if ! grep -qE "Summary:" "${IMPORT_LOG}"; then
   exit 1
 fi
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # sentinel: a Summary line exists
-if ! grep -qE "2 imported, 0 not found" "${IMPORT_LOG}"; then
-  echo "FAIL: import summary is not '2 imported, 0 not found'" >&2
-  grep -iE "Summary:" "${IMPORT_LOG}" >&2 || true
+if ! grep -qE "3 imported, 0 not found" "${IMPORT_LOG}"; then
+  echo "FAIL: import summary is not '3 imported, 0 not found'" >&2
+  # Masked like the tee above: this runs BEFORE the leak checks, so a raw line
+  # could carry what they have not yet refused.
+  grep -iE "Summary:" "${IMPORT_LOG}" \
+    | sed -e "s/${SECRET_PLAINTEXT}/<needle>/g" -e "s/${SUB_FLOOR_FRAMED}/port:**/g" -e "s/\"pin\":\"${SUB_FLOOR_PLAINTEXT}\"/\"pin\":\"**\"/g" >&2 || true
   exit 1
 fi
-ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # both resources adopted
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # all three resources adopted
 # THE LOG IS AN ARTIFACT TOO. Issue #2829 was exactly a plaintext reaching
 # stderr through resolver error text, and `--verbose` output is already in hand
 # here -- not asserting it would leave the cheapest check in the fixture unmade.
 if grep -qF "${SECRET_PLAINTEXT}" "${IMPORT_LOG}"; then
-  echo "FAIL: the decrypted secret appears in the import log (issue #2829 class)." >&2
-  grep -nF "${SECRET_PLAINTEXT}" "${IMPORT_LOG}" | head -3 >&2
+  echo "FAIL: the decrypted secret appears in the import log (issue #2829 class); log line(s): $(grep -nF "${SECRET_PLAINTEXT}" "${IMPORT_LOG}" | cut -d: -f1 | head -3 | tr '\n' ' ')" >&2
   exit 1
 fi
 # A `grep -qF` SANITY CHECK, and that is all it is. It plants the same variable
@@ -297,7 +374,15 @@ if ! grep -qF "${SECRET_PLAINTEXT}" "${LOG_PROBE}"; then
 fi
 rm -f "${LOG_PROBE}"
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # import log is needle-free (control-backed)
-echo "==> Phase 3 ok: both resources adopted, and the import log is needle-free"
+# NOT asserted for the framed two-character value, and stated rather than
+# skipped: the MASKING channel shares the value scan's four-character floor
+# (`maskSecretsInText`'s substring arm), so a verbose line quoting the assembled
+# join can carry `port:q7` -- the pre-existing #2453 residual, not this arm's
+# subject. Reported without the value so a reader knows the channel is open.
+if grep -qF "${SUB_FLOOR_FRAMED}" "${IMPORT_LOG}"; then
+  echo "    NOTE: the verbose import log carries the framed two-character value (the #2453 masking-floor residual; not asserted here)"
+fi
+echo "==> Phase 3 ok: all three resources adopted, and the import log is needle-free"
 
 # ---------------------------------------------------------------------------
 echo "==> Phase 4: the persisted baseline holds the EXPRESSION, not the value"
@@ -369,7 +454,8 @@ if removed != expected_removed or changed:
 
 # The exclusion must point at something real, or it is silently vacuous.
 if not isinstance(excluded, str) or needle not in excluded:
-    print(f'FAIL: the excluded position did not hold the needle: {excluded!r}. '
+    shape = 'absent' if excluded is None else f'{type(excluded).__name__} of length {len(str(excluded))}'
+    print(f'FAIL: the excluded position did not hold the needle ({shape}; not printed). '
           'The template no longer carries the plaintext where this check '
           'expects it, so the exclusion is pointing at nothing.', file=sys.stderr)
     sys.exit(1)
@@ -407,25 +493,79 @@ print(f'  leak check ok (excluded exactly resources.{secret_lid}.properties.Secr
 PY
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # leak check (+ structural exclusion + neg control)
 
+# THE FRAMED TWO-CHARACTER VALUE has no legitimate home ANYWHERE in the document
+# (issue #2745): the secret's own SecretString carries `"pin":"q7"`, never
+# `port:q7`, so unlike the needle above this check needs no exclusion and runs
+# over the WHOLE file. A here-string, not `printf | grep -q`: under `pipefail`
+# the builtin printf takes SIGPIPE when grep exits early on a multi-line text,
+# and a leak check would then read "absent" over a leak. A negative control
+# plants the framed value beside the document and requires the same predicate
+# to fire.
+if grep -qF "${SUB_FLOOR_FRAMED}" "${STATE_JSON_FILE}"; then
+  echo "FAIL: the framed two-character value is somewhere in state.json (issue #2745, import site)" >&2
+  exit 1
+fi
+if ! grep -qF "${SUB_FLOOR_FRAMED}" <<< "$(cat "${STATE_JSON_FILE}"; printf '\nplanted %s for the control\n' "${SUB_FLOOR_FRAMED}")"; then
+  echo "FAIL: negative control did not fire -- the framed-value check cannot detect a planted value" >&2
+  exit 1
+fi
+echo "  framed two-character value absent from the WHOLE state document (control-backed)"
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # framed sub-floor value absent (control-backed)
+
 # THE POSITIVE ASSERTION, and the reason "no plaintext" is not enough on its
 # own: an absent baseline, an empty bag, and a capture that never ran all
 # satisfy the leak check. This is the fact the whole fixture exists to
 # establish -- that a REAL provider readback of a secret-bearing property lands
 # in state.json as the assembled expression, at the position the property
 # occupies.
-python3 - "${STATE_JSON_FILE}" <<'PY'
+python3 - "${STATE_JSON_FILE}" "${EXPECTED_SUB_FLOOR_EXPR}" <<'PY'
 import json, sys
 
 with open(sys.argv[1]) as fh:
     state = json.load(fh)
+expected_sub_floor = sys.argv[2]
 
 rows = [(lid, r) for lid, r in state.get('resources', {}).items()
         if r.get('resourceType') == 'AWS::SSM::Parameter']
-if len(rows) != 1:
-    print(f'FAIL: expected exactly one SSM parameter row, got {len(rows)}', file=sys.stderr)
+if len(rows) != 2:
+    print(f'FAIL: expected exactly two SSM parameter rows, got {len(rows)}', file=sys.stderr)
     sys.exit(1)
 
-lid, row = rows[0]
+# The two rows are told apart by the SHAPE of `properties.Value`: the #2828 row
+# holds a WHOLE token, the #2745 row the framed `port:` + token. Refuse anything
+# else rather than guess -- a row holding the plaintext matches neither.
+whole = [(lid, r) for lid, r in rows
+         if str((r.get('properties') or {}).get('Value')).startswith('{{resolve:secretsmanager:')]
+framed = [(lid, r) for lid, r in rows
+          if str((r.get('properties') or {}).get('Value')).startswith('port:{{resolve:secretsmanager:')]
+if len(whole) != 1 or len(framed) != 1:
+    print(f'FAIL: expected one whole-token row and one framed row, got whole={len(whole)} '
+          f'framed={len(framed)} (a row holding the plaintext matches neither)', file=sys.stderr)
+    sys.exit(1)
+
+# THE #2745 ROW: exact equality with the ARN-form expression the L2 join
+# assembles -- never the plaintext, never a whole-token rewrite that drops the
+# `port:` frame -- and the observed baseline positioned to the same string.
+sf_lid, sf_row = framed[0]
+sf_value = (sf_row.get('properties') or {}).get('Value')
+# A mismatch is described, never PRINTED: an unexpected value here is exactly
+# the shape that could carry the plaintext.
+def describe(v):
+    return 'absent' if v is None else f'{type(v).__name__} of length {len(str(v))}'
+if sf_value != expected_sub_floor:
+    print(f'FAIL: {sf_lid} properties.Value is not the framed ARN-form expression '
+          f'({describe(sf_value)}; expected the {len(expected_sub_floor)}-character '
+          'ARN-form token, issue #2745)', file=sys.stderr)
+    sys.exit(1)
+sf_observed = sf_row.get('observedProperties')
+if sf_observed is None or sf_observed.get('Value') != expected_sub_floor:
+    got = None if sf_observed is None else sf_observed.get('Value')
+    print(f'FAIL: {sf_lid} observedProperties.Value is not the framed expression '
+          f'({describe(got)}, issue #2745)', file=sys.stderr)
+    sys.exit(1)
+print(f'  {sf_lid}: properties.Value = observedProperties.Value = {sf_value}')
+
+lid, row = whole[0]
 observed = row.get('observedProperties')
 if observed is None:
     print(f'FAIL: {lid} has no observedProperties. A REFUSAL is a legitimate '
@@ -437,19 +577,20 @@ if observed is None:
 
 value = observed.get('Value')
 if not isinstance(value, str) or not value.startswith('{{resolve:secretsmanager:'):
-    print(f'FAIL: {lid} observedProperties.Value is not the dynamic reference: '
-          f'{value!r}', file=sys.stderr)
+    print(f'FAIL: {lid} observedProperties.Value is not the dynamic reference '
+          f'({describe(value)})', file=sys.stderr)
     sys.exit(1)
 
 props_value = (row.get('properties') or {}).get('Value')
 if props_value != value:
-    print(f'FAIL: {lid} properties.Value ({props_value!r}) and '
-          f'observedProperties.Value ({value!r}) disagree', file=sys.stderr)
+    print(f'FAIL: {lid} properties.Value ({describe(props_value)}) and '
+          f'observedProperties.Value ({describe(value)}) disagree', file=sys.stderr)
     sys.exit(1)
 
 print(f'  {lid}: observedProperties.Value = {value}')
 PY
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # POSITIVE: the baseline holds the expression
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # POSITIVE: the framed row holds the ARN-form expression (#2745)
 
 echo "==> Phase 4 ok: the baseline holds the expression at the right position"
 
@@ -462,6 +603,9 @@ AWS_REGION="${REGION}" node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "SSM parameter ${PARAM_NAME} still exists after destroy" \
   aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}"
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # parameter gone
+assert_gone "SSM parameter ${SUB_FLOOR_PARAM_NAME} still exists after destroy" \
+  aws ssm get-parameter --name "${SUB_FLOOR_PARAM_NAME}" --region "${REGION}"
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # sub-floor parameter gone
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
@@ -579,10 +723,10 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))  # no state version survives
 # failure mode a self-derived floor could never produce. Same shape as the unit
 # matrix's `proven` counter, and it has now bitten twice: a deleted assertion
 # block that stayed green, and this fixture's own unsound harness.
-if [ "${ASSERTIONS_RUN:-0}" -lt 14 ]; then
-  echo "FAIL: only ${ASSERTIONS_RUN:-0} of 14 assertions executed -- a block was" >&2
+if [ "${ASSERTIONS_RUN:-0}" -lt 20 ]; then
+  echo "FAIL: only ${ASSERTIONS_RUN:-0} of 20 assertions executed -- a block was" >&2
   echo "      skipped, so this run proves less than it claims." >&2
   exit 1
 fi
 
-echo "[verify] PASS -- cdkd import persisted the expression, never the decrypted value (issue #2828); ${ASSERTIONS_RUN} assertions executed"
+echo "[verify] PASS -- cdkd import persisted the expression, never the decrypted value (issues #2828, #2745); ${ASSERTIONS_RUN} assertions executed"
