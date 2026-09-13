@@ -22,7 +22,11 @@ import { renderLikeLogger } from '../../render-like-logger.js';
  * mock `src/utils/logger.js`, which is what makes the comparison possible.
  */
 describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', () => {
-  let spies: Record<string, ReturnType<typeof vi.spyOn>>;
+  // Keyed by the ARM's own `emit` union, not `string`: `tsconfig.test.json`
+  // sets `noUncheckedIndexedAccess: false`, so a `Record<string, ...>` would
+  // let an arm name a real `ConsoleLogger` method with no spy here
+  // (`setLevel`, `child`) and type-check, then crash at `mockClear()`.
+  let spies: Record<(typeof ARMS)[number]['emit'], ReturnType<typeof vi.spyOn>>;
 
   beforeEach(() => {
     spies = {
@@ -50,8 +54,11 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
    *
    * The two live extra-arg call sites outside the verbose arm --
    * `src/cli/commands/destroy-runner.ts`'s two `logger.error(msg, detail)` --
-   * run through the global logger, i.e. `info` level with colours, so they take
-   * the compact-colour-error arm specifically.
+   * run through the GLOBAL logger, so which arm they take depends on the flag:
+   * at the default level they are compact-with-colours-and-`error`, and under
+   * `cdkd destroy --verbose` (`destroy.ts` calls `logger.setLevel('debug')` on
+   * that same object) they move to the verbose-colour arm. Both are in `ARMS`,
+   * which is the point of enumerating the returns rather than picking one.
    */
   const ARMS = [
     { name: 'verbose, colours', loggerLevel: 'debug', emit: 'debug', colors: true },
@@ -73,7 +80,7 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
    * escape-bearing message; one would false-FAIL, which is the safe direction.
    */
   const realLine = (arm: (typeof ARMS)[number], call: readonly unknown[]): string => {
-    const spy = spies[arm.emit]!;
+    const spy = spies[arm.emit];
     spy.mockClear();
     const logger = new ConsoleLogger(arm.loggerLevel, arm.colors);
     (logger[arm.emit] as (m: string, ...a: unknown[]) => void)(
@@ -83,7 +90,7 @@ describe('renderLikeLogger mirrors ConsoleLogger.formatMessage (issue #3003)', (
     // `info` to `console.error`) fails loudly instead of comparing against ''.
     expect(spy.mock.calls).toHaveLength(1);
     // eslint-disable-next-line no-control-regex
-    const stripped = String(spy.mock.calls[0]![0]).replace(/\u001b\[[0-9;]*m/g, '');
+    const stripped = String(spy.mock.calls[0][0]).replace(/\u001b\[[0-9;]*m/g, '');
     if (arm.loggerLevel !== 'debug') return stripped;
     const marker = ` ${arm.emit.toUpperCase().padEnd(5)} `;
     const at = stripped.indexOf(marker);

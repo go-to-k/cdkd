@@ -1381,7 +1381,24 @@ const CORPUS_FILE_COUNT = 54; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#271
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 966_000;   // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
+const CORPUS_BYTES_MIN = 1_006_000; // RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, issue
+                                    // go-to-k/cdkd#3003's PR): the "discriminates the deletion of
+                                    // the LARGEST satellite" case went RED IN CI, which is the
+                                    // mechanical occasion this constant's own note below promises.
+                                    // Measured 1,039,993 B on the MERGE of that PR with main --
+                                    // 33,993 B of slack, the ~34 KB margin every previous setting
+                                    // used, and well under `hooks.md`'s 73,606 B so the case it
+                                    // failed now passes with room.
+                                    //
+                                    // Derived against the MERGE, not the branch: the branch tree
+                                    // measures 1,035,794 B because it sits 30 commits behind main,
+                                    // and a floor derived there would have shipped 4,199 B low and
+                                    // gone red again on the first CI run. `.claude/rules/**` is a
+                                    // corpus every lane appends to, so the number to derive against
+                                    // is the one CI will see, which is `origin/main` plus this
+                                    // branch's own rule-file delta.
+                                    //
+                                    // 966_000 was: // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
                                     // go-to-k/cdkd#2310): measured 1,003,542 B on the tree that
                                     // ships this line -- 37,542 B of slack. The constant was set
                                     // against a 999,957 B corpus (~34 KB, the margin every previous
