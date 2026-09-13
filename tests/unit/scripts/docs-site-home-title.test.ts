@@ -67,6 +67,10 @@ describe('docs-site home title', () => {
     expect(heroTextOf('---\nhero: \n  text: a\n---\n')).toBe('a');
     expect(heroTextOf('---\nhero: # why\n  text: b\n---\n')).toBe('b');
     expect(heroTextOf('---\nhero:\n    # c\n    \n  text: c\n---\n')).toBe('c');
+    // A column-0 comment inside the block is legal YAML and must not end it.
+    expect(heroTextOf('---\nhero:\n  name: x\n# note\n  text: d\n---\n')).toBe('d');
+    // `hero:#c` is a plain scalar, not the key.
+    expect(heroTextOf('---\nhero:#c\n  text: z\n---\n')).toBeUndefined();
     expect(heroTextOf('---\ntitle: x\n---\n')).toBeUndefined();
     expect(() => homeTitleOf(SITE_NAME, '---\ntitle: x\n---\n')).toThrow(/hero\.text/);
   });

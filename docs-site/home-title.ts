@@ -34,13 +34,15 @@ export function heroTextOf(markdown: string): string | undefined {
   const lines = fm[1].split('\n');
   // Tolerate trailing whitespace / a comment on the key line: docs/**/*.md is
   // outside the formatter, so nothing strips them.
-  const start = lines.findIndex((l) => /^hero:[ \t]*(#.*)?$/.test(l));
+  // A `#` must be preceded by whitespace to be a comment (`hero:#c` is a plain
+  // scalar in YAML, not the `hero` key).
+  const start = lines.findIndex((l) => /^hero:(?:[ \t]+#.*|[ \t]*)$/.test(l));
   if (start === -1) return undefined;
-  // The block runs while lines are indented or blank (a blank line inside a
-  // YAML mapping is legal, so it must not end the block).
+  // The block runs while lines are indented, blank, or a column-0 comment —
+  // all legal inside a YAML mapping, so none may end the block.
   const block: string[] = [];
   for (const line of lines.slice(start + 1)) {
-    if (line !== '' && !/^[ \t]/.test(line)) break;
+    if (line !== '' && !/^[ \t#]/.test(line)) break;
     block.push(line);
   }
   // First CONTENT line sets the child indent — not a whitespace-only line or a
