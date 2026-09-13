@@ -131,12 +131,19 @@ function formatStackRefSafe(ref: StackStateRef): string {
  * One spelling of "this value came from an S3 key or a state record, and is
  * about to be interpolated into a message a terminal will render".
  *
- * Every refusal in this file that names a stack or a region goes through it
- * (issue #3003). It exists as one function rather than the expression repeated
- * per site because the failure this closes WAS the repeated form: issue #2772
- * guarded the rendered rows and left the refusals, and the first cut of #3003
- * guarded three refusals and left four more in these same two commands. A
- * value reaching a message is the population, not a list of call sites.
+ * Call it for a stack name or a region. NOT every refusal in this file goes
+ * through it, and this comment does not say which do -- `grep safe(` answers
+ * it exactly. The sentence that used to sit here claimed all of them, and
+ * three sites in `state destroy` / `state refresh-observed` disprove it by
+ * interpolating a `listStacks()` region raw (go-to-k/cdkd#3027). That is the
+ * same over-claiming shape `lock-manager.ts`'s twin helper records having got
+ * wrong three times.
+ *
+ * It exists as one function rather than the expression repeated per site
+ * because the failure this closes WAS the repeated form: issue #2772 guarded
+ * the rendered rows and left the refusals, and the first cut of #3003 guarded
+ * three refusals and left four more in these same two commands. A value
+ * reaching a message is the population, not a list of call sites.
  *
  * `asciiOnly` because the population has a known charset — CloudFormation
  * constrains a stack name and AWS constrains a region, so the allowlist is a
