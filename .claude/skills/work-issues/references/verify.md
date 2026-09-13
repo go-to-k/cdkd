@@ -297,8 +297,10 @@ false claim a review round had read past:
 - **A claim inherited from the ISSUE BODY is the least trustworthy of all** —
   re-verify an issue's mechanism against current `main` before restating it
   (a later PR may already have falsified it).
-- **A correction can be a new false claim** — twice the replacement sentence
-  was wrong in the other direction. Re-read a correction against the code.
+- **A correction can be a new false claim — RUN it, do not re-read it** —
+  twice the replacement sentence was wrong in the other direction; a third
+  (go-to-k/cdkd#3029, withdrawing a refuted exemption) named a subtraction
+  the fixtures never make.
 - **A round finding the SAME CLASS twice, or TWO SPELLINGS of one question,
   means stop fixing instances** — name the site that OWNS the question and
   make every other site call or copy ONE
@@ -321,11 +323,10 @@ false claim a review round had read past:
   affirmative NAMES its backing; one that cannot is DELETED rather than
   verified. The recurring form is a CONSEQUENCE bolted onto a verified claim
   ("X is load-bearing: deleting it would hard-fail" — X probed, the consequence
-  never). Dated measurement (2026-09-09, go-to-k/cdkd#2842 / go-to-k/cdkd#2873):
-  over ten rounds, nine reassurances falsified — re-READING caught none, running
-  the claim caught all, two survived a security reviewer's endorsement. Deleting
-  a whole CLAIM cannot introduce a new false one; deleting a clause from INSIDE
-  a sentence can falsify the survivor.
+  never). Measured 2026-09-09 (go-to-k/cdkd#2842 / go-to-k/cdkd#2873): ten
+  rounds, nine reassurances falsified — running caught all, re-reading none,
+  two endorsed by a security reviewer. Deleting a whole CLAIM cannot introduce a new
+  false one; deleting a clause from INSIDE a sentence can falsify the survivor.
 - **A claim outlives the sweep that corrected it. Sweep by CLAIM, over
   NORMALISED text** — every TRACKED file, comment leaders stripped, whitespace
   collapsed, matched ACROSS line breaks — **subtracting only what you can name a
