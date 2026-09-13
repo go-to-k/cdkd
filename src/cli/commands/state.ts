@@ -23,7 +23,7 @@ import { confirmOrRefuse } from './confirm-prompt.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, truncateCodePoints } from '../../utils/display-safe.js';
 import { UNRENDERABLE, buildForceUnlockCommand } from '../../state/lock-contention-message.js';
 import {
   buildLockContentionMessage,
@@ -61,7 +61,7 @@ import {
 } from './state-list-tree.js';
 import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
-import type { LockInfo, StackState } from '../../types/state.js';
+import type { LockInfo, StackState, ResourceState } from '../../types/state.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import {
   forwardSigtermToSigint,
@@ -411,7 +411,7 @@ async function stateListCommand(options: {
         return {
           stackName: ref.stackName,
           region: ref.region ?? null,
-          resourceCount: state ? Object.keys(state.resources).length : 0,
+          resourceCount: state ? Object.keys(state.resources ?? {}).length : 0,
           lastModified:
             state && typeof state.lastModified === 'number'
               ? new Date(state.lastModified).toISOString()
@@ -612,14 +612,25 @@ async function stateResourcesCommand(
     }
 
     const resources = stateResult.state.resources ?? {};
-    const details: ResourceDetail[] = Object.entries(resources)
-      .map(([logicalId, resource]) => ({
-        logicalId,
-        resourceType: resource.resourceType,
-        physicalId: resource.physicalId,
-        dependencies: resource.dependencies ?? [],
-        attributes: resource.attributes ?? {},
-      }))
+    const details: ResourceDetail[] = (
+      Object.entries(resources) as Array<[string, ResourceState | null]>
+    )
+      .map(([logicalId, entry]) => {
+        // Possibly `null`: `resources` is an unchecked cast, and a hand-edited
+        // `{"R": null}` threw on `.resourceType` here in all three modes —
+        // `--json` included, since the details are built before the JSON branch
+        // (issue #2947). A null entry now renders the way the other malformed
+        // shapes already did: a number or a string there never threw, its
+        // missing fields rendering as `undefined` or their defaults.
+        const resource = (entry ?? {}) as ResourceState;
+        return {
+          logicalId,
+          resourceType: resource.resourceType,
+          physicalId: resource.physicalId,
+          dependencies: resource.dependencies ?? [],
+          attributes: resource.attributes ?? {},
+        };
+      })
       .sort((a, b) => a.logicalId.localeCompare(b.logicalId));
 
     if (options.json) {
@@ -831,13 +842,14 @@ function formatLastModified(value: unknown): string {
  * whole control class with spaces. They arrive here as control-free strings, so
  * a guard would be redundant — and a test for one could only be written by
  * mocking the read that sanitises them, which would pin nothing about the real
- * path. `displaySafe`'s own `String(value)` is unguarded, so a value that throws
- * on coercion fails THERE, before this function; that is go-to-k/cdkd#2947 and
- * not something a guard here could catch either.
+ * path. A value whose coercion THROWS is absorbed there too: `displaySafe`
+ * falls back to `Object.prototype.toString` (go-to-k/cdkd#2947).
  *
  * `expiresAt` is declared a number and is not guaranteed to be one, but it
  * reaches the row only through subtraction and `formatDuration`, so no character
- * the record carries can survive into the output either.
+ * the record carries can survive into the output either. One that cannot be
+ * coerced arrives as `NaN` (`getLockRecord`), so the row reads as expired
+ * rather than the read throwing.
  */
 function formatLockSummary(lockInfo: LockInfo | null): string {
   if (!lockInfo) return 'unlocked';
@@ -1072,9 +1084,9 @@ function renderStateBlock(
   // number or `undefined` before a renderer sees the record, so a hand-edited
   // one fails THERE rather than reaching this row. A guard here would be
   // unreachable by that route and could only be pinned by a test that mocks the
-  // read away. What that failure SAYS is a separate question — building the
-  // rejection message coerces the value, so one that throws on coercion reports
-  // that instead of the schema (go-to-k/cdkd#2947).
+  // read away. What that failure SAYS goes through `displaySafe`, so a value
+  // that throws on coercion, or carries a control character, still yields the
+  // schema message on one line (go-to-k/cdkd#2947).
   lines.push(`Stack: ${formatAttributeValue(state.stackName)}`);
   if (state.region) lines.push(`  Region: ${formatAttributeValue(state.region)}`);
   lines.push(`  Version: ${state.version}`);
@@ -1160,18 +1172,29 @@ function renderStateBlock(
       // than the window, and cut to `(unserializa…` it reads as a hash prefix
       // rather than as the guard having fired.
       const fullDigest = formatAttributeValue(digest);
+      // Cut by CODE POINT, not by UTF-16 unit: a hand-edited digest whose 12th
+      // and 13th units are a surrogate pair left a lone high surrogate at the
+      // end of the preview (issue #2947). `truncateCodePoints` owns that rule,
+      // so the next truncation site inherits it.
+      const cut = truncateCodePoints(fullDigest, SKIPPED_DIGEST_PREVIEW_LEN);
       const shownDigest =
-        fullDigest.length > SKIPPED_DIGEST_PREVIEW_LEN && fullDigest !== UNSERIALIZABLE
-          ? `${fullDigest.slice(0, SKIPPED_DIGEST_PREVIEW_LEN)}…`
-          : fullDigest;
+        cut.truncated && fullDigest !== UNSERIALIZABLE ? `${cut.text}…` : fullDigest;
       lines.push(`  ${stripControlChars(k)}: ${shownDigest}`);
     }
     if (withLegend) lines.push(...skippedOutputsLegend());
   }
 
-  const resourceEntries = Object.entries(state.resources ?? {}).sort(([a], [b]) =>
-    a.localeCompare(b)
-  );
+  // Possibly-`null` entries, for the reason `state resources` spells out (issue
+  // #2947): the loop below dereferenced a hand-edited `{"R": null}` and took the
+  // whole render with it.
+  const resourceEntries = (
+    Object.entries(state.resources ?? {}) as Array<[string, ResourceState | null]>
+  )
+    .map(([logicalId, entry]): [string, ResourceState] => [
+      logicalId,
+      (entry ?? {}) as ResourceState,
+    ])
+    .sort(([a], [b]) => a.localeCompare(b));
   lines.push('');
   lines.push(`Resources (${resourceEntries.length}):`);
   for (const [logicalId, resource] of resourceEntries) {

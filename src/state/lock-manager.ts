@@ -609,6 +609,18 @@ export class LockManager {
         ...parsed,
         owner: displaySafe(parsed.owner),
         ...(parsed.operation !== undefined && { operation: displaySafe(parsed.operation) }),
+        // Normalised HERE for the same reason `owner` is: `expiresAt` has five
+        // readers that do arithmetic on it (`formatLockSummary`, the contention
+        // message, the retry line, the final refusal, and the expired-lock
+        // takeover's own warning), and an object whose `toString` is not
+        // callable makes every one of them throw — the takeover's AFTER it has
+        // deleted the lock, leaving the stack unlocked (issue #2947). Only a
+        // value whose coercion THROWS is replaced; every other value passes
+        // through untouched, because `isLockExpired` decides on the RAW value:
+        // a numeric string is non-finite there and therefore expired, and
+        // converting it would move a future string deadline to "live" — the
+        // direction only `force-unlock` recovers from.
+        expiresAt: nanIfUncoercible(parsed.expiresAt),
       };
 
       this.logger.debug(`Lock info for stack: ${shownStack}:`, lockInfo);
@@ -1501,5 +1513,21 @@ export class LockManager {
             recovery
           : `Lock exists but could not read lock info. ${recovery}`)
     );
+  }
+}
+
+/**
+ * `value` itself, unless coercing it to a number THROWS — then `NaN`.
+ *
+ * Deliberately not a conversion: see the `expiresAt` note in `getLockRecord`.
+ * The call is the probe — `Number` throws on exactly the values the readers'
+ * arithmetic would throw on, and on nothing else.
+ */
+function nanIfUncoercible(value: unknown): number {
+  try {
+    Number(value);
+    return value as number;
+  } catch {
+    return Number.NaN;
   }
 }

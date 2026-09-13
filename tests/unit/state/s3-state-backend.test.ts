@@ -454,6 +454,143 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
   });
 
   describe('getState', () => {
+    // Issue #2947: a non-object ROOT is the one shape `parseStateBody` refuses.
+    // Before it, `null` threw at the `.version` read and the other roots were
+    // returned as a record; the refusal now names what the body parsed to.
+    it.each([
+      ['null', 'null'],
+      ['true', 'a boolean'],
+      ['false', 'a boolean'],
+      ['[]', 'an array'],
+      ['5', 'a number'],
+      ['"text"', 'a string'],
+    ])('refuses a body that parses to %s, naming it (%s)', async (raw, got) => {
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(raw) },
+        ETag: '"e"',
+      });
+
+      const read = backend.getState('MyStack', 'us-west-2');
+
+      await expect(read).rejects.toBeInstanceOf(StateError);
+      await expect(read).rejects.toThrow(`is not a JSON object (it parses to ${got})`);
+    });
+
+    it('sanitizes the STACK NAME in the not-an-object refusal (issue #2947)', async () => {
+      // Same class as the two refusals above it in `parseStateBody` (issue
+      // #3003): the name reaches here from a raw S3 key segment on the
+      // `state show` path, and its rows are joined by newlines.
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('[]') },
+        ETag: '"e"',
+      });
+
+      const caught = await backend
+        .getState('Ghost\n  PhysicalID: arn:forged\u3000\u2500', 'us-west-2')
+        .catch((e: unknown) => e);
+      const message = (caught as Error).message;
+
+      expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      // `displayName` is `displaySafe`'s ASCII ALLOWLIST mode, and the two
+      // characters appended to the name above are what tells that apart from
+      // its denylist mode: both survive the denylist untouched, while the
+      // newline above does not. Without them the case passes against either.
+      expect(message).not.toContain('\u3000');
+      expect(message).not.toContain('\u2500');
+      // Not vacuous: it is still the not-an-object refusal, naming the stack.
+      expect(message).toContain('is not a JSON object (it parses to an array)');
+      expect(message).toContain('Ghost');
+    });
+
+    it('skips a legacy record whose region cannot be coerced instead of failing the read (issue #2947)', async () => {
+      // The mismatch branch interpolated `state.region` into a debug line, and
+      // for `{"toString": null}` that interpolation THREW — inside the legacy
+      // read's `try`, so a record that should simply be skipped failed the
+      // whole `getState` as "Failed to get legacy state".
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ ...v1State('MyStack', 'us-west-2'), region: { toString: null } })
+            ),
+        },
+        ETag: '"legacy-etag"',
+      });
+
+      await expect(backend.getState('MyStack', 'us-east-1')).resolves.toBeNull();
+    });
+
+    it('logs a skipped legacy record without letting its region forge a line (issue #2947)', async () => {
+      // CHARACTERIZATION: the sanitization this asserts shipped with
+      // go-to-k/cdkd#3016, so this case passes on unfixed source. It is here
+      // because the issue's shape list names the line, and because the
+      // uncoercible-region case ABOVE it does depend on this PR.
+      // The mismatch branch's debug line interpolates the RECORD's region, which
+      // a hand-edited legacy file controls, and the stack name and the LOOKUP
+      // region, which reach here from key segments. All three take the file's
+      // own class for untrusted text in a message (`displaySafe` with
+      // `asciiOnly`): the Cyrillic `е` in the record's region AND the stack name
+      // is what that allowlist removes and the default class keeps.
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                ...v1State('MyStack', 'us-west-2'),
+                region: 'us-w\u0435st-2\n  PhysicalID: arn:forged\u009b',
+              })
+            ),
+        },
+        ETag: '"legacy-etag"',
+      });
+
+      await expect(
+        backend.getState('MyStack\u0435\n  Stack: FORGED', 'us-east-1\u0435\n  Region: FORGED')
+      ).resolves.toBeNull();
+
+      const line = childLoggerMock.debug.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((m: string) => m.startsWith('Legacy state for stack'));
+      // Not vacuous: the skip WAS logged, and it still names the region.
+      expect(line).toContain('PhysicalID: arn:forged');
+      expect(line).toContain('Stack: FORGED');
+      expect(line).toContain('Region: FORGED');
+      // No control character from either value, and not the non-ASCII letter
+      // from the region. (Not "ASCII only" for the whole line: the message's
+      // own template carries an em dash.)
+      expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(line).not.toContain('\u0435');
+    });
+
+    it('names a legacy region that sanitizes to nothing with the stand-in (issue #2947)', async () => {
+      // CHARACTERIZATION too, for the same reason as the case above.
+      // All non-ASCII, so the allowlist leaves nothing: without the stand-in the
+      // line would read `has region ''`, which says the record has no region.
+      // Both regions, the record's and the LOOKUP one, and they must DIFFER or
+      // the mismatch branch is never entered.
+      childLoggerMock.debug.mockClear();
+      s3Client.send.mockRejectedValueOnce(new NoSuchKey({ message: 'NoSuchKey', $metadata: {} }));
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ ...v1State('MyStack', 'us-west-2'), region: '\u0435\u0435' })
+            ),
+        },
+        ETag: '"legacy-etag"',
+      });
+
+      await expect(backend.getState('MyStack', '\u0436\u0436')).resolves.toBeNull();
+
+      const line = childLoggerMock.debug.mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((m: string) => m.startsWith('Legacy state for stack'));
+      expect(line).toContain("has region '<unrenderable>', not '<unrenderable>'");
+    });
+
     it('reads from the new region-scoped key when present', async () => {
       const state = v2State('MyStack', 'us-west-2');
       s3Client.send.mockResolvedValueOnce({ Body: bodyOf(state), ETag: '"new-etag"' });

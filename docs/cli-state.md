@@ -225,21 +225,31 @@ they print as untrusted text:
   mode: `cdkd state show` emits the record as parsed, while
   `cdkd state resources --json` substitutes an empty list or object for an absent
   `dependencies` or `attributes`, and the lock `cdkd state show` reports has already
-  had its `owner` and `operation` put through the shared display sanitizer
+  had its `owner` and `operation` put through the shared display sanitizer, with
+  an `expiresAt` whose number coercion THROWS emitted as `null` — one that merely
+  converts to `NaN`, such as `{}` or `"soon"`, is emitted as stored
   (`cdkd state resources` never reads a lock).
 
-This tolerance covers the VALUES these views render. A record can still be
-malformed in a way that fails earlier than that — a `resources` entry holding
-`null` rather than a resource, or a lock whose `expiresAt` holds an object that
-cannot be coerced to a number — and there the command reports an error and
-renders nothing.
+This tolerance also covers a record that is malformed beyond its values. A `resources`
+entry holding `null` rather than a resource no longer aborts any mode,
+`--show-nested` and both JSON walks included: the human views render it the way
+a number or a string there always did (`Type` and `PhysicalID` read `undefined`,
+the other fields their defaults), and the JSON modes emit it —
+`cdkd state show --json` as the stored `null`. A `resources` bag that is absent
+or `null` no longer aborts either: `cdkd state list --long` counts it as zero
+resources, and `--show-nested` walks past it with no children. A lock whose
+`owner`, `operation` or `expiresAt` holds an object that cannot be coerced
+renders too: the owner and operation read as `[object Object]`, and the expiry
+reads as `expired NaNmNaNs ago` — the row an `expiresAt` of `{}` already
+produced.
 
-Plain `cdkd state show --json` is the way to read such a record: it emits the
-record as parsed, without walking it or rendering a lock summary. The other two
-JSON modes walk the resources before emitting anything, so the `null` resource
-entry fails `cdkd state resources --json` and
-`cdkd state show --show-nested --json` as well. The lock case does not reach
-them: neither renders a lock summary.
+A record malformed at its ROOT is still refused rather than rendered, with a
+message that names the problem — for example a `state.json` that is not valid
+JSON, one whose body is not a JSON object (it parses to `null`, an array or a
+primitive), or one whose schema version this binary does not read, whatever
+type that version holds. Plain `cdkd state show --json` remains the way to see
+a record's stored values: it emits the record as parsed, without walking it or
+rendering a lock summary.
 
 **Resource properties are deliberately excluded from every mode here** — use
 [`cdkd state show`](#cdkd-state-show) when you need them. A physical id may be

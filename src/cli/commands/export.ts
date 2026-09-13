@@ -3399,8 +3399,15 @@ async function walkCdkdStateStackTree(
   stateBackend: S3StateBackend
 ): Promise<CdkdStateStackTree> {
   const nestedChildren = new Map<string, CdkdStateStackTree>();
-  for (const [logicalId, resource] of Object.entries(state.resources)) {
-    if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
+  // `?? {}` and a possibly-`null` entry, matching `renderStateBlock`: this is
+  // the `--show-nested` walker, and a hand-edited record with `resources`
+  // absent or `null`, or a `null` entry, threw here before anything rendered
+  // (issue #2947). A `null` entry cannot be a nested stack, so the type check
+  // skips it.
+  for (const [logicalId, entry] of Object.entries(state.resources ?? {}) as Array<
+    [string, (typeof state.resources)[string] | null]
+  >) {
+    if (entry?.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     const childStackName = `${stackName}~${logicalId}`;
     const childResult = await stateBackend.getState(childStackName, region);
     if (!childResult) {

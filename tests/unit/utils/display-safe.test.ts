@@ -6,7 +6,7 @@
  * it routes through here rather than re-spelling it.
  */
 import { describe, expect, it } from 'vite-plus/test';
-import { displaySafe } from '../../../src/utils/display-safe.js';
+import { displaySafe, truncateCodePoints } from '../../../src/utils/display-safe.js';
 
 describe('displaySafe — denylist mode (owner / operation, may be non-ASCII)', () => {
   it('strips the classes a C0 + DEL denylist misses', () => {
@@ -45,10 +45,12 @@ describe('displaySafe — denylist mode (owner / operation, may be non-ASCII)', 
   });
 
   it('renders an ABSENT value as EMPTY, not as the word', () => {
-    // `String(undefined)` is `'undefined'`, a TRUTHY string. Every caller keys
-    // some decision on emptiness, so returning the word answered "yes, there
-    // is a value" for a lock.json carrying none — which printed
-    // `held by undefined` AND certified the holder as live.
+    // `String(undefined)` is `'undefined'`, a TRUTHY string. The callers that
+    // key a decision on emptiness — the lock summary, the refusals that fall
+    // back to `UNRENDERABLE` — were answered "yes, there is a value" for a
+    // lock.json carrying none, which printed `held by undefined` AND certified
+    // the holder as live. (Not every caller does: `ConsoleLogger` concatenates
+    // the result and `sameLockIdentity` only compares two of them.)
     expect(displaySafe(undefined)).toBe('');
     expect(displaySafe(null)).toBe('');
   });
@@ -83,5 +85,63 @@ describe('displaySafe — asciiOnly mode (stack name / region, known charset)', 
     const zwsp = 'a\u200bb';
     expect(displaySafe(zwsp)).toBe(zwsp);
     expect(displaySafe(zwsp, { asciiOnly: true })).toBe('a b');
+  });
+});
+
+describe('displaySafe — a value whose String conversion THROWS (issue #2947)', () => {
+  it('renders an object with a non-callable toString instead of throwing', () => {
+    const value = JSON.parse('{"toString": null}') as unknown;
+    // The premise, asserted rather than assumed: `String` itself throws here.
+    expect(() => String(value)).toThrow(TypeError);
+    expect(displaySafe(value)).toBe('[object Object]');
+  });
+
+  it('renders an array holding one through its own tag', () => {
+    const value = JSON.parse('[{"toString": null}]') as unknown;
+    expect(() => String(value)).toThrow(TypeError);
+    expect(displaySafe(value)).toBe('[object Array]');
+  });
+
+  it('sanitizes the FALLBACK tag too, rather than returning it straight', () => {
+    // Unreachable from `JSON.parse` — a `Symbol.toStringTag` is not a JSON key
+    // — and that is exactly why it is needed: every tag a JSON-derived value
+    // can produce (`[object Object]`, `[object Array]`) is already inert, so
+    // no other case can tell "the catch arm flows through the sanitizer" from
+    // "the catch arm returns its tag". This one can.
+    const value = { toString: null, [Symbol.toStringTag]: 'Ta\u0007g' } as unknown;
+    expect(() => String(value)).toThrow(TypeError);
+    // The premise: the tag the fallback produces carries the control character.
+    expect(Object.prototype.toString.call(value)).toBe('[object Ta\u0007g]');
+
+    expect(displaySafe(value)).toBe('[object Ta g]');
+  });
+
+  it('leaves every value String already handled exactly as it was', () => {
+    for (const value of [42, true, 'plain', {}, [1, 2]]) {
+      expect(displaySafe(value)).toBe(String(value));
+    }
+  });
+});
+
+describe('truncateCodePoints (issue #2947)', () => {
+  it('never splits a surrogate pair at the cut', () => {
+    const text = 'abcdefghijk\u{1F600}rest'; // 11 BMP chars, then one astral
+    // The premise: a UTF-16 slice at 12 DOES leave a lone high surrogate.
+    expect(/[\uD800-\uDBFF]$/.test(text.slice(0, 12))).toBe(true);
+
+    const cut = truncateCodePoints(text, 12);
+
+    expect(cut).toEqual({ text: 'abcdefghijk\u{1F600}', truncated: true });
+    expect(/[\uD800-\uDBFF]$/.test(cut.text)).toBe(false);
+  });
+
+  it('counts an astral character as ONE, so 12 code points in 13 units is not cut', () => {
+    const text = 'abcdefghijk\u{1F600}';
+    expect(text.length).toBe(13);
+    expect(truncateCodePoints(text, 12)).toEqual({ text, truncated: false });
+  });
+
+  it('reports no truncation for a value exactly the window long', () => {
+    expect(truncateCodePoints('abc', 3)).toEqual({ text: 'abc', truncated: false });
   });
 });

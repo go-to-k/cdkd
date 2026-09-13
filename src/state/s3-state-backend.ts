@@ -1370,9 +1370,9 @@ export class S3StateBackend {
    * silently lose data on the next save.
    */
   private parseStateBody(bodyString: string, stackName: string): StackState {
-    let parsed: StackState;
+    let root: unknown;
     try {
-      parsed = JSON.parse(bodyString) as StackState;
+      root = JSON.parse(bodyString);
     } catch (error) {
       // Sanitized for the same reason `probeLegacyState` sanitizes its own
       // `JSON.parse` failure: V8's `SyntaxError` quotes the offending INPUT,
@@ -1401,20 +1401,53 @@ export class S3StateBackend {
       );
     }
 
+    // Past the parse, a non-object ROOT is the one SHAPE refused here (issue
+    // #2947; the schema-version check below is a value check). A body that
+    // parses to `null`, an array or a primitive is usable by no consumer:
+    // `null` threw a raw `TypeError` at the `.version` read below, and the
+    // others passed it and reached every consumer as a record. Everything
+    // INSIDE a well-formed root is deliberately NOT validated at this boundary:
+    // this is the read path for deploy, destroy, rollback and the recovery
+    // commands (`state orphan`, `state destroy`), so a refusal here would make
+    // a broken record unreadable by every one of them AT ONCE, including the
+    // two whose job is to clean it up — and plain `cdkd state show --json`
+    // reads such a record today. That is an argument about what stays
+    // FIXABLE, not a claim about what works now: `state orphan` and
+    // `state destroy` still abort on a `null` resources bag at their own
+    // dereference, which is issue go-to-k/cdkd#3018's class, and each is one
+    // guard away precisely because the boundary let the record through.
+    // Normalising one here would be worse than either, though NOT for the
+    // reason it is tempting to give: the deploy path already reads a `null`
+    // entry exactly as it reads an absent one (its `previousState` lookup is
+    // a truthiness test), so dropping the entry changes nothing THERE. What it
+    // changes is every consumer that enumerates KEYS — the destroy count,
+    // `state orphan`'s `id in resources`, the diff — for which a `null` entry
+    // keeps the logical id visible and actionable while a dropped one erases
+    // it from the record silently. Inner shapes are tolerated where they are
+    // dereferenced instead.
+    if (root === null || typeof root !== 'object' || Array.isArray(root)) {
+      const got = root === null ? 'null' : Array.isArray(root) ? 'an array' : `a ${typeof root}`;
+      throw new StateError(
+        `State file for stack '${this.displayName(stackName)}' is not a JSON object (it parses to ${got}), ` +
+          `so cdkd cannot read it as a state record.`
+      );
+    }
+    const parsed = root as StackState;
+
     const v = parsed.version;
     if (v !== undefined && !STATE_SCHEMA_VERSIONS_READABLE.includes(v)) {
-      // `displaySafe` rather than `String(v)`: the value is an unchecked cast
-      // and a string one reaches the terminal verbatim. It does NOT close the
-      // other half — `displaySafe` coerces with its own unguarded `String`, so
-      // a `v` that throws on coercion still throws, one frame further in. That
-      // is issue #2947's call, not this one's.
-      // `String(v)` FIRST, then sanitize: `displaySafe` maps `null` and
-      // `undefined` to the empty string, so passing the value straight in turns
-      // a `version: null` record into the `UNRENDERABLE` stand-in and loses the
-      // one precise, already-safe word the refusal could have said. Coercing
-      // first also keeps issue go-to-k/cdkd#2947's boundary exactly where it
-      // was: a value that throws on coercion throws here, as it did before.
-      const shown = displaySafe(String(v), { asciiOnly: true }) || UNRENDERABLE;
+      // `displaySafe` rather than `String(v)`: the value is an unchecked cast, so
+      // a string one reached the terminal verbatim (issue #3003) and one whose
+      // coercion throws — an object whose `toString` is not callable — made the
+      // refusal itself throw a `TypeError` (issue #2947); `displaySafe` absorbs
+      // both. `null` is mapped to its word FIRST, because `displaySafe` renders
+      // an absent value empty, and the refusal would then say the `UNRENDERABLE`
+      // stand-in instead of the one precise word it has. The REFUSAL is
+      // unchanged: `includes` compares with SameValueZero, so no value is
+      // coerced to reach it.
+      const vShown: unknown = v;
+      const shown =
+        displaySafe(vShown === null ? 'null' : vShown, { asciiOnly: true }) || UNRENDERABLE;
       throw new StateError(
         `Unsupported state schema version ${shown} for stack '${this.displayName(stackName)}'. ` +
           `This cdkd binary supports versions ${STATE_SCHEMA_VERSIONS_READABLE.join(', ')}. ` +
