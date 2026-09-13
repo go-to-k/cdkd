@@ -56,9 +56,6 @@ describe('docs-site home title', () => {
     expect(heroTextOf('---\nhero:\n\n  name: x\n\n  text: After blanks.\nfeatures: []\n---\n')).toBe(
       'After blanks.'
     );
-    const withBlank = INDEX_MD.replace('hero:\n  name: cdkd\n', 'hero:\n  name: cdkd\n\n');
-    expect(withBlank).not.toBe(INDEX_MD); // or the next line re-checks the plain derivation
-    expect(heroTextOf(withBlank)).toBe('The fastest way to deploy AWS CDK.');
     expect(heroTextOf('---\nhero:\n  name: x\nother:\n  text: wrong\n---\n')).toBeUndefined();
     expect(heroTextOf('---\nhero: # why\n  text: b\n---\n')).toBe('b');
     expect(heroTextOf('---\nhero:\n  name: x\n# note\n  text: d\n---\n')).toBe('d');
@@ -67,9 +64,15 @@ describe('docs-site home title', () => {
     expect(heroTextOf('---\nhero:\n  text: C#fast\n---\n')).toBe('C#fast');
     expect(heroTextOf("---\nhero:\n  text: 'it''s'\n---\n")).toBe("it's");
     expect(heroTextOf('---\nhero:\n  text: "a\\u0041b"\n---\n')).toBe('aAb');
+    // `---` inside a value is not the closing fence (mutant: `\n---` -> `---`
+    // shipped `cdkd - a` here); a quoted value comes back trimmed.
+    expect(heroTextOf('---\nhero:\n  text: a --- b\n---\n')).toBe('a --- b');
+    expect(heroTextOf('---\nhero:\n  text: "  a  "\n---\n')).toBe('a');
+    expect(heroTextOf('---\r\nhero:\r\n  text: crlf\r\n---\r\n')).toBe('crlf');
     // Absent / not a string / blank — bare, quoted, comment-only, null.
     expect(heroTextOf('---\ntitle: x\n---\n')).toBeUndefined();
     expect(heroTextOf('no frontmatter at all\n')).toBeUndefined();
+    expect(heroTextOf('---\n# nothing but a comment\n---\n')).toBeUndefined();
     expect(heroTextOf('---\nhero: plain scalar\n---\n')).toBeUndefined();
     expect(heroTextOf('---\nhero:\n  text: 42\n---\n')).toBeUndefined();
     for (const v of ['  ', '" "', "' '", '# todo', '#only', '~']) {
@@ -81,9 +84,10 @@ describe('docs-site home title', () => {
   });
 
   it('does not fall through to hero.actions[].text when hero.text is removed', () => {
-    // Review probe: the first regex accepted `text:` at ANY indent under
-    // `hero:` and returned "Get Started" here, shipping `cdkd - Get Started`
-    // instead of failing the build.
+    // Regression fence for the shipped-once bug: a line-shape walk took
+    // `hero.actions[0].text` ("Get Started") for `hero.text` and shipped
+    // `cdkd - Get Started`. Structurally impossible for a YAML parse; kept so
+    // a return to line matching fails here.
     const withoutText = INDEX_MD.replace(/^  text: .*\n/m, '');
     expect(withoutText).not.toBe(INDEX_MD);
     expect(withoutText).toMatch(/^      text: Get Started$/m);

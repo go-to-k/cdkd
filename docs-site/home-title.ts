@@ -30,16 +30,20 @@ import { parse as parseYaml } from 'yaml';
  * found one more YAML shape it misread (`hero.actions[].text` taken for
  * `hero.text`, blank lines and comments ending the block, `\n` / `\uXXXX`
  * escapes), which is the signal to use the real parser. A frontmatter the
- * parser rejects throws, and that is the right outcome: the SSG would have
- * refused the same page.
+ * parser rejects THROWS on purpose: Ox Content swallows the same parse
+ * failure (measured: `transformAsync` returns `frontmatter: {}` and renders
+ * the page without its hero), so this throw is the only thing that stops a
+ * heroless home page shipping under the bare title. The value is returned
+ * trimmed so the blank check and the headline agree on a quoted `"  a  "`.
  */
 export function heroTextOf(markdown: string): string | undefined {
-  const fm = /^---\n([\s\S]*?)\n---/.exec(markdown);
+  // Same delimiter shape as Ox Content's own parseFrontmatter (CRLF-tolerant).
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(markdown);
   if (!fm) return undefined;
   const doc: unknown = parseYaml(fm[1]);
   const hero = (doc as { hero?: unknown } | null)?.hero;
   const text = (hero as { text?: unknown } | null | undefined)?.text;
-  return typeof text === 'string' && text.trim() !== '' ? text : undefined;
+  return typeof text === 'string' && text.trim() !== '' ? text.trim() : undefined;
 }
 
 /** `<siteName> - <hero.text>` — what the home page's `<title>` should read. */
