@@ -9,14 +9,19 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
-vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
+// Hoisted so a test can assert on it: the provider's warn is the ONLY thing
+// that distinguishes a SKIPPED secret value from an UNCHANGED one (issue
+// #3048) — both send no `SecretString`.
+const { childLogger } = vi.hoisted(() => ({
+  childLogger: {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
+  },
+}));
+
+vi.mock('../../../src/utils/logger.js', () => {
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -86,28 +91,228 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     expect(updateInput().SecretString).toBeUndefined();
   });
 
-  it('refuses an UNRESOLVED INTRINSIC GenerateSecretString rather than generating from it', async () => {
-    // Issue #3032 widened `readConfigString`'s CONTAINER gate to the intrinsic
-    // shape, and `generateSecretString` reads `ExcludeCharacters` through it —
-    // so this site's behaviour changed and was, until this case, unwatched in
-    // BOTH directions (measured: adding an `onUnusable` downgrade there left
-    // the entire suite green).
+  it('SKIPS the value for a malformed GenerateSecretString instead of throwing', async () => {
+    // Issue #3048. `update()` is reached by the rollback executor's revert
+    // arms with a cdkd STATE record as the desired bag, which the user cannot
+    // edit from the template — so throwing here left the secret
+    // un-rollbackable (the #1544 hazard). (`cdkd drift --revert` never hands
+    // this key over: `getDriftUnknownPaths` keeps it out of the comparison.)
     //
-    // The refusal is the right answer for the same reason as the module's
-    // other no-downgrade sites: the `''` fallback means "exclude nothing", so
-    // cdkd would mint a LIVE secret whose character set ignores what the
-    // template declared — a weaker-than-declared substitution, and one the
-    // user cannot see afterwards because the value is generated.
-    //
-    // It only fires when the block CHANGED (`changedSecretValue` returns early
-    // when the config is unchanged), which is why `prev` differs here.
+    // The remedy is a SKIP, not an `onUnusable` downgrade, because proceeding
+    // is the harm: `generateSecretString` reads every member off the
+    // container, so a malformed one mints a bare default-charset password and
+    // — with `GenerateStringKey` / `SecretStringTemplate` also gone —
+    // returns it RAW instead of the JSON document the template declared.
     const prev = generated();
     const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
 
-    await expect(provider.update('L', SECRET_ARN, TYPE, next, prev)).rejects.toThrow(
-      /GenerateSecretString must be an object \(got an unresolved Ref intrinsic/
+    await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    // The UpdateSecret still goes out (other members may have changed), but
+    // carries NO SecretString — `UpdateSecret`'s merge semantics then leave
+    // the value AWS already holds untouched.
+    expect(updateInput().SecretString).toBeUndefined();
+  });
+
+  it('distinguishes a SKIPPED value from an UNCHANGED one by its warning', async () => {
+    // Both return `undefined` from `changedSecretValue` and both send no
+    // `SecretString`, so a regression that ALWAYS skips looks correct on the
+    // wire. The warning is the only thing that tells them apart, which is why
+    // it is asserted rather than the payload alone.
+    await provider.update('L', SECRET_ARN, TYPE, generated(), generated());
+    expect(childLogger.warn).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    await provider.update('L', SECRET_ARN, TYPE, { ...generated(), GenerateSecretString: 'nope' }, generated());
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('GenerateSecretString must be an object')
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('keeps the value AWS currently holds')
+    );
+  });
+
+  it('a SKIPPED generate block RETAINS the previous one in the recorded bag', async () => {
+    // The blocker both reviewers found. Without this, the engine records the
+    // DESIRED (malformed) bag, so the next deploy of the same broken template
+    // compares desired == previous, takes the `unchanged` early return, and
+    // the secret sits un-regenerated with NO warning — a loud repeating
+    // failure converted into a silent one. The poisoned record then reaches
+    // the reverse-replacement replay-create, which refuses it.
+    const prev = generated();
+    const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
+
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(result.effectiveProperties?.['GenerateSecretString']).toEqual(
+      prev['GenerateSecretString']
+    );
+    // COPIED, not aliased (the #1653 review rule): both engine consumers
+    // spread the answer one level deep, so an aliased block would let a later
+    // mutation of the previous bag rewrite the record.
+    expect(result.effectiveProperties?.['GenerateSecretString']).not.toBe(
+      prev['GenerateSecretString']
+    );
+    // Every other key rides through untouched — `effectiveProperties` REPLACES
+    // the desired bag wholesale, so it has to be complete.
+    expect(result.effectiveProperties?.['Name']).toBe('my-secret');
+    // A retained block is not a drop, so the drop warning stays silent.
+    expect(childLogger.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('dropped from the recorded properties')
+    );
+  });
+
+  it('a SKIP with an unusable PREVIOUS block drops the key rather than recording junk', async () => {
+    // #1653's rule: with neither side vouchable there is no value to record,
+    // and an explicitly-`undefined` key survives `structuredClone` where a
+    // dropped one does not — so the key is removed, not set to undefined.
+    const prev = { ...generated(), GenerateSecretString: 'also-broken' };
+    const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
+
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(result.effectiveProperties).toBeDefined();
+    expect('GenerateSecretString' in result.effectiveProperties!).toBe(false);
+    // The drop is ANNOUNCED (the #1654 rule): a record with no value source
+    // later reaches the reverse-replacement replay-create, which would create
+    // the secret with no version — an absent key is not malformed, so nothing
+    // downstream would otherwise say so.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('dropped from the recorded properties')
+    );
+    // Names the resource: a stack with two secrets must be able to tell them
+    // apart from the warning alone.
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('Secret L:'));
+  });
+
+  it('a SKIP with an ABSENT previous block (secret created from a literal) drops the key too', async () => {
+    // The ABSENT previous: the record carries a literal and no block, the
+    // template switched to a malformed block. The guard answers `undefined`
+    // for an absent value exactly as for an unusable one, so the key is
+    // dropped and the drop announced; the literal is NOT restored (the
+    // template removed it), see the helper's JSDoc.
+    const prev = literal();
+    const next = { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } };
+
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(updateInput().SecretString).toBeUndefined();
+    expect('GenerateSecretString' in result.effectiveProperties!).toBe(false);
+    expect('SecretString' in result.effectiveProperties!).toBe(false);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('dropped from the recorded properties')
+    );
+  });
+
+  it.each([
+    ['an empty string', ''],
+    ['zero', 0],
+  ])('a FALSY malformed GenerateSecretString (%s) still reaches the guard', async (_l, bad) => {
+    // The #1493 gate-bug shape. Under the old truthiness gate these fell
+    // straight through to the `SecretString` branch, so a declared generate
+    // block was ignored in silence — and with no `SecretString` either, the
+    // update sent no value at all and nothing said why. `!= null` routes them
+    // to the guard, which skips and warns like any other malformed container.
+    const prev = generated();
+    const next = { ...generated(), GenerateSecretString: bad };
+
+    const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('GenerateSecretString must be an object')
+    );
+    expect(updateInput().SecretString).toBeUndefined();
+    // ...and it takes the same retention as any other skip.
+    expect(result.effectiveProperties?.['GenerateSecretString']).toEqual(
+      prev['GenerateSecretString']
+    );
+  });
+
+  it.each([
+    ['update', 'sends nothing and records the desired bag'],
+    ['create', 'creates a valueless secret and says so'],
+  ])('an explicit GenerateSecretString: null on %s is ABSENT, not malformed (%s)', async (path) => {
+    // `config-shape.ts` rule 1: `undefined` / `null` mean "the template
+    // omitted the block", so the `!= null` gate must let a declared `null`
+    // fall through to the literal read WITHOUT the malformed-container
+    // warning -- the one falsy value that gate and `requireConfigObject`
+    // would otherwise disagree about (test-review round of go-to-k/cdkd#3058).
+    const props = { Name: 'my-secret', Description: 'app secret', GenerateSecretString: null };
+    if (path === 'update') {
+      const result = await provider.update('L', SECRET_ARN, TYPE, props, generated());
+      expect(updateInput().SecretString).toBeUndefined();
+      expect(result.effectiveProperties).toBeUndefined();
+      expect(childLogger.warn).not.toHaveBeenCalled();
+    } else {
+      mockSend.mockResolvedValue({ ARN: SECRET_ARN });
+      await provider.create('L', TYPE, props);
+      const created = mockSend.mock.calls.find((c) => c[0] instanceof CreateSecretCommand);
+      expect(created![0].input.SecretString).toBeUndefined();
+      expect(childLogger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('must be an object')
+      );
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('created with NO version')
+      );
+    }
+  });
+
+  it('an ORDINARY update records nothing — effectiveProperties is absent', async () => {
+    // Every engine reader gates on truthiness or `=== undefined`, so ABSENT is the contract for "record the
+    // desired bag". An implementation that always returned a bag would be
+    // indistinguishable by value here but would rewrite the record on every
+    // deploy.
+    const result = await provider.update('L', SECRET_ARN, TYPE, generated({ Description: 'x' }), generated());
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('create() still REFUSES a malformed GenerateSecretString — no live value to keep', async () => {
+    // The skip is scoped to `changedSecretValue`; `generateSecretString` is
+    // shared with `create()`, where there is no existing secret to fall back
+    // to, so a skip there would create a secret with no version at all.
+    await expect(
+      provider.create('L', TYPE, { ...generated(), GenerateSecretString: { Ref: 'GenConfig' } })
+    ).rejects.toThrow(/GenerateSecretString must be an object \(got an unresolved Ref intrinsic/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an empty string', ''],
+    ['zero', 0],
+  ])('create() REFUSES a FALSY malformed GenerateSecretString (%s) too', async (_l, bad) => {
+    // The same #1493 gate shape on the create path (round-2 review): under
+    // the truthiness gate a falsy block fell through to the literal read and,
+    // with no `SecretString`, created a secret with NO version in silence.
+    const props = { ...generated(), GenerateSecretString: bad };
+    await expect(provider.create('L', TYPE, props)).rejects.toThrow(
+      /GenerateSecretString must be an object/
     );
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('create() WARNS when the bag carries no secret value at all', async () => {
+    // Legal by the schema, but on the reverse-replacement replay-create this
+    // is exactly the shape a DROPPED block arrives in, and `create()` cannot
+    // tell that record from a template that meant it.
+    mockSend.mockResolvedValue({ ARN: SECRET_ARN });
+    const props = { Name: 'my-secret', Description: 'app secret' };
+
+    await provider.create('L', TYPE, props);
+
+    const created = mockSend.mock.calls.find((c) => c[0] instanceof CreateSecretCommand);
+    expect(created![0].input.SecretString).toBeUndefined();
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('created with NO version')
+    );
+  });
+
+  it('create() does NOT warn when a value source is present', async () => {
+    // The control for the case above: a warning that fires on every create
+    // is noise nobody reads.
+    mockSend.mockResolvedValue({ ARN: SECRET_ARN });
+    await provider.create('L', TYPE, generated());
+    expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
   it('a Description-only update of a GenerateSecretString secret sends NO SecretString', async () => {
@@ -372,6 +577,10 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const created = mockSend.mock.calls.find((c) => c[0] instanceof CreateSecretCommand);
     expect(created).toBeDefined();
     expect((created![0].input as { SecretString?: string }).SecretString).toBeUndefined();
+    // ...and since issue #3048 the valueless create is ANNOUNCED.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('created with NO version')
+    );
   });
 
   it('a null SecretString is refused as "null"', async () => {
@@ -558,5 +767,75 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
 
       expect(updateInput().SecretString).toBe(PLAIN);
     });
+  });
+});
+
+/**
+ * The RUNTIME half of the #2212 fence (round-6 security review of
+ * go-to-k/cdkd#3058). `tests/unit/scripts/integ-secret-fixture-sweep.test.ts`
+ * reads the provider's SOURCE and refuses every spelling by which the minted
+ * value could reach the recorded bag; six review rounds each found one more
+ * spelling. This block asks the question by VALUE instead, which no spelling
+ * can dodge: mint a value through the real code, then look for it in every
+ * object the engine records -- the desired bag it was handed (the SDK route
+ * records that very object) and the `effectiveProperties` a later SKIP
+ * returns, with a usable and with an absent previous block, after a mint
+ * from `update()` AND from `create()` (a cross-resource stash on the
+ * singleton would surface on the second resource).
+ */
+describe('the minted secret value reaches nothing the engine records (#2212, runtime half)', () => {
+  const ARN = 'arn:aws:secretsmanager:us-east-1:0:secret:my-secret-AbCdEf';
+  const TYPE = 'AWS::SecretsManager::Secret';
+  const gen = (len: number): Record<string, unknown> => ({
+    Name: 'my-secret',
+    GenerateSecretString: { PasswordLength: len, ExcludePunctuation: true },
+  });
+  /** The value the LAST mutating call actually sent. */
+  const minted = (command: typeof UpdateSecretCommand | typeof CreateSecretCommand): string => {
+    const calls = mockSend.mock.calls.filter((c) => c[0] instanceof command);
+    const v = (calls.at(-1)![0].input as { SecretString?: string }).SecretString;
+    expect(v, 'the priming call must have minted a value').toBeDefined();
+    expect(v!.length).toBeGreaterThanOrEqual(16);
+    return v!;
+  };
+  let provider: SecretsManagerSecretProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({ ARN });
+    provider = new SecretsManagerSecretProvider();
+  });
+
+  it('the desired bag handed to update() is not mutated', async () => {
+    const next = gen(32);
+    const before = JSON.stringify(next);
+    await provider.update('L', ARN, TYPE, next, gen(16));
+    const v = minted(UpdateSecretCommand);
+    expect(JSON.stringify(next)).toBe(before);
+    expect(before).not.toContain(v);
+  });
+
+  it.each([
+    ['USABLE', (): Record<string, unknown> => gen(32)],
+    ['ABSENT', (): Record<string, unknown> => ({ Name: 'my-secret', SecretString: 'lit' })],
+  ])(
+    'a later SKIP with a %s previous block carries no value minted by an earlier update()',
+    async (_l, previous) => {
+      await provider.update('L', ARN, TYPE, gen(32), gen(16)); // prime: mints
+      const v = minted(UpdateSecretCommand);
+      const desired = { ...gen(32), GenerateSecretString: 'bad' };
+      const result = await provider.update('L', ARN, TYPE, desired, previous());
+      expect(JSON.stringify(result)).not.toContain(v);
+      expect(JSON.stringify(desired)).not.toContain(v);
+    }
+  );
+
+  it('a SKIP on a SECOND resource carries no value minted by create() on the first', async () => {
+    await provider.create('A', TYPE, gen(32)); // prime: mints, on another resource
+    const v = minted(CreateSecretCommand);
+    const desired = { ...gen(32), Name: 'other', GenerateSecretString: 'bad' };
+    const result = await provider.update('B', ARN, TYPE, desired, { ...gen(32), Name: 'other' });
+    expect(JSON.stringify(result)).not.toContain(v);
+    expect(JSON.stringify(desired)).not.toContain(v);
   });
 });

@@ -548,7 +548,13 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
    * ones that can hand a freshly minted value back to the engine.
    */
   function methodBody(src: string, name: string): string {
-    const m = new RegExp(`async ${name}\\(`).exec(src);
+    // `async` and `private` are both optional so a SYNC private helper can be
+    // read too (issue #3048 needs `retainPreviousGenerateBlock`). The existing
+    // `async create(` / `async update(` matches are unaffected.
+    // Anchored to a DECLARATION line (`^\s*` + the `m` flag): unanchored, the
+    // optional prefixes let a bare `create(` elsewhere in the file win, and
+    // the fence then reads the wrong body and passes vacuously (measured).
+    const m = new RegExp(`^\\s*(?:private\\s+)?(?:async\\s+)?${name}\\(`, 'm').exec(src);
     expect(m, `${name}() not found in the provider — this fence reads a shape that has changed`).not.toBeNull();
     let i = src.indexOf('{', m!.index);
     let depth = 0;
@@ -641,9 +647,265 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     //    secret. Anything else -- `effectiveProperties`, `properties`, a new
     //    field invented later -- is persisted by the engine and must fail here
     //    rather than be enumerated as a denylist.
-    const ALLOWED_RETURN_KEYS = new Set(['physicalId', 'attributes', 'wasReplaced']);
+    // `effectiveProperties` is allowed on ONE construction only, and the
+    // constraint below is what keeps that from being a blanket widening
+    // (issue #3048). It is NOT enumerated as "safe because we checked once":
+    // the value expression must be a call to `retainPreviousGenerateBlock`,
+    // and that helper is separately asserted never to mention the generated
+    // value or the wire field it travels in. Anything else -- a spread, a
+    // literal, a different helper -- still fails, including the
+    // `{ ...properties, SecretString: secretString }` spelling this test's
+    // header records as having slipped through an earlier cut.
+    //
+    // The premise: `effectiveProperties` is returned only on the SKIP path,
+    // which is exactly the path where `generateSecretString` was never called,
+    // so no generated value exists to carry. The two are mutually exclusive by
+    // construction rather than by inspection -- and the round-2 review
+    // measured what "by construction" needs pinned for that to stay true:
+    //   - the ELSE arm must be `undefined` (a `{ ...properties, ...updateParams }`
+    //     there carries the wire bag, `SecretString` included, and was GREEN
+    //     under a pattern that stopped at the helper's opening paren);
+    //   - the helper must not reach a THIRD path to the minted value: no
+    //     `this.` other than the logger (a `this.mintAgain(properties)`
+    //     delegate was GREEN), exactly the two known `generateSecretString`
+    //     call sites, and no instance-field assignment outside the
+    //     constructor (a `this.minted = secretString` stash read back inside
+    //     the helper was GREEN). The provider is a registered SINGLETON, so
+    //     any such stash is a cross-resource bug regardless of this fence.
+    // A regex LITERAL, not a string: in a quoted string `\s` collapses to a
+    // bare `s` and the pattern silently stops matching (measured).
+    const EFFECTIVE_PROPS_RE =
+      /effectiveProperties:\s*skippedGenerate\s*\?\s*this\.retainPreviousGenerateBlock\(\s*logicalId,\s*properties,\s*previousProperties\s*\)\s*:\s*undefined\s*,/;
+    const ALLOWED_RETURN_KEYS = new Set([
+      'physicalId',
+      'attributes',
+      'wasReplaced',
+      'effectiveProperties',
+    ]);
+
+    expect(
+      EFFECTIVE_PROPS_RE.test(code),
+      'effectiveProperties is no longer built by retainPreviousGenerateBlock — it may now be able ' +
+        'to carry the generated secret; re-open #2212 rather than editing this expectation'
+    ).toBe(true);
+
+    const retainBody = methodBody(code, 'retainPreviousGenerateBlock');
+    // String literals are prose; a template literal keeps the CODE in its
+    // `${...}` holes. Used by every arm below that reads a NAME, so a future
+    // warning saying "fix this template" is not read as `this`.
+    const stripStrings = (src: string): string =>
+      src
+        .replace(/\`(?:[^\`\\]|\\.)*\`/g, (t) =>
+          [...t.matchAll(/\$\{([^}]*)\}/g)].map((m) => ` ${m[1]} `).join('')
+        )
+        .replace(/'(?:[^'\\]|\\.)*'/g, ' ')
+        .replace(/"(?:[^"\\]|\\.)*"/g, ' ');
+    // The argument list is PINNED above (round-3 review): a third argument is
+    // the one-line edit that hands the helper the minted value, and the
+    // body-side check below would not see it under bracket access
+    // (`effective['SecretString'] = v` carries no `SecretString:`), which is
+    // why that check is a lookbehind regex rather than the colon spelling.
+    for (const forbidden of [/generateSecretString/, /(?<!Generate)SecretString/, /\bsecretString\b/]) {
+      expect(
+        forbidden.exec(retainBody)?.[0],
+        `retainPreviousGenerateBlock now mentions \`${forbidden.source}\` — the bag it builds may ` +
+          `carry the generated secret into state; re-open #2212`
+      ).toBeUndefined();
+    }
+    expect(
+      /\bthis\b(?!\.logger\.warn\()/.exec(stripStrings(retainBody))?.[0],
+      'retainPreviousGenerateBlock now reaches the instance beyond logger.warn — a delegate, a ' +
+        'field or a bracket access can route the minted value into the bag it builds; re-open #2212'
+    ).toBeUndefined();
+    // THE READ SIDE IS AN ALLOW-LIST (round-4 security review). A write-side
+    // denylist loses the race: eight stash spellings were measured GREEN under
+    // the previous arms, two of them proven to land the minted value in the
+    // recorded bag -- a module-level `const cache = new Map()` written from
+    // `create()` and read back here (`const` is not `let`/`var`), and
+    // `(getLogger() as any).x = v` with no `this` at all. Every one of them
+    // needs a NAME inside this helper that is not on this list, so the list is
+    // what closes the class rather than one more spelling. A stash read
+    // inside the warning's `${...}` interpolation was measured GREEN when the
+    // whole template literal was blanked, which is why `stripStrings` keeps
+    // the holes; member accesses are not free identifiers; and an object KEY is one only
+    // at object-literal position (after `{` or `,`) -- the first cut stripped
+    // every `name :`, which is also the consequent of a ternary, and
+    // `cond ? stash : x` walked through (round-5 security review, both
+    // proven to land the minted value in the recorded bag).
+    //
+    // WHAT THE LIST CLOSES IS NAMES, NOT THE VALUE RETURNED BY THE ONE NAME IT
+    // ALLOWS. `this.logger.warn(` is a CALL, and a call has a return value:
+    // round 6 measured a field initializer whose `warn` returns a closure's
+    // stash, read by the helper as `Seed: this.logger.warn('')`, GREEN under
+    // everything above. So the initializer is pinned VERBATIM and every
+    // `this.logger.warn(` in the helper must sit at STATEMENT position, where
+    // its return value is discarded. The value-based twin of all of this --
+    // mint through the real code, then look for the value in what the engine
+    // records -- lives in
+    // `tests/unit/provisioning/secretsmanager-secret-provider-update-value-source.test.ts`
+    // ("runtime half"), and is the check no spelling can dodge.
+    expect(
+      /private logger = getLogger\(\)\.child\('SecretsManagerSecretProvider'\);/.test(src),
+      'the logger field is no longer the verbatim getLogger().child(...) — a custom logger can ' +
+        'return a stash through the one call the helper may make; re-open #2212'
+    ).toBe(true);
+    const strippedRetainBody = stripStrings(retainBody);
+    expect(
+      strippedRetainBody.match(/^\s*this\.logger\.warn\(/gm)?.length ?? 0,
+      'a this.logger.warn( in retainPreviousGenerateBlock is in a VALUE position — its return ' +
+        'value can carry a stash into the bag; re-open #2212'
+    ).toBe(strippedRetainBody.match(/this\.logger\.warn\(/g)?.length ?? 0);
+    const freeIdentifiers = (body: string): string[] => {
+      const stripped = stripStrings(body)
+        .replace(/\.{3}/g, ' ')
+        .replace(/\.[A-Za-z_$][\w$]*/g, ' ')
+        .replace(/(?<=[{,]\s*)[A-Za-z_$][\w$]*\s*:(?!:)/g, ' ');
+      return [...new Set(stripped.match(/\b[A-Za-z_$][\w$]*\b/g) ?? [])].sort();
+    };
+    expect(
+      freeIdentifiers(retainBody),
+      'retainPreviousGenerateBlock now names an identifier outside its allow-list — a new name is a ' +
+        'new route by which the minted value can reach the bag it builds; trace it before widening this'
+    ).toEqual([
+      'const',
+      'delete',
+      'effective',
+      'else',
+      'if',
+      'logicalId',
+      'previousProperties',
+      'properties',
+      'requireConfigObject',
+      'return',
+      'this',
+      'undefined',
+      'usablePrevious',
+    ]);
+    // A name on the list can be SHADOWED: a local `const requireConfigObject =
+    // (properties = previousProperties) => ...` spells only allow-listed names
+    // and reads whatever it likes (measured). So the helper's own bindings
+    // and its one arrow are pinned too.
+    expect(
+      [...stripStrings(retainBody).matchAll(/\bconst\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]).sort(),
+      'retainPreviousGenerateBlock declares a binding it did not before — a local can shadow an ' +
+        'allow-listed name; trace it before widening this'
+    ).toEqual(['effective', 'usablePrevious']);
+    expect(
+      stripStrings(retainBody).match(/=>/g)?.length,
+      'retainPreviousGenerateBlock gained a closure beyond the no-op onUnusable; re-open #2212'
+    ).toBe(1);
+    // Routes AROUND the instance are refused by absence, on the STRING-STRIPPED
+    // source (a future warning saying "fix this template" is prose, not a
+    // `this`): none of these tokens appears in the provider today, so a mutant
+    // that stashes the value in module or static state (`export const` too --
+    // the first cut anchored on the keyword and `export` walked past it),
+    // writes the instance reflectively, writes the minted value INTO the
+    // desired bag the helper spreads by ANY assignment operator (`||=` /
+    // `??=` were measured to land in state with no flag flip: the engine
+    // records the same object it hands the provider), or reaches `this` by
+    // any spelling other than a dotted member (`this!`, `<any>this`,
+    // `(this)`, `this['x']`, `this satisfies`, `= this`) reds here.
+    const codeNoStrings = stripStrings(code);
+    for (const escape of [
+      /^(?:export\s+)?(?:const|let|var)\s/m,
+      /\bstatic\s/,
+      /\bglobalThis\b/,
+      /\bReflect\./,
+      /Object\.(?:assign|defineProperty|defineProperties)\(/,
+      /\b(?:properties|previousProperties)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
+      /\bthis\b(?!\.)/,
+    ]) {
+      expect(
+        escape.exec(codeNoStrings)?.[0],
+        `the secret provider now contains \`${escape.source}\` — a value can travel outside the ` +
+          `method it was minted in; re-open #2212`
+      ).toBeUndefined();
+    }
+    // And the module's TOP LEVEL is an allow-list of its own, by BRACE DEPTH
+    // rather than by column (the parser does not care about indentation, so
+    // an indented module statement is still module state): every statement
+    // that opens at depth 0 is an import, one of the two known free
+    // functions, or the class. Anything else is module state a method can
+    // write -- the `export const stash` the keyword arm above walked past
+    // until it learned `export`. RECORDED BOUND: the walk counts brackets
+    // inside REGEX LITERALS too, so a `/\{/` early and a `/\}/` late would
+    // hide a module statement between them at "depth 1" while depth still
+    // returns to 0 (measured, round 6) -- and it was still RED, because the
+    // helper has to NAME the stash. Not hardened: round 6 also showed a stash
+    // needs no module state at all, so the walk's job is the cheap half.
+    const topLevel: string[] = [];
+    let depth = 0;
+    for (const rawLine of codeNoStrings.split('\n')) {
+      const line = rawLine.trim();
+      if (depth === 0 && line !== '' && !/^[})\]]/.test(line)) topLevel.push(line);
+      for (const ch of rawLine) {
+        if (ch === '{' || ch === '(' || ch === '[') depth += 1;
+        else if (ch === '}' || ch === ')' || ch === ']') depth -= 1;
+      }
+    }
+    expect(depth, 'the brace walk did not return to depth 0 — the stripper mis-read the source').toBe(0);
+    const unexpectedTopLevel = topLevel.filter(
+      (line) => !/^(?:import\b|export\s+class\s+SecretsManagerSecretProvider\b|function\s+(?:asJson|requireSecretStringShape)\()/.test(line)
+    );
+    expect(topLevel.length, 'the top-level walk saw no statements — it attests to nothing').toBeGreaterThanOrEqual(5);
+    expect(
+      unexpectedTopLevel,
+      'the secret provider gained a module-level statement — module state outlives a method and ' +
+        'a resource (the provider is a singleton); re-open #2212'
+    ).toEqual([]);
+    // The SKIP flag is what routes `update()` to the helper, so its true arm is
+    // pinned to the one site that also returns NO value: a flipped flag beside
+    // a minted value would hand the helper a bag the wire is about to carry.
+    expect(
+      code.match(/skippedGenerate:\s*true/g)?.length,
+      'skippedGenerate: true appears at more than one site — each must be the { value: undefined } arm'
+    ).toBe(1);
+    expect(
+      code.match(/\{\s*value:\s*undefined,\s*skippedGenerate:\s*true\s*\}/g)?.length,
+      'the skippedGenerate: true arm no longer returns value: undefined; re-open #2212'
+    ).toBe(1);
+    expect(
+      code.match(/\bthis\.generateSecretString\(/g)?.length,
+      'generateSecretString gained a call site — trace where its value goes before changing this'
+    ).toBe(2);
+    // Provenance of the allow-listed names: `requireConfigObject` and
+    // `getLogger` come from the modules they always came from. An
+    // `import { requireConfigObject } from './leaky.js'` is an allowed
+    // top-level statement and a second file this fence cannot read, so the
+    // import block's SOURCES are pinned instead (recorded bound: the modules
+    // themselves are trusted as the rest of the tree is).
+    expect(
+      [...src.matchAll(/^import\b[\s\S]*?\bfrom\s+'([^']+)';/gm)].map((m) => m[1]).sort(),
+      'the secret provider imports from a module it did not before — trace what it brings in'
+    ).toEqual([
+      '../../deployment/resource-secrets-scope.js',
+      '../../deployment/secret-redaction.js',
+      '../../types/resource.js',
+      '../../utils/aws-clients.js',
+      '../../utils/error-handler.js',
+      '../../utils/logger.js',
+      '../config-shape.js',
+      '../import-helpers.js',
+      '../region-check.js',
+      '../resource-name.js',
+      '../update-removal.js',
+      '@aws-sdk/client-secrets-manager',
+      'node:util',
+    ]);
+    // Dotted CHAINS count (`this.logger.minted = v` is a write through the
+    // one member the helper may read). Every non-dotted spelling of `this` --
+    // a cast, bracket access, `this!`, `<any>this`, an alias -- is refused
+    // above by the `this` followed by anything but a dot arm.
+    const fieldWrites = (s: string): number => (s.match(/\bthis\.[\w.]+\s*=(?!=)/g) ?? []).length;
+    expect(
+      fieldWrites(code),
+      'an instance field is assigned outside the constructor — a stash can carry the minted value ' +
+        'across methods (and across resources: the provider is a singleton); re-open #2212'
+    ).toBe(fieldWrites(methodBody(code, 'constructor')));
     for (const method of ['create', 'update']) {
-      const body = methodBody(src, method);
+      // Comment-STRIPPED: a comment inside a return literal was otherwise read
+      // as a key (measured on issue #3048's `effectiveProperties` note).
+      const body = methodBody(code, method);
       const objs = returnedObjects(body);
       expect(objs.length, `${method}() returns no object literal — shape changed`).toBeGreaterThanOrEqual(1);
       for (const obj of objs) {

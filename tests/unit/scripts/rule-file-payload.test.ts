@@ -1381,7 +1381,22 @@ const CORPUS_FILE_COUNT = 54; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#271
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 966_000;   // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
+const CORPUS_BYTES_MIN = 1_006_000; // RE-DERIVED UPWARD 966_000 -> 1_006_000 (2026-09-13, PR
+                                    // go-to-k/cdkd#3058): the mechanical occasion below fired for
+                                    // the first time, on CI, where the MERGE of that PR measured
+                                    // 1,040,248 B and `corpus - hooks.md` = 966,642 B cleared the
+                                    // 966_000 floor by 642 B -- the floor could no longer see the
+                                    // largest file being emptied. DERIVED against that CI figure;
+                                    // SHIPS (measured on the tree that carries this line, after two
+                                    // more review rounds and one more main commit) at: branch
+                                    // 1,036,454 B, origin/main 1,039,393 B, the PR's rule delta
+                                    // 1,064 B, so the merge projects to 1,040,457 B -- 34,457 B of
+                                    // slack, the same ~34 KB every previous setting used, and
+                                    // `merge - hooks.md` = 966,851 B. Set against the MERGE, not
+                                    // the branch (2,939 B behind main), which would have shipped
+                                    // 30 KB while claiming 34.
+                                    //
+                                    // 966_000 was: // RE-DERIVED UPWARD 895_000 -> 966_000 (2026-09-08, issue
                                     // go-to-k/cdkd#2310): measured 1,003,542 B on the tree that
                                     // ships this line -- 37,542 B of slack. The constant was set
                                     // against a 999,957 B corpus (~34 KB, the margin every previous

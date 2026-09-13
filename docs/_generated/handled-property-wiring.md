@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1138** (**1136** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **22**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **23**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -61,6 +61,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applyAllSubConfigsForCreate()`, `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()` |
 | `S3DirectoryBucketProvider` (s3-directory-bucket-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
+| `SecretsManagerSecretProvider` (secretsmanager-secret-provider.ts) | `object spread in retainPreviousGenerateBlock()` |
 | `SNSTopicProvider` (sns-topic-provider.ts) | `computed key in applyUpdate()` |
 
 ## Full classification

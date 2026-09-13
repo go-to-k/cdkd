@@ -270,7 +270,7 @@ sdk-to-cc-autoroute	2026-09-11T18:26:05Z	PASS	168	verify.sh	maintainer-side run 
 secrets-array-nested	2026-09-10T08:15:35Z	PASS	90	verify.sh	rc0 after fixture retired the plaintext residual (#2852); first run FAILed on the old assertion
 secrets-dynamic-ref	2026-09-13T03:24:24Z	PASS	500	verify.sh	maintainer-side gating run for the PR 3052 merge at 9463a63b (frame arm, #2745 sites 1+3): Guard 3d DB_PORT_SUB / DB_PORT_JOIN / PortJoin OK in properties, observedProperties, outputs, post-rollback and re-capture; 4 del 0 err, 0 surviving state versions
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
-secretsmanager-update-value-source	2026-09-04T00:49:00Z	PASS	70	verify.sh	rc ok, orph clean, versions swept (maintainer merge-gate rerun of PR 2476)
+secretsmanager-update-value-source	2026-09-12T19:19:26Z	PASS	111	verify.sh	rc ok, orph clean, 0 surviving versions (PR 3058: ordinary paths only; the skip/retain arms are not exercised by this fixture)
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 servicediscovery	2026-08-20T11:10:22Z	PASS	110	verify.sh	#2053: 4 threaded sites incl. the 5.5-min DeleteNamespace backoff; clean destroy, 0 orphans
 servicediscovery-namespaces	2026-08-20T03:39:32Z	PASS	136	verify.sh	issues 2058/2063 maskSecrets threading, re-run after rebase onto 0.284.17; six namespace arms + pollOperation via async operation-based create/update/delete; destroy 2 deleted 0 errors, hosted zone gone, 0 orphans
