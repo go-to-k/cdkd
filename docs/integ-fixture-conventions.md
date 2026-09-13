@@ -967,8 +967,13 @@ premise that cdkd "persists that value into state.json exactly like a
 hand-written one"; traced through `SecretsManagerSecretProvider`, that premise
 does not hold. The value is minted LOCALLY from a CSPRNG into a local variable,
 handed to `CreateSecret`, and never returned, read back, or written into the
-properties bag: `create` / `update` return `attributes: { Id }` only, the
-provider never issues `GetSecretValue`, and `getDriftUnknownPaths()` lists both
+properties bag: `create` / `update` return `attributes: { Id }` and nothing
+else that can carry a value (since issue
+[#3048](https://github.com/go-to-k/cdkd/issues/3048) `update` also returns
+`effectiveProperties` on ONE path — the SKIP of a malformed
+`GenerateSecretString` block, where no value was minted at all, built by a
+helper the fence asserts never touches the minted value), the provider never
+issues `GetSecretValue`, and `getDriftUnknownPaths()` lists both
 `SecretString` and `GenerateSecretString`. What state holds is the RECIPE.
 
 So it lives in the lint's `EXEMPT_SHAPES` rather than in `SECRET_MATERIAL`, and

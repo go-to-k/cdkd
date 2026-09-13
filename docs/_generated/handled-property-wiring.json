@@ -7,7 +7,7 @@
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 22
+    "classesWithBlindSpots": 23
   },
   "classes": [
     {
@@ -17573,7 +17573,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "object spread in retainPreviousGenerateBlock()"
+      ]
     },
     {
       "file": "servicediscovery-provider.ts",
