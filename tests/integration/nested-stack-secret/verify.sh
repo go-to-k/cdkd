@@ -49,6 +49,15 @@
 #           here (that needs a mid-deploy failure); its unit coverage is
 #           `tests/unit/deployment/rollback-executor-nested-stack-secret-scope.test.ts`.
 #           What this fixture contributes is the shape those bindings feed.
+#   #2745 - the SUB-FLOOR carry. The parent builds `SubFloorPin` as a LITERAL
+#           frame around a token whose value is TWO characters (`port:` +
+#           token -> `port:q7`). The child's carry records an inherited pair
+#           for a whole-value match at any length or a substring match at or
+#           above the needle floor, and the framed value was neither -- not a
+#           key of the parent's bag, middle below the floor -- so `PinParam`
+#           persisted `port:q7` in the clear and `cdkd diff --recursive`
+#           reported it as a change on every run. The parent's recorder now
+#           records `port:q7 -> port:{{resolve:...}}` as a whole-value entry.
 #
 # THREE deploys, and the third is not decoration. Phases 1-2b only ever reach
 # `NestedStackProvider.create` and a no-op, so the deploy engine's UPDATE call
@@ -168,6 +177,7 @@ CHILD_UNRELATED_PARAM="cdkd-nested-child-unrelated-${ACCOUNT_ID}"
 CHILD_HANDOFF_PARAM="cdkd-nested-child-handoff-${ACCOUNT_ID}"
 CHILD_HANDOFF_SUB_PARAM="cdkd-nested-child-handoffsub-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
+CHILD_PIN_PARAM="cdkd-nested-child-pin-${ACCOUNT_ID}"
 PARENT_CONSUMER_PARAM="cdkd-nested-parent-consumer-${ACCOUNT_ID}"
 PARENT_SUB_PARAM="cdkd-nested-parent-sub-${ACCOUNT_ID}"
 PARENT_SUBPAIR_PARAM="cdkd-nested-parent-subpair-${ACCOUNT_ID}"
@@ -219,6 +229,20 @@ LIST_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:list:AWSCURREN
 # survive VERBATIM in state -- a rule that certified every element of every list
 # leaf would rewrite it, which is the issue #2087 / #1915 over-redaction class.
 LIST_PUBLIC_VALUE="listpublic2327"
+# The #2745 SUB-FLOOR frame. A FIFTH JSON key whose value is TWO characters --
+# below `MIN_NEEDLE_LENGTH` (4, exported by `src/deployment/secret-redaction.ts`
+# and bound there by the unit suite; the guard below pins the premise from this
+# side) -- which the PARENT embeds in a LITERAL frame, `port:` + token. The
+# framed PLAINTEXT is the greppable literal: a bare 2-character value would
+# match ordinary text in every scan below and prove nothing either way.
+PIN_VALUE="q7"
+PIN_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin::}}"
+PIN_FRAMED_VALUE="port:${PIN_VALUE}"
+PIN_FRAMED_EXPR="port:${PIN_EXPR}"
+if [ -z "${PIN_VALUE}" ] || [ "${#PIN_VALUE}" -ge 4 ]; then
+  echo "FAIL: PIN_VALUE must be 1-3 characters, or this arm tests the substring carry (or nothing) instead" >&2
+  exit 1
+fi
 # The #2291 ROUND-2 arm's EMBEDDING leaf, over the LOSING parameter. Its
 # persisted form must splice HANDOFF_EXPR_A -- not the survivor -- into the
 # connection string, or the desired side (which answers per parameter) never
@@ -278,7 +302,7 @@ esac
 # The pre-existing three are inner-only -- `UNRELATED_LITERAL` legitimately
 # CONTAINS `SECRET_STAGE_VALUE`, which the #2087 assertion above requires, so
 # they must never be compared against each other.
-CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE"
+CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE"
 CDKD_ALL_LITERALS="SECRET_STAGE_VALUE SECURE_PW_VALUE UNRELATED_LITERAL ${CDKD_2270_LITERALS}"
 for mine_name in ${CDKD_2270_LITERALS}; do
   mine="${!mine_name}"
@@ -303,6 +327,9 @@ done
 mask() {
   local v="$1"
   if [ -z "${v}" ]; then echo "<empty>"; return; fi
+  # A value shorter than the needle floor is masked WHOLE: two revealed
+  # characters would be all of the #2745 arm's `PIN_VALUE`.
+  if [ "${#v}" -lt 4 ]; then echo "***(len=${#v})"; return; fi
   echo "$(printf '%s' "${v}" | cut -c1-2)***(len=${#v})"
 }
 
@@ -318,7 +345,10 @@ diag_output() {
   # handoff pair join it here for the same reason: a diff failure on either arm
   # is the failure mode in which their plaintext is MOST likely to be in the
   # captured text.
-  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}"; then
+  # The BARE 2-character pin is in this regex on purpose, unlike in the FAIL
+  # scans: here a false match only withholds diagnostics (the safe direction),
+  # while there it would fail a green run on ordinary text.
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}" <<<"${text}"; then
     echo "      output: <WITHHELD - it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
@@ -345,32 +375,38 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
   # `SECRET_STAGE_VALUE` and has its own exact assertion, so leaving it in would
   # make this grep fail on the CORRECT behaviour.
   scan="$(printf '%s' "${state}" | jq 'del(.resources.UnrelatedParam)')"
-  if printf '%s' "${scan}" | grep -qF "${SECRET_STAGE_VALUE}"; then
+  if grep -qF "${SECRET_STAGE_VALUE}" <<<"${scan}"; then
     echo "FAIL: ${label}: the child's state.json carries the resolved secretsmanager plaintext" >&2
     exit 1
   fi
-  if printf '%s' "${scan}" | grep -qF "${SECURE_PW_VALUE}"; then
+  if grep -qF "${SECURE_PW_VALUE}" <<<"${scan}"; then
     echo "FAIL: ${label}: the child's state.json carries the resolved SecureString plaintext" >&2
     exit 1
   fi
   # The #2270 round-3 pair resolves inside the CHILD, so its plaintext must be
   # absent from the child's record too -- the outputs are persisted redacted.
-  if printf '%s' "${scan}" | grep -qF "${SHARED_PW_VALUE}"; then
+  if grep -qF "${SHARED_PW_VALUE}" <<<"${scan}"; then
     echo "FAIL: ${label}: the child's state.json carries the resolved shared plaintext" >&2
     exit 1
   fi
   # The #2291 pair is resolved by the PARENT and handed down, so its plaintext
   # must be absent from the CHILD's record -- the arm this fixture exists to
   # fence is precisely a child leaf holding something it should not.
-  if printf '%s' "${scan}" | grep -qF "${HANDOFF_PW_VALUE}"; then
+  if grep -qF "${HANDOFF_PW_VALUE}" <<<"${scan}"; then
     echo "FAIL: ${label}: the child's state.json carries the resolved handoff plaintext" >&2
     exit 1
   fi
   # The #2327 pair is handed down the same way, and its leaves are ARRAYS -- a
   # shape no arm positioned before this fix, so a regression here shows up as
   # the plaintext sitting inside a list rather than at a scalar leaf.
-  if printf '%s' "${scan}" | grep -qF "${LIST_PW_VALUE}"; then
+  if grep -qF "${LIST_PW_VALUE}" <<<"${scan}"; then
     echo "FAIL: ${label}: the child's state.json carries the resolved list plaintext" >&2
+    exit 1
+  fi
+  # The #2745 frame is handed down below the carry's needle floor. Grepped as
+  # the FRAMED plaintext, since the bare 2-character middle is ungreppable.
+  if grep -qF "${PIN_FRAMED_VALUE}" <<<"${scan}"; then
+    echo "FAIL: ${label}: the child's state.json carries the framed sub-floor plaintext" >&2
     exit 1
   fi
   echo "    OK: ${label}: no resolved plaintext anywhere else in the child's state.json"
@@ -383,17 +419,26 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
   # all before concluding anything from their absence of plaintext. The two
   # markers are independent of the masking: `--verbose` prints them whatever the
   # value renders as.
-  if ! printf '%s' "${text}" | grep -q 'Resolved Ref to parameter'; then
+  # HERE-STRINGS, not `printf | grep -q`: under `pipefail` a `grep -q` that
+  # matches before the last line closes the pipe while the builtin `printf`
+  # still has writes outstanding, `printf` dies of SIGPIPE, and the pipeline
+  # reports 141 for a line that IS there -- a scheduling-dependent false FAIL
+  # (issue #2582 has the measurements; this fixture hit it on two consecutive
+  # runs on 2026-09-13, once here and once on the phase 2c sentinel). The
+  # negative scans use here-strings too: there an early match -- the very
+  # plaintext they exist to catch -- would kill `printf` the same way and read
+  # as "no match", the fail-OPEN half of the same race.
+  if ! grep -q 'Resolved Ref to parameter' <<<"${text}"; then
     echo "FAIL: ${label}: no 'Resolved Ref to parameter' line in the --verbose output" >&2
     echo "      the log format drifted, so the plaintext scan below proves nothing" >&2
     exit 1
   fi
-  if ! printf '%s' "${text}" | grep -q 'using user-provided value'; then
+  if ! grep -q 'using user-provided value' <<<"${text}"; then
     echo "FAIL: ${label}: no 'using user-provided value' line in the --verbose output" >&2
     echo "      the log format drifted, so the plaintext scan below proves nothing" >&2
     exit 1
   fi
-  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}" <<<"${text}"; then
     echo "FAIL: ${label}: --verbose printed a resolved secret plaintext" >&2
     exit 1
   fi
@@ -419,7 +464,7 @@ cleanup() {
     # out-of-band resources are cdkd's responsibility NOWHERE, so this sweep is
     # the only thing that keeps them from being orphans.
     for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
-             "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" \
+             "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_PIN_PARAM}" \
              "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" \
              "${PARENT_SUBPAIR_PARAM}" "${SECURE_PARAM_NAME}"; do
       aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
@@ -475,7 +520,7 @@ cleanup
 # --- Out-of-band secret + SecureString parameter ---------------------------
 echo "==> Creating the secretsmanager secret and the SecureString SSM parameter out of band"
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\"}" \
+  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\"}" \
   --region "${REGION}" >/dev/null
 aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
   --value "${SECURE_PW_VALUE}" --overwrite --region "${REGION}" >/dev/null
@@ -833,7 +878,67 @@ assert_eq "the literal source matcher survives VERBATIM" \
   "$(jq_state "${CHILD_STATE}" '.resources.ListPair.properties.EventPattern.source | join(",")')" \
   "cdkd.integ.nested-stack-secret"
 
-if printf '%s' "${PARENT_STATE}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}"; then
+# --- #2745: a sub-floor LITERAL frame crosses the handoff as a WHOLE value ---
+# The parent built `SubFloorPin` as `port:` + a token whose value is TWO
+# characters. The child's carry records an inherited pair for a whole-value
+# match at any length or a substring match at or above the needle floor, and
+# the framed value was neither, so `PinParam` persisted `port:q7` in the clear
+# -- and `cdkd diff --recursive` reported it as a change on every run, which
+# is what phase 2 below turns red on for a pre-fix binary. The parent's
+# recorder now records `port:q7 -> port:{{resolve:...}}` as a whole-value
+# entry of the bag it hands down.
+echo "==> #2745: a sub-floor literal frame reaches the child as its framed expression"
+
+# PREMISE GUARD on the SPELLING: this arm is about a LITERAL frame, and the
+# synthesized parent template must carry `SubFloorPin` as a STRING. cdkd's
+# synth exports `CDK_DEFAULT_ACCOUNT`, so the account inside the secret name
+# is concrete and CDK leaves the literal alone; with a token in it the value
+# would synthesize as an `Fn::Join` -- the object spelling this arm does not
+# cover (issue #3062) -- and every assertion below would be about a
+# different mechanism.
+# `cdkd deploy` re-synthesizes `cdk.out`, so this reads what phase 1 deployed.
+SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
+if [ ! -f "${SYNTH_TEMPLATE}" ]; then
+  echo "FAIL: premise: ${SYNTH_TEMPLATE} is missing after the phase 1 deploy" >&2
+  exit 1
+fi
+assert_eq "premise: the synthesized SubFloorPin is a LITERAL string (the spelling this arm covers)" \
+  "$(jq -r '.Resources.Child.Properties.Parameters.SubFloorPin | type' "${SYNTH_TEMPLATE}")" "string"
+assert_eq "premise: the synthesized SubFloorPin is the framed token" \
+  "$(jq -r '.Resources.Child.Properties.Parameters.SubFloorPin' "${SYNTH_TEMPLATE}")" "${PIN_FRAMED_EXPR}"
+
+# THE PARENT SIDE FIRST, as the premise: the parent's own record of the row is
+# framed (the #2516 literal arm), which is what the carry has to match.
+assert_eq "the parent's nested-stack row keeps SubFloorPin as its FRAMED expression" \
+  "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.SubFloorPin')" \
+  "${PIN_FRAMED_EXPR}"
+
+# The LIVE value is the framed PLAINTEXT -- what AWS must hold.
+LIVE_PIN=$(aws ssm get-parameter --name "${CHILD_PIN_PARAM}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+assert_eq "the LIVE PinParam holds the framed resolved value" "${LIVE_PIN}" "${PIN_FRAMED_VALUE}"
+
+# THE NAMED DEFECT RUNS FIRST, for the reason the #2270 arm records: `assert_eq`
+# exits on a mismatch and masks both values, so the one value a pre-fix binary
+# produces would never be legible in the log.
+PIN_STATE="$(jq_state "${CHILD_STATE}" '.resources.PinParam.properties.Value')"
+if [ "${PIN_STATE}" = "${PIN_FRAMED_VALUE}" ]; then
+  echo "FAIL: PinParam persisted the framed PLAINTEXT -- the sub-floor carry did not reach the child (issue #2745)" >&2
+  exit 1
+fi
+assert_eq "child PinParam persists the FRAMED expression" "${PIN_STATE}" "${PIN_FRAMED_EXPR}"
+# The readback too: `observedProperties` is captured against the marked
+# readback bag and redacted through the same per-resource entry. Read with a
+# fail-closed default, or a missing readback would compare an empty string
+# and this line would say nothing.
+PIN_OBSERVED="$(jq_state "${CHILD_STATE}" '.resources.PinParam.observedProperties.Value // "<no readback>"')"
+assert_eq "child PinParam's observedProperties readback holds the FRAMED expression" \
+  "${PIN_OBSERVED}" "${PIN_FRAMED_EXPR}"
+# The outputs-pass twin: the child's outputs walk shares the inherited bag.
+assert_eq "the child's ChildPinOutput persists the FRAMED expression" \
+  "$(jq_state "${CHILD_STATE}" '.outputs.ChildPinOutput')" "${PIN_FRAMED_EXPR}"
+
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
   exit 1
 fi
@@ -855,7 +960,7 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd diff --recursive --fail exited 0"
-if printf '%s' "${DIFF_OUT}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
   echo "FAIL: the diff output printed a resolved secret plaintext" >&2
   exit 1
 fi
@@ -926,7 +1031,8 @@ assert_eq "the child's StageParam description was UPDATED (so the update arm ran
 # Ordered this way on purpose: a grep that matches nothing cannot distinguish
 # "the arm did not run" from "the log wording drifted", and AWS has just settled
 # the first. So a miss here is a DRIFT report, not a silent pass.
-if ! printf '%s' "${UPDATE_OUT}" | grep -q "Updating nested stack ${CHILD_STACK}"; then
+# A here-string for the same SIGPIPE reason `scan_verbose_output` gives.
+if ! grep -q "Updating nested stack ${CHILD_STACK}" <<<"${UPDATE_OUT}"; then
   echo "FAIL: AWS shows the child WAS updated, but the deploy log has no" >&2
   echo "      'Updating nested stack ${CHILD_STACK}' line -- NestedStackProvider's" >&2
   echo "      wording drifted, so this fixture can no longer see which arm ran" >&2
@@ -999,7 +1105,21 @@ assert_eq "the PUBLIC list-typed leaf is STILL verbatim after the UPDATE" \
 assert_eq "HandoffSub is STILL the losing parameter's own expression after the UPDATE" \
   "$(jq_state "${CHILD_STATE3}" '.resources.HandoffSub.properties.Value')" \
   "${HANDOFF_SUB_STATE_EXPECTED}"
-if printf '%s' "${PARENT_STATE3}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
+# The #2745 arm through the same call site. `PinParam` gains a changed
+# `Description` under `CDKD_TEST_UPDATE=child-property`, so the child genuinely
+# RE-RESOLVES the leaf off the UPDATE site's recorder.
+LIVE_PIN_DESC=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${CHILD_PIN_PARAM}" \
+  --query 'Parameters[0].Description' --output text)
+assert_eq "the child's PinParam was UPDATED (so the update arm re-resolved it)" \
+  "${LIVE_PIN_DESC}" "cdkd nested-stack-secret integ - #2745 sub-floor framed parameter (updated)"
+PIN_STATE3="$(jq_state "${CHILD_STATE3}" '.resources.PinParam.properties.Value')"
+if [ "${PIN_STATE3}" = "${PIN_FRAMED_VALUE}" ]; then
+  echo "FAIL: the UPDATE arm re-persisted PinParam's framed PLAINTEXT (issue #2745)" >&2
+  exit 1
+fi
+assert_eq "PinParam is STILL the framed expression after the UPDATE" "${PIN_STATE3}" "${PIN_FRAMED_EXPR}"
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext after the update" >&2
   exit 1
 fi
@@ -1031,14 +1151,14 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # EVERY stack-owned SSM parameter, which the two #2291 rows were missing: the
 # loop said "all six" while the stack owned eight, so a destroy that stranded
 # `HandoffPair` / `HandoffSub` passed this check. Counted from the fixture on
-# 2026-08-28 while adding the #2327 arm.
+# 2026-08-28 while adding the #2327 arm; nine since the #2745 arm's `PinParam`.
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
-         "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" \
+         "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_PIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}"; do
   assert_gone "SSM parameter '${p}' still exists after destroy" \
     aws ssm get-parameter --name "${p}" --region "${REGION}"
 done
-echo "    OK: all eight stack-owned SSM parameters are gone"
+echo "    OK: all nine stack-owned SSM parameters are gone"
 
 # The #2327 arm's rule is the one non-SSM resource this stack owns, so its
 # destroy is asserted on its own terms rather than inferred from the loop above.

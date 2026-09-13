@@ -515,6 +515,47 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
     });
   });
 
+  describe('beside a FRAMED whole-value entry, the nested-stack carry\'s (issue #2745)', () => {
+    // `recordNestedStackParameterExpressions` writes `'port:q7' ->
+    // 'port:{{resolve:...}}'` into the parent's own bag. That value is not a
+    // token, yet it enters the skeleton and frame candidate unions through
+    // `recordedExpressionsOf`. The frame pattern is anchored to the source's
+    // token and cannot match it; the SKELETON pattern of a join spelling the
+    // same frame CAN, and then names this leaf's own frame around its token —
+    // the same answer the frame arm gives, so the leaf is written its own
+    // token either way. The scan is no longer silent on `port:q7`, so where
+    // the frame arm answers, its bound decides instead of the mark.
+    it('still writes the leaf its own token, and an unrelated frame beside it its own', () => {
+      const secrets = resolvedAlone(TOKEN_L2, PIN);
+      secrets.set(`port:${PIN}`, `port:${TOKEN_L2}`);
+      const bag = markSameGenerationBag({ Dsn: `port:${PIN}`, Url: `url:${PIN}` });
+      const URL_JOIN = {
+        'Fn::Join': ['', ['url:{{resolve:secretsmanager:', { Ref: 'Secret' }, ':SecretString:pin::}}']],
+      };
+
+      expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN, Url: URL_JOIN })).toEqual({
+        Dsn: `port:${TOKEN_L2}`,
+        Url: `url:${TOKEN_L2}`,
+      });
+    });
+
+    it('makes this arm refuse an intrinsic-sourced leaf once the framed entry exceeds the candidate length cap, so it falls to the value scan (residual (c))', () => {
+      // 512 is `MAX_SKELETON_CANDIDATE_LENGTH`, not exported; a candidate over
+      // it makes this arm refuse the WHOLE leaf (the safe direction), which
+      // the recorder's docstring lists as its residual (c). Pinned for THIS
+      // arm only: the skeleton arm could never match the framed leaf anyway,
+      // and a LITERAL-sourced leaf keeps the span arm, which reads no
+      // candidate list.
+      const secrets = resolvedAlone(TOKEN_L2, PIN);
+      const longPrefix = 'p'.repeat(600);
+      secrets.set(`${longPrefix}:${PIN}`, `${longPrefix}:${TOKEN_L2}`);
+      const leaf = `port:${PIN}`;
+      const bag = markSameGenerationBag({ Dsn: leaf });
+
+      expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN })).toEqual({ Dsn: leaf });
+    });
+  });
+
   describe('residual, stated on the docstring rather than closed', () => {
     it('takes a same-service SECRET sibling\'s expression for a leaf whose own reference resolved PUBLIC and whose value coincides with the middle', () => {
       // Check 2 proves the candidate resolved to the middle in this pass, not

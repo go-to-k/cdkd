@@ -193,7 +193,8 @@ function resolvedExpressionsOf(secrets: RecordedSecretValues): string[] {
  * for the object it is handed. A copy of the bag, a derived needle map, a
  * previous generation's record, a scrub / drift walk and a bag nobody marked
  * all answer `false` and keep the fall-through. `cdkd import` marks the one
- * bag its own resolver produced (the sixth site below, issue #2745).
+ * bag its own resolver produced (the sixth site below, issue #2745), and the
+ * nested-stack recorder marks the COPY it positions (the seventh, same issue).
  *
  * A `WeakSet` for the reason {@link resolvedPairsOf} is a `WeakMap`: the mark
  * dies with the object it is on, and nothing has to clear it.
@@ -229,9 +230,9 @@ const sameGenerationBags = new WeakSet<object>();
  * and may skip it entirely. "Every leaf this pass produced" is false for the
  * auto-refresh readback of an UNCHANGED resource, where nothing was resolved
  * at all — there the safety comes from the empty secrets map, not from the
- * mark. Read the per-site list below rather than a rule over all six.
+ * mark. Read the per-site list below rather than a rule over all seven.
  *
- * The six call sites, and which of them the record HOLDS, because the earlier
+ * The seven call sites, and which of them the record HOLDS, because the earlier
  * "two never-installed copies" reading of this paragraph was false once the
  * third copy arrived:
  * - `propertiesToRecord` — the record's `properties`, installed. The resolved
@@ -276,6 +277,20 @@ const sameGenerationBags = new WeakSet<object>();
  *   it does NOT claim is that AWS holds the value: `observedProperties` is
  *   captured separately, against the redacted record, and is never marked
  *   here.
+ * - `recordNestedStackParameterExpressions` (issue #2745) — a shallow COPY of
+ *   a nested-stack row's resolved `Parameters` sub-bag, marked as the
+ *   position pass's input so a sub-floor middle a literal frame embeds is
+ *   written as its token there, which is what the recorder's sub-floor
+ *   carry reads. NOT installed: the caller's own object is untouched, and
+ *   whether THAT gets marked is decided at the caller (the deploy engine's
+ *   two sites mark it later, in `propertiesToRecord`; the replay's three
+ *   never do). Pair provenance holds at all five callers: the engine's two
+ *   resolve the row in the pass that recorded the pairs, and the replay's
+ *   three hand it the bag `resolveReplayProps` filled through
+ *   `recordResolvedPair` from the journal rows it resolved just before -- the
+ *   desired row, and on the update and failed-op arms the current or
+ *   attempted row as well -- all within one replay, so every pair in it is
+ *   that pass's own.
  */
 export function markSameGenerationBag<T extends object>(bag: T): T {
   sameGenerationBags.add(bag);
@@ -648,6 +663,21 @@ function substringNeedlesOf(secrets: RecordedSecretValues): string[] {
  * documented as "the expressions this pass recorded" must not silently contain
  * something that is not one: the day a candidate test stops requiring token
  * SHAPE, the sentinel would be live in it.
+ *
+ * A SECOND non-token class passes the filter, and is meant to: the FRAMED
+ * whole-value entry `recordNestedStackParameterExpressions` writes for a
+ * sub-floor carry (issue #2745) has a `port:{{resolve:...}}` value. It
+ * enters the skeleton and frame candidate unions. The frame pattern is
+ * anchored to the source's token and cannot match it; the SKELETON pattern of
+ * an `Fn::Join` / `Fn::Sub` spelling the same frame around the same token
+ * CAN, and then names that leaf's own frame around this pass's token -- the
+ * correct expression for it, and one `isKnownSecretExpression` reads as
+ * secret anyway, since the value is a map entry. What it DOES cost is the
+ * length cap -- a framed value longer than
+ * `MAX_SKELETON_CANDIDATE_LENGTH` makes both intrinsic arms refuse every
+ * INTRINSIC-sourced leaf of the resource whose bag holds it; a literal-source
+ * leaf keeps the span arm, which reads no candidate list (the recorder's doc
+ * lists it).
  */
 function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
   const expressions = new Set<string>();
@@ -1345,6 +1375,15 @@ const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 const nestedStackParameterExpressions = new WeakMap<RecordedSecretValues, CrossStackAssociations>();
 
 /**
+ * Condition (iv)'s key (see {@link recordNestedStackParameterExpressions}) for
+ * a `Parameters` spelling that is not a single-span literal frame of its
+ * resolved value carrying this pass's pair for its token: an object source, a
+ * plain literal, a two-span literal, a bag equal to its source, and a frame
+ * whose token this pass never resolved to the middle (a PUBLIC sibling).
+ */
+const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-spelling');
+
+/**
  * Record, for the pass that owns `secrets`, which `{{resolve:...}}` expression
  * each `Parameters` entry of a nested-stack row was resolved FROM (issue
  * #2291). No-op for every other resource type.
@@ -1418,6 +1457,127 @@ const nestedStackParameterExpressions = new WeakMap<RecordedSecretValues, CrossS
  *    `return source`, which is the same string again), so both callers reach it.
  *    Fenced by the self-referential case in
  *    `secret-redaction-nested-parameter-source.test.ts`.
+ *
+ * THE SUB-FLOOR CARRY (issue #2745, its nested-stack site). A parameter the
+ * parent spelled as a LITERAL frame around one token -- `Pin:
+ * 'port:{{resolve:secretsmanager:S:SecretString:pin::}}'` -- resolves to
+ * `port:q7`: not a key of the map (refusal 1), with a middle below
+ * `MIN_NEEDLE_LENGTH`, so the child's carry (`inheritedSecretsCarriedBy`:
+ * whole value at any length, substring at or above the floor) misses it both
+ * ways and the child persisted `port:q7`. This recorder is the only point
+ * holding the literal frame beside the pair, so the carry is written HERE:
+ * the position pass runs over a MARKED shallow copy, on which
+ * {@link positionByEmbeddedSpan} writes the frame on pair evidence, and a
+ * second walk records `resolvedValue -> sourceLeaf`
+ * (`'port:q7' -> 'port:{{resolve:...}}'`) as an ordinary WHOLE-VALUE entry of
+ * the parent's own bag, under five conditions:
+ *
+ *   (i)   `positioned[name] === sourceLeaf` -- the pass CERTIFIED the leaf.
+ *         On a literal source the span arm returns the source verbatim, so a
+ *         mismatch proves it did not fire -- refusal 2b's test, applied to
+ *         a literal source; pinned by the "map NO RESOLVER populated" case,
+ *         where (ii) and (iii) both pass and only the missing pair refuses.
+ *   (ii)  `redactSecretsForState(resolvedValue, secrets) === resolvedValue`
+ *         -- the value scan is SILENT on it: the sub-floor gate, byte-for-byte
+ *         the bound the span arm accepted. What it refuses is a middle at or
+ *         above the floor, whose substring carry the child already has (the
+ *         only refusal a test can see: the others coincide with (i) or with
+ *         the map's own entry, as a whole-token source's would).
+ *   (iii) `secrets.get(middle) === token` -- the token IS the map's survivor
+ *         for the middle. Load-bearing: two framed parameters over ONE middle
+ *         (`pin::` and `pin:AWSCURRENT:`) keep their own tokens on this row's
+ *         record today because each reaches the span arm with the scan
+ *         silent; once a `'port:q7'` entry exists the scan answers for the
+ *         whole leaf and the arm's bound (`scanned === prefix + survivor +
+ *         suffix`) decides. Recording only the frame whose token is the
+ *         middle's survivor makes every parent leaf keep its own token by
+ *         construction rather than by recording order.
+ *   (iv)  ONE FRAME per VALUE, across the whole row. Once the entry exists
+ *         the scan is no longer silent on the value, so on the parent's
+ *         record every leaf holding it answers against the entry through the
+ *         span arm's bound (`scanned === prefix + survivor + suffix`). The
+ *         SAME frame around another token -- the (iii) shape, `port:` + A
+ *         beside `port:` + B -- passes that bound and keeps its own token. A
+ *         DIFFERENT frame (`port:` + `q7` beside `port` + `:q7`, each passing
+ *         (i)-(iii) on its own), a leaf (iii) refused under a different
+ *         frame, an object spelling and a plain literal equal to the value
+ *         all fail it and would take the entry's frame -- and so would a
+ *         same-frame sibling whose token this pass never resolved to the
+ *         middle: a PUBLIC `ssm` reference in the same `port:` frame holding
+ *         the same two characters is kept RESOLVED on the record, and the
+ *         entry would rewrite it to the secret sibling's expression. So the
+ *         frames (prefix + suffix) of every spelling of every string value in
+ *         the row are gathered BEFORE the conditions run, a spelling that is
+ *         not a single-span literal frame with this pass's pair for its token
+ *         (`resolvedPlaintextOf`) counting as its own, and a value is
+ *         recorded only when its certified frame is the row's only one.
+ *   (v)   No OTHER string leaf of the ROW would be rewritten by the entry,
+ *         read over every leaf of the resolved row since the bag is per
+ *         resource, not per `Parameters`. Two arms of the persist walk read
+ *         a map entry. The WHOLE-VALUE arm is floorless, so a leaf EQUAL to
+ *         the value OUTSIDE `Parameters` (a `TemplateURL` that happens to
+ *         equal it has no frame of its own and escapes (iv)) or inside a
+ *         LIST-valued sibling parameter (an array here; `extractParameters`
+ *         joins it back for the wire) refuses at any length; equality
+ *         between string parameters is (iv)'s frame identity. The SUBSTRING
+ *         arm is reached only by a value at or above `MIN_NEEDLE_LENGTH`
+ *         (`port:q7` clears the floor its bare middle sits under), so a
+ *         sibling merely CONTAINING the value -- `x-port` + `:q7` from
+ *         another token, a plain literal `literal-port:q7-end` -- refuses
+ *         only then, or it would be spliced with this frame on the parent's
+ *         record, exactly the #2087 splice the child side is scoped against;
+ *         a 3-character `pq7` beside such a sibling is carried, since no
+ *         needle exists for it.
+ *
+ * Written AFTER the walk, so no iteration reads the recorder's own write --
+ * a statement of intent rather than a pinned behaviour: under (iv) and (v)
+ * an in-loop write is EQUIVALENT (a later value the entry would rewrite is
+ * refused by (v), an equal one by (iv) or as the same entry), so no test can
+ * red on the order, and it is kept so (ii)'s reading of the map cannot come
+ * to depend on iteration order. No pair and no pin are recorded for the
+ * entry: it is not a token
+ * ({@link recordedExpressionsOf} names the class), and no consumer needs one
+ * -- the child's carry, the child's persist (the floorless whole-value arm),
+ * the diff side (`redactParametersForDiff`'s fallback) and the parent's
+ * rollback record all read the map by whole value. Refusal 3's
+ * self-referential shape cannot reach the write: {@link singleSpanFrame}
+ * refuses a middle that is itself a token, which is what a bag equal to its
+ * source has.
+ *
+ * WHAT STAYS OPEN, weighed against the three live consumers named on
+ * {@link positionByIntrinsicFrame} (`cdkd rollback`, `drift --revert`, a
+ * consumer's cross-stack read). (a) Over one middle with TWO tokens, (iii)
+ * records the survivor's frames only, never a loser's, so the loser's child
+ * leaf takes the survivor's frame when the two frames MATCH (`port:` + either
+ * token: the survivor's entry is the loser's whole value too) and stays
+ * PLAINTEXT when they differ (`port:` + A beside `url:` + B: no entry names
+ * `port:q7`). Either is the pre-#2291 answer for this shape; on a match it is
+ * the wrong reference those consumers re-resolve -- after the sibling
+ * rotates, a rollback or `--revert` of the child hands the sibling's
+ * plaintext to the loser's live property. The PARENT's record stays per leaf
+ * by (iii) and (iv). One token framed two ways (`port:` + T and `url:` + T)
+ * is two values and two entries, not this shape. (b) The framed
+ * value is a SUBSTRING needle (7 characters here) in every child resource
+ * that consumed the parameter, so an unrelated literal there containing it
+ * is spliced -- the #2087 class, bounded to resources whose own resolution
+ * consumed the parameter; on the parent's own row (v) refuses the entry
+ * instead, over the leaves visible at record time -- a readback leaf AWS
+ * rewrote to contain the value is spliced like any 4+ character needle's.
+ * (c) A frame longer than
+ * `MAX_SKELETON_CANDIDATE_LENGTH` makes both intrinsic arms refuse every
+ * INTRINSIC-sourced leaf of that child resource, which then falls to the
+ * value scan (a literal-source leaf keeps the span arm). (d) A child
+ * OUTPUT carrying the framed value re-resolves in the parent to `port:q7`,
+ * where the cross-stack seam refuses a non-token and the consumer's leaf
+ * persists the plaintext -- the same class as the nonliteral-frame deferral.
+ * (e) An OBJECT-spelled parameter source (`Fn::Join` / `Fn::Sub` in the
+ * parent's own `Parameters` block) is out of this arm's reach -- (i) cannot
+ * hold for one. #2745 scopes this site to the literal spelling; the object
+ * spelling is issue #3062. (f) A child record persisted BEFORE this carry
+ * keeps `port:q7` until the child is next redeployed: the parent's own row
+ * already held the frame (the literal arm), so a parent deploy whose child
+ * row is unchanged never re-runs the child, and `cdkd scrub` cannot repair
+ * it either -- it walks the child's stored bag with no inherited bag.
  */
 export function recordNestedStackParameterExpressions(
   secrets: RecordedSecretValues,
@@ -1437,8 +1597,14 @@ export function recordNestedStackParameterExpressions(
   const sourceParameters = sourceProperties['Parameters'];
   if (!isPlainObject(resolvedParameters) || !isPlainObject(sourceParameters)) return;
 
+  // A MARKED shallow copy (issue #2745, the nested-stack site): the copy is
+  // this pass's own, so `positionByEmbeddedSpan` may write a sub-floor middle
+  // as the token this pass resolved it from. The seventh site on
+  // {@link markSameGenerationBag}'s list, which states the claim and why it
+  // holds at every caller of this function. The caller's object is never
+  // marked here -- what the record holds is the caller's business.
   const positioned = redactSecretsForState(
-    resolvedParameters,
+    markSameGenerationBag({ ...resolvedParameters }),
     secrets,
     sourceParameters,
     rules
@@ -1454,13 +1620,15 @@ export function recordNestedStackParameterExpressions(
     // naming this test as the second broken half of the list-typed collapse,
     // beside the diff side. Measured against `NestedStackProvider` while fixing
     // that issue: `extractParameters` (`src/provisioning/providers/nested-stack-provider.ts`)
-    // REFUSES a non-scalar parent-side parameter value outright -- "Parameters
-    // must be scalars (string / number / boolean)" -- and it runs immediately
-    // after this recorder, so an array `resolvedValue` here can never reach a
-    // child engine at all. The parent therefore always hands the child a
-    // STRING, and the ARRAY the issue is about is produced INSIDE the child by
-    // its own `Type` coercion. That is why #2327 changed the two READ sides and
-    // left this WRITE side exactly as it was.
+    // casts a scalar parent-side parameter value to a string, JOINS an array
+    // back into the comma-delimited string the wire carries (issue #2347;
+    // before it, arrays were refused with the rest), and REFUSES every other
+    // non-scalar -- and it runs immediately after this recorder, so what
+    // reaches a child engine is always a STRING. The ARRAY the issue is about
+    // is produced INSIDE the child by its own `Type` coercion. That is why
+    // #2327 changed the two READ sides and left this WRITE side exactly as it
+    // was. (An array `resolvedValue` on the PARENT side is what condition (v)
+    // of the sub-floor carry below walks leaf by leaf.)
     if (typeof resolvedValue !== 'string' || !secrets.has(resolvedValue)) continue;
     const expression = positioned[name];
     if (typeof expression !== 'string') continue;
@@ -1542,6 +1710,102 @@ export function recordNestedStackParameterExpressions(
     }
     storeAssociation(table, name, expression, resolvedValue);
   }
+
+  // THE SUB-FLOOR CARRY (issue #2745). See the doc above for the shape, the
+  // five conditions and what stays open. Collected first and written AFTER
+  // the walk, so no iteration reads the recorder's own write.
+  //
+  // (iv) needs the FRAME of every spelling of every value, not only the
+  // certified ones: a leaf (iii) refused, an object-spelled one and a plain
+  // literal all share the value the entry would be keyed by, and the parent's
+  // record of such a leaf answers against the entry. So the frames are
+  // gathered over the whole row first, keyed by prefix + suffix; a spelling
+  // that is not a single-span literal frame of the value, or whose token this
+  // pass did NOT resolve to the middle (a PUBLIC sibling in the same frame,
+  // kept resolved on the record), is its own key.
+  const framesByValue = new Map<string, Set<string | typeof UNFRAMED_SPELLING>>();
+  for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
+    if (typeof resolvedValue !== 'string') continue;
+    const sourceLeaf = sourceParameters[name];
+    const frame =
+      typeof sourceLeaf === 'string' ? singleSpanFrame(resolvedValue, sourceLeaf) : undefined;
+    const frames = framesByValue.get(resolvedValue) ?? new Set<string | typeof UNFRAMED_SPELLING>();
+    frames.add(
+      frame === undefined || resolvedPlaintextOf(secrets, frame.token) !== frame.middle
+        ? UNFRAMED_SPELLING
+        : `${frame.prefix.length}:${frame.prefix}${frame.suffix}`
+    );
+    framesByValue.set(resolvedValue, frames);
+  }
+  // (v) reads the string leaves of the ROW outside `Parameters` as well: the
+  // bag is per resource, so the entry is a needle for `TemplateURL` too, and
+  // a leaf there EQUAL to the value has no frame to answer with.
+  const rowWithoutParameters: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(resolvedProperties)) {
+    if (key !== 'Parameters') rowWithoutParameters[key] = value;
+  }
+  const outsideLeaves = wholeStringLeavesOf(rowWithoutParameters);
+  const framed = new Map<string, string>();
+  for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
+    const sourceLeaf = sourceParameters[name];
+    if (typeof resolvedValue !== 'string' || typeof sourceLeaf !== 'string') continue;
+    // (i) the position pass CERTIFIED this leaf. On a literal source the span
+    // arm returns the source verbatim, so a mismatch proves it did not fire.
+    if (positioned[name] !== sourceLeaf) continue;
+    // (ii) the value scan is SILENT on the value: the sub-floor gate. A middle
+    // at or above the floor is refused here -- the child's substring carry
+    // already has it.
+    if (redactSecretsForState(resolvedValue, secrets) !== resolvedValue) continue;
+    // (iii) the token IS the map's survivor for the middle -- the collapse
+    // hazard the doc above spells out. `singleSpanFrame` also refuses a
+    // middle that is itself a token, which is what refusal 3's
+    // self-referential shape has here (a bag equal to its source).
+    const frame = singleSpanFrame(resolvedValue, sourceLeaf);
+    if (frame === undefined || secrets.get(frame.middle) !== frame.token) continue;
+    // (iv) ONE frame per value across the row. `port:` + `q7` beside `port` +
+    // `:q7`, an object spelling or a plain literal would each fail the span
+    // arm's bound against this entry on the parent's record and take its
+    // frame; the same frame around another token (the (iii) shape) passes
+    // that bound and keeps its own token. So the value is recorded only when
+    // every spelling of it in the row is this one frame.
+    if (framesByValue.get(resolvedValue)?.size !== 1) continue;
+    // (v) no OTHER string leaf of the row would be rewritten by the entry.
+    // Two arms read it: the WHOLE-VALUE arm, floorless, so a leaf EQUAL to the
+    // value outside `Parameters` (a `TemplateURL`) or inside a LIST-valued
+    // parameter refuses at any length (between string parameters equality is
+    // (iv)'s frame identity); and the SUBSTRING arm, which only a value at or
+    // above `MIN_NEEDLE_LENGTH` reaches, so a sibling merely CONTAINING it --
+    // `x-port` + `:q7` from another token, a plain literal -- refuses only
+    // then, and a 3-character `pq7` is carried beside such a sibling.
+    const isNeedle = resolvedValue.length >= MIN_NEEDLE_LENGTH;
+    const rewrites = (leaf: string): boolean =>
+      leaf === resolvedValue || (isNeedle && leaf.includes(resolvedValue));
+    let embedded = false;
+    for (const leaf of outsideLeaves) {
+      if (rewrites(leaf)) {
+        embedded = true;
+        break;
+      }
+    }
+    for (const other of Object.values(resolvedParameters)) {
+      if (embedded) break;
+      if (typeof other === 'string') {
+        if (other !== resolvedValue && rewrites(other)) embedded = true;
+        continue;
+      }
+      // A LIST-valued parameter (`extractParameters` joins it back for the
+      // wire) has no frame at all, so every leaf of it counts.
+      for (const leaf of wholeStringLeavesOf(other)) {
+        if (rewrites(leaf)) {
+          embedded = true;
+          break;
+        }
+      }
+    }
+    if (embedded) continue;
+    framed.set(resolvedValue, sourceLeaf);
+  }
+  for (const [plaintext, expression] of framed) secrets.set(plaintext, expression);
 }
 
 /**
@@ -2843,10 +3107,14 @@ function positionByCrossStackSource(
  * template text, which genuinely can be a PUBLIC ssm reference that must stay
  * resolved in state (issue #1901), so it has to be tested. Here the candidates
  * come only from {@link recordedSecretExpressions} and from the values of a
- * {@link RecordedSecretValues} map, both of which the resolver populates ONLY
- * on a proven-secret verdict — so the test could never answer `false`, and an
- * unfalsifiable guard reads as protection while fencing nothing. Widening
- * either candidate source is what would make it necessary again.
+ * {@link RecordedSecretValues} map, which the resolver populates ONLY on a
+ * proven-secret verdict — and, since issue #2745, the nested-stack recorder's
+ * framed carry entries ({@link recordedExpressionsOf}), which are not
+ * references but ARE map values, so the same membership test reads them as
+ * secret too. So the test could never answer `false`, and an
+ * unfalsifiable guard reads as protection while fencing nothing. Widening the
+ * candidate sources to a reference that can be public is what would make it
+ * necessary again.
  */
 function positionByIntrinsicSkeleton(
   bag: string,
@@ -5641,8 +5909,10 @@ export function redactSecretsForState<T>(
     // measured and the merge that ends them is argued.
     // The generation mark is read for the OBJECT this call was handed and
     // threaded down the walk unchanged: a sub-bag walked on its own (a
-    // nested-stack `Parameters` block, a caller's slice) is a different
-    // object and answers `false`, which is the safe direction.
+    // caller's slice) is a different object and answers `false`, which is the
+    // safe direction -- unless its caller marked it, as
+    // `recordNestedStackParameterExpressions` marks the COPY of a nested-stack
+    // `Parameters` block it hands in (issue #2745).
     const positioned = redactByPath(
       bag,
       source,

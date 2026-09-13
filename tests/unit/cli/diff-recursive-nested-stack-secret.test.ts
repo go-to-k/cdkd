@@ -153,6 +153,85 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
     });
   }
 
+  /**
+   * The sub-floor LITERAL frame (issue #2745): the parent hands
+   * `Pin: 'port:{{resolve:...:pin::}}'` down, the child's leaf is `{Ref: Pin}`.
+   * `resolveChildStackParameters` leaves the token in place, so the desired
+   * side of the child diff binds `Pin` to the FRAMED string — which only
+   * matches a child record that persisted the framed form. Two cases, the
+   * second a MEASUREMENT rather than a reasoning: with the pre-#2745 record
+   * (`port:q7` in the clear) the recursive diff reported a change on every
+   * run, which is what makes the integ fixture's exit-code phase non-vacuous
+   * for this arm.
+   */
+  const PIN_PARAM = 'referencetoParentPin';
+  const PIN_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:pin::}}';
+  const FRAMED_EXPR = `port:${PIN_EXPR}`;
+
+  function writePinChildTemplate(): string {
+    const childPath = join(dir, 'child-pin.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Parameters: { [PIN_PARAM]: { Type: 'String' } },
+        Resources: {
+          PinRes: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Type: 'String', Value: { Ref: PIN_PARAM } },
+          },
+        },
+      })
+    );
+    return childPath;
+  }
+
+  async function diffPin(childValue: string) {
+    const states: Record<string, StackState> = {
+      Parent: st('Parent', {
+        Child: res(NESTED, { Parameters: { [PIN_PARAM]: FRAMED_EXPR } }),
+      }),
+      'Parent~Child': st('Parent~Child', {
+        PinRes: res('AWS::SSM::Parameter', { Type: 'String', Value: childValue }),
+      }),
+    };
+    return await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Child: {
+            Type: NESTED,
+            Metadata: { 'aws:asset:path': 'child-pin.json' },
+            Properties: { Parameters: { [PIN_PARAM]: FRAMED_EXPR } },
+          },
+        },
+      },
+      nestedTemplates: { Child: writePinChildTemplate() },
+      recursive: true,
+      stateBackend: fakeBackend(states),
+      diffCalculator: new DiffCalculator(),
+    });
+  }
+
+  it('reports NO_CHANGE when the child persisted a sub-floor LITERAL frame as its framed expression (#2745)', async () => {
+    const root = await diffPin(FRAMED_EXPR);
+
+    expect(root.changes.get('Child')!.changeType).toBe('NO_CHANGE');
+    const child = root.children[0]!;
+    expect(child.changes.get('PinRes')!.changeType).toBe('NO_CHANGE');
+    expect(treeHasChanges(root)).toBe(false);
+    expect(secretSend).not.toHaveBeenCalled();
+  });
+
+  it('reports a CHANGE while the child still persists the framed PLAINTEXT — the pre-#2745 record, measured', async () => {
+    const root = await diffPin('port:q7');
+
+    const child = root.children[0]!;
+    expect(child.changes.get('PinRes')!.changeType).toBe('UPDATE');
+    expect(treeHasChanges(root)).toBe(true);
+  });
+
   it('reports NO_CHANGE on a freshly-deployed tree and never fetches the secret', async () => {
     const root = await diff(freshStates());
 

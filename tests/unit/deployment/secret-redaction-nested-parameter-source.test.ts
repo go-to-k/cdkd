@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach } from 'vite-plus/test';
 import {
   clearRecordedSecretExpressions,
   crossStackSourceKey,
+  isRecordedSecretExpression,
+  isSameGenerationBag,
+  markSameGenerationBag,
+  MIN_NEEDLE_LENGTH,
   recordCrossStackExpression,
+  recordResolvedPair,
   redactSecretsForState,
   STATE_DERIVED_RULES,
   recordNestedStackParameterExpressions,
@@ -570,5 +575,578 @@ describe('inheritedParameterExpression — the DIFF side (#2291)', () => {
     // A pass that recorded nothing — `cdkd state refresh-observed`, whose bag is
     // empty by construction — finds no table at all.
     expect(inheritedParameterExpression(new Map(), PARAM_A, SHARED)).toBeUndefined();
+  });
+});
+
+/**
+ * THE SUB-FLOOR CARRY (issue [#2745](https://github.com/go-to-k/cdkd/issues/2745),
+ * its nested-stack site). A parent `Parameters` entry spelled as a LITERAL
+ * frame around one token (`Pin: 'port:{{resolve:...:pin::}}'`) resolves to
+ * `port:q7`. That value is not a key of the parent's map, and its middle sits
+ * below `MIN_NEEDLE_LENGTH`, so the child's carry missed it both ways and the
+ * child persisted `port:q7`. The recorder now positions a MARKED copy of the
+ * resolved parameters and records `'port:q7' -> 'port:{{resolve:...}}'` as a
+ * whole-value entry of the parent's own bag; every consumer then reads it
+ * through the floorless whole-value arms that already exist.
+ *
+ * EVERY case drives the real recorder against a real parent source; the
+ * positive cases then read the result back through the real child-side walk.
+ * The child's bag is built by `childBagFor`, a MIRROR of
+ * `inheritedSecretsCarriedBy`'s two arms (whole value at any length, substring
+ * at or above the floor) over the leaves the child resolves, plus the
+ * inherited associations — so it holds the framed entry and NOT the bare
+ * middle, exactly as `recordInheritedParameterSecrets` leaves it for a
+ * `{Ref: <Param>}` leaf. Mirrored, not fenced: the real carry is driven by
+ * `intrinsic-resolver-inherited-parameter-secrets.test.ts`.
+ */
+describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)', () => {
+  const PIN = 'q7';
+  const PIN_TOKEN_A = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin::}}`;
+  const PIN_TOKEN_B = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:AWSCURRENT:}}`;
+  const frame = (token: string): string => `port:${token}`;
+  const NESTED = 'AWS::CloudFormation::Stack';
+
+  /**
+   * The parent's map after the given references resolved, IN ORDER: the map
+   * is keyed by plaintext so the last one wins the slot, while the pair table
+   * beside it keeps every `token -> plaintext` — the shape the resolver's
+   * `secrets.set` + `recordResolvedPair` pair produces.
+   */
+  function parentResolved(
+    ...pairs: ReadonlyArray<readonly [token: string, plaintext: string]>
+  ): RecordedSecretValues {
+    const secrets: RecordedSecretValues = new Map();
+    for (const [token, plaintext] of pairs) {
+      secrets.set(plaintext, token);
+      recordResolvedPair(secrets, token, plaintext);
+    }
+    return secrets;
+  }
+
+  /** The carry's two arms, mirrored, over the string leaves the child resolved. */
+  function childBagFor(parent: RecordedSecretValues, leaves: Record<string, unknown>): RecordedSecretValues {
+    const child: RecordedSecretValues = new Map();
+    for (const value of Object.values(leaves)) {
+      if (typeof value !== 'string') continue;
+      for (const [plaintext, expression] of parent) {
+        if (value === plaintext || (plaintext.length >= MIN_NEEDLE_LENGTH && value.includes(plaintext))) {
+          child.set(plaintext, expression);
+        }
+      }
+    }
+    inheritNestedStackParameterAssociations(child, parent);
+    return child;
+  }
+
+  function childPersist(
+    parent: RecordedSecretValues,
+    leaves: Record<string, unknown>,
+    source: Record<string, unknown>
+  ): Record<string, unknown> {
+    return redactSecretsForState(leaves, childBagFor(parent, leaves), source) as Record<string, unknown>;
+  }
+
+  beforeEach(() => clearRecordedSecretExpressions());
+
+  it('records the framed value as a WHOLE-VALUE entry of the parent bag, which the child carries and persists floorless', () => {
+    const parent = parentResolved([PIN_TOKEN_A, PIN]);
+    // Premises, asserted rather than assumed: the middle is below the floor
+    // and the value scan is silent on the framed value — the exact reason the
+    // pre-fix child persisted it.
+    expect(PIN.length).toBeLessThan(MIN_NEEDLE_LENGTH);
+    expect(redactSecretsForState(frame(PIN), parent)).toBe(frame(PIN));
+
+    const resolved = { Parameters: { Pin: frame(PIN), Plain: 'hello' } };
+    recordNestedStackParameterExpressions(parent, NESTED, resolved, {
+      Parameters: { Pin: frame(PIN_TOKEN_A), Plain: 'hello' },
+    });
+
+    expect(parent.get(frame(PIN))).toBe(frame(PIN_TOKEN_A));
+    expect(parent.size).toBe(2);
+    // The value is not a token, and the recorder says so by recording no pin
+    // for it: the entry lives in the map alone. (A PAIR for it would be inert
+    // -- nothing reads the pair table by a non-token expression -- and the
+    // table has no reader this file can reach, so "no pair" is stated on the
+    // docstring rather than pinned here.)
+    expect(isRecordedSecretExpression(frame(PIN_TOKEN_A))).toBe(false);
+    // The COPY is what carries the mark; the caller's own objects never do
+    // (whether they get marked is decided at the caller).
+    expect(isSameGenerationBag(resolved)).toBe(false);
+    expect(isSameGenerationBag(resolved.Parameters)).toBe(false);
+
+    // The child: whole-value carry, whole-value persist, no floor in either.
+    const persisted = childPersist(
+      parent,
+      { Value: frame(PIN), Desc: 'hello' },
+      { Value: { Ref: 'Pin' }, Desc: { Ref: 'Plain' } }
+    );
+    expect(persisted['Value']).toBe(frame(PIN_TOKEN_A));
+    expect(persisted['Desc']).toBe('hello');
+    // ...and the framed value is now a 7-character SUBSTRING needle in the
+    // child bag, so an embedding child leaf is spliced (residual (b), the
+    // #2087 direction, bounded to bags that consumed the parameter).
+    const embedding = childPersist(
+      parent,
+      { Dsn: `x-${frame(PIN)}-y` },
+      { Dsn: { 'Fn::Sub': 'x-${Pin}-y' } }
+    );
+    expect(embedding['Dsn']).toBe(`x-${frame(PIN_TOKEN_A)}-y`);
+  });
+
+  // The INVARIANT across the whole sub-floor range, and the control at the
+  // floor: there the child's substring arm already carries the value, so the
+  // recorder must write NO extra entry — a version that recorded every framed
+  // parameter would double every map (`port:abcd` beside `abcd`) for no reader.
+  // Both the range AND the boundary are spelled out rather than derived from
+  // the floor: a floor lowered to 3 reds the three-character case, a floor
+  // raised to 5 reds the four-character control, where a derived control
+  // would simply move with it (the intrinsic-frame file pins its range the
+  // same way). The premise line is what names the floor this pins.
+  for (const middle of ['z', 'zz', 'zzz', 'zzzz'] as const) {
+    const below = middle.length <= 3;
+    it(`for a ${middle.length}-character middle: ${below ? 'entry written' : 'NO entry, the substring arm carries it'}`, () => {
+      expect(middle.length < MIN_NEEDLE_LENGTH).toBe(below);
+      const parent = parentResolved([PIN_TOKEN_A, middle]);
+      recordNestedStackParameterExpressions(
+        parent,
+        NESTED,
+        { Parameters: { Pin: frame(middle) } },
+        { Parameters: { Pin: frame(PIN_TOKEN_A) } }
+      );
+      expect(parent.has(frame(middle))).toBe(below);
+      expect(parent.size).toBe(below ? 2 : 1);
+      // Either way the child persists the frame — which is what makes the
+      // at-floor control a control rather than a gap.
+      const persisted = childPersist(parent, { Value: frame(middle) }, { Value: { Ref: 'Pin' } });
+      expect(persisted['Value']).toBe(frame(PIN_TOKEN_A));
+    });
+  }
+
+  it("records ONLY the frame whose token is the map's SURVIVOR when two framed parameters share one middle, so the parent record stays per leaf", () => {
+    // `PIN_TOKEN_B` resolved last, so it holds the `q7` slot. The SOURCE order
+    // is the reverse on purpose: a recorder that skipped condition (iii) would
+    // write the LAST framed parameter's frame (`PIN_TOKEN_A`'s), the parent's
+    // `Pin1` leaf would then fail the span arm's bound against the map's
+    // survivor and persist `PIN_TOKEN_A`'s frame — the wrong reference.
+    const parent = parentResolved([PIN_TOKEN_A, PIN], [PIN_TOKEN_B, PIN]);
+    expect(parent.get(PIN)).toBe(PIN_TOKEN_B);
+    const resolved = { Parameters: { Pin1: frame(PIN), Pin2: frame(PIN) } };
+    const source = { Parameters: { Pin1: frame(PIN_TOKEN_B), Pin2: frame(PIN_TOKEN_A) } };
+
+    recordNestedStackParameterExpressions(parent, NESTED, resolved, source);
+
+    expect(parent.get(frame(PIN))).toBe(frame(PIN_TOKEN_B));
+    expect([...parent.values()]).not.toContain(frame(PIN_TOKEN_A));
+
+    // The PARENT's own record of the row, positioned the way `propertiesToRecord`
+    // positions it (a marked bag): each leaf keeps ITS OWN token.
+    const parentRecord = redactSecretsForState(
+      markSameGenerationBag(structuredClone(resolved)),
+      parent,
+      source
+    ) as { Parameters: Record<string, unknown> };
+    expect(parentRecord.Parameters['Pin1']).toBe(frame(PIN_TOKEN_B));
+    expect(parentRecord.Parameters['Pin2']).toBe(frame(PIN_TOKEN_A));
+
+    // RESIDUAL (a), pinned as the stated answer rather than left implicit: the
+    // CHILD receives one entry per middle, so with MATCHING frames both of its
+    // leaves take the survivor's frame — the pre-#2291 answer for this shape.
+    const persisted = childPersist(
+      parent,
+      { Value: frame(PIN), Description: frame(PIN) },
+      { Value: { Ref: 'Pin1' }, Description: { Ref: 'Pin2' } }
+    );
+    expect(persisted['Value']).toBe(frame(PIN_TOKEN_B));
+    expect(persisted['Description']).toBe(frame(PIN_TOKEN_B));
+  });
+
+  it("with DIFFERENT frames over one middle, records the survivor's frame only, and the loser's child leaf stays PLAINTEXT (residual (a), the other half)", () => {
+    const parent = parentResolved([PIN_TOKEN_A, PIN], [PIN_TOKEN_B, PIN]);
+    const resolved = { Parameters: { Pin1: `port:${PIN}`, Pin2: `url:${PIN}` } };
+    const source = { Parameters: { Pin1: `port:${PIN_TOKEN_A}`, Pin2: `url:${PIN_TOKEN_B}` } };
+
+    recordNestedStackParameterExpressions(parent, NESTED, resolved, source);
+
+    expect(parent.get(`url:${PIN}`)).toBe(`url:${PIN_TOKEN_B}`);
+    expect(parent.has(`port:${PIN}`)).toBe(false);
+    // The parent's own record: still per leaf (the span arm on a marked bag).
+    const parentRecord = redactSecretsForState(
+      markSameGenerationBag(structuredClone(resolved)),
+      parent,
+      source
+    ) as { Parameters: Record<string, unknown> };
+    expect(parentRecord.Parameters['Pin1']).toBe(`port:${PIN_TOKEN_A}`);
+    expect(parentRecord.Parameters['Pin2']).toBe(`url:${PIN_TOKEN_B}`);
+    // The child: no entry names `port:q7`, so the loser's leaf keeps the
+    // plaintext -- stated on the recorder's docstring, not closed.
+    const persisted = childPersist(
+      parent,
+      { Value: `port:${PIN}`, Description: `url:${PIN}` },
+      { Value: { Ref: 'Pin1' }, Description: { Ref: 'Pin2' } }
+    );
+    expect(persisted['Value']).toBe(`port:${PIN}`);
+    expect(persisted['Description']).toBe(`url:${PIN_TOKEN_B}`);
+  });
+
+  it('refuses a value the row spells through a DIFFERENT frame or CONTAINS elsewhere, so the parent record keeps each leaf its own token (conditions (iv) and (v))', () => {
+    // `port:` + `q7` and `port` + `:q7` are both `port:q7`. Each passes
+    // (i)-(iii) on its own; a recorder without (iv) writes whichever came
+    // last, and the parent's other leaf then fails the span arm's bound
+    // against that entry and persists the sibling's frame.
+    const COLON_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:colonpin::}}`;
+    const parent = parentResolved([PIN_TOKEN_A, PIN], [COLON_TOKEN, `:${PIN}`]);
+    const resolved = { Parameters: { Pin1: `port:${PIN}`, Pin2: `port:${PIN}` } };
+    const source = { Parameters: { Pin1: `port:${PIN_TOKEN_A}`, Pin2: `port${COLON_TOKEN}` } };
+
+    recordNestedStackParameterExpressions(parent, NESTED, resolved, source);
+
+    expect(parent.has(`port:${PIN}`)).toBe(false);
+    expect(parent.size).toBe(2);
+    const parentRecord = redactSecretsForState(
+      markSameGenerationBag(structuredClone(resolved)),
+      parent,
+      source
+    ) as { Parameters: Record<string, unknown> };
+    expect(parentRecord.Parameters['Pin1']).toBe(`port:${PIN_TOKEN_A}`);
+    expect(parentRecord.Parameters['Pin2']).toBe(`port${COLON_TOKEN}`);
+
+    // The spelling (iii) REFUSED still counts: with a third token C winning
+    // the `q7` slot, `port:` + A is refused by (iii) and would not reach a
+    // conflict check placed after it -- yet the entry `port` + B would write
+    // answers for A's leaf on the parent's record all the same.
+    const C_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin:AWSPREVIOUS:}}`;
+    const three = parentResolved([PIN_TOKEN_A, PIN], [COLON_TOKEN, `:${PIN}`], [C_TOKEN, PIN]);
+    const threeResolved = { Parameters: { Pin1: `port:${PIN}`, Pin2: `port:${PIN}`, Pin3: PIN } };
+    const threeSource = {
+      Parameters: { Pin1: `port:${PIN_TOKEN_A}`, Pin2: `port${COLON_TOKEN}`, Pin3: C_TOKEN },
+    };
+    recordNestedStackParameterExpressions(three, NESTED, threeResolved, threeSource);
+    expect(three.has(`port:${PIN}`)).toBe(false);
+    const threeRecord = redactSecretsForState(
+      markSameGenerationBag(structuredClone(threeResolved)),
+      three,
+      threeSource
+    ) as { Parameters: Record<string, unknown> };
+    expect(threeRecord.Parameters['Pin1']).toBe(`port:${PIN_TOKEN_A}`);
+    expect(threeRecord.Parameters['Pin2']).toBe(`port${COLON_TOKEN}`);
+    expect(threeRecord.Parameters['Pin3']).toBe(C_TOKEN);
+
+    // An OBJECT spelling of the same value blocks the entry too, and so does a
+    // PLAIN LITERAL equal to it: neither is a single-span literal frame, and
+    // the entry would turn the plain literal's own record into an expression
+    // it never referenced.
+    for (const sibling of [{ 'Fn::Sub': `port:${PIN_TOKEN_A}` }, `port:${PIN}`]) {
+      const mixed = parentResolved([PIN_TOKEN_A, PIN]);
+      recordNestedStackParameterExpressions(
+        mixed,
+        NESTED,
+        { Parameters: { Pin1: `port:${PIN}`, Pin2: `port:${PIN}` } },
+        { Parameters: { Pin1: `port:${PIN_TOKEN_A}`, Pin2: sibling } }
+      );
+      expect(mixed.has(`port:${PIN}`)).toBe(false);
+    }
+
+    // A sibling leaf that merely CONTAINS the value blocks it too (condition
+    // (v)): the entry would be a substring needle in this row's bag, so `Two`
+    // -- `x-port` + `:q7` from a third token -- would be spliced with `One`'s
+    // frame on the parent's record, and a plain literal likewise. Read over
+    // the whole row, `TemplateURL` included.
+    for (const two of [{ value: `x-port:${PIN}`, source: `x-port${COLON_TOKEN}` }, { value: `literal-port:${PIN}-end`, source: `literal-port:${PIN}-end` }]) {
+      const row = parentResolved([PIN_TOKEN_A, PIN], [COLON_TOKEN, `:${PIN}`]);
+      const rowResolved = { Parameters: { One: `port:${PIN}`, Two: two.value } };
+      const rowSource = { Parameters: { One: `port:${PIN_TOKEN_A}`, Two: two.source } };
+      recordNestedStackParameterExpressions(row, NESTED, rowResolved, rowSource);
+      expect(row.has(`port:${PIN}`)).toBe(false);
+      const rowRecord = redactSecretsForState(
+        markSameGenerationBag(structuredClone(rowResolved)),
+        row,
+        rowSource
+      ) as { Parameters: Record<string, unknown> };
+      expect(rowRecord.Parameters['One']).toBe(`port:${PIN_TOKEN_A}`);
+      expect(rowRecord.Parameters['Two']).toBe(two.source);
+    }
+    const url = parentResolved([PIN_TOKEN_A, PIN]);
+    recordNestedStackParameterExpressions(
+      url,
+      NESTED,
+      { Parameters: { One: `port:${PIN}` }, TemplateURL: `https://bucket/port:${PIN}/child.json` },
+      { Parameters: { One: `port:${PIN_TOKEN_A}` }, TemplateURL: `https://bucket/port:${PIN}/child.json` }
+    );
+    expect(url.has(`port:${PIN}`)).toBe(false);
+    // The frame's IDENTITY is prefix AND suffix, each on its own side: two
+    // spellings whose prefix + suffix concatenate to the same text (`a` + X +
+    // `bb` beside `ab` + Y + `b`, both `abqbb` over the sub-floor middles `bq`
+    // and `qb`) are different frames, and so are two sharing a prefix (`p` +
+    // X + `x` beside `p` + Y, both `pq7x` over `q7` and `q7x`). A key that
+    // dropped the length split, or the suffix, would merge each pair into one
+    // frame and record an entry the other leaf then answers against.
+    const BQ_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:bq::}}`;
+    const QB_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:qb::}}`;
+    const Q7X_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:q7x::}}`;
+    for (const shape of [
+      { value: 'abqbb', pairs: [[BQ_TOKEN, 'bq'], [QB_TOKEN, 'qb']] as const, sources: [`a${BQ_TOKEN}bb`, `ab${QB_TOKEN}b`] },
+      { value: `p${PIN}x`, pairs: [[PIN_TOKEN_A, PIN], [Q7X_TOKEN, `${PIN}x`]] as const, sources: [`p${PIN_TOKEN_A}x`, `p${Q7X_TOKEN}`] },
+    ]) {
+      const bag = parentResolved(...shape.pairs);
+      const shapeResolved = { Parameters: { Pin1: shape.value, Pin2: shape.value } };
+      const shapeSource = { Parameters: { Pin1: shape.sources[0], Pin2: shape.sources[1] } };
+      recordNestedStackParameterExpressions(bag, NESTED, shapeResolved, shapeSource);
+      expect(bag.has(shape.value)).toBe(false);
+      const shapeRecord = redactSecretsForState(
+        markSameGenerationBag(structuredClone(shapeResolved)),
+        bag,
+        shapeSource
+      ) as { Parameters: Record<string, unknown> };
+      expect(shapeRecord.Parameters['Pin1']).toBe(shape.sources[0]);
+      expect(shapeRecord.Parameters['Pin2']).toBe(shape.sources[1]);
+    }
+
+    // A same-frame sibling WITHOUT this pass's pair blocks it too: a PUBLIC
+    // `ssm` reference in the same `port:` frame resolving to the same value
+    // (a String parameter holding `q7`) is kept resolved on the parent's
+    // record, and the entry would rewrite it to the SECRET sibling's
+    // expression. (iv)'s frame identity therefore requires pair evidence.
+    const PUBLIC_TOKEN = '{{resolve:ssm:public-pin}}';
+    const withPublic = parentResolved([PIN_TOKEN_A, PIN]);
+    const publicResolved = { Parameters: { One: `port:${PIN}`, Pub: `port:${PIN}` } };
+    const publicSource = { Parameters: { One: `port:${PIN_TOKEN_A}`, Pub: `port:${PUBLIC_TOKEN}` } };
+    recordNestedStackParameterExpressions(withPublic, NESTED, publicResolved, publicSource);
+    expect(withPublic.has(`port:${PIN}`)).toBe(false);
+    const publicRecord = redactSecretsForState(
+      markSameGenerationBag(structuredClone(publicResolved)),
+      withPublic,
+      publicSource
+    ) as { Parameters: Record<string, unknown> };
+    expect(publicRecord.Parameters['One']).toBe(`port:${PIN_TOKEN_A}`);
+    expect(publicRecord.Parameters['Pub']).toBe(`port:${PIN}`);
+
+    // A LIST-valued sibling parameter (an array by the time this runs, which
+    // `extractParameters` joins back for the wire) has no frame either, so its
+    // leaves count equal or containing.
+    for (const list of [[`literal-port:${PIN}-end`], [`port:${PIN}`]]) {
+      const withList = parentResolved([PIN_TOKEN_A, PIN]);
+      recordNestedStackParameterExpressions(
+        withList,
+        NESTED,
+        { Parameters: { One: `port:${PIN}`, Public: list } },
+        { Parameters: { One: `port:${PIN_TOKEN_A}`, Public: list } }
+      );
+      expect(withList.has(`port:${PIN}`)).toBe(false);
+    }
+    // ...and outside `Parameters` EQUALITY counts too: a `TemplateURL` equal to
+    // the value has no frame of its own, escapes (iv), and the entry would
+    // rewrite it whole to the parameter's expression.
+    const equalUrl = parentResolved([PIN_TOKEN_A, PIN]);
+    const urlValue = `https://bucket/${PIN}.json`;
+    const urlResolved = { Parameters: { Tpl: urlValue }, TemplateURL: urlValue };
+    const urlSource = { Parameters: { Tpl: `https://bucket/${PIN_TOKEN_A}.json` }, TemplateURL: urlValue };
+    recordNestedStackParameterExpressions(equalUrl, NESTED, urlResolved, urlSource);
+    expect(equalUrl.has(urlValue)).toBe(false);
+    const urlRecord = redactSecretsForState(
+      markSameGenerationBag(structuredClone(urlResolved)),
+      equalUrl,
+      urlSource
+    ) as { Parameters: Record<string, unknown>; TemplateURL: unknown };
+    expect(urlRecord.Parameters['Tpl']).toBe(`https://bucket/${PIN_TOKEN_A}.json`);
+    expect(urlRecord.TemplateURL).toBe(urlValue);
+
+    // The SAME frame twice is one spelling, not a conflict.
+    const twice = parentResolved([PIN_TOKEN_A, PIN]);
+    recordNestedStackParameterExpressions(
+      twice,
+      NESTED,
+      { Parameters: { Pin1: `port:${PIN}`, Pin2: `port:${PIN}` } },
+      { Parameters: { Pin1: `port:${PIN_TOKEN_A}`, Pin2: `port:${PIN_TOKEN_A}` } }
+    );
+    expect(twice.get(`port:${PIN}`)).toBe(`port:${PIN_TOKEN_A}`);
+  });
+
+  it('is read by the child through the WHOLE-VALUE arm alone, shown on a framed value shorter than the floor in total', () => {
+    // `port:q7` is 7 characters, so the child's SUBSTRING arm would carry it
+    // too and the positive cases cannot tell the two arms apart. A frame whose
+    // WHOLE length is below the floor (`p` + `q7`) leaves only the whole-value
+    // arm, which is the one the carry rests on.
+    const tiny = `p${PIN}`;
+    expect(tiny.length).toBeLessThan(MIN_NEEDLE_LENGTH);
+    const parent = parentResolved([PIN_TOKEN_A, PIN]);
+    recordNestedStackParameterExpressions(
+      parent,
+      NESTED,
+      { Parameters: { Pin: tiny } },
+      { Parameters: { Pin: `p${PIN_TOKEN_A}` } }
+    );
+    expect(parent.get(tiny)).toBe(`p${PIN_TOKEN_A}`);
+    const persisted = childPersist(parent, { Value: tiny }, { Value: { Ref: 'Pin' } });
+    expect(persisted['Value']).toBe(`p${PIN_TOKEN_A}`);
+    // ...and an EMBEDDING child leaf is left alone at this length: no
+    // substring needle exists for it.
+    const embedding = childPersist(parent, { Dsn: `x-${tiny}-y` }, { Dsn: { 'Fn::Sub': 'x-${Pin}-y' } });
+    expect(embedding['Dsn']).toBe(`x-${tiny}-y`);
+
+    // For the same reason (v) lets a sibling merely CONTAINING a tiny frame
+    // through -- nothing can splice it -- while a sibling EQUAL to it outside
+    // `Parameters` still refuses, the whole-value arm having no floor.
+    const beside = parentResolved([PIN_TOKEN_A, PIN]);
+    recordNestedStackParameterExpressions(
+      beside,
+      NESTED,
+      { Parameters: { Pin: tiny, Other: `x-${tiny}-y` }, TemplateURL: `https://bucket/${tiny}/child.json` },
+      { Parameters: { Pin: `p${PIN_TOKEN_A}`, Other: `x-${tiny}-y` }, TemplateURL: `https://bucket/${tiny}/child.json` }
+    );
+    expect(beside.get(tiny)).toBe(`p${PIN_TOKEN_A}`);
+    const equal = parentResolved([PIN_TOKEN_A, PIN]);
+    recordNestedStackParameterExpressions(
+      equal,
+      NESTED,
+      { Parameters: { Pin: tiny }, TemplateURL: tiny },
+      { Parameters: { Pin: `p${PIN_TOKEN_A}` }, TemplateURL: tiny }
+    );
+    expect(equal.has(tiny)).toBe(false);
+    // ...at any length inside a LIST-valued sibling as well (an array element
+    // equal to the value is rewritten whole), while an element merely
+    // containing a tiny frame is not: the same split, one container in.
+    for (const [list, carried] of [
+      [[tiny], false],
+      [[`x-${tiny}-y`], true],
+    ] as const) {
+      const withList = parentResolved([PIN_TOKEN_A, PIN]);
+      recordNestedStackParameterExpressions(
+        withList,
+        NESTED,
+        { Parameters: { Pin: tiny, Public: [...list] } },
+        { Parameters: { Pin: `p${PIN_TOKEN_A}`, Public: [...list] } }
+      );
+      expect(withList.get(tiny)).toBe(carried ? `p${PIN_TOKEN_A}` : undefined);
+    }
+    // ...and the walk outside `Parameters` is a deep one: a leaf nested under
+    // another property (`Tags[].Value`) equal to the value refuses too.
+    const nested = parentResolved([PIN_TOKEN_A, PIN]);
+    recordNestedStackParameterExpressions(
+      nested,
+      NESTED,
+      { Parameters: { Pin: tiny }, Tags: [{ Key: 'pin', Value: tiny }] },
+      { Parameters: { Pin: `p${PIN_TOKEN_A}` }, Tags: [{ Key: 'pin', Value: tiny }] }
+    );
+    expect(nested.has(tiny)).toBe(false);
+
+    // The BOUNDARY of that split, AT the floor: a 4-character framed value
+    // (`p` + a 3-character middle) IS a substring needle, so a containing
+    // sibling refuses it, while alone it is carried. A gate one character
+    // off in either direction reds one of the two halves.
+    const atFloor = `p${'z'.repeat(MIN_NEEDLE_LENGTH - 1)}`;
+    expect(atFloor.length).toBe(MIN_NEEDLE_LENGTH);
+    const contained = parentResolved([PIN_TOKEN_A, 'z'.repeat(MIN_NEEDLE_LENGTH - 1)]);
+    const containedResolved = { Parameters: { Pin: atFloor, Other: `x-${atFloor}-y` } };
+    const containedSource = { Parameters: { Pin: `p${PIN_TOKEN_A}`, Other: `x-${atFloor}-y` } };
+    recordNestedStackParameterExpressions(contained, NESTED, containedResolved, containedSource);
+    expect(contained.has(atFloor)).toBe(false);
+    const containedRecord = redactSecretsForState(
+      markSameGenerationBag(structuredClone(containedResolved)),
+      contained,
+      containedSource
+    ) as { Parameters: Record<string, unknown> };
+    expect(containedRecord.Parameters['Other']).toBe(`x-${atFloor}-y`);
+    const alone = parentResolved([PIN_TOKEN_A, 'z'.repeat(MIN_NEEDLE_LENGTH - 1)]);
+    recordNestedStackParameterExpressions(
+      alone,
+      NESTED,
+      { Parameters: { Pin: atFloor } },
+      { Parameters: { Pin: `p${PIN_TOKEN_A}` } }
+    );
+    expect(alone.get(atFloor)).toBe(`p${PIN_TOKEN_A}`);
+  });
+
+  it('records under STATE_DERIVED_RULES too, which is what the replay call sites pass', () => {
+    const parent = parentResolved([PIN_TOKEN_A, PIN]);
+    recordNestedStackParameterExpressions(
+      parent,
+      NESTED,
+      { Parameters: { Pin: frame(PIN) } },
+      { Parameters: { Pin: frame(PIN_TOKEN_A) } },
+      STATE_DERIVED_RULES
+    );
+    expect(parent.get(frame(PIN))).toBe(frame(PIN_TOKEN_A));
+  });
+
+  // These pin each SHAPE's outcome, not one condition: every shape below is
+  // refused by more than one of (i)-(v) (a two-span source fails (i) as well
+  // as (iii); a value the pair table does not vouch for fails (i) and (iii);
+  // a bag equal to its source fails (i)'s reading and (iii)'s token-middle
+  // refusal alike), so no single mutant reds one of them alone. The
+  // per-condition discriminators are the cases above.
+  describe('writes nothing for', () => {
+    const WORD_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:word::}}`;
+    const REFUSALS: ReadonlyArray<
+      readonly [
+        label: string,
+        resolved: unknown,
+        source: unknown,
+        extra?: ReadonlyArray<readonly [token: string, plaintext: string]>,
+      ]
+    > = [
+      [
+        "a whole-token source: the whole-value entry already exists and refusal 1's association covers it",
+        PIN,
+        PIN_TOKEN_A,
+      ],
+      [
+        'a source with TWO spans, where which span produced which value is ambiguous',
+        `port:${PIN}:${PIN}`,
+        `port:${PIN_TOKEN_A}:${PIN_TOKEN_B}`,
+        [[PIN_TOKEN_B, PIN]],
+      ],
+      [
+        "an OBJECT-spelled source (residual (e): out of this arm's reach, issue #3062)",
+        frame(PIN),
+        { 'Fn::Sub': frame(PIN_TOKEN_A) },
+      ],
+      ["a value that does not fit the source's frame", `PORT:${PIN}`, frame(PIN_TOKEN_A)],
+      [
+        'a value the pair table does not vouch for (the token resolved to something else)',
+        frame('zz'),
+        frame(PIN_TOKEN_A),
+      ],
+      [
+        "a bag equal to its source (refusal 3's self-referential shape: the middle is itself a token)",
+        frame(PIN_TOKEN_A),
+        frame(PIN_TOKEN_A),
+      ],
+      [
+        'a value another 4+ character needle already rewrites (the interference refusal)',
+        frame(PIN),
+        frame(PIN_TOKEN_A),
+        [[WORD_TOKEN, 'port']],
+      ],
+    ];
+    for (const [label, resolved, source, extra = []] of REFUSALS) {
+      it(label, () => {
+        const parent = parentResolved([PIN_TOKEN_A, PIN], ...extra);
+        const before = new Map(parent);
+        recordNestedStackParameterExpressions(
+          parent,
+          NESTED,
+          { Parameters: { Pin: resolved } },
+          { Parameters: { Pin: source } }
+        );
+        expect([...parent]).toEqual([...before]);
+      });
+    }
+
+    it('a map NO RESOLVER populated (the entry without its pair): the position pass refuses, so the carry must too', () => {
+      // Condition (i) alone. The map's survivor for `q7` IS the frame's token
+      // and the scan is silent, so (ii) and (iii) both pass -- what refuses
+      // is the span arm, which needs the pass-local pair
+      // (`recordResolvedPair`) before it will write a sub-floor middle, and
+      // the recorder must not out-certify the positioner it derives from. An
+      // inheritance copy or a `new Map` copy is exactly this shape.
+      const parent: RecordedSecretValues = new Map([[PIN, PIN_TOKEN_A]]);
+      recordNestedStackParameterExpressions(
+        parent,
+        NESTED,
+        { Parameters: { Pin: frame(PIN) } },
+        { Parameters: { Pin: frame(PIN_TOKEN_A) } }
+      );
+      expect([...parent]).toEqual([[PIN, PIN_TOKEN_A]]);
+    });
   });
 });

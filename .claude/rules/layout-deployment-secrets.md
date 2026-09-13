@@ -159,7 +159,7 @@ Index of every area: [code-layout.md](code-layout.md).
     embedded 1-3 character secret sits BELOW the scan's needle floor, where
     the scan makes no claim, so the arm writes it as its token ONLY on a bag
     whose generation the ENGINE proved (issue #2516): `markSameGenerationBag`
-    marks the object — a `WeakSet`, the shape of the pair side table — at six
+    marks the object — a `WeakSet`, the shape of the pair side table — at seven
     sites whose CONDITIONS differ per site; the function's own docstring is the
     authority and this is the index (`propertiesToRecord`, on the resolved bag
     or on the SUBSET of it the SDK route writes -- taken AFTER that narrowing,
@@ -176,12 +176,11 @@ Index of every area: [code-layout.md](code-layout.md).
     of the resolver's own output (the update arm's no-change re-check, marked
     BEFORE a provider call it may skip, or a stored token would read as a
     change on every deploy; a failed op's journaled `attemptedProperties`);
-    and `cdkd import`'s own resolution bag (#2745, per the docstring),
+    `cdkd import`'s resolution bag and the nested recorder's copy (#2745),
     and `redactSecretsForState` reads the
     mark for the object it is handed and threads it down the walk. A previous
-    generation's record, a scrub / drift walk, a sub-bag walked on
-    its own and any copy stay unmarked and keep the plaintext the scan
-    leaves. Residuals, in full on the arm's own docstring: the
+    generation's record, a scrub / drift walk and a sub-bag nobody
+    marked stay unmarked and keep the plaintext the scan leaves. Residuals, in full on the arm's own docstring: the
     `effectiveProperties` bag; a coinciding readback; an interference refusal
     (substring interference by a 4+ character needle -- a sub-floor interferer
     leaves the scan silent and costs the OTHER secret, never a fabrication,
@@ -190,8 +189,7 @@ Index of every area: [code-layout.md](code-layout.md).
     one);
     `maskSecretsInText`, whose substring arm shares the floor, so a warn line
     can still print the plaintext (#2453); `cdkd scrub`, walking a STORED bag
-    no deploy marked; a NONLITERAL intrinsic frame; and the nested-stack
-    twin, still #2745.
+    no deploy marked; and a NONLITERAL intrinsic frame.
   - **`positionByIntrinsicSkeleton`** (issue #1916) positions `Fn::Join` /
     `Fn::Sub` source leaves — the DOMINANT CDK shape
     (`secret.secretValueFromJson(...)` renders the ARN as a `Ref`, so every
@@ -206,8 +204,9 @@ Index of every area: [code-layout.md](code-layout.md).
     intrinsic twin; its docstring is the authority, residuals included),
     then to the value scan. Deliberately NO
     `isKnownSecretExpression` test on this arm: candidates come only from
-    stores of references treated as secret, so the test could never answer
-    `false`, and an unfalsifiable guard fences nothing.
+    stores of references treated as secret (a #2745 framed carry entry is
+    a map value, secret too), so the test could never answer `false`, and
+    an unfalsifiable guard fences nothing.
   - **`positionByCrossStackSource`** (issue #2059, consulted BEFORE the
     skeleton pass) handles `Fn::ImportValue` / `Fn::GetStackOutput` source
     leaves. Extending the skeleton could not work (measured and refuted

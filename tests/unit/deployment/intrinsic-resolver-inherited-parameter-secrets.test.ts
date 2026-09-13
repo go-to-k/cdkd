@@ -27,6 +27,7 @@ import {
   MIN_NEEDLE_LENGTH,
   SECRET_MASK,
   recordNestedStackParameterExpressions,
+  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -311,6 +312,37 @@ describe('IntrinsicFunctionResolver — inherited nested-stack parameter secrets
     const wholeCtx = makeContext({ [PARAM]: short }, new Map([[short, shortExpr]]));
     await resolver.resolve({ Ref: PARAM }, wholeCtx);
     expect(wholeCtx.recordedSecretValues.get(short)).toBe(shortExpr);
+  });
+
+  it('carries a sub-floor LITERAL frame the parent recorded as a WHOLE value, through the floorless arm (#2745)', async () => {
+    // The parent's `recordNestedStackParameterExpressions` writes
+    // `'port:q7' -> 'port:{{resolve:...}}'` beside `'q7' -> token` into the bag
+    // it hands down. The child's `{Ref}` resolves to the framed value, which
+    // IS a key, so the whole-value arm above carries it at any length — and
+    // the substring arm's floor is untouched: the bare middle is not recorded
+    // from it. Nothing in this module changed for #2745; this is the control
+    // that says the existing arm is the carry.
+    // The framed value's WHOLE length sits below the floor too (`p` + `ab`),
+    // or the substring arm would carry a 7-character `port:ab` as well and
+    // this case could not tell the two arms apart.
+    const short = 'ab'.repeat(Math.max(1, Math.floor((MIN_NEEDLE_LENGTH - 2) / 2)));
+    const shortExpr = '{{resolve:secretsmanager:prod/app/tiny:SecretString:v::}}';
+    const framed = `p${short}`;
+    expect(framed.length).toBeLessThan(MIN_NEEDLE_LENGTH);
+    const framedExpr = `p${shortExpr}`;
+    const ctx = makeContext(
+      { [PARAM]: framed },
+      new Map([
+        [short, shortExpr],
+        [framed, framedExpr],
+      ])
+    );
+
+    await expect(resolver.resolve({ Ref: PARAM }, ctx)).resolves.toBe(framed);
+    expect(ctx.recordedSecretValues.get(framed)).toBe(framedExpr);
+    expect(ctx.recordedSecretValues.has(short)).toBe(false);
+    // ...and the child's persist reads the same entry, floorless.
+    expect(redactSecretsForState(framed, ctx.recordedSecretValues)).toBe(framedExpr);
   });
 
   it('records nothing at all when no map was inherited (a top-level stack)', async () => {
