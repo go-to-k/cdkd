@@ -59,6 +59,14 @@ describe('docs-site home title', () => {
     expect(heroTextOf(INDEX_MD.replace('hero:\n  name: cdkd\n', 'hero:\n  name: cdkd\n\n'))).toBe(
       'The fastest way to deploy AWS CDK.'
     );
+    // The walk must STOP at the next top-level key (round-3 mutant: `break`
+    // -> `continue` survived every case above).
+    expect(heroTextOf('---\nhero:\n  name: x\nother:\n  text: wrong\n---\n')).toBeUndefined();
+    // Key-line trailing whitespace / comment, and a comment or whitespace-only
+    // line at a foreign indent ahead of the first child.
+    expect(heroTextOf('---\nhero: \n  text: a\n---\n')).toBe('a');
+    expect(heroTextOf('---\nhero: # why\n  text: b\n---\n')).toBe('b');
+    expect(heroTextOf('---\nhero:\n    # c\n    \n  text: c\n---\n')).toBe('c');
     expect(heroTextOf('---\ntitle: x\n---\n')).toBeUndefined();
     expect(() => homeTitleOf(SITE_NAME, '---\ntitle: x\n---\n')).toThrow(/hero\.text/);
   });

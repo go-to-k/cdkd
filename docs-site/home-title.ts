@@ -32,7 +32,9 @@ export function heroTextOf(markdown: string): string | undefined {
   const fm = /^---\n([\s\S]*?)\n---/.exec(markdown);
   if (!fm) return undefined;
   const lines = fm[1].split('\n');
-  const start = lines.indexOf('hero:');
+  // Tolerate trailing whitespace / a comment on the key line: docs/**/*.md is
+  // outside the formatter, so nothing strips them.
+  const start = lines.findIndex((l) => /^hero:[ \t]*(#.*)?$/.test(l));
   if (start === -1) return undefined;
   // The block runs while lines are indented or blank (a blank line inside a
   // YAML mapping is legal, so it must not end the block).
@@ -41,7 +43,10 @@ export function heroTextOf(markdown: string): string | undefined {
     if (line !== '' && !/^[ \t]/.test(line)) break;
     block.push(line);
   }
-  const indent = /^[ \t]+/.exec(block.find((l) => l !== '') ?? '')?.[0];
+  // First CONTENT line sets the child indent — not a whitespace-only line or a
+  // comment, which may sit at any indent.
+  const first = block.find((l) => l.trim() !== '' && !l.trim().startsWith('#'));
+  const indent = /^[ \t]+/.exec(first ?? '')?.[0];
   if (!indent) return undefined;
   const key = new RegExp(`^${indent}text:[ \\t]*(.+?)[ \\t]*$`);
   for (const line of block) {
