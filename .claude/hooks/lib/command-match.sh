@@ -583,12 +583,22 @@ gate_segments_raw() {
     # review round 2, 1c2 / 1d2 / 1e3b). `$\047` is ANSI-C only OUTSIDE double
     # quotes, as close_paren has it. `${...}` and `$((...))` are skipped whole,
     # and a `#` at word start ends the scan, because a `<<` inside any of them
-    # is not an opener. Finally the depth at the opener is recorded, and an
-    # opener followed by a NEW `$(` still open at end of line is discarded:
-    # bash defers that body until the substitution closes, so the next lines
-    # are commands (round 2, 1g).
-    function last_heredoc_opener(text,   j, n, c, d, iq, depth, bt, btq, OQ, rest, out, ol, k) {
-      out = ""; iq = ""; depth = 0; bt = 0; btq = ""; ol = 0
+    # is not an opener. Finally the FRAME of the opener is recorded -- the
+    # substitution depth and whether it sat inside a backtick -- and the
+    # answer is "" whenever the line goes on to do something bash does not
+    # read as "body follows on the next line": a NEW `$(` still open at end
+    # of line (bash defers that body until the substitution closes, round 2,
+    # 1g); the opener FRAME itself closing on the same line, as in
+    # `y=$(cat <<\047EOF\047) ; z=$(` or `x=$(echo $(cat <<\047X\047)`, where
+    # bash 3.2 and zsh run the next line as the new substitution and bash 5
+    # reads it as the body -- version-dependent, so it is not modelled
+    # (round 3, code review); and a `#` after a `)` is a comment like one
+    # after a space (round 3). Third, an UNQUOTED opener ANYWHERE on the line
+    # is a bail too, not merely "not latched": in `cat <<A <<\047B\047` bash
+    # reads the A body FIRST and expands it, so recording only the quoted B
+    # dropped the expanded body a verb runs in (round 3, security).
+    function last_heredoc_opener(text,   j, n, c, d, iq, depth, bt, btq, OQ, rest, out, ol, of, ob, k) {
+      out = ""; iq = ""; depth = 0; bt = 0; btq = ""; ol = 0; of = 0; ob = 0
       n = length(text)
       for (j = 1; j <= n; j++) {
         c = substr(text, j, 1)
@@ -606,12 +616,13 @@ gate_segments_raw() {
                         if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) return ""
                           j = j + 1 + k; continue }
                         continue }
-        if (c == "`" && (iq == "" || iq == "\"")) { if (!bt) { btq = iq; iq = ""; bt = 1 } else { bt = 0; iq = btq }; continue }
+        if (c == "`" && (iq == "" || iq == "\"")) { if (!bt) { btq = iq; iq = ""; bt = 1 }
+                                                    else { if (out != "" && ob) return ""; bt = 0; iq = btq }; continue }
         if (iq != "") { if (c == iq) iq = ""; continue }
         if (c == "\"" || c == "\047") { iq = c; continue }
         if (c == "(") { depth++; OQ[depth] = ""; continue }
-        if (c == ")") { if (depth > 0) { iq = OQ[depth]; depth-- }; continue }
-        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|(]/)) break
+        if (c == ")") { if (depth > 0) { if (out != "" && depth <= of) return ""; iq = OQ[depth]; depth-- }; continue }
+        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|()]/)) break
         if (c == "<" && substr(text, j + 1, 1) == "<") {
           if (substr(text, j + 2, 1) == "<") { j += 2; continue }
           rest = substr(text, j)
@@ -619,9 +630,9 @@ gate_segments_raw() {
             d = substr(rest, RSTART, RLENGTH)
             sub(/^<<-?[ \t]*/, "", d)
             gsub(/["\047]/, "", d)
-            if (d != "") { out = d; ol = depth + bt }
+            if (d != "") { out = d; ol = depth + bt; of = depth; ob = bt }
             j += RLENGTH - 1
-          }
+          } else if (match(rest, /^<<-?[ \t]*[^ \t<]/)) return ""
           continue
         }
       }

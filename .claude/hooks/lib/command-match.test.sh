@@ -130,6 +130,18 @@ subst_unterminated=$(printf '%s\n' \
   'x="$(echo <<EOF is prose' \
   'gh pr merge 1)"')
 check "an unterminated opener inside \$( ) does not swallow" 0 "$MERGE" "$subst_unterminated"
+# The case above spells its opener UNQUOTED, which since round 2 never reaches
+# the terminator look-ahead at all (an unquoted opener is a bail on its own),
+# so it stopped fencing that guard -- code review round 3 measured the guard
+# deleted with the suite green. This QUOTED twin is the fence: bash 3.2 runs
+# the commit (no terminator, the `)` closes the substitution), and with
+# `terminated()` no longer consulted the latch swallows it.
+subst_unterminated_q=$(printf '%s\n' \
+  'x=$(cat <<'"'"'X'"'"'' \
+  'body' \
+  ')' \
+  'git commit -m y')
+check "a QUOTED opener with no terminator is not latched (terminated() guard)" 0 "$COMMIT" "$subst_unterminated_q"
 
 # --- Security review of go-to-k/cdkd#3040: three shapes bash RUNS that the ---
 # --- first cut of the body-skip swallowed. Each was measured with a stub  ---
@@ -261,6 +273,9 @@ check "B1: a quoted heredoc inside a backtick substitution inside double quotes 
 # for the stack arms, a REAL heredoc after a `)` that must restore the outer
 # quoting, where the deleted arm reads `; cat <<'X'` as quoted text and scans
 # the body as commands. Deleting an arm reds exactly its case.
+# Two of the arms share one case: `$(` SAVES the enclosing quote and `)`
+# RESTORES it, and `stack pop` reds when either half goes; there is no shape
+# that tells the halves apart, since a save nobody restores is a no-op.
 # The `$'` twin carries a trailing `# ... "` on purpose: with the arm deleted
 # the scan leaves the string one `"` early, so every later `"` flips parity and
 # the line ends inside a quote -- which the bail-on-doubt answers with "no
@@ -279,6 +294,59 @@ check "stack pop: the ) of a nested \$( ) inside dq restores the dq, so the ; ca
   "$(printf '%s\n' 'x="$(echo "$(true)" ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')"')"
 check "stack push: a bare ( ) inside \$( ) pushes its own frame, so its ) does not pop the \$( frame" 1 "$MERGE" \
   "$(printf '%s\n' 'x="$( (echo a); cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')"')"
+
+# --- Round 3 (security + code + test review): the FRAME, not the depth -------
+# Every shape below was measured through real bash with a stub `git` on PATH:
+# bash runs the verb, origin/main matched, and the round-2 cut answered NO
+# MATCH. All are fail-opens in the shared matcher; the fix for each is named.
+#
+# Security: two openers on one line, the FIRST unquoted. bash reads the bodies
+# in order and EXPANDS the unquoted one, so a `$(git commit)` on an A-body line
+# runs; the scan recorded only the last QUOTED delimiter (B) and the latch
+# dropped every line through B, the expanded body included. An unquoted opener
+# anywhere on the line is now a bail (`return ""`), not merely "not recorded".
+r3_case() { local label="$1" want="$2" re="$3"; shift 3; check "$label" "$want" "$re" "$(printf '%s\n' "$@")"; }
+r3_case "d01: unquoted A then quoted B on one line -- verb in the EXPANDED A body" 0 "$COMMIT" \
+  'x=$(cat <<A <<'"'"'B'"'"'' '$(git commit -m y)' 'A' 'bbb' 'B' ')'
+r3_case "d02: same, a backtick push in the A body" 0 "$GATE_RE_GIT_PUSH" \
+  'x=$(cat <<A <<'"'"'B'"'"'' '`git push origin main`' 'A' 'bbb' 'B' ')'
+r3_case "d07: same, a decoy line before the verb in the A body" 0 "$COMMIT" \
+  'x=$(cat <<A <<'"'"'B'"'"'' 'notdelim' '$(git commit -m x)' 'A' 'bbb' 'B' ')'
+r3_case "d03: quoted A then unquoted B -- the unquoted one is a bail wherever it sits" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'A'"'"' <<B' 'aaa' 'A' '$(git commit -m y)' 'B' ')'
+r3_case "d04: two QUOTED openers -- both bodies are still data (control)" 1 "$MERGE" \
+  'x=$(cat <<'"'"'A'"'"' <<'"'"'B'"'"'' 'gh pr merge 1 was refused' 'A' 'gh pr merge 2 was refused' 'B' ')'
+r3_case "d05: two QUOTED openers, verb after both terminators is still a segment" 0 "$MERGE" \
+  'x=$(cat <<'"'"'A'"'"' <<'"'"'B'"'"'' 'aaa' 'A' 'bbb' 'B' 'gh pr merge 1)'
+# Code review: the `ol` bail compared NET depth, so a line whose opener FRAME
+# closes and then opens another `$(` ended at the recorded depth and latched.
+# Which shell reads the next line as the new substitution and which as the
+# heredoc body is VERSION-DEPENDENT (bash 3.2 and zsh run the commit, bash 5
+# reads a body; the backtick twin runs it in all three), so the scan bails
+# the moment the opener frame closes -- a `)` at or below the recorded depth,
+# or the backtick that held the opener closing -- rather than modelling it.
+r3_case "c1: opener frame closes, a new \$( opens -- \$( form" 0 "$COMMIT" \
+  'y=$(cat <<'"'"'EOF'"'"') ; z=$(' 'git commit -m y' 'EOF' ')'
+r3_case "c1b: opener frame closes, a new \$( opens -- backtick form" 0 "$COMMIT" \
+  'y=`cat <<'"'"'EOF'"'"'` ; z=$(' 'git commit -m y' 'EOF' ')'
+r3_case "c1c: a NESTED opener frame closes while the outer stays open" 0 "$COMMIT" \
+  'x=$(echo $(cat <<'"'"'X'"'"')' 'git commit -m y' 'X' ')'
+# Code review: `)#` starts a comment in bash exactly as ` #` does; the
+# preceding-character class had every separator but `)`.
+r3_case "c2: a # right after ) is a comment, so the quoted <<X in it is not an opener" 0 "$COMMIT" \
+  'x="$( (echo a)# <<'"'"'X'"'"'' 'git commit -m y' 'X' ')"'
+# Code review: two arms that existed and were fenced by nothing -- the `<<<`
+# here-string skip and the unbalanced-quote bail. Deleting either was green.
+r3_case "c3a: a here-string <<<'X' is not an opener" 0 "$COMMIT" \
+  'x=$(cat <<<'"'"'X'"'"'' 'git commit -m y' 'X' ')'
+r3_case "c3b: a quoted opener followed by an UNBALANCED double quote is a bail" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'X'"'"' "' 'abc' '" ; git commit -m y' 'X' ')'
+# Test review: the round-2 `$'` twin fenced the dq CONDITION of the ANSI-C arm
+# and not the arm: with the whole arm deleted, `$'a\''` read as a plain
+# single-quoted span one quote out of phase, the `'<<'X'` after it read as an
+# opener, and a trailing `# '` re-synced the parity so the line did not bail.
+r3_case "t1: \$'a\\'' is ANSI-C, so the '<<' after it is a quoted span, not an opener" 0 "$COMMIT" \
+  'x="$(echo $'"'"'a\'"'"''"'"' '"'"'<<'"'"'X'"'"' # '"'"'' 'git commit -m y' 'X' ')"'
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

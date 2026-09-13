@@ -1022,8 +1022,11 @@ describe('integ-stale-base-detector scope superset', () => {
  *     a defect (include-only: a marker that stales for nothing; hook-only:
  *     the fail-open above).
  *
- * The regex is read with `expandFiniteEre`, like the destroy hook's patterns,
- * so a spelling change in either copy is compared rather than trusted.
+ * The regex is NOT expanded the way the destroy hook's patterns are: it is
+ * split on `|` and each alternative compared VERBATIM against the hand-paired
+ * table below, so a respelling of an alternative reds even when it would
+ * still match the same paths -- a deliberately cruder fence, since the three
+ * alternatives are anchored prefixes with nothing to expand.
  */
 const LOCAL_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-local-gate.sh');
 

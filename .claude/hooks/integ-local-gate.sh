@@ -342,7 +342,13 @@ if gate_matches "$cmd" "$GATE_RE_GIT_MERGE" \
 
   if [ "$parse_ok" -eq 1 ] && [ -n "$merge_ref" ] \
     && git rev-parse --verify --quiet "${merge_ref}^{commit}" >/dev/null 2>&1; then
-    if incoming=$(git diff --name-only "HEAD...${merge_ref}" 2>/dev/null); then
+    # `--no-relative` on BOTH readers: with `diff.relative=true` a `git diff`
+    # run from a subdirectory drops every path outside it, so a merge issued
+    # from `tests/` would see no `src/local/**` and no root `package.json` at
+    # all (measured, git 2.49: 0 lines from `sub/`, the root manifest back
+    # with the flag). The hook runs in the payload cwd, which is wherever
+    # the agent happened to be.
+    if incoming=$(git diff --no-relative --name-only "HEAD...${merge_ref}" 2>/dev/null); then
       touches_local=0
       while IFS= read -r f; do
         [ -z "$f" ] && continue
@@ -369,8 +375,10 @@ EOF_INCOMING
         # the header and every changed line in SGR escapes EVEN INTO A PIPE,
         # so without `--no-color` this branch alone goes fail-open. `gh pr
         # diff` is API output with no git config behind it; its own colour
-        # flag is pinned at the call above.
-        if incoming_diff=$(git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "HEAD...${merge_ref}" 2>/dev/null) \
+        # flag is pinned at the call above. (`diff.srcPrefix` / `dstPrefix`,
+        # git 2.45+, rewrite the header too and are settled by the same two
+        # flags.)
+        if incoming_diff=$(git diff --no-relative --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "HEAD...${merge_ref}" 2>/dev/null) \
           && bumps_cdk_local "$incoming_diff"; then
           touches_local=1
         fi

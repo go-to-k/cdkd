@@ -179,9 +179,12 @@ fi
 if [ "${1:-} ${2:-}" = "pr diff" ]; then
   if [ "${GH_DIFF_FAIL:-}" = "1" ]; then exit 1; fi
   # Real `gh pr diff` defaults to `--color auto` and colours its output when
-  # it believes stdout is a terminal (`GH_FORCE_TTY`). Emulate the SGR shape
-  # git itself emits (measured: `\e[1m` on the header, `\e[31m` / `\e[32m` on
-  # the changed lines, `\e[m` resets) unless the caller pinned `--color never`.
+  # it believes stdout is a terminal (`GH_FORCE_TTY`). Emulate that with the
+  # SGR shape git emits (measured: `\e[1m` on the header, `\e[31m` / `\e[32m`
+  # on the changed lines, `\e[m` resets); real gh 2.92 bolds the header as
+  # `\e[1;37m` instead, and either escape defeats the hook's anchored
+  # `^diff --git ` identically, which is the property under test. Plain
+  # output only when the caller pinned `--color never`.
   pinned=0; prev=""
   for a in "$@"; do
     if [ "$prev" = "--color" ] && [ "$a" = "never" ]; then pinned=1; fi
@@ -523,6 +526,20 @@ git -C "$merge_repo" config color.ui always
 run_case "git merge <cdk-local-bump range> still fires under color.ui=always" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-cdklocal-bump"}}' "$merge_repo")"
 git -C "$merge_repo" config --unset color.ui
+
+# 26f. The user has `diff.relative=true` and issues the merge from a
+#      SUBDIRECTORY: a bare `git diff` then lists only paths under that
+#      directory, so the root `package.json` -- and every `src/local/**`
+#      path -- vanish from BOTH readers (measured, git 2.49: 0 lines from
+#      `sub/`; code review round 3 of go-to-k/cdkd#3040). The hook pins
+#      `--no-relative` on both; 26b must still fire with the payload cwd
+#      two levels down. The control beside it: from the repo ROOT the
+#      setting changes nothing, so a green there says nothing about the pin.
+mkdir -p "$merge_repo/tests/unit"
+git -C "$merge_repo" config diff.relative true
+run_case "git merge <cdk-local-bump range> still fires under diff.relative=true from a subdirectory" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-cdklocal-bump"}}' "$merge_repo/tests/unit")"
+git -C "$merge_repo" config --unset diff.relative
 
 # --- CROSS-REPO GATE NAMING (go-to-k/cdkd#2236) ---
 #
