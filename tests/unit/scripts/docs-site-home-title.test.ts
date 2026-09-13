@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
-import { heroTextOf, homeTitleOf, rewriteHomeTitle } from '../../../docs-site/home-title.js';
+import {
+  heroTextOf,
+  homeTitleOf,
+  homeTitlePlugin,
+  rewriteHomeTitle,
+} from '../../../docs-site/home-title.js';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync as readFile, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 // cdkd.dev's home page shipped `<title>cdkd</title>`, so a Google result for
 // the site read "cdkd" and nothing else. docs-site/home-title.ts patches the
@@ -49,6 +56,17 @@ describe('docs-site home title', () => {
     expect(() => homeTitleOf(SITE_NAME, '---\ntitle: x\n---\n')).toThrow(/hero\.text/);
   });
 
+  it('does not fall through to hero.actions[].text when hero.text is removed', () => {
+    // Review probe: the first regex accepted `text:` at ANY indent under
+    // `hero:` and returned "Get Started" here, shipping `cdkd - Get Started`
+    // instead of failing the build.
+    const withoutText = INDEX_MD.replace(/^  text: .*\n/m, '');
+    expect(withoutText).not.toBe(INDEX_MD);
+    expect(withoutText).toMatch(/^      text: Get Started$/m);
+    expect(heroTextOf(withoutText)).toBeUndefined();
+    expect(() => homeTitleOf(SITE_NAME, withoutText)).toThrow(/hero\.text/);
+  });
+
   it('rewrites every title surface of the home page and nothing else', () => {
     const homeTitle = homeTitleOf(SITE_NAME, INDEX_MD);
     const out = rewriteHomeTitle(HOME_HEAD, SITE_NAME, homeTitle);
@@ -79,5 +97,63 @@ describe('docs-site home title', () => {
     expect(out).toContain('<title>cdkd - CDK &amp; &quot;friends&quot; &lt;fast&gt;</title>');
     expect(out).toContain('content="cdkd - CDK &amp; &quot;friends&quot; &lt;fast&gt;"');
     expect(out).toContain('"headline":"cdkd - CDK & \\"friends\\" <fast>"');
+  });
+
+  it('passes replacement-pattern characters through literally', () => {
+    // `$'` / `$&` / `$$` are expansions for a STRING replacement; a title
+    // holding one produced a nested, corrupted head before the replacer
+    // became a function.
+    const out = rewriteHomeTitle(HOME_HEAD, SITE_NAME, "cdkd - $' $& $$ ok");
+    expect(out).toContain("<title>cdkd - $' $&amp; $$ ok</title>");
+    expect(out).toContain('"headline":"cdkd - $\' $& $$ ok"');
+  });
+
+  describe('plugin', () => {
+    const run = (html: string, markdown = INDEX_MD): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'home-title-'));
+      try {
+        mkdirSync(join(dir, 'site'));
+        writeFileSync(join(dir, 'site/index.html'), html);
+        writeFileSync(join(dir, 'index.md'), markdown);
+        const plugin = homeTitlePlugin({
+          siteName: SITE_NAME,
+          outDir: 'site',
+          indexMarkdownPath: 'index.md',
+        }) as unknown as {
+          configResolved: (c: { root: string }) => void;
+          closeBundle: () => void;
+        };
+        plugin.configResolved({ root: dir });
+        plugin.closeBundle();
+        return readFile(join(dir, 'site/index.html'), 'utf8');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    it('patches index.html under the resolved Vite root', () => {
+      expect(run(HOME_HEAD)).toContain('<title>cdkd - The fastest way to deploy AWS CDK.</title>');
+    });
+
+    it('fails the build when ANY of the four surfaces stops matching', () => {
+      // Review probe: a `<title>`-only guard let a reordered og:title ship
+      // bare while the build stayed green.
+      const reordered = HOME_HEAD.replace(
+        '<meta property="og:title" content="cdkd">',
+        '<meta content="cdkd" property="og:title">'
+      );
+      expect(() => run(reordered)).toThrow(/og:title/);
+      expect(() => run(HOME_HEAD.replace('<title>cdkd</title>', '<title>CDKD</title>'))).toThrow(
+        /<title>cdkd<\/title>/
+      );
+    });
+
+    it('is a no-op on an already-patched page and build-only', () => {
+      const patched = rewriteHomeTitle(HOME_HEAD, SITE_NAME, homeTitleOf(SITE_NAME, INDEX_MD));
+      expect(run(patched)).toBe(patched);
+      expect(homeTitlePlugin({ siteName: 'x', outDir: 'o', indexMarkdownPath: 'i' }).apply).toBe(
+        'build'
+      );
+    });
   });
 });

@@ -12,24 +12,37 @@
 // title being the site name.
 //
 // So the frontmatter stays `title: cdkd` (the OG image, JSON-LD, llms.txt and
-// the hero keep working off it) and this plugin rewrites the three title
-// surfaces of dist/site/index.html after the SSG has emitted it. The home
-// title is DERIVED from docs/index.md's `hero.text` rather than written as a
-// literal, so the hero headline and the search-result headline cannot drift
-// apart — tests/unit/scripts/docs-site-home-title.test.ts fences the
-// derivation and the rewrite.
+// the hero keep working off it) and this plugin rewrites the title surfaces
+// of dist/site/index.html after the SSG has emitted it. The home title is
+// DERIVED from docs/index.md's `hero.text` rather than written as a literal,
+// so the hero headline and the search-result headline cannot drift apart —
+// tests/unit/scripts/docs-site-home-title.test.ts fences the derivation and
+// the rewrite.
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { Plugin } from 'vite-plus';
 
-/** `hero.text` from an entry page's frontmatter, or undefined when absent. */
+/**
+ * `hero.text` from an entry page's frontmatter, or undefined when absent.
+ * The key must sit at the `hero:` block's own child indent: a looser match
+ * would fall through to `hero.actions[].text` ("Get Started") when
+ * `hero.text` is removed, and ship that as the headline instead of failing.
+ */
 export function heroTextOf(markdown: string): string | undefined {
   const fm = /^---\n([\s\S]*?)\n---/.exec(markdown);
   if (!fm) return undefined;
-  const m = /^hero:\n(?:[ \t]+.*\n)*?[ \t]+text:[ \t]*(.+?)[ \t]*$/m.exec(fm[1]);
-  if (!m) return undefined;
-  // A plain scalar today; strip a matching pair of YAML quotes should one be added.
-  return m[1].replace(/^(["'])(.*)\1$/, '$2');
+  const block = /^hero:\n((?:[ \t]+.*\n?)*)/m.exec(fm[1]);
+  if (!block) return undefined;
+  const lines = block[1].split('\n');
+  const indent = /^[ \t]+/.exec(lines[0] ?? '')?.[0];
+  if (!indent) return undefined;
+  const key = new RegExp(`^${indent}text:[ \\t]*(.+?)[ \\t]*$`);
+  for (const line of lines) {
+    const m = key.exec(line);
+    // A plain scalar today; strip a matching pair of YAML quotes should one be added.
+    if (m) return m[1].replace(/^(["'])(.*)\1$/, '$2');
+  }
+  return undefined;
 }
 
 /** `<siteName> - <hero.text>` — what the home page's `<title>` should read. */
@@ -42,7 +55,23 @@ export function homeTitleOf(siteName: string, indexMarkdown: string): string {
 }
 
 const escapeAttr = (value: string): string =>
-  value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+
+/** The four (bare → rewritten) needles, in the order they appear in the head. */
+const titleNeedles = (siteName: string, homeTitle: string): Array<[string, string]> => {
+  const bare = escapeAttr(siteName);
+  const full = escapeAttr(homeTitle);
+  return [
+    [`<title>${bare}</title>`, `<title>${full}</title>`],
+    [`<meta property="og:title" content="${bare}">`, `<meta property="og:title" content="${full}">`],
+    [`<meta name="twitter:title" content="${bare}">`, `<meta name="twitter:title" content="${full}">`],
+    [`"headline":${JSON.stringify(siteName)}`, `"headline":${JSON.stringify(homeTitle)}`],
+  ];
+};
 
 /**
  * Rewrite the `<title>`, `og:title`, `twitter:title` and JSON-LD `headline`
@@ -54,42 +83,58 @@ const escapeAttr = (value: string): string =>
  * IS the site name.
  */
 export function rewriteHomeTitle(html: string, siteName: string, homeTitle: string): string {
-  const bare = escapeAttr(siteName);
-  const full = escapeAttr(homeTitle);
-  return html
-    .replace(`<title>${bare}</title>`, `<title>${full}</title>`)
-    .replace(`<meta property="og:title" content="${bare}">`, `<meta property="og:title" content="${full}">`)
-    .replace(`<meta name="twitter:title" content="${bare}">`, `<meta name="twitter:title" content="${full}">`)
-    .replace(`"headline":${JSON.stringify(siteName)}`, `"headline":${JSON.stringify(homeTitle)}`);
+  let out = html;
+  for (const [from, to] of titleNeedles(siteName, homeTitle)) {
+    // Replacer FUNCTION: a string replacement would expand `$&`, `$'`, `$$`
+    // inside the title text.
+    out = out.replace(from, () => to);
+  }
+  return out;
 }
 
 export interface HomeTitlePluginOptions {
   siteName: string;
-  /** Directory the SSG emits into (`dist/site`). */
+  /** Directory the SSG emits into (`dist/site`), relative to the Vite root. */
   outDir: string;
-  /** Entry page source whose `hero.text` supplies the headline (`docs/index.md`). */
+  /** Entry page source whose `hero.text` supplies the headline (`docs/index.md`), relative to the Vite root. */
   indexMarkdownPath: string;
 }
 
 /**
  * Vite plugin: runs in `closeBundle` AFTER the Ox Content SSG has written the
- * site (plugin order in vite.docs.config.ts is what sequences it) and patches
- * the home page in place. Fails the build rather than shipping the bare title
- * if the emitted head no longer has the shape it rewrites.
+ * site and patches the home page in place. Two things sequence it, and both
+ * are load-bearing: `enforce: 'post'` sorts it after oxContent's plugins
+ * (which carry no `enforce`), and Rolldown runs `closeBundle` hooks
+ * sequentially, so oxContent's async hook has finished writing before this
+ * one reads. Build-only: the dev server never emits index.html, so there is
+ * nothing to patch (`vp run docs:dev` shows the bare title by design). Fails
+ * the build rather than shipping the bare title if the emitted head no longer
+ * has the shape it rewrites.
  */
 export function homeTitlePlugin(options: HomeTitlePluginOptions): Plugin {
+  let root = process.cwd();
   return {
     name: 'cdkd:docs-home-title',
     enforce: 'post',
+    apply: 'build',
+    configResolved(config) {
+      root = config.root;
+    },
     closeBundle() {
-      const indexHtml = join(options.outDir, 'index.html');
-      if (!existsSync(indexHtml)) return; // `vp dev` serves from memory; nothing to patch
-      const homeTitle = homeTitleOf(options.siteName, readFileSync(options.indexMarkdownPath, 'utf8'));
+      const indexHtml = join(resolve(root, options.outDir), 'index.html');
+      if (!existsSync(indexHtml)) return;
+      const homeTitle = homeTitleOf(
+        options.siteName,
+        readFileSync(resolve(root, options.indexMarkdownPath), 'utf8')
+      );
       const before = readFileSync(indexHtml, 'utf8');
       const after = rewriteHomeTitle(before, options.siteName, homeTitle);
-      if (!after.includes(`<title>${escapeAttr(homeTitle)}</title>`)) {
+      const missing = titleNeedles(options.siteName, homeTitle)
+        .filter(([, to]) => !after.includes(to))
+        .map(([from]) => from);
+      if (missing.length > 0) {
         throw new Error(
-          `[home-title] ${indexHtml} has neither <title>${options.siteName}</title> nor the rewritten title — the SSG's head shape changed; update docs-site/home-title.ts`
+          `[home-title] ${indexHtml}: could not rewrite ${missing.join(', ')} — the SSG's head shape changed; update docs-site/home-title.ts`
         );
       }
       if (after !== before) writeFileSync(indexHtml, after);
