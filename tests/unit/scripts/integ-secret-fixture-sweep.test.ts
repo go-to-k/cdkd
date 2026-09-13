@@ -690,6 +690,16 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     ).toBe(true);
 
     const retainBody = methodBody(code, 'retainPreviousGenerateBlock');
+    // String literals are prose; a template literal keeps the CODE in its
+    // \`${...}\` holes. Used by every arm below that reads a NAME, so a future
+    // warning saying "fix this template" is not read as \`this\`.
+    const stripStrings = (src: string): string =>
+      src
+        .replace(/\`(?:[^\`\\]|\\.)*\`/g, (t) =>
+          [...t.matchAll(/\$\{([^}]*)\}/g)].map((m) => ` ${m[1]} `).join('')
+        )
+        .replace(/'(?:[^'\\]|\\.)*'/g, ' ')
+        .replace(/"(?:[^"\\]|\\.)*"/g, ' ');
     // The argument list is PINNED above (round-3 review): a third argument is
     // the one-line edit that hands the helper the minted value, and the
     // body-side check below would not see it under bracket access
@@ -703,7 +713,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       ).toBeUndefined();
     }
     expect(
-      /\bthis\b(?!\.logger\.warn\()/.exec(retainBody)?.[0],
+      /\bthis\b(?!\.logger\.warn\()/.exec(stripStrings(retainBody))?.[0],
       'retainPreviousGenerateBlock now reaches the instance beyond logger.warn — a delegate, a ' +
         'field or a bracket access can route the minted value into the bag it builds; re-open #2212'
     ).toBeUndefined();
@@ -714,17 +724,19 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     // `create()` and read back here (`const` is not `let`/`var`), and
     // `(getLogger() as any).x = v` with no `this` at all. Every one of them
     // needs a NAME inside this helper that is not on this list, so the list is
-    // what closes the class rather than one more spelling. Strings and
-    // template literals are stripped (the warning text is prose), member
-    // accesses and object keys are not free identifiers.
+    // what closes the class rather than one more spelling. A stash read
+    // inside the warning's \`${...}\` interpolation was measured GREEN when the
+    // whole template literal was blanked, which is why \`stripStrings\` keeps
+    // the holes; member accesses are not free identifiers; and an object KEY is one only
+    // at object-literal position (after \`{\` or \`,\`) -- the first cut stripped
+    // every \`name :\`, which is also the consequent of a ternary, and
+    // \`cond ? stash : x\` walked through (round-5 security review, both
+    // proven to land the minted value in the recorded bag).
     const freeIdentifiers = (body: string): string[] => {
-      const stripped = body
-        .replace(/`(?:[^`\\]|\\.)*`/g, ' ')
-        .replace(/'(?:[^'\\]|\\.)*'/g, ' ')
-        .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+      const stripped = stripStrings(body)
         .replace(/\.{3}/g, ' ')
         .replace(/\.[A-Za-z_$][\w$]*/g, ' ')
-        .replace(/\b[A-Za-z_$][\w$]*\s*:(?!:)/g, ' ');
+        .replace(/(?<=[{,]\s*)[A-Za-z_$][\w$]*\s*:(?!:)/g, ' ');
       return [...new Set(stripped.match(/\b[A-Za-z_$][\w$]*\b/g) ?? [])].sort();
     };
     expect(
@@ -737,6 +749,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       'effective',
       'else',
       'if',
+      'logicalId',
       'previousProperties',
       'properties',
       'requireConfigObject',
@@ -745,27 +758,73 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       'undefined',
       'usablePrevious',
     ]);
-    // Routes AROUND the instance are refused by absence: none of these tokens
-    // appears in the provider today, so a mutant that stashes the value in
-    // module or static state, writes the instance reflectively, writes the
-    // minted value INTO the desired bag the helper spreads (`properties['X'] =`),
-    // or reaches `this` by any spelling other than a dotted member (`this!`,
-    // `<any>this`, `(this)`, `this['x']`, `this satisfies`, `= this`) reds here.
+    // A name on the list can be SHADOWED: a local \`const requireConfigObject =
+    // (properties = previousProperties) => ...\` spells only allow-listed names
+    // and reads whatever it likes (measured). So the helper's own bindings
+    // and its one arrow are pinned too.
+    expect(
+      [...stripStrings(retainBody).matchAll(/\bconst\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]).sort(),
+      'retainPreviousGenerateBlock declares a binding it did not before — a local can shadow an ' +
+        'allow-listed name; trace it before widening this'
+    ).toEqual(['effective', 'usablePrevious']);
+    expect(
+      stripStrings(retainBody).match(/=>/g)?.length,
+      'retainPreviousGenerateBlock gained a closure beyond the no-op onUnusable; re-open #2212'
+    ).toBe(1);
+    // Routes AROUND the instance are refused by absence, on the STRING-STRIPPED
+    // source (a future warning saying "fix this template" is prose, not a
+    // \`this\`): none of these tokens appears in the provider today, so a mutant
+    // that stashes the value in module or static state (\`export const\` too --
+    // the first cut anchored on the keyword and \`export\` walked past it),
+    // writes the instance reflectively, writes the minted value INTO the
+    // desired bag the helper spreads by ANY assignment operator (\`||=\` /
+    // \`??=\` were measured to land in state with no flag flip: the engine
+    // records the same object it hands the provider), or reaches \`this\` by
+    // any spelling other than a dotted member (\`this!\`, \`<any>this\`,
+    // \`(this)\`, \`this['x']\`, \`this satisfies\`, \`= this\`) reds here.
+    const codeNoStrings = stripStrings(code);
     for (const escape of [
-      /^(?:const|let|var)\s/m,
+      /^(?:export\s+)?(?:const|let|var)\s/m,
       /\bstatic\s/,
       /\bglobalThis\b/,
       /\bReflect\./,
       /Object\.(?:assign|defineProperty|defineProperties)\(/,
-      /\b(?:properties|previousProperties)(?:\.\w+|\[[^\]]*\])\s*=(?!=)/,
+      /\b(?:properties|previousProperties)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
       /\bthis\b(?!\.)/,
     ]) {
       expect(
-        escape.exec(code)?.[0],
+        escape.exec(codeNoStrings)?.[0],
         `the secret provider now contains \`${escape.source}\` — a value can travel outside the ` +
           `method it was minted in; re-open #2212`
       ).toBeUndefined();
     }
+    // And the module's TOP LEVEL is an allow-list of its own, by BRACE DEPTH
+    // rather than by column (the parser does not care about indentation, so
+    // an indented module statement is still module state): every statement
+    // that opens at depth 0 is an import, one of the two known free
+    // functions, or the class. Anything else is module state a method can
+    // write -- the \`export const stash\` the keyword arm above walked past
+    // until it learned \`export\`.
+    const topLevel: string[] = [];
+    let depth = 0;
+    for (const rawLine of codeNoStrings.split('\n')) {
+      const line = rawLine.trim();
+      if (depth === 0 && line !== '' && !/^[})\]]/.test(line)) topLevel.push(line);
+      for (const ch of rawLine) {
+        if (ch === '{' || ch === '(' || ch === '[') depth += 1;
+        else if (ch === '}' || ch === ')' || ch === ']') depth -= 1;
+      }
+    }
+    expect(depth, 'the brace walk did not return to depth 0 — the stripper mis-read the source').toBe(0);
+    const unexpectedTopLevel = topLevel.filter(
+      (line) => !/^(?:import\b|export\s+class\s+SecretsManagerSecretProvider\b|function\s+(?:asJson|requireSecretStringShape)\()/.test(line)
+    );
+    expect(topLevel.length, 'the top-level walk saw no statements — it attests to nothing').toBeGreaterThanOrEqual(5);
+    expect(
+      unexpectedTopLevel,
+      'the secret provider gained a module-level statement — module state outlives a method and ' +
+        'a resource (the provider is a singleton); re-open #2212'
+    ).toEqual([]);
     // The SKIP flag is what routes `update()` to the helper, so its true arm is
     // pinned to the one site that also returns NO value: a flipped flag beside
     // a minted value would hand the helper a bag the wire is about to carry.
