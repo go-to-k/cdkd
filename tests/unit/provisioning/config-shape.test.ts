@@ -806,14 +806,20 @@ describe('configIntegerRefusal (issue #3056)', () => {
   });
 
   it('refuses the NON-DECIMAL spellings Number() would coerce (CFn refuses them too)', () => {
-    for (const value of ['1e2', '0x10', '0b11', '0o7', '1_000', '32px', 'Infinity']) {
-      expect(coerceCfnInteger(value), value).toBeUndefined();
-      expect(configIntegerRefusal({ N: value }, 'N', P, 1), value).toBeDefined();
+    // Padded strings included: CloudFormation's validator reports
+    // `" 12 "` as `found: String` (measured), so it is not an integer here
+    // either. A sign IS accepted there (`"+12"` passed validation).
+    for (const value of ['1e2', '0x10', '0b11', '0o7', '1_000', '32px', 'Infinity', ' 7 ', '\t8\n', '32 ']) {
+      expect(coerceCfnInteger(value), JSON.stringify(value)).toBeUndefined();
+      expect(configIntegerRefusal({ N: value }, 'N', P, 1), JSON.stringify(value)).toBeDefined();
     }
-    // A sign and surrounding whitespace are the decimal-literal grammar.
-    for (const value of ['+5', '-0', ' 7 ', '\t8\n']) {
+    for (const value of ['+5', '-0', '007']) {
       expect(coerceCfnInteger(value), value).toBeDefined();
     }
+    // One value, one verdict, whatever the spelling: the NUMBER branch is as
+    // strict as the string branch above 2^53.
+    expect(coerceCfnInteger(2 ** 53 + 2)).toBeUndefined();
+    expect(coerceCfnInteger(String(2 ** 53 + 2))).toBeUndefined();
   });
 
   it('refuses above the caller\'s max, and words the range', () => {
@@ -835,7 +841,7 @@ describe('configIntegerRefusal (issue #3056)', () => {
   });
 
   it('accepts a whole number and a CFn STRING integer, at or above the floor', () => {
-    for (const value of [1, 32, 4096, '1', '32', ' 32 ']) {
+    for (const value of [1, 32, 4096, '1', '32', '+32']) {
       expect(configIntegerRefusal({ PasswordLength: value }, 'PasswordLength', P, 1)).toBeUndefined();
     }
     // The floor is the caller's: zero is a value where a count of zero is legal.
@@ -844,7 +850,7 @@ describe('configIntegerRefusal (issue #3056)', () => {
   });
 
   it('shares its FIELD predicate with coerceCfnInteger rather than restating it', () => {
-    for (const value of [1, 32, '32', ' 32 ', 'abc', null, '', 3.5, -1, 0, true, [], {}, { Ref: 'L' }, NaN]) {
+    for (const value of [1, 32, '32', ' 32 ', '+32', 'abc', null, '', 3.5, -1, 0, true, [], {}, { Ref: 'L' }, NaN, 2 ** 53 + 2]) {
       const refused = configIntegerRefusal({ N: value }, 'N', P, 0) !== undefined;
       const coerced = coerceCfnInteger(value);
       expect(`${JSON.stringify(value)} refused=${refused}`).toBe(

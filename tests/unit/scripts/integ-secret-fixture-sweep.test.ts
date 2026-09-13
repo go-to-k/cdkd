@@ -842,6 +842,11 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       /\bReflect\./,
       /Object\.(?:assign|defineProperty|defineProperties)\(/,
       /\b(?:properties|previousProperties)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
+      // A FUNCTION OBJECT is a stash too (`generateMemberRefusal.cache = v`,
+      // measured GREEN under every arm above -- the write sits at depth > 0
+      // and `.cache` is a member access); the runtime half catches the READ,
+      // this refuses the write on every name the module binds.
+      /\b(?:asJson|requireSecretStringShape|generateMemberRefusal|requireConfigObject|configStringRefusal|configBooleanRefusal|configIntegerRefusal|coerceCfnBoolean|coerceCfnInteger|getLogger|getAwsClients|redactSecretsForState|getCurrentResourceSecrets|assertRegionMatch|generateResourceName|normalizeAwsTagsToCfn|clearOnUpdateRemoval|isDeepStrictEqual|ProvisioningError|SecretsManagerClient)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
       /\bthis\b(?!\.)/,
     ]) {
       expect(

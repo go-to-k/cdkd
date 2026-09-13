@@ -570,22 +570,26 @@ export function configBooleanRefusal(
  *
  * Same reason as {@link coerceCfnBoolean}: CloudFormation is stringly typed, so
  * an imported or hand-written template legitimately spells `PasswordLength:
- * "32"`. A finite whole number, or a string that is a DECIMAL INTEGER LITERAL
- * (optional sign, digits, surrounding whitespace), is the value; anything
- * else — `null`, `''`, `'abc'`, `3.5`, `'1e2'`, `'0x10'`, an object, an
- * unresolved intrinsic — is `undefined`, so a caller that indexed
+ * "32"`. A safe whole number, or a string that is a DECIMAL INTEGER LITERAL
+ * (optional sign, then digits, nothing else), is the value; anything else —
+ * `null`, `''`, `'abc'`, `3.5`, `'1e2'`, `'0x10'`, `' 32 '`, an object,
+ * an unresolved intrinsic — is `undefined`, so a caller that indexed
  * `(x as number) || 32` cannot read a malformed member as its default. The
- * string grammar is deliberately narrower than `Number()`: CloudFormation's
- * own integer parser refuses `'1e2'` / `'0x10'` / `'0b11'`, and accepting
- * them here would mint from a template CloudFormation rejects (review of
- * issue #3056 measured all three coerced under `Number()`).
+ * string grammar is exactly what CloudFormation's own validator accepts,
+ * MEASURED (us-east-1, 2026-09-13, `AWS::SecretsManager::Secret
+ * GenerateSecretString.PasswordLength`): `"+12"` passes, `" 12 "` fails
+ * `expected type: Integer, found: String`, `"1e1"` fails `found: Float` —
+ * so a padded string is refused HERE rather than minted from a template the
+ * service rejects, and a signed one is accepted. Both branches use
+ * `Number.isSafeInteger`, so one value gets one verdict whatever its
+ * spelling.
  *
  * @returns the integer, or `undefined` when the value is not one.
  */
 export function coerceCfnInteger(value: unknown): number | undefined {
-  if (typeof value === 'number') return Number.isInteger(value) ? value : undefined;
-  if (typeof value !== 'string' || !/^[+-]?\d+$/.test(value.trim())) return undefined;
-  const n = Number(value.trim());
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : undefined;
+  if (typeof value !== 'string' || !/^[+-]?\d+$/.test(value)) return undefined;
+  const n = Number(value);
   return Number.isSafeInteger(n) ? n : undefined;
 }
 

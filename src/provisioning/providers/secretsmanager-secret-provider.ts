@@ -62,13 +62,6 @@ function requireSecretStringShape(literal: unknown): string {
 }
 
 /**
- * AWS Secrets Manager Secret Provider
- *
- * Implements resource provisioning for AWS::SecretsManager::Secret using the Secrets Manager SDK.
- * WHY: CreateSecret is synchronous - the CC API adds unnecessary polling overhead
- * (1s->2s->4s->8s) for an operation that completes immediately.
- */
-/**
  * The refusal for the MEMBERS of a `GenerateSecretString` block whose container
  * has already passed `requireConfigObject` (issue #3056), or `undefined` when
  * every member is usable. ONE predicate for two readers — the generator, which
@@ -84,10 +77,11 @@ function requireSecretStringShape(literal: unknown): string {
  * unresolved intrinsic refuse. `PasswordLength` is capped at 4096, the
  * service's documented maximum, so a runaway length is refused before
  * `new Uint8Array` allocates it. `GenerateStringKey` / `SecretStringTemplate`
- * must be declared TOGETHER — measured on CloudFormation (us-east-1,
- * 2026-09-13): a template with `SecretStringTemplate` alone fails with
- * `SecretStringTemplate and GenerateStringKey must both be set or removed`,
- * so this pair rule is the service's, in both directions — the template must
+ * must be declared TOGETHER — the docs pin only key -> template; measured on
+ * CloudFormation (us-east-1, 2026-09-13), a template with
+ * `SecretStringTemplate` alone fails with `SecretStringTemplate and
+ * GenerateStringKey must both be set or removed`, the service's own message
+ * naming both directions (only that one was exercised) — the template must
  * parse to a JSON OBJECT (an array or a scalar parses and cannot take a key),
  * and the key may not be `__proto__`, which `template[key] = password` would
  * hand to the prototype setter, silently dropping the password from the
@@ -131,6 +125,13 @@ function generateMemberRefusal(config: Record<string, unknown>): string | undefi
   return undefined;
 }
 
+/**
+ * AWS Secrets Manager Secret Provider
+ *
+ * Implements resource provisioning for AWS::SecretsManager::Secret using the Secrets Manager SDK.
+ * WHY: CreateSecret is synchronous - the CC API adds unnecessary polling overhead
+ * (1s->2s->4s->8s) for an operation that completes immediately.
+ */
 export class SecretsManagerSecretProvider implements ResourceProvider {
   private smClient: SecretsManagerClient;
   private logger = getLogger().child('SecretsManagerSecretProvider');
