@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   coerceCfnBoolean,
+  coerceCfnInteger,
   configBooleanRefusal,
+  configIntegerRefusal,
   configStringRefusal,
   readConfigString,
   requireConfigArray,
@@ -781,5 +783,50 @@ describe('the onUnusable message COMPOSES with a caller clause (issue #1735)', (
     expect(() => requireConfigString('', 'PROVISIONED', 'AWS::DynamoDB::Table BillingMode')).toThrow(
       /Omit the field entirely to use the default \(PROVISIONED\)$/
     );
+  });
+});
+
+describe('configIntegerRefusal (issue #3056)', () => {
+  const P = 'AWS::SecretsManager::Secret GenerateSecretString';
+
+  it('defaults for an ABSENT container and an ABSENT key', () => {
+    expect(configIntegerRefusal(undefined, 'PasswordLength', P, 1)).toBeUndefined();
+    expect(configIntegerRefusal(null, 'PasswordLength', P, 1)).toBeUndefined();
+    expect(configIntegerRefusal({}, 'PasswordLength', P, 1)).toBeUndefined();
+  });
+
+  it('refuses a present-but-non-object container, naming the container path', () => {
+    for (const container of ['32', 42, [], true, { Ref: 'Cfg' }]) {
+      const refusal = configIntegerRefusal(container, 'PasswordLength', P, 1);
+      expect(refusal).toContain(`${P} must be an object`);
+    }
+  });
+
+  it('refuses a present-but-unusable value, naming the FIELD path and the floor', () => {
+    // `'abc'` leads: truthy, so `(x as number) || 32` kept it, and
+    // `new Uint8Array('abc')` minted an EMPTY password.
+    for (const value of ['abc', null, '', '   ', 3.5, '3.5', -1, 0, true, [], {}, { Ref: 'Len' }, Infinity, NaN]) {
+      const refusal = configIntegerRefusal({ PasswordLength: value }, 'PasswordLength', P, 1);
+      expect(refusal, JSON.stringify(value)).toContain(`${P}.PasswordLength must be an integer >= 1`);
+    }
+  });
+
+  it('accepts a whole number and a CFn STRING integer, at or above the floor', () => {
+    for (const value of [1, 32, 4096, '1', '32', ' 32 ']) {
+      expect(configIntegerRefusal({ PasswordLength: value }, 'PasswordLength', P, 1)).toBeUndefined();
+    }
+    // The floor is the caller's: zero is a value where a count of zero is legal.
+    expect(configIntegerRefusal({ N: 0 }, 'N', P, 0)).toBeUndefined();
+    expect(configIntegerRefusal({ N: 0 }, 'N', P, 1)).toBeDefined();
+  });
+
+  it('shares its FIELD predicate with coerceCfnInteger rather than restating it', () => {
+    for (const value of [1, 32, '32', ' 32 ', 'abc', null, '', 3.5, -1, 0, true, [], {}, { Ref: 'L' }, NaN]) {
+      const refused = configIntegerRefusal({ N: value }, 'N', P, 0) !== undefined;
+      const coerced = coerceCfnInteger(value);
+      expect(`${JSON.stringify(value)} refused=${refused}`).toBe(
+        `${JSON.stringify(value)} refused=${coerced === undefined || coerced < 0}`
+      );
+    }
   });
 });

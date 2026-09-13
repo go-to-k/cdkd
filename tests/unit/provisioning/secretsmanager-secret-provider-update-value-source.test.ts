@@ -315,6 +315,106 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
+  // Issue #3056: the container's MEMBERS take the same road as the container.
+  // A malformed member used to take a DEFAULT that was not inert -- an empty
+  // password, punctuation excluded by a truthy 'false', a bare password where
+  // a JSON document was declared -- or, for `ExcludeCharacters`, to THROW on
+  // the update path (the #1544 hazard one level down).
+  const MALFORMED_MEMBERS: Array<[string, Record<string, unknown>, RegExp]> = [
+    ['PasswordLength: null', { PasswordLength: null }, /PasswordLength must be an integer >= 1/],
+    ['PasswordLength: "abc" (minted an EMPTY password)', { PasswordLength: 'abc' }, /PasswordLength must be an integer/],
+    ['PasswordLength: 0', { PasswordLength: 0 }, /PasswordLength must be an integer >= 1/],
+    ['PasswordLength: 3.5', { PasswordLength: 3.5 }, /PasswordLength must be an integer/],
+    ['PasswordLength: {Ref}', { PasswordLength: { Ref: 'Len' } }, /PasswordLength must be an integer/],
+    ['ExcludePunctuation: "yes"', { ExcludePunctuation: 'yes' }, /ExcludePunctuation must be a boolean/],
+    ['ExcludeUppercase: null', { ExcludeUppercase: null }, /ExcludeUppercase must be a boolean/],
+    ['ExcludeLowercase: 1', { ExcludeLowercase: 1 }, /ExcludeLowercase must be a boolean/],
+    ['ExcludeNumbers: []', { ExcludeNumbers: [] }, /ExcludeNumbers must be a boolean/],
+    ['ExcludeCharacters: null', { ExcludeCharacters: null }, /ExcludeCharacters must be a non-empty string/],
+    ['ExcludeCharacters: 123', { ExcludeCharacters: 123 }, /ExcludeCharacters must be a non-empty string/],
+    ['GenerateStringKey: ""', { GenerateStringKey: '', SecretStringTemplate: '{}' }, /GenerateStringKey must be a non-empty string/],
+    ['SecretStringTemplate: {object}', { GenerateStringKey: 'p', SecretStringTemplate: { a: 1 } }, /SecretStringTemplate must be a non-empty string/],
+    ['GenerateStringKey without SecretStringTemplate', { GenerateStringKey: 'password' }, /must be declared together \(got only GenerateStringKey\)/],
+    ['SecretStringTemplate without GenerateStringKey', { SecretStringTemplate: '{"u":"a"}' }, /must be declared together \(got only SecretStringTemplate\)/],
+    ['SecretStringTemplate not JSON (returned the bare password RAW)', { GenerateStringKey: 'p', SecretStringTemplate: '{oops' }, /SecretStringTemplate must be a JSON object \(got a string that does not parse/],
+    ['SecretStringTemplate a JSON array', { GenerateStringKey: 'p', SecretStringTemplate: '[1]' }, /SecretStringTemplate must be a JSON object \(got JSON that is not an object/],
+  ];
+  const withBlock = (members: Record<string, unknown>): Record<string, unknown> => ({
+    Name: 'my-secret',
+    Description: 'app secret',
+    GenerateSecretString: { PasswordLength: 16, ...members },
+  });
+
+  it.each(MALFORMED_MEMBERS)(
+    'update() SKIPS the value and retains the previous block for a malformed member (%s)',
+    async (_l, members, message) => {
+      const prev = generated();
+      const next = withBlock(members);
+
+      const result = await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+      expect(updateInput().SecretString).toBeUndefined();
+      expect(childLogger.warn).toHaveBeenCalledWith(expect.stringMatching(message));
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('keeps the value AWS currently holds')
+      );
+      expect(result.effectiveProperties?.['GenerateSecretString']).toEqual(
+        prev['GenerateSecretString']
+      );
+    }
+  );
+
+  it.each(MALFORMED_MEMBERS)(
+    'create() REFUSES a malformed member (%s) before any call',
+    async (_l, members, message) => {
+      await expect(provider.create('L', TYPE, withBlock(members))).rejects.toThrow(message);
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ['PasswordLength: "20"', { PasswordLength: '20' }, (v: string) => expect(v).toHaveLength(20)],
+    ['PasswordLength: 20', { PasswordLength: 20 }, (v: string) => expect(v).toHaveLength(20)],
+    [
+      'ExcludePunctuation: "true"',
+      { ExcludePunctuation: 'true', PasswordLength: 200 },
+      (v: string) => expect(v).toMatch(/^[A-Za-z0-9]+$/),
+    ],
+    [
+      'ExcludePunctuation: "false" (a truthy string used to EXCLUDE)',
+      { ExcludePunctuation: 'false', ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, PasswordLength: 200 },
+      (v: string) => expect(v).toMatch(/^[^A-Za-z0-9]+$/),
+    ],
+    [
+      'ExcludeCharacters',
+      {
+        ExcludeCharacters: 'aeiou',
+        ExcludeUppercase: true,
+        ExcludeNumbers: true,
+        ExcludePunctuation: true,
+        PasswordLength: 200,
+      },
+      // Lowercase minus the vowels: a check the generator's own all-excluded
+      // fallback (plain lowercase) cannot satisfy by accident.
+      (v: string) => expect(v).toMatch(/^[b-df-hj-np-tv-z]+$/),
+    ],
+  ])('a CFn-spelled member is COERCED, not refused (%s)', async (_l, members, check) => {
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(members), generated());
+    const sent = updateInput().SecretString;
+    expect(sent).toBeDefined();
+    check(sent!);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('writes the password into the declared template under the declared key', async () => {
+    const members = { GenerateStringKey: 'password', SecretStringTemplate: '{"username":"admin"}', PasswordLength: 24 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(members), generated());
+    const doc = JSON.parse(updateInput().SecretString!) as Record<string, string>;
+    expect(Object.keys(doc).sort()).toEqual(['password', 'username']);
+    expect(doc['username']).toBe('admin');
+    expect(doc['password']).toHaveLength(24);
+  });
+
   it('a Description-only update of a GenerateSecretString secret sends NO SecretString', async () => {
     const prev = generated();
     const next = generated({ Description: 'renamed' });

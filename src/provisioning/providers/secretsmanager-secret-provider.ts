@@ -15,7 +15,14 @@ import {
   type Tag,
 } from '@aws-sdk/client-secrets-manager';
 import { getLogger } from '../../utils/logger.js';
-import { readConfigString, requireConfigObject } from '../config-shape.js';
+import {
+  coerceCfnBoolean,
+  coerceCfnInteger,
+  configBooleanRefusal,
+  configIntegerRefusal,
+  configStringRefusal,
+  requireConfigObject,
+} from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -627,26 +634,31 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // Omitting `SecretString` instead leaves `UpdateSecret`'s merge
       // semantics to keep the value AWS already holds.
       //
-      // The guard lives HERE and not in `generateSecretString`, which
-      // `create()` also calls (there is no live secret to fall back to on a
-      // create, so it must keep refusing).
+      // The downgrade is handed to `generateSecretString` as a callback
+      // rather than living inside it, because `create()` calls the same
+      // function with none (there is no live secret to fall back to on a
+      // create, so it must keep refusing). The container and every MEMBER
+      // (issue #3056) take the same road: a refusal on the update path is a
+      // SKIP of the whole value, announced once.
       //
       // `requireConfigObject`'s own message already ends with the
       // template-path-create clause, so this one adds only what IS specific to
       // the site: what happens to the live value.
+      const skip = (m: string): void =>
+        this.logger.warn(
+          `${m} No new secret value is generated; the secret keeps the value AWS ` +
+            `currently holds.`
+        );
       const usable = requireConfigObject(
         generateConfig,
         'AWS::SecretsManager::Secret GenerateSecretString',
-        {
-          onUnusable: (m) =>
-            this.logger.warn(
-              `${m} No new secret value is generated; the secret keeps the value AWS ` +
-                `currently holds.`
-            ),
-        }
+        { onUnusable: skip }
       );
-      if (usable === undefined) return { value: undefined, skippedGenerate: true };
-      return { value: this.generateSecretString(usable), skippedGenerate: false };
+      const generated =
+        usable === undefined ? undefined : this.generateSecretString(usable, { onUnusable: skip });
+      return generated === undefined
+        ? { value: undefined, skippedGenerate: true }
+        : { value: generated, skippedGenerate: false };
     }
     const literal = properties['SecretString'];
     if (literal === undefined) return { value: undefined, skippedGenerate: false };
@@ -682,22 +694,66 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   }
 
   /**
-   * Generate a secret string from GenerateSecretString configuration
+   * Generate a secret string from a USABLE `GenerateSecretString` block (the
+   * caller has already run `requireConfigObject` on the container).
    *
-   * Simple implementation that generates a random string based on the config.
+   * Every MEMBER is read through the shared `config-shape.ts` predicate for
+   * its type (issue #3056) rather than a cast: CFn is stringly typed, so
+   * `PasswordLength: "32"` and `ExcludePunctuation: "true"` are legitimate
+   * and coerce, while a malformed member — `null`, a blank, a non-numeric
+   * string, an object, an unresolved intrinsic — REFUSES instead of taking a
+   * default. The defaults it used to take were not inert: `(x as number) || 32`
+   * read `PasswordLength: 'abc'` as a truthy string and `new Uint8Array('abc')`
+   * minted an EMPTY password; a truthy `'false'` EXCLUDED punctuation; and a
+   * malformed `SecretStringTemplate` fell into the `catch` and returned the
+   * bare password RAW where the template declared a JSON document — as the
+   * new `AWSCURRENT`.
+   *
+   * `GenerateStringKey` and `SecretStringTemplate` must be declared TOGETHER
+   * (Secrets Manager rejects one without the other), the template must parse
+   * to a JSON object, and the key is written into it; both absent means a bare
+   * password, which is what the service does.
+   *
+   * With no `onUnusable` a refusal THROWS (the create path, where the block
+   * is template-borne). With one, the message is handed over and `undefined`
+   * is returned — the update path's SKIP, decided by the caller, so that this
+   * function never mints from a block it could not read. The two members the
+   * schema declares that this recipe does not implement, `IncludeSpace` and
+   * `RequireEachIncludedType`, are a separate fidelity gap (issue #3068), not
+   * a shape question.
    */
-  private generateSecretString(config: Record<string, unknown>): string {
-    const length = (config['PasswordLength'] as number) || 32;
-    const excludeUppercase = config['ExcludeUppercase'] as boolean;
-    const excludeLowercase = config['ExcludeLowercase'] as boolean;
-    const excludeNumbers = config['ExcludeNumbers'] as boolean;
-    const excludePunctuation = config['ExcludePunctuation'] as boolean;
-    const excludeCharacters = readConfigString(
-      config,
-      'ExcludeCharacters',
-      '',
-      'AWS::SecretsManager::Secret GenerateSecretString'
-    );
+  private generateSecretString(
+    config: Record<string, unknown>,
+    options?: { onUnusable?: (message: string) => void }
+  ): string | undefined {
+    const PATH = 'AWS::SecretsManager::Secret GenerateSecretString';
+    const refusal =
+      configIntegerRefusal(config, 'PasswordLength', PATH, 1) ??
+      configBooleanRefusal(config, 'ExcludeUppercase', PATH) ??
+      configBooleanRefusal(config, 'ExcludeLowercase', PATH) ??
+      configBooleanRefusal(config, 'ExcludeNumbers', PATH) ??
+      configBooleanRefusal(config, 'ExcludePunctuation', PATH) ??
+      configStringRefusal(config, 'ExcludeCharacters', '', PATH) ??
+      configStringRefusal(config, 'GenerateStringKey', 'required', PATH) ??
+      configStringRefusal(config, 'SecretStringTemplate', 'required', PATH) ??
+      this.templateRefusal(config, PATH);
+    if (refusal !== undefined) {
+      if (options?.onUnusable) {
+        options.onUnusable(
+          `${refusal}. Leaving this configuration unapplied here; the same value is REFUSED on a ` +
+            `template-path create.`
+        );
+        return undefined;
+      }
+      throw new Error(refusal);
+    }
+
+    const length = coerceCfnInteger(config['PasswordLength']) ?? 32;
+    const excludeUppercase = coerceCfnBoolean(config['ExcludeUppercase']) ?? false;
+    const excludeLowercase = coerceCfnBoolean(config['ExcludeLowercase']) ?? false;
+    const excludeNumbers = coerceCfnBoolean(config['ExcludeNumbers']) ?? false;
+    const excludePunctuation = coerceCfnBoolean(config['ExcludePunctuation']) ?? false;
+    const excludeCharacters = (config['ExcludeCharacters'] as string | undefined) ?? '';
 
     let chars = '';
     if (!excludeUppercase) chars += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -724,21 +780,40 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       password += chars[bytes[i]! % chars.length];
     }
 
-    // If GenerateStringKey is specified, wrap in JSON
+    // Both present (the refusal above settled "both or neither" and that the
+    // template parses to an object): write the password into the document.
     const generateStringKey = config['GenerateStringKey'] as string | undefined;
     const secretStringTemplate = config['SecretStringTemplate'] as string | undefined;
+    if (generateStringKey === undefined || secretStringTemplate === undefined) return password;
+    const template = JSON.parse(secretStringTemplate) as Record<string, unknown>;
+    template[generateStringKey] = password;
+    return JSON.stringify(template);
+  }
 
-    if (generateStringKey && secretStringTemplate) {
-      try {
-        const template = JSON.parse(secretStringTemplate) as Record<string, unknown>;
-        template[generateStringKey] = password;
-        return JSON.stringify(template);
-      } catch {
-        return password;
-      }
+  /**
+   * The refusal for the `GenerateStringKey` / `SecretStringTemplate` PAIR,
+   * after each member's own shape has passed: declared together or not at
+   * all, and the template a JSON OBJECT (an array or a scalar parses and
+   * cannot take a key; the old `catch` arm returned the bare password for a
+   * template that did not parse, RAW, with no warning).
+   */
+  private templateRefusal(config: Record<string, unknown>, path: string): string | undefined {
+    const key = config['GenerateStringKey'];
+    const template = config['SecretStringTemplate'];
+    if (key === undefined && template === undefined) return undefined;
+    if (key === undefined || template === undefined) {
+      return `${path}.GenerateStringKey and ${path}.SecretStringTemplate must be declared together (got only ${key === undefined ? 'SecretStringTemplate' : 'GenerateStringKey'})`;
     }
-
-    return password;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(template as string);
+    } catch {
+      return `${path}.SecretStringTemplate must be a JSON object (got a string that does not parse as JSON)`;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return `${path}.SecretStringTemplate must be a JSON object (got JSON that is not an object)`;
+    }
+    return undefined;
   }
 
   /**

@@ -565,6 +565,60 @@ export function configBooleanRefusal(
   return `${containerPath}.${key} must be a boolean ${malformedShapeDetail(value)}`;
 }
 
+/**
+ * Coerce a CFn integer, which may arrive as the string `"32"`.
+ *
+ * Same reason as {@link coerceCfnBoolean}: CloudFormation is stringly typed, so
+ * an imported or hand-written template legitimately spells `PasswordLength:
+ * "32"`. A finite whole number, or a string that parses to one, is the value;
+ * anything else — `null`, `''`, `'abc'`, `3.5`, an object, an unresolved
+ * intrinsic — is `undefined`, so a caller that indexed `(x as number) || 32`
+ * cannot read a malformed member as its default.
+ *
+ * @returns the integer, or `undefined` when the value is not one.
+ */
+export function coerceCfnInteger(value: unknown): number | undefined {
+  const n =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim() !== ''
+        ? Number(value)
+        : undefined;
+  return n !== undefined && Number.isInteger(n) ? n : undefined;
+}
+
+/**
+ * The integer twin of {@link configBooleanRefusal} (issue #3056): the same
+ * CONTAINER-then-FIELD halves, the FIELD half being {@link coerceCfnInteger} —
+ * the function the wire read calls. Exists for the member shape neither
+ * sibling sees: `(config['PasswordLength'] as number) || 32` read a
+ * malformed length as the default, and a non-numeric STRING (truthy) reached
+ * `new Uint8Array('abc')` and minted an EMPTY password with no warning.
+ *
+ * @param min the smallest integer that is usable (a generated-password length
+ *   of `0` is a value, not a refusal, to `Number.isInteger`, and it mints an
+ *   empty secret); pass `1` for a count, `0` where zero is legitimate.
+ * @returns The refusal sentence (`<path> must be …`), or `undefined` when the
+ *   value is usable — including the ABSENT container / ABSENT key cases, which
+ *   legitimately take the caller's default.
+ */
+export function configIntegerRefusal(
+  container: unknown,
+  key: string,
+  containerPath: string,
+  min: number
+): string | undefined {
+  if (container === undefined || container === null) return undefined;
+  if (!isPlainObject(container) || isUnresolvedIntrinsicContainer(container)) {
+    return `${containerPath} must be an object ${malformedShapeDetail(container)}`;
+  }
+  const value = container[key];
+  if (value === undefined) return undefined;
+  const n = coerceCfnInteger(value);
+  if (n !== undefined && n >= min) return undefined;
+  return `${containerPath}.${key} must be an integer >= ${min} ${malformedShapeDetail(value)}`;
+}
+
 /** The FIELD half of {@link configStringRefusal}, shared with {@link requireConfigString}. */
 function configValueRefusal(
   value: unknown,
@@ -669,9 +723,10 @@ const NAMEABLE_INTRINSIC_KEYS: ReadonlySet<string> = new Set([
  * (`DeploymentController`) and `codebuild-provider.ts` (reached from `update()`
  * through `mapProperties`). `secretsmanager-secret-provider.ts` was on this
  * list until issue #3048 moved its update path to a SKIP (the container is
- * refused by `requireConfigObject` before `generateSecretString` reads it;
- * `create()` still throws, and so does the MEMBER-level `ExcludeCharacters`
- * read inside a well-formed container -- issue #3056). Not a count, for the same
+ * refused by `requireConfigObject` before `generateSecretString` reads it,
+ * and since issue #3056 every MEMBER read inside it takes the same skip
+ * through an `onUnusable` callback; `create()` still throws on both). Not a
+ * count, for the same
  * reason as the near-copy list below: two successive reviews each found
  * another. Re-derive with
  * `grep -rn 'readConfigString(' src/provisioning/providers/`.
