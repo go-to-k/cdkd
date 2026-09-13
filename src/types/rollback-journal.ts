@@ -23,6 +23,7 @@
  */
 
 import type { CompletedOperation, FailedOperation } from '../deployment/rollback-executor.js';
+import { displaySafe } from '../utils/display-safe.js';
 
 /**
  * Journal format version, INDEPENDENT of the state schema. An unknown value
@@ -107,33 +108,67 @@ export class UnknownRollbackJournalVersionError extends Error {
 }
 
 /**
+ * One spelling of "this value came from an S3 key or a rollback-journal record,
+ * and is about to be interpolated into a message a terminal will render"
+ * (issue #3064). Call it for a stack name, a parse detail, or a journal field.
+ * `grep safeJournalText` answers the scope; this comment does not.
+ */
+function safeJournalText(value: unknown): string {
+  return displaySafe(value, { asciiOnly: true });
+}
+
+/**
  * Parse + validate a journal body. Throws
  * {@link UnknownRollbackJournalVersionError} on a newer version, and a plain
  * Error on a structurally-invalid body.
  */
 export function parseRollbackJournal(bodyString: string, stackName: string): RollbackJournal {
+  // The ASCII allowlist, and the same reasoning `S3StateBackend.parseStateBody`
+  // records for its twin (issue #3003): `rollback-journal.json` is a sibling of
+  // `state.json` in the same bucket, so anyone with `s3:PutObject` writes it,
+  // and every value below is either an S3 key segment or a field of that
+  // unchecked cast. A stack name has a known charset, so the allowlist is a
+  // no-op on every legitimate input while removing the invisibles a denylist
+  // leaves behind (issue #3064).
+  const shownStack = safeJournalText(stackName);
   let parsed: unknown;
   try {
     parsed = JSON.parse(bodyString);
   } catch (err) {
-    throw new Error(
-      `Rollback journal for '${stackName}' is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
-    );
+    // V8's `SyntaxError` QUOTES the offending input, so this detail carries
+    // bytes of the journal body itself. cdkd's output is line-oriented, so an
+    // unsanitized newline here invents a line that reads like a real one --
+    // and `formatError` prints a non-`CdkdError`'s `message` RAW, so nothing
+    // downstream would have caught it.
+    //
+    // No empty-detail fallback, and that is measured rather than assumed: the
+    // only thing that reaches here is a V8 `SyntaxError`, whose wording is
+    // ASCII prose (`Unexpected token ...`, `Expected property name ...`) that
+    // survives the allowlist even when the quoted input sanitises away
+    // entirely. A `detail ? ... : ...` ternary here had a dead arm and a test
+    // that could not reach it.
+    const detail = safeJournalText(err instanceof Error ? err.message : String(err));
+    throw new Error(`Rollback journal for '${shownStack}' is not valid JSON: ${detail}`);
   }
   if (typeof parsed !== 'object' || parsed === null) {
-    throw new Error(`Rollback journal for '${stackName}' is malformed (not an object).`);
+    throw new Error(`Rollback journal for '${shownStack}' is malformed (not an object).`);
   }
   const j = parsed as Partial<RollbackJournal>;
   if (typeof j.journalVersion !== 'number' || j.journalVersion < 1) {
+    // `String(v)` FIRST, then sanitize -- `displaySafe` maps `null` and
+    // `undefined` to the empty string, so sanitizing first would report a
+    // journal whose `journalVersion` is `null` as if the field were absent.
+    // The same order, and the same reason, as `parseStateBody`'s version arm.
+    const shown = safeJournalText(String(j.journalVersion));
     throw new Error(
-      `Rollback journal for '${stackName}' has an invalid 'journalVersion' (${String(j.journalVersion)}).`
+      `Rollback journal for '${shownStack}' has an invalid 'journalVersion' (${shown}).`
     );
   }
   if (j.journalVersion > ROLLBACK_JOURNAL_VERSION) {
     throw new UnknownRollbackJournalVersionError(j.journalVersion, stackName);
   }
   if (!Array.isArray(j.segments)) {
-    throw new Error(`Rollback journal for '${stackName}' is missing a 'segments' array.`);
+    throw new Error(`Rollback journal for '${shownStack}' is missing a 'segments' array.`);
   }
   return {
     journalVersion: j.journalVersion,

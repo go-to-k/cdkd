@@ -1180,3 +1180,135 @@ describe('rollbackCommand — plan preview vs a refused Snapshot delete (#1368)'
     expect(lines.some((l) => /already reverted/.test(l))).toBe(true);
   });
 });
+
+/**
+ * Issue [#3064](https://github.com/go-to-k/cdkd/issues/3064): the plan preview
+ * is what the user CONFIRMS against, so a forged row here is worse than a
+ * forged diagnostic line -- the confirmation attests to something other than
+ * what will run.
+ *
+ * `rollback-journal.json` is a sibling of `state.json` in the same bucket and
+ * carries no more validation than an unchecked cast, so every field the
+ * preview renders is attacker-writable.
+ *
+ * Two dimensions per site. The HOLE is the guard being dropped. The CLASS is
+ * `asciiOnly` being swapped for the denylist, which still removes a newline
+ * but leaves the invisible formatters and bidi marks that `display-safe.ts`
+ * names as its residual -- a control byte is in BOTH classes and cannot tell
+ * them apart, which is why every fixture below carries a zero-width space too.
+ */
+describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const CTRL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+  const INVISIBLE = /[\u200b-\u200f\ufeff]/;
+
+  const FORGED_ID = 'Vic\u200btim\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+  const FORGED_TYPE = 'AWS::S3::Buc\u200bket\n  - delete   RealBucket (AWS::S3::Bucket)';
+
+  function installForgedJournal(kind: 'completed' | 'failed'): FakeBackend {
+    const op = {
+      logicalId: FORGED_ID,
+      changeType: 'CRE\u200bATE\n  forged-change-type',
+      resourceType: FORGED_TYPE,
+      physicalId: 'phys-D',
+      provisionedBy: 'sdk',
+      ...(kind === 'failed' && { attemptedProperties: {} }),
+    };
+    return installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            runId: '2026\u200b0101\n  - delete   RealQueue (AWS::SQS::Queue)',
+            timestamp: 1,
+            reason: 'auto-rollb\u200back-clean\n  - delete   RealTable (AWS::DynamoDB::Table)',
+            initialDeploy: false,
+            operations: kind === 'completed' ? [op] : [],
+            ...(kind === 'failed' && { failedOperations: [op] }),
+          },
+        ],
+      }),
+    });
+  }
+
+  async function forgedPlanLines(
+    kind: 'completed' | 'failed',
+    opts: Record<string, unknown> = {}
+  ): Promise<string[]> {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installForgedJournal(kind);
+    await rollbackCommand('S', { ...baseOpts, ...opts }).catch(() => undefined);
+    return info.mock.calls.map((c) => String(c[0]));
+  }
+
+  /**
+   * The plan's own first line begins with a newline (it separates segments), so
+   * "contains no newline" is the wrong assertion. What must hold is that no
+   * line the journal CONTRIBUTED text to gained a second one -- i.e. the
+   * forged rows never become rows.
+   */
+  const forgedRowCount = (lines: string[]): number =>
+    lines.join('\n').split('\n').filter((l) => /^\s*- delete\s+Real/.test(l)).length;
+
+  it('the completed-operation label cannot inject a row', async () => {
+    const lines = await forgedPlanLines('completed');
+
+    expect(forgedRowCount(lines)).toBe(0);
+    for (const line of lines) {
+      expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
+      expect(line).not.toMatch(INVISIBLE);
+    }
+    // Removed, not censored: the operator still sees what the journal claimed.
+    expect(lines.join('\n')).toContain('Vic tim');
+  });
+
+  it('the failed-operation label cannot inject a row', async () => {
+    const lines = await forgedPlanLines('failed', { revertFailed: true });
+
+    expect(forgedRowCount(lines)).toBe(0);
+    for (const line of lines) {
+      expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
+      expect(line).not.toMatch(INVISIBLE);
+    }
+  });
+
+  it('the not-reverting `left as-is` label cannot inject a row', async () => {
+    // `--revert-failed` OFF is a different label function from the two above,
+    // and it renders the failed op's changeType as well.
+    const lines = await forgedPlanLines('failed');
+
+    expect(forgedRowCount(lines)).toBe(0);
+    for (const line of lines) {
+      expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
+      expect(line).not.toMatch(INVISIBLE);
+    }
+    expect(lines.join('\n')).toContain('CRE ATE');
+  });
+
+  it('the SEGMENT header cannot inject a row through its reason or run id', async () => {
+    const lines = await forgedPlanLines('completed');
+    const header = lines.find((l) => l.includes('Segment 1/1'));
+
+    expect(header).toBeDefined();
+    expect(header!.replace(/^\n/, '')).not.toMatch(CTRL);
+    expect(header).not.toMatch(INVISIBLE);
+    expect(header).toContain('auto-rollb ack-clean');
+    expect(header).toContain('2026 0101');
+  });
+});
