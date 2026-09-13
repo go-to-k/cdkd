@@ -7,7 +7,8 @@ description: "cdkd deploy wait and concurrency flags — the concurrency knobs, 
 
 `cdkd deploy` decides two things you can tune from the command line: how many
 operations it runs at once, and how long it waits before calling a resource
-done. This page covers both. The rest of the deploy flags live under
+done. This page covers both, plus what the wait mode does and does not change
+about the stack lock. The rest of the deploy flags live under
 [Deploy: tuning](cli-deploy-tuning.md) and
 [Deploy: safety & compatibility flags](cli-deploy-safety.md).
 
@@ -224,6 +225,95 @@ there is no failure state to detect — and failing would hand the automatic
 rollback a healthy distribution to disable and delete. cdkd warns with the
 manual wait command and proceeds.
 
+## What the stack lock covers, and when a second deploy can start
+
+A stack lock covers one stack in one region, and is held for as long as the
+command is working on that stack — a multi-stack run releases each stack's lock
+as that stack finishes rather than holding them all to the end. Either way it
+is released when the work finishes, not when the resources it touched finish
+provisioning, so a second `cdkd deploy` on the same stack can start while
+resources the first one created are still coming up.
+
+That holds in every wait mode, not only under `--no-wait`. `--no-wait` widens
+the window by skipping the waits the default mode runs, but the default mode
+already returns before a CloudFront distribution is `Deployed` and before an
+ECS service reaches steady state, and no mode waits on a VPC Lambda's ENI
+attach. `--full-wait` narrows the window to the waits it adds. None of the
+three change what releasing the lock means.
+
+While it is held and being renewed, the lock keeps other cdkd runs out of the
+stack, short of the exceptions below. It does not queue them: a deploy that
+finds it held retries three times at two-second intervals and then fails,
+naming the current holder when it can read the lock — when it cannot, the
+attempts fire back to back and it fails at once.
+
+### What a second deploy started too early runs into
+
+**An update against a still-provisioning resource is likely to fail, and the
+failure rolls that deploy back.** cdkd does not wait for a resource to become
+available before updating it.
+
+Its per-operation retry covers throttling responses (HTTP 429 included),
+transient HTTP 500, 502, 503 and 504 answers, and AWS messages matching a fixed
+list of transient patterns. Nested stacks and Custom Resources sit outside that
+retry entirely and handle their own transient errors.
+
+The backoff budget is roughly 47 to 64 seconds for a single operation, and up to
+about ten minutes where a replacement path nests one retry loop inside another.
+A rejection in none of those classes, or one that outlasts the budget, fails the
+resource.
+
+[Rollback](rollback.md) then reverts what the *second* deploy had already done,
+while the first deploy's resources keep coming up in the background: it deletes
+what that deploy created and undoes its own updates. `DeletionPolicy` carves
+out what survives that delete, per the table under
+[`cdkd rollback`](cli-rollback.md#deletionpolicy-on-a-rolled-back-create), and
+one carve-out is not a policy at all: a resource the second deploy had already
+deleted cannot be brought back. `--no-rollback` leaves the whole partial deploy
+in place instead.
+
+**A second deploy whose template produces no diff updates nothing, so it avoids
+that rejection.** A resource the rollback above left in AWS is re-adopted before
+the diff runs — when the template still declares it with the same type and
+leaves the physical name for cdkd to derive — and the adoption produces no diff
+entry of its own, so such a deploy stays no-change. It still re-resolves the
+stack's Outputs, and an attribute the first deploy never produced does not read
+back as expected:
+
+- An Output over a `--no-wait` EC2 instance's `PublicIp` resolves to the empty
+  string the first deploy recorded, and that empty string is persisted and
+  served to `Fn::ImportValue` consumers. No later deploy re-reads it from AWS:
+  the recorded value stands until the instance is updated or replaced.
+  `PrivateIp`, `PublicDnsName`, `PrivateDnsName` and `AvailabilityZone` behave
+  the same way.
+- A single Output the resolver cannot resolve at all suppresses the whole
+  re-resolved bag: cdkd warns and keeps every previously persisted Output
+  value, not only that one.
+
+**The baseline it reads is only as complete as the first deploy's exit.** A
+deploy that succeeded wrote its final state, physical IDs included, before
+releasing the lock. A deploy that failed or was interrupted wrote what it could
+on a best-effort basis.
+
+### The lock does not guarantee exclusion
+
+It can change hands while its holder is still working. Three ways:
+
+- Renewals that fail long enough for the TTL to lapse leave the lock free for
+  another process to take.
+- [`cdkd force-unlock`](cli-force-unlock.md) removes one outright, live holder
+  included.
+- `cdkd state orphan --force` force-releases the stack's lock the same way on
+  its way to dropping the state record.
+
+A holder that notices warns and declines to delete a lock it no longer owns,
+but past that point two processes can be writing one stack's state.
+
+A lock can also outlive its command: a force-quit (a second Ctrl-C), a
+`SIGKILL`, or a release cdkd refuses because it cannot confirm the lock is
+still its own. Such a lock lapses on its own once its TTL passes with nobody
+renewing it, and `cdkd force-unlock` clears one immediately.
+
 ## Why the defaults are where they are
 
 Where CloudFormation and Terraform agree on the completion definition, cdkd
@@ -272,3 +362,5 @@ the deploy at all. The full cross-command table is in the
 - [Deploy: tuning](cli-deploy-tuning.md) — timeouts, name prefixing, observed-state capture
 - [Deploy: safety & compatibility flags](cli-deploy-safety.md) — the guards and their escape hatches
 - [Benchmarks](benchmarks.md) — what the wait modes cost in wall-clock time
+- [State Management](state-management.md) — the stack lock's layout, TTL and renewal
+- [Rollback](rollback.md) — what the automatic rollback reverts when a deploy fails

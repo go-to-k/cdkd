@@ -184,7 +184,7 @@ CloudFormation:
 
 | `DeletionPolicy` | What the rollback does |
 | --- | --- |
-| `Retain` | Leaves the resource in AWS and drops it from state. The plan labels it `orphan`. |
+| `Retain` | Leaves the resource in AWS and moves it into a rollback-orphan record a later deploy can re-adopt. The plan labels it `orphan`. |
 | `Snapshot` | Takes the final snapshot, then deletes. A shape cdkd cannot snapshot is refused as a per-operation failure, and the journal is kept. |
 | `RetainExceptOnCreate`, `Delete`, absent | Deletes plainly. |
 
