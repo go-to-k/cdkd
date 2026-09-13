@@ -23,7 +23,7 @@
  */
 
 import type { CompletedOperation, FailedOperation } from '../deployment/rollback-executor.js';
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
 
 /**
  * Journal format version, INDEPENDENT of the state schema. An unknown value
@@ -96,8 +96,12 @@ export class UnknownRollbackJournalVersionError extends Error {
   readonly foundVersion: number;
   readonly stackName: string;
   constructor(foundVersion: number, stackName: string) {
+    // The MESSAGE is sanitized; the `stackName` PROPERTY stays raw, because a
+    // property is a value a caller may key on and a message is only ever
+    // shown (issue #3064). `foundVersion` is already narrowed to a number by
+    // the parser's guard above this throw.
     super(
-      `Rollback journal for '${stackName}' has journalVersion ${foundVersion}, ` +
+      `Rollback journal for '${safeJournalText(stackName)}' has journalVersion ${foundVersion}, ` +
         `but this cdkd only understands up to ${ROLLBACK_JOURNAL_VERSION}. ` +
         `Upgrade cdkd to roll this stack back.`
     );
@@ -114,7 +118,7 @@ export class UnknownRollbackJournalVersionError extends Error {
  * `grep safeJournalText` answers the scope; this comment does not.
  */
 function safeJournalText(value: unknown): string {
-  return displaySafe(value, { asciiOnly: true });
+  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
 }
 
 /**
@@ -156,9 +160,11 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
   const j = parsed as Partial<RollbackJournal>;
   if (typeof j.journalVersion !== 'number' || j.journalVersion < 1) {
     // `String(v)` FIRST, then sanitize -- `displaySafe` maps `null` and
-    // `undefined` to the empty string, so sanitizing first would report a
-    // journal whose `journalVersion` is `null` as if the field were absent.
-    // The same order, and the same reason, as `parseStateBody`'s version arm.
+    // `undefined` to the empty string, so sanitizing first would print `null`
+    // as nothing. That order covers ONLY those two values; a version that is
+    // entirely invisible characters also sanitizes to nothing, and for that the
+    // predicate's `UNRENDERABLE` fallback is what keeps the slot from reading
+    // as absent. Same order and same reason as `parseStateBody`'s version arm.
     const shown = safeJournalText(String(j.journalVersion));
     throw new Error(
       `Rollback journal for '${shownStack}' has an invalid 'journalVersion' (${shown}).`

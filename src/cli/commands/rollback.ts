@@ -37,7 +37,7 @@ import {
   type StackOrphanRecord,
 } from '../../types/state.js';
 import type { StackStateRef } from '../../state/s3-state-backend.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, UNRENDERABLE } from '../../utils/display-safe.js';
 
 interface RollbackOptions {
   force?: boolean;
@@ -122,12 +122,6 @@ function snapshotNote(
 }
 
 /**
- * Human label for a planned rollback action (plan preview). `skipFinalSnapshot`
- * is threaded in because the classifier is pure (it cannot see CLI flags) and
- * the Snapshot label would otherwise promise a final snapshot the run is about
- * to skip — a data-loss-relevant lie in the one preview the user reads.
- */
-/**
  * One spelling of "this value came from an S3 key or a rollback-journal record,
  * and is about to be interpolated into a message a terminal will render"
  * (issue #3064).
@@ -148,9 +142,15 @@ function snapshotNote(
  * key silently mismatches the record it is meant to find.
  */
 function safe(value: unknown): string {
-  return displaySafe(value, { asciiOnly: true });
+  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
 }
 
+/**
+ * Human label for a planned rollback action (plan preview). `skipFinalSnapshot`
+ * is threaded in because the classifier is pure (it cannot see CLI flags) and
+ * the Snapshot label would otherwise promise a final snapshot the run is about
+ * to skip — a data-loss-relevant lie in the one preview the user reads.
+ */
 function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string {
   const { op, action, replacement } = item;
   const rep = replacement ? ' [replacement occurred, best-effort revert]' : '';
@@ -364,7 +364,7 @@ export async function rollbackCommand(
       const journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
       if (!journal || journal.segments.length === 0) {
         throw new Error(
-          `Nothing to roll back for '${stackName}' (${region}). ` +
+          `Nothing to roll back for '${safe(stackName)}' (${safe(region)}). ` +
             "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
         );
       }
@@ -391,13 +391,13 @@ export async function rollbackCommand(
       const newestSegment = journal.segments[journal.segments.length - 1]!;
       if (newestSegment.roleArn && !options.roleArn) {
         logger.info(
-          `Note: the failed deploy ran with --role-arn ${newestSegment.roleArn}; ` +
+          `Note: the failed deploy ran with --role-arn ${safe(newestSegment.roleArn)}; ` +
             `this rollback is running with ambient credentials (pass --role-arn to match).`
         );
       }
 
       // 5. Plan — newest-first, one block per segment.
-      logger.info(`\nRollback plan for '${stackName}' (${region}):`);
+      logger.info(`\nRollback plan for '${safe(stackName)}' (${safe(region)}):`);
       // Plan preview walks a COPY of state so it does not disturb replay.
       const planStateView: Record<string, ResourceState> = { ...stateResources };
       for (let s = journal.segments.length - 1; s >= 0; s--) {
@@ -431,7 +431,7 @@ export async function rollbackCommand(
       logger.info('');
 
       if (!skipConfirmation) {
-        const ok = await confirm(`Roll back '${stackName}' (${region})?`);
+        const ok = await confirm(`Roll back '${safe(stackName)}' (${safe(region)})?`);
         if (!ok) {
           logger.info('Rollback cancelled');
           return;
@@ -507,7 +507,7 @@ export async function rollbackCommand(
           } catch (retryError) {
             logger.warn(
               `Failed to persist state after a rollback operation: ${retryError instanceof Error ? retryError.message : String(retryError)}. ` +
-                `The resource was reverted in AWS; re-run 'cdkd rollback ${stackName}' to reconcile state.`
+                `The resource was reverted in AWS; re-run 'cdkd rollback ${safe(stackName)}' to reconcile state.`
             );
           }
         }
@@ -676,19 +676,21 @@ export async function rollbackCommand(
         survivingOrphans.length === 0
       ) {
         await setup.stateBackend.deleteState(stackName, region);
-        logger.info(`State for '${stackName}' (${region}) removed (stack fully rolled back).`);
+        logger.info(
+          `State for '${safe(stackName)}' (${safe(region)}) removed (stack fully rolled back).`
+        );
       }
 
       // 10. Exit codes.
       if (interrupted) {
         throw new PartialFailureError(
-          `Rollback interrupted. Journal preserved — re-run 'cdkd rollback ${stackName}' to finish.`
+          `Rollback interrupted. Journal preserved — re-run 'cdkd rollback ${safe(stackName)}' to finish.`
         );
       }
       if (totalFailures > 0) {
         throw new PartialFailureError(
           `Rollback completed with ${totalFailures} failed operation(s). Journal preserved — ` +
-            `re-run 'cdkd rollback ${stackName}' to retry.`
+            `re-run 'cdkd rollback ${safe(stackName)}' to retry.`
         );
       }
       if (totalWarnings > 0) {
@@ -696,7 +698,7 @@ export async function rollbackCommand(
           `Rollback completed with ${totalWarnings} skipped/unrecoverable operation(s) (see warnings above).`
         );
       }
-      logger.info(`\nRollback of '${stackName}' (${region}) complete.`);
+      logger.info(`\nRollback of '${safe(stackName)}' (${safe(region)}) complete.`);
     } finally {
       // Release FIRST, unregister LAST (issue #2118). While the release
       // round-trip is in flight the lock is still held, so the handlers must
@@ -724,7 +726,7 @@ export async function rollbackCommand(
       try {
         await setup.lockManager.releaseLock(stackName, region).catch((err) => {
           logger.warn(
-            `Failed to release lock for '${stackName}' (${region}): ${err instanceof Error ? err.message : String(err)}`
+            `Failed to release lock for '${safe(stackName)}' (${safe(region)}): ${safe(err instanceof Error ? err.message : String(err))}`
           );
         });
       } finally {

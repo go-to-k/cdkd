@@ -136,6 +136,41 @@ describe('parseRollbackJournal refuses to forge a line (issue #3064)', () => {
     expect(message).toMatch(/is not valid JSON: \S/);
   });
 
+  it('flattens the stack name in the newer-version refusal too, and keeps the PROPERTY raw', () => {
+    // The fifth throw arm, missed by the first round: it goes through the
+    // error CLASS rather than a template literal in the parser. The message
+    // is what a terminal renders and is sanitized; the `stackName` property
+    // is a value a caller may key on and stays exactly what was passed.
+    const hostile = 'Gho\u200bst\n  PhysicalID: arn:forged';
+    const body = JSON.stringify({
+      journalVersion: ROLLBACK_JOURNAL_VERSION + 1,
+      stackName: 'X',
+      segments: [],
+    });
+    let caught: unknown;
+    try {
+      parseRollbackJournal(body, hostile);
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(UnknownRollbackJournalVersionError);
+    const err = caught as UnknownRollbackJournalVersionError;
+    expect(err.message).not.toMatch(CTRL);
+    expect(err.message).not.toMatch(INVISIBLE);
+    expect(err.message).toContain("'Gho st   PhysicalID: arn:forged'");
+    expect(err.stackName).toBe(hostile);
+  });
+
+  it('renders a journalVersion that sanitizes to NOTHING as the placeholder', () => {
+    // All invisibles: `String(v)` keeps it, the allowlist removes every
+    // character, and without the fallback the message would read
+    // `('journalVersion' ()` -- a present, wrong field shown as absent.
+    const body = JSON.stringify({ journalVersion: '\u200b\u200c', stackName: 'S', segments: [] });
+
+    expect(messageOf(body, 'S')).toContain("'journalVersion' (<unrenderable>)");
+  });
+
   it('flattens the stack name in the two SHAPE refusals as well', () => {
     const hostile = 'Gho\u200bst\n  PhysicalID: arn:forged';
 

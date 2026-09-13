@@ -1198,7 +1198,12 @@ describe('rollbackCommand — plan preview vs a refused Snapshot delete (#1368)'
  * them apart, which is why every fixture below carries a zero-width space too.
  */
 describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)', () => {
-  beforeEach(() => vi.clearAllMocks());
+  let originalIsTTY: boolean | undefined;
+  beforeEach(() => {
+    originalIsTTY = process.stdin.isTTY;
+    vi.clearAllMocks();
+  });
+  afterEach(() => setStdinIsTty(originalIsTTY));
 
   const CTRL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
   const INVISIBLE = /[\u200b-\u200f\ufeff]/;
@@ -1237,6 +1242,9 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
             runId: '2026\u200b0101\n  - delete   RealQueue (AWS::SQS::Queue)',
             timestamp: 1,
             reason: 'auto-rollb\u200back-clean\n  - delete   RealTable (AWS::DynamoDB::Table)',
+            // Rendered in its own `Note:` line directly ABOVE the plan header --
+            // the one journal field the first fix round did not enumerate.
+            roleArn: 'arn:aws:iam::1:role/De\u200bploy\n  - delete   RealRole (AWS::IAM::Role)',
             initialDeploy: false,
             operations: kind === 'completed' ? [op] : [],
             ...(kind === 'failed' && { failedOperations: [op] }),
@@ -1310,5 +1318,229 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect(header).not.toMatch(INVISIBLE);
     expect(header).toContain('auto-rollb ack-clean');
     expect(header).toContain('2026 0101');
+  });
+
+  it('the `--role-arn` NOTE above the plan cannot inject a row', async () => {
+    // A journal field the first round's enumeration missed: it is not an op
+    // field and not a segment-header field, and it prints INSIDE the block the
+    // user confirms against.
+    const lines = await forgedPlanLines('completed');
+    const note = lines.find((l) => l.includes('ran with --role-arn'));
+
+    expect(note).toBeDefined();
+    expect(note).not.toMatch(CTRL);
+    expect(note).not.toMatch(INVISIBLE);
+    expect(note).toContain('role/De ploy');
+    expect(forgedRowCount(lines)).toBe(0);
+  });
+
+  it('a field that sanitizes to NOTHING renders the placeholder, not an empty slot', async () => {
+    // `logicalId: '\u200b'` is all invisibles. Without the fallback the row
+    // reads `- skip      (AWS::...)`, i.e. as if the id were absent -- while
+    // the replay still keys on the raw `'\u200b'`. The predicate's
+    // `|| UNRENDERABLE` is what keeps the slot visibly filled.
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: { version: 8, stackName: 'S', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [
+              {
+                logicalId: '\u200b',
+                changeType: 'CREATE',
+                resourceType: 'AWS::S3::Bucket',
+                physicalId: 'p',
+                provisionedBy: 'sdk',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+    const row = info.mock.calls.map((c) => String(c[0])).find((l) => /^\s*- skip/.test(l));
+
+    expect(row).toBeDefined();
+    expect(row).toContain('<unrenderable> (AWS::S3::Bucket)');
+  });
+
+  it('the stack name and region reach every message sanitized on the no-arg path', async () => {
+    // With no positional argument the command picks the single journaled
+    // stack from a RAW KEY SCAN, so `stackName` / `region` are S3 key segments
+    // there -- the same population `state.ts` guards. The plan header and the
+    // confirmation prompt are the two lines that matter most.
+    const hostileStack = 'Gho\u200bst\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: hostileStack, region: 'us-east-1' }]),
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${hostileStack}/us-east-1/rollback-journal.json`,
+      ]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: hostileStack,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: hostileStack,
+        region: 'us-east-1',
+        segments: [
+          { timestamp: 1, reason: 'auto-rollback-clean', initialDeploy: false, operations: [] },
+        ],
+      }),
+    });
+    await rollbackCommand(undefined, { ...baseOpts }).catch(() => undefined);
+    const lines = info.mock.calls.map((c) => String(c[0]));
+
+    expect(forgedRowCount(lines)).toBe(0);
+    for (const line of lines) {
+      expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
+      expect(line).not.toMatch(INVISIBLE);
+    }
+    expect(lines.some((l) => l.includes("Rollback plan for 'Gho st"))).toBe(true);
+  });
+
+  it('the CONFIRMATION PROMPT itself is sanitized', async () => {
+    // The prompt is the one line the user answers `y` to. It is reached only
+    // without `--force` / `--yes` and on a TTY; the readline mock at the top
+    // of this file records the exact text handed to `question()`.
+    const hostileStack = 'Gho\u200bst\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('n');
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: hostileStack, region: 'us-east-1' }]),
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${hostileStack}/us-east-1/rollback-journal.json`,
+      ]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: hostileStack,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: hostileStack,
+        region: 'us-east-1',
+        segments: [
+          { timestamp: 1, reason: 'auto-rollback-clean', initialDeploy: false, operations: [] },
+        ],
+      }),
+    });
+    await rollbackCommand(undefined, { ...baseOpts, force: false, yes: false }).catch(
+      () => undefined
+    );
+
+    expect(readlineQuestion).toHaveBeenCalledTimes(1);
+    const prompt = String(readlineQuestion.mock.calls[0]![0]);
+    expect(prompt).not.toMatch(CTRL);
+    expect(prompt).not.toMatch(INVISIBLE);
+    expect(prompt).toContain("Roll back 'Gho st");
+  });
+
+  it('the previewState LOOKUPS stay keyed on the RAW logicalId', async () => {
+    // The one place sanitizing is WRONG. The preview classifies each older
+    // segment against a running copy of state that the newer segments' plan
+    // has already mutated, and those mutations index by `op.logicalId`. A
+    // sanitized key would delete the wrong entry (nothing), so the older
+    // segment's op on the same id would classify as a live `revert` instead
+    // of `no longer in state`. This fixture is the only one in the suite whose
+    // journal id differs from its sanitized form AND exists in state, which is
+    // what makes the two keys observable as different -- an ASCII id cannot.
+    const X = 'Vic\u200btim';
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const record = {
+      physicalId: 'phys-X',
+      resourceType: 'AWS::S3::Bucket',
+      properties: {},
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk',
+    };
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: { [X]: record },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          // OLDER: an update of X, replayed second.
+          {
+            timestamp: 1,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [
+              {
+                logicalId: X,
+                changeType: 'UPDATE',
+                resourceType: 'AWS::S3::Bucket',
+                physicalId: 'phys-X',
+                provisionedBy: 'sdk',
+                previousState: { ...record, properties: { Old: true } },
+              },
+            ],
+          },
+          // NEWER: the create of X, replayed first; its `delete` removes X
+          // from the preview, so the older UPDATE must then read as gone.
+          {
+            timestamp: 2,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [
+              {
+                logicalId: X,
+                changeType: 'CREATE',
+                resourceType: 'AWS::S3::Bucket',
+                physicalId: 'phys-X',
+                provisionedBy: 'sdk',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+    const rows = info.mock.calls.map((c) => String(c[0])).filter((l) => /^\s*- /.test(l));
+
+    expect(rows.some((l) => /^\s*- delete\s+Vic tim/.test(l))).toBe(true);
+    expect(rows.some((l) => /^\s*- skip\s+Vic tim .*no longer in state/.test(l))).toBe(true);
+    expect(rows.some((l) => /^\s*- revert\s+Vic tim/.test(l))).toBe(false);
   });
 });
