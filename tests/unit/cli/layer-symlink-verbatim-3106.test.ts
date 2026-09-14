@@ -20,7 +20,7 @@ import { copyLayerTreeLastWins } from '../../../src/local/layer-tree-copy.js';
 
 /**
  * Issue #3106: a RELATIVE symlink inside a Lambda Layer asset must arrive in
- * the merged `/opt` tmpdir as the SAME relative link. Both layer copies go
+ * the merged `/opt` tmpdir as the SAME relative link. Both layer copies WENT
  * through `fs.cpSync`, whose `verbatimSymlinks` defaults to false — and a
  * non-verbatim copy rewrites the link target to the ABSOLUTE path of the
  * source on the host, which is dangling inside the container (only the
@@ -197,6 +197,35 @@ describe('copyLayerTreeLastWins merges symlinks last-wins without resolving them
     // `cpSync({ force })` wrote B's files THROUGH the link into it.
     expect(readFileSync(join(dest, 'nodejs', 'node_modules', 'x', 'index.js'), 'utf8')).toBe('A\n');
     expect(readFileSync(join(a, 'nodejs', 'node_modules', 'x', 'index.js'), 'utf8')).toBe('A\n');
+  });
+
+  it("a later layer's FILE replaces a directory and a dangling link, and its DIRECTORY replaces a file", () => {
+    // The two arms the cases above do not reach: the file branch's guard and
+    // the directory branch's guard, each against the OTHER kind. Measured on
+    // Node 24.21 with the guard removed: a single-file `cpSync` onto a
+    // directory throws `ERR_FS_CP_NON_DIR_TO_DIR`, onto a dangling link it
+    // ABORTS THE PROCESS (a C++ `filesystem_error` no JS frame catches, rc
+    // 134), and `mkdirSync({ recursive })` onto a file throws `EEXIST`.
+    const a = layer('a', (d) => {
+      mkdirSync(join(d, 'python', 'foo'), { recursive: true });
+      writeFileSync(join(d, 'python', 'foo', 'x.py'), 'a\n');
+      symlinkSync('missing', join(d, 'bin', 'tool'));
+      writeFileSync(join(d, 'bin', 'pkg'), 'FILE\n');
+    });
+    const b = layer('b', (d) => {
+      mkdirSync(join(d, 'python'));
+      writeFileSync(join(d, 'python', 'foo'), 'FILE\n');
+      writeFileSync(join(d, 'bin', 'tool'), '#!/bin/sh\necho tool\n', { mode: 0o755 });
+      mkdirSync(join(d, 'bin', 'pkg'));
+      writeFileSync(join(d, 'bin', 'pkg', 'y'), 'B\n');
+    });
+    const dest = mergedOf(a, b);
+    expect(lstatSync(join(dest, 'python', 'foo')).isFile()).toBe(true);
+    expect(readFileSync(join(dest, 'python', 'foo'), 'utf8')).toBe('FILE\n');
+    expect(lstatSync(join(dest, 'bin', 'tool')).isFile()).toBe(true);
+    expect(readFileSync(join(dest, 'bin', 'tool'), 'utf8')).toContain('echo tool');
+    expect(lstatSync(join(dest, 'bin', 'pkg')).isDirectory()).toBe(true);
+    expect(readFileSync(join(dest, 'bin', 'pkg', 'y'), 'utf8')).toBe('B\n');
   });
 
   it('a cyclic directory link terminates the walk, and an absolute link to a host directory never reaches the host', () => {

@@ -51,10 +51,11 @@ Index of every area: [code-layout.md](code-layout.md).
     (thin `execFile`/`spawn` wrappers around docker pull/run/logs/rm + free-
     port allocator; optional `--name` for orphan-sweep),
     `layer-tree-copy.ts` (issue #3106 — `copyLayerTreeLastWins`, the ONE
-    layer-merge copy both `invoke` and `start-api` call: `cpSync` for
-    everything but symlinks, which are then placed by hand last-wins with
-    their own target strings; its doc comment records why a bare
-    `verbatimSymlinks: true` was wrong in both directions),
+    layer-merge copy both `invoke` and `start-api` call: an explicit walk
+    that recurses only into real directories, copies files one at a time,
+    recreates symlinks with their own target strings and lets the last
+    layer win for every kind; its doc comment records why a bare
+    `verbatimSymlinks: true` and a recursive `readdirSync` were each wrong),
     `docker-image-builder.ts` (local-build path for container Lambdas),
     `ecr-puller.ts` (ECR-pull fallback; cross-account AND cross-region are
     SUPPORTED — the ECR client is built for the image URI's own region and
