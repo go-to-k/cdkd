@@ -845,7 +845,12 @@ export function clearRecoverableMaskedOutputs(): void {
  * degrades to the value scan, i.e. to today's behavior, so no case gets worse.
  */
 interface CrossStackAssociation {
-  /** The WHOLE `{{resolve:...}}` token the producer's state held. */
+  /**
+   * The WHOLE `{{resolve:...}}` token the producer's state held -- or, from
+   * the nested-stack recorder's sub-floor carry (issue #3079), the parent's
+   * literal FRAME around one (`port:{{resolve:...}}`), the string its
+   * whole-value entry persists.
+   */
   readonly expression: string;
   /** What that token resolved to when this pass read the producer. */
   readonly plaintext: string;
@@ -1308,7 +1313,11 @@ export function recordCrossStackExpression(
  *
  * The `isSingleDynamicReferenceToken` shape invariant is deliberately NOT here:
  * it belongs to each writer, which is where the parameters are named and where
- * a swap could be introduced.
+ * a swap could be introduced. One writer stores a NON-token on purpose:
+ * {@link recordNestedStackParameterExpressions}'s sub-floor carry records a
+ * parameter's literal FRAME (`port:{{resolve:...}}`, issue #3079), the same
+ * string its whole-value entry writes, so a reader returning it persists what
+ * the entry would have.
  */
 function storeAssociation(
   associations: CrossStackAssociations,
@@ -1484,14 +1493,21 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  *         only refusal a test can see: the others coincide with (i) or with
  *         the map's own entry, as a whole-token source's would).
  *   (iii) `secrets.get(middle) === token` -- the token IS the map's survivor
- *         for the middle. Load-bearing: two framed parameters over ONE middle
- *         (`pin::` and `pin:AWSCURRENT:`) keep their own tokens on this row's
- *         record today because each reaches the span arm with the scan
- *         silent; once a `'port:q7'` entry exists the scan answers for the
- *         whole leaf and the arm's bound (`scanned === prefix + survivor +
- *         suffix`) decides. Recording only the frame whose token is the
- *         middle's survivor makes every parent leaf keep its own token by
- *         construction rather than by recording order.
+ *         for the middle -- OR every framed spelling of the value in the row
+ *         carries this token (issue #3079). Load-bearing: two framed
+ *         parameters over ONE middle (`pin::` and `pin:AWSCURRENT:`) keep
+ *         their own tokens on this row's record today because each reaches
+ *         the span arm with the scan silent; once a `'port:q7'` entry exists
+ *         the scan answers for the whole leaf and the arm's bound (`scanned
+ *         === prefix + survivor + suffix`) decides. With the survivor's
+ *         frame as the entry every same-frame leaf passes the bound and
+ *         writes its own token; with a loser's, a same-frame sibling around
+ *         another token would fail it and take the loser's frame -- so a
+ *         loser's frame is the entry only when no such sibling exists, and
+ *         then its own leaf reads the entry from the value scan after the
+ *         bound refuses, which is its frame. Either way every parent leaf
+ *         keeps its own token by construction rather than by recording
+ *         order.
  *   (iv)  ONE FRAME per VALUE, across the whole row. Once the entry exists
  *         the scan is no longer silent on the value, so on the parent's
  *         record every leaf holding it answers against the entry through the
@@ -1544,19 +1560,41 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * refuses a middle that is itself a token, which is what a bag equal to its
  * source has.
  *
+ * THE PER-NAME ASSOCIATION (issue #3079). The entry is keyed by VALUE, so over
+ * one middle with TWO tokens in one frame it names one of them, and every
+ * child leaf holding the value would take that one -- the loser's `{Ref}`
+ * persisting the survivor's frame, which is the wrong reference the three
+ * consumers below re-resolve after the sibling rotates. So beside the entry,
+ * every leaf passing (i), (ii), the pair gate between (ii) and (iv), (iv)
+ * and (v) -- the survivor's and the loser's alike, and whether or not (iii)
+ * let its entry through -- is recorded BY NAME into {@link nestedStackParameterExpressions}, the table
+ * the whole-token walk above fills, as `name -> (its own frame, the value)`.
+ * The child inherits it ({@link inheritNestedStackParameterAssociations})
+ * and reads it through {@link certifiedExpressionForLeaf} at all three
+ * sites: the carry (`recordInheritedParameterSecrets` asks per plaintext),
+ * the persist walk (`positionByCrossStackSource` on the `{Ref}` source) and
+ * the diff side (`redactParametersForDiff`). Each requires the bag to HOLD
+ * the value, which the entry provides -- or the child's OWN resolution of
+ * the same plaintext, in which case the association answers with the leaf's
+ * own frame, the right reference for it. So a FRAMED association whose value
+ * (iii) refused is inert or correct, never wrong -- a claim about this
+ * route's pair gate, not about the whole-token walk above, whose refusal 4
+ * cannot see a public token (issue #3090). The association's expression is
+ * the FRAME, not a token -- the one writer into that table that stores a
+ * non-token, said so on {@link storeAssociation}; its readers return it to be
+ * persisted, which is exactly what the entry would have written.
+ *
  * WHAT STAYS OPEN, weighed against the three live consumers named on
  * {@link positionByIntrinsicFrame} (`cdkd rollback`, `drift --revert`, a
- * consumer's cross-stack read). (a) Over one middle with TWO tokens, (iii)
- * records the survivor's frames only, never a loser's, so the loser's child
- * leaf takes the survivor's frame when the two frames MATCH (`port:` + either
- * token: the survivor's entry is the loser's whole value too) and stays
- * PLAINTEXT when they differ (`port:` + A beside `url:` + B: no entry names
- * `port:q7`). Either is the pre-#2291 answer for this shape; on a match it is
- * the wrong reference those consumers re-resolve -- after the sibling
- * rotates, a rollback or `--revert` of the child hands the sibling's
- * plaintext to the loser's live property. The PARENT's record stays per leaf
- * by (iii) and (iv). One token framed two ways (`port:` + T and `url:` + T)
- * is two values and two entries, not this shape. (b) The framed
+ * consumer's cross-stack read). (a) CLOSED by the association above (was:
+ * the loser's child leaf took the survivor's frame, or stayed plaintext
+ * under a different frame -- the second half closed by (iii)'s second arm).
+ * What remains of it: one child RESOURCE consuming BOTH parameters holds
+ * ONE plaintext-keyed slot for the value, and a leaf of it the association
+ * cannot reach by name -- an `Fn::Sub` EMBEDDING the `{Ref}`, positioned by
+ * the value scan -- reads that slot's frame, whichever `{Ref}` resolved
+ * last; a bare `{Ref}` leaf of the same resource is positioned by name and
+ * is unaffected (pinned). (b) The framed
  * value is a SUBSTRING needle (7 characters here) in every child resource
  * that consumed the parameter, so an unrelated literal there containing it
  * is spliced -- the #2087 class, bounded to resources whose own resolution
@@ -1724,18 +1762,27 @@ export function recordNestedStackParameterExpressions(
   // pass did NOT resolve to the middle (a PUBLIC sibling in the same frame,
   // kept resolved on the record), is its own key.
   const framesByValue = new Map<string, Set<string | typeof UNFRAMED_SPELLING>>();
+  // The TOKENS the row's framed spellings of each value carry -- (iii)'s
+  // second arm (issue #3079) reads it. An unframed spelling adds nothing
+  // here because (iv) refuses the value before (iii) is asked.
+  const tokensOf = new Map<string, Set<string>>();
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
     if (typeof resolvedValue !== 'string') continue;
     const sourceLeaf = sourceParameters[name];
     const frame =
       typeof sourceLeaf === 'string' ? singleSpanFrame(resolvedValue, sourceLeaf) : undefined;
     const frames = framesByValue.get(resolvedValue) ?? new Set<string | typeof UNFRAMED_SPELLING>();
+    const unframed =
+      frame === undefined || resolvedPlaintextOf(secrets, frame.token) !== frame.middle;
     frames.add(
-      frame === undefined || resolvedPlaintextOf(secrets, frame.token) !== frame.middle
-        ? UNFRAMED_SPELLING
-        : `${frame.prefix.length}:${frame.prefix}${frame.suffix}`
+      unframed ? UNFRAMED_SPELLING : `${frame.prefix.length}:${frame.prefix}${frame.suffix}`
     );
     framesByValue.set(resolvedValue, frames);
+    if (!unframed) {
+      const tokens = tokensOf.get(resolvedValue) ?? new Set<string>();
+      tokens.add(frame.token);
+      tokensOf.set(resolvedValue, tokens);
+    }
   }
   // (v) reads the string leaves of the ROW outside `Parameters` as well: the
   // bag is per resource, so the entry is a needle for `TemplateURL` too, and
@@ -1746,6 +1793,10 @@ export function recordNestedStackParameterExpressions(
   }
   const outsideLeaves = wholeStringLeavesOf(rowWithoutParameters);
   const framed = new Map<string, string>();
+  // The per-NAME associations (issue #3079): each framed leaf's OWN frame,
+  // loser included, written into the same table the whole-token walk above
+  // fills. Collected here, stored after the loop with the entries.
+  const framedByName: Array<[name: string, expression: string, plaintext: string]> = [];
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
     const sourceLeaf = sourceParameters[name];
     if (typeof resolvedValue !== 'string' || typeof sourceLeaf !== 'string') continue;
@@ -1756,12 +1807,25 @@ export function recordNestedStackParameterExpressions(
     // at or above the floor is refused here -- the child's substring carry
     // already has it.
     if (redactSecretsForState(resolvedValue, secrets) !== resolvedValue) continue;
-    // (iii) the token IS the map's survivor for the middle -- the collapse
-    // hazard the doc above spells out. `singleSpanFrame` also refuses a
+    // The frame, and THIS leaf's own pair evidence: the pass resolved the
+    // frame's token to the middle. LOAD-BEARING UNDER BOTH RULESETS, and not
+    // implied by (i) + (ii) -- two arms of `redactByPath` return a source
+    // verbatim. A LITERAL frame reaches here only through the span arm,
+    // which fires on pair evidence alone. An EMPTY frame (a whole-token
+    // source) reaches here through the whole-token arm, which asks for NO
+    // pair: under STATE_DERIVED_RULES it trusts any expression, so a raw
+    // PUBLIC `ssm` token a `cdkd import` record kept (the carve-out the doc
+    // above names) arrives around a value the map never held; under the
+    // TEMPLATE rules it is merely SPELLING-gated (`isKnownSecretExpression`),
+    // so a `secretsmanager` token a bag no resolver populated never paired
+    // arrives the same way. Either would hand the child's leaf a reference
+    // this pass has no evidence for (the #1901 class in the first case).
+    // This gate refuses both (issue #3079 review, both rounds); do not scope
+    // it to `rules.trustAnyExpression`. `singleSpanFrame` also refuses a
     // middle that is itself a token, which is what refusal 3's
     // self-referential shape has here (a bag equal to its source).
     const frame = singleSpanFrame(resolvedValue, sourceLeaf);
-    if (frame === undefined || secrets.get(frame.middle) !== frame.token) continue;
+    if (frame === undefined || resolvedPlaintextOf(secrets, frame.token) !== frame.middle) continue;
     // (iv) ONE frame per value across the row. `port:` + `q7` beside `port` +
     // `:q7`, an object spelling or a plain literal would each fail the span
     // arm's bound against this entry on the parent's record and take its
@@ -1803,9 +1867,37 @@ export function recordNestedStackParameterExpressions(
       }
     }
     if (embedded) continue;
+    // The association: this leaf's own frame, whatever the map's survivor for
+    // the middle is. Its readers ({@link certifiedExpressionForLeaf}, through
+    // the child's carry, its persist walk and `redactParametersForDiff`) each
+    // require the bag to HOLD the value, which the entry below provides (or
+    // the child's own resolution of the same plaintext, answered with this
+    // leaf's own frame) -- so on a row where (iii) refuses every leaf of a
+    // value, the association is inert or correct, never wrong.
+    framedByName.push([name, sourceLeaf, resolvedValue]);
+    // (iii) the token IS the map's survivor for the middle -- the collapse
+    // hazard the doc above spells out -- OR every spelling of the value in
+    // the row carries THIS token (issue #3079). The hazard is a same-frame
+    // sibling around a DIFFERENT token: on the parent's record it answers
+    // against the entry through the span arm's bound, which names the
+    // SURVIVOR, so a loser's entry would be written onto it. With no such
+    // sibling the entry is read correctly either way: the bound passes for
+    // the survivor's token and the arm writes it; for a loser's the bound
+    // fails, the value scan writes the entry, and the entry IS this leaf's
+    // frame. (v) has already refused every other leaf the entry could reach.
+    if (secrets.get(frame.middle) !== frame.token && tokensOf.get(resolvedValue)?.size !== 1) {
+      continue;
+    }
     framed.set(resolvedValue, sourceLeaf);
   }
   for (const [plaintext, expression] of framed) secrets.set(plaintext, expression);
+  for (const [name, expression, plaintext] of framedByName) {
+    if (table === undefined) {
+      table = new Map();
+      nestedStackParameterExpressions.set(secrets, table);
+    }
+    storeAssociation(table, name, expression, plaintext);
+  }
 }
 
 /**

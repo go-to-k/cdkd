@@ -80,6 +80,15 @@ import { Construct } from 'constructs';
  *    `port:q7` in the clear -- a perpetual `cdkd diff --recursive` change as
  *    well as a disclosure. The parent's recorder now hands the framed pair
  *    down as a whole-value entry; `ChildPinOutput` is the outputs-pass twin.
+ *  - `PinTwinParam` (child) — THE #3079 ARM. A SECOND parameter in the SAME
+ *    literal frame around a DIFFERENT token whose value is the SAME two
+ *    characters (`port:{{resolve:...:pintwin::}}` -> `port:q7`). The parent's
+ *    bag holds one `q7` slot and one `port:q7` entry, so before #3079 the
+ *    losing parameter's child leaf persisted the OTHER token's frame -- the
+ *    wrong reference `cdkd rollback` / `drift --revert` re-resolve. Each
+ *    child `{Ref}` now binds to its own frame through the parent's per-name
+ *    association; which of the two lost the slot is not asserted, both
+ *    leaves are.
  *  - `ParentConsumer` (parent) — reads the child's OUTPUT through
  *    `Fn::GetAtt: [Child, 'Outputs.ChildSecretOutput']`. Since PR #1899 the
  *    child persists that output REDACTED, so before #2055 the parent shipped
@@ -121,6 +130,7 @@ class SecretBearingChild extends cdk.NestedStack {
       handoffSubParamName: string;
       pinParamName: string;
       pinParamDescription: string;
+      pinTwinParamName: string;
       listRuleName: string;
       unrelatedLiteral: string;
       handoffAllowedPattern?: string;
@@ -195,6 +205,9 @@ class SecretBearingChild extends cdk.NestedStack {
     // at any length.
     const subFloorPin = new cdk.CfnParameter(this, 'SubFloorPin', { type: 'String' });
     subFloorPin.overrideLogicalId('SubFloorPin');
+    // THE #3079 ARM's input: the same frame, another token, the same middle.
+    const subFloorPinTwin = new cdk.CfnParameter(this, 'SubFloorPinTwin', { type: 'String' });
+    subFloorPinTwin.overrideLogicalId('SubFloorPinTwin');
 
     const stageParam = new ssm.StringParameter(this, 'StageParam', {
       parameterName: names.stageParamName,
@@ -377,6 +390,18 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     ((pinParam.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('PinParam');
 
+    // THE #3079 ARM. Its own resource, like `PinParam`: the child's bag is
+    // scoped per logical id, so the two leaves land in two bags, and what
+    // this arm measures is the per-NAME association the parent hands down,
+    // not the plaintext-keyed slot (one bag consuming both would exercise
+    // the slot as well; that shape is pinned in the unit suite).
+    const pinTwinParam = new ssm.StringParameter(this, 'PinTwinParam', {
+      parameterName: names.pinTwinParamName,
+      stringValue: subFloorPinTwin.valueAsString,
+      description: 'cdkd nested-stack-secret integ - #3079 sub-floor framed twin parameter',
+    });
+    ((pinTwinParam.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('PinTwinParam');
+
     // The OUTPUTS-pass twin of `PinParam`: the child's outputs walk carries
     // the same inherited bag, so a `{Ref: SubFloorPin}` output persists the
     // frame through the same whole-value entry. Deliberately NOT consumed by
@@ -536,6 +561,10 @@ export class NestedStackSecretStack extends cdk.Stack {
     // purpose -- issue #2745 scopes its nested-stack site to this spelling;
     // the `cdk.Fn.join` spelling of the same frame is issue #3062.
     const pinReference = `port:{{resolve:secretsmanager:${secretName}:SecretString:pin::}}`;
+    // THE #3079 TWIN. A SIXTH JSON key holding the SAME two characters as
+    // `pin`, in the SAME `port:` frame -- two tokens, one middle, one frame.
+    // Kept in sync with verify.sh's secret JSON (`pintwin`).
+    const pinTwinReference = `port:{{resolve:secretsmanager:${secretName}:SecretString:pintwin::}}`;
     const secureReference = `{{resolve:ssm:${secureParamName}}}`;
 
     const child = new SecretBearingChild(
@@ -549,6 +578,7 @@ export class NestedStackSecretStack extends cdk.Stack {
         handoffSubParamName: `cdkd-nested-child-handoffsub-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
+        pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,
         listRuleName: `cdkd-nested-child-listpair-${account}`,
         listRuleDescription,
         ...(handoffAllowedPattern !== undefined && { handoffAllowedPattern }),
@@ -578,6 +608,8 @@ export class NestedStackSecretStack extends cdk.Stack {
           ListPublic: 'listpublic2327',
           // The #2745 frame: ONE parameter, a literal `port:` + token.
           SubFloorPin: pinReference,
+          // The #3079 twin: the same frame around another token.
+          SubFloorPinTwin: pinTwinReference,
         },
       }
     );

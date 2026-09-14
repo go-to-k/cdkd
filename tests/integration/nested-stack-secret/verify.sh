@@ -58,6 +58,13 @@
 #           persisted `port:q7` in the clear and `cdkd diff --recursive`
 #           reported it as a change on every run. The parent's recorder now
 #           records `port:q7 -> port:{{resolve:...}}` as a whole-value entry.
+#   #3079 - the per-NAME association behind that entry. `SubFloorPinTwin` is
+#           the SAME `port:` frame around a DIFFERENT token whose value is the
+#           SAME two characters, so the parent's bag holds one `q7` slot and
+#           one `port:q7` entry; before #3079 the losing parameter's child
+#           leaf persisted the OTHER token's frame. Each child `{Ref}` now
+#           binds to its own frame; the run asserts BOTH leaves rather than
+#           guessing which token lost the slot.
 #
 # THREE deploys, and the third is not decoration. Phases 1-2b only ever reach
 # `NestedStackProvider.create` and a no-op, so the deploy engine's UPDATE call
@@ -178,6 +185,7 @@ CHILD_HANDOFF_PARAM="cdkd-nested-child-handoff-${ACCOUNT_ID}"
 CHILD_HANDOFF_SUB_PARAM="cdkd-nested-child-handoffsub-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
 CHILD_PIN_PARAM="cdkd-nested-child-pin-${ACCOUNT_ID}"
+CHILD_PIN_TWIN_PARAM="cdkd-nested-child-pintwin-${ACCOUNT_ID}"
 PARENT_CONSUMER_PARAM="cdkd-nested-parent-consumer-${ACCOUNT_ID}"
 PARENT_SUB_PARAM="cdkd-nested-parent-sub-${ACCOUNT_ID}"
 PARENT_SUBPAIR_PARAM="cdkd-nested-parent-subpair-${ACCOUNT_ID}"
@@ -239,6 +247,11 @@ PIN_VALUE="q7"
 PIN_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin::}}"
 PIN_FRAMED_VALUE="port:${PIN_VALUE}"
 PIN_FRAMED_EXPR="port:${PIN_EXPR}"
+# The #3079 TWIN: a SIXTH JSON key (`pintwin`) holding the SAME value as
+# `pin`, referenced through the SAME frame. Kept in sync with the stack's
+# `pinTwinReference` and the secret JSON below.
+PIN_TWIN_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pintwin::}}"
+PIN_TWIN_FRAMED_EXPR="port:${PIN_TWIN_EXPR}"
 if [ -z "${PIN_VALUE}" ] || [ "${#PIN_VALUE}" -ge 4 ]; then
   echo "FAIL: PIN_VALUE must be 1-3 characters, or this arm tests the substring carry (or nothing) instead" >&2
   exit 1
@@ -465,7 +478,7 @@ cleanup() {
     # the only thing that keeps them from being orphans.
     for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
              "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_PIN_PARAM}" \
-             "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" \
+             "${CHILD_PIN_TWIN_PARAM}" "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" \
              "${PARENT_SUBPAIR_PARAM}" "${SECURE_PARAM_NAME}"; do
       aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
     done
@@ -520,7 +533,7 @@ cleanup
 # --- Out-of-band secret + SecureString parameter ---------------------------
 echo "==> Creating the secretsmanager secret and the SecureString SSM parameter out of band"
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\"}" \
+  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\",\"pintwin\":\"${PIN_VALUE}\"}" \
   --region "${REGION}" >/dev/null
 aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
   --value "${SECURE_PW_VALUE}" --overwrite --region "${REGION}" >/dev/null
@@ -926,6 +939,17 @@ if [ "${PIN_STATE}" = "${PIN_FRAMED_VALUE}" ]; then
   echo "FAIL: PinParam persisted the framed PLAINTEXT -- the sub-floor carry did not reach the child (issue #2745)" >&2
   exit 1
 fi
+# THE #3079 DEFECT, named BEFORE the equality assert below can mask it:
+# whichever of `pin` / `pintwin` lost the parent's `q7` slot, its child leaf
+# used to persist the OTHER token's frame. Both directions, because the
+# slot's winner is a resolution-order accident (MEASURED on the pre-fix
+# recorder: `pin` lost, and this assert -- not the #3079 block's -- was the
+# one that fired, with an 86-character value against the 82 expected).
+PIN_TWIN_STATE="$(jq_state "${CHILD_STATE}" '.resources.PinTwinParam.properties.Value')"
+if [ "${PIN_TWIN_STATE}" = "${PIN_FRAMED_EXPR}" ] || [ "${PIN_STATE}" = "${PIN_TWIN_FRAMED_EXPR}" ]; then
+  echo "FAIL: a framed twin persisted the OTHER token's frame -- the per-name association did not reach the child (issue #3079)" >&2
+  exit 1
+fi
 assert_eq "child PinParam persists the FRAMED expression" "${PIN_STATE}" "${PIN_FRAMED_EXPR}"
 # The readback too: `observedProperties` is captured against the marked
 # readback bag and redacted through the same per-resource entry. Read with a
@@ -937,6 +961,28 @@ assert_eq "child PinParam's observedProperties readback holds the FRAMED express
 # The outputs-pass twin: the child's outputs walk shares the inherited bag.
 assert_eq "the child's ChildPinOutput persists the FRAMED expression" \
   "$(jq_state "${CHILD_STATE}" '.outputs.ChildPinOutput')" "${PIN_FRAMED_EXPR}"
+
+# --- #3079: the twin in the same frame keeps ITS OWN token on both sides ---
+echo "==> #3079: two tokens in one frame over one middle, each child leaf its own frame"
+assert_eq "premise: the synthesized SubFloorPinTwin is the framed twin token" \
+  "$(jq -r '.Resources.Child.Properties.Parameters.SubFloorPinTwin' "${SYNTH_TEMPLATE}")" \
+  "${PIN_TWIN_FRAMED_EXPR}"
+assert_eq "the parent's nested-stack row keeps SubFloorPinTwin as its OWN framed expression" \
+  "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.SubFloorPinTwin')" \
+  "${PIN_TWIN_FRAMED_EXPR}"
+LIVE_PIN_TWIN=$(aws ssm get-parameter --name "${CHILD_PIN_TWIN_PARAM}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+assert_eq "the LIVE PinTwinParam holds the framed resolved value" "${LIVE_PIN_TWIN}" "${PIN_FRAMED_VALUE}"
+# The named defect ran above, beside `PinParam`'s own check; here the twin's
+# own values.
+if [ "${PIN_TWIN_STATE}" = "${PIN_FRAMED_VALUE}" ]; then
+  echo "FAIL: PinTwinParam persisted the framed PLAINTEXT (issue #3079)" >&2
+  exit 1
+fi
+assert_eq "child PinTwinParam persists ITS OWN framed expression" "${PIN_TWIN_STATE}" "${PIN_TWIN_FRAMED_EXPR}"
+assert_eq "child PinTwinParam's observedProperties readback holds ITS OWN framed expression" \
+  "$(jq_state "${CHILD_STATE}" '.resources.PinTwinParam.observedProperties.Value // "<no readback>"')" \
+  "${PIN_TWIN_FRAMED_EXPR}"
 
 if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
@@ -1119,6 +1165,10 @@ if [ "${PIN_STATE3}" = "${PIN_FRAMED_VALUE}" ]; then
   exit 1
 fi
 assert_eq "PinParam is STILL the framed expression after the UPDATE" "${PIN_STATE3}" "${PIN_FRAMED_EXPR}"
+# The #3079 twin rides the same child pass unchanged; its record must survive
+# the parent's UPDATE save as its OWN frame, not be rewritten to the slot's.
+assert_eq "PinTwinParam is STILL its own framed expression after the UPDATE" \
+  "$(jq_state "${CHILD_STATE3}" '.resources.PinTwinParam.properties.Value')" "${PIN_TWIN_FRAMED_EXPR}"
 if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext after the update" >&2
   exit 1
@@ -1151,14 +1201,16 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # EVERY stack-owned SSM parameter, which the two #2291 rows were missing: the
 # loop said "all six" while the stack owned eight, so a destroy that stranded
 # `HandoffPair` / `HandoffSub` passed this check. Counted from the fixture on
-# 2026-08-28 while adding the #2327 arm; nine since the #2745 arm's `PinParam`.
+# 2026-08-28 while adding the #2327 arm; nine since the #2745 arm's `PinParam`;
+# ten since the #3079 arm's `PinTwinParam`.
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
          "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_PIN_PARAM}" \
+         "${CHILD_PIN_TWIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}"; do
   assert_gone "SSM parameter '${p}' still exists after destroy" \
     aws ssm get-parameter --name "${p}" --region "${REGION}"
 done
-echo "    OK: all nine stack-owned SSM parameters are gone"
+echo "    OK: all ten stack-owned SSM parameters are gone"
 
 # The #2327 arm's rule is the one non-SSM resource this stack owns, so its
 # destroy is asserted on its own terms rather than inferred from the loop above.

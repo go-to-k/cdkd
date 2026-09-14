@@ -27,9 +27,10 @@ import {
   MIN_NEEDLE_LENGTH,
   SECRET_MASK,
   recordNestedStackParameterExpressions,
+  recordResolvedPair,
   redactSecretsForState,
   type RecordedSecretValues,
-} from '../../../src/deployment/secret-redaction.js';
+} from "../../../src/deployment/secret-redaction.js";
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -343,6 +344,38 @@ describe('IntrinsicFunctionResolver — inherited nested-stack parameter secrets
     expect(ctx.recordedSecretValues.has(short)).toBe(false);
     // ...and the child's persist reads the same entry, floorless.
     expect(redactSecretsForState(framed, ctx.recordedSecretValues)).toBe(framedExpr);
+  });
+
+  it("records a framed LOSER under ITS OWN frame, through the parent's per-name association (#3079)", async () => {
+    // Two parent parameters, one literal frame, one sub-floor middle, two
+    // DIFFERENT secrets that resolved to the same two characters. The parent's
+    // map holds one `q7` slot (B, resolved last) and one `port:q7` entry (B's
+    // frame, condition (iii)); the association table holds BOTH names. The
+    // REAL recorder builds the bag; the REAL resolver reads it.
+    const pin = 'q7';
+    const tokenA = '{{resolve:secretsmanager:prod/app/pin-a:SecretString:pin::}}';
+    const tokenB = '{{resolve:secretsmanager:prod/app/pin-b:SecretString:pin::}}';
+    const parent: RecordedSecretValues = new Map([[pin, tokenB]]);
+    recordResolvedPair(parent, tokenA, pin);
+    recordResolvedPair(parent, tokenB, pin);
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { PinA: `port:${pin}`, PinB: `port:${pin}` } },
+      { Parameters: { PinA: `port:${tokenA}`, PinB: `port:${tokenB}` } }
+    );
+    expect(parent.get(`port:${pin}`)).toBe(`port:${tokenB}`);
+
+    // The LOSER's resource: its bag gets A's frame, not the entry's.
+    const loser = makeContext({ PinA: `port:${pin}`, PinB: `port:${pin}` }, parent);
+    await expect(resolver.resolve({ Ref: 'PinA' }, loser)).resolves.toBe(`port:${pin}`);
+    expect(loser.recordedSecretValues.get(`port:${pin}`)).toBe(`port:${tokenA}`);
+    expect(redactSecretsForState(`port:${pin}`, loser.recordedSecretValues)).toBe(`port:${tokenA}`);
+
+    // The survivor's resource is unchanged by the association.
+    const survivor = makeContext({ PinA: `port:${pin}`, PinB: `port:${pin}` }, parent);
+    await expect(resolver.resolve({ Ref: 'PinB' }, survivor)).resolves.toBe(`port:${pin}`);
+    expect(survivor.recordedSecretValues.get(`port:${pin}`)).toBe(`port:${tokenB}`);
   });
 
   it('records nothing at all when no map was inherited (a top-level stack)', async () => {

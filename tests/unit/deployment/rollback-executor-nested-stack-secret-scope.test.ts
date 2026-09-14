@@ -493,6 +493,62 @@ describe('rollback-executor keeps colliding child Parameters apart on replay (#2
     });
   });
 
+  it('binds each of two same-frame twins to ITS OWN frame on replay, through the per-name association (#3079)', async () => {
+    // The replay's bag holds one `q7` slot and one `port:q7` entry; each
+    // `{Ref}` must still persist its own frame. One arm suffices here: the
+    // association is written by the same recorder call the three #2745 cases
+    // above measure per arm, and adds no provenance requirement of its own.
+    const PIN_TWIN_EXPR = '{{resolve:secretsmanager:prod/child/db:SecretString:pintwin::}}';
+    const original = mockSMSend.getMockImplementation()!;
+    mockSMSend.mockImplementation(
+      async () =>
+        ({
+          SecretString: JSON.stringify({ password: SECRET_PLAINTEXT, pin: 'q7', pintwin: 'q7' }),
+        }) as never
+    );
+    try {
+      const seen: Array<Record<string, unknown>> = [];
+      const update = vi.fn(async () => {
+        const bound = getCurrentResourceSecrets()!;
+        const childBag: RecordedSecretValues = new Map(bound);
+        inheritNestedStackParameterAssociations(childBag, bound);
+        seen.push(
+          redactSecretsForState(
+            { Value: 'port:q7', Twin: 'port:q7' },
+            childBag,
+            { Value: { Ref: 'Pin' }, Twin: { Ref: 'PinTwin' } }
+          ) as Record<string, unknown>
+        );
+        return { physicalId: CHILD_ARN };
+      });
+      const twinRow = (templateUrl: string): ResourceState =>
+        res({
+          physicalId: CHILD_ARN,
+          properties: {
+            Parameters: { Pin: `port:${PIN_EXPR}`, PinTwin: `port:${PIN_TWIN_EXPR}` },
+            TemplateURL: templateUrl,
+          },
+        });
+      const ctx = makeCtx({ update, disableOuterRetry: true });
+      const ops: CompletedOperation[] = [
+        {
+          logicalId: 'Child',
+          changeType: 'UPDATE',
+          resourceType: NESTED,
+          physicalId: CHILD_ARN,
+          previousState: twinRow('child.json'),
+        },
+      ];
+      await replayRollback(ops, { Child: twinRow('child-v2.json') }, 'Parent', ctx);
+
+      expect(update).toHaveBeenCalledOnce();
+      expect(seen[0]!['Value']).toBe(`port:${PIN_EXPR}`);
+      expect(seen[0]!['Twin']).toBe(`port:${PIN_TWIN_EXPR}`);
+    } finally {
+      mockSMSend.mockImplementation(original);
+    }
+  });
+
   it('carries it on the --revert-failed arm, whose bag also resolved the attempted row (#2745)', async () => {
     await withPinSecret(async () => {
       const seen: Array<ReturnType<typeof pinLeafFromBoundScope>> = [];
