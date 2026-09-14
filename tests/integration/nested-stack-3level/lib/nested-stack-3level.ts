@@ -72,6 +72,31 @@ class GrandchildNestedStack extends cdk.NestedStack {
 
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Grandchild');
 
+    // THE #3094 ARM, depth 2. Two parameters the CHILD hands down as
+    // `{Ref: HandoffSecretA}` / `{Ref: HandoffSecretB}` -- an INTRINSIC source
+    // on the child's nested-stack row -- each consumed by its own resource
+    // (the child's bag is scoped per logical id). The two are two SPELLINGS
+    // of one secret, so the parent's bag collapsed them onto one plaintext
+    // before the child existed; each leaf must still persist ITS OWN
+    // expression (the #2291 shape one level down, which go-to-k/cdkd#3093's
+    // review found regressed with no live signal).
+    const secretA = new cdk.CfnParameter(this, 'HandoffSecretA', { type: 'String' });
+    secretA.overrideLogicalId('HandoffSecretA');
+    const secretB = new cdk.CfnParameter(this, 'HandoffSecretB', { type: 'String' });
+    secretB.overrideLogicalId('HandoffSecretB');
+    const secretParamA = new ssm.StringParameter(this, 'SecretA', {
+      stringValue: secretA.valueAsString,
+      description:
+        'cdkd nested-stack-3level integ - grandchild (depth=2) SSM parameter fed by the secret handed down two nested-stack boundaries (spelling A, issue #3094)',
+    });
+    (secretParamA.node.defaultChild as ssm.CfnParameter).overrideLogicalId('SecretA');
+    const secretParamB = new ssm.StringParameter(this, 'SecretB', {
+      stringValue: secretB.valueAsString,
+      description:
+        'cdkd nested-stack-3level integ - grandchild (depth=2) SSM parameter fed by the secret handed down two nested-stack boundaries (spelling B, issue #3094)',
+    });
+    (secretParamB.node.defaultChild as ssm.CfnParameter).overrideLogicalId('SecretB');
+
     // Own SNS topic — a second resource type at this level (the existing deep
     // fixture is SSM-only) and a sibling of the nested-stack node in the DAG.
     const topic = new sns.Topic(this, 'Topic', {
@@ -111,7 +136,21 @@ class ChildNestedStack extends cdk.NestedStack {
 
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
 
-    const grandchild = new GrandchildNestedStack(this, 'Grandchild', downwardValue);
+    // THE #3094 ARM, depth 1: the two secret spellings arrive from the ROOT
+    // as literal `{{resolve:...}}` strings (the parent resolves them) and are
+    // forwarded to the grandchild as `{Ref}` -- `valueAsString` of a
+    // CfnParameter synthesizes `{Ref: <LogicalId>}` on the grandchild's row.
+    const secretA = new cdk.CfnParameter(this, 'HandoffSecretA', { type: 'String' });
+    secretA.overrideLogicalId('HandoffSecretA');
+    const secretB = new cdk.CfnParameter(this, 'HandoffSecretB', { type: 'String' });
+    secretB.overrideLogicalId('HandoffSecretB');
+
+    const grandchild = new GrandchildNestedStack(this, 'Grandchild', downwardValue, {
+      parameters: {
+        HandoffSecretA: secretA.valueAsString,
+        HandoffSecretB: secretB.valueAsString,
+      },
+    });
 
     this.param = new ssm.StringParameter(this, 'Param', {
       stringValue: grandchild.param.parameterName,
@@ -150,7 +189,19 @@ export class NestedStack3Level extends cdk.Stack {
       displayName: 'cdkd nested-stack-3level root topic',
     });
 
-    const child = new ChildNestedStack(this, 'Child', rootTopic.topicName);
+    // THE #3094 ARM, depth 0: two spellings of ONE secret (an empty version
+    // stage defaults to AWSCURRENT, so they resolve identically -- the
+    // `nested-stack-secret` fixture's trick), spelled as LITERAL strings so
+    // the root's own row is a string source. The secret is created OUT OF
+    // BAND by verify.sh; the name is kept in sync there.
+    const account = cdk.Stack.of(this).account;
+    const secretName = `cdkd-3level-secret-${account}`;
+    const child = new ChildNestedStack(this, 'Child', rootTopic.topicName, {
+      parameters: {
+        HandoffSecretA: `{{resolve:secretsmanager:${secretName}:SecretString:handoff::}}`,
+        HandoffSecretB: `{{resolve:secretsmanager:${secretName}:SecretString:handoff:AWSCURRENT:}}`,
+      },
+    });
 
     // Root-side resource that pulls the child's exposed value UP via
     // Fn::GetAtt across the top nested-stack boundary.

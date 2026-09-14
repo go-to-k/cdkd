@@ -1231,6 +1231,7 @@
         "local-invoke-agentcore-from-state",
         "local-start-alb-from-state",
         "macro-expansion",
+        "nested-stack-3level",
         "nested-stack-secret",
         "opensearch-domain-getatt",
         "redshift-cluster-getatt",
