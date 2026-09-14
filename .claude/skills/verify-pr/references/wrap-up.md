@@ -49,9 +49,9 @@ Remaining-work taxonomy):
 - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit
   and why shipping as-is is right.
 
-If none holds for any nit, file a bundled follow-up issue NOW and reference it
-from the PR body. Do not set `verify-pr` until every reviewer-flagged item is on
-one of the three paths.
+If none holds for any nit, FIX it — (a) is the default; (b) is reached only
+through a `next` reason written in the issue body. Do not set `verify-pr`
+until every reviewer-flagged item is on one of the three paths.
 
 Also walk the transcript for memory-rule candidates — each written as a memory
 file (with MEMORY.md index entry) or explicitly de-prioritized.

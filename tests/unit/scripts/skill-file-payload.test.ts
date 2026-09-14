@@ -323,15 +323,17 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // leaders SWAPPED again, by 3 B; neither cap nor the floor moved.
     //
     // The `now`-by-default pass (the maintainer's recurring wrap-time "cheaper
-    // to do it here?" challenge, answered in advance) touched two NON-leader
+    // to do it here?" challenge, answered in advance) touched three NON-leader
     // files: triage.md 3-b gained the context-test-first paragraph (funded in
     // part by compressing two incident narratives in the same section, net
-    // +414) and retro.md 10-0 gained the read-set-is-wider-than-the-diff
-    // promotion bullet (+601). Components: 28,323 -> 28,737 and 18,796 ->
-    // 19,397, = +1,015. Neither leader moved; the floor was re-derived upward
-    // beside MIN_REFERENCE_CORPUS_BYTES (a non-leader addition is charged
-    // there in full).
-    corpusBytes: 187_147,
+    // +380), retro.md 10-0 gained the read-set-is-wider-than-the-diff
+    // promotion bullet and 10-c lost its session-budget exception (+655), and
+    // filing.md's sweep bullet and body template now name reason (a) and the
+    // context test (+190). Components: 28,323 -> 28,703, 18,796 -> 19,451,
+    // 15,330 -> 15,520, = +1,225. Neither leader moved; the floor was
+    // re-derived upward beside MIN_REFERENCE_CORPUS_BYTES (a non-leader
+    // addition is charged there in full).
+    corpusBytes: 187_357,
     largest: { file: 'implement.md', bytes: 29_992 },
     runnerUp: { file: 'verify.md', bytes: 29_989 },
   },
@@ -777,13 +779,13 @@ const MIN_REFERENCE_FILES = 6;
 // band the derivations above carried. Both leaders are at the per-file cap's
 // doorstep (the cap's failure message prints the live headroom), so the next
 // edit to EITHER opens with a compression pass.
-// RE-DERIVED UPWARD 156_500 -> 157_500 by the `now`-by-default pass (+1,015 B,
-// corpus 186,132 -> 187,147), all of it in non-leader files (triage.md 3-b,
-// retro.md 10-0). Inputs at this date: largest 29,992, runner-up 29,989, so
-// the two thresholds are 157,155 (largest-side) and 157,158 (runner-up side,
-// binding); 157_500 clears the binding one by 342 B, at the low edge of the
-// 342-383 B band the derivations above carried.
-const MIN_REFERENCE_CORPUS_BYTES = 157_500;
+// RE-DERIVED UPWARD 156_500 -> 157_700 by the `now`-by-default pass (+1,225 B,
+// corpus 186,132 -> 187,357), all of it in non-leader files (triage.md 3-b,
+// retro.md 10-0 / 10-c, filing.md). Inputs at this date: largest 29,992,
+// runner-up 29,989, so the two thresholds are 157,365 (largest-side) and
+// 157,368 (runner-up side, binding); 157_700 clears the binding one by 332 B,
+// just under the 342-383 B band the derivations above carried.
+const MIN_REFERENCE_CORPUS_BYTES = 157_700;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

@@ -206,9 +206,9 @@ unread one.
   Without the rules below this bullet is a duplicate GENERATOR (thirteen open
   issues across the repos were one change; go-to-k/cdkd#2011 /
   go-to-k/cdkd#2016 filed three lessons twice):
-  - **The session that FINDS the lesson lands all three** — the default; the
-    narrow exception (cannot pay the remaining gate cycles) is justified in
-    the wrap. Land the mirror BEFORE the original's review rounds finish: the
+  - **The session that FINDS the lesson lands all three** — the default,
+    and session budget is not a `next` reason (`.claude/rules/session-report.md`);
+    the only exception is external input, justified in the wrap. Land the mirror BEFORE the original's review rounds finish: the
     mirror's own reviewers read the same design with none of the original's
     momentum (measured 2026-09-02: the cdk-local port's reviewers found two
     defects in code cdkd had already merged past a three-axis panel). It

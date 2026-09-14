@@ -426,8 +426,8 @@ NEXT session will run to verify the fix, and say a fresh session can run it.**
 `.claude/rules/session-report.md` holds the rest: the bar (name the
 FIXTURE, not "run the integ"; the assertion that goes red to green), the four
 failure modes a hard-to-name verifier reveals (host-bound / account- or
-region-bound / does not exist yet, the one case where `next` is genuinely
-right / unnameable, which is an unbounded deferral), the go-to-k/cdk-local#560
+region-bound / does not exist yet, reason (a) / unnameable, which is an
+unbounded deferral), the go-to-k/cdk-local#560
 measurement behind them, and why "it needs its own PR" is an `Effort` note
 rather than a `next` reason. Read it there. Two things this stage adds at PICK
 time — one about EVIDENCE, one about the COMPARAND.
