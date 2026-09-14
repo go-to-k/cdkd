@@ -1574,8 +1574,10 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * sites: the carry (`recordInheritedParameterSecrets` asks per plaintext),
  * the persist walk (`positionByCrossStackSource` on the `{Ref}` source) and
  * the diff side (`redactParametersForDiff`). Each requires the bag to HOLD
- * the value, which only the entry provides, so an association whose value
- * (iii) refused is inert rather than wrong. The association's expression is
+ * the value, which the entry provides -- or the child's OWN resolution of
+ * the same plaintext, in which case the association answers with the leaf's
+ * own frame, the right reference for it. So an association whose value
+ * (iii) refused is inert or correct, never wrong. The association's expression is
  * the FRAME, not a token -- the one writer into that table that stores a
  * non-token, said so on {@link storeAssociation}; its readers return it to be
  * persisted, which is exactly what the entry would have written.
@@ -1803,15 +1805,22 @@ export function recordNestedStackParameterExpressions(
     // at or above the floor is refused here -- the child's substring carry
     // already has it.
     if (redactSecretsForState(resolvedValue, secrets) !== resolvedValue) continue;
-    // The frame. THIS leaf's own pair evidence (the pass resolved the frame's
-    // token to the middle) is not re-tested here: (i) and (ii) together imply
-    // it -- below the floor the scan is silent, so the only arm that returns
-    // the source verbatim is the span arm, which fires on pair evidence alone
-    // (measured: re-testing it reds nothing). `singleSpanFrame` also refuses
-    // a middle that is itself a token, which is what refusal 3's
-    // self-referential shape has here (a bag equal to its source).
+    // The frame, and THIS leaf's own pair evidence: the pass resolved the
+    // frame's token to the middle. Under the TEMPLATE rules (i) and (ii)
+    // already imply it -- below the floor the scan is silent, so the only arm
+    // that returns the source verbatim is the span arm, which fires on pair
+    // evidence alone. Under STATE_DERIVED_RULES they do NOT: `redactByPath`'s
+    // whole-token source arm returns the source on `trustAnyExpression` with
+    // no pair at all, so a raw PUBLIC `ssm` token a `cdkd import` record kept
+    // (the carve-out the doc above names) reaches this point as an empty
+    // frame around a value the map never held -- and the association below
+    // would hand a public reference to the child's leaf (the #1901 class).
+    // This gate is what refuses it there (issue #3079 review).
+    // `singleSpanFrame` also refuses a middle that is itself a token, which
+    // is what refusal 3's self-referential shape has here (a bag equal to
+    // its source).
     const frame = singleSpanFrame(resolvedValue, sourceLeaf);
-    if (frame === undefined) continue;
+    if (frame === undefined || resolvedPlaintextOf(secrets, frame.token) !== frame.middle) continue;
     // (iv) ONE frame per value across the row. `port:` + `q7` beside `port` +
     // `:q7`, an object spelling or a plain literal would each fail the span
     // arm's bound against this entry on the parent's record and take its
@@ -1856,9 +1865,10 @@ export function recordNestedStackParameterExpressions(
     // The association: this leaf's own frame, whatever the map's survivor for
     // the middle is. Its readers ({@link certifiedExpressionForLeaf}, through
     // the child's carry, its persist walk and `redactParametersForDiff`) each
-    // require the bag to HOLD the value, which only the entry below provides
-    // -- so on a row where (iii) refuses every leaf of a value, the
-    // association is inert rather than wrong.
+    // require the bag to HOLD the value, which the entry below provides (or
+    // the child's own resolution of the same plaintext, answered with this
+    // leaf's own frame) -- so on a row where (iii) refuses every leaf of a
+    // value, the association is inert or correct, never wrong.
     framedByName.push([name, sourceLeaf, resolvedValue]);
     // (iii) the token IS the map's survivor for the middle -- the collapse
     // hazard the doc above spells out -- OR every spelling of the value in

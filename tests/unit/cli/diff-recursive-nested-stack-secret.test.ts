@@ -236,8 +236,11 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
    * The #3079 TWIN: a second parameter in the SAME frame around ANOTHER token.
    * The recursive diff binds each child parameter to its parent's own framed
    * string, so a child record where the losing parameter's leaf holds the
-   * OTHER token's frame (the pre-#3079 persist) reports a change on every run
-   * -- measured here, beside the NO_CHANGE the per-name association buys.
+   * OTHER token's frame (the pre-#3079 persist) reports a change on every run.
+   * A SYMPTOM measurement, not a path through the recorder: `diff-recursive.ts`
+   * never calls it (`skipDynamicReferences`, no map). What this pins is the
+   * RECORD SHAPE the persist side must produce for the diff to converge --
+   * the pair of cases below say which shape does and which does not.
    */
   const PIN_TWIN_PARAM = 'referencetoParentPinTwin';
   const PIN_TWIN_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:pintwin::}}';

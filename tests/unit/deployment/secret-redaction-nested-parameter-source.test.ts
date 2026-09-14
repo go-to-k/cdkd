@@ -1158,6 +1158,55 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     expect(parent.get(frame(PIN))).toBe(frame(PIN_TOKEN_A));
   });
 
+  it('writes NO association under STATE_DERIVED_RULES for a raw PUBLIC token the record kept, which that ruleset certifies WITHOUT a pair (#3079 review)', () => {
+    // The whole-token source arm returns the source verbatim on
+    // `trustAnyExpression` with no pair evidence, so (i) and (ii) pass for a
+    // public `ssm` token a `cdkd import` record kept raw (the doc's carve-out)
+    // -- an empty frame around a value the map never held. Without the pair
+    // gate the recorder would store `Env -> {{resolve:ssm:/public/env}}`, and
+    // a CHILD resource that resolved the same plaintext from a secret of its
+    // own would then persist the PUBLIC reference on its `{Ref: Env}` leaf.
+    const PUBLIC = '{{resolve:ssm:/public/env}}';
+    const parent = parentResolved([PIN_TOKEN_A, PIN]); // no pair for PUBLIC
+    recordNestedStackParameterExpressions(
+      parent,
+      NESTED,
+      { Parameters: { Env: 'prod', Pin: frame(PIN) } },
+      { Parameters: { Env: PUBLIC, Pin: frame(PIN_TOKEN_A) } },
+      STATE_DERIVED_RULES
+    );
+    expect(parent.has('prod')).toBe(false);
+    const child: RecordedSecretValues = new Map([['prod', EXPR_C]]);
+    inheritNestedStackParameterAssociations(child, parent);
+    const persisted = redactSecretsForState({ Value: 'prod' }, child, {
+      Value: { Ref: 'Env' },
+    }) as Record<string, unknown>;
+    // The value scan's answer (the child's own token), never the public one.
+    expect(persisted['Value']).not.toBe(PUBLIC);
+    expect(persisted['Value']).toBe(EXPR_C);
+  });
+
+  it("pins what remains of residual (a): ONE resource consuming both twins through an Fn::Sub embedding reads the slot's frame, its bare {Ref} its own (#3079)", () => {
+    const parent = parentResolved([PIN_TOKEN_A, PIN], [PIN_TOKEN_B, PIN]);
+    const resolved = { Parameters: { Pin1: frame(PIN), Pin2: frame(PIN) } };
+    const source = { Parameters: { Pin1: frame(PIN_TOKEN_B), Pin2: frame(PIN_TOKEN_A) } };
+    recordNestedStackParameterExpressions(parent, NESTED, resolved, source);
+    // The child bag as the carry leaves it when `{Ref: Pin2}` resolved LAST:
+    // one slot, A's frame.
+    const child: RecordedSecretValues = new Map([[frame(PIN), frame(PIN_TOKEN_A)]]);
+    inheritNestedStackParameterAssociations(child, parent);
+    const persisted = redactSecretsForState(
+      { Value: frame(PIN), Dsn: `x-${frame(PIN)}-y` },
+      child,
+      { Value: { Ref: 'Pin1' }, Dsn: { 'Fn::Sub': 'x-${Pin1}-y' } }
+    ) as Record<string, unknown>;
+    // The bare `{Ref: Pin1}` leaf: positioned by NAME, its own frame (B's).
+    expect(persisted['Value']).toBe(frame(PIN_TOKEN_B));
+    // The embedding leaf: the value scan, the slot's frame (A's) -- the stated
+    // answer, the #2320 class, not closed here.
+    expect(persisted['Dsn']).toBe(`x-${frame(PIN_TOKEN_A)}-y`);
+  });
+
   // These pin each SHAPE's outcome, not one condition: every shape below is
   // refused by more than one of (i)-(v) (a two-span source fails (i) as well
   // as (iii); a value the pair table does not vouch for fails (i) and (iii);
