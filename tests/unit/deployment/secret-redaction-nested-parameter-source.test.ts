@@ -559,10 +559,10 @@ describe('nested-stack parameter associations (#2291)', () => {
       V: { Ref: 'B' },
     }) as Record<string, unknown>;
     expect(persisted['U']).toBe(EXPR_B);
-    // POSITIVE CONTROL: the sibling with a clean index entry IS recorded and
-    // reaches the grandchild by name.
+    // POSITIVE CONTROL: the sibling with a clean index entry IS recorded.
+    // (Its grandchild leaf reads `EXPR_B` by name AND from the value scan --
+    // a confluence, so only the table line above discriminates.)
     expect(inheritedParameterExpression(child, 'B', OWN)).toBe(EXPR_B);
-    expect(persisted['V']).toBe(EXPR_B);
   });
 });
 

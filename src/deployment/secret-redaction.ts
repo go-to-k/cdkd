@@ -1589,7 +1589,8 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * own frame, the right reference for it. So a FRAMED association whose value
  * (iii) refused is inert or correct, never wrong -- a claim the whole-token
  * walk's STRING-source half now earns the same way, through refusal 5 (issue
- * #3090); its intrinsic-source half rests on the reader's condition 3.
+ * #3090); its intrinsic-source half rests on the reader's condition 3, less
+ * the skeleton arm's own unpinned-`ssm` residual (stated on that arm).
  * The association's expression is
  * the FRAME, not a token -- the one writer into that table that stores a
  * non-token, said so on {@link storeAssociation}; its readers return it to be
@@ -1774,9 +1775,13 @@ export function recordNestedStackParameterExpressions(
     // every three-level chain back onto the survivor (measured: the loser's
     // grandchild leaf took the sibling's expression). An intrinsic source is
     // not the #3090 shape: it positions only through an association -- a
-    // `Ref` key the PARENT's recorder gated with this refusal, or a seam key
-    // (`Fn::ImportValue` / `Fn::GetAtt` / `Fn::GetStackOutput`) gated at
-    // `recordCrossStackExpression`, whose residual the resolver states -- or
+    // `Ref` key the PARENT's recorder gated (this refusal on a string row,
+    // its positioners' condition 3 otherwise, the sub-floor carry's pair
+    // gate for a framed row), or a seam key (`Fn::ImportValue` /
+    // `Fn::GetAtt` / `Fn::GetStackOutput`) gated at the resolver's recording
+    // seam (`reresolveCrossStackValue`: presence plus secret verdict;
+    // `recordCrossStackExpression` adds only the shape test), whose residual
+    // that seam states -- or
     // through the skeleton / frame arms: the frame arm requires a pair, the
     // skeleton arm none, its safety being a candidate set (map values plus
     // the pinned verdict set) that holds secret-verdict expressions only.
