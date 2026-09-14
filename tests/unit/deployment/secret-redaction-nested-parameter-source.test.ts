@@ -1186,6 +1186,29 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     expect(persisted['Value']).toBe(EXPR_C);
   });
 
+  it('writes NO association under the TEMPLATE rules either for a secretsmanager whole token a bag no resolver populated never paired (#3079 review, round 2)', () => {
+    // The TEMPLATE twin of the case above: the whole-token arm is merely
+    // SPELLING-gated there, so a `secretsmanager` token passes (i) with no
+    // pair as well. Same gate, same refusal -- the child's `{Ref}` leaf keeps
+    // its own token rather than one this pass has no evidence for.
+    const UNPAIRED = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:env::}}`;
+    const parent = parentResolved([PIN_TOKEN_A, PIN]); // `prod` never resolved here
+    recordNestedStackParameterExpressions(
+      parent,
+      NESTED,
+      { Parameters: { Env: 'prod', Pin: frame(PIN) } },
+      { Parameters: { Env: UNPAIRED, Pin: frame(PIN_TOKEN_A) } }
+    );
+    expect(parent.has('prod')).toBe(false);
+    const child: RecordedSecretValues = new Map([['prod', EXPR_C]]);
+    inheritNestedStackParameterAssociations(child, parent);
+    const persisted = redactSecretsForState({ Value: 'prod' }, child, {
+      Value: { Ref: 'Env' },
+    }) as Record<string, unknown>;
+    expect(persisted['Value']).not.toBe(UNPAIRED);
+    expect(persisted['Value']).toBe(EXPR_C);
+  });
+
   it("pins what remains of residual (a): ONE resource consuming both twins through an Fn::Sub embedding reads the slot's frame, its bare {Ref} its own (#3079)", () => {
     const parent = parentResolved([PIN_TOKEN_A, PIN], [PIN_TOKEN_B, PIN]);
     const resolved = { Parameters: { Pin1: frame(PIN), Pin2: frame(PIN) } };

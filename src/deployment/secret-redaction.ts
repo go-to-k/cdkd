@@ -1576,8 +1576,10 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * the diff side (`redactParametersForDiff`). Each requires the bag to HOLD
  * the value, which the entry provides -- or the child's OWN resolution of
  * the same plaintext, in which case the association answers with the leaf's
- * own frame, the right reference for it. So an association whose value
- * (iii) refused is inert or correct, never wrong. The association's expression is
+ * own frame, the right reference for it. So a FRAMED association whose value
+ * (iii) refused is inert or correct, never wrong -- a claim about this
+ * route's pair gate, not about the whole-token walk above, whose refusal 4
+ * cannot see a public token (issue #3090). The association's expression is
  * the FRAME, not a token -- the one writer into that table that stores a
  * non-token, said so on {@link storeAssociation}; its readers return it to be
  * persisted, which is exactly what the entry would have written.
@@ -1806,19 +1808,22 @@ export function recordNestedStackParameterExpressions(
     // already has it.
     if (redactSecretsForState(resolvedValue, secrets) !== resolvedValue) continue;
     // The frame, and THIS leaf's own pair evidence: the pass resolved the
-    // frame's token to the middle. Under the TEMPLATE rules (i) and (ii)
-    // already imply it -- below the floor the scan is silent, so the only arm
-    // that returns the source verbatim is the span arm, which fires on pair
-    // evidence alone. Under STATE_DERIVED_RULES they do NOT: `redactByPath`'s
-    // whole-token source arm returns the source on `trustAnyExpression` with
-    // no pair at all, so a raw PUBLIC `ssm` token a `cdkd import` record kept
-    // (the carve-out the doc above names) reaches this point as an empty
-    // frame around a value the map never held -- and the association below
-    // would hand a public reference to the child's leaf (the #1901 class).
-    // This gate is what refuses it there (issue #3079 review).
-    // `singleSpanFrame` also refuses a middle that is itself a token, which
-    // is what refusal 3's self-referential shape has here (a bag equal to
-    // its source).
+    // frame's token to the middle. LOAD-BEARING UNDER BOTH RULESETS, and not
+    // implied by (i) + (ii) -- two arms of `redactByPath` return a source
+    // verbatim. A LITERAL frame reaches here only through the span arm,
+    // which fires on pair evidence alone. An EMPTY frame (a whole-token
+    // source) reaches here through the whole-token arm, which asks for NO
+    // pair: under STATE_DERIVED_RULES it trusts any expression, so a raw
+    // PUBLIC `ssm` token a `cdkd import` record kept (the carve-out the doc
+    // above names) arrives around a value the map never held; under the
+    // TEMPLATE rules it is merely SPELLING-gated (`isKnownSecretExpression`),
+    // so a `secretsmanager` token a bag no resolver populated never paired
+    // arrives the same way. Either would hand the child's leaf a reference
+    // this pass has no evidence for (the #1901 class in the first case).
+    // This gate refuses both (issue #3079 review, both rounds); do not scope
+    // it to `rules.trustAnyExpression`. `singleSpanFrame` also refuses a
+    // middle that is itself a token, which is what refusal 3's
+    // self-referential shape has here (a bag equal to its source).
     const frame = singleSpanFrame(resolvedValue, sourceLeaf);
     if (frame === undefined || resolvedPlaintextOf(secrets, frame.token) !== frame.middle) continue;
     // (iv) ONE frame per value across the row. `port:` + `q7` beside `port` +
