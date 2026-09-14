@@ -489,15 +489,15 @@ r3_case "B1b: the top-level twin of B1a" 0 "$GATE_RE_GIT_PUSH" \
   'cat <<"E\xF"' 'body' 'E\xF' 'git push' 'ExF'
 check "B1c: a real E\\xF terminator ends the body -- the fix also removes a false refusal (the old walk waited for ExF)" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<"E\xF"' 'gh pr merge 1 was refused' 'E\xF' ')')"
-# Security: the top-level arm latches an UNQUOTED word only when it is
-# identifier-shaped, which is all origin/main ever latched. That arm drops a
+# Security: the top-level arm latches an UNQUOTED word only when it is a
+# whole identifier; origin/main latched the identifier PREFIX of any word. That arm drops a
 # body whatever its quoting, and bash EXPANDS an unquoted body, so `<<EOF.x`
 # latched by the round-7 walk dropped a `$(git push)` main still matched.
 r3_case "B2a: top-level <<EOF.x is unquoted and not an identifier -- its expanded body is scanned" 0 "$GATE_RE_GIT_PUSH" \
   'cat <<EOF.x' '$(git push)' 'EOF.x'
 r3_case "B2b: top-level <<E-x likewise" 0 "$GATE_RE_GIT_PUSH" \
   'cat <<E-x' '$(git push)' 'E-x'
-check "B2c: top-level <<'EOF.x' is QUOTED, so its body is data (control)" 1 "$MERGE" \
+check "B2c: top-level <<'EOF.x' is QUOTED, so its body is data -- fenced by hw-toplevel-ident-only" 1 "$MERGE" \
   "$(printf '%s\n' 'cat <<'"'"'EOF.x'"'"'' 'gh pr merge 1 was refused' 'EOF.x')"
 # origin/main latched the identifier PREFIX of `<<EOF.x` -- the tag `EOF` --
 # so a later bare `EOF` line dropped the expanded body; B2a has no such line
@@ -514,12 +514,12 @@ r3_case "Pc10: a body line E);<verb> closes the heredoc AND the substitution -- 
   'x=$(cat <<'"'"'E'"'"'' 'body' 'E);git commit -m C' 'git commit -m B' 'E' ')'
 r3_case "Pc11: E) && <verb> likewise" 0 "$COMMIT" \
   'x=$(cat <<'"'"'E'"'"'' 'body' 'E) && git commit -m C' 'E' ')'
-r3_case "Pc17: E) ; x=\$( re-opens a substitution and the next line is its command" 0 "$COMMIT" \
+r3_case "Pc17: E) ; x=\$( -- the verb on the next line is a segment either way" 0 "$COMMIT" \
   'x=$(cat <<'"'"'E'"'"'' 'body' 'E) ; x=$(' 'git commit -m B' 'E' ')'
 check "Pc-ctl1: a body line carrying a ) that does not begin with the delimiter is still data" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused (see #3)' 'E' ')')"
 check "Pc-ctl2: a body line beginning with the delimiter but carrying no ) is still data" 1 "$MERGE" \
-  "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'EOF is not this: gh pr merge 1' 'E' ')')"
+  "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'E;gh pr merge 1' 'E' ')')"
 # Round 10: the fall-through hands the join only what FOLLOWS the delimiter.
 # A delimiter carrying a quote (`<<"a'b"`) re-lexed as an open quoted span in
 # subst_open and folded the verbs after `a'b)` into it -- bash 5 runs both.
@@ -527,6 +527,12 @@ r3_case "X5: a delimiter carrying a quote does not re-open a quoted span on the 
   'x=$(cat <<"a'"'"'b"' 'body' 'a'"'"'b);git commit -m C' 'git commit -m B' 'a'"'"'b' ')'
 check "X5-ctl: the same delimiter over a plain body keeps it data" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<"a'"'"'b"' 'gh pr merge 1 was refused' 'a'"'"'b' ')')"
+# Round 11: the remainder is sliced from the line with only its LEADING
+# whitespace removed. Round 10 sliced the both-sides-trimmed copy, so a closing
+# line ending in an escaped space lost it and read as a `\`-continuation that
+# glued the verb on the next line onto `echo` (bash 5 and 3.2 run the verb).
+r3_case "T1: a closing line ending in an escaped space is not a line continuation" 0 "$MERGE" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E);echo \ ' 'gh pr merge 1' 'E' ')'
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

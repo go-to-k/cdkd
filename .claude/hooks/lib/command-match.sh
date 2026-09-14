@@ -950,7 +950,11 @@ gate_segments_raw() {
           # delimiter text is data bash has consumed, and one carrying a quote
           # (`<<"a\047b"` then `a\047b);verb`) would open a quoted span in
           # subst_open and fold the verb into it (security review round 10).
-          line = substr(t, length(ptag) + 1)
+          # Sliced from the line with only its LEADING whitespace removed: `t`
+          # is trimmed on both sides, and a closing line ending in an escaped
+          # space (`E);echo \ `) lost the space and read as a `\`-continuation
+          # that glued the next line onto it (round 11).
+          sub(/^[ \t]+/, "", line); line = substr(line, length(ptag) + 1)
           ptag = ""
         }
         if (pending != "") { line = pending line; pending = "" }
