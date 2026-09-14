@@ -157,19 +157,50 @@ echo ""
 echo "==> Step 0: create the out-of-band secret ${SECRET_NAME}"
 aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
   --force-delete-without-recovery --region "${AWS_REGION}" >/dev/null 2>&1 || true
-aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"handoff\":\"${HANDOFF_PW_VALUE}\"}" \
-  --region "${AWS_REGION}" >/dev/null
+# A force-delete is asynchronous; a secret a KILLED prior run left behind can
+# still be "scheduled for deletion" for a few seconds, so the create retries.
+created=0
+for attempt in 1 2 3 4 5 6; do
+  if aws secretsmanager create-secret --name "${SECRET_NAME}" \
+       --secret-string "{\"handoff\":\"${HANDOFF_PW_VALUE}\"}" \
+       --region "${AWS_REGION}" >/dev/null 2>&1; then
+    created=1
+    break
+  fi
+  sleep 5
+done
+if [[ ${created} -ne 1 ]]; then
+  echo "FAIL: could not create the out-of-band secret ${SECRET_NAME} after 6 attempts" >&2
+  exit 1
+fi
 
 # --------------------------------------------------------------------
 # Step 1: deploy the 4-level tree.
 # --------------------------------------------------------------------
 echo ""
 echo "==> Step 1: deploy ${STACK} (root -> Child -> Grandchild -> GreatGrandchild)"
-${CDKD} deploy ${STACK} \
+# Captured, and at --verbose, so the deploy's own DISPLAY readers (the
+# resolver's parameter debug lines, the per-resource summaries) are scanned
+# for the plaintext before anything is echoed (#3094 review). The sentinel
+# says the capture holds the deploy at all -- a plaintext-free EMPTY string
+# would otherwise pass the scan.
+DEPLOY_OUT=$(${CDKD} deploy ${STACK} \
   --region "${AWS_REGION}" \
   --state-bucket "${STATE_BUCKET}" \
-  --yes
+  --yes --verbose 2>&1)
+scan_output() { # scan_output <label> <text> -- FAIL (without echoing) on the plaintext
+  if grep -qF "${HANDOFF_PW_VALUE}" <<<"$2"; then
+    echo "FAIL: $1 printed the secret plaintext" >&2
+    exit 1
+  fi
+}
+scan_output "cdkd deploy --verbose" "${DEPLOY_OUT}"
+if ! grep -qF "${STACK}" <<<"${DEPLOY_OUT}"; then
+  echo "FAIL: premise: the captured deploy output does not mention ${STACK} (nothing was captured)" >&2
+  exit 1
+fi
+echo "${DEPLOY_OUT}"
+echo "  OK: the deploy's --verbose output carries no plaintext"
 
 # --------------------------------------------------------------------
 # Step 2: one state file per level with correct parentStack/parentLogicalId.
@@ -329,8 +360,12 @@ assert_eq "live SecretB holds the resolved plaintext" \
   "${HANDOFF_PW_VALUE}"
 # No state file at any level carries the plaintext (here-strings, not
 # `printf | grep -q`: issue #2582's SIGPIPE race).
+# A STRICT capture first: a `$(fetch_state ...)` inside the here-string
+# would turn a failed fetch into an empty input and a false "no plaintext"
+# (#3102 review, the gone-probe shape one layer over).
 for lvl in "${LEVELS[@]}"; do
-  if grep -qF "${HANDOFF_PW_VALUE}" <<<"$(fetch_state "${lvl}")"; then
+  lvl_json=$(fetch_state "${lvl}")
+  if grep -qF "${HANDOFF_PW_VALUE}" <<<"${lvl_json}"; then
     echo "FAIL: state.json of '${lvl}' carries the secret plaintext" >&2
     exit 1
   fi
@@ -343,6 +378,7 @@ echo "  OK: no level's state.json carries the plaintext"
 echo ""
 echo "==> Step 4: 'cdkd diff ${STACK} --recursive' must report no changes"
 CLEAN_OUT=$(${CDKD} diff ${STACK} --recursive --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}")
+scan_output "cdkd diff --recursive" "${CLEAN_OUT}"
 echo "${CLEAN_OUT}"
 if ! echo "${CLEAN_OUT}" | grep -q "No changes detected"; then
   echo "FAIL: recursive diff of a freshly-deployed tree reported spurious changes"
@@ -352,7 +388,7 @@ if echo "${CLEAN_OUT}" | grep -qE "\[~\]|\[\+\]|\[-\]"; then
   echo "FAIL: recursive diff of a freshly-deployed tree printed change markers"
   exit 1
 fi
-echo "  OK: clean recursive diff across all 4 levels (the #3094 chain included: a leaf holding the OTHER spelling would report a change here on every run)"
+echo "  OK: clean recursive diff across all 4 levels (the #3094 chain included: by construction a leaf holding the OTHER spelling reports a change here -- the control run stopped at Step 3b, so this half is unmeasured)"
 
 # Changed deep value -> '--recursive --fail' must exit 1 and surface the
 # great-grandchild under its own Nested stack header (deepest-level diff).
@@ -362,6 +398,7 @@ set +e
 CHANGED_OUT=$(CDKD_INTEG_GGC_VALUE="${CHANGED_VALUE}" ${CDKD} diff ${STACK} --recursive --fail --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
 CHANGED_RC=$?
 set -e
+scan_output "cdkd diff --recursive --fail (changed)" "${CHANGED_OUT}"
 echo "${CHANGED_OUT}"
 if [[ ${CHANGED_RC} -ne 1 ]]; then
   echo "FAIL: --recursive --fail exited ${CHANGED_RC} after a great-grandchild change (expected 1)"
@@ -383,6 +420,7 @@ echo "  OK: depth=3 UPDATE surfaced under its Nested stack header"
 echo ""
 echo "==> Step 5: 'cdkd state list --tree' renders the 4-level hierarchy"
 TREE_OUT=$(${CDKD} state list --tree --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}")
+scan_output "cdkd state list --tree" "${TREE_OUT}"
 echo "${TREE_OUT}"
 # Root row appears unindented; each deeper level renders with a box-drawing
 # branch prefix. Assert the full ~-joined name shows at each level AND that the

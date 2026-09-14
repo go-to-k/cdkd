@@ -1152,6 +1152,7 @@ describe('a fixture that resolves a secret DYNAMIC REFERENCE must sweep too', ()
     for (const required of [
       'cross-stack-secret-import',
       'dynamic-ref-cross-region',
+      'nested-stack-3level',
       'nested-stack-secret',
       'rollback-cross-region-secret',
       'secrets-array-nested',
