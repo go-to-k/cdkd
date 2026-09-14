@@ -96,20 +96,26 @@ invoke_with_retry() {
   local args=("$@")
   local attempts=3
   local i=1
+  local err
+  err="$(mktemp)"
   while [ $i -le $attempts ]; do
-    if out=$(${CLI} local invoke "${args[@]}" 2>/dev/null | tail -1) && \
+    if out=$(${CLI} local invoke "${args[@]}" 2>"${err}" | tail -1) && \
        echo "${out}" | grep -q '"bucketName":'; then
+      rm -f "${err}"
       printf '%s' "${out}"
       return 0
     fi
     if [ $i -lt $attempts ]; then
-      echo "[verify]   invoke attempt ${i} failed, retrying..." >&2
+      echo "[verify]   invoke attempt ${i} failed (last stdout line: ${out}); stderr tail:" >&2
+      tail -5 "${err}" >&2
+      echo "[verify]   retrying..." >&2
       sleep 2
     fi
     i=$((i+1))
   done
-  echo "[verify]   all ${attempts} invoke attempts failed; last stderr below:" >&2
-  ${CLI} local invoke "${args[@]}" 2>&1 | tail -10 >&2
+  echo "[verify]   all ${attempts} invoke attempts failed (last stdout line: ${out}); last attempt's stderr below:" >&2
+  tail -20 "${err}" >&2
+  rm -f "${err}"
   return 1
 }
 

@@ -137,6 +137,23 @@ The same defect hides in two more spellings, both banned (issue #1120):
   `if fn` read a throttle as "gone". Tail-less value wrappers are legal
   **only when the probe is the LAST command of the body**: `$(fn)` returns the
   last command's status, so `set -e` fails the caller loudly.
+- **Abort-shaped captures** (issue #3126, a different defect in the same
+  clothing): a silenced capture PIPED to a line picker,
+  `RESULT=$(${CDKD} local invoke Fn 2>/dev/null | tail -1)`. Under
+  `pipefail` a non-zero exit aborts the script at the assignment, so the
+  assertion that would print `FAIL: ... got: ${RESULT}` never runs and the
+  CLI's stderr is already gone — the log ends at the previous banner with no
+  error text. Nothing false-passes; the diagnostic is what is lost. Use the
+  `capture` helper (`RESULT=$(capture ${CDKD} local invoke Fn)` — on a
+  non-zero exit it logs the status, last stdout line and stderr tail and
+  emits nothing, so the assertion fails with its own text; copy
+  `CANONICAL_CAPTURE_BLOCK` from `scripts/check-integ-capture-shape.ts`,
+  byte-identical in every fixture that carries it — an env prefix
+  `AWS_REGION=x capture ...` reaches the CLI), or keep stderr in a file
+  (`2>"${err}"`) and print its tail on the failure path. `... | head -1 ||
+  true` stays legal: the fallback hands the caller an explicit empty value to
+  check. Enforced by `tests/unit/scripts/integ-verify-capture-shape.test.ts`,
+  which also runs both shapes under bash.
 
 **Intermediate captures inside a value wrapper need `|| return 1`.** Bash
 clears errexit inside `$( )` command substitutions (no

@@ -26,25 +26,34 @@ IMAGE="public.ecr.aws/lambda/nodejs:20"
 #     VAR=$(${CDKD} local invoke ... 2>/dev/null | tail -1)
 # aborts the WHOLE script at the ASSIGNMENT when the CLI exits non-zero:
 # pipefail fails the pipeline, the substitution fails, `set -e` kills the
-# script BEFORE the assertion, and the CLI's stderr is already gone. That is
-# how a transient during issue #3106's verification left a log ending at
-# `[2/4] Invoking ...` with no error text at all. `capture` runs the command
-# with its exit status captured EXPLICITLY, prints the status and the tail of
-# the captured stderr on a non-zero exit, and still emits the last stdout
-# line so the assertion runs, FAILS, and prints its own diagnostic — with
-# the evidence in the log. (The shape cdk-local's twin fixture carries.)
-CDKD_STDERR="$(mktemp)"
+# script BEFORE the assertion, and the CLI's stderr is already gone -- a log
+# that ends at `[2/4] Invoking ...` with no error text (issue #3106's lane
+# paid a re-run to learn a transient had hit; issue #3126 swept the shape).
+# `capture` runs the command with its exit status captured EXPLICITLY. On a
+# non-zero exit it prints the status, the last stdout line and the tail of
+# the captured stderr, and emits NOTHING on stdout -- the assertion still
+# runs and FAILS with its own text, and a response that happened to look
+# right never passes a failed invoke (the old shape's one merit, kept). On
+# success it emits the last stdout line. The stderr file is per call and
+# removed here, so the EXIT trap chain carries no entry for it. Every
+# fixture that uses this block carries it byte-for-byte (copy
+# CANONICAL_CAPTURE_BLOCK from scripts/check-integ-capture-shape.ts); the
+# fence is tests/unit/scripts/integ-verify-capture-shape.test.ts.
 capture() {
-  local out rc=0
-  out="$("$@" 2>"${CDKD_STDERR}")" || rc=$?
+  local out err rc=0
+  err="$(mktemp)"
+  out="$("$@" 2>"${err}")" || rc=$?
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] last stdout line: $(printf '%s\n' "${out}" | tail -1)" >&2
     echo "[verify] captured stderr (last 20 lines):" >&2
-    tail -20 "${CDKD_STDERR}" >&2
+    tail -20 "${err}" >&2
+    rm -f "${err}"
+    return 0
   fi
+  rm -f "${err}"
   printf '%s\n' "${out}" | tail -1
 }
-trap 'rm -f "${CDKD_STDERR}"' EXIT
 
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
@@ -65,7 +74,7 @@ ${CDKD} synth >/dev/null
 # /opt mount point.
 echo "==> [1/4] Invoking EchoHandler (default empty event)"
 EVENT_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${CDKD_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"name":"alice","n":7}' > "${EVENT_FILE}"
 RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_1}"
@@ -108,7 +117,7 @@ echo "${RESULT_1}" | grep -q '"greeting":"from-layer-B:hello-alice"' || {
 # end-to-end (sanity check that nothing was cached as constants).
 echo "==> [2/4] Invoking with a different event payload"
 EVENT2=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${EVENT2}" "${CDKD_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${EVENT2}"' EXIT
 echo '{"name":"bob","n":42}' > "${EVENT2}"
 RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT2}" --no-pull)
 echo "    response: ${RESULT_2}"

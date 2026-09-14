@@ -200,10 +200,10 @@ fallbacks** (`N=$(aws <read-verb> ... 2>/dev/null || echo 0)` / `|| true` — a
 throttle reads as "0 remaining"; use a plain strict capture, or branch on
 `gone_probe` when not-found is legitimate) and **silenced function wrappers**
 (an exit-status wrapper `fn() { aws ... >/dev/null 2>&1; }` or a value wrapper
-with a swallow tail). Tail-less silenced captures/wrappers stay legal (`set -e`
-fails them loudly; for wrappers ONLY when the probe is the LAST command of the
-body), as does the strict stderr-capture idiom
-(`$(cmd 2>&1 >/dev/null || true)`).
+with a swallow tail). A tail-less silenced capture or wrapper stays legal
+(`set -e` fails it loudly; a wrapper ONLY when the probe is its LAST command),
+the strict idiom `$(cmd 2>&1 >/dev/null || true)` too — piped to `tail` it is
+not: [abort-capture.md](abort-capture.md).
 
 **Intermediate captures inside a value wrapper need `|| return 1`**: errexit is
 CLEARED inside `$( )`, so in a multi-statement wrapper called as `V="$(fn)"` an

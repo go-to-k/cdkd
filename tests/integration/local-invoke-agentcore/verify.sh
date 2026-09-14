@@ -42,6 +42,39 @@ AGUI="CdkLocalInvokeAgentCoreFixture/AguiAgent"
 BASE_IMAGE="public.ecr.aws/docker/library/node:20-slim"
 CODE_BASE_IMAGE="public.ecr.aws/docker/library/python:3.12-slim"
 
+# --- capture ---------------------------------------------------------------
+# Under `set -euo pipefail` the shape
+#     VAR=$(${CDKD} local invoke ... 2>/dev/null | tail -1)
+# aborts the WHOLE script at the ASSIGNMENT when the CLI exits non-zero:
+# pipefail fails the pipeline, the substitution fails, `set -e` kills the
+# script BEFORE the assertion, and the CLI's stderr is already gone -- a log
+# that ends at `[2/4] Invoking ...` with no error text (issue #3106's lane
+# paid a re-run to learn a transient had hit; issue #3126 swept the shape).
+# `capture` runs the command with its exit status captured EXPLICITLY. On a
+# non-zero exit it prints the status, the last stdout line and the tail of
+# the captured stderr, and emits NOTHING on stdout -- the assertion still
+# runs and FAILS with its own text, and a response that happened to look
+# right never passes a failed invoke (the old shape's one merit, kept). On
+# success it emits the last stdout line. The stderr file is per call and
+# removed here, so the EXIT trap chain carries no entry for it. Every
+# fixture that uses this block carries it byte-for-byte (copy
+# CANONICAL_CAPTURE_BLOCK from scripts/check-integ-capture-shape.ts); the
+# fence is tests/unit/scripts/integ-verify-capture-shape.test.ts.
+capture() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$("$@" 2>"${err}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] last stdout line: $(printf '%s\n' "${out}" | tail -1)" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
+    tail -20 "${err}" >&2
+    rm -f "${err}"
+    return 0
+  fi
+  rm -f "${err}"
+  printf '%s\n' "${out}" | tail -1
+}
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
 
@@ -56,7 +89,7 @@ fi
 
 # Test 1 — default empty event: env injection + auto session id.
 echo "==> [1/20] Invoking EchoAgent with default empty event"
-RESULT_1=$(${CDKD} local invoke-agentcore "${TARGET}" 2>/dev/null | tail -1)
+RESULT_1=$(capture ${CDKD} local invoke-agentcore "${TARGET}")
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello-from-agent"' || {
   echo "FAIL: expected greeting=hello-from-agent in response, got: ${RESULT_1}"
@@ -73,7 +106,7 @@ echo "==> [2/20] Invoking EchoAgent with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"prompt":"hello agent","n":7}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKD} local invoke-agentcore "${TARGET}" --event "${EVENT_FILE}" 2>/dev/null | tail -1)
+RESULT_2=$(capture ${CDKD} local invoke-agentcore "${TARGET}" --event "${EVENT_FILE}")
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -q '"prompt":"hello agent"' || {
   echo "FAIL: expected echoed prompt in response, got: ${RESULT_2}"
@@ -85,7 +118,7 @@ echo "==> [3/20] Invoking EchoAgent with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
-RESULT_3=$(${CDKD} local invoke-agentcore "${TARGET}" --env-vars "${ENV_FILE}" 2>/dev/null | tail -1)
+RESULT_3=$(capture ${CDKD} local invoke-agentcore "${TARGET}" --env-vars "${ENV_FILE}")
 echo "    response: ${RESULT_3}"
 echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
@@ -95,7 +128,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 # Test 4 — explicit --session-id reaches the container's session header.
 echo "==> [4/20] Invoking EchoAgent with explicit --session-id"
 SESSION="cdkd-integ-session-1234567890abcdef"
-RESULT_4=$(${CDKD} local invoke-agentcore "${TARGET}" --session-id "${SESSION}" 2>/dev/null | tail -1)
+RESULT_4=$(capture ${CDKD} local invoke-agentcore "${TARGET}" --session-id "${SESSION}")
 echo "    response: ${RESULT_4}"
 echo "${RESULT_4}" | grep -q "\"sessionId\":\"${SESSION}\"" || {
   echo "FAIL: expected sessionId=${SESSION} in response, got: ${RESULT_4}"
@@ -126,7 +159,7 @@ RUNNING=$(docker ps -a --filter name=cdkd-local-agentcore- -q | wc -l | tr -d ' 
 
 # Test 6 — --no-verify-auth skips verification and proceeds.
 echo "==> [6/20] ProtectedAgent with --no-verify-auth proceeds (auth skipped)"
-RESULT_6=$(${CDKD} local invoke-agentcore "${PROTECTED}" --no-verify-auth 2>/dev/null | tail -1)
+RESULT_6=$(capture ${CDKD} local invoke-agentcore "${PROTECTED}" --no-verify-auth)
 echo "    response: ${RESULT_6}"
 echo "${RESULT_6}" | grep -q '"greeting":"hello-from-agent"' || {
   echo "FAIL: expected the agent to respond under --no-verify-auth, got: ${RESULT_6}"
@@ -137,7 +170,7 @@ echo "${RESULT_6}" | grep -q '"greeting":"hello-from-agent"' || {
 # is verified and forwarded to /invocations as the Authorization header.
 echo "==> [7/20] ProtectedAgent with --bearer-token forwards the Authorization header"
 TOKEN="header.payload.sig"
-RESULT_7=$(${CDKD} local invoke-agentcore "${PROTECTED}" --bearer-token "${TOKEN}" 2>/dev/null | tail -1)
+RESULT_7=$(capture ${CDKD} local invoke-agentcore "${PROTECTED}" --bearer-token "${TOKEN}")
 echo "    response: ${RESULT_7}"
 echo "${RESULT_7}" | grep -q "\"authorization\":\"Bearer ${TOKEN}\"" || {
   echo "FAIL: expected the bearer token forwarded as Authorization: Bearer ${TOKEN}, got: ${RESULT_7}"
@@ -192,7 +225,7 @@ echo "${RESULT_10}" | grep -q '"text": "5"' || {
 # source (no Dockerfile): cdkd local builds it from source (pip install + run the
 # entrypoint) and the entrypoint self-serves the 8080 HTTP contract.
 echo "==> [11/20] CodeAgent (fromCodeAsset) builds from source + responds"
-RESULT_11=$(${CDKD} local invoke-agentcore "${CODE}" 2>/dev/null | tail -1)
+RESULT_11=$(capture ${CDKD} local invoke-agentcore "${CODE}")
 echo "    response: ${RESULT_11}"
 echo "${RESULT_11}" | grep -q '"runtime":"python-code"' || {
   echo "FAIL: expected the from-source python agent to respond, got: ${RESULT_11}"
@@ -208,7 +241,7 @@ echo "==> [12/20] CodeAgent with --event echoes the payload"
 CODE_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}"' EXIT
 echo '{"prompt":"hello code"}' > "${CODE_EVENT}"
-RESULT_12=$(${CDKD} local invoke-agentcore "${CODE}" --event "${CODE_EVENT}" 2>/dev/null | tail -1)
+RESULT_12=$(capture ${CDKD} local invoke-agentcore "${CODE}" --event "${CODE_EVENT}")
 echo "    response: ${RESULT_12}"
 echo "${RESULT_12}" | grep -q '"prompt":"hello code"' || {
   echo "FAIL: expected echoed prompt from the from-source agent, got: ${RESULT_12}"
@@ -272,7 +305,7 @@ echo "${ERR_14}" | grep -q -- '--ws applies only to the HTTP / AGUI protocols' |
 # scope / claim checks are covered by the unit tests, which sign real RS256
 # tokens against mock JWKS.)
 echo "==> [15/20] ProtectedAgentClaims (allowedScopes + customClaims) invokes successfully"
-RESULT_15=$(${CDKD} local invoke-agentcore "${PROTECTED_CLAIMS}" --bearer-token "h.p.s" 2>/dev/null | tail -1)
+RESULT_15=$(capture ${CDKD} local invoke-agentcore "${PROTECTED_CLAIMS}" --bearer-token "h.p.s")
 echo "    response: ${RESULT_15}"
 echo "${RESULT_15}" | grep -q '"greeting":"hello-from-agent"' || {
   echo "FAIL: expected ProtectedAgentClaims to invoke under pass-through, got: ${RESULT_15}"
@@ -295,7 +328,7 @@ echo "==> [16/20] EchoAgent --sigv4 forwards an AWS4-HMAC-SHA256 Authorization h
 RESULT_16=$(AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
   AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
   AWS_REGION=us-east-1 \
-  ${CDKD} local invoke-agentcore "${TARGET}" --sigv4 2>/dev/null | tail -1)
+  capture ${CDKD} local invoke-agentcore "${TARGET}" --sigv4)
 echo "    response: ${RESULT_16}"
 echo "${RESULT_16}" | grep -q '"authorization":"AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/' || {
   echo "FAIL: expected an AWS4-HMAC-SHA256 Authorization header carrying the access key id, got: ${RESULT_16}"
@@ -327,7 +360,7 @@ echo "${OUT_16B}" | grep -q 'mutually exclusive' || {
 # ignored). The negative sub-check confirms the parser rejects a non-positive
 # value pre-container.
 echo "==> [17/20] EchoAgent --timeout 60000 succeeds (flag is parsed + applied)"
-RESULT_17=$(${CDKD} local invoke-agentcore "${TARGET}" --timeout 60000 2>/dev/null | tail -1)
+RESULT_17=$(capture ${CDKD} local invoke-agentcore "${TARGET}" --timeout 60000)
 echo "    response: ${RESULT_17}"
 echo "${RESULT_17}" | grep -q '"greeting":"hello-from-agent"' || {
   echo "FAIL: expected EchoAgent to invoke under --timeout 60000, got: ${RESULT_17}"

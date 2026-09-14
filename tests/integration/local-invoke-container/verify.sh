@@ -20,6 +20,39 @@ cd "$(dirname "$0")"
 CDKD="node ../../../dist/cli.js"
 BASE_IMAGE="public.ecr.aws/lambda/nodejs:20"
 
+# --- capture ---------------------------------------------------------------
+# Under `set -euo pipefail` the shape
+#     VAR=$(${CDKD} local invoke ... 2>/dev/null | tail -1)
+# aborts the WHOLE script at the ASSIGNMENT when the CLI exits non-zero:
+# pipefail fails the pipeline, the substitution fails, `set -e` kills the
+# script BEFORE the assertion, and the CLI's stderr is already gone -- a log
+# that ends at `[2/4] Invoking ...` with no error text (issue #3106's lane
+# paid a re-run to learn a transient had hit; issue #3126 swept the shape).
+# `capture` runs the command with its exit status captured EXPLICITLY. On a
+# non-zero exit it prints the status, the last stdout line and the tail of
+# the captured stderr, and emits NOTHING on stdout -- the assertion still
+# runs and FAILS with its own text, and a response that happened to look
+# right never passes a failed invoke (the old shape's one merit, kept). On
+# success it emits the last stdout line. The stderr file is per call and
+# removed here, so the EXIT trap chain carries no entry for it. Every
+# fixture that uses this block carries it byte-for-byte (copy
+# CANONICAL_CAPTURE_BLOCK from scripts/check-integ-capture-shape.ts); the
+# fence is tests/unit/scripts/integ-verify-capture-shape.test.ts.
+capture() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$("$@" 2>"${err}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] last stdout line: $(printf '%s\n' "${out}" | tail -1)" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
+    tail -20 "${err}" >&2
+    rm -f "${err}"
+    return 0
+  fi
+  rm -f "${err}"
+  printf '%s\n' "${out}" | tail -1
+}
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
 
@@ -40,7 +73,7 @@ ${CDKD} synth >/dev/null
 # documented as a no-op in CLI help — it still skips the public-base
 # image's `docker pull` from the ZIP path which we did up front).
 echo "==> [1/4] Invoking EchoHandler (container) with default empty event"
-RESULT_1=$(${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -56,7 +89,7 @@ echo "==> [2/4] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -q '"key":"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -68,7 +101,7 @@ echo "==> [3/4] Invoking EchoHandler with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
-RESULT_3=$(${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_3=$(capture ${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_3}"
 echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"

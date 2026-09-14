@@ -379,10 +379,13 @@ verify, clean up.
   `com.docker.cli` child running).
 - **A fixture that discards the CLI's stderr cannot report its own failure.**
   `RESULT=$(${CDKD} ... 2>/dev/null | tail -1)` under `set -euo pipefail`
-  prints the arm header and exits 1 with NO error text, so re-run the failing
-  command with stderr attached BEFORE concluding anything about the change
-  under test (2026-09-05: `local-invoke-agentcore`'s `verify.sh:59` rendered a
-  pre-existing synth break — go-to-k/cdkd#2191 — as "the PR under review is
-  swallowing its own errors", and that fixture gates `integ-local`).
+  printed the arm header and exited 1 with NO error text (2026-09-05:
+  `local-invoke-agentcore`'s `verify.sh:59` rendered a pre-existing synth
+  break — go-to-k/cdkd#2191 — as "the PR under review is swallowing its own
+  errors"). The shape is banned and fenced since go-to-k/cdkd#3126
+  (`.claude/rules/abort-capture.md`): a failing invoke now prints
+  `[verify] command exited N` plus the stderr tail. A log that still ends at
+  an arm header with no error text means a fixture outside the fence — re-run
+  that command with stderr attached BEFORE concluding anything.
 - **Never bypass this skill** with direct `cdkd deploy` / `cdkd destroy` —
   the orphan-cleanup contract is part of the test, not optional.
