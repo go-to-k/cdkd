@@ -30,7 +30,8 @@
 # .claude/hooks/lib/command-match.test.sh` is what answers that question.
 #
 # Usage:  bash .claude/hooks/lib/command-match-mutants.sh [<mutant> ...]
-# Exit 0 when every mutant reduced the pass count, non-zero if any did not --
+# Exit 0 when every mutant fails a case the unmutated run did not, non-zero
+# if any does not --
 # a mutant the suite does not notice is a coverage hole, and this reports it.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,7 +54,19 @@ tally() { grep -E '^Pass: ' "$1" | head -1; }
 # of go-to-k/cdkd#3040, at load average 136: twenty-five one-case mutants
 # reported undiscriminated at once). A mutant discriminates when it fails a
 # case the baseline did NOT fail.
-failset() { grep -E '^FAIL ' "$1" | sed 's/ (want .*$//' | sort -u; }   # the suite prints each failure twice, once with its verdict
+# Keyed on the case NAME alone, read from the IMMEDIATE failure lines -- the
+# ones printed BEFORE the `Pass:` tally, once per case, with or without a
+# `(want X, got Y)` suffix. The tail summary after the tally prints the same
+# names again through printf %b, which renders a backslash in a name as an
+# escape, so it is not read. The TIMING cases carry their measurement in the
+# line (`took 9s`); a case that fails in both runs with different seconds
+# would read as a NEW failure and report a no-op mutant as discriminated
+# (review round 13 measured exactly that with a `$(date +%s)` case), so they
+# are outside the set: timing cannot discriminate a mutant.
+failset() {
+  awk '/^Pass: /{exit} /^FAIL /{print}' "$1" | grep -vE '^FAIL (latency|bounded walk)' \
+    | sed -E 's/ \(want .*$//' | sort -u
+}
 base_out="$WORK/base.txt"
 cp "$LIB" "$WORK/command-match.sh"
 bash "$WORK/command-match.test.sh" > "$base_out" 2>&1
@@ -211,6 +224,10 @@ edits={
  # pre-#3040 behaviour whose false refusals the control cases pin.
  'bs-parity':           ('        if (match(line, /\\\\+$/) && RLENGTH % 2 == 1) {\n',
                          '        if (line ~ /\\\\$/) {\n'),
+ # `bs-arm-off` removes the continuation join entirely, so E3 / T1-ctl and
+ # the pre-existing continuation cases are what hold it in place.
+ 'bs-arm-off':          ('        if (match(line, /\\\\+$/) && RLENGTH % 2 == 1) {\n',
+                         '        if (0) {\n'),
  'ptag-latch-off':      ('          if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd\n',
                          '          if (0) ptag = pd\n'),
  'pending-tag-restore': ('      pending_tag = saved_pt\n', ''),
@@ -224,7 +241,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close ptag-keep-delimiter ptag-trim-both ptag-paren-clause bs-parity ptag-latch-off pending-tag-restore}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close ptag-keep-delimiter ptag-trim-both ptag-paren-clause bs-parity bs-arm-off ptag-latch-off pending-tag-restore}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then
@@ -243,7 +260,7 @@ for m in $MUTANTS; do
   if [ "$new_fails" -eq 0 ]; then
     printf '%-16s %s   <- NOT DISCRIMINATED: no case notices this mutation\n' "$m" "$(tally "$WORK/$m.txt")"; rc=1
   else
-    printf '%-16s %s   (%s case(s) red beyond the baseline)\n' "$m" "$(tally "$WORK/$m.txt")" "$new_fails"
+    printf '%-16s %s   (%s case name(s) red beyond the baseline)\n' "$m" "$(tally "$WORK/$m.txt")" "$new_fails"
   fi
 done
 exit "$rc"
