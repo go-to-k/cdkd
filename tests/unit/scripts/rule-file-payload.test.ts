@@ -309,6 +309,10 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // (go-to-k/cdkd#2719) because its detail pushed src/types/state.ts over the
   // per-path budget, and a wider glob here would re-create that. EXACT.
   ['provisioning-sticky-routing.md', 1],
+  // Exactly one path by design (go-to-k/cdkd#3110): split out so the
+  // `src/deployment/secret-redaction.ts` and `src/cli/commands/scrub.ts` paths,
+  // both within a few dozen bytes of their caps, do not pay for it. EXACT.
+  ['no-change-outputs-merge.md', 1],
   ['providers.md', 92],
   ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
@@ -358,6 +362,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // them but the custom-resource provider needed them.
   ['src/provisioning/region-check.ts', 63_500, 102_000],
   ['src/deployment/deploy-engine.ts', 43_000, 61_000],
+  // The one path that loads `no-change-outputs-merge.md` (go-to-k/cdkd#3110);
+  // without this row the satellite would sit under no budget at all. Payload
+  // is layout-deployment.md + architecture.md + code-layout.md + the satellite.
+  ['src/deployment/no-change-outputs-merge.ts', 50_000, 62_000], // measured 56,993
   ['src/cli/commands/deploy.ts', 41_000, 63_000],
   ['src/local/docker-runner.ts', 41_500, 67_000],
   ['src/analyzer/dag-builder.ts', 26_000, 35_000],
@@ -1202,7 +1210,8 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 54; // -1 hooks-deferral-criteria.md (go-to-k/cdkd#2717, its gate retired). + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
+const CORPUS_FILE_COUNT = 55; // + no-change-outputs-merge.md (go-to-k/cdkd#3110).
+                              // Was 54: // -1 hooks-deferral-criteria.md (go-to-k/cdkd#2717, its gate retired). + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
                               //  auto-close-form entry, plus the review round that followed
                               //  it, took layout-ci-checks.md to 20,839 B against the 20,000 B
                               //  ceiling its `pr-title-check.yml` path band asserts. (The entry

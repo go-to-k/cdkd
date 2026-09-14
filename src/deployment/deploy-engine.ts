@@ -3258,8 +3258,8 @@ export class DeployEngine {
             );
           } else if (merge?.kind === 'merged' && merge.carriedKeys.length > 0) {
             this.logger.debug(
-              `Kept the previously persisted value of ${merge.carriedKeys.length} output key(s) ` +
-                'that could not be resolved (no-change path, #2771)'
+              `Kept the previously persisted value of ${merge.carriedKeys.length} output key(s), ` +
+                'carried export aliases included, that could not be resolved (no-change path, #2771)'
             );
           }
 

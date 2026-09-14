@@ -171,8 +171,8 @@ Index of every area: [code-layout.md](code-layout.md).
     bag `resolveOutputs` returns, which is the redaction INPUT; whether it is
     also the STORED object depends on whether this pass recorded an output
     secret -- with one `redactOutputs` returns a fresh bag, with none (the
-    ordinary deploy) it returns its input and the marked object IS stored; on the no-change path the redacted bag is stored when the
-    outputs changed) and on two never-installed COPIES
+    ordinary deploy) it returns its input and the marked object IS stored; on the no-change path see
+    [no-change-outputs-merge.md](no-change-outputs-merge.md)) and on two never-installed COPIES
     of the resolver's own output (the update arm's no-change re-check, marked
     BEFORE a provider call it may skip, or a stored token would read as a
     change on every deploy; a failed op's journaled `attemptedProperties`);

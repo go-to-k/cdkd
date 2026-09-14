@@ -600,7 +600,18 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
       const internals = engine as unknown as {
         skippedOutputs: Record<string, string> | undefined;
         outputsPassSecretMaps: Map<string, string>[];
+        redactOutputs: (outputs: Record<string, unknown>) => Record<string, unknown>;
       };
+      // The outputs pass redacts its bag ONCE before the drain; the save-time
+      // re-check and the save itself redact again after it. Counting the calls
+      // at the moment the needle is written pins the needle AFTER that first
+      // redaction, which is what makes the save-time re-check the only thing
+      // standing between the needle and the saved bag. Without this premise, an
+      // `await` inserted between the outputs pass and the drain would let the
+      // merge's own gate refuse first, and the case would keep passing on the
+      // safe verdict it also wants.
+      const redactSpy = vi.spyOn(internals, 'redactOutputs');
+      let redactCallsWhenNeedleLanded = -1;
       // MICROTASK yields only: a timer yield would also run whatever timer an
       // EARLIER test in this file left pending, inside this test's window. The
       // extra yields after `skippedOutputs` appears let the engine finish
@@ -612,6 +623,7 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
           await Promise.resolve();
         }
         for (let i = 0; i < 200; i += 1) await Promise.resolve();
+        redactCallsWhenNeedleLanded = redactSpy.mock.calls.length;
         internals.outputsPassSecretMaps[0]!.set(LATE, SEC);
         return { BucketName: 'bucket-a' };
       });
@@ -625,8 +637,12 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
 
       await engine.deploy(stackName, template);
 
-      // PREMISE: the capture ran, so the needle really arrived during the drain.
+      // PREMISE: the capture ran, so the needle really arrived during the
+      // drain — and AFTER the outputs pass had redacted its bag (exactly one
+      // `redactOutputs` call by then), so only the save-time re-check saw it.
       expect(mockProvider.readCurrentState).toHaveBeenCalledTimes(1);
+      expect(redactCallsWhenNeedleLanded).toBe(1);
+      expect(redactSpy.mock.calls.length).toBeGreaterThan(1);
       const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
       expect(saved.outputs).toEqual(previous);
       expect(JSON.stringify(saved)).not.toContain(LATE);
