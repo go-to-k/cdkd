@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vite-plus/test';
 import {
   mkdtempSync,
   mkdirSync,
@@ -115,6 +115,12 @@ const BASH = '/bin/bash';
 const slowIt = (name: string, fn: () => void): void => {
   it(name, fn, 120_000);
 };
+// Every other case spawns bash at least once too, and the single-page ones
+// measured 503–750 ms under a 40+ load average — against the 5 s default that
+// is the go-to-k/cdkd#2741 / #3038 flake class, and `.claude/rules/testing.md`
+// asks a spawning test to declare its own bound. One file-level bound covers
+// the whole population (PR #3134); `slowIt` keeps its larger one above it.
+vi.setConfig({ testTimeout: 60_000 });
 
 /** One entry in the fake bucket's version listing. */
 interface StoreObject {

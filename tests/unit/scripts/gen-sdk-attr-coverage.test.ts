@@ -189,6 +189,17 @@ describe('buildReport / findGaps', () => {
 describe('real repo coverage (regression floor)', () => {
   const repoRoot = join(import.meta.dirname, '../../..');
 
+  // Declared bound for the ONE case in this block that reads the repo (issue
+  // #3038): it loads every fixture under `tests/fixtures/cfn-schemas` and
+  // parses every provider, so its cost grows with the repo and moves with
+  // machine load -- measured at 0.6-0.7 s on a host at load 25-45
+  // (2026-09-15), and observed crossing the 5 s in-process default while
+  // three suites shared one machine. Per `.claude/rules/testing.md` the
+  // bound stops a HANG rather than policing latency, so it is >= 80x the
+  // measured cost. The three sibling cases below read only the
+  // `SDK_ATTR_ALLOW_LIST` constant (0 ms measured) and keep the default.
+  const REAL_REPO_TIMEOUT_MS = 60_000;
+
   it('classifies a substantial number of SDK-backed types with an Arn/Url attribute', () => {
     const fixtures = loadAllFixtures(join(repoRoot, 'tests/fixtures/cfn-schemas'));
     const providersDir = join(repoRoot, 'src/provisioning/providers');
@@ -272,7 +283,7 @@ describe('real repo coverage (regression floor)', () => {
         `${resourceType}.${attr} must be CACHED by its provider (issue 1824) — not allow-listed`
       ).toBe('cached');
     }
-  });
+  }, REAL_REPO_TIMEOUT_MS);
 
   it('carries no KNOWN GAP entries — the issue-1824 pair was fixed, not carved out', () => {
     // Both kinds of entry have to share one list (the classifier needs the same

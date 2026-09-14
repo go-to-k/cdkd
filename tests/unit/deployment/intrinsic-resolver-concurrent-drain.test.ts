@@ -135,8 +135,76 @@ function gate(): { promise: Promise<void>; open: () => void } {
   return { promise, open };
 }
 
-/** Let every already-queued microtask and timer callback run. */
-const settleTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+/**
+ * Let every already-queued microtask and timer callback run. On the fake
+ * clock (below) a 0 ms timer fires only when the clock is ticked, so the
+ * helper ticks it by zero there instead of scheduling a real turn that
+ * would never come.
+ */
+const settleTurn = async (): Promise<void> => {
+  if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+  else await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
+/**
+ * EVERY case below that reads a duration runs on vitest's FAKE clock (issues
+ * [#2907](https://github.com/go-to-k/cdkd/issues/2907) and
+ * [#3071](https://github.com/go-to-k/cdkd/issues/3071)).
+ *
+ * The cap is a `setTimeout`, the fake client's delays are `setTimeout`s, and
+ * `Date.now()` is what the budget arithmetic and these cases both read. With
+ * all three faked, the clock moves only when a timer fires, so the fake time
+ * at which a resolution SETTLES is the timer that released it -- for a
+ * drain, the cap wait it paid -- and a verdict below is arithmetic over the
+ * fixture (`cap`, the delays) rather than a measurement of the host. The
+ * helper steps ONE timer at a time and stops at settlement: running every
+ * scheduled timer first would count a timer the resolution never waited on
+ * (a leaked cap timer moved one reading from 90 to 140 on review, with the
+ * resolution released at 90). The two shapes this replaces both lost to
+ * scheduling noise: a RATIO of two real durations (`wrapped < bare / 2`,
+ * measured 46 % and 86 % over under full-suite load) and an ABSOLUTE
+ * ceiling (`< 280`, measured 1898 on a first run in a fresh process).
+ * Neither could be widened into safety without losing the regression it
+ * pins, since a per-level charge and a shared one differ by ONE cap.
+ *
+ * What the fake clock does NOT change: the drains still wait on real
+ * promises, the mock still holds and rejects by secret id, and the cap is
+ * still armed by a rejection -- only the passage of time is driven from the
+ * test instead of the host. Each verdict is `toBe` because the clock makes
+ * it exact; a `toBeLessThan` here would hide a regression by exactly the
+ * margin it allows.
+ */
+async function runClockUntilSettled(pending: Promise<unknown>): Promise<void> {
+  const seen = watch(pending);
+  for (let steps = 0; seen.state() === 'pending'; steps += 1) {
+    // ONE timer per step (`advanceTimersToNextTimerAsync` yields a real
+    // macrotask around each firing, so the continuations the previous step
+    // released run before the next timer fires and `seen` can flip) -- the
+    // clock stops at the timer
+    // that settled `pending`, not at the last timer anyone scheduled. With
+    // no timer left the step only yields; a promise still pending then is
+    // waiting on something the clock cannot drive, which this file has one
+    // of by design (a hung sibling with no cap armed), so the loop is
+    // bounded rather than spun. No case here fires more than a handful.
+    if (steps >= 50) {
+      throw new Error('still pending after 50 timer steps: nothing timer-driven is left, so this is a hang');
+    }
+    await vi.advanceTimersToNextTimerAsync();
+  }
+}
+
+/**
+ * Fake milliseconds from now until `pending` SETTLES (the clock is left at
+ * the timer that settled it), then `pending`'s own outcome so an assertion
+ * inside a wrapped callback still propagates. A caller expecting a rejection
+ * passes `pending.catch(...)` and asserts the rejection on the original.
+ */
+async function fakeElapsed(pending: Promise<unknown>): Promise<number> {
+  const started = Date.now();
+  await runClockUntilSettled(pending);
+  await pending;
+  return Date.now() - started;
+}
 
 function makeContext(): ResolverContext & { recordedSecretValues: Map<string, string> } {
   return {
@@ -178,9 +246,12 @@ beforeEach(() => {
 });
 
 // ALSO after: `beforeEach` alone leaves the last case's cap set for whatever
-// runs next in this worker.
+// runs next in this worker. The clock too: a timed case installs the fake
+// one, and a case that failed before its own cleanup would otherwise hand
+// it to the next.
 afterEach(() => {
   delete concurrentDrainCap.ms;
+  vi.useRealTimers();
 });
 
 describe('a concurrent resolution drains every part before a rejection surfaces (issue #2563)', () => {
@@ -282,13 +353,14 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // the remaining settles race the cap, and the recorded rejection is thrown
     // when it expires. Driven through the exported seam rather than a real
     // minute of waiting.
-    concurrentDrainCap.ms = 50;
+    vi.useFakeTimers();
+    const cap = 50;
+    concurrentDrainCap.ms = cap;
     control.hangs.add(SLOW_ID);
     control.fails.add(FAIL_ID);
     const context = makeContext();
     const resolver = new IntrinsicFunctionResolver('us-east-1');
 
-    const started = Date.now();
     const pending = resolver.resolve({ 'Fn::Join': ['-', [ref(SLOW_ID), ref(FAIL_ID)]] }, context);
     const seen = watch(pending);
     await settleTurn();
@@ -298,8 +370,11 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // what pins the wait.)
     expect(seen.state(), 'the rejection does not surface on the turn it happened').toBe('pending');
 
+    const elapsed = await fakeElapsed(pending.catch(() => undefined));
     await expect(pending).rejects.toThrow(`refused ${FAIL_ID}`);
-    expect(Date.now() - started, 'the drain waited the cap out').toBeGreaterThanOrEqual(45);
+    // The only timer that fired was the cap's, so the fake clock moved by
+    // exactly the cap; `ms = 0` reads 0 here.
+    expect(elapsed, 'the drain waited the cap out').toBe(cap);
     // The hung part never recorded, which is the price the cap accepts.
     expect(context.recordedSecretValues.size).toBe(0);
   });
@@ -311,7 +386,9 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // whole time, so depth x 60 s is the wrong bound to offer. The first
     // rejection anywhere opens ONE budget for the resolution and every drain
     // under it spends the same remaining wait.
-    concurrentDrainCap.ms = 60;
+    vi.useFakeTimers();
+    const cap = 60;
+    concurrentDrainCap.ms = cap;
     for (const id of HANG_IDS) control.hangs.add(id);
     control.fails.add(FAIL_DEEP_ID);
     const context = makeContext();
@@ -321,34 +398,33 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // to wait for: without that the outer drains have nothing pending once
     // the inner one throws, and a per-invocation cap costs nothing extra.
     // Shape: join -> [hangA, [hangB, [hangC, FAIL]]].
-    // Depth 1 FIRST, as the baseline: an absolute ceiling would be a bet on
-    // the runner's scheduler, while a ratio against a drain measured moments
-    // earlier dilates with whatever load the machine is under.
-    const flatStarted = Date.now();
-    await expect(
-      resolver.resolve({ 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_DEEP_ID)]] }, context)
-    ).rejects.toThrow(`refused ${FAIL_DEEP_ID}`);
-    const flat = Date.now() - flatStarted;
+    // Depth 1 FIRST, as the control: the same fixture one level deep costs
+    // exactly one cap, which is what the three-level shape must also cost.
+    const flatRun = resolver.resolve(
+      { 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_DEEP_ID)]] },
+      context
+    );
+    const flat = await fakeElapsed(flatRun.catch(() => undefined));
+    await expect(flatRun).rejects.toThrow(`refused ${FAIL_DEEP_ID}`);
 
-    const started = Date.now();
-    await expect(
-      resolver.resolve(
-        {
-          'Fn::Join': [
-            '-',
-            [ref(HANG_IDS[0]!), [ref(HANG_IDS[1]!), [ref(HANG_IDS[2]!), ref(FAIL_DEEP_ID)]]],
-          ],
-        },
-        context
-      )
-    ).rejects.toThrow(`refused ${FAIL_DEEP_ID}`);
-    const elapsed = Date.now() - started;
+    const nestedRun = resolver.resolve(
+      {
+        'Fn::Join': [
+          '-',
+          [ref(HANG_IDS[0]!), [ref(HANG_IDS[1]!), [ref(HANG_IDS[2]!), ref(FAIL_DEEP_ID)]]],
+        ],
+      },
+      context
+    );
+    const elapsed = await fakeElapsed(nestedRun.catch(() => undefined));
+    await expect(nestedRun).rejects.toThrow(`refused ${FAIL_DEEP_ID}`);
 
-    expect(flat, 'the baseline really waited the cap').toBeGreaterThanOrEqual(50);
-    expect(elapsed, 'three levels waited the cap').toBeGreaterThanOrEqual(50);
-    // Three levels of drain: per-invocation caps measured ~3 x the baseline,
-    // one shared budget ~1 x. Fewer than TWO baselines is the verdict.
-    expect(elapsed, 'waited it ONCE, not once per level').toBeLessThan(flat * 2);
+    expect(flat, 'the control waited exactly the cap').toBe(cap);
+    // Three levels of drain: per-invocation caps cost 3 x the cap (the inner
+    // one waits it out, then each outer level arms its own); one shared
+    // budget costs the cap once, since the outer levels arm against a
+    // remainder the inner one already spent.
+    expect(elapsed, 'waited it ONCE, not once per level').toBe(cap);
   });
 
   it('the cap timer is cleared on the way out, and the budget is released with it', async () => {
@@ -357,15 +433,19 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // hides it), and a budget left open across resolutions (the NEXT failure
     // would then drain against the FIRST call's remainder instead of its own
     // cap -- longer here, since this first call barely waits at all).
+    vi.useFakeTimers();
     const firstCap = 400;
+    const secondCap = 40;
     concurrentDrainCap.ms = firstCap;
     const cleared: unknown[] = [];
-    const realClear = globalThis.clearTimeout;
+    // The FAKE clock's `clearTimeout`, installed just above: the spy must
+    // forward to it, or the fake timer it clears would stay scheduled.
+    const fakeClear = globalThis.clearTimeout;
     const spy = vi
       .spyOn(globalThis, 'clearTimeout')
       .mockImplementation(((id: never) => {
         cleared.push(id);
-        return realClear(id);
+        return fakeClear(id);
       }) as typeof globalThis.clearTimeout);
     try {
       // The sibling is RELEASED long before the cap, so the timer being
@@ -384,37 +464,46 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
       void pending.catch(() => undefined);
       await settleTurn();
       held.open();
+      // Released by the gate, through microtasks alone: nothing ticks the
+      // clock here, so a resolver that waited for the cap instead would HANG
+      // this await and the case would fail by its timeout -- that hang is
+      // the verdict on "released before the cap", not an elapsed reading,
+      // which under an unticked fake clock is 0 whatever the resolver did.
       await expect(pending).rejects.toThrow(`refused ${FAIL_ID}`);
+      expect(Date.now() - started, 'the clock never moved: nothing timer-driven released this').toBe(0);
 
-      expect(Date.now() - started, 'released well before the cap could fire').toBeLessThan(100);
+      // The leak itself, stated directly: no timer is left armed after the
+      // rejection surfaced (the cap's was live, at 400, and must have been
+      // cleared). The spy pins that the clear was a CALL on that live timer.
+      expect(vi.getTimerCount(), 'no live cap timer remains after the release').toBe(0);
       expect(cleared.length, 'the live cap timer is cleared on the way out').toBeGreaterThan(before);
 
       // The SAME context again, and NO sleep between the two calls: the
       // budget holds remaining WAIT rather than an instant, so elapsed time
       // spends nothing and no sleep could make a leaked budget look spent.
       // What discriminates is the SIZE of the second wait. The first call
-      // released its sibling almost at once, so a budget leaked from it --
-      // kept per CONTEXT, or one module-level singleton -- still holds
-      // nearly all of `firstCap`; the second drain would then wait that
-      // remainder instead of its own much smaller cap. Hence the upper bound
-      // below as well as the lower one: the lower alone passes under both
-      // leaks (measured -- the singleton mutant is green against it).
+      // released its sibling at once, so a budget leaked from it -- kept per
+      // CONTEXT, or one module-level singleton -- still holds all of
+      // `firstCap`; the second drain would then wait that remainder instead
+      // of its own much smaller cap. Hence the exact value rather than a
+      // lower bound: the lower bound alone passes under both leaks
+      // (measured -- the singleton mutant is green against it).
       // A DIFFERENT id for the sibling: the resolver caches a resolved
       // dynamic reference, so reusing `SLOW_ID` here would answer from the
       // cache with nothing left to drain and the case would pin nothing.
-      concurrentDrainCap.ms = 40;
+      concurrentDrainCap.ms = secondCap;
       control.holds.clear();
       control.hangs.add(HANG_IDS[0]!);
-      const secondStarted = Date.now();
-      await expect(
-        resolver.resolve({ 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_ID)]] }, context)
-      ).rejects.toThrow(`refused ${FAIL_ID}`);
-      const secondElapsed = Date.now() - secondStarted;
-      expect(secondElapsed, 'the second failure took a wait of its own').toBeGreaterThanOrEqual(35);
+      const second = resolver.resolve(
+        { 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_ID)]] },
+        context
+      );
+      const secondElapsed = await fakeElapsed(second.catch(() => undefined));
+      await expect(second).rejects.toThrow(`refused ${FAIL_ID}`);
       expect(
         secondElapsed,
-        'the second failure waited its OWN cap, not a remainder leaked from the first'
-      ).toBeLessThan(firstCap / 2);
+        `the second failure waited its OWN cap, not the ${firstCap} ms remainder a leaked budget would hold`
+      ).toBe(secondCap);
     } finally {
       spy.mockRestore();
     }
@@ -467,7 +556,9 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // lock held was `#outputs x` the cap. `withSharedDrainBudget` is what the
     // engine wraps that loop in, and this pins that the wrap actually bounds
     // the aggregate rather than reading as though it does.
-    concurrentDrainCap.ms = 60;
+    vi.useFakeTimers();
+    const cap = 60;
+    concurrentDrainCap.ms = cap;
     control.hangs.add(HANG_IDS[0]!);
     control.hangs.add(HANG_IDS[1]!);
     control.hangs.add(HANG_IDS[2]!);
@@ -476,31 +567,36 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     const context = makeContext();
 
     // Three "outputs", each a join that fails beside a part that never
-    // settles. Unwrapped this is 3 x the cap; wrapped it is one.
-    const started = Date.now();
-    await withSharedDrainBudget(async () => {
-      for (const hang of HANG_IDS) {
-        await resolver
-          .resolve({ 'Fn::Join': ['-', [ref(hang), ref(FAIL_ID)]] }, context)
-          .catch(() => undefined);
-      }
-    });
-    const wrapped = Date.now() - started;
+    // settles. Unwrapped this is 3 x the cap; wrapped it is one: the first
+    // iteration waits the cap out and charges it, and the other two arm
+    // against a spent remainder and get a 0 ms wait.
+    const wrapped = await fakeElapsed(
+      withSharedDrainBudget(async () => {
+        for (const hang of HANG_IDS) {
+          await resolver
+            .resolve({ 'Fn::Join': ['-', [ref(hang), ref(FAIL_ID)]] }, context)
+            .catch(() => undefined);
+        }
+      })
+    );
 
-    // The same loop UNWRAPPED, as the baseline the wrap is measured against —
-    // fresh ids so the resolver's cache cannot answer for them.
+    // The same loop UNWRAPPED, as the control that proves the fixture pays
+    // per iteration when nothing shares -- fresh ids so the resolver's cache
+    // cannot answer for them.
     const bareContext = makeContext();
-    const bareStarted = Date.now();
-    for (const hang of ['cdkd-drain-bare-a', 'cdkd-drain-bare-b', 'cdkd-drain-bare-c']) {
-      control.hangs.add(hang);
-      await resolver
-        .resolve({ 'Fn::Join': ['-', [ref(hang), ref(FAIL_ID)]] }, bareContext)
-        .catch(() => undefined);
-    }
-    const bare = Date.now() - bareStarted;
+    const bare = await fakeElapsed(
+      (async () => {
+        for (const hang of ['cdkd-drain-bare-a', 'cdkd-drain-bare-b', 'cdkd-drain-bare-c']) {
+          control.hangs.add(hang);
+          await resolver
+            .resolve({ 'Fn::Join': ['-', [ref(hang), ref(FAIL_ID)]] }, bareContext)
+            .catch(() => undefined);
+        }
+      })()
+    );
 
-    expect(bare, 'the unwrapped loop pays the cap per iteration').toBeGreaterThanOrEqual(150);
-    expect(wrapped, 'the wrapped loop paid it once').toBeLessThan(bare / 2);
+    expect(bare, 'the unwrapped loop pays the cap per iteration').toBe(3 * cap);
+    expect(wrapped, 'the wrapped loop paid it once').toBe(cap);
   });
 
   it('ordinary resolution time between drains does not spend the shared budget', async () => {
@@ -509,14 +605,14 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // with a fast sibling and then does ordinary AWS work leaves a later
     // iteration with zero grace -- strictly worse for outputs 2..N than not
     // wrapping at all, in the direction this issue exists to fix.
-    // A 1 s budget rather than 200 ms, because this case's lower bound is
-    // not the usual "a timer cannot fire early" kind: it asserts what is
-    // LEFT, so an event-loop stall long enough to swallow step 1's whole
-    // budget would red it legitimately. Reproduced on review with a 220 ms
-    // stall against a 200 ms budget. Real timers are kept -- the margin is
-    // bought with a budget a stall would have to exceed by ~900 ms.
-    concurrentDrainCap.ms = 1_000;
-    control.delays.set(SLOW_ID, 80);
+    // The clean step is LONGER than the whole budget, so a wall-clock
+    // deadline is already past when step 3 arms and the two readings sit as
+    // far apart as they can: the whole remainder against none of it.
+    vi.useFakeTimers();
+    const cap = 1_000;
+    const siblingWait = 80;
+    concurrentDrainCap.ms = cap;
+    control.delays.set(SLOW_ID, siblingWait);
     control.fails.add(FAIL_ID);
     control.delays.set('cdkd-drain-clean', 1_200);
     control.hangs.add(HANG_IDS[0]!);
@@ -524,30 +620,31 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     const context = makeContext();
 
     let lastWait = 0;
-    await withSharedDrainBudget(async () => {
-      // 1. A failure whose sibling settles in 80 ms: ~80 ms of WAIT spent,
-      //    leaving ~920 of the 1000.
-      await resolver
-        .resolve({ 'Fn::Join': ['-', [ref(SLOW_ID), ref(FAIL_ID)]] }, context)
-        .catch(() => undefined);
-      // 2. Ordinary work, longer than the whole budget, with no rejection:
-      //    spends nothing, because nothing drained.
-      await resolver.resolve(ref('cdkd-drain-clean'), context);
-      // 3. A second failure, this time against a sibling that never settles.
-      const started = Date.now();
-      await resolver
-        .resolve({ 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_ID)]] }, context)
-        .catch(() => undefined);
-      lastWait = Date.now() - started;
-    });
+    await fakeElapsed(
+      withSharedDrainBudget(async () => {
+        // 1. A failure whose sibling settles in 80 ms: 80 ms of WAIT spent,
+        //    leaving 920 of the 1000.
+        await resolver
+          .resolve({ 'Fn::Join': ['-', [ref(SLOW_ID), ref(FAIL_ID)]] }, context)
+          .catch(() => undefined);
+        // 2. Ordinary work, longer than the whole budget, with no rejection:
+        //    spends nothing, because nothing drained.
+        await resolver.resolve(ref('cdkd-drain-clean'), context);
+        // 3. A second failure, this time against a sibling that never settles.
+        const started = Date.now();
+        await resolver
+          .resolve({ 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_ID)]] }, context)
+          .catch(() => undefined);
+        lastWait = Date.now() - started;
+      })
+    );
 
-    // ~920 ms is correct, and a wall-clock deadline leaves it at ~0 since
-    // step 2 alone outlasts the cap. Only the LOWER bound is asserted: an
-    // upper one would have to sit close to the remainder to mean anything,
-    // and a correct run of this case measured 3344 ms once under load. "It
-    // is still charged" is covered where it can be measured robustly -- the
-    // aggregate and nesting cases both red when nothing is ever charged.
-    expect(lastWait, 'the last drain kept the grace the clean step did not spend').toBeGreaterThanOrEqual(300);
+    // Exactly the remainder: the budget was charged step 1's sibling wait and
+    // nothing else. A wall-clock deadline leaves 0 here, since step 2 alone
+    // outlasts the cap; charging nothing at all would leave the whole cap.
+    expect(lastWait, 'the last drain kept the grace the clean step did not spend').toBe(
+      cap - siblingWait
+    );
   });
 
   it('nested drains waiting CONCURRENTLY charge the budget once, not once per level', async () => {
@@ -561,68 +658,60 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // waits OVERLAP. With the failure only at the bottom, each level arms
     // after the one below it finished, the waits are sequential, and charging
     // once and charging per level cost the same.
-    // A 600 ms budget against 200 ms waits, so the two readings are 400 and
-    // 200 rather than 200 and 100: the relative bounds below stay
-    // discriminating until the fixture's own timers stretch past 2x nominal,
-    // where a 300/100 shape went vacuous at 1.5x (measured on review).
-    concurrentDrainCap.ms = 600;
-    control.delays.set('cdkd-charge-outer', 200);
-    control.delays.set('cdkd-charge-inner', 200);
+    // A 600 ms budget against 200 ms waits, so the three readings the second
+    // drain can take are 400 (charged once), 200 (charged per level) and 600
+    // (never charged) -- a cap apart from each other.
+    vi.useFakeTimers();
+    const cap = 600;
+    const levelWait = 200;
+    concurrentDrainCap.ms = cap;
+    control.delays.set('cdkd-charge-outer', levelWait);
+    control.delays.set('cdkd-charge-inner', levelWait);
     control.fails.add(FAIL_ID);
     control.fails.add(FAIL_DEEP_ID);
     control.hangs.add('cdkd-charge-hung');
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const context = makeContext();
 
-    await withSharedDrainBudget(async () => {
-      // Outer and inner both reject at once and both wait ~200 ms, together.
-      const spentStart = Date.now();
-      await resolver
-        .resolve(
-          {
-            'Fn::Join': [
-              '-',
-              [
-                ref(FAIL_ID),
-                ref('cdkd-charge-outer'),
-                [ref(FAIL_DEEP_ID), ref('cdkd-charge-inner')],
+    await fakeElapsed(
+      withSharedDrainBudget(async () => {
+        // Outer and inner both reject at once and both wait 200 ms, together.
+        const spentStart = Date.now();
+        await resolver
+          .resolve(
+            {
+              'Fn::Join': [
+                '-',
+                [
+                  ref(FAIL_ID),
+                  ref('cdkd-charge-outer'),
+                  [ref(FAIL_DEEP_ID), ref('cdkd-charge-inner')],
+                ],
               ],
-            ],
-          },
-          context
-        )
-        .catch(() => undefined);
-      // What that overlapping wait actually cost, measured rather than
-      // assumed to be the nominal 200 ms: under parallel workers the fake
-      // client's timers stretch, and an absolute bound below then reds a
-      // correct run (observed while this file ran beside `scrub.test.ts`).
-      const spent = Date.now() - spentStart;
+            },
+            context
+          )
+          .catch(() => undefined);
+        const spent = Date.now() - spentStart;
 
-      // What is left decides it: about `cap - spent` if that overlapping wait
-      // was charged once, about `cap - 2 x spent` if each level charged its
-      // own. Both bounds are relative to the measurement, so load moves them
-      // together.
-      const started = Date.now();
-      await resolver
-        .resolve({ 'Fn::Join': ['-', [ref('cdkd-charge-hung'), ref(FAIL_ID)]] }, context)
-        .catch(() => undefined);
-      const left = Date.now() - started;
+        // What is left decides it: `cap - spent` if that overlapping wait was
+        // charged once, `cap - 2 x spent` if each level charged its own, the
+        // whole cap if nothing was charged.
+        const started = Date.now();
+        await resolver
+          .resolve({ 'Fn::Join': ['-', [ref('cdkd-charge-hung'), ref(FAIL_ID)]] }, context)
+          .catch(() => undefined);
+        const left = Date.now() - started;
 
-      expect(spent, 'the overlapping wait actually happened').toBeGreaterThanOrEqual(100);
-      // Above ~2x nominal the arithmetic stops separating the two readings,
-      // so say that rather than let the case pass on a machine where it
-      // measured nothing.
-      expect(
-        spent,
-        'the fixture timers stretched past 2x nominal — this case cannot measure here',
-      ).toBeLessThan(420);
-      expect(left, 'the overlapping wait was charged once, not twice').toBeGreaterThan(
-        600 - spent * 1.4
-      );
-      expect(left, 'and it WAS charged -- this is not a fresh budget').toBeLessThan(
-        600 - spent * 0.6
-      );
-    });
+        // The two levels waited TOGETHER: one nominal wait on the clock, not
+        // two in sequence. A fixture where they no longer overlap would read
+        // 2 x here, and the case would then discriminate nothing below.
+        expect(spent, 'the overlapping wait cost one wait, not one per level').toBe(levelWait);
+        expect(left, 'the overlapping wait was charged once, not twice, and not never').toBe(
+          cap - spent
+        );
+      })
+    );
   });
 
   it('two conditions share the CALLER\'s budget when there is one, and not otherwise', async () => {
@@ -639,7 +728,9 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     //
     // A version of this case that did not wrap measured identically either
     // way, which is why the wrapped half is the discriminating one.
-    concurrentDrainCap.ms = 120;
+    vi.useFakeTimers();
+    const cap = 120;
+    concurrentDrainCap.ms = cap;
     control.hangs.add('cdkd-cond-hang-a');
     control.hangs.add('cdkd-cond-hang-b');
     control.fails.add(FAIL_ID);
@@ -661,17 +752,18 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     const resolver = new IntrinsicFunctionResolver('us-east-1');
 
     // INSIDE a caller's budget: the two conditions share it, so the total is
-    // about one cap rather than two.
-    const wrappedStart = Date.now();
-    const wrapped = await withSharedDrainBudget(() => resolver.evaluateConditions(context));
-    const wrappedElapsed = Date.now() - wrappedStart;
+    // one cap rather than two -- the first waits it out, the second arms
+    // against a spent remainder.
+    const wrappedRun = withSharedDrainBudget(() => resolver.evaluateConditions(context));
+    const wrappedElapsed = await fakeElapsed(wrappedRun);
+    const wrapped = await wrappedRun;
 
     expect(wrapped['First']).toBe(false);
     expect(wrapped['Second']).toBe(false);
-    expect(wrappedElapsed, 'the conditions shared the caller budget').toBeLessThan(200);
+    expect(wrappedElapsed, 'the conditions shared the caller budget').toBe(cap);
 
-    // NO caller budget: each condition opens its own, so the total is about
-    // two caps. Fresh ids, because the resolver caches a resolved reference.
+    // NO caller budget: each condition opens its own, so the total is two
+    // caps. Fresh ids, because the resolver caches a resolved reference.
     control.hangs.add('cdkd-cond-hang-c');
     control.hangs.add('cdkd-cond-hang-d');
     const bare = makeContext();
@@ -689,12 +781,10 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
         ],
       },
     };
-    const bareStart = Date.now();
-    await new IntrinsicFunctionResolver('us-east-1').evaluateConditions(bare);
-    expect(
-      Date.now() - bareStart,
-      'unwrapped, each condition got its own budget',
-    ).toBeGreaterThanOrEqual(200);
+    const bareElapsed = await fakeElapsed(
+      new IntrinsicFunctionResolver('us-east-1').evaluateConditions(bare)
+    );
+    expect(bareElapsed, 'unwrapped, each condition got its own budget').toBe(2 * cap);
   });
 
   it('a drain arming while another WAITS gets what is left of the open window', async () => {
@@ -703,7 +793,10 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // it, two staggered drains each arm against the full remainder and keep
     // extending the bound: at a 100 ms budget, A at t=0 and B at t=80 were
     // released at 100 and 180 (measured on review).
-    concurrentDrainCap.ms = 200;
+    vi.useFakeTimers();
+    const cap = 200;
+    const stagger = 120;
+    concurrentDrainCap.ms = cap;
     control.hangs.add('cdkd-stagger-a');
     control.hangs.add('cdkd-stagger-b');
     control.fails.add(FAIL_ID);
@@ -711,24 +804,24 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const context = makeContext();
 
-    const started = Date.now();
-    await withSharedDrainBudget(async () => {
-      const first = resolver
-        .resolve({ 'Fn::Join': ['-', [ref('cdkd-stagger-a'), ref(FAIL_ID)]] }, context)
-        .catch(() => undefined);
-      // Start the second one well into the first's window.
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      const second = resolver
-        .resolve({ 'Fn::Join': ['-', [ref('cdkd-stagger-b'), ref(FAIL_DEEP_ID)]] }, context)
-        .catch(() => undefined);
-      await Promise.all([first, second]);
-    });
-    const total = Date.now() - started;
+    const total = await fakeElapsed(
+      withSharedDrainBudget(async () => {
+        const first = resolver
+          .resolve({ 'Fn::Join': ['-', [ref('cdkd-stagger-a'), ref(FAIL_ID)]] }, context)
+          .catch(() => undefined);
+        // Start the second one well into the first's window.
+        await new Promise((resolve) => setTimeout(resolve, stagger));
+        const second = resolver
+          .resolve({ 'Fn::Join': ['-', [ref('cdkd-stagger-b'), ref(FAIL_DEEP_ID)]] }, context)
+          .catch(() => undefined);
+        await Promise.all([first, second]);
+      })
+    );
 
-    // Both drains hang, so the budget is spent in full and no further: ~200.
-    // Arming the second against the whole remainder gives ~320.
-    expect(total, 'the second drain took what was LEFT of the window').toBeLessThan(280);
-    expect(total, 'and the budget really was spent').toBeGreaterThanOrEqual(180);
+    // Both drains hang, so the budget is spent in full and no further: the
+    // second is released together with the first, at the cap. Arming it
+    // against the whole remainder instead releases it at `stagger + cap`.
+    expect(total, 'the second drain took what was LEFT of the window').toBe(cap);
   });
 
   it('a re-entrant `resolve` INHERITS the open budget instead of resetting it', async () => {
@@ -740,20 +833,23 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // `resolver.resolve(...)` from it lands on the inheritance branch. Without
     // that branch each level opens a FRESH budget and the bound goes back to
     // depth x cap, which is the defect the per-resolution budget removed.
-    concurrentDrainCap.ms = 60;
+    vi.useFakeTimers();
+    const cap = 60;
+    concurrentDrainCap.ms = cap;
     for (const id of HANG_IDS) control.hangs.add(id);
     control.fails.add(FAIL_DEEP_ID);
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const context = makeContext();
 
-    // Depth 1 through the same path, as the load-tracking baseline.
+    // Depth 1 through the same path, as the control.
     const flatContext = makeContext();
     flatContext.conditionResolver = async () => true;
-    const flatStarted = Date.now();
-    await expect(
-      resolver.resolve({ 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_DEEP_ID)]] }, flatContext)
-    ).rejects.toThrow(`refused ${FAIL_DEEP_ID}`);
-    const flat = Date.now() - flatStarted;
+    const flatRun = resolver.resolve(
+      { 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_DEEP_ID)]] },
+      flatContext
+    );
+    const flat = await fakeElapsed(flatRun.catch(() => undefined));
+    await expect(flatRun).rejects.toThrow(`refused ${FAIL_DEEP_ID}`);
 
     // Three RE-ENTRANT levels: each hook body calls `resolve` again, so the
     // budget is opened once at the top and inherited twice.
@@ -768,16 +864,14 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
       return true;
     };
 
-    const started = Date.now();
-    await expect(resolver.resolve({ Condition: 'Top' }, context)).rejects.toThrow(
-      `refused ${FAIL_DEEP_ID}`
-    );
-    const elapsed = Date.now() - started;
+    const nestedRun = resolver.resolve({ Condition: 'Top' }, context);
+    const elapsed = await fakeElapsed(nestedRun.catch(() => undefined));
+    await expect(nestedRun).rejects.toThrow(`refused ${FAIL_DEEP_ID}`);
 
-    expect(flat, 'the baseline really waited the cap').toBeGreaterThanOrEqual(50);
-    // Three nested `resolve` calls. Opening a fresh budget at each measures
-    // ~3 x the baseline; inheriting measures ~1 x.
-    expect(elapsed, 'the re-entrant calls shared ONE budget').toBeLessThan(flat * 2);
+    expect(flat, 'the control waited exactly the cap').toBe(cap);
+    // Three nested `resolve` calls. Opening a fresh budget at each costs 3 x
+    // the cap; inheriting costs it once.
+    expect(elapsed, 'the re-entrant calls shared ONE budget').toBe(cap);
   });
 
   it('a CONDITION operand gets one budget too, not one per nesting level', async () => {
@@ -785,7 +879,9 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // through `resolve`, so without its own store every nested drain under a
     // condition operand would take a fresh cap. A condition's failure is
     // downgraded to false rather than thrown, so the wait is the observable.
-    concurrentDrainCap.ms = 60;
+    vi.useFakeTimers();
+    const cap = 60;
+    concurrentDrainCap.ms = cap;
     for (const id of HANG_IDS) control.hangs.add(id);
     control.fails.add(FAIL_DEEP_ID);
     const context = makeContext();
@@ -804,25 +900,25 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     };
     const resolver = new IntrinsicFunctionResolver('us-east-1');
 
-    // Depth 1 through the same entry point, as the load-tracking baseline.
+    // Depth 1 through the same entry point, as the control.
     context.template.Conditions['Flat'] = {
       'Fn::Equals': [{ 'Fn::Join': ['-', [ref(HANG_IDS[0]!), ref(FAIL_DEEP_ID)]] }, 'never-equal'],
     };
-    const flatStarted = Date.now();
-    await resolver.evaluateConditions({
-      ...context,
-      template: { ...context.template, Conditions: { Flat: context.template.Conditions['Flat'] } },
-    } as never);
-    const flat = Date.now() - flatStarted;
+    const flat = await fakeElapsed(
+      resolver.evaluateConditions({
+        ...context,
+        template: { ...context.template, Conditions: { Flat: context.template.Conditions['Flat'] } },
+      } as never)
+    );
     delete context.template.Conditions['Flat'];
 
-    const started = Date.now();
-    const conditions = await resolver.evaluateConditions(context);
-    const elapsed = Date.now() - started;
+    const deepRun = resolver.evaluateConditions(context);
+    const elapsed = await fakeElapsed(deepRun);
+    const conditions = await deepRun;
 
     expect(conditions['Deep'], 'a failed condition is downgraded, not thrown').toBe(false);
-    expect(flat, 'the baseline really waited the cap').toBeGreaterThanOrEqual(50);
-    expect(elapsed, 'waited it ONCE, not once per level').toBeLessThan(flat * 2);
+    expect(flat, 'the control waited exactly the cap').toBe(cap);
+    expect(elapsed, 'waited it ONCE, not once per level').toBe(cap);
   });
 
   it('two resolutions sharing one context do not share one budget', async () => {
@@ -831,10 +927,14 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // `resolve` in flight against it. The second call would then inherit the
     // first's budget — measured when this was keyed by context: at an 80 ms
     // cap it waited 19 ms and returned before its own sibling had recorded.
-    concurrentDrainCap.ms = 140;
+    vi.useFakeTimers();
+    const cap = 140;
+    const siblingWait = 90;
+    const stagger = 80;
+    concurrentDrainCap.ms = cap;
     control.hangs.add(HANG_IDS[0]!);
     control.fails.add(FAIL_ID);
-    control.delays.set(SLOW_ID, 90);
+    control.delays.set(SLOW_ID, siblingWait);
     const context = makeContext();
     const resolver = new IntrinsicFunctionResolver('us-east-1');
 
@@ -850,20 +950,18 @@ describe('a concurrent resolution drains every part before a rejection surfaces 
     // 60 ms left, less than the 90 ms its own sibling needs. The first call
     // is actually WAITING for that whole 80 ms, which is what spends a
     // budget -- unlike the clear-on-the-way-out case above, where the first
-    // call barely waits and a leaked budget stays nearly full. Every
-    // margin here is >= 30 ms: the first is still draining at 80 of 140, a
-    // shared budget misses the sibling by 30, and its own budget clears it by
-    // 50. The first shape of this case was 60-of-80 against a 45 ms sibling,
-    // an 11 ms margin measured under load — the tightest window in the file.
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // call barely waits and a leaked budget stays nearly full.
+    await vi.advanceTimersByTimeAsync(stagger);
     expect(firstSettled.state(), 'the first is still draining').toBe('pending');
 
-    const started = Date.now();
-    await expect(
-      resolver.resolve({ 'Fn::Join': ['-', [ref(SLOW_ID), ref(FAIL_ID)]] }, context)
-    ).rejects.toThrow(`refused ${FAIL_ID}`);
+    const second = resolver.resolve({ 'Fn::Join': ['-', [ref(SLOW_ID), ref(FAIL_ID)]] }, context);
+    const secondElapsed = await fakeElapsed(second.catch(() => undefined));
+    await expect(second).rejects.toThrow(`refused ${FAIL_ID}`);
 
-    expect(Date.now() - started, 'the second call got its own budget').toBeGreaterThanOrEqual(70);
+    // Its own budget waits the sibling out and then stops: 90. A budget
+    // shared with the first call has 60 left at this point and releases the
+    // rejection at 60, before the sibling recorded.
+    expect(secondElapsed, 'the second call got its own budget').toBe(siblingWait);
     expect(
       context.recordedSecretValues.get(valueOf(SLOW_ID)),
       "the second call's own sibling recorded before its rejection surfaced",

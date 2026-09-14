@@ -6,6 +6,16 @@ import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { marked } from 'marked';
 
+// The dead-glob case below walks every TRACKED file against every `paths:`
+// glob, so its wall-clock cost is a function of repo size and machine load,
+// not of correctness (measured 1045 ms under a 40+ load average, against
+// vitest's 5 s default — the go-to-k/cdkd#2741 / #3038 class). A bound's job
+// here is to stop a HANG, not to police latency, so it is declared generously
+// (≥50× the measurement) rather than tuned. The other slow case in this file,
+// the merge projection that spawns `git show` per rule file, already carries
+// its own 120 s bound.
+const REPO_WALK_TIMEOUT_MS = 60_000;
+
 /**
  * `.claude/rules/*.md` files are LAZILY loaded by a native Claude Code feature:
  * a `paths:` glob in the YAML frontmatter injects the WHOLE file into the
@@ -2599,7 +2609,7 @@ describe('.claude/rules payload fence', () => {
       dead,
       `These \`paths:\` globs match no tracked file, so the rule file never loads for them: ${dead.join(', ')}. Either the glob has a typo, or the code it named was renamed or removed and the notes went with it.`,
     ).toEqual([]);
-  });
+  }, REPO_WALK_TIMEOUT_MS);
 
   it('the tests/setup.ts floor still discriminates a GUTTED satellite', () => {
     // A floor that merely exists is not a check. This one has to be BELOW the
