@@ -6,6 +6,16 @@ Integration test for deep recursive `cdk.NestedStack` handling — a
 cdkd's recursive `NestedStackProvider` and the v6 `<parent>~<childLogicalId>`
 state-key layout.
 
+Since issue [#3094](https://github.com/go-to-k/cdkd/issues/3094) it also
+carries a **secret through three levels**: the root hands two spellings of one
+Secrets Manager reference to the child as literal strings, the child forwards
+them to the grandchild as `{Ref}`, and the grandchild consumes each in its own
+SSM parameter. `verify.sh` asserts that every level's record and each
+grandchild leaf holds its OWN expression (the losing spelling named, in both
+directions), that the live values are the plaintext, that the tree is
+diff-clean, and that every level's state versions are swept. The secret is
+created out of band by `verify.sh`.
+
 This fixture is a strictly deeper + wider + bidirectional **superset** of the
 existing [`nested-stack-deep`](../nested-stack-deep) fixture. Where
 `nested-stack-deep` stops at 3 levels with one resource per level and only
