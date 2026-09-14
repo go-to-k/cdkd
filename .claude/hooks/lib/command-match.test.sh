@@ -442,8 +442,10 @@ check "3066 control: the later top-level heredoc body is still data" 1 "$MERGE" 
 # (P3 is a syntax error on 3.2).
 r3_case "P1: <<'EOF'x -- the delimiter is EOFx, so a bare EOF line is not the terminator" 0 "$COMMIT" \
   'x=$(cat <<'"'"'EOF'"'"'x' 'body' 'EOFx' 'git commit -m y' 'EOF' ')'
-check "P2: <<\"EO\"F -- the delimiter is EOF, so the verb before a decoy EO line is still body" 1 "$COMMIT" \
-  "$(printf '%s\n' 'x=$(cat <<"EO"F' 'body' 'git commit -m y' 'EO' 'EOF' ')')"
+check "P2: <<\"EO\"F -- the delimiter is EOF, so a decoy EO line does not end the body before the verb" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<"EO"F' 'body' 'EO' 'gh pr merge 1 was refused' 'EOF' ')')"
+check "P2t: the top-level twin of P2" 1 "$MERGE" \
+  "$(printf '%s\n' 'cat <<E"O"F $(echo y)' 'p' 'EO' 'gh pr merge 1 was refused' 'EOF')"
 check "P3: <<'a\"b' keeps the inner quote, so an ab line does not end the body early" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<'"'"'a"b'"'"'' 'body' 'ab' 'gh pr merge 1 was refused' 'a"b' ')')"
 # Round 7 (/review-pr, second pass). Security + code: the TOP-LEVEL arm in
@@ -476,6 +478,27 @@ r3_case "D-sticky: <<'EOF'\$x is unreadable, and the <<'B' on the next line must
 # the prose after it was read as commands on origin/main.
 check "R1: a heredoc opened on the line that closes a substitution keeps its tag through the drain" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(echo a) ; cat <<EOF' 'gh pr merge 1 was refused' 'EOF')"
+# Round 8 (/review-pr, third pass). Security + code: inside double quotes a
+# backslash is removed only before `$`, a backtick, `"` or `\` -- `<<"E\xF"`
+# is the delimiter `E\xF`, and the round-7 walk gave `ExF`, so a decoy `ExF`
+# line ended the latch early and the verb after the real terminator, which
+# all three shells run, was dropped (origin/main matched).
+r3_case "B1a: <<\"E\\xF\" keeps the backslash -- a decoy ExF line is not the terminator" 0 "$COMMIT" \
+  'x=$(cat <<"E\xF"' 'body' 'E\xF' 'git commit -m y' 'ExF' ')'
+r3_case "B1b: the top-level twin of B1a" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<"E\xF"' 'body' 'E\xF' 'git push' 'ExF'
+check "B1c: a real E\\xF terminator ends the body (control)" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<"E\xF"' 'gh pr merge 1 was refused' 'E\xF' ')')"
+# Security: the top-level arm latches an UNQUOTED word only when it is
+# identifier-shaped, which is all origin/main ever latched. That arm drops a
+# body whatever its quoting, and bash EXPANDS an unquoted body, so `<<EOF.x`
+# latched by the round-7 walk dropped a `$(git push)` main still matched.
+r3_case "B2a: top-level <<EOF.x is unquoted and not an identifier -- its expanded body is scanned" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<EOF.x' '$(git push)' 'EOF.x'
+r3_case "B2b: top-level <<E-x likewise" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<E-x' '$(git push)' 'E-x'
+check "B2c: top-level <<'EOF.x' is QUOTED, so its body is data (control)" 1 "$MERGE" \
+  "$(printf '%s\n' 'cat <<'"'"'EOF.x'"'"'' 'gh pr merge 1 was refused' 'EOF.x')"
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

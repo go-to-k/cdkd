@@ -560,7 +560,9 @@ gate_segments_raw() {
     # heredoc_word(rest): `rest` starts at the `<<`. Returns the delimiter WORD
     # as bash reads it -- quote removal applied, everything else kept:
     # `<<\047EOF\047x` is EOFx, `<<E"O"F` is EOF, `<<\047a"b\047` is a"b,
-    # `<<\\EOF` is EOF, `<<EOF.x` is EOF.x. Sets HW_QUOTED to 1 when ANY quoting
+    # `<<\\EOF` is EOF, `<<EOF.x` is EOF.x, and inside double quotes a
+    # backslash is removed only before `$`, a backtick, `"` or `\\` -- so
+    # `<<"E\\xF"` is E\\xF (review round 8). Sets HW_QUOTED to 1 when ANY quoting
     # was seen (bash then performs no expansion in the body) and HW_LEN to the
     # characters consumed. Returns "" for a word it cannot read -- an
     # unterminated quote, an expansion inside the word, nothing after the
@@ -581,7 +583,8 @@ gate_segments_raw() {
         if (c == "\"") { j++
                          while (j <= n) { c = substr(rest, j, 1)
                            if (c == "\"") break
-                           if (c == "\\") { j++; w = w substr(rest, j, 1); j++; continue }
+                           if (c == "\\") { if (substr(rest, j + 1, 1) ~ /[$`"\\]/) { j++; w = w substr(rest, j, 1); j++ }
+                                            else { w = w c; j++ }; continue }
                            if (c == "$" || c == "`") return ""
                            w = w c; j++ }
                          if (j > n) return ""
@@ -804,7 +807,13 @@ gate_segments_raw() {
             # a word the walk cannot read sets no tag, and the line stays a
             # command line (review round 7 of go-to-k/cdkd#3040).
             d = heredoc_word(rest)
-            if (d != "") pending_tag = d
+            # An UNQUOTED word is latched only when it is identifier-shaped,
+            # which is all origin/main ever latched: this arm drops a body
+            # whatever its quoting, and an unquoted body is EXPANDED by bash,
+            # so latching `<<EOF.x` here dropped a `$(git push)` main still
+            # matched (review round 8). The identifier gap itself is the
+            # accepted top-level one hooks.md records; it is not widened.
+            if (d != "" && (HW_QUOTED || d ~ /^[A-Za-z_][A-Za-z0-9_]*$/)) pending_tag = d
             continue
           }
           continue

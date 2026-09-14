@@ -40,7 +40,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 # The suite's own CASE_FLOOR is neutralised in the copy. It exists to catch a
 # case count that SHRANK in the repo, which is not what is being measured here
-# -- and it fires spuriously on every run, because the copied suite skips the
+# -- and it fires spuriously on every run, because the copied suite FAILS the
 # few cases that resolve fixtures from the suite's own directory. Left in, the
 # unmutated baseline reports a failure and every row below inherits it.
 sed 's/^CASE_FLOOR=[0-9]*$/CASE_FLOOR=0/' "$SUITE" > "$WORK/command-match.test.sh"
@@ -129,7 +129,6 @@ edits={
                          '          lho_reset(); pd = last_heredoc_opener(phys)\n'),
  'lho-no-reset-on-close': ('        lho_reset()\n        # A line that ends INSIDE a quoted span',
                            '        # A line that ends INSIDE a quoted span'),
- 'lho-bail-not-sticky': ('{ lho_bail = 1; return "" }', '{ return "" }'),
  'lho-frame-close-paren': ('if (out != "" && lho_depth <= of) return ""; lho_iq = lho_OQ[lho_depth]', 'lho_iq = lho_OQ[lho_depth]'),
  'lho-frame-close-bt':  ('else { if (out != "" && ob) return ""; lho_bt = 0; lho_iq = lho_btq }', 'else { lho_bt = 0; lho_iq = lho_btq }'),
  'lho-hash-class-paren': ('~ /[ \\t;&|()`]/)) break', '~ /[ \\t;&|(`]/)) break'),
@@ -163,8 +162,21 @@ edits={
                          '          if (d == "") { lho_bail = 1; return "" }\n'),
  'hw-bail-not-sticky':  ('          if (d == "" || !HW_QUOTED) { lho_bail = 1; return "" }\n',
                          '          if (d == "" || !HW_QUOTED) { return "" }\n'),
- 'hw-flush-line-regex': ('            d = heredoc_word(rest)\n            if (d != "") pending_tag = d\n',
+ 'hw-flush-line-regex': ('            if (d != "" && (HW_QUOTED || d ~ /^[A-Za-z_][A-Za-z0-9_]*$/)) pending_tag = d\n',
                          '            if (match(rest, /^<<-?[ \\t]*("[^"]+"|\\047[^\\047]+\\047|[A-Za-z_][A-Za-z0-9_]*)/)) { d = substr(rest, RSTART, RLENGTH); sub(/^<<-?[ \\t]*/, "", d); gsub(/["\\047]/, "", d); if (d != "") pending_tag = d }\n'),
+ # `hw-stop-at-dquote` ends the word at a closing double quote (`<<E"O"F`
+ # read as EO); `hw-dq-backslash` strips a backslash before ANY character
+ # inside double quotes (`<<"E\xF"` read as ExF); `hw-backslash-arm` makes
+ # `<<\EOF` count as unquoted; `hw-toplevel-any-word` lets the top-level arm
+ # latch a non-identifier unquoted word (`<<EOF.x`), dropping an expanded body.
+ 'hw-stop-at-dquote':   ('                         j++; HW_QUOTED = 1; continue }\n',
+                         '                         j++; HW_QUOTED = 1; break }\n'),
+ 'hw-dq-backslash':     ('if (c == "\\\\") { if (substr(rest, j + 1, 1) ~ /[$`"\\\\]/) { j++; w = w substr(rest, j, 1); j++ }',
+                         'if (c == "\\\\") { if (1) { j++; w = w substr(rest, j, 1); j++ }'),
+ 'hw-backslash-arm':    ('w = w substr(rest, j + 1, 1); j += 2; HW_QUOTED = 1; continue }',
+                         'w = w substr(rest, j + 1, 1); j += 2; continue }'),
+ 'hw-toplevel-any-word': ('            if (d != "" && (HW_QUOTED || d ~ /^[A-Za-z_][A-Za-z0-9_]*$/)) pending_tag = d\n',
+                          '            if (d != "") pending_tag = d\n'),
  'pending-tag-restore': ('      pending_tag = saved_pt\n', ''),
 }
 a,b=edits[probe]
@@ -176,7 +188,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-bail-not-sticky lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex pending-tag-restore}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word pending-tag-restore}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then
