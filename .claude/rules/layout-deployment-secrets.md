@@ -451,8 +451,8 @@ Index of every area: [code-layout.md](code-layout.md).
     element so a mixed leaf inside a paired element is reached.
   - **The walk FAILS CLOSED where it cannot certify, for a caller that DECLARES
     its bag a drift baseline** (`STATE_SOURCED_BASELINE_RULES`; #2852, closing
-    #2846). Destination is not derivable — `drift --accept` writes to
-    `properties` — and `import`'s capture moved onto it in #2885.
+    #2846). Destination is not derivable here (`--accept` can write
+    `properties`), so callers declare it: `import` (#2885), `drift.ts` (#2939).
     `refuseUncertifiedSubtree`'s doc comment is the authority for
     what it masks, spares and costs; do not restate it here.
     **`scrubResourceRecord` DERIVES it on TWO conditions** (#2906): empty

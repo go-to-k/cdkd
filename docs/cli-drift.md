@@ -279,8 +279,13 @@ re-resolves the baseline in memory before comparing it against the AWS-current
 snapshot. In its DETECTION modes the resolved value stays in memory for the
 comparison and nothing is written back. `--accept` is the exception: it writes
 the AWS-current values into state, and what it writes goes through the same
-redaction — which substitutes only where it can certify the position, so an
-accepted value it cannot certify is persisted as it came back from AWS.
+redaction — which substitutes only where it can certify the position. What
+happens at a position it cannot certify depends on where the write lands: into
+`observedProperties` (a record that has one) the position is written as `***`,
+the same fail-closed rule the baseline refreshes below apply; into
+`properties` (a record with no observed baseline) the value is persisted as it
+came back from AWS, because a mask there would block `cdkd export` and the
+rollback replay over a template value that was never unknown.
 
 The stored side is a redaction pass rather than a guarantee — it substitutes
 only where it can match the value against the template position it came from,
@@ -377,9 +382,11 @@ way, since nothing in state distinguishes the two — see
 
 A `NoEcho` response is not the only way the mask reaches a baseline. When cdkd
 refreshes `observedProperties` — during a deploy, from
-[`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed), or
+[`cdkd state refresh-observed`](cli-state.md#cdkd-state-refresh-observed),
 from the baseline [`cdkd import`](import.md) captures for each resource it
-adopts — it rewrites the decrypted value AWS returns back
+adopts, from `cdkd drift --accept` on a record that has one, or from the
+narrowing `--revert` records when a provider reports it delivered something
+other than what it was sent — it rewrites the decrypted value AWS returns back
 onto the `{{resolve:...}}` reference the record holds, **by position**. Where
 the readback and the record cannot be lined up at a reference-bearing position,
 cdkd has no way to tell a resolved secret from an ordinary literal, so it
@@ -467,8 +474,10 @@ does to those positions depends on where the token sits:
   element's** live value to the token's position).
 - If the position cannot be matched — AWS reports nothing there, the list was
   reordered or resized past what its own values can vouch for, two elements
-  carry tokens, or the list holds nothing BUT tokens — the token is written
-  **literally**, exactly as `cdkd deploy` sends it. For a stack cdkd deployed
+  carry tokens, or the list holds nothing BUT tokens — or the value AWS holds
+  there is **not a string** (a list or an object at a position the token types
+  as a string), the token is written **literally**, exactly as `cdkd deploy`
+  sends it. For a stack cdkd deployed
   that is a no-op (AWS already holds the literal); for a record adopted from
   elsewhere it preserves whatever breakage already existed rather than
   guessing. A **one-element list against a one-element readback always

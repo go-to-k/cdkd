@@ -69,6 +69,7 @@ import {
   recordMaskOnlyValue,
   redactSecretsForState,
   SECRET_MASK,
+  STATE_SOURCED_BASELINE_RULES,
   STATE_SOURCED_READBACK_RULES,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
@@ -1813,7 +1814,15 @@ async function resolveStateSecretExpressions(
       return out;
     }
     if (v !== null && typeof v === 'object') {
-      const out: Record<string, unknown> = {};
+      // `Object.create(null)` (issue #2899): the input is the JSON-parsed
+      // state baseline, exactly the producer of an OWN `__proto__` key, and
+      // assigning that key onto a `{}` literal SETS the rebuilt node's
+      // prototype and silently DROPS the key — the member vanishes from the
+      // revert payload, and the node then fails `hasPlainPrototype` and
+      // cascades into the non-plain refusal arms below. Same rule as the
+      // preserve walks' and `mergeUntemplatedValue`'s rebuild targets. The
+      // ARRAY arm above needs no twin: its keys are numeric indices.
+      const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [k, val] of Object.entries(v)) {
         out[k] = await walk(val, path === '' ? k : `${path}.${k}`);
       }
@@ -3058,17 +3067,45 @@ export function buildReadCurrentStateContext(
  * The read counterpart of {@link setAtPath}, and it parses the same subset:
  * the drift comparator only synthesizes paths through plain objects.
  */
-function getAtPath(source: unknown, path: string): unknown {
+/**
+ * Read a dotted path out of a bag, OWN keys only.
+ *
+ * Own keys, because the bag is `JSON.parse`d state, whose one exotic key is an
+ * OWN `__proto__` (issue #2899's class): on a plain object a bare
+ * `cursor['__proto__']` read for a segment the bag does NOT own answers with
+ * `Object.prototype` — an inherited value that the `--accept` post-write check
+ * below would then compare against the accepted one. `undefined` is the answer
+ * "the bag has nothing here", which is what an absent segment means.
+ *
+ * Exported, like `setAtPath`, as a test seam only: a `__proto__` path cannot
+ * reach either through the command today (the comparison chain's normalisers
+ * drop the key on both sides — issue #3121), so the own-key rule is pinned on
+ * the helpers directly.
+ */
+export function getAtPath(source: unknown, path: string): unknown {
   if (path.length === 0) return source;
   let cursor: unknown = source;
   for (const segment of path.split('.')) {
     if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined;
+    if (!hasOwnKey(cursor, segment)) return undefined;
     cursor = (cursor as Record<string, unknown>)[segment];
   }
   return cursor;
 }
 
-function setAtPath(target: Record<string, unknown>, path: string, value: unknown): void {
+/**
+ * Write a dotted path into a bag as OWN keys.
+ *
+ * `Object.defineProperty` rather than assignment, and a null-prototype
+ * intermediate node (issue #2899's class): the target is `JSON.parse`d state
+ * cloned by `runAccept`, a plain object, and a drifted top-level key literally
+ * named `__proto__` (which `JSON.parse` yields as an ordinary own key and the
+ * comparator enumerates like any other) would be ASSIGNED as the prototype —
+ * the accepted value silently dropped from the baseline while the summary
+ * counts it recorded. Defining it makes it the own data property the record
+ * round-trips through `JSON.stringify`.
+ */
+export function setAtPath(target: Record<string, unknown>, path: string, value: unknown): void {
   if (path.length === 0) {
     return;
   }
@@ -3076,16 +3113,36 @@ function setAtPath(target: Record<string, unknown>, path: string, value: unknown
   let cursor: Record<string, unknown> = target;
   for (let i = 0; i < segments.length - 1; i++) {
     const key = segments[i]!;
-    const next = cursor[key];
+    const next = ownValue(cursor, key);
     if (next === undefined || next === null || typeof next !== 'object' || Array.isArray(next)) {
-      const fresh: Record<string, unknown> = {};
-      cursor[key] = fresh;
+      const fresh: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      defineOwnKey(cursor, key, fresh);
       cursor = fresh;
     } else {
       cursor = next as Record<string, unknown>;
     }
   }
-  cursor[segments[segments.length - 1]!] = value;
+  defineOwnKey(cursor, segments[segments.length - 1]!, value);
+}
+
+/** Own-key membership: `in` reads the prototype chain, which a `JSON.parse`d bag never means. */
+function hasOwnKey(target: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(target, key);
+}
+
+/** An own-key read: `undefined` for an inherited name (`__proto__`, `constructor`, ...). */
+function ownValue(target: Record<string, unknown>, key: string): unknown {
+  return hasOwnKey(target, key) ? target[key] : undefined;
+}
+
+/** An ordinary (writable, enumerable, configurable) own data property — never the prototype. */
+function defineOwnKey(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
 }
 
 /**
@@ -3330,23 +3387,48 @@ async function runAccept(
         // it. Rather than claim it cannot happen, the write is CHECKED below
         // and the user is told — a silent permanent no-op is the failure mode
         // worth naming, and the check catches any future cause of it too.
+        //
+        // THE RULES CONSTANT FOLLOWS THE DESTINATION (issue
+        // [#2939](https://github.com/go-to-k/cdkd/issues/2939)), which this
+        // site has already computed: `hasObserved` decides two lines below
+        // whether the bag lands in `observedProperties` or in `properties`.
+        // `failClosedOnUncertifiedPositions` is DECLARED by the caller rather
+        // than derived inside `secret-redaction.ts` precisely because that
+        // module cannot see the destination — and here it is in scope. On the
+        // `observedProperties` arm the bag IS a drift baseline, so an
+        // uncertifiable position is written as `SECRET_MASK` by the same
+        // reasoning #2852 applied to `cdkd state refresh-observed` and #2885
+        // to `cdkd import`: the re-redaction exists to clean a stored plaintext
+        // the value map cannot recognise (a pre-GHSA record, or last week's
+        // rotated-away value), and at a position the walk cannot pair the
+        // non-failing constant left it in the clear. On the `properties` arm
+        // the non-failing constant stays: a mask there is a REGRESSION rather
+        // than a refusal (`cdkd export` blocks the record and the rollback
+        // replay refuses the operation over a template value that was never
+        // unknown), which is the whole reason the flag is declared per site.
         const redactedBaseline = redactSecretsForState(
           newBaseline,
           outcome.secrets,
           existing.properties ?? {},
-          STATE_SOURCED_READBACK_RULES
+          hasObserved ? STATE_SOURCED_BASELINE_RULES : STATE_SOURCED_READBACK_RULES
         );
         let recordedChanges = 0;
         for (const change of accepted) {
+          // `deepEqualUnordered` calls a NON-PLAIN value (a `Date` the raw
+          // readback carries) equal only to ITSELF (issue #2897): a rebuilt
+          // stand-in for it — which the redaction pass can produce — is a
+          // value the baseline does not hold, and the warning below is the
+          // only signal that the accept did not land.
           if (deepEqualUnordered(getAtPath(redactedBaseline, change.path), change.awsValue)) {
             recordedChanges++;
             continue;
           }
           logger.warn(
             `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              `'${change.path}' was NOT recorded — cdkd state holds an unresolved ` +
-              `'{{resolve:...}}' reference at that property, and the reference wins over an ` +
-              `accepted value. Change the template if that reference is wrong.`
+              `'${change.path}' was NOT recorded — after redaction cdkd state holds a different ` +
+              `value at that property. Usually an unresolved '{{resolve:...}}' reference sits ` +
+              `there and wins over an accepted value (change the template if that reference ` +
+              `is wrong); a readback value cdkd cannot compare is never called recorded.`
           );
         }
         if (recordedChanges > 0) acceptedResourceCount++;
@@ -3537,10 +3619,10 @@ export function findRevertPreservedTagKeys(
   }
 
   for (const key of driftedTopLevelKeys) {
-    if (!(key in desiredProperties)) continue;
+    if (!hasOwnKey(desiredProperties, key)) continue;
     if (!isTagListKey(key)) continue;
     const desiredValue = desiredProperties[key];
-    const awsValue = awsProperties[key];
+    const awsValue = ownValue(awsProperties, key);
     const baselineIsTagList =
       isCfnTagList(desiredValue) || (Array.isArray(desiredValue) && desiredValue.length === 0);
     if (!baselineIsTagList || !isCfnTagList(awsValue)) continue;
@@ -3610,14 +3692,14 @@ export function findRevertUnbaselinedAwsKeys(
 
   for (const key of driftedTopLevelKeys) {
     // `buildRevertNewProperties` only overwrites a key the desired side
-    // actually has; otherwise the AWS-current value survives untouched.
-    if (!(key in desiredProperties)) continue;
+    // actually OWNS; otherwise the AWS-current value survives untouched.
+    if (!hasOwnKey(desiredProperties, key)) continue;
     // A top-level TAG LIST is reverted through `mergeTagListForRevert`, which
     // PRESERVES service-authored entries (issue #1501) — so those are not
     // at stake and must not be reported here, while an ordinary console-added
     // tag still is stripped and still counts.
     collectMissingPaths(
-      awsProperties[key],
+      ownValue(awsProperties, key),
       desiredProperties[key],
       key,
       missing,
@@ -3695,7 +3777,10 @@ function collectMissingPaths(
   }
   for (const [key, value] of Object.entries(awsValue)) {
     const childPath = `${path}.${key}`;
-    if (!(key in desiredValue)) {
+    // OWN keys (issue #2899's class, PR #3124 review): `in` reads the
+    // prototype chain, so an AWS key named `constructor` / `toString` would
+    // read as declared by a plain baseline and be walked against a function.
+    if (!hasOwnKey(desiredValue, key)) {
       out.add(childPath);
       continue;
     }
@@ -3855,20 +3940,26 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
     // worse than the flag-off overlay. Treat it as the shape mismatch it is:
     // the baseline wins, exactly like the arm above. Guarded on BOTH sides
     // deliberately: a non-plain DESIRED side would otherwise fall through to
-    // the merge loops, whose `key in desiredValue` reads the prototype chain
-    // and whose second loop walks no own keys — silently returning the AWS
-    // side wholesale, the OPPOSITE of "the baseline wins".
+    // the merge loops, which walk no own keys of it and so return the AWS
+    // side wholesale — the OPPOSITE of "the baseline wins".
     return desiredValue;
   }
   // `Object.create(null)`: an own `__proto__` key (a `JSON.parse`d baseline
   // yields one as an OWN key) must stay an own key, not become the prototype —
   // same rule as the preserve walks' rebuild targets below.
   const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  // OWN-key membership, mirroring `collectMissingPaths` (PR #3124 review): an
+  // AWS key named `constructor` / `toString` is a legal property name, and
+  // `in` on a plain baseline answers `true` for it through the prototype
+  // chain — the recursion then merged against `Object`'s function and the
+  // member vanished from the payload under `JSON.stringify`.
   for (const [key, value] of Object.entries(awsValue)) {
-    merged[key] = key in desiredValue ? mergeUntemplatedValue(value, desiredValue[key]) : value;
+    merged[key] = hasOwnKey(desiredValue, key)
+      ? mergeUntemplatedValue(value, desiredValue[key])
+      : value;
   }
   for (const [key, value] of Object.entries(desiredValue)) {
-    if (!(key in awsValue)) merged[key] = value;
+    if (!hasOwnKey(awsValue, key)) merged[key] = value;
   }
   return merged;
 }
@@ -3972,7 +4063,22 @@ export function preserveLiveValuesAtUnresolvedTokens(
       // redaction NEEDLE out of it — every unrelated delta leaf equal to it
       // rewritten into this token, after which the next deploy ships the token
       // to AWS (the #1904 wrong-reference corruption, one spelling over).
-      return live;
+      //
+      // ONLY A STRING is copied (issue
+      // [#2920](https://github.com/go-to-k/cdkd/issues/2920)). The baseline
+      // types this position as a string — the token IS one — so a live
+      // OBJECT / ARRAY / number / `null` here is a container or scalar of
+      // another type at a string-typed property, and copying it ships a
+      // wrong-shape value to the wire (the #2855 class, arriving through the
+      // preservation arm instead of the baseline). Every route reaches this
+      // line — a keyed pairing, a corroborated frame, and the forced 1-vs-1
+      // singleton `acceptForcedSingleton` admits uncorroborated. The residual
+      // is this pass's own: the token is KEPT, what `cdkd deploy` sends. The
+      // sibling mask walk documents the OPPOSITE choice for its non-string
+      // live values (it still copies, because ITS refusal drops the whole
+      // resource); that trade does not carry here, where refusing costs a
+      // kept token rather than a dropped revert.
+      return typeof live === 'string' ? live : value;
     }
     if (Array.isArray(value)) {
       // Pair live elements the way the sibling mask walk does — identity
@@ -4025,7 +4131,7 @@ export function preserveLiveValuesAtUnresolvedTokens(
       // `__proto__` key must stay an own key, not become the prototype.
       const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        out[k] = walk(v, liveObject?.[k]);
+        out[k] = walk(v, liveObject === undefined ? undefined : ownValue(liveObject, k));
       }
       return out;
     }
@@ -4287,9 +4393,25 @@ function pairedLiveItems(
     // literal), and a live element literally named by the token text is
     // producible the same way, so without this guard such an element would
     // "pair" and donate its live leaves (PR #2912 security review).
+    //
+    // The refusal is keyed on {@link isTokenOrMaskLeaf} for BOTH callers,
+    // NOT on the caller's `wildcardLeaf` (issue
+    // [#2919](https://github.com/go-to-k/cdkd/issues/2919)): the two
+    // predicates answer different questions. `wildcardLeaf` says which leaf
+    // is being paired FOR and so must abstain from corroboration; the
+    // identity refusal says which identity VALUE is a guess to pair on, and
+    // that set is the same for both walks. Keyed on the mask walk's
+    // `isMaskLeaf` alone, a corroboration-bag identity holding a whole
+    // `{{resolve:...}}` token (a keyed list whose identity FIELD carries a
+    // surviving token, beside a mask elsewhere in the element) paired by
+    // string equality with the live element cdkd's own literal echo names,
+    // and donated that element's leaves into the masked slots — an
+    // uncorroborated guess. Refused, the mask walk's residual is its safe
+    // drop; the token walk's answer is unchanged, its wildcard already being
+    // this predicate.
     return send.map((item) => {
       const identity = (item as Record<string, unknown>)[key];
-      return wildcardLeaf(identity) ? undefined : byIdentity.get(identity);
+      return isTokenOrMaskLeaf(identity) ? undefined : byIdentity.get(identity);
     });
   }
   // No identity field: the literal frame has to vouch for the order, per LEAF.
@@ -4499,12 +4621,13 @@ function corroboratedLeafCount(
  * masked VALUES the walk writes still come from `send` — only the evidence
  * source changes. Defaults to `send` (self-corroboration, the pre-round-4
  * behaviour) for a caller with no sibling pass; a structural mismatch between
- * the two bags — which the token pass CAN produce, by returning the live
- * CONTAINER AWS holds over a whole-token string leaf — refuses the masks
- * beneath it rather than falling back to the fabricable bag. That refusal is
- * a deliberate fail-closed cost, not a reachable loss: the mismatching
- * subtree is live-derived and carries no mask, so nothing preservable is
- * refused today.
+ * the two bags refuses the masks beneath it rather than falling back to the
+ * fabricable bag. Until issue #2920 the token pass COULD produce one, by
+ * returning the live CONTAINER AWS holds over a whole-token string leaf; it
+ * now copies only a string, so no sibling pass produces the mismatch today.
+ * The refusal is KEPT as a deliberate fail-closed cost rather than retired on
+ * that reachability argument: a bag that disagrees with its evidence source is
+ * exactly where falling back would hand the fabricable bag back.
  *
  * Returns the input bag BY IDENTITY when it holds no mask — checked FIRST via
  * {@link carriesSecretMask}, so a mask-free revert (the ordinary case) pays
@@ -4538,12 +4661,13 @@ export function preserveLiveValuesAtMaskedLeaves(
       // Pairing evidence comes from `corr` — see `corroborationSource` above.
       // In the self-corroboration default `corr` IS `value`, so this test
       // always passes there. A provided source of any other shape is REFUSED,
-      // not fallen back from — and the mismatch is producible: the token pass
-      // returns `live` at a whole-token leaf, so a string in `corr` can sit
-      // where `value` holds the container AWS reported. Deliberate fail-closed
-      // cost: the container is live-derived and holds no mask, so the refusal
-      // guards nothing today, but falling back to `value` would hand the
-      // fabricable bag back exactly where the two bags disagree.
+      // not fallen back from. Until issue #2920 the mismatch was producible
+      // (the token pass returned `live` untyped at a whole-token leaf, so a
+      // string in `corr` could sit where `value` held the container AWS
+      // reported); the token pass now copies only a string, so nothing
+      // produces it today. Kept as a deliberate fail-closed cost: falling back
+      // to `value` would hand the fabricable bag back exactly where the two
+      // bags disagree.
       const corrItems =
         Array.isArray(corr) && corr.length === value.length
           ? (corr as readonly unknown[])
@@ -4579,7 +4703,12 @@ export function preserveLiveValuesAtMaskedLeaves(
       // rule and reason as `secret-redaction.ts`'s rebuild sites.
       const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        out[k] = walk(v, corrObject?.[k], liveObject?.[k], path === '' ? k : `${path}.${k}`);
+        out[k] = walk(
+          v,
+          corrObject === undefined ? undefined : ownValue(corrObject, k),
+          liveObject === undefined ? undefined : ownValue(liveObject, k),
+          path === '' ? k : `${path}.${k}`
+        );
       }
       return out;
     }
@@ -4647,13 +4776,21 @@ export function buildRevertNewProperties(
   options: { preserveUntemplated?: boolean } = {}
 ): Record<string, unknown> {
   const preserveUntemplated = options.preserveUntemplated === true;
+  // A plain spread on purpose (every provider receives this bag, and spread
+  // defines an own `__proto__` key correctly); the overlays below go through
+  // `defineOwnKey` because a top-level drift at a key literally named
+  // `__proto__` (issue #2899's class — `JSON.parse`d state yields one as an
+  // ordinary own key) ASSIGNED onto this plain object would set its prototype
+  // and drop the reverted member from the payload.
   const result: Record<string, unknown> = { ...awsProperties };
   for (const d of drifts) {
     const topLevelKey = d.path.split('.', 1)[0];
     if (!topLevelKey) continue;
-    if (topLevelKey in desiredProperties) {
+    if (hasOwnKey(desiredProperties, topLevelKey)) {
       const desiredValue = desiredProperties[topLevelKey];
-      const awsValue = awsProperties[topLevelKey];
+      // Own key only: on a plain AWS bag a bare `['__proto__']` read for a key
+      // it does not own answers `Object.prototype`, not "absent".
+      const awsValue = ownValue(awsProperties, topLevelKey);
       // A TAG LIST keeps its AWS-service-authored entries instead of being
       // overwritten wholesale (issue #1501). See `mergeTagListForRevert`.
       //
@@ -4671,14 +4808,17 @@ export function buildRevertNewProperties(
         // below rather than competing with it. The superset holds for a
         // DECLARED-but-EMPTY baseline list too — see the note in
         // `mergeUntemplatedValue`, which is where that shape is handled.
-        result[topLevelKey] = mergeUntemplatedValue(awsValue, desiredValue);
+        defineOwnKey(result, topLevelKey, mergeUntemplatedValue(awsValue, desiredValue));
       } else {
         const baselineIsTagList =
           isCfnTagList(desiredValue) || (Array.isArray(desiredValue) && desiredValue.length === 0);
-        result[topLevelKey] =
+        defineOwnKey(
+          result,
+          topLevelKey,
           isTagListKey(topLevelKey) && baselineIsTagList && isCfnTagList(awsValue)
             ? mergeTagListForRevert(desiredValue as Array<Record<string, unknown>>, awsValue)
-            : desiredValue;
+            : desiredValue
+        );
       }
     } else {
       // Drift surfaced on a key that's no longer in `desiredProperties`
@@ -4715,7 +4855,7 @@ export function buildRevertNewProperties(
  * too. That is represented by an explicit `undefined` value, which the caller
  * turns into a `delete` — a plain `{...baseline, ...delta}` spread would leave
  * an `undefined`-valued key in the JSON instead. Presence is decided by
- * `key in effective`, NOT by comparing against `undefined`: a provider that
+ * OWN-key membership in `effective`, NOT by comparing against `undefined`: a provider that
  * delivers an explicit `undefined` and one that omits the key both mean "AWS
  * does not hold it", while a key whose value genuinely IS `null` on both sides
  * must not read as a drop.
@@ -4731,10 +4871,19 @@ export function collectNarrowedTopLevelKeys(
   sent: Record<string, unknown>,
   effective: Record<string, unknown>
 ): Record<string, unknown> {
-  const delta: Record<string, unknown> = {};
+  // `Object.create(null)` (issue #2899's class): `sent` is the preserve
+  // walks' null-prototype rebuild of a `JSON.parse`d baseline, so an own
+  // `__proto__` key is enumerated here like any other — assigned onto a `{}`
+  // literal it would set the delta's prototype and drop the narrowing.
+  const delta: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of new Set([...Object.keys(sent), ...Object.keys(effective)])) {
-    const inSent = key in sent;
-    const inEffective = key in effective;
+    // OWN keys (PR #3124 review): `sent` is the preserve walks' null-prototype
+    // rebuild and may own `__proto__`; `effective` is a provider's plain bag,
+    // where `'__proto__' in effective` is `true` through the chain and the
+    // delta would record `Object.prototype` as the "effective value" instead
+    // of the drop it really is.
+    const inSent = hasOwnKey(sent, key);
+    const inEffective = hasOwnKey(effective, key);
     if (inSent && inEffective && deepEqualUnordered(sent[key], effective[key])) continue;
     if (!inSent && !inEffective) continue;
     delta[key] = inEffective ? effective[key] : undefined;
@@ -4742,7 +4891,24 @@ export function collectNarrowedTopLevelKeys(
   return delta;
 }
 
-/** Deep equality that does not depend on object key ORDER. */
+/**
+ * Deep equality that does not depend on object key ORDER.
+ *
+ * A NON-PLAIN object (`Date`, `Uint8Array`, `Map`, a class instance) on either
+ * side compares UNEQUAL unless it is the same object (issue
+ * [#2897](https://github.com/go-to-k/cdkd/issues/2897)): its own enumerable
+ * keys are `[]`, so the key walk below reported any two `Date`s equal —
+ * `0 === 0` — which HID a narrowing in {@link collectNarrowedTopLevelKeys}
+ * (the changed value never reached `observedProperties`, leaving the baseline
+ * stale there) and SUPPRESSED `runAccept`'s "was NOT recorded" warning. Same
+ * guard, same reason as `secret-redaction.ts`'s `deepEqualJsonValue` and the
+ * corroboration count above. Reachable: `sent` descends from
+ * `buildRevertNewProperties`, which copies `readCurrentState`'s RAW SDK return
+ * with no JSON round-trip, and `effective` is a provider's own echo. The
+ * direction is deliberate — a value cdkd cannot compare is a value it must not
+ * call unchanged, and for the narrowing that means the provider's echo is
+ * recorded (the truthful answer) rather than silently kept stale.
+ */
 function deepEqualUnordered(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a == null || b == null) return a === b;
@@ -4751,6 +4917,7 @@ function deepEqualUnordered(a: unknown, b: unknown): boolean {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
     return a.every((v, i) => deepEqualUnordered(v, b[i]));
   }
+  if (!hasPlainPrototype(a) || !hasPlainPrototype(b)) return false;
   const ao = a as Record<string, unknown>;
   const bo = b as Record<string, unknown>;
   const ak = Object.keys(ao);
@@ -5499,11 +5666,37 @@ async function runRevert(
                   // site stays empty for a resource carrying no secret
                   // reference -- which is the common shape. With an empty map
                   // the source expression silently wins (issue #2036).
+                  //
+                  // THE RULES CONSTANT FOLLOWS THE DESTINATION, as at the
+                  // `--accept` site (issue #2939 — the sibling question that
+                  // issue asked to be answered rather than assumed). A VALUE
+                  // from this delta is persisted ONLY into `observedProperties`
+                  // (the write loop below records a value against an observed
+                  // baseline and never into `properties`, which takes drops
+                  // alone), so wherever a redacted value lands it lands in a
+                  // drift baseline — the fail-closed constant's one
+                  // destination. The mask costs the same here as it does for
+                  // `cdkd import` / `refresh-observed`: a masked position
+                  // reports as drift, `--accept` refuses it and `--revert`
+                  // preserves the live value there, until a deploy rewrites the
+                  // baseline. The alternative at an uncertifiable position is
+                  // persisting the provider's echo of a DECRYPTED value. The
+                  // merge provenance of this bag (AWS-current non-drifted keys,
+                  // resolved desired subtrees) changes how OFTEN a position is
+                  // uncertifiable — a reordered echo of a non-drifted key —
+                  // never what a mask costs, and the refusal masks only where
+                  // the source spells a reference, so a reordered literal list
+                  // is untouched. On the `properties` arm the redacted values
+                  // are discarded by the loop below, so the non-failing
+                  // constant there changes nothing and is kept for symmetry
+                  // with `--accept`.
                   redactSecretsForState(
                     delta,
                     secrets,
                     revertBaseline,
-                    STATE_SOURCED_READBACK_RULES
+                    stateResource.observedProperties !== undefined
+                      ? STATE_SOURCED_BASELINE_RULES
+                      : STATE_SOURCED_READBACK_RULES
                   )
                 );
               }
@@ -5566,7 +5759,7 @@ async function runRevert(
             // field); a provider that echoes one back in a changed shape would
             // otherwise INSERT it into state — `--revert` behaving like
             // `--accept`, the thing the per-key delta exists to prevent.
-            if (!Object.prototype.hasOwnProperty.call(newBaseline, key)) continue;
+            if (!hasOwnKey(newBaseline, key)) continue;
             if (value === undefined) {
               delete newBaseline[key];
               changed = true;
@@ -5585,7 +5778,7 @@ async function runRevert(
             // never imports — so the loop this fix exists to break still
             // closes for the shape that actually produces it.
             if (!hasObserved) continue;
-            newBaseline[key] = value;
+            defineOwnKey(newBaseline, key, value);
             changed = true;
           }
           if (!changed) continue;
