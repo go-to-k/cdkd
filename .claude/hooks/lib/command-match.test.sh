@@ -281,7 +281,8 @@ check "B1: a quoted heredoc inside a backtick substitution inside double quotes 
 # the line ends inside a quote -- which the bail-on-doubt answers with "no
 # opener", the same verdict as the intact arm. Only a `#` the intact scan stops
 # at, holding one `"` the deleted arm keeps reading, re-syncs the two and
-# makes the fail-open observable (bash runs the commit: verified). Both this
+# makes the fail-open observable (bash 5 and zsh run the commit; bash 3.2
+# rejects the line as a syntax error and runs nothing -- safe either way). Both this
 # twin and the `${}` one carry a SPACE after the delimiter: round 6 added a
 # word-boundary bail (`<<\047EOF\047x` is delimiter `EOFx`), and a `"` or
 # `}` right after the closing quote now bails before either arm is asked.
@@ -350,6 +351,12 @@ r3_case "c2: a # right after ) is a comment, so the quoted <<X in it is not an o
 # here-string skip and the unbalanced-quote bail. Deleting either was green.
 r3_case "c3a: a here-string <<<'X' is not an opener" 0 "$COMMIT" \
   'x=$(cat <<<'"'"'X'"'"'' 'git commit -m y' 'X' ')'
+# Since round 7 an unreadable word bails anyway, so c3a passes with the `<<<`
+# skip deleted; what the skip still decides is the REFUSING direction -- a
+# here-string ahead of a real quoted heredoc must not bail the body back
+# into commands. Deleting the skip reds this case alone.
+check "c3a2: a here-string before a real quoted heredoc on the same line does not bail its body" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<<'"'"'X'"'"' ; cat <<'"'"'Y'"'"'' 'gh pr merge 1 was refused' 'Y' ')')"
 r3_case "c3b: a quoted opener followed by an UNBALANCED double quote is a bail" 0 "$COMMIT" \
   'x=$(cat <<'"'"'X'"'"' "' 'abc' '" ; git commit -m y' 'X' ')'
 # Test review: the round-2 `$'` twin fenced the dq CONDITION of the ANSI-C arm
@@ -423,17 +430,52 @@ r3_case "3066: the issue shape itself, UNQUOTED body, commit before a later top-
   'x=$(cat <<EOF' 'p' 'EOF' ')' 'git commit -m x' 'cat <<EOF' 'q' 'EOF'
 check "3066 control: the later top-level heredoc body is still data" 1 "$MERGE" \
   "$(printf '%s\n' 'x="$(cat <<'"'"'E'"'"'' 'prose' 'E' ')"' 'cat <<E' 'gh pr merge 1 was refused' 'E')"
-# Code review: the delimiter is the whole WORD. `<<'EOF'x` is delimiter
-# `EOFx` (bash 3.2 and 5 run the line after a decoy `EOF`), and `<<"EO"F` is
-# `EOF`; the scan took the quoted span alone and latched on the decoy. And
-# `<<'a"b'` is `a"b` with the inner quote kept -- stripping every quote made
-# it `ab`, which the body's prose then terminated early.
+# Code review rounds 6 and 7: the delimiter is the whole WORD as bash reads it
+# after quote removal (`heredoc_word`). `<<'EOF'x` is `EOFx` -- bash 3.2 and 5
+# run the line after a decoy `EOF` -- and `<<"EO"F` is `EOF`, so the line
+# after a decoy `EO` is still body; the round-2 regex took the quoted span
+# alone. `<<'a"b'` is `a"b` with the inner quote kept -- stripping every
+# quote made it `ab`, which the body's prose then terminated early. All three
+# are MODELLED now rather than bailed, so a body under such a delimiter stays
+# data (P2, P3) instead of being refused as commands. Shells measured: P1 runs
+# the commit on bash 3.2, 5 and zsh; P2 and P3 run nothing on any of them
+# (P3 is a syntax error on 3.2).
 r3_case "P1: <<'EOF'x -- the delimiter is EOFx, so a bare EOF line is not the terminator" 0 "$COMMIT" \
   'x=$(cat <<'"'"'EOF'"'"'x' 'body' 'EOFx' 'git commit -m y' 'EOF' ')'
-r3_case "P2: <<\"EO\"F -- a quoted span followed by more word is a bail, never a latch on EO" 0 "$COMMIT" \
-  'x=$(cat <<"EO"F' 'body' 'git commit -m y' 'EO' 'EOF' ')'
+check "P2: <<\"EO\"F -- the delimiter is EOF, so the verb before a decoy EO line is still body" 1 "$COMMIT" \
+  "$(printf '%s\n' 'x=$(cat <<"EO"F' 'body' 'git commit -m y' 'EO' 'EOF' ')')"
 check "P3: <<'a\"b' keeps the inner quote, so an ab line does not end the body early" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<'"'"'a"b'"'"'' 'body' 'ab' 'gh pr merge 1 was refused' 'a"b' ')')"
+# Round 7 (/review-pr, second pass). Security + code: the TOP-LEVEL arm in
+# flush_line had the same two defects, and the round-6 pending_tag restore
+# made them reachable where drain_extra used to reset the wrong tag by
+# accident -- `cat <<'EOF'x $(echo y)` set `pending_tag = EOF`, and a later
+# bare `EOF` swallowed the push between (all three shells run it; origin/main
+# matched). Both arms read the word through heredoc_word now.
+r3_case "D5: top-level <<'EOF'x with a substitution on the line -- the push before a later bare EOF is a segment" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<'"'"'EOF'"'"'x $(echo y)' 'p' 'EOFx' 'git push' 'cat <<'"'"'EOF'"'"'' 'q' 'EOF'
+r3_case "D7: top-level <<EOF.x -- a bare word with a dot is one delimiter" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<EOF.x $(echo y)' 'p' 'EOF.x' 'git push' 'cat <<'"'"'EOF'"'"'' 'q' 'EOF'
+r3_case "D8: top-level <<E\"O\"F -- quote removal gives EOF" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<E"O"F $(echo y)' 'p' 'EOF' 'git push' 'cat <<'"'"'E'"'"'' 'q' 'E'
+r3_case "D9: top-level <<-'EOF'x" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<-'"'"'EOF'"'"'x $(echo y)' 'p' 'EOFx' 'git push' 'cat <<'"'"'EOF'"'"'' 'q' 'EOF'
+check "D-ctl: a top-level <<'EOF'x body is still data" 1 "$MERGE" \
+  "$(printf '%s\n' 'cat <<'"'"'EOF'"'"'x' 'gh pr merge 1 was refused' 'EOFx')"
+check "D-bs: <<\\EOF is a quoted delimiter EOF, body is data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<\EOF' 'gh pr merge 1 was refused' 'EOF' ')')"
+# Test review: a delimiter the walk cannot read has no modelled body end, so
+# its bail is STICKY like the unquoted one -- a per-line bail let a <<'B' on
+# the next line, inside that body, latch and drop the verb after the real
+# terminator (all three shells run it; origin/main matched).
+r3_case "D-sticky: <<'EOF'\$x is unreadable, and the <<'B' on the next line must not latch" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'EOF'"'"'$x' 'cat <<'"'"'B'"'"'' 'EOF$x' 'git commit -m y' 'B' ')'
+# Test review: the pending_tag restore also REMOVES a false refusal. A heredoc
+# opened on the substitution's CLOSING line -- `x=$(echo a) ; cat <<EOF` --
+# had its tag cleared by the body flush (flush_line resets pending_tag), so
+# the prose after it was read as commands on origin/main.
+check "R1: a heredoc opened on the line that closes a substitution keeps its tag through the drain" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(echo a) ; cat <<EOF' 'gh pr merge 1 was refused' 'EOF')"
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

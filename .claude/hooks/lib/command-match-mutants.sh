@@ -20,7 +20,8 @@
 #
 # THE BASELINE IS THE COPIED RUN, NOT THE IN-PLACE ONE, and the difference is
 # real: a few cases in the suite build fixtures relative to the SUITE'S OWN
-# directory, so they skip when it runs from a copy, and the copied baseline is
+# directory, so they FAIL when it runs from a copy (they do not skip -- the
+# copied baseline prints their failures), and the copied baseline is
 # therefore a few cases lower than the in-place one. Every mutant below is
 # compared against the copied baseline printed on the FIRST LINE of this run,
 # so the comparison is internally consistent. Do not read that line as the
@@ -129,7 +130,6 @@ edits={
  'lho-no-reset-on-close': ('        lho_reset()\n        # A line that ends INSIDE a quoted span',
                            '        # A line that ends INSIDE a quoted span'),
  'lho-bail-not-sticky': ('{ lho_bail = 1; return "" }', '{ return "" }'),
- 'lho-unquoted-bail':   ('} else if (match(rest, /^<<-?[ \\t]*[^ \\t<]/)) { lho_bail = 1; return "" }', '}'),
  'lho-frame-close-paren': ('if (out != "" && lho_depth <= of) return ""; lho_iq = lho_OQ[lho_depth]', 'lho_iq = lho_OQ[lho_depth]'),
  'lho-frame-close-bt':  ('else { if (out != "" && ob) return ""; lho_bt = 0; lho_iq = lho_btq }', 'else { lho_bt = 0; lho_iq = lho_btq }'),
  'lho-hash-class-paren': ('~ /[ \\t;&|()`]/)) break', '~ /[ \\t;&|(`]/)) break'),
@@ -148,20 +148,35 @@ edits={
  'lho-subst-push-save-iq': ('if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_iq = ""; j++; continue }', 'if (d == "(") { lho_depth++; lho_OQ[lho_depth] = ""; lho_iq = ""; j++; continue }'),
  'lho-backtick-arm':    ('if (c == "`" && (lho_iq == "" || lho_iq == "\\"")) { if (!lho_bt)', 'if (0) { if (!lho_bt)'),
  'lho-terminated-guard': ('if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd', 'if (pd != "") ptag = pd'),
- 'lho-word-boundary':   ('            if (substr(rest, RSTART + RLENGTH, 1) !~ /^([ \\t;&|()<>]|$)/) return ""\n', ''),
- 'lho-strip-all-quotes': ('            d = substr(d, 2, length(d) - 2)\n', '            gsub(/["\\047]/, "", d)\n'),
+ # heredoc_word (round 7): the delimiter is the whole WORD after quote
+ # removal. `hw-stop-at-quote` ends the word at the closing quote (the old
+ # regex: `<<'EOF'x` read as EOF); `hw-drop-inner-quote` strips a quote
+ # INSIDE the word (`<<'a"b'` read as ab); `hw-unquoted-latch` latches an
+ # unquoted delimiter in the $( ) arm; `hw-bail-not-sticky` makes an
+ # unreadable word a per-line bail; `hw-flush-line-regex` puts flush_line
+ # back on its own quoted-span regex instead of heredoc_word.
+ 'hw-stop-at-quote':    ('                           w = w substr(rest, j + 1, k - 1); j += k + 1; HW_QUOTED = 1; continue }\n',
+                         '                           w = w substr(rest, j + 1, k - 1); j += k + 1; HW_QUOTED = 1; break }\n'),
+ 'hw-drop-inner-quote': ('      HW_LEN = j - 1\n      return w\n',
+                         '      HW_LEN = j - 1; gsub(/"/, "", w)\n      return w\n'),
+ 'hw-unquoted-latch':   ('          if (d == "" || !HW_QUOTED) { lho_bail = 1; return "" }\n',
+                         '          if (d == "") { lho_bail = 1; return "" }\n'),
+ 'hw-bail-not-sticky':  ('          if (d == "" || !HW_QUOTED) { lho_bail = 1; return "" }\n',
+                         '          if (d == "" || !HW_QUOTED) { return "" }\n'),
+ 'hw-flush-line-regex': ('            d = heredoc_word(rest)\n            if (d != "") pending_tag = d\n',
+                         '            if (match(rest, /^<<-?[ \\t]*("[^"]+"|\\047[^\\047]+\\047|[A-Za-z_][A-Za-z0-9_]*)/)) { d = substr(rest, RSTART, RLENGTH); sub(/^<<-?[ \\t]*/, "", d); gsub(/["\\047]/, "", d); if (d != "") pending_tag = d }\n'),
  'pending-tag-restore': ('      pending_tag = saved_pt\n', ''),
 }
 a,b=edits[probe]
 n=s.count(a)
-assert n>=1, (probe, n)
+assert n==1, (probe, n)
 io.open(p,'w',encoding='utf-8').write(s.replace(a,b))
 PY
       ;;
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-bail-not-sticky lho-unquoted-bail lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard lho-word-boundary lho-strip-all-quotes pending-tag-restore}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-bail-not-sticky lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex pending-tag-restore}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then

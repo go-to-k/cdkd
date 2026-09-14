@@ -557,6 +557,42 @@ gate_segments_raw() {
     # to join into a still-open `$(` body, where a heredoc opened here is
     # followed by BODY lines that must not be joined as commands.
     #
+    # heredoc_word(rest): `rest` starts at the `<<`. Returns the delimiter WORD
+    # as bash reads it -- quote removal applied, everything else kept:
+    # `<<\047EOF\047x` is EOFx, `<<E"O"F` is EOF, `<<\047a"b\047` is a"b,
+    # `<<\\EOF` is EOF, `<<EOF.x` is EOF.x. Sets HW_QUOTED to 1 when ANY quoting
+    # was seen (bash then performs no expansion in the body) and HW_LEN to the
+    # characters consumed. Returns "" for a word it cannot read -- an
+    # unterminated quote, an expansion inside the word, nothing after the
+    # `<<` -- which both callers treat as "not modelled" (review round 7 of
+    # go-to-k/cdkd#3040: the regex read `\047EOF\047` out of `<<\047EOF\047x`
+    # and latched on a decoy `EOF` line, dropping the verb bash runs).
+    function heredoc_word(rest,   j, n, c, w, k) {
+      HW_QUOTED = 0; HW_LEN = 0; w = ""
+      n = length(rest)
+      j = 3
+      if (substr(rest, j, 1) == "-") j++
+      while (j <= n && substr(rest, j, 1) ~ /[ \t]/) j++
+      while (j <= n) {
+        c = substr(rest, j, 1)
+        if (c ~ /[ \t;&|()<>]/) break
+        if (c == "\047") { k = index(substr(rest, j + 1), "\047"); if (k == 0) return ""
+                           w = w substr(rest, j + 1, k - 1); j += k + 1; HW_QUOTED = 1; continue }
+        if (c == "\"") { j++
+                         while (j <= n) { c = substr(rest, j, 1)
+                           if (c == "\"") break
+                           if (c == "\\") { j++; w = w substr(rest, j, 1); j++; continue }
+                           if (c == "$" || c == "`") return ""
+                           w = w c; j++ }
+                         if (j > n) return ""
+                         j++; HW_QUOTED = 1; continue }
+        if (c == "\\") { if (j == n) return ""; w = w substr(rest, j + 1, 1); j += 2; HW_QUOTED = 1; continue }
+        if (c == "$" || c == "`") return ""
+        w = w c; j++
+      }
+      HW_LEN = j - 1
+      return w
+    }
     # WHY ONLY A QUOTED DELIMITER, and why "" on doubt. Two review rounds of
     # go-to-k/cdkd#3040 each measured shapes bash EXECUTES that the previous
     # cut dropped as heredoc body -- a new fail-open in the matcher every
@@ -648,19 +684,13 @@ gate_segments_raw() {
         if (c == "<" && substr(text, j + 1, 1) == "<") {
           if (substr(text, j + 2, 1) == "<") { j += 2; continue }
           rest = substr(text, j)
-          if (match(rest, /^<<-?[ \t]*("[^"]+"|\047[^\047]+\047)/)) {
-            # The delimiter is the whole WORD: `<<\047EOF\047x` ends at `EOFx`,
-            # and `<<\047a"b\047` is `a"b` with the inner quote kept. A quoted
-            # span followed by more word is not modelled (code review round 6
-            # measured bash running the line after a decoy `EOF`); only the
-            # quote characters that delimit the span are stripped.
-            if (substr(rest, RSTART + RLENGTH, 1) !~ /^([ \t;&|()<>]|$)/) return ""
-            d = substr(rest, RSTART, RLENGTH)
-            sub(/^<<-?[ \t]*/, "", d)
-            d = substr(d, 2, length(d) - 2)
-            if (d != "") { out = d; ol = lho_depth + lho_bt; of = lho_depth; ob = lho_bt }
-            j += RLENGTH - 1
-          } else if (match(rest, /^<<-?[ \t]*[^ \t<]/)) { lho_bail = 1; return "" }
+          d = heredoc_word(rest)
+          # Only a QUOTED delimiter is latched: bash expands an unquoted body,
+          # and a word this walk cannot read has no modelled body either. Both
+          # are the STICKY bail -- the rest of the substitution is commands.
+          if (d == "" || !HW_QUOTED) { lho_bail = 1; return "" }
+          out = d; ol = lho_depth + lho_bt; of = lho_depth; ob = lho_bt
+          j += HW_LEN - 1
           continue
         }
       }
@@ -770,12 +800,11 @@ gate_segments_raw() {
             # `<<<` is a here-string, not a heredoc opener.
             if (substr(line, i + 2, 1) == "<") { i += 2; continue }   # verbatim
             rest = substr(line, i)
-            if (match(rest, /^<<-?[ \t]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
-              d = substr(rest, RSTART, RLENGTH)
-              sub(/^<<-?[ \t]*/, "", d)
-              gsub(/["'"'"']/, "", d)
-              if (d != "") pending_tag = d
-            }
+            # The delimiter is the whole WORD as bash reads it (heredoc_word);
+            # a word the walk cannot read sets no tag, and the line stays a
+            # command line (review round 7 of go-to-k/cdkd#3040).
+            d = heredoc_word(rest)
+            if (d != "") pending_tag = d
             continue
           }
           continue
