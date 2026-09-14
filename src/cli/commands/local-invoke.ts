@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import * as path from 'node:path';
@@ -32,6 +32,7 @@ import {
   type ResolvedZipLambda,
 } from '../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
+import { copyLayerTreeLastWins } from '../../local/layer-tree-copy.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
   substituteEnvVarsFromStateAsync,
@@ -1045,42 +1046,12 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
   }
   const tmpDir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-invoke-layers-'));
   for (const layer of layers) {
-    // `recursive: true` is required for directory copy. `force: true`
-    // makes later layers overwrite earlier ones — the load-bearing
-    // half of AWS's "last layer wins" semantic. cpSync merges into the
-    // existing target rather than replacing it.
-    //
-    // **Contract pinned (Node 22.12+, the `engines` floor)**: cdkd relies on three default
-    // behaviors of `fs.cpSync` that future readers should NOT change
-    // without auditing every Lambda Layer the integ test exercises:
-    //   - `mode` defaults to preserving the source's file-mode bits,
-    //     including the `+x` execute bit. AWS layers commonly ship
-    //     executable scripts under `bin/` (e.g. layer-version shipped
-    //     binaries, the Python `bin/python` shim) and a Lambda handler
-    //     that runs `bin/<script>` from `/opt` would fail with a bare
-    //     "Permission denied" otherwise. Equivalent to `cp -a` semantics
-    //     for the bits Lambda actually cares about.
-    //   - `dereference` defaults to false, so a symlink in the source is
-    //     copied as a symlink rather than flattened into its target,
-    //     matching how AWS extracts a layer ZIP into `/opt`. Some build
-    //     tools emit symlinks inside the layer asset directory.
-    //   - `verbatimSymlinks: true` is set EXPLICITLY (issue #3106): it
-    //     defaults to false in every Node release, and a non-verbatim
-    //     copy rewrites a RELATIVE link target to the ABSOLUTE path of
-    //     the source, so `bin/rel-link -> real.sh` arrived as
-    //     `-> <cdk.out>/asset.<hash>/bin/real.sh` — dangling inside the
-    //     container, where only the merged tmpdir is mounted. Measured on
-    //     Node 22.12 / 24.21; the `local-invoke-layers` fixture execs
-    //     through such a link.
-    //   - `force: true` (above) makes a later layer's entry overwrite
-    //     the previous layer's same-path entry; mirrors AWS's
-    //     last-layer-wins file-collision rule.
-    // The first two are defaults on every supported Node and require no explicit flag;
-    // we document them here so a future "tighten the cpSync options"
-    // refactor doesn't accidentally drop the `+x` bit, dereference
-    // symlinks, or drop `verbatimSymlinks` and silently break
-    // `/opt/bin/...` layers in the field.
-    cpSync(layer.assetPath, tmpDir, { recursive: true, force: true, verbatimSymlinks: true });
+    // Merged in template order with AWS's "last layer wins" semantic, mode
+    // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
+    // the two ways a bare `cpSync` breaks it, are written once on
+    // `copyLayerTreeLastWins` (issue #3106); `local-start-api.ts`'s merge is
+    // the same call.
+    copyLayerTreeLastWins(layer.assetPath, tmpDir);
   }
   return {
     mount: { hostPath: tmpDir, containerPath: '/opt', readOnly: true },

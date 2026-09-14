@@ -50,6 +50,11 @@ Index of every area: [code-layout.md](code-layout.md).
     `public.ecr.aws/lambda/<lang>:<v>` + source extension), `docker-runner.ts`
     (thin `execFile`/`spawn` wrappers around docker pull/run/logs/rm + free-
     port allocator; optional `--name` for orphan-sweep),
+    `layer-tree-copy.ts` (issue #3106 — `copyLayerTreeLastWins`, the ONE
+    layer-merge copy both `invoke` and `start-api` call: `cpSync` for
+    everything but symlinks, which are then placed by hand last-wins with
+    their own target strings; its doc comment records why a bare
+    `verbatimSymlinks: true` was wrong in both directions),
     `docker-image-builder.ts` (local-build path for container Lambdas),
     `ecr-puller.ts` (ECR-pull fallback; cross-account AND cross-region are
     SUPPORTED — the ECR client is built for the image URI's own region and

@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { Command, Option } from 'commander';
@@ -40,6 +40,7 @@ import {
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
+import { copyLayerTreeLastWins } from '../../local/layer-tree-copy.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
@@ -2065,30 +2066,13 @@ export async function materializeLambdaLayers(
   if (flat.length === 1) return flat[0]!.assetPath;
   const dir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-start-api-layers-'));
   for (const layer of flat) {
-    // `recursive: true` enables the directory copy. `force: true`
-    // implements AWS's "last layer wins" file-collision semantic: a
-    // later layer's entry at the same relative path overwrites the
-    // earlier one.
-    //
-    // **Contract pinned (Node 22.12+, the `engines` floor)**: this call relies on `fs.cpSync`
-    // defaults that the integ-test fixture (`tests/integration/local-
-    // invoke-layers/`) exercises end-to-end, and that future
-    // refactors must NOT silently drop:
-    //   - `mode` defaults to preserving the source's file-mode bits,
-    //     including `+x`. AWS layers commonly ship executable scripts
-    //     under `bin/` and a handler that runs `/opt/bin/<script>`
-    //     would otherwise fail with "Permission denied".
-    //   - `dereference` defaults to false, so symlinks are copied as
-    //     symlinks rather than flattened, matching AWS's layer-ZIP
-    //     extraction into `/opt`.
-    //   - `verbatimSymlinks: true` is set EXPLICITLY (issue #3106): it
-    //     defaults to false in every Node, and a non-verbatim copy
-    //     rewrites a RELATIVE link target to the source's absolute host
-    //     path, which is dangling in the container.
-    // Mirrors the same contract pinned in `local-invoke.ts`'s
-    // `materializeLambdaLayers`; keep the two call sites in sync if
-    // they ever consolidate into one helper.
-    cpSync(layer.assetPath, dir, { recursive: true, force: true, verbatimSymlinks: true });
+    // Merged in template order with AWS's "last layer wins" semantic, mode
+    // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
+    // the two ways a bare `cpSync` breaks it, are written once on
+    // `copyLayerTreeLastWins` (issue #3106); `local-invoke.ts`'s
+    // `materializeLambdaLayers` is the same call. The `local-invoke-layers`
+    // fixture exercises it end-to-end.
+    copyLayerTreeLastWins(layer.assetPath, dir);
   }
   layerTmpDirs.add(dir);
   return dir;
