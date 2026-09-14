@@ -159,13 +159,22 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
   }
   const j = parsed as Partial<RollbackJournal>;
   if (typeof j.journalVersion !== 'number' || j.journalVersion < 1) {
-    // `String(v)` FIRST, then sanitize -- `displaySafe` maps `null` and
-    // `undefined` to the empty string, so sanitizing first would print `null`
-    // as nothing. That order covers ONLY those two values; a version that is
-    // entirely invisible characters also sanitizes to nothing, and for that the
-    // predicate's `UNRENDERABLE` fallback is what keeps the slot from reading
-    // as absent. Same order and same reason as `parseStateBody`'s version arm.
-    const shown = safeJournalText(String(j.journalVersion));
+    // NOT `String(v)` first. `String()` is not total on a JSON-derived value:
+    // an object whose `toString` is not callable -- `{"toString": null}`,
+    // which `JSON.parse` produces from a hand-edited journal -- makes it throw,
+    // and the REFUSAL would then throw a raw `TypeError` instead (issue #2947).
+    // `displaySafe` absorbs that. `null` AND `undefined` are mapped to their
+    // words FIRST, because `displaySafe` renders both empty and the refusal
+    // would then say `UNRENDERABLE` instead of the one precise word it has --
+    // and unlike `parseStateBody`'s version arm, whose guard excludes
+    // `undefined` before it renders, THIS guard lets a missing field through,
+    // so the missing case has to be named here or it reads as unrenderable.
+    // A version that is entirely invisibles still falls to `UNRENDERABLE`,
+    // which is what keeps that slot from reading as absent. The
+    // `String(v)`-first spelling this used to share with `parseStateBody` is
+    // the one #3067 removed from it.
+    const raw: unknown = j.journalVersion;
+    const shown = safeJournalText(raw === null ? 'null' : raw === undefined ? 'undefined' : raw);
     throw new Error(
       `Rollback journal for '${shownStack}' has an invalid 'journalVersion' (${shown}).`
     );

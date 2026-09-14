@@ -44,9 +44,15 @@ describe('parseRollbackJournal', () => {
     expect(() => parseRollbackJournal(body, 'X')).toThrow(/segments/);
   });
 
-  it('throws when journalVersion is missing', () => {
+  it('throws when journalVersion is missing, and SAYS it is missing', () => {
+    // The word, not the `<unrenderable>` placeholder: `displaySafe` renders
+    // `undefined` empty, so without an explicit mapping a MISSING field would
+    // print exactly like an unrenderable one -- the present/absent distinction
+    // the placeholder exists to keep.
     const body = JSON.stringify({ stackName: 'X', segments: [] });
-    expect(() => parseRollbackJournal(body, 'X')).toThrow(/journalVersion/);
+    expect(() => parseRollbackJournal(body, 'X')).toThrow(
+      "has an invalid 'journalVersion' (undefined)"
+    );
   });
 });
 
@@ -160,6 +166,18 @@ describe('parseRollbackJournal refuses to forge a line (issue #3064)', () => {
     expect(err.message).not.toMatch(INVISIBLE);
     expect(err.message).toContain("'Gho st   PhysicalID: arn:forged'");
     expect(err.stackName).toBe(hostile);
+  });
+
+  it('refuses a journalVersion whose coercion THROWS, instead of throwing a raw TypeError', () => {
+    // `{"toString": null}` is reachable through `JSON.parse` of a hand-edited
+    // journal. `String(v)` on it throws `TypeError: Cannot convert object to
+    // primitive value`, which used to escape the parser in place of the
+    // refusal (issue #2947). `displaySafe` absorbs it; the refusal stands.
+    const body = '{"journalVersion":{"toString":null},"stackName":"S","segments":[]}';
+    const message = messageOf(body, 'S');
+
+    expect(message).toContain("has an invalid 'journalVersion'");
+    expect(message).not.toContain('TypeError');
   });
 
   it('renders a journalVersion that sanitizes to NOTHING as the placeholder', () => {
