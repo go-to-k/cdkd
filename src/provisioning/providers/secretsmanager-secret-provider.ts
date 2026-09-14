@@ -62,6 +62,116 @@ function requireSecretStringShape(literal: unknown): string {
 }
 
 /**
+ * The character classes a `GenerateSecretString` block leaves available,
+ * after the `Exclude*` switches and `ExcludeCharacters` (issue #3068), or the
+ * refusal that says why no password can be minted from it. ONE function for
+ * the predicate and the generator, so the shapes the predicate refuses are
+ * exactly the shapes the generator cannot serve.
+ *
+ * Three rules, each MEASURED on CloudFormation (us-east-1, 2026-09-14) rather
+ * than read off the docs, because the docs state none of them:
+ *
+ * - `RequireEachIncludedType` defaults to TRUE and covers the four classes
+ *   (upper, lower, number, punctuation) that are not switched off; a space is
+ *   never required, only admitted. With it on, a class the `Exclude*` switch
+ *   keeps but `ExcludeCharacters` empties is refused: `All characters of the
+ *   desired type have been excluded`. With it OFF the same template CREATES
+ *   (measured), so the refusal is scoped to REQUIRED classes.
+ * - With it on, `PasswordLength` below the number of required classes is
+ *   refused: `Password length is too short based on the required types`.
+ * - A pool with no character at all cannot mint anything; the old local
+ *   fallback to lowercase invented a charset the template excluded, so it is
+ *   a refusal now.
+ */
+function generateCharset(config: Record<string, unknown>): {
+  readonly required: readonly string[];
+  readonly pool: string;
+  readonly refusal?: string;
+} {
+  // Secrets Manager's own punctuation set for `GetRandomPassword` (32
+  // characters, from the API reference's `ExcludePunctuation` description).
+  // The local recipe used a 25-character subset until issue #3068, so an
+  // `ExcludeCharacters` aimed at one of the missing seven (double quote,
+  // apostrophe, slash, backslash, backtick, tilde) was inert here while it
+  // meant something to the service. A LOCAL const (the #2212 fence refuses
+  // module-level bindings by spelling), with the backtick built from its
+  // char code: that fence's string stripper takes template literals FIRST,
+  // so a raw backtick inside a quoted literal desyncs its brace walk -- and
+  // prettier rewrites a \u escape back into the raw character.
+  const PUNCTUATION = '!"#$%&\'()*+,-./:;<=>?@[\\]^_' + String.fromCharCode(0x60) + '{|}~';
+  const off = (key: string): boolean => coerceCfnBoolean(config[key]) ?? false;
+  const excluded = new Set((config['ExcludeCharacters'] as string | undefined) ?? '');
+  const strip = (chars: string): string => [...chars].filter((c) => !excluded.has(c)).join('');
+  const classes: Array<[name: string, chars: string, included: boolean]> = [
+    ['uppercase', strip('ABCDEFGHIJKLMNOPQRSTUVWXYZ'), !off('ExcludeUppercase')],
+    ['lowercase', strip('abcdefghijklmnopqrstuvwxyz'), !off('ExcludeLowercase')],
+    ['number', strip('0123456789'), !off('ExcludeNumbers')],
+    ['punctuation', strip(PUNCTUATION), !off('ExcludePunctuation')],
+  ];
+  const requireEach = coerceCfnBoolean(config['RequireEachIncludedType']) ?? true;
+  const included = classes.filter(([, , on]) => on);
+  const required: string[] = [];
+  if (requireEach) {
+    for (const [name, chars] of included) {
+      if (chars.length === 0) {
+        return {
+          required: [],
+          pool: '',
+          refusal: `all characters of the ${name} type have been excluded while RequireEachIncludedType requires one (exclude the type with Exclude${name === 'number' ? 'Numbers' : name[0]!.toUpperCase() + name.slice(1)} instead)`,
+        };
+      }
+      required.push(chars);
+    }
+  }
+  const space =
+    (coerceCfnBoolean(config['IncludeSpace']) ?? false) && !excluded.has(' ') ? ' ' : '';
+  const pool = included.map(([, chars]) => chars).join('') + space;
+  if (pool.length === 0) {
+    return {
+      required: [],
+      pool: '',
+      refusal: 'every character has been excluded, so no password can be generated',
+    };
+  }
+  const length = coerceCfnInteger(config['PasswordLength']) ?? 32;
+  if (required.length > length) {
+    return {
+      required: [],
+      pool: '',
+      refusal: `PasswordLength ${length} is too short for the ${required.length} character types RequireEachIncludedType requires`,
+    };
+  }
+  return { required, pool };
+}
+
+/**
+ * A uniformly distributed index below `n`, by rejection: `byte % n` biases
+ * toward the low indexes whenever 256 is not a multiple of `n` (it never is
+ * for a 26- or 32-character class), and a password generator should not.
+ * RECORDED BOUND: the rejection is not fenced -- removing it leaves every
+ * unit case green (measured), because the bias is statistical (about 1 part
+ * in 2^32 / n per index at this width) and a test that could see it would be
+ * a distribution test over millions of draws. The width is what makes the
+ * bias negligible even without the rejection; the rejection makes it zero.
+ */
+function randomIndex(n: number): number {
+  // An empty range is a caller bug, and it must FAIL rather than spin: with
+  // `n === 0` the limit is `NaN`, no draw is ever below it, and the loop never
+  // returns. Measured while probing the too-short refusal above -- with that
+  // refusal removed, a 3-character password under four required classes ran
+  // out of positions and the test process hung instead of failing.
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`randomIndex: range must be a positive integer (got ${n})`);
+  }
+  const limit = Math.floor(0x1_0000_0000 / n) * n;
+  const draw = new Uint32Array(1);
+  for (;;) {
+    crypto.getRandomValues(draw);
+    if (draw[0]! < limit) return draw[0]! % n;
+  }
+}
+
+/**
  * The refusal for the MEMBERS of a `GenerateSecretString` block whose container
  * has already passed `requireConfigObject` (issue #3056), or `undefined` when
  * every member is usable. ONE predicate for two readers — the generator, which
@@ -96,6 +206,8 @@ function generateMemberRefusal(config: Record<string, unknown>): string | undefi
     configBooleanRefusal(config, 'ExcludeLowercase', P) ??
     configBooleanRefusal(config, 'ExcludeNumbers', P) ??
     configBooleanRefusal(config, 'ExcludePunctuation', P) ??
+    configBooleanRefusal(config, 'IncludeSpace', P) ??
+    configBooleanRefusal(config, 'RequireEachIncludedType', P) ??
     // A blank fallback is what lets a declared `''` pass (legitimate: exclude
     // nothing); the non-blank sentinel on the next two is never TAKEN — it
     // only makes a blank value refuse, since a blank key or template is not
@@ -104,6 +216,8 @@ function generateMemberRefusal(config: Record<string, unknown>): string | undefi
     configStringRefusal(config, 'GenerateStringKey', 'required', P) ??
     configStringRefusal(config, 'SecretStringTemplate', 'required', P);
   if (shape !== undefined) return shape;
+  const charset = generateCharset(config);
+  if (charset.refusal !== undefined) return `${P}: ${charset.refusal}`;
   const key = config['GenerateStringKey'];
   const template = config['SecretStringTemplate'];
   if (key === undefined && template === undefined) return undefined;
@@ -788,10 +902,11 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * With no `onUnusable` a refusal THROWS (the create path, where the block
    * is template-borne). With one, the message is handed over and `undefined`
    * is returned — the update path's SKIP, decided by the caller, so that this
-   * function never mints from a block it could not read. The two members the
-   * schema declares that this recipe does not implement, `IncludeSpace` and
-   * `RequireEachIncludedType`, are a separate fidelity gap (issue #3068), not
-   * a shape question.
+   * function never mints from a block it could not read. The recipe itself —
+   * the four classes, the service's punctuation set, `IncludeSpace`, and the
+   * `RequireEachIncludedType` guarantee — lives in `generateCharset` (issue
+   * #3068), shared with the predicate so the block it refuses and the block
+   * it mints from cannot disagree.
    */
   private generateSecretString(
     config: Record<string, unknown>,
@@ -810,36 +925,21 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     }
 
     const length = coerceCfnInteger(config['PasswordLength']) ?? 32;
-    const excludeUppercase = coerceCfnBoolean(config['ExcludeUppercase']) ?? false;
-    const excludeLowercase = coerceCfnBoolean(config['ExcludeLowercase']) ?? false;
-    const excludeNumbers = coerceCfnBoolean(config['ExcludeNumbers']) ?? false;
-    const excludePunctuation = coerceCfnBoolean(config['ExcludePunctuation']) ?? false;
-    const excludeCharacters = (config['ExcludeCharacters'] as string | undefined) ?? '';
+    const { required, pool } = generateCharset(config);
 
-    let chars = '';
-    if (!excludeUppercase) chars += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    if (!excludeLowercase) chars += 'abcdefghijklmnopqrstuvwxyz';
-    if (!excludeNumbers) chars += '0123456789';
-    if (!excludePunctuation) chars += '!@#$%^&*()_+-=[]{}|;:,.<>?';
-
-    // Remove excluded characters
-    if (excludeCharacters) {
-      for (const c of excludeCharacters) {
-        chars = chars.replaceAll(c, '');
-      }
+    // Draw uniformly from the pool, then satisfy `RequireEachIncludedType` by
+    // PLACEMENT rather than by re-drawing: one character of each required
+    // class lands at a distinct random position, so the guarantee holds in
+    // one pass whatever the length (the refusal above already settled
+    // `length >= required.length`).
+    const out: string[] = [];
+    for (let i = 0; i < length; i++) out.push(pool[randomIndex(pool.length)]!);
+    const positions = Array.from({ length }, (_, i) => i);
+    for (const classChars of required) {
+      const slot = positions.splice(randomIndex(positions.length), 1)[0]!;
+      out[slot] = classChars[randomIndex(classChars.length)]!;
     }
-
-    if (chars.length === 0) {
-      chars = 'abcdefghijklmnopqrstuvwxyz';
-    }
-
-    // Generate random password
-    const bytes = new Uint8Array(length);
-    crypto.getRandomValues(bytes);
-    let password = '';
-    for (let i = 0; i < length; i++) {
-      password += chars[bytes[i]! % chars.length];
-    }
+    const password = out.join('');
 
     // Both present (the refusal above settled "both or neither" and that the
     // template parses to an object): write the password into the document.

@@ -343,6 +343,13 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     ['SecretStringTemplate a JSON array', { GenerateStringKey: 'p', SecretStringTemplate: '[1]' }, /SecretStringTemplate must be a JSON object \(got JSON that is not an object/],
     ['SecretStringTemplate JSON null (template[key] would throw on the update path)', { GenerateStringKey: 'p', SecretStringTemplate: 'null' }, /SecretStringTemplate must be a JSON object \(got JSON that is not an object/],
     ['SecretStringTemplate a JSON scalar', { GenerateStringKey: 'p', SecretStringTemplate: '42' }, /SecretStringTemplate must be a JSON object \(got JSON that is not an object/],
+    // Issue #3068: the two members the recipe used to ignore, and the three
+    // charset rules measured on CloudFormation.
+    ['IncludeSpace: "yes"', { IncludeSpace: 'yes' }, /IncludeSpace must be a boolean/],
+    ['RequireEachIncludedType: null', { RequireEachIncludedType: null }, /RequireEachIncludedType must be a boolean/],
+    ['PasswordLength 3 under four required types (CFn: too short based on the required types)', { PasswordLength: 3 }, /PasswordLength 3 is too short for the 4 character types RequireEachIncludedType requires/],
+    ['a REQUIRED class emptied by ExcludeCharacters (CFn: all characters of the desired type have been excluded)', { ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' }, /all characters of the uppercase type have been excluded while RequireEachIncludedType requires one \(exclude the type with ExcludeUppercase instead\)/],
+    ['every character excluded', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true }, /every character has been excluded/],
     ['GenerateStringKey: "__proto__" (the password went to the prototype, not the document)', { GenerateStringKey: '__proto__', SecretStringTemplate: '{"u":"a"}' }, /GenerateStringKey must not be __proto__/],
   ];
   const withBlock = (members: Record<string, unknown>): Record<string, unknown> => ({
@@ -409,6 +416,72 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const sent = updateInput().SecretString;
     expect(sent).toBeDefined();
     check(sent!);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  // Issue #3068: the recipe itself. Every row below reads the WHOLE sent value
+  // against a charset the config yields, so none depends on a random draw
+  // landing anywhere in particular; the RequireEachIncludedType rows draw
+  // repeatedly because the guarantee is per draw.
+  const AWS_PUNCTUATION = '!"#$%&\'()*+,-./:;<=>?@[\\]^_' + String.fromCharCode(0x60) + '{|}~';
+  const classesIn = (v: string): number =>
+    [/[A-Z]/, /[a-z]/, /[0-9]/, (t: string) => [...t].some((c) => AWS_PUNCTUATION.includes(c))].filter(
+      (re) => (typeof re === 'function' ? re(v) : re.test(v))
+    ).length;
+
+  it('the punctuation class is the SERVICE\'s 32-character set, not the old 25', async () => {
+    // Uppercase / lowercase / numbers excluded, so the pool IS the
+    // punctuation class; over 2000 draws every member appears (the chance a
+    // given one is absent is (31/32)^2000, ~1e-28), including the seven the
+    // old set lacked.
+    const block = { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, PasswordLength: 2000 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+    const sent = updateInput().SecretString!;
+    expect([...sent].every((c) => AWS_PUNCTUATION.includes(c))).toBe(true);
+    for (const c of ['"', "'", '/', '\\', String.fromCharCode(0x60), '~']) expect(sent).toContain(c);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('IncludeSpace admits the space character (and ExcludeCharacters can take it back)', async () => {
+    // Every class switched off, RequireEachIncludedType off, IncludeSpace on:
+    // the pool is the space alone.
+    const only = { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true, RequireEachIncludedType: false, IncludeSpace: true, PasswordLength: 16 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(only), generated());
+    expect(updateInput().SecretString).toBe(' '.repeat(16));
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    // Space admitted but excluded by name: the pool is lowercase only.
+    const taken = { ExcludeUppercase: true, ExcludeNumbers: true, ExcludePunctuation: true, IncludeSpace: true, ExcludeCharacters: ' ', PasswordLength: 200 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(taken), generated());
+    expect(updateInput().SecretString).toMatch(/^[a-z]+$/);
+  });
+
+  it('RequireEachIncludedType (the DEFAULT) puts one of every included class in every draw, even at the minimum length', async () => {
+    for (let i = 0; i < 200; i++) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await provider.update('L', SECRET_ARN, TYPE, withBlock({ PasswordLength: 4 }), generated());
+      expect(classesIn(updateInput().SecretString!)).toBe(4);
+    }
+  });
+
+  it('RequireEachIncludedType: false draws uniformly, so a short password can miss a class', async () => {
+    // 200 four-character draws from 94 characters: the chance EVERY one carries
+    // all four classes is astronomically small, so at least one misses.
+    let missing = 0;
+    for (let i = 0; i < 200; i++) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await provider.update('L', SECRET_ARN, TYPE, withBlock({ PasswordLength: 4, RequireEachIncludedType: false }), generated());
+      if (classesIn(updateInput().SecretString!) < 4) missing++;
+    }
+    expect(missing).toBeGreaterThan(0);
+  });
+
+  it('a class emptied by ExcludeCharacters is fine when it is not REQUIRED (measured: CREATE_COMPLETE)', async () => {
+    const block = { RequireEachIncludedType: false, ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', PasswordLength: 200 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+    expect(updateInput().SecretString).not.toMatch(/[A-Z]/);
     expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
