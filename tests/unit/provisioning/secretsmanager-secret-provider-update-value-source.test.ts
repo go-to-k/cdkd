@@ -432,10 +432,10 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
       (t: string) => [...t].some((c) => AWS_PUNCTUATION.includes(c)),
     ].filter((has) => has(v)).length;
 
-  it('the punctuation class is the SERVICE\'s 32-character set, not the old 25', async () => {
+  it('the punctuation class is the SERVICE\'s 32-character set, not the old 26', async () => {
     // Uppercase / lowercase / numbers excluded, so the pool IS the
     // punctuation class; over 2000 draws every member appears (the chance a
-    // given one is absent is (31/32)^2000, ~1e-28), including the seven the
+    // given one is absent is (31/32)^2000, ~1e-28), including the six the
     // old set lacked.
     const block = { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, PasswordLength: 2000 };
     await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
@@ -446,11 +446,11 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
   });
 
   it.each([
-    // The issue's headline: an ExcludeCharacters naming one of the seven the
+    // The issue's headline: an ExcludeCharacters naming one of the six the
     // old set lacked was INERT. Every class is stripped by the same helper,
     // and each row keeps the class non-empty so the default
     // RequireEachIncludedType still holds.
-    ['the seven punctuation characters the old set lacked', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludeCharacters: '"\'/\\' + String.fromCharCode(0x60) + '~' }, /^[!#$%&()*+,\-.:;<=>?@[\]^_{|}]+$/],
+    ['the six punctuation characters the old set lacked', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludeCharacters: '"\'/\\' + String.fromCharCode(0x60) + '~' }, /^[!#$%&()*+,\-.:;<=>?@[\]^_{|}]+$/],
     ['half the digits', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludePunctuation: true, ExcludeCharacters: '01234' }, /^[5-9]+$/],
     ['all but one letter of a REQUIRED class (the guarantee then places that one)', { ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true, ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXY' }, /^Z+$/],
   ])('ExcludeCharacters strips %s', async (_l, members, shape) => {
@@ -475,6 +475,27 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
       await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
       expect(updateInput().SecretString).toBe('a');
       expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('the PLACED character of a required class comes from the STRIPPED class', async () => {
+    // Deterministic fence for the placement step (round-2 review: the
+    // probabilistic rows let a "placement draws from the unstripped class"
+    // mutant survive ~1.6% of runs). All-zero draws: the pool draw lands on
+    // the pool's first char and the placement draw on the required class's
+    // first char -- 'Z' after A..Y are excluded, 'A' on the mutant.
+    const spy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(((
+      arr: Uint32Array
+    ) => {
+      arr[0] = 0;
+      return arr;
+    }) as typeof crypto.getRandomValues);
+    try {
+      const block = { ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true, ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXY', PasswordLength: 1 };
+      await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+      expect(updateInput().SecretString).toBe('Z');
     } finally {
       spy.mockRestore();
     }

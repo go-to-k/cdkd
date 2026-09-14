@@ -95,8 +95,8 @@ function generateCharset(config: Record<string, unknown>): {
 } {
   // Secrets Manager's own punctuation set for `GetRandomPassword` (32
   // characters, from the API reference's `ExcludePunctuation` description).
-  // The local recipe used a 25-character subset until issue #3068, so an
-  // `ExcludeCharacters` aimed at one of the missing seven (double quote,
+  // The local recipe used a 26-character subset until issue #3068, so an
+  // `ExcludeCharacters` aimed at one of the missing six (double quote,
   // apostrophe, slash, backslash, backtick, tilde) was inert here while it
   // meant something to the service. A LOCAL const (the #2212 fence refuses
   // module-level bindings by spelling), with the backtick built from its
@@ -153,9 +153,10 @@ function generateCharset(config: Record<string, unknown>): {
 }
 
 /**
- * A uniformly distributed index below `n`, by rejection: `byte % n` biases
- * toward the low indexes whenever 256 is not a multiple of `n` (it never is
- * for a 26- or 32-character class), and a password generator should not.
+ * A uniformly distributed index below `n`, by rejection: a raw draw taken
+ * modulo `n` biases toward the low indexes whenever the draw's range is not
+ * a multiple of `n` (2^32 never is for a 26- or 32-character class), and a
+ * password generator should not.
  * The rejection IS fenced, deterministically: the unit suite stubs
  * `crypto.getRandomValues` to hand back a draw at or above `limit` and then
  * one below it, and asserts the first is thrown away (a `% n` shortcut would
