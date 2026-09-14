@@ -6,7 +6,13 @@
  * it routes through here rather than re-spelling it.
  */
 import { describe, expect, it } from 'vite-plus/test';
-import { displaySafe, truncateCodePoints } from '../../../src/utils/display-safe.js';
+import {
+  displayIdent,
+  displaySafe,
+  IDENT_MAX_CODE_POINTS,
+  truncateCodePoints,
+  UNRENDERABLE,
+} from '../../../src/utils/display-safe.js';
 
 describe('displaySafe — denylist mode (owner / operation, may be non-ASCII)', () => {
   it('strips the classes a C0 + DEL denylist misses', () => {
@@ -143,5 +149,64 @@ describe('truncateCodePoints (issue #2947)', () => {
 
   it('reports no truncation for a value exactly the window long', () => {
     expect(truncateCodePoints('abc', 3)).toEqual({ text: 'abc', truncated: false });
+  });
+});
+
+describe('displayIdent (issues #3064 / #3092)', () => {
+  it('is the identity on every legitimate identifier shape', () => {
+    // A rendering that changed any of these would move a fixture grep, a unit
+    // pin and an operator's `--orphan` paste; the conditional quoting exists
+    // so that it does not.
+    for (const v of [
+      'MyBucketF68F3FF0',
+      'AWS::S3::Bucket',
+      'AWS::CloudFormation::Stack::MODULE',
+      'Custom::my-thing_v2@x',
+      'CREATE',
+      'CdkdBasicExample',
+      // The name cdkd mints for a nested-stack child (`NestedStackProvider`).
+      'CdkdParent~ChildStack',
+      'us-east-1',
+      '20260914T101010123Z-abcd',
+      'cdkd/CdkdBasicExample/us-east-1',
+      'arn:aws:iam::123456789012:role/cdkd-deploy+role,x=y',
+    ]) {
+      expect(displayIdent(v)).toBe(v);
+    }
+  });
+
+  it('quotes a value that could plant the surrounding line\'s own annotation', () => {
+    // All ASCII, so the allowlist keeps every character -- the same-line
+    // spoof go-to-k/cdkd#3072 left open. Quoted, the boundary is visible.
+    const spoof = 'X (AWS::RDS::DBInstance) -- already reverted';
+    expect(displayIdent(spoof)).toBe(`"${spoof}"`);
+    // JSON escaping keeps an embedded `"` from faking the closing quote.
+    expect(displayIdent('X" (AWS::RDS::DBInstance) "Y')).toBe('"X\\" (AWS::RDS::DBInstance) \\"Y"');
+    // The sanitized form decides: an id that becomes odd only after the
+    // allowlist replaced its zero-width space is quoted too.
+    expect(displayIdent('Vic\u200btim')).toBe('"Vic tim"');
+  });
+
+  it('cuts a value past the identifier cap and says how much it withheld', () => {
+    const atCap = 'A'.repeat(IDENT_MAX_CODE_POINTS);
+    expect(displayIdent(atCap)).toBe(atCap);
+    const over = 'A'.repeat(IDENT_MAX_CODE_POINTS + 45);
+    expect(displayIdent(over)).toBe(`${atCap} [cut: 45 more characters withheld]`);
+    // The cut is measured AFTER sanitizing, so a value padded with invisibles
+    // to sneak under the cap is measured by what it renders as.
+    expect(displayIdent(`${atCap}\u200b`)).toBe(atCap);
+  });
+
+  it('renders nothing-left and absent values as the placeholder, unquoted', () => {
+    expect(displayIdent('\u200b')).toBe(UNRENDERABLE);
+    expect(displayIdent('')).toBe(UNRENDERABLE);
+    expect(displayIdent(undefined)).toBe(UNRENDERABLE);
+    expect(displayIdent(null)).toBe(UNRENDERABLE);
+  });
+
+  it('is never the identity on a value it changed', () => {
+    for (const v of ['Vic\u200btim', 'X (Y)', 'A'.repeat(IDENT_MAX_CODE_POINTS + 1), '\u200b', ' X ']) {
+      expect(displayIdent(v)).not.toBe(v);
+    }
   });
 });

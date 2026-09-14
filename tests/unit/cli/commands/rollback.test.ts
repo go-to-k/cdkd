@@ -1212,7 +1212,10 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
   const FORGED_ID = 'Vic\u200btim\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
   const FORGED_TYPE = 'AWS::S3::Buc\u200bket\n  - delete   RealBucket (AWS::S3::Bucket)';
 
-  function installForgedJournal(kind: 'completed' | 'failed'): FakeBackend {
+  function installForgedJournal(
+    kind: 'completed' | 'failed',
+    opOverride: Record<string, unknown> = {}
+  ): FakeBackend {
     const op = {
       logicalId: FORGED_ID,
       changeType: 'CRE\u200bATE\n  forged-change-type',
@@ -1220,6 +1223,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       physicalId: 'phys-D',
       provisionedBy: 'sdk',
       ...(kind === 'failed' && { attemptedProperties: {} }),
+      ...opOverride,
     };
     return installSetup({
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
@@ -1257,11 +1261,12 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
 
   async function forgedPlanLines(
     kind: 'completed' | 'failed',
-    opts: Record<string, unknown> = {}
+    opts: Record<string, unknown> = {},
+    opOverride: Record<string, unknown> = {}
   ): Promise<string[]> {
     const { getLogger } = await import('../../../../src/utils/logger.js');
     const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
-    installForgedJournal(kind);
+    installForgedJournal(kind, opOverride);
     await rollbackCommand('S', { ...baseOpts, ...opts }).catch(() => undefined);
     return info.mock.calls.map((c) => String(c[0]));
   }
@@ -1285,6 +1290,39 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     }
     // Removed, not censored: the operator still sees what the journal claimed.
     expect(lines.join('\n')).toContain('Vic tim');
+  });
+
+  it('an all-ASCII id cannot plant the row\'s own annotation wording -- its boundary is quoted (#3092)', async () => {
+    // Survives the allowlist untouched: no newline, no invisible. Un-quoted,
+    // the row read `- skip     X (AWS::RDS::DBInstance) -- already reverted
+    // (AWS::S3::Bucket) — already reverted`, and a reader stops at the first
+    // `(type)`.
+    const spoof = 'X (AWS::RDS::DBInstance) -- already reverted';
+    const lines = await forgedPlanLines('completed', {}, {
+      logicalId: spoof,
+      resourceType: 'AWS::S3::Bucket',
+      changeType: 'CREATE',
+    });
+    const rows = lines.join('\n').split('\n').filter((l) => /^\s*- /.test(l));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain(`- skip     "${spoof}" (AWS::S3::Bucket) — already reverted`);
+    // Outside the quotes, the annotation appears exactly once: the genuine one.
+    expect(rows[0]!.replace(`"${spoof}"`, '').split('already reverted')).toHaveLength(2);
+  });
+
+  it('a value past the identifier cap is cut and the cut is named (#3092)', async () => {
+    const long = 'A'.repeat(300);
+    const lines = await forgedPlanLines('completed', {}, {
+      logicalId: long,
+      resourceType: 'AWS::S3::Bucket',
+      changeType: 'CREATE',
+    });
+    const row = lines.join('\n').split('\n').find((l) => /^\s*- skip/.test(l));
+
+    expect(row).toBeDefined();
+    expect(row).not.toContain(long);
+    expect(row).toContain(`${'A'.repeat(255)} [cut: 45 more characters withheld] (AWS::S3::Bucket)`);
   });
 
   it('the failed-operation label cannot inject a row', async () => {
@@ -1418,7 +1456,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
       expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
       expect(line).not.toMatch(INVISIBLE);
     }
-    expect(lines.some((l) => l.includes("Rollback plan for 'Gho st"))).toBe(true);
+    expect(lines.some((l) => l.includes("Rollback plan for '\"Gho st"))).toBe(true);
   });
 
   it('the CONFIRMATION PROMPT itself is sanitized', async () => {
@@ -1461,7 +1499,7 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const prompt = String(readlineQuestion.mock.calls[0]![0]);
     expect(prompt).not.toMatch(CTRL);
     expect(prompt).not.toMatch(INVISIBLE);
-    expect(prompt).toContain("Roll back 'Gho st");
+    expect(prompt).toContain("Roll back '\"Gho st");
   });
 
   it('the previewState LOOKUPS stay keyed on the RAW logicalId', async () => {
@@ -1540,8 +1578,8 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
     const rows = info.mock.calls.map((c) => String(c[0])).filter((l) => /^\s*- /.test(l));
 
-    expect(rows.some((l) => /^\s*- delete\s+Vic tim/.test(l))).toBe(true);
-    expect(rows.some((l) => /^\s*- skip\s+Vic tim .*no longer in state/.test(l))).toBe(true);
+    expect(rows.some((l) => /^\s*- delete\s+"Vic tim/.test(l))).toBe(true);
+    expect(rows.some((l) => /^\s*- skip\s+"Vic tim" .*no longer in state/.test(l))).toBe(true);
     expect(rows.some((l) => /^\s*- revert\s+Vic tim/.test(l))).toBe(false);
   });
 
@@ -1585,10 +1623,10 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     const prompt = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
 
     expect(forgedRowCount(lines)).toBe(0);
-    expect(lines.some((l) => l.includes("Rollback plan for 'S' (us- east-1"))).toBe(true);
+    expect(lines.some((l) => l.includes("Rollback plan for 'S' (\"us- east-1"))).toBe(true);
     expect(prompt).not.toMatch(CTRL);
     expect(prompt).not.toMatch(INVISIBLE);
-    expect(prompt).toContain("(us- east-1");
+    expect(prompt).toContain('("us- east-1');
   });
 
   it('the multi-journal CANDIDATE LIST cannot inject a row', async () => {
@@ -1609,8 +1647,8 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     // The list's own newlines are structural; the forged row must not be one.
     expect(message.split('\n').filter((l) => /^\s*- delete\s+Real/.test(l))).toHaveLength(0);
     expect(message).not.toMatch(INVISIBLE);
-    expect(message).toContain('- Al pha');
-    expect(message).toContain('(eu- west-1)');
+    expect(message).toContain('- "Al pha');
+    expect(message).toContain('("eu- west-1")');
   });
 
   it('SOURCE SHAPE: no plan-label arm interpolates a journal field bare', () => {

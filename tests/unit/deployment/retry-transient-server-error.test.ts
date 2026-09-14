@@ -363,4 +363,33 @@ describe('isTransientServerError depth bound (issue #2026)', () => {
     }
     expect(isTransientServerError(current)).toBe(false);
   });
+
+  it('renders the label through the ASCII allowlist, so a journal-sourced id cannot forge a line (issue #3092)', async () => {
+    // The rollback executor passes an id read from `rollback-journal.json` as
+    // this label. It renders its own copy sanitized, but `withRetry` is a
+    // cross-module reader with callers outside that file, so the entry point
+    // sanitizes too -- and this case drives THIS module's copy, not the
+    // executor's.
+    const logger = makeLogger();
+    const op = vi.fn().mockImplementation(async () => {
+      const e = new Error('UnknownError');
+      e.name = 'InternalFailure';
+      (e as unknown as { $metadata: unknown }).$metadata = { httpStatusCode: 503 };
+      throw wrapped(e);
+    });
+    const hostile = 'Vic\u200btim\n  \u2713 RealDB deleted successfully';
+
+    await expect(
+      withRetry(op, hostile, { logger, sleep: () => Promise.resolve() })
+    ).rejects.toThrow('UnknownError');
+
+    const rendered = [...logger.warn.mock.calls, ...logger.debug.mock.calls].map((c) => String(c[0]));
+    const naming = rendered.filter((l) => l.includes('Vic'));
+    expect(naming.length).toBeGreaterThan(1); // the retry lines AND the give-up summary
+    for (const l of naming) {
+      expect(l.split('\n')).toHaveLength(1);
+      expect(l).not.toMatch(/[\u200b-\u200f\ufeff]/);
+      expect(l).toContain('Vic tim');
+    }
+  });
 });

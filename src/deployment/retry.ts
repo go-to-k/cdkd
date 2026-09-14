@@ -17,6 +17,7 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from './retryable-errors.js';
+import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
 
 export interface RetryLogger {
   debug(message: string): void;
@@ -277,6 +278,17 @@ export async function withRetry<T>(
   logicalId: string,
   opts: WithRetryOptions = {}
 ): Promise<T> {
+  // `logicalId` is display-only here -- it names the operation in the give-up
+  // summary and the per-attempt debug line -- and the rollback executor hands
+  // it a value straight from `rollback-journal.json`, which anyone with
+  // `s3:PutObject` writes (issue #3092). Sanitized ONCE at the entry so every
+  // caller inherits it: the ASCII allowlist, since every label a caller passes
+  // is ASCII (a CFn logical id, `Fn::GetAtt [X, Arn]`, `<id> (<dimension>)`)
+  // and is identity under it. NOT `displayIdent`: a label here is not always a
+  // plain identifier, so its boundary quoting would change the resolver's and
+  // the providers' ordinary lines; the executor passes an already-rendered
+  // label instead.
+  const shownId = displaySafe(logicalId, { asciiOnly: true }) || UNRENDERABLE;
   const maxRetries = opts.maxRetries ?? 8;
   const initialDelayMs = opts.initialDelayMs ?? 1_000;
   const maxDelayMs = opts.maxDelayMs ?? 8_000;
@@ -493,7 +505,7 @@ export async function withRetry<T>(
             );
           }
           const summary = (): string =>
-            `${logicalId}: gave up after ${spent.join(' and ')} - ${message}` +
+            `${shownId}: gave up after ${spent.join(' and ')} - ${message}` +
             formatRetryClassificationSignals(error);
           // Best-effort: this is a diagnostic about an error we are ABOUT to
           // rethrow, so a throwing logger must not replace it. Losing the
@@ -536,7 +548,7 @@ export async function withRetry<T>(
         ? propagationSleptMs + delay
         : propagationSleptMs;
       opts.logger?.debug(
-        `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}${
+        `  ⏳ Retrying ${shownId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}${
           propagation
             ? `, ${(backoffThroughThisAttemptMs / 1000).toFixed(2)}s backoff through this attempt`
             : ''

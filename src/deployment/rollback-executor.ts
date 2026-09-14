@@ -72,6 +72,7 @@ import {
 import { getAwsClients } from '../utils/aws-clients.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { CdkdError } from '../utils/error-handler.js';
+import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { IntrinsicFunctionResolver, type ResolverContext } from './intrinsic-function-resolver.js';
 import {
   scrubResourceRecord,
@@ -232,6 +233,47 @@ function effectiveProvisionedBy(
 }
 
 /**
+ * One spelling of "this value came from a rollback-journal record, and is
+ * about to be interpolated into a message a terminal will render" (issue
+ * #3092). The journal is a sibling of `state.json` in the same bucket,
+ * writable by anyone with `s3:PutObject` and validated no more than an
+ * unchecked cast; cdkd's output is line-oriented, so an injected newline
+ * invents a line that reads like a real one. This executor runs under the
+ * standalone `cdkd rollback` AND under the deploy engine's automatic
+ * rollback, so its lines print on every failed deploy.
+ *
+ * `displayIdent`: the ASCII allowlist with `UNRENDERABLE` for a value that
+ * sanitizes to nothing, a length cap, and a visible boundary (a JSON-quoted
+ * rendering) for a value that is not a plain identifier -- the all-ASCII
+ * `X (AWS::RDS::DBInstance) -- already reverted` the allowlist lets through.
+ * A logical id, a CFn resource type and a change type all have known
+ * charsets. Call it for those; `grep safe(` answers the scope.
+ *
+ * NOT for a value that is USED rather than shown -- the ids passed to a
+ * provider call, the keys into `stateResources`, the `msg` a classifier reads.
+ * NOT for the `reason` / `survivorReason` strings handed to `ctx.recordEvent`:
+ * those are PERSISTED into `deployments/*.jsonl` raw and `cdkd events`
+ * sanitizes them on the way out, so sanitizing here would put a display
+ * transform on a stored value and double it at render (the go-to-k/cdkd#2170
+ * direction). NOT for free-form error text either: an SDK message legitimately
+ * carries non-ASCII, so a site rendering one calls `displaySafe()` directly and
+ * takes the DENYLIST, as `formatError` does for a `cause`.
+ */
+function safe(value: unknown): string {
+  return displayIdent(value);
+}
+
+/**
+ * The one shape of `op.logicalId` this executor will print INSIDE a command it
+ * invites the user to paste (`cdkd rollback --orphan <id>`): CloudFormation's
+ * own logical-id charset and length. Stricter than "`safe()` is the identity
+ * on it" on purpose -- `~user` and `=x` are plain identifiers the shell
+ * expands before cdkd sees them (issue #3092 review). Not a display rule: a
+ * legitimate id the executor merely SHOWS still goes through `safe()`.
+ */
+const PASTEABLE_LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
+
+/**
  * `UpdateReplacePolicy: Snapshot` on a rollback's delete-of-the-NEW-resource
  * (issue #1354): honor it where it costs nothing — an atomic-final-snapshot
  * type on the SDK route gets a generated identifier threaded into the delete
@@ -340,13 +382,23 @@ export function retainedSurvivorMessages(
   survivorPhysicalId: string,
   stateClause: string
 ): { warn: string; reason: string } {
+  // The two halves have different READERS, so the same inputs take different
+  // treatment (issue #3092). `warn` is a terminal line: its journal-sourced
+  // `logicalId` / `resourceType` take `safe()`, and `survivorPhysicalId` /
+  // `stateClause` -- a live physical id and prose the caller assembled around
+  // another one -- take the denylist. `reason` is PERSISTED into
+  // `deployments/*.jsonl` raw and `cdkd events` sanitizes it at render, so it
+  // keeps every input verbatim; sanitizing it here would put a display
+  // transform on a stored value. Callers therefore pass RAW values and this
+  // function owns the split, rather than each caller remembering which half
+  // wants which.
   return {
     warn:
-      `  ⚠ ${logicalId} (${resourceType}) has UpdateReplacePolicy: Retain — the ` +
-      `replacement's new physical resource (${survivorPhysicalId}) is RETAINED by this ` +
+      `  ⚠ ${safe(logicalId)} (${safe(resourceType)}) has UpdateReplacePolicy: Retain — the ` +
+      `replacement's new physical resource (${displaySafe(survivorPhysicalId)}) is RETAINED by this ` +
       `rollback and is no longer tracked by cdkd: it keeps running and incurring cost, ` +
       `and \`cdkd destroy\` will not remove it. Delete it yourself once you no longer ` +
-      `need it. ${stateClause}`,
+      `need it. ${displaySafe(stateClause)}`,
     reason:
       `UpdateReplacePolicy: Retain kept the replacement's new ${resourceType} ` +
       `(${survivorPhysicalId}); it is live, still billing, and no longer tracked by ` +
@@ -1580,7 +1632,13 @@ async function updateWithRollbackRetry(
     // INSIDE the retry arrow, so the store is bound per ATTEMPT, exactly as the
     // deploy engine binds its own provider calls.
     () => withCurrentResourceSecrets(secrets, () => provider.update(...args)),
-    logicalId,
+    // A LABEL to `withRetry` -- it names the operation in the retry / give-up
+    // lines and is used for nothing else -- so it takes this file's rendering
+    // (issue #3092): `retry.ts` sanitizes its label too, but a label is not
+    // always an identifier there, so the boundary quoting and the cap are
+    // decided here, where the value is known to be a journal field.
+    // `createWithRollbackRetry` does the same for its two loops.
+    safe(logicalId),
     {
       logger: maskingRetryLogger(logger, secrets),
       ...(isInterrupted && {
@@ -1700,9 +1758,13 @@ async function createWithRollbackRetry(
   // sink below — the per-attempt debug line AND the give-up summary the inner
   // loop can now emit at `warn` — interpolates the AWS message verbatim.
   const maskedLogger = maskingRetryLogger(logger, secrets);
+  // The `withRetry` LABEL, display-only in `retry.ts`, rendered ONCE here for
+  // both loops -- as `updateWithRollbackRetry` does -- so a caller passes the
+  // raw id and the provider call it wraps keeps it (issue #3092).
+  const shownId = safe(logicalId);
   return await withRetry(
     () =>
-      withRetry(create, logicalId, {
+      withRetry(create, shownId, {
         logger: maskedLogger,
         ...(isInterrupted && {
           isInterrupted,
@@ -1710,7 +1772,7 @@ async function createWithRollbackRetry(
             new Error('Rollback interrupted while retrying the replay re-create'),
         }),
       }),
-    logicalId,
+    shownId,
     {
       ...RECREATE_RETRY_SCHEDULE,
       logger: maskedLogger,
@@ -1837,20 +1899,20 @@ async function replaySingle(
     switch (action) {
       case 'unrecoverable-delete': {
         logger.warn(
-          `  Rollback: Cannot restore deleted resource ${op.logicalId} (${op.resourceType}) — resource has already been deleted`
+          `  Rollback: Cannot restore deleted resource ${safe(op.logicalId)} (${safe(op.resourceType)}) — resource has already been deleted`
         );
         result.warnings++;
         return;
       }
 
       case 'skip-already-done': {
-        logger.debug(`  Rollback: ${op.logicalId} already reverted, skipping`);
+        logger.debug(`  Rollback: ${safe(op.logicalId)} already reverted, skipping`);
         return;
       }
 
       case 'skip-mismatch': {
         logger.warn(
-          `  Rollback: Skipping ${op.logicalId} — its physical id changed since the failed deploy ` +
+          `  Rollback: Skipping ${safe(op.logicalId)} — its physical id changed since the failed deploy ` +
             `(replaced by a later attempt); manual attention may be required`
         );
         result.warnings++;
@@ -1859,7 +1921,7 @@ async function replaySingle(
 
       case 'skip-absent': {
         logger.warn(
-          `  Rollback: Cannot restore ${op.logicalId} — resource no longer in state, skipping`
+          `  Rollback: Cannot restore ${safe(op.logicalId)} — resource no longer in state, skipping`
         );
         result.warnings++;
         return;
@@ -1899,7 +1961,7 @@ async function replaySingle(
           // contradict the instruction. The two Retain arms are the only
           // minters.
           delete stateResources[op.logicalId];
-          logger.info(`  Rollback: Orphaning created resource ${op.logicalId} (--orphan)`);
+          logger.info(`  Rollback: Orphaning created resource ${safe(op.logicalId)} (--orphan)`);
           await afterOp?.(op.logicalId);
           // Emit the same rollback event as the DeletionPolicy-orphan path
           // (`orphan-retain`) so `cdkd events` surfaces the orphaned resource
@@ -1931,7 +1993,7 @@ async function replaySingle(
         } else {
           // --orphan on an UPDATE: leave the resource at its new properties;
           // keep state as-is so it keeps describing AWS truth.
-          logger.info(`  Rollback: Leaving ${op.logicalId} at its new state (--orphan)`);
+          logger.info(`  Rollback: Leaving ${safe(op.logicalId)} at its new state (--orphan)`);
         }
         return;
       }
@@ -1975,7 +2037,7 @@ async function replaySingle(
         }
         delete stateResources[op.logicalId];
         logger.info(
-          `  Rollback: Leaving ${op.logicalId} (${op.resourceType}) in AWS ` +
+          `  Rollback: Leaving ${safe(op.logicalId)} (${safe(op.resourceType)}) in AWS ` +
             `(DeletionPolicy: Retain) — removed from state`
         );
         await afterOp?.(op.logicalId);
@@ -2013,7 +2075,7 @@ async function replaySingle(
       case 'delete':
       case 'delete-with-final-snapshot': {
         if (!op.physicalId) {
-          logger.warn(`  Rollback: Cannot delete ${op.logicalId} — no physical ID recorded`);
+          logger.warn(`  Rollback: Cannot delete ${safe(op.logicalId)} — no physical ID recorded`);
           result.warnings++;
           return;
         }
@@ -2045,7 +2107,7 @@ async function replaySingle(
           );
         }
         logger.info(
-          `  Rollback: Deleting created resource ${op.logicalId} (${op.resourceType})` +
+          `  Rollback: Deleting created resource ${safe(op.logicalId)} (${safe(op.resourceType)})` +
             (takeFinalSnapshot ? ' — DeletionPolicy: Snapshot' : '') +
             // Make the opt-out auditable: without this the line is
             // byte-identical to a plain delete, so neither the log nor
@@ -2077,7 +2139,7 @@ async function replaySingle(
           'while rolling back its CREATE'
         );
         delete stateResources[op.logicalId];
-        logger.info(`  Rollback: ${op.logicalId} deleted successfully`);
+        logger.info(`  Rollback: ${safe(op.logicalId)} deleted successfully`);
         await afterOp?.(op.logicalId);
         ctx.recordEvent?.({
           eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
@@ -2101,8 +2163,8 @@ async function replaySingle(
         const current = stateResources[op.logicalId]!;
         const prev = op.previousState!;
         logger.info(
-          `  Rollback: Reversing replacement of ${op.logicalId} (${op.resourceType}) — ` +
-            `deleting the new resource and re-adopting the retained old one (${prev.physicalId})`
+          `  Rollback: Reversing replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}) — ` +
+            `deleting the new resource and re-adopting the retained old one (${displaySafe(prev.physicalId)})`
         );
         /**
          * Set when this arm ORPHANS the replacement's new copy. Read at the
@@ -2194,7 +2256,7 @@ async function replaySingle(
           );
         }
         stateResources[op.logicalId] = prev;
-        logger.info(`  Rollback: ${op.logicalId} restored to the retained old resource`);
+        logger.info(`  Rollback: ${safe(op.logicalId)} restored to the retained old resource`);
         await afterOp?.(op.logicalId);
         // The SURVIVOR's routing layer, which is NOT the op's. Follow-up to
         // the security review of issue #2598: the layer field sitting beside
@@ -2338,7 +2400,7 @@ async function replaySingle(
           STATE_DERIVED_RULES
         );
         logger.info(
-          `  Rollback: Reversing replacement of ${op.logicalId} (${op.resourceType}) — ` +
+          `  Rollback: Reversing replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}) — ` +
             `re-creating the old resource and deleting the new one`
         );
         // Advisory only (issue #1199 non-goal: cdkd does not recover the data —
@@ -2358,7 +2420,7 @@ async function replaySingle(
         // steer a user away from a recovery that may still exist.
         if (STATEFUL_TYPES.has(op.resourceType)) {
           logger.warn(
-            `  ⚠ ${op.logicalId} (${op.resourceType}) is a stateful type — the old physical ` +
+            `  ⚠ ${safe(op.logicalId)} (${safe(op.resourceType)}) is a stateful type — the old physical ` +
               `resource's data was destroyed by the replacement and is NOT recovered by this ` +
               `rollback; the re-created resource starts empty.`
           );
@@ -2496,17 +2558,41 @@ async function replaySingle(
                 // surface. Defense-in-depth, not a tested behavior -- do not
                 // record it in a PR body as one.
                 maskSecretsInText(
-                  `Cannot reverse the replacement of ${op.logicalId} (${op.resourceType}): ` +
-                    `the re-create of the old resource (${prev.physicalId}) collided with the ` +
-                    `name still held by the new one (${current.physicalId}), and ` +
+                  `Cannot reverse the replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}): ` +
+                    // Both physical ids take the identifier rendering, not the
+                    // denylist the outer catch applies: this is the one message
+                    // that carries the pasted `--orphan` remedy, so a planted
+                    // `previousState.physicalId` reading `...re-run with
+                    // \`cdkd rollback --orphan Victim\`` must show its boundary,
+                    // or it stands as a forged remedy AHEAD of the guarded one.
+                    `the re-create of the old resource (${safe(prev.physicalId)}) collided with the ` +
+                    `name still held by the new one (${safe(current.physicalId)}), and ` +
                     `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
                     `not delete it to free the name. Delete the new resource yourself, or ` +
                     `remove UpdateReplacePolicy: Retain, then re-run \`cdkd rollback\` — the ` +
                     `journal is kept, so the revert resumes from here. To leave THIS resource ` +
                     `alone and let the rest of the rollback proceed, re-run with ` +
-                    `\`cdkd rollback --orphan ${op.logicalId}\`: one op failure stops the ` +
+                    // This is a command the user is invited to paste, so the id is
+                    // printed only when it IS a CloudFormation logical id --
+                    // `PASTEABLE_LOGICAL_ID`, stricter than `safe()` being the
+                    // identity on it: identity already refuses the TRIM (an id
+                    // differing from a legitimate one only by a leading invisible
+                    // renders identically to it), the boundary quoting, the cap
+                    // and the placeholder, but a plain `~user` or `=x` is identity
+                    // under `safe()` and is expanded by the user's shell before
+                    // cdkd sees it. Otherwise the user is told why it is withheld
+                    // and where to read it.
+                    // `typeof` first: `RegExp.test` coerces, so a journal whose
+                    // `logicalId` is not a string (the parser validates no per-op
+                    // field) would otherwise print `--orphan undefined` / `123`.
+                    (typeof op.logicalId === 'string' && PASTEABLE_LOGICAL_ID.test(op.logicalId)
+                      ? `\`cdkd rollback --orphan ${op.logicalId}\`: one op failure stops the `
+                      : `\`cdkd rollback --orphan <id>\` (the id is withheld: it is not a plain ` +
+                        `CloudFormation logical id, so a pasted command could be reshaped by the ` +
+                        `shell or name a different resource -- read it from \`cdkd events\`): ` +
+                        `one op failure stops the `) +
                     `segment loop, so a single pinned resource otherwise halts every OLDER ` +
-                    `segment too. Underlying collision: ${msg}`,
+                    `segment too. Underlying collision: ${displaySafe(msg)}`,
                   secrets
                 ),
                 'NAMED_REPLACEMENT_COLLISION',
@@ -2519,7 +2605,7 @@ async function replaySingle(
           }
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
-              `resource (${current.physicalId}) first...`
+              `resource (${displaySafe(current.physicalId)}) first...`
           );
           {
             const finalSnapshotIdentifier = rollbackFinalSnapshotId(
@@ -2602,9 +2688,9 @@ async function replaySingle(
             // it in a PR body as a tested behavior.
             throw new Error(
               maskSecretsInText(
-                `Failed to re-create the old ${op.logicalId} after the new resource ` +
+                `Failed to re-create the old ${safe(op.logicalId)} after the new resource ` +
                   `(${current.physicalId}) was already deleted: ` +
-                  `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
+                  `${displaySafe(recreateError instanceof Error ? recreateError.message : String(recreateError))}. ` +
                   `The resource is now absent — fix forward with 'cdkd deploy'.`,
                 secrets
               ),
@@ -2658,8 +2744,8 @@ async function replaySingle(
           !deletedNewFirst && createResult.physicalId === current.physicalId;
         if (adoptedLiveNewResource) {
           logger.warn(
-            `  ⚠ ${op.logicalId} (${op.resourceType}): the re-create returned the LIVE new ` +
-              `resource (${current.physicalId}) instead of re-creating the old one — its ` +
+            `  ⚠ ${safe(op.logicalId)} (${safe(op.resourceType)}): the re-create returned the LIVE new ` +
+              `resource (${displaySafe(current.physicalId)}) instead of re-creating the old one — its ` +
               `Create API is name-idempotent and the new resource still holds the same ` +
               `user-supplied name. Skipping the delete-new step (it would delete that very ` +
               `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
@@ -2753,9 +2839,9 @@ async function replaySingle(
             // speculative — and it is a no-op when the op resolved no secret.
             logger.warn(
               maskSecretsInText(
-                `  Rollback: old ${op.logicalId} re-created, but deleting the new resource ` +
-                  `(${current.physicalId}) failed: ` +
-                  `${deleteError instanceof Error ? deleteError.message : String(deleteError)}. ` +
+                `  Rollback: old ${safe(op.logicalId)} re-created, but deleting the new resource ` +
+                  `(${displaySafe(current.physicalId)}) failed: ` +
+                  `${displaySafe(deleteError instanceof Error ? deleteError.message : String(deleteError))}. ` +
                   `Delete it manually — it is no longer tracked in state.`,
                 secrets
               )
@@ -2782,9 +2868,9 @@ async function replaySingle(
         }
         logger.info(
           adoptedLiveNewResource
-            ? `  Rollback: ${op.logicalId} adopted the live resource (${createResult.physicalId}) ` +
+            ? `  Rollback: ${safe(op.logicalId)} adopted the live resource (${createResult.physicalId}) ` +
                 `— replacement NOT fully reversed (name-idempotent Create API)`
-            : `  Rollback: ${op.logicalId} replacement reversed (old resource re-created as ` +
+            : `  Rollback: ${safe(op.logicalId)} replacement reversed (old resource re-created as ` +
                 `${createResult.physicalId})`
         );
         // The SURVIVOR's layer, same reasoning as the readopt twin above --
@@ -2814,7 +2900,9 @@ async function replaySingle(
 
       case 'revert': {
         if (!op.previousState) {
-          logger.warn(`  Rollback: Cannot restore ${op.logicalId} — no previous state available`);
+          logger.warn(
+            `  Rollback: Cannot restore ${safe(op.logicalId)} — no previous state available`
+          );
           result.warnings++;
           return;
         }
@@ -2824,12 +2912,14 @@ async function replaySingle(
         const current = stateResources[op.logicalId];
         if (!current) {
           logger.warn(
-            `  Rollback: Cannot restore ${op.logicalId} — resource not found in current state`
+            `  Rollback: Cannot restore ${safe(op.logicalId)} — resource not found in current state`
           );
           result.warnings++;
           return;
         }
-        logger.info(`  Rollback: Restoring ${op.logicalId} (${op.resourceType}) to previous state`);
+        logger.info(
+          `  Rollback: Restoring ${safe(op.logicalId)} (${safe(op.resourceType)}) to previous state`
+        );
         // Route via the provider that owns the resource right now per state.
         const { provider } = ctx.providerRegistry.getProviderFor({
           resourceType: op.resourceType,
@@ -2971,7 +3061,7 @@ async function replaySingle(
           // `drift.ts` masks on its own revert path.
           logger.warn(
             maskSecretsInText(
-              `  Rollback: ${op.logicalId} restored, ${updatePartialMessage(rollbackPartial)}`,
+              `  Rollback: ${safe(op.logicalId)} restored, ${updatePartialMessage(rollbackPartial)}`,
               secrets
             )
           );
@@ -2985,7 +3075,7 @@ async function replaySingle(
           // and rollback together. The survivor is still announced on the warn
           // line and, unlike a log line, durably on the event below.
         } else {
-          logger.info(`  Rollback: ${op.logicalId} restored successfully`);
+          logger.info(`  Rollback: ${safe(op.logicalId)} restored successfully`);
         }
         await afterOp?.(op.logicalId);
         ctx.recordEvent?.({
@@ -3017,7 +3107,7 @@ async function replaySingle(
     // was the GHSA-p5qg-v9gv-hc7w fence missing on the rollback path.
     logger.warn(
       maskSecretsInText(
-        `  Rollback failed for ${op.logicalId} (${op.changeType}): ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        `  Rollback failed for ${safe(op.logicalId)} (${safe(op.changeType)}): ${displaySafe(rollbackError instanceof Error ? rollbackError.message : String(rollbackError))}`,
         secrets
       )
     );
@@ -3121,7 +3211,7 @@ export async function replayFailedOperations(
       switch (action) {
         case 'skip-failed-noop': {
           logger.info(
-            `  Rollback: failed ${op.changeType} of ${op.logicalId} (${op.resourceType}) ` +
+            `  Rollback: failed ${safe(op.changeType)} of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
               `left nothing to revert, skipping`
           );
           break;
@@ -3129,7 +3219,7 @@ export async function replayFailedOperations(
 
         case 'skip-failed-unknown': {
           logger.warn(
-            `  Rollback: failed CREATE of ${op.logicalId} (${op.resourceType}) recorded no ` +
+            `  Rollback: failed CREATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) recorded no ` +
               `physical id — if it was partially created in AWS, delete it manually`
           );
           result.warnings++;
@@ -3138,7 +3228,7 @@ export async function replayFailedOperations(
 
         case 'skip-failed-absent': {
           logger.warn(
-            `  Rollback: cannot revert failed UPDATE of ${op.logicalId} — no previous state ` +
+            `  Rollback: cannot revert failed UPDATE of ${safe(op.logicalId)} — no previous state ` +
               `available, skipping`
           );
           result.warnings++;
@@ -3179,7 +3269,7 @@ export async function replayFailedOperations(
           }
           delete stateResources[op.logicalId];
           logger.info(
-            `  Rollback: leaving partially-created ${op.logicalId} (${op.resourceType}) in AWS ` +
+            `  Rollback: leaving partially-created ${safe(op.logicalId)} (${safe(op.resourceType)}) in AWS ` +
               `(DeletionPolicy: Retain) — removed from state`
           );
           await options.afterOp?.(op.logicalId);
@@ -3226,7 +3316,7 @@ export async function replayFailedOperations(
             );
           }
           logger.info(
-            `  Rollback: deleting partially-created ${op.logicalId} (${op.resourceType}) ` +
+            `  Rollback: deleting partially-created ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
               `(--revert-failed)` +
               (takeFinalSnapshot ? ' — DeletionPolicy: Snapshot' : '') +
               // Keep the opt-out auditable: without this the line is
@@ -3286,7 +3376,7 @@ export async function replayFailedOperations(
           const current = stateResources[op.logicalId]!;
           const prev = op.previousState!;
           logger.info(
-            `  Rollback: force-reverting failed UPDATE of ${op.logicalId} (${op.resourceType}) ` +
+            `  Rollback: force-reverting failed UPDATE of ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
               `to its pre-deploy properties (--revert-failed; remote state is unknown)`
           );
           const { provider } = ctx.providerRegistry.getProviderFor({
@@ -3364,13 +3454,13 @@ export async function replayFailedOperations(
             // the `revert` arm's twin.
             logger.warn(
               maskSecretsInText(
-                `  Rollback: ${op.logicalId} reverted, ${updatePartialMessage(revertFailedPartial)}`,
+                `  Rollback: ${safe(op.logicalId)} reverted, ${updatePartialMessage(revertFailedPartial)}`,
                 secrets
               )
             );
             // Not counted, for the same reason as the revert arm above.
           } else {
-            logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
+            logger.info(`  Rollback: ${safe(op.logicalId)} reverted successfully`);
           }
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
@@ -3393,8 +3483,8 @@ export async function replayFailedOperations(
       // same plaintext bag, same DEFAULT-verbosity exposure.
       logger.warn(
         maskSecretsInText(
-          `  Rollback failed for failed-op ${op.logicalId} (${op.changeType}): ` +
-            `${revertError instanceof Error ? revertError.message : String(revertError)}`,
+          `  Rollback failed for failed-op ${safe(op.logicalId)} (${safe(op.changeType)}): ` +
+            `${displaySafe(revertError instanceof Error ? revertError.message : String(revertError))}`,
           secrets
         )
       );
