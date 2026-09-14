@@ -13,10 +13,12 @@
  * command's stderr already discarded by `2>/dev/null`. The log ends at the
  * previous `echo "==> [2/4] ..."` banner with no error text at all. That is
  * how a transient during issue #3106's verification read as an unexplained
- * abort and cost the lane a re-run. Nine `local-*` fixtures carried the
- * shape at 29 sites, plus three retry loops that lost every attempt's
- * stderr the same way (`if out=$(... 2>/dev/null | tail -1)` -- `set -e`
- * is suspended in a condition, so the loop ran, but the text was gone).
+ * abort and cost the lane a re-run. Measured on the tree before the sweep
+ * (2026-09-14, this scanner): eight `local-*` fixtures carried the shape at
+ * 35 sites, plus three retry loops that lost every attempt's stderr the
+ * same way (`if out=$(... 2>/dev/null | tail -1)` -- `set -e` is suspended
+ * in a condition, so the loop ran, but the text was gone), plus three
+ * sites outside `local-*` in other clothing.
  *
  * The shape is NOT a swallow: the script still fails, so nothing false-passes
  * (issue #1120's capture-form lint classifies "a silenced capture with no
@@ -26,10 +28,14 @@
  * THE CORRECT FORM
  *
  * `capture` (the block below, carried byte-for-byte by every fixture that
- * uses it) runs the command with its exit status taken EXPLICITLY, prints the
- * status and the tail of the captured stderr on a non-zero exit, and still
- * emits the last stdout line so the assertion runs, FAILS, and prints its own
- * diagnostic. Env-prefixed calls (`AWS_REGION=x capture ${CDKD} ...`) work
+ * uses it) runs the command with its exit status taken EXPLICITLY. On a
+ * non-zero exit it prints the status, the last stdout line and the tail of
+ * the captured stderr, and emits NOTHING on stdout, so the assertion runs,
+ * FAILS, and prints its own diagnostic -- and a response that happened to
+ * look right never passes a failed invoke, the one property the old shape
+ * had (review of go-to-k/cdkd#3133 measured a first draft that emitted the
+ * line regardless: a `return 1` after a good-looking response went green).
+ * Env-prefixed calls (`AWS_REGION=x capture ${CDKD} ...`) work
  * because bash exports the prefix for the duration of a function call. A
  * retry loop routes stderr to a file (`2>"${err}"`) and prints its tail on
  * the failure paths instead of running a fourth attempt to see it.
@@ -62,21 +68,27 @@ export const CANONICAL_CAPTURE_BLOCK = `# --- capture --------------------------
 # script BEFORE the assertion, and the CLI's stderr is already gone -- a log
 # that ends at \`[2/4] Invoking ...\` with no error text (issue #3106's lane
 # paid a re-run to learn a transient had hit; issue #3126 swept the shape).
-# \`capture\` runs the command with its exit status captured EXPLICITLY, prints
-# the status and the tail of the captured stderr on a non-zero exit, and
-# still emits the last stdout line so the assertion runs, FAILS, and prints
-# its own diagnostic -- with the evidence in the log. The stderr file is per
-# call and removed here, so the EXIT trap chain carries no entry for it.
-# Every local-* fixture carries this block byte-for-byte; the fence is
-# tests/unit/scripts/integ-verify-capture-shape.test.ts.
+# \`capture\` runs the command with its exit status captured EXPLICITLY. On a
+# non-zero exit it prints the status, the last stdout line and the tail of
+# the captured stderr, and emits NOTHING on stdout -- the assertion still
+# runs and FAILS with its own text, and a response that happened to look
+# right never passes a failed invoke (the old shape's one merit, kept). On
+# success it emits the last stdout line. The stderr file is per call and
+# removed here, so the EXIT trap chain carries no entry for it. Every
+# fixture that uses this block carries it byte-for-byte (copy
+# CANONICAL_CAPTURE_BLOCK from scripts/check-integ-capture-shape.ts); the
+# fence is tests/unit/scripts/integ-verify-capture-shape.test.ts.
 capture() {
   local out err rc=0
   err="$(mktemp)"
   out="$("$@" 2>"\${err}")" || rc=$?
   if [ "\${rc}" -ne 0 ]; then
     echo "[verify] command exited \${rc}: $*" >&2
+    echo "[verify] last stdout line: $(printf '%s\\n' "\${out}" | tail -1)" >&2
     echo "[verify] captured stderr (last 20 lines):" >&2
     tail -20 "\${err}" >&2
+    rm -f "\${err}"
+    return 0
   fi
   rm -f "\${err}"
   printf '%s\\n' "\${out}" | tail -1
@@ -107,17 +119,42 @@ export interface CaptureShapeClassification {
   callsCapture: boolean;
 }
 
+/** Depth of `$(` left open at the end of `text` (never negative). */
+function openSubstitutions(text: string): number {
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (depth === 0) {
+      if (text[i] === '$' && text[i + 1] === '(') {
+        depth = 1;
+        i++;
+      }
+      continue;
+    }
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')') depth--;
+  }
+  return depth;
+}
+
 /**
- * Joins backslash continuations (a multi-line env-prefixed call is one
- * statement) and blanks comment lines and heredoc bodies, keeping the line
- * count so a report's line number is the first physical line of the
- * statement. Trailing comments stay: the banned shape cannot sit inside one
- * without also being code on that line, and a quote-aware stripper is more
+ * Joins one logical statement out of its physical lines -- a backslash
+ * continuation, a line ending in `|` / `&&` / `||`, or a `$(` still open
+ * at the line's end (a wrapped `R=$(cmd 2>/dev/null |` newline `tail -1)`
+ * was invisible to the first cut, review of go-to-k/cdkd#3133) -- and blanks
+ * comment lines and heredoc bodies, keeping the line count so a report's
+ * line number is the first physical line of the statement. A `<<` that is
+ * part of a here-string (`<<<`) is not a heredoc, and a heredoc whose
+ * terminator never comes is not skipped either: both used to blank the rest
+ * of the file, which made the fence silently inert from that line on.
+ * Trailing comments stay: the banned shape cannot sit inside one without
+ * also being code on that line, and a quote-aware stripper is more
  * machinery than the question needs.
  */
 export function codeLines(content: string): Array<{ line: number; text: string }> {
   const raw = content.split('\n');
   const out: Array<{ line: number; text: string }> = [];
+  const continues = (text: string) =>
+    /(\\|\||&&)\s*$/.test(text) || openSubstitutions(text) > 0;
   for (let i = 0; i < raw.length; i++) {
     const start = i;
     let text = raw[i]!;
@@ -125,15 +162,20 @@ export function codeLines(content: string): Array<{ line: number; text: string }
       out.push({ line: start + 1, text: '' });
       continue;
     }
-    while (/\\$/.test(text) && i + 1 < raw.length) {
+    while (continues(text) && i + 1 < raw.length) {
       i++;
-      text = text.replace(/\\$/, ' ') + raw[i]!.trim();
+      const next = raw[i]!;
+      if (/^\s*#/.test(next)) continue;
+      text = /\\$/.test(text) ? text.replace(/\\$/, ' ') + next.trim() : `${text} ${next.trim()}`;
     }
     out.push({ line: start + 1, text });
-    const here = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/.exec(text);
+    const here = /(?<!<)<<-?(?!<)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/.exec(text);
     if (here) {
       const end = new RegExp(`^\\s*${here[1]}\\s*$`);
-      while (++i < raw.length && !end.test(raw[i]!)) out.push({ line: i + 1, text: '' });
+      const stop = raw.findIndex((l, k) => k > i && end.test(l));
+      if (stop !== -1) {
+        while (++i < stop) out.push({ line: i + 1, text: '' });
+      }
     }
   }
   return out;
@@ -142,7 +184,8 @@ export function codeLines(content: string): Array<{ line: number; text: string }
 /**
  * Every `$( ... )` body on the line, parentheses balanced, nested
  * substitutions masked so an inner capture's redirections are never read as
- * the outer one's (each nested body is returned as its own entry).
+ * the outer one's (each nested body is returned as its own entry). Newlines
+ * inside a joined statement are ordinary whitespace here.
  */
 export function substitutionBodies(text: string): string[] {
   const bodies: string[] = [];
@@ -200,7 +243,9 @@ export function classifyCaptureShape(content: string): CaptureShapeClassificatio
     if (/(?:^|\$\(|[;|&]\s*)\s*(?:[A-Z0-9_]+=\S+\s+)*capture\s+\S/.test(text)) callsCapture = true;
   }
   return {
-    setsPipefail: lines.some(({ text }) => /^\s*set\s+(?:-[a-zA-Z]*o\s+pipefail|-o\s+pipefail)\b/.test(text)),
+    // `set -euo pipefail`, `set -o pipefail`, `set -e -o pipefail`,
+    // `set -o errexit -o pipefail`: any `set` line whose `-o` names pipefail.
+    setsPipefail: lines.some(({ text }) => /^\s*set\s+(?:-[a-zA-Z]*o|.*\s-o)\s+pipefail\b/.test(text)),
     abortShapedCaptures,
     definesCapture: /^capture\(\)\s*\{/m.test(content),
     hasCanonicalCaptureBlock: content.includes(CANONICAL_CAPTURE_BLOCK),

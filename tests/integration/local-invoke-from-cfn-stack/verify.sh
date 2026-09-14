@@ -146,7 +146,7 @@ invoke_with_retry() {
     fi
     i=$((i+1))
   done
-  echo "[verify]   all ${attempts} invoke attempts failed; last attempt's stderr below:" >&2
+  echo "[verify]   all ${attempts} invoke attempts failed (last stdout line: ${out}); last attempt's stderr below:" >&2
   tail -20 "${err}" >&2
   rm -f "${err}"
   return 1

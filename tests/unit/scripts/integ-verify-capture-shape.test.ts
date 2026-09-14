@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -68,9 +68,21 @@ describe('classifyCaptureShape', () => {
     ['inside an if condition (the retry-loop shape)', 'if out=$(${CLI} local invoke "${args[@]}" 2>/dev/null | tail -1) && echo x; then :; fi'],
     ['&> /dev/null', 'R=$(${CDKD} local invoke Fn &>/dev/null | tail -1)'],
     ['a second pipe stage before tail', 'R=$(${CDKD} local invoke Fn 2>/dev/null | grep x | tail -1)'],
+    ['the strict-idiom ordering, silenced then piped', 'R=$(${CDKD} local invoke Fn 2>&1 >/dev/null | tail -1)'],
   ])('flags: %s', (_label, stmt) => {
     const c = classifyCaptureShape(`${PIPEFAIL}${stmt}\n`);
     expect(c.setsPipefail).toBe(true);
+    expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([3]);
+  });
+
+  it.each([
+    ['a pipe at the line end', 'R=$(${CDKD} local invoke Fn 2>/dev/null |\n  tail -1)'],
+    ['an open $( at the line end', 'R=$(\n  ${CDKD} local invoke Fn 2>/dev/null | tail -1\n)'],
+    ['a comment line inside the open substitution', 'R=$(${CDKD} local invoke Fn 2>/dev/null |\n  # pick the response\n  tail -1)'],
+  ])('flags a statement wrapped WITHOUT a backslash, at its first line: %s', (_label, stmt) => {
+    // The first cut joined backslash continuations only; a wrapped `|` or an
+    // open `$(` hid the shape entirely (review of go-to-k/cdkd#3133).
+    const c = classifyCaptureShape(`${PIPEFAIL}${stmt}\necho after\n`);
     expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([3]);
   });
 
@@ -93,9 +105,27 @@ describe('classifyCaptureShape', () => {
     ['tail outside the substitution', 'R=$(${CDKD} local invoke Fn 2>/dev/null); echo "$R" | tail -1'],
     ['a fallback after the picker (the caller checks the empty value -- #1120 class)', 'T=$(ls cdk.out/*.template.json 2>/dev/null | head -1 || true)'],
     ['the word capture in a banner is not a call', 'echo "==> Phase 2: capture + confirm the policy"'],
+    ['a here-string is not a heredoc (the line AFTER it still counts)', 'read -r x <<< foo\necho ok'],
   ])('does not flag: %s', (_label, stmt) => {
     const c = classifyCaptureShape(`${PIPEFAIL}${stmt}\n`);
     expect(c.abortShapedCaptures).toEqual([]);
+  });
+
+  it('tells a capture CALL from the word in prose, env prefix included', () => {
+    expect(classifyCaptureShape(`${PIPEFAIL}R=$(capture x)\n`).callsCapture).toBe(true);
+    expect(classifyCaptureShape(`${PIPEFAIL}R=$(AWS_REGION=x capture x)\n`).callsCapture).toBe(true);
+    expect(classifyCaptureShape(`${PIPEFAIL}echo "==> Phase 2: capture + confirm"\n`).callsCapture).toBe(false);
+  });
+
+  it.each([
+    ['a bare-word here-string', 'read -r x <<< foo\nR=$(x 2>/dev/null | tail -1)\n'],
+    ['a quoted here-string', "read -r x <<< 'foo'\nR=$(x 2>/dev/null | tail -1)\n"],
+    ['a heredoc whose terminator never comes', 'echo "<<EOF"\nR=$(x 2>/dev/null | tail -1)\n'],
+  ])('does not blank the rest of the file after %s', (_label, body) => {
+    // Both shapes used to open a heredoc that never closed, so every later
+    // line was data and the fence was silently inert from there on.
+    const c = classifyCaptureShape(`${PIPEFAIL}${body}`);
+    expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([4]);
   });
 
   it('attributes a nested substitution\'s redirections to the inner body only', () => {
@@ -110,6 +140,9 @@ describe('classifyCaptureShape', () => {
     expect(classifyCaptureShape('set -euo pipefail\n').setsPipefail).toBe(true);
     expect(classifyCaptureShape('set -o pipefail\n').setsPipefail).toBe(true);
     expect(classifyCaptureShape('set -eu\nset -o pipefail\n').setsPipefail).toBe(true);
+    expect(classifyCaptureShape('set -e -o pipefail\n').setsPipefail).toBe(true);
+    expect(classifyCaptureShape('set -o errexit -o pipefail\n').setsPipefail).toBe(true);
+    expect(classifyCaptureShape('set -eEuo pipefail\n').setsPipefail).toBe(true);
     expect(classifyCaptureShape('set -eu\n').setsPipefail).toBe(false);
     expect(classifyCaptureShape('# set -euo pipefail\n').setsPipefail).toBe(false);
   });
@@ -212,6 +245,17 @@ describe('real-code probes (issue #3126)', () => {
     expect(classifyCaptureShape(real).abortShapedCaptures).toEqual([]);
   });
 
+  it('re-wrapping a real site across two lines without a backslash is still flagged', () => {
+    const real = readFileSync(join(INTEG_ROOT, 'local-invoke', 'verify.sh'), 'utf8');
+    const fixed = 'RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull)';
+    const broken = real.replace(
+      fixed,
+      'RESULT_1=$(${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull 2>/dev/null |\n  tail -1)',
+    );
+    const line = broken.slice(0, broken.indexOf('RESULT_1=$(')).split('\n').length;
+    expect(classifyCaptureShape(broken).abortShapedCaptures.map((f) => f.line)).toEqual([line]);
+  });
+
   it('re-introducing the retry-loop shape into local-invoke-from-state/verify.sh is flagged', () => {
     const real = readFileSync(join(INTEG_ROOT, 'local-invoke-from-state', 'verify.sh'), 'utf8');
     const fixed = 'if out=$(${CLI} local invoke "${args[@]}" 2>"${err}" | tail -1) && \\';
@@ -226,13 +270,32 @@ describe('bash behavior (the convention itself, not the scanner)', () => {
   // A stub CLI: prints one stdout line, one stderr line, exits 7.
   const STUB = 'stub() { echo "partial"; echo "boom: the real cause" >&2; return 7; }\n';
 
+  /**
+   * Runs `body` under `set -euo pipefail` with `TMPDIR` pointed at a fresh
+   * directory AND a `mktemp` shim first on PATH that honours it: macOS's
+   * `/usr/bin/mktemp` prefers `_CS_DARWIN_USER_TEMP_DIR` and reads `TMPDIR`
+   * only as a fallback, so without the shim the leftovers check below was
+   * vacuous on a Mac (measured by review of go-to-k/cdkd#3133: deleting the
+   * helper's `rm -f` left `leftovers` empty). The shim makes the check bind
+   * on every host; the control case proves it binds.
+   */
   function runScript(body: string) {
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-3126-'));
     try {
+      const bin = join(dir, 'bin');
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, 'mktemp'),
+        '#!/bin/sh\nexec /usr/bin/mktemp "${TMPDIR:?}/tmp.XXXXXXXX"\n',
+        { mode: 0o755 },
+      );
       const script = join(dir, 'verify.sh');
       writeFileSync(script, `set -euo pipefail\n${STUB}${body}`);
-      const r = spawnSync('bash', [script], { encoding: 'utf8', env: { ...process.env, TMPDIR: dir } });
-      const leftovers = readdirSync(dir).filter((f) => f !== 'verify.sh');
+      const r = spawnSync('bash', [script], {
+        encoding: 'utf8',
+        env: { ...process.env, TMPDIR: dir, PATH: `${bin}:${process.env['PATH'] ?? ''}` },
+      });
+      const leftovers = readdirSync(dir).filter((f) => f !== 'verify.sh' && f !== 'bin');
       return { status: r.status, stdout: r.stdout, stderr: r.stderr, leftovers };
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -246,13 +309,42 @@ describe('bash behavior (the convention itself, not the scanner)', () => {
     expect(r.stderr).not.toContain('boom');
   });
 
-  it('capture reaches the assertion with the status and stderr tail in the log, and leaves no temp file', () => {
+  it('capture reaches the assertion with the status, last stdout line and stderr tail in the log, emits nothing, and leaves no temp file', () => {
     const r = runScript(`${CANONICAL_CAPTURE_BLOCK}R=$(capture stub)\necho "reached assertion: [$R]"\n`);
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('reached assertion: [partial]');
+    // Empty on purpose: a response that happened to look right must not pass
+    // a failed invoke. The old shape aborted; this fails the assertion.
+    expect(r.stdout).toContain('reached assertion: []');
     expect(r.stderr).toContain('[verify] command exited 7: stub');
+    expect(r.stderr).toContain('[verify] last stdout line: partial');
     expect(r.stderr).toContain('boom: the real cause');
     expect(r.leftovers).toEqual([]);
+  });
+
+  it('a good-looking last line does NOT pass a failed invoke (the property the old shape had)', () => {
+    const r = runScript(
+      `${CANONICAL_CAPTURE_BLOCK}bad() { echo '{"greeting":"hello"}'; echo "teardown failed" >&2; return 1; }\n` +
+        'R=$(capture bad)\necho "$R" | grep -q \'"greeting":"hello"\' && echo PASSED || echo FAILED-AS-IT-SHOULD\n',
+    );
+    expect(r.stdout).toContain('FAILED-AS-IT-SHOULD');
+    expect(r.stdout).not.toContain('PASSED');
+    expect(r.stderr).toContain('last stdout line: {"greeting":"hello"}');
+  });
+
+  it('on success capture emits the last stdout line and leaves no temp file', () => {
+    const r = runScript(`${CANONICAL_CAPTURE_BLOCK}ok() { echo one; echo two; }\nR=$(capture ok)\necho "got: [$R]"\n`);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('got: [two]');
+    expect(r.stderr).toBe('');
+    expect(r.leftovers).toEqual([]);
+  });
+
+  it('CONTROL: without the helper\'s rm the shim-backed leftovers check goes red (the check binds)', () => {
+    const noRm = CANONICAL_CAPTURE_BLOCK.replace(/\n +rm -f "\$\{err\}"\n/g, '\n');
+    expect(noRm).not.toBe(CANONICAL_CAPTURE_BLOCK);
+    expect(noRm).not.toContain('rm -f');
+    const r = runScript(`${noRm}R=$(capture stub)\n`);
+    expect(r.leftovers.length).toBeGreaterThan(0);
   });
 
   it('an env prefix before capture reaches the command', () => {

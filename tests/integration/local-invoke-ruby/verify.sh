@@ -28,21 +28,27 @@ IMAGE="public.ecr.aws/lambda/ruby:3.3"
 # script BEFORE the assertion, and the CLI's stderr is already gone -- a log
 # that ends at `[2/4] Invoking ...` with no error text (issue #3106's lane
 # paid a re-run to learn a transient had hit; issue #3126 swept the shape).
-# `capture` runs the command with its exit status captured EXPLICITLY, prints
-# the status and the tail of the captured stderr on a non-zero exit, and
-# still emits the last stdout line so the assertion runs, FAILS, and prints
-# its own diagnostic -- with the evidence in the log. The stderr file is per
-# call and removed here, so the EXIT trap chain carries no entry for it.
-# Every local-* fixture carries this block byte-for-byte; the fence is
-# tests/unit/scripts/integ-verify-capture-shape.test.ts.
+# `capture` runs the command with its exit status captured EXPLICITLY. On a
+# non-zero exit it prints the status, the last stdout line and the tail of
+# the captured stderr, and emits NOTHING on stdout -- the assertion still
+# runs and FAILS with its own text, and a response that happened to look
+# right never passes a failed invoke (the old shape's one merit, kept). On
+# success it emits the last stdout line. The stderr file is per call and
+# removed here, so the EXIT trap chain carries no entry for it. Every
+# fixture that uses this block carries it byte-for-byte (copy
+# CANONICAL_CAPTURE_BLOCK from scripts/check-integ-capture-shape.ts); the
+# fence is tests/unit/scripts/integ-verify-capture-shape.test.ts.
 capture() {
   local out err rc=0
   err="$(mktemp)"
   out="$("$@" 2>"${err}")" || rc=$?
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] last stdout line: $(printf '%s\n' "${out}" | tail -1)" >&2
     echo "[verify] captured stderr (last 20 lines):" >&2
     tail -20 "${err}" >&2
+    rm -f "${err}"
+    return 0
   fi
   rm -f "${err}"
   printf '%s\n' "${out}" | tail -1

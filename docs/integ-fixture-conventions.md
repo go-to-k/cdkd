@@ -144,7 +144,9 @@ The same defect hides in two more spellings, both banned (issue #1120):
   assertion that would print `FAIL: ... got: ${RESULT}` never runs and the
   CLI's stderr is already gone — the log ends at the previous banner with no
   error text. Nothing false-passes; the diagnostic is what is lost. Use the
-  `capture` helper (`RESULT=$(capture ${CDKD} local invoke Fn)`; copy
+  `capture` helper (`RESULT=$(capture ${CDKD} local invoke Fn)` — on a
+  non-zero exit it logs the status, last stdout line and stderr tail and
+  emits nothing, so the assertion fails with its own text; copy
   `CANONICAL_CAPTURE_BLOCK` from `scripts/check-integ-capture-shape.ts`,
   byte-identical in every fixture that carries it — an env prefix
   `AWS_REGION=x capture ...` reaches the CLI), or keep stderr in a file
