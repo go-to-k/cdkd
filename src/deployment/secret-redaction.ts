@@ -1868,7 +1868,10 @@ export function recordNestedStackParameterExpressions(
   // here because (iv) refuses the value before (iii) is asked.
   const tokensOf = new Map<string, Set<string>>();
   // The TEXT a leaf's frame is read from. A LITERAL source is its own text,
-  // certified or not -- (iv) must see an uncertified literal frame too. An
+  // certified or not. No case in the suite tells the two readings apart
+  // (swapping `certifiedSpellingOf` into the frames loop reddens nothing),
+  // so no claim that (iv) NEEDS the uncertified one is made; it is kept so
+  // the loop reads a literal and an object source through one function. An
   // OBJECT source (`Fn::Join` / `Fn::Sub`, issue #3062) carries no text
   // about the frame, so its text is what the position pass WROTE for it, and
   // only when the pass rewrote the leaf at all: an unrewritten leaf has no
@@ -1894,7 +1897,14 @@ export function recordNestedStackParameterExpressions(
   // resolved it, so a second match refuses; a placeholder inside the prefix
   // fails `startsWith` and refuses. Refused here rather than after
   // certification so the leaf also counts as UNFRAMED in (iv), which keeps a
-  // same-value literal sibling from taking the entry.
+  // same-value literal sibling from taking the entry. The second match
+  // refuses only while the leaf's OWN pair is intact: an own token that
+  // resolved to two plaintexts in one pass (`CONFLICTING_PLAINTEXT`, which
+  // `deploy-engine.ts` shows a non-cacheable re-resolution can produce) is
+  // dropped from the frame arm's candidates by its plaintext test, a sibling
+  // becomes the single match, and this arm carries the sibling's reference
+  // to the child -- the frame arm's own residual, inherited rather than
+  // added here.
   //
   // What each test below refuses. `written === resolvedValue` refuses an
   // unrewritten leaf, which `singleSpanFrame` refuses too (a spelling equal

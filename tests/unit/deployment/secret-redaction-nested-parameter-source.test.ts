@@ -1494,9 +1494,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
    * the recorder takes what the position pass WROTE for the leaf, when it
    * rewrote it at all. That is sound only beside (ii) -- the `per arm` cases
    * below pin that every other arm able to rewrite an object-sourced leaf is
-   * refused: by (ii) where the source spells a secret service, and by the
-   * source-service check where the source renders no token -- so on a leaf
-   * both pass, the rewrite can only be the frame arm's.
+   * refused: by (ii) where the source spells a secret service, and by
+   * `frameSpellingOf`'s no-segments refusal where the source is not a join
+   * or sub at all -- so on a leaf every refusal passes, the rewrite can only
+   * be the frame arm's.
    */
   describe('an OBJECT-spelled parameter source (#3062)', () => {
     const ARN = 'arn:aws:secretsmanager:us-east-1:111111111111:secret:prod/db-AbCdEf';
@@ -1636,8 +1637,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     // survivor itself would carry an entry equal to the one already in the
     // map, and no refusal could be seen. WHICH refusal decides differs: the
     // skeleton and value-scan sources spell `secretsmanager:` literally, so
-    // (ii) is what refuses them; an `Fn::ImportValue` source renders no token
-    // at all, so the source-service check refuses it before (ii) is asked.
+    // (ii) is what refuses them; an `Fn::ImportValue` source is neither an
+    // `Fn::Join` nor an `Fn::Sub`, so `intrinsicSkeletonSegments` renders it
+    // as nothing and `frameSpellingOf` refuses it there, before any token
+    // exists for the source-service check to read and before (ii) is asked.
     describe('per arm, a rewrite the recorder refuses writes no entry', () => {
       it("the SKELETON arm: a whole-token join matching ONE recorded expression, not the map's survivor", () => {
         // The join names the `pintwin` key, so its pattern matches TWIN_TOKEN
