@@ -16,15 +16,16 @@ that cost is paid once, the reviewer sees the whole class, and sites 2..N
 cannot sit open while site 1's fix drifts away. Two boundaries:
 
 - **A sweep whose residue needs a NEW integ fixture is a genuine `next`** —
-  `.claude/rules/session-report.md`'s reason (a), the only one a residue can
-  take (its files are loaded by construction). File an umbrella naming every
+  `.claude/rules/session-report.md`'s reason (a); (b) is the only other one a
+  residue can take (its files are loaded, so never (c)). File an umbrella
+  naming every
   site (§3 sorts umbrellas last), and say which sites this lane DID close, so
   the residue is unambiguous.
 
   **Say WHY in the criteria's terms, not the PR's.** This read "would make the
   PR unreviewable" until 2026-09-05, so the file blessed what its own rule
-  refuses. Review size is the SIGNAL; under it is verification the residue needs
-  and this lane is not paying. Else the residue is `now`.
+  refuses. Review size is the SIGNAL; under it is a NEW fixture the residue
+  needs — reason (a). Else the residue is `now`.
 
   **The unreviewable state is never reached by drifting into it**, because each
   widening is small and real:
@@ -142,8 +143,9 @@ Dup-check: searched open issues for <terms> -- none covers this root cause
 worktree still open?" (usually yes) — and while it is, `next` is weak: another
 PR from that tree costs almost nothing, deps and markers already paid.
 `.claude/rules/session-report.md` owns the criteria and wins on conflict (a
-frozen-scope reason is a SESSION-STATE clause there: legal, expiring, and it
-must name its ending event). This step adds only the TIMING: twice a
+frozen-scope reason is a SESSION-STATE clause there, and one that no longer
+counts as a reason at all; only "held by another lane's open PR" survives, as
+reason (b) with its ending event named). This step adds only the TIMING: twice a
 frozen-scope `next` was filed while the owning lane was still open
 (go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
 
@@ -169,7 +171,7 @@ cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY' &&
 <one paragraph: the root cause, and where the evidence for it is>
 
 Dup-check: searched open issues for <terms> -- none covers this root cause
-Session-fit: now (do it in this session) | next (not this session) -- <context test: which files the fix touches were read this session; then a reason the WORK owns -- .claude/rules/session-report.md>
+Session-fit: now (do it in this session) | next (not this session) -- <context test: which files the fix touches or must read were read this session; then a reason the WORK owns -- .claude/rules/session-report.md>
 Severity: high -- <what stays broken while it is undone>
 Effort: large (L) -- <which verification cycle it drags>
 Estimate: ~3 h+ -- <what eats the time>

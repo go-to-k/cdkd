@@ -43,8 +43,8 @@ Remaining-work taxonomy):
   time when the evidence is gone. **(a) is the default, not (b)**: a nit a
   reviewer found lives in a file this session just reviewed, so the context
   test in `.claude/rules/session-report.md` → Session-fit makes it `now`
-  unless one of that rule's three `next` reasons fires — file an issue only
-  then, and write the reason. A `now` item must be fixed before the marker
+  unless that rule's reason (a) or (b) fires — file an issue only then, and
+  write the reason. A `now` item must be fixed before the marker
   is set, or re-classified with the reason recorded.
 - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit
   and why shipping as-is is right.

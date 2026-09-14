@@ -413,13 +413,14 @@ talked into by a ranking before:
 
 ### 3-b. Before writing `next`, NAME the next session's verification
 
-**`now` is the default, and the CONTEXT TEST comes before the decision.** List
-the files the fix touches; if this session has already read, edited or
-reviewed ANY of them, the item is `now` — `next` is reserved for the three
-reasons `.claude/rules/session-report.md` → Session-fit enumerates (a NEW
-verifier to write / external input / a COLD subsystem). The maintainer's
-wrap-time "cheaper to do it here, with the context loaded?" has flipped every
-item it was asked about; this paragraph asks it in advance.
+**`now` is the default; `next` needs one of the three reasons
+`.claude/rules/session-report.md` → Session-fit enumerates** (a NEW integ
+fixture to write / external input / a COLD subsystem). Once the first two are
+excluded, the CONTEXT TEST decides: list the files the fix touches or must
+read; if this session read, edited or reviewed ANY of them, the item is
+`now`. The maintainer's wrap-time "cheaper to do it here, with the context
+loaded?" has flipped every item it was asked about; this paragraph asks it in
+advance.
 
 **You may not write `Session-fit: next` until you can name the command the
 NEXT session will run to verify the fix, and say a fresh session can run it.**
@@ -447,5 +448,6 @@ three-repo behaviour change while a six-line no-behaviour-change alternative
 sat in the same body).
 
 **The converse is the honest use of `next`**: when you CAN name the
-verification and a fresh session will plainly have it, the deferral is sound
-— put that line in the issue body next to `Session-fit`.
+verification, a fresh session will plainly have it, AND one of the three
+reasons holds — nameability is necessary, never sufficient — the deferral is
+sound; put that line in the issue body next to `Session-fit`.

@@ -69,13 +69,13 @@ nearly every recent session the maintainer has had to ask whether the
 leftover would not be cheaper to finish HERE, with the context already
 loaded — and every time the answer was yes: the item was re-classified `now`
 and done in that session (go-to-k/cdkd#3083 is the latest, ~25 min because
-every file it touched was already read). This rule pre-answers that question;
-it must never need asking again.
+every file it touched was already read). This rule pre-answers the question.
 
 **Write the CONTEXT TEST before the decision**: list the files the fix
 touches or must read to be made correctly (tests and docs included), and
-say, per file, whether this session already READ it — read, edited, or reviewed in a diff; a reviewer's
-read set counts exactly like an author's. ONE loaded file makes the item
+say, per file, whether this session already READ it — read, edited, or
+reviewed in a diff; a reviewer's read set counts exactly like an author's.
+ONE loaded file makes the item
 `now`: a fresh session pays the launch probe, install, build, the module read
 and the evidence re-derivation BEFORE its first edit, while this session pays
 the edit alone. Precedence: `next` reasons (a) and (b) below ask whether the
@@ -96,14 +96,14 @@ work CAN finish here and are decided first; (c) is what the test decides.
 - **`next`** — ONLY one of: (a) a NEW live-AWS verifier (an integ fixture,
   `Effort: large`) must be WRITTEN and writing it is most of the work — a
   unit case never qualifies, every fix writes one; (b) external input (a
-  quota, an upstream fix, credentials this host lacks, a maintainer decision
-  already asked through `AskUserQuestion` and unanswered — a routine call is
-  yours to make); or (c) the subsystem is COLD — nothing the fix touches or
-  must read was read this session AND no `now` criterion fires. **Nothing about the SESSION is a reason**: its
-  length, the context left, "it has done enough", a wrap report already
-  drafted, the PR already merged. The wrap reflex (file → classify → close)
-  fires exactly when the context is richest, which is why it produces `next`
-  — and why the context test is written first.
+  quota, an upstream fix, credentials this host lacks, a file held by another
+  lane's OPEN PR, a maintainer decision already asked through
+  `AskUserQuestion` and unanswered — a routine call is yours to make); or (c)
+  the subsystem is COLD — nothing the fix touches or must read was read this
+  session AND no `now` criterion fires. **Nothing about the SESSION is a
+  reason**: its length, the context left, "it has done enough", a wrap report
+  already drafted, the PR already merged. The wrap reflex (file → classify →
+  close) fires when the context is richest — which is why it produced `next`.
 
 **No `next` criterion is about the PR.** Two used to be — "a schema bump /
 behavior change that must not share a PR" and "bundling makes the PR
@@ -134,11 +134,11 @@ REQUEST); this is a claim about the SESSION that filed it — "PR 2519's scope
 was frozen at its final review round" (go-to-k/cdkd#2554), "the file is held
 by another open PR's diff" (go-to-k/cdkd#2604), "a unit-and-review lane with
 no integ run budgeted" (go-to-k/cdkd#2539). A PR can be named on either side,
-so ask which of the two the sentence is ABOUT. Of those three only #2604's
-survives, as reason (b) ending at that merge; "no integ run budgeted" and
-"no file overlap" are no longer reasons at all. A session-state clause is
-legal only as the EXPIRY event of a `next` reason, and it goes stale;
-classify-once freezes the DECISION, not the PREMISE.
+so ask which of the two the sentence is ABOUT. Only #2604's survives, as
+reason (b) ending at that merge; "no integ run budgeted" and "no file
+overlap" are no longer reasons. A session-state clause is legal only when it
+carries its expiry event, and it goes stale; classify-once freezes the
+DECISION, not the PREMISE.
 
 So: prefer a reason the WORK owns; if a session-state clause is written anyway,
 name the event that ends it on the same line (go-to-k/cdkd#2604's "unblocked
@@ -182,8 +182,10 @@ reporting bar — noticing one right after shipping is a reason to raise it.
 
 **A newly DISCOVERED bug is `now` even in a cold subsystem**: its expensive
 part is the evidence (repro, observed AWS behavior, measured numbers), which
-an issue body cannot carry cheaply — and if deferred anyway on reason (a) or
-(b), the issue body carries the EVIDENCE, not just the diagnosis.
+an issue body cannot carry cheaply — unless that evidence is already
+PERSISTED in the repo (a committed fixture or corpus case), when (c) applies
+as usual. If deferred anyway on reason (a) or (b), the issue body carries the
+EVIDENCE, not just the diagnosis.
 
 **`next` is not on the menu inside a scope the user framed as "do this across
 the repos in one session".** The framing IS the deferral decision. Three
@@ -228,9 +230,8 @@ it.
 `Severity` / `Effort` are ALSO labels (`severity:high|medium|low`,
 `effort:small|medium|large`) — set at filing and at a claim that rewrites an
 old packed body; the label is APPLIED in CI from the body (go-to-k/cdkd#2717
-retired `issue-classification-label-gate.sh`, whose only move was to refuse);
-the PR inherits them via `pr-inherit-issue-labels.yml` (label the ISSUE, never
-the PR by hand). Only these two: `Session-fit` is re-decided at claim (a stale
+retired the refusing hook); the PR inherits them via
+`pr-inherit-issue-labels.yml` (label the ISSUE, never the PR by hand). Only these two: `Session-fit` is re-decided at claim (a stale
 label is worse than none) and `Estimate` is free-form.
 
 A label can also be **DERIVED** (a 2026-09-06 maintainer-directed sweep
