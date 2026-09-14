@@ -79,6 +79,7 @@ import {
   type InstanceMetadataEndpointState,
   type InstanceMetadataProtocolState,
   type InstanceMetadataTagsState,
+  type Instance,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -103,6 +104,7 @@ import {
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from '../ec2-termination-protection.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { definedAttributes } from '../attribute-map.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import type { MaskerFn } from '../masked-retry-logger.js';
@@ -351,6 +353,66 @@ function canonicalizeSgInlineRuleProtocols(
  * - AWS::EC2::SecurityGroupIngress
  * - AWS::EC2::Instance
  */
+/**
+ * The `AWS::EC2::Instance` attribute map for a `DescribeInstances` read-back,
+ * shared by `createInstance` and `updateInstance` so the two cannot answer
+ * the same instance differently (issue #3077).
+ *
+ * The map distinguishes UNKNOWN from KNOWN-EMPTY, and the instance STATE is
+ * what tells them apart:
+ *
+ *  - `pending` (a `--no-wait` create, or an update racing one): the private
+ *    address, private DNS name and AZ are assigned at launch and are recorded
+ *    when present; the PUBLIC pair may simply not exist yet — the API
+ *    reports `PublicDnsName: ''` and no `PublicIpAddress` in that window — so
+ *    an empty or absent public member is UNKNOWN and its key is OMITTED. A
+ *    persisted `''` would shadow the resolver's live re-read for the life of
+ *    the record (the defect the issue reports); an absent key sends the next
+ *    `Fn::GetAtt` back to AWS.
+ *  - any settled state (`running`, `stopped`, ...): what AWS reports IS the
+ *    answer. A running instance in a private subnet is described exactly like
+ *    the pending window above — `PublicDnsName: ''`, no `PublicIpAddress` —
+ *    and CloudFormation answers `''` for both attributes, so the pair is
+ *    recorded as the known empty string rather than omitted: omitted, every
+ *    resolution would take the live arm, find nothing, and degrade to the
+ *    instance id with a warning, permanently, on an ordinary private-subnet
+ *    stack (review of the first cut).
+ *  - no `State` at all (a read-back that returned no instance, or a shape
+ *    without one): treated like `pending` — whatever members are present are
+ *    recorded, and an empty or absent public member is omitted, since nothing
+ *    says the instance has settled.
+ *
+ * `definedAttributes` then drops the `undefined` members; it keeps `''`, so the
+ * pending-window normalization has to happen HERE, where the state is known.
+ *
+ * The residual that follows from the pending rule: a `--no-wait` create of an
+ * instance in a PRIVATE subnet omits the public pair, and nothing later writes
+ * it -- a no-change deploy's auto-refresh touches `observedProperties`, never
+ * `attributes` -- so `Fn::GetAtt [.., PublicIp]` takes the resolver's live arm,
+ * finds no address, and degrades to the instance id with a warning until the
+ * next `update()` of that instance records the known-empty pair. Tracked on
+ * go-to-k/cdkd#3096.
+ */
+export function describedInstanceAttributes(
+  instanceId: string,
+  instance: Instance | undefined
+): Record<string, unknown> {
+  const stateName = instance?.State?.Name;
+  const settled = stateName !== undefined && stateName !== 'pending';
+  // A settled instance's public member: reported value, or the known empty.
+  // A pending one's: reported non-empty value, or unknown.
+  const publicMember = (value: string | undefined): string | undefined =>
+    settled ? (value ?? '') : value || undefined;
+  return definedAttributes({
+    InstanceId: instanceId,
+    PrivateIp: instance?.PrivateIpAddress,
+    PublicIp: publicMember(instance?.PublicIpAddress),
+    PrivateDnsName: instance?.PrivateDnsName,
+    PublicDnsName: publicMember(instance?.PublicDnsName),
+    AvailabilityZone: instance?.Placement?.AvailabilityZone,
+  });
+}
+
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   private logger = getLogger().child('EC2Provider');
@@ -866,7 +928,9 @@ export class EC2Provider implements ResourceProvider {
       // `DeleteVpcCommand` before re-throwing the original error. A
       // freshly-created VPC has no subnets / SGs (except default which
       // CASCADE-delete with the VPC), so a single DeleteVpc suffices.
-      let defaultSgId = '';
+      // `undefined` until the default security group is read back: the
+      // attribute is OMITTED rather than recorded as `''` (issue #3077).
+      let defaultSgId: string | undefined;
       try {
         // Apply DNS settings
         if (
@@ -909,7 +973,7 @@ export class EC2Provider implements ResourceProvider {
               ],
             })
           );
-          defaultSgId = sgResponse.SecurityGroups?.[0]?.GroupId || '';
+          defaultSgId = sgResponse.SecurityGroups?.[0]?.GroupId;
         } catch {
           this.logger.debug(`Failed to get default SG for VPC ${vpcId}`);
         }
@@ -931,12 +995,19 @@ export class EC2Provider implements ResourceProvider {
 
       return {
         physicalId: vpcId,
-        attributes: {
+        // `DefaultNetworkAcl` is deliberately not recorded: nothing reads it
+        // back, and a permanent `''` placeholder was the issue #3077 shape --
+        // absent, a reference falls to the resolver's `guardedPhysicalIdFallback`
+        // (the VPC id, with a warning) instead of resolving to the empty
+        // string. `DefaultSecurityGroup` is absent only when the read-back
+        // above failed; the resolver's own arm for it then answers the VPC id
+        // WITHOUT a warning -- the same silent physical-id class as the EC2
+        // Instance arm, tracked on issue #3096.
+        attributes: definedAttributes({
           VpcId: vpcId,
           CidrBlock: cidrBlock,
-          DefaultNetworkAcl: '',
           DefaultSecurityGroup: defaultSgId,
-        },
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -3725,23 +3796,15 @@ export class EC2Provider implements ResourceProvider {
         }
 
         // Describe instance to get attributes after running. Under
-        // --no-wait the instance can still be `pending` here, so the
-        // IP / DNS fields may not be assigned yet — every field below
-        // already falls back to '' rather than failing, which is the
-        // accepted --no-wait trade-off (same as other gated types).
+        // --no-wait the instance can still be `pending` here, so the public
+        // address may not be assigned yet; `describedInstanceAttributes`
+        // records what is KNOWN and omits what is not (issue #3077).
         const describeResponse = await this.ec2Client.send(
           new DescribeInstancesCommand({ InstanceIds: [instanceId] })
         );
         const runningInstance = describeResponse.Reservations?.[0]?.Instances?.[0];
 
-        const attributes: Record<string, unknown> = {
-          InstanceId: instanceId,
-          PrivateIp: runningInstance?.PrivateIpAddress ?? '',
-          PublicIp: runningInstance?.PublicIpAddress ?? '',
-          PrivateDnsName: runningInstance?.PrivateDnsName ?? '',
-          PublicDnsName: runningInstance?.PublicDnsName ?? '',
-          AvailabilityZone: runningInstance?.Placement?.AvailabilityZone ?? '',
-        };
+        const attributes = describedInstanceAttributes(instanceId, runningInstance);
 
         this.logger.debug(`Successfully created EC2 Instance ${logicalId}: ${instanceId}`);
 
@@ -3997,7 +4060,14 @@ export class EC2Provider implements ResourceProvider {
 
       await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
 
-      // Refresh attributes
+      // Refresh attributes. The map REPLACES the record's (the engine does
+      // not merge it with the previous one), and that is the right answer
+      // (issue #3077): a public address disappears only on a real event — a
+      // stop, an EIP change — where the previously recorded value is dead,
+      // and carrying it forward would hand a downstream reference an address
+      // the instance no longer has. `describedInstanceAttributes` records
+      // the settled instance's public pair as the KNOWN empty CloudFormation
+      // reports, and omits it only while the instance is still `pending`.
       const describeResponse = await this.ec2Client.send(
         new DescribeInstancesCommand({ InstanceIds: [physicalId] })
       );
@@ -4006,14 +4076,7 @@ export class EC2Provider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: {
-          InstanceId: physicalId,
-          PrivateIp: instance?.PrivateIpAddress ?? '',
-          PublicIp: instance?.PublicIpAddress ?? '',
-          PrivateDnsName: instance?.PrivateDnsName ?? '',
-          PublicDnsName: instance?.PublicDnsName ?? '',
-          AvailabilityZone: instance?.Placement?.AvailabilityZone ?? '',
-        },
+        attributes: describedInstanceAttributes(physicalId, instance),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;

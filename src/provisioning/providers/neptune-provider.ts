@@ -30,6 +30,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 
 /**
  * AWS Neptune Provider
@@ -422,12 +423,12 @@ export class NeptuneProvider implements ResourceProvider {
 
       return {
         physicalId: dbClusterIdentifier,
-        attributes: {
-          'Endpoint.Address': described?.Endpoint ?? '',
-          'Endpoint.Port': String(described?.Port ?? ''),
-          'ReadEndpoint.Address': described?.ReaderEndpoint ?? '',
-          ClusterResourceId: described?.DbClusterResourceId ?? '',
-        },
+        attributes: definedAttributes({
+          'Endpoint.Address': described?.Endpoint,
+          'Endpoint.Port': stringifyIfAssigned(described?.Port),
+          'ReadEndpoint.Address': described?.ReaderEndpoint,
+          ClusterResourceId: described?.DbClusterResourceId,
+        }),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
@@ -542,12 +543,12 @@ export class NeptuneProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: {
-          'Endpoint.Address': described?.Endpoint ?? '',
-          'Endpoint.Port': String(described?.Port ?? ''),
-          'ReadEndpoint.Address': described?.ReaderEndpoint ?? '',
-          ClusterResourceId: described?.DbClusterResourceId ?? '',
-        },
+        attributes: definedAttributes({
+          'Endpoint.Address': described?.Endpoint,
+          'Endpoint.Port': stringifyIfAssigned(described?.Port),
+          'ReadEndpoint.Address': described?.ReaderEndpoint,
+          ClusterResourceId: described?.DbClusterResourceId,
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -694,10 +695,10 @@ export class NeptuneProvider implements ResourceProvider {
 
       return {
         physicalId: dbInstanceIdentifier,
-        attributes: {
-          'Endpoint.Address': described?.Endpoint?.Address ?? '',
-          'Endpoint.Port': String(described?.Endpoint?.Port ?? ''),
-        },
+        attributes: definedAttributes({
+          'Endpoint.Address': described?.Endpoint?.Address,
+          'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
+        }),
       };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
@@ -774,10 +775,10 @@ export class NeptuneProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: {
-          'Endpoint.Address': described?.Endpoint?.Address ?? '',
-          'Endpoint.Port': String(described?.Endpoint?.Port ?? ''),
-        },
+        attributes: definedAttributes({
+          'Endpoint.Address': described?.Endpoint?.Address,
+          'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;

@@ -99,6 +99,43 @@ describe('ECRProvider read-update round-trip', () => {
     });
   });
 
+  // Issue #3077: the attribute refresh at the tail of update() records what
+  // the describe returned and OMITS what it did not -- never `''`. A transient
+  // miss (no repository in the response) therefore records an empty map, which
+  // REPLACES the record, and the resolver rebuilds `Arn` / `RepositoryUri`
+  // from the physical id on the next read instead of serving `''`.
+  // `repositories: []` is not what the real API answers for a missing
+  // repository (it throws `RepositoryNotFoundException`); it is the shape that
+  // reaches `repo === undefined`, which is the branch under test.
+  it('records an empty attribute map when the post-update describe returns no repository (issue #3077)', async () => {
+    mockSend.mockResolvedValue({ repositories: [] });
+    const observed = {
+      RepositoryName: REPO,
+      ImageTagMutability: 'MUTABLE',
+      ImageScanningConfiguration: { ScanOnPush: false },
+      EncryptionConfiguration: { EncryptionType: 'AES256' },
+      Tags: [] as Array<{ Key: string; Value: string }>,
+    };
+
+    const result = await provider.update('L', REPO, 'AWS::ECR::Repository', observed, observed);
+
+    expect(result.attributes).toStrictEqual({});
+  });
+
+  it('records both attributes verbatim when the post-update describe carries them (the control)', async () => {
+    const observed = {
+      RepositoryName: REPO,
+      ImageTagMutability: 'MUTABLE',
+      ImageScanningConfiguration: { ScanOnPush: false },
+      EncryptionConfiguration: { EncryptionType: 'AES256' },
+      Tags: [] as Array<{ Key: string; Value: string }>,
+    };
+
+    const result = await provider.update('L', REPO, 'AWS::ECR::Repository', observed, observed);
+
+    expect(result.attributes).toStrictEqual({ Arn: REPO_ARN, RepositoryUri: REPO_URI });
+  });
+
   it('AES256 (default) repository: no-drift round-trip is a no-op (zero mutating SDK calls; KmsKey not pushed)', async () => {
     // Class 1 guard — `KmsKey` is only valid on `EncryptionType=KMS`.
     // readCurrentState now omits `KmsKey` on AES256 (the AWS API may

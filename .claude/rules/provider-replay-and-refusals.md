@@ -289,7 +289,15 @@ shape: `ApiGatewayV2Provider` gated its `ExecuteApiArn` re-record on the endpoin
 alone, so a transient `fabricated: true` from `getAccountInfo` wrote
 `{ApiId, ApiEndpoint}` over a correct ARN and a same-deploy `Fn::GetAtt`
 hard-threw with the loss persisted — worse than not healing at all. Gate the
-write on EVERY member being in hand; return nothing otherwise.
+write on EVERY member being in hand; return nothing otherwise. **That is the
+rule for a HEAL of a value cdkd COMPUTES; a member the live read-back reports
+UNASSIGNED is the opposite case and is replaced on purpose** (issue #3077,
+`EC2Provider.updateInstance` via `describedInstanceAttributes`): an EC2 public
+IP the describe no longer returns is gone from AWS — a stop, an EIP change —
+so re-recording the previous value would hand a downstream reference a dead
+address. On a settled instance the pair is recorded as the known empty string
+CloudFormation reports; only while the instance is still `pending` is the key
+omitted, which sends the next `Fn::GetAtt` back to AWS.
 
 **`effectiveProperties` is the OTHER half of that remedy, and the two answer
 different questions** (issue #1591). Seeding the comparison baseline from the

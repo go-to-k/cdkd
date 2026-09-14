@@ -3028,6 +3028,86 @@ describe('IntrinsicFunctionResolver - AWS::EC2::Instance Fn::GetAtt (live Descri
     expect(mockEc2Send).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #3077, the consumer half of the provider fix. A stored `''` is a HIT
+  // for the flat lookup (`flatValue !== undefined`), so it shadows this live
+  // arm for the life of the record -- which is why a provider must OMIT an
+  // attribute it could not read back rather than record `''`. The record
+  // shape below (`InstanceId` only) is exactly what `EC2Provider` writes for
+  // a `--no-wait` instance that was still `pending` at create time.
+  it('serves a stored empty string WITHOUT re-describing the instance (the shadowing the providers must not manufacture)', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [{ Instances: [{ PrivateIpAddress: '10.0.3.42' }] }],
+    });
+    const context: ResolverContext = {
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: { InstanceId: 'i-0123456789abcdef0', PrivateIp: '' },
+          dependencies: [],
+        },
+      },
+    };
+
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, context)).toBe('');
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('re-reads AWS for an attribute the record OMITS, even when the record holds other attributes', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [{ Instances: [{ PrivateIpAddress: '10.0.3.42' }] }],
+    });
+    const context: ResolverContext = {
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: { InstanceId: 'i-0123456789abcdef0' },
+          dependencies: [],
+        },
+      },
+    };
+
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, context)).toBe(
+      '10.0.3.42'
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the physical id, and caches NOTHING, while the live read still finds the attribute unassigned', async () => {
+    // The residual issue #3077 leaves in place, pinned so its shape is
+    // visible: a still-`pending` instance answers with no address, the arm
+    // warns and degrades to the instance id, and because no value is cached
+    // the NEXT resolution re-describes rather than serving the degraded value.
+    mockEc2Send.mockResolvedValue({
+      Reservations: [{ Instances: [{ InstanceId: 'i-0123456789abcdef0', State: { Name: 'pending' } }] }],
+    });
+    const makeContext = (): ResolverContext => ({
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: { InstanceId: 'i-0123456789abcdef0' },
+          dependencies: [],
+        },
+      },
+    });
+
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
+      'i-0123456789abcdef0'
+    );
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
+      'i-0123456789abcdef0'
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
   it('falls back to the physical id when DescribeInstances fails', async () => {
     mockEc2Send.mockRejectedValue(new Error('Access Denied'));
 

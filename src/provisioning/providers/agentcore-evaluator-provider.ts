@@ -44,6 +44,7 @@ import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-c
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { definedAttributes } from '../attribute-map.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -179,12 +180,12 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
 
       return {
         physicalId: evaluatorArn,
-        attributes: {
+        attributes: definedAttributes({
           EvaluatorArn: evaluatorArn,
           EvaluatorId: evaluatorId,
-          Status: response.status ?? '',
-          CreatedAt: response.createdAt?.toISOString() ?? '',
-        },
+          Status: response.status,
+          CreatedAt: response.createdAt?.toISOString(),
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -248,12 +249,12 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       return {
         physicalId: evaluatorArn,
         wasReplaced: false,
-        attributes: {
+        attributes: definedAttributes({
           EvaluatorArn: evaluatorArn,
           EvaluatorId: response.evaluatorId ?? evaluatorIdFromArn(evaluatorArn),
-          Status: response.status ?? '',
-          UpdatedAt: response.updatedAt?.toISOString() ?? '',
-        },
+          Status: response.status,
+          UpdatedAt: response.updatedAt?.toISOString(),
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;

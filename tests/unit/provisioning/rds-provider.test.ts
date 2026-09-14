@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
 
@@ -937,5 +937,144 @@ describe('RDSProvider', () => {
         provider.delete('MyResource', 'some-id', 'AWS::RDS::Unknown')
       ).rejects.toThrow('Unsupported resource type: AWS::RDS::Unknown');
     });
+  });
+});
+
+// Issue #3077: an attribute the describe left unassigned is OMITTED from the
+// recorded map, never written as `''` -- and `Endpoint.Port` is never written
+// as the literal `'undefined'`, which is what `String(described?.Port ?? '')`
+// turns into once its `?? ''` is merely deleted. Under `--no-wait` the
+// post-create describe runs against a `creating` instance, whose `Endpoint`
+// AWS has not assigned yet. `toStrictEqual` on the whole map is the
+// discriminator: `''`, `'undefined'` and a present-but-`undefined` key all
+// fail it (`toEqual` ignores the last -- measured under an identity helper).
+describe('RDSProvider unassigned attributes are omitted, never recorded as an empty string (issue #3077)', () => {
+  let provider: RDSProvider;
+  let originalNoWait: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new RDSProvider();
+    originalNoWait = process.env['CDKD_NO_WAIT'];
+    process.env['CDKD_NO_WAIT'] = 'true';
+  });
+
+  afterEach(() => {
+    if (originalNoWait === undefined) delete process.env['CDKD_NO_WAIT'];
+    else process.env['CDKD_NO_WAIT'] = originalNoWait;
+  });
+
+  it('DBInstance create under --no-wait records only the Arn while the instance is still creating', async () => {
+    mockSend.mockResolvedValueOnce({
+      DBInstance: {
+        DBInstanceIdentifier: 'my-instance',
+        DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+      },
+    });
+    // The wait is skipped, so this is the attribute describe: `creating`, no Endpoint.
+    mockSend.mockResolvedValueOnce({
+      DBInstances: [
+        {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceStatus: 'creating',
+          DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+        },
+      ],
+    });
+
+    const result = await provider.create('MyInstance', 'AWS::RDS::DBInstance', {
+      DBInstanceIdentifier: 'my-instance',
+      DBInstanceClass: 'db.t3.micro',
+      Engine: 'postgres',
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(result.attributes).toStrictEqual({
+      Arn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+    });
+  });
+
+  it('DBInstance update records only the Arn when the describe carries no Endpoint', async () => {
+    // ModifyDBInstance, then the attribute describe.
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      DBInstances: [
+        {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceStatus: 'modifying',
+          DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+        },
+      ],
+    });
+
+    const result = await provider.update(
+      'MyInstance',
+      'my-instance',
+      'AWS::RDS::DBInstance',
+      { DBInstanceClass: 'db.t3.small', Engine: 'postgres' },
+      { DBInstanceClass: 'db.t3.micro', Engine: 'postgres' }
+    );
+
+    expect(result.attributes).toStrictEqual({
+      Arn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+    });
+  });
+
+  it('DBInstance create keeps a numeric Port as its string form when it IS assigned (the control)', async () => {
+    mockSend.mockResolvedValueOnce({ DBInstance: { DBInstanceIdentifier: 'my-instance' } });
+    mockSend.mockResolvedValueOnce({
+      DBInstances: [
+        {
+          DBInstanceIdentifier: 'my-instance',
+          DBInstanceStatus: 'available',
+          Endpoint: { Address: 'my-instance.xxx.us-east-1.rds.amazonaws.com', Port: 5432 },
+          DBInstanceArn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+        },
+      ],
+    });
+
+    const result = await provider.create('MyInstance', 'AWS::RDS::DBInstance', {
+      DBInstanceIdentifier: 'my-instance',
+      DBInstanceClass: 'db.t3.micro',
+      Engine: 'postgres',
+    });
+
+    expect(result.attributes).toStrictEqual({
+      'Endpoint.Address': 'my-instance.xxx.us-east-1.rds.amazonaws.com',
+      'Endpoint.Port': '5432',
+      Arn: 'arn:aws:rds:us-east-1:123456789012:db:my-instance',
+    });
+  });
+
+  // The empty `DBClusters: []` below is not what the real API answers for a
+  // missing cluster (it throws `DBClusterNotFoundFault`); it is the shape that
+  // reaches `described === undefined`, which is the branch under test.
+  it('DBCluster update records an EMPTY map when the describe returns no cluster at all', async () => {
+    // ModifyDBCluster, then the attribute describe.
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({ DBClusters: [] });
+
+    const result = await provider.update(
+      'MyCluster',
+      'my-cluster',
+      'AWS::RDS::DBCluster',
+      { Engine: 'aurora-postgresql', BackupRetentionPeriod: 7 },
+      { Engine: 'aurora-postgresql', BackupRetentionPeriod: 1 }
+    );
+
+    expect(result.attributes).toStrictEqual({});
+  });
+
+  it('DBCluster create records an EMPTY map when the describe returns no cluster at all', async () => {
+    mockSend.mockResolvedValueOnce({ DBCluster: { DBClusterIdentifier: 'my-cluster' } });
+    mockSend.mockResolvedValueOnce({ DBClusters: [] });
+
+    const result = await provider.create('MyCluster', 'AWS::RDS::DBCluster', {
+      DBClusterIdentifier: 'my-cluster',
+      Engine: 'aurora-postgresql',
+    });
+
+    expect(result.physicalId).toBe('my-cluster');
+    expect(result.attributes).toStrictEqual({});
   });
 });

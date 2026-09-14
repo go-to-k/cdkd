@@ -40,6 +40,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { definedAttributes } from '../attribute-map.js';
 
 /**
  * AWS ECR Repository Provider
@@ -216,9 +217,6 @@ export class ECRProvider implements ResourceProvider {
         throw new Error('CreateRepository did not return repository name');
       }
 
-      const arn = repo.repositoryArn ?? '';
-      const repositoryUri = repo.repositoryUri ?? '';
-
       // Apply lifecycle policy (separate API call)
       const lifecyclePolicy = properties['LifecyclePolicy'] as
         | { LifecyclePolicyText?: string }
@@ -253,10 +251,10 @@ export class ECRProvider implements ResourceProvider {
 
       return {
         physicalId: repo.repositoryName,
-        attributes: {
-          Arn: arn,
-          RepositoryUri: repositoryUri,
-        },
+        attributes: definedAttributes({
+          Arn: repo.repositoryArn,
+          RepositoryUri: repo.repositoryUri,
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -470,10 +468,10 @@ export class ECRProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: {
-          Arn: repo?.repositoryArn ?? '',
-          RepositoryUri: repo?.repositoryUri ?? '',
-        },
+        attributes: definedAttributes({
+          Arn: repo?.repositoryArn,
+          RepositoryUri: repo?.repositoryUri,
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;

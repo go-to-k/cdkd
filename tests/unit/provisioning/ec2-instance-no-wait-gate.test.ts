@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import {
   DescribeIamInstanceProfileAssociationsCommand,
   RunInstancesCommand,
+  type Instance,
+  type InstanceStateName,
 } from '@aws-sdk/client-ec2';
 
 // Issue #1277: the EC2 Instance `running` wait was unconditional, so
@@ -54,7 +56,10 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   };
 });
 
-import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import {
+  EC2Provider,
+  describedInstanceAttributes,
+} from '../../../src/provisioning/providers/ec2-provider.js';
 
 const PROPS = { ImageId: 'ami-12345678', InstanceType: 't3.micro', SubnetId: 'subnet-1' };
 
@@ -71,15 +76,20 @@ function mockRunInstancesOk(state: 'pending' | 'running') {
             {
               InstanceId: 'i-1234567890abcdef0',
               State: { Name: state },
-              // Under --no-wait the instance can still be `pending`, so AWS
-              // has not assigned the addresses yet.
+              // The real DescribeInstances shape: the private address, private
+              // DNS name and AZ are assigned at launch and present while still
+              // `pending`; the PUBLIC pair is what may not exist yet -- and
+              // the API reports `PublicDnsName: ''` with NO `PublicIpAddress`
+              // in that window (issue #3077 review, fixture realism).
+              PrivateIpAddress: '10.0.0.5',
+              PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+              Placement: { AvailabilityZone: 'us-east-1a' },
               ...(state === 'running'
                 ? {
-                    PrivateIpAddress: '10.0.0.5',
                     PublicIpAddress: '54.0.0.5',
-                    Placement: { AvailabilityZone: 'us-east-1a' },
+                    PublicDnsName: 'ec2-54-0-0-5.compute-1.amazonaws.com',
                   }
-                : {}),
+                : { PublicDnsName: '' }),
             },
           ],
         },
@@ -127,16 +137,198 @@ describe('EC2 Instance running-state wait gating (issue #1277)', () => {
     expect(result.physicalId).toBe('i-1234567890abcdef0');
   });
 
-  it('still returns attributes when the pending instance has no addresses yet', async () => {
+  // Issue #3077: the public pair a `pending` instance has not been assigned
+  // is OMITTED from the recorded attributes, never written as `''` -- and the
+  // `''` the API itself reports for `PublicDnsName` in that window is treated
+  // the same way. The consumers of the map key off `undefined`-vs-present, and
+  // `''` put every one of them on the wrong branch: state persisted it, the
+  // Outputs pass published it as an export alias, and the resolver served it
+  // forever instead of re-describing the instance. `toStrictEqual` on the
+  // WHOLE map is the discriminator -- `''` and a present-but-`undefined` key
+  // both fail it (`toEqual` ignores an `undefined`-valued key: measured green
+  // under an identity `definedAttributes`).
+  it('omits the unassigned public pair of a pending instance and keeps the launch-time members', async () => {
     process.env['CDKD_NO_WAIT'] = 'true';
     mockRunInstancesOk('pending');
 
     const result = await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', PROPS);
 
-    // The accepted --no-wait trade-off: empty rather than a hard failure.
-    expect(result.attributes?.['PrivateIp']).toBe('');
+    expect(result.attributes).toStrictEqual({
+      InstanceId: 'i-1234567890abcdef0',
+      PrivateIp: '10.0.0.5',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      AvailabilityZone: 'us-east-1a',
+    });
+    expect(Object.hasOwn(result.attributes!, 'PublicIp')).toBe(false);
+    expect(Object.hasOwn(result.attributes!, 'PublicDnsName')).toBe(false);
+  });
+
+  it('records every assigned address of a running instance (the default-path control)', async () => {
+    // The negative control for the omission: a value AWS DID assign is kept
+    // verbatim, so the fix cannot be satisfied by dropping the map wholesale.
+    mockRunInstancesOk('running');
+
+    const result = await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', PROPS);
+
+    expect(result.attributes).toStrictEqual({
+      InstanceId: 'i-1234567890abcdef0',
+      PrivateIp: '10.0.0.5',
+      PublicIp: '54.0.0.5',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      PublicDnsName: 'ec2-54-0-0-5.compute-1.amazonaws.com',
+      AvailabilityZone: 'us-east-1a',
+    });
+  });
+
+  it('records the KNOWN-empty public pair of a running private-subnet instance (CloudFormation parity)', async () => {
+    // A running instance with no public address is described exactly like the
+    // pending window -- `PublicDnsName: ''`, no `PublicIpAddress` -- and
+    // CloudFormation answers `''` for both attributes. Omitting them here
+    // would send every later resolution to the live arm, which finds nothing
+    // and degrades to the instance id with a warning, permanently, on an
+    // ordinary private-subnet stack (review of the first cut). The instance
+    // STATE is what tells known-empty from not-yet.
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof RunInstancesCommand) {
+        return Promise.resolve({ Instances: [{ InstanceId: 'i-1234567890abcdef0' }] });
+      }
+      return Promise.resolve({
+        Reservations: [
+          {
+            Instances: [
+              {
+                InstanceId: 'i-1234567890abcdef0',
+                State: { Name: 'running' },
+                PrivateIpAddress: '10.0.0.5',
+                PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+                PublicDnsName: '',
+                Placement: { AvailabilityZone: 'us-east-1a' },
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    const result = await new EC2Provider().create('MyInstance', 'AWS::EC2::Instance', PROPS);
+
+    expect(result.attributes).toStrictEqual({
+      InstanceId: 'i-1234567890abcdef0',
+      PrivateIp: '10.0.0.5',
+      PublicIp: '',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      PublicDnsName: '',
+      AvailabilityZone: 'us-east-1a',
+    });
+  });
+});
+
+// Issue #3077, the `update()` twin. The update result's map REPLACES the
+// record's rather than merging into it, and that is the intended answer: a
+// public IP the describe no longer reports is gone from AWS (a stop, an EIP
+// change), so carrying the recorded one forward would hand a downstream
+// `Fn::GetAtt` a dead address. On a settled instance the pair is recorded as
+// the known empty string CloudFormation reports; only while still `pending`
+// is it omitted, so the next resolution re-reads AWS.
+describe('EC2 Instance update() attribute refresh distinguishes unknown from known-empty (issue #3077)', () => {
+  const INSTANCE_ID = 'i-1234567890abcdef0';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env['CDKD_NO_WAIT'];
+  });
+
+  function mockDescribe(instance: Record<string, unknown>) {
+    mockSend.mockImplementation(() =>
+      Promise.resolve({ Reservations: [{ Instances: [{ InstanceId: INSTANCE_ID, ...instance }] }] })
+    );
+  }
+
+  it('records the public pair as the known empty string on a running instance with no public address', async () => {
+    mockDescribe({
+      State: { Name: 'running' },
+      PrivateIpAddress: '10.0.0.5',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      PublicDnsName: '',
+      Placement: { AvailabilityZone: 'us-east-1a' },
+    });
+
+    const result = await new EC2Provider().update(
+      'MyInstance',
+      INSTANCE_ID,
+      'AWS::EC2::Instance',
+      PROPS,
+      PROPS
+    );
+
+    expect(result.attributes).toStrictEqual({
+      InstanceId: INSTANCE_ID,
+      PrivateIp: '10.0.0.5',
+      PublicIp: '',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      PublicDnsName: '',
+      AvailabilityZone: 'us-east-1a',
+    });
+  });
+
+  it('records the public pair as the known empty string on a STOPPED instance (the address was released)', async () => {
+    mockDescribe({
+      State: { Name: 'stopped' },
+      PrivateIpAddress: '10.0.0.5',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      PublicDnsName: '',
+      Placement: { AvailabilityZone: 'us-east-1a' },
+    });
+
+    const result = await new EC2Provider().update(
+      'MyInstance',
+      INSTANCE_ID,
+      'AWS::EC2::Instance',
+      PROPS,
+      PROPS
+    );
+
     expect(result.attributes?.['PublicIp']).toBe('');
-    expect(result.attributes?.['InstanceId']).toBe('i-1234567890abcdef0');
+    expect(result.attributes?.['PublicDnsName']).toBe('');
+  });
+
+  it('omits the public pair while the instance is still pending, even though the API reports PublicDnsName as ""', async () => {
+    mockDescribe({
+      State: { Name: 'pending' },
+      PrivateIpAddress: '10.0.0.5',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      PublicDnsName: '',
+      Placement: { AvailabilityZone: 'us-east-1a' },
+    });
+
+    const result = await new EC2Provider().update(
+      'MyInstance',
+      INSTANCE_ID,
+      'AWS::EC2::Instance',
+      PROPS,
+      PROPS
+    );
+
+    expect(result.attributes).toStrictEqual({
+      InstanceId: INSTANCE_ID,
+      PrivateIp: '10.0.0.5',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      AvailabilityZone: 'us-east-1a',
+    });
+  });
+
+  it('records only InstanceId when the read-back carries no State at all (nothing is known to have settled)', async () => {
+    mockDescribe({});
+
+    const result = await new EC2Provider().update(
+      'MyInstance',
+      INSTANCE_ID,
+      'AWS::EC2::Instance',
+      PROPS,
+      PROPS
+    );
+
+    expect(result.attributes).toStrictEqual({ InstanceId: INSTANCE_ID });
   });
 });
 
@@ -494,5 +686,57 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
 
     expect(current?.['IamInstanceProfile']).toBe(PROFILE_ARN);
     expect(associationCalls()).toHaveLength(0);
+  });
+});
+
+// Issue #3077: the state table of `describedInstanceAttributes`, driven
+// directly -- every EC2 instance state the API can report, against the two
+// describe shapes that matter (a public address present, and the
+// `PublicDnsName: ''` / no `PublicIpAddress` shape of an instance without
+// one). The provider suites above reach the same function through
+// `create()` / `update()`; this table is what makes the export load-bearing
+// and pins the ONE line that separates not-yet from known-empty.
+describe('describedInstanceAttributes state table (issue #3077)', () => {
+  const ID = 'i-1234567890abcdef0';
+  const withoutPublic = (state: string | undefined): Instance => ({
+    ...(state === undefined ? {} : { State: { Name: state as InstanceStateName } }),
+    PrivateIpAddress: '10.0.0.5',
+    PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+    PublicDnsName: '',
+    Placement: { AvailabilityZone: 'us-east-1a' },
+  });
+
+  it.each(['running', 'stopping', 'stopped', 'shutting-down', 'terminated'])(
+    'records the public pair as the known empty string in the settled state %s',
+    (state) => {
+      const out = describedInstanceAttributes(ID, withoutPublic(state));
+      expect(out['PublicIp']).toBe('');
+      expect(out['PublicDnsName']).toBe('');
+      expect(out['PrivateIp']).toBe('10.0.0.5');
+    }
+  );
+
+  it.each(['pending', undefined])('omits the public pair when the state is %s', (state) => {
+    const out = describedInstanceAttributes(ID, withoutPublic(state));
+    expect(out).toStrictEqual({
+      InstanceId: ID,
+      PrivateIp: '10.0.0.5',
+      PrivateDnsName: 'ip-10-0-0-5.ec2.internal',
+      AvailabilityZone: 'us-east-1a',
+    });
+  });
+
+  it('keeps a public address the API reports whatever the state, pending included', () => {
+    const out = describedInstanceAttributes(ID, {
+      ...withoutPublic('pending'),
+      PublicIpAddress: '54.0.0.5',
+      PublicDnsName: 'ec2-54-0-0-5.compute-1.amazonaws.com',
+    });
+    expect(out['PublicIp']).toBe('54.0.0.5');
+    expect(out['PublicDnsName']).toBe('ec2-54-0-0-5.compute-1.amazonaws.com');
+  });
+
+  it('records only InstanceId when the read-back returned no instance', () => {
+    expect(describedInstanceAttributes(ID, undefined)).toStrictEqual({ InstanceId: ID });
   });
 });

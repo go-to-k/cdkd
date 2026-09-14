@@ -1166,13 +1166,27 @@ Notes:
   attributes" and falls back to the same-physical-id map already in state,
   so returning `{}` never clobbers a good snapshot from a prior deploy.
 - **Never store an empty-string placeholder for an attribute you could not
-  read back — omit the key instead.** Write
-  `attributes: arn ? { Arn: arn } : {}`, not
-  `attributes: { Arn: arn ?? '' }`. The resolver treats any non-`undefined`
-  stored attribute as a hit, so a persisted `''` shadows
-  `constructAttribute`'s fallback and makes `Fn::GetAtt` resolve to the
-  empty string. This applies to `create()` / `update()` / `import()` alike —
-  keep the three consistent within a provider.
+  read back — omit the key instead.** Build the map with `definedAttributes`
+  from `src/provisioning/attribute-map.ts`, which drops every `undefined` /
+  `null` value (an empty string AWS itself reported is a known value and is
+  kept — a provider that knows a `''` means "not yet" maps it to `undefined`
+  first, as the EC2 Instance provider does while an instance is `pending`):
+  write
+  `attributes: definedAttributes({ Arn: response.Arn })`, not
+  `attributes: { Arn: response.Arn ?? '' }`, and stringify a numeric field
+  through its `stringifyIfAssigned` sibling so `Endpoint.Port` never becomes
+  the literal `'undefined'`. The resolver treats any non-`undefined` stored
+  attribute as a hit, so a persisted `''` shadows `constructAttribute`'s
+  fallback — the live `DescribeInstances` re-read for an EC2 instance's
+  addresses, the rebuilt ARN for the RDS family — and makes `Fn::GetAtt`
+  resolve to the empty string, which the Outputs pass then exports. This
+  applies to `create()` / `update()` / `import()` alike — keep the three
+  consistent within a provider. `tests/unit/provisioning/attribute-map.test.ts`
+  fails the build on any `?? ''` / `|| ''`, or a bare `''` where a value is
+  built (a property value, an initializer, an `=` right-hand side, a `?:`
+  branch), reachable from a provider's `attributes` value — the literal, a
+  hoisted `const` / `let` and its reassignments, a builder's element writes, a
+  same-file helper's return, a call's arguments and receiver, or a spread.
 - Tests for `import` go in the same file as the create/update/delete
   tests, with three cases: explicit-override path, tag-based lookup
   hit, tag-based lookup miss (returns `null`)

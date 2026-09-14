@@ -30,6 +30,7 @@ import type {
   CreateContext,
   SecretMasker,
 } from '../../types/resource.js';
+import { definedAttributes } from '../attribute-map.js';
 
 /**
  * Top-level `DistributionConfig` fields that are a BARE ARRAY in the CFn
@@ -432,7 +433,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       const getResponse = await this.cloudFrontClient.send(
         new GetDistributionCommand({ Id: physicalId })
       );
-      const domainName = getResponse.Distribution?.DomainName ?? '';
+      const domainName = getResponse.Distribution?.DomainName;
       const arn = getResponse.Distribution?.ARN;
 
       // Apply tag diff via TagResource / UntagResource. CloudFront has no
@@ -469,11 +470,11 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: {
+        attributes: definedAttributes({
           Id: physicalId,
           DistributionId: physicalId,
           DomainName: domainName,
-        },
+        }),
       };
     } catch (error) {
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner

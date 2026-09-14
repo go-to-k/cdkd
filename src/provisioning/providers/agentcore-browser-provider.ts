@@ -30,6 +30,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { definedAttributes } from '../attribute-map.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -83,12 +84,12 @@ export class AgentCoreBrowserProvider implements ResourceProvider {
 
       return {
         physicalId: browserArn,
-        attributes: {
+        attributes: definedAttributes({
           BrowserArn: browserArn,
           BrowserId: response.browserId ?? DEFAULT_BROWSER_ID,
-          Name: response.name ?? '',
-          Status: response.status ?? '',
-        },
+          Name: response.name,
+          Status: response.status,
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -168,12 +169,12 @@ export class AgentCoreBrowserProvider implements ResourceProvider {
     );
     return {
       physicalId: response.browserArn!,
-      attributes: {
+      attributes: definedAttributes({
         BrowserArn: response.browserArn!,
         BrowserId: response.browserId ?? DEFAULT_BROWSER_ID,
-        Name: response.name ?? '',
-        Status: response.status ?? '',
-      },
+        Name: response.name,
+        Status: response.status,
+      }),
     };
   }
 }

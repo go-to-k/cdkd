@@ -147,6 +147,118 @@ describe('ElastiCacheProvider read-update round-trip', () => {
     expect(input.SecurityGroupIds).toBeUndefined();
   });
 
+  // Issue #3077: an endpoint member the final describe leaves unassigned is
+  // OMITTED from the attribute map -- never `''`, and `RedisEndpoint.Port`
+  // never the literal `'undefined'` that `String(port ?? '')` decays to.
+  it('records only the endpoint members the final describe carries (issue #3077)', async () => {
+    const observed: Record<string, unknown> = {
+      ClusterName: CLUSTER_ID,
+      Engine: 'redis',
+      CacheNodeType: 'cache.t3.micro',
+      NumCacheNodes: 1,
+      VpcSecurityGroupIds: ['sg-1'],
+    };
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+    });
+    // Final describe: a node whose endpoint has an address but no port yet.
+    mockSend.mockResolvedValueOnce({
+      CacheClusters: [
+        {
+          CacheClusterId: CLUSTER_ID,
+          CacheClusterStatus: 'available',
+          CacheNodes: [{ Endpoint: { Address: 'my-cluster.abc123.0001.use1.cache.amazonaws.com' } }],
+        },
+      ],
+    });
+
+    const result = await provider.update(
+      'L',
+      CLUSTER_ID,
+      'AWS::ElastiCache::CacheCluster',
+      observed,
+      observed
+    );
+
+    expect(result.attributes).toStrictEqual({
+      'RedisEndpoint.Address': 'my-cluster.abc123.0001.use1.cache.amazonaws.com',
+    });
+  });
+
+  // Issue #3077, the memcached twin of the case above: a ConfigurationEndpoint
+  // whose Port the describe left unassigned records only the address -- never
+  // `ConfigurationEndpoint.Port: 'undefined'`, which `String(port)` decays to
+  // once the assigned-only guard is lost. Not a shape the real API answers
+  // (the endpoint's members arrive together); it is the shape that reaches
+  // the guard, which is the branch under test. Create and update both carry
+  // the guard, so both are pinned.
+  it('create records only the ConfigurationEndpoint members the describe carries (issue #3077)', async () => {
+    const originalNoWait = process.env['CDKD_NO_WAIT'];
+    process.env['CDKD_NO_WAIT'] = 'true';
+    try {
+      mockSend.mockResolvedValueOnce({}); // CreateCacheCluster
+      mockSend.mockResolvedValueOnce({
+        CacheClusters: [
+          {
+            CacheClusterId: CLUSTER_ID,
+            CacheClusterStatus: 'creating',
+            ConfigurationEndpoint: { Address: 'my-cluster.abc123.cfg.use1.cache.amazonaws.com' },
+          },
+        ],
+      });
+
+      const result = await provider.create('L', 'AWS::ElastiCache::CacheCluster', {
+        ClusterName: CLUSTER_ID,
+        Engine: 'memcached',
+        CacheNodeType: 'cache.t3.micro',
+        NumCacheNodes: 2,
+      });
+
+      expect(result.attributes).toStrictEqual({
+        'ConfigurationEndpoint.Address': 'my-cluster.abc123.cfg.use1.cache.amazonaws.com',
+      });
+    } finally {
+      if (originalNoWait === undefined) delete process.env['CDKD_NO_WAIT'];
+      else process.env['CDKD_NO_WAIT'] = originalNoWait;
+    }
+  });
+
+  it('update records only the ConfigurationEndpoint members the describe carries (issue #3077)', async () => {
+    const observed: Record<string, unknown> = {
+      ClusterName: CLUSTER_ID,
+      Engine: 'memcached',
+      CacheNodeType: 'cache.t3.micro',
+      NumCacheNodes: 2,
+      VpcSecurityGroupIds: ['sg-1'],
+    };
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      CacheClusters: [{ CacheClusterId: CLUSTER_ID, CacheClusterStatus: 'available' }],
+    });
+    mockSend.mockResolvedValueOnce({
+      CacheClusters: [
+        {
+          CacheClusterId: CLUSTER_ID,
+          CacheClusterStatus: 'available',
+          ConfigurationEndpoint: { Address: 'my-cluster.abc123.cfg.use1.cache.amazonaws.com' },
+        },
+      ],
+    });
+
+    const result = await provider.update(
+      'L',
+      CLUSTER_ID,
+      'AWS::ElastiCache::CacheCluster',
+      observed,
+      observed
+    );
+
+    expect(result.attributes).toStrictEqual({
+      'ConfigurationEndpoint.Address': 'my-cluster.abc123.cfg.use1.cache.amazonaws.com',
+    });
+  });
+
   it('Class 2 — non-empty VpcSecurityGroupIds reaches AWS unchanged', async () => {
     // Sibling case: the sanitization must not regress the non-empty
     // path. State `['sg-1', 'sg-2']` should reach AWS as-is.

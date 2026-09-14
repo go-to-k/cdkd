@@ -55,6 +55,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { definedAttributes } from '../attribute-map.js';
 
 /**
  * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
@@ -1036,11 +1037,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
       return {
         physicalId: serviceId,
-        attributes: {
+        attributes: definedAttributes({
           Id: serviceId,
-          Arn: service.Arn || '',
-          Name: service.Name || name || '',
-        },
+          Arn: service.Arn,
+          Name: service.Name || name,
+        }),
       };
     } catch (error) {
       // `cause` carries the ORIGINAL error untouched (issue #2050): the
