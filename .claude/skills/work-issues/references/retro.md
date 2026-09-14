@@ -59,6 +59,14 @@ done | sort -u
 rm -f /tmp/run-touched.$$
 ```
 
+- **The diff is a LOWER bound on what this run loaded — run the context test
+  on every `next` as well.** The query above sees files the run EDITED; the
+  run also READ its reviewers' diffs, the modules its lanes traced and every
+  sibling site a review named, none of which is in `run-touched`. For each
+  `next` still open, list the files its fix touches and ask whether any was
+  read this run — if one was, it is `now` (`.claude/rules/session-report.md`
+  → Session-fit: the default is `now`, and the maintainer's wrap-time
+  challenge on exactly this has promoted every time it was asked).
 - **An EMPTY result is not "nothing to promote" — check the extraction saw a
   FILE at all.** A body names its subject by SYMBOL as often as by path
   (go-to-k/cdkd#2442), and a DOTFILE needs the `\.?` prefix above

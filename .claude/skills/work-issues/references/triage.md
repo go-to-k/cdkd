@@ -413,6 +413,14 @@ talked into by a ranking before:
 
 ### 3-b. Before writing `next`, NAME the next session's verification
 
+**`now` is the default, and the CONTEXT TEST comes before the decision.** List
+the files the fix touches; if this session has already read, edited or
+reviewed ANY of them, the item is `now` — `next` is reserved for the three
+reasons `.claude/rules/session-report.md` → Session-fit enumerates (a NEW
+verifier to write / external input / a COLD subsystem). The maintainer's
+wrap-time "cheaper to do it here, with the context loaded?" has flipped every
+item it was asked about; this paragraph asks it in advance.
+
 **You may not write `Session-fit: next` until you can name the command the
 NEXT session will run to verify the fix, and say a fresh session can run it.**
 `.claude/rules/session-report.md` holds the rest: the bar (name the
@@ -427,16 +435,16 @@ time — one about EVIDENCE, one about the COMPARAND.
 **Ask what the next session will have to RE-DERIVE.** If something
 exists only in THIS session — a measured table, a built probe, a shape just
 proved in a sibling repo — the deferral is not free and the answer is `now`
-(a hook fix filed `next` minutes after its probe, corrected shape and rc
-table were all in hand was re-classified `now` on the maintainer's challenge;
-the port then found four more defects a fresh session would not have known to
-look for). Understanding survives in an issue body; a measurement does not.
+(a hook fix filed `next` with its probe, corrected shape and rc table all in
+hand was re-classified `now` on the maintainer's challenge; the port then
+found four more defects). Understanding survives in an issue body; a
+measurement does not.
 
 **When the issue body offers more than one fix, cost the CHEAPEST one you
 would actually accept** — a deferral justified by the expensive option is a
-choice of comparand, not a measurement (measured an hour after this paragraph
-went in: a `next` reason costing the three-repo behaviour change when a
-six-line no-behaviour-change alternative sat in the same body).
+choice of comparand, not a measurement (measured: a `next` reason costing a
+three-repo behaviour change while a six-line no-behaviour-change alternative
+sat in the same body).
 
 **The converse is the honest use of `next`**: when you CAN name the
 verification and a fresh session will plainly have it, the deferral is sound
