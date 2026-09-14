@@ -1026,3 +1026,116 @@ describe('LockManager.ensureClientForBucket — region rebuild (issue #803)', ()
     );
   });
 });
+
+describe('LockManager — a lock record whose fields cannot be coerced (issue #2947)', () => {
+  let s3Client: ReturnType<typeof makeFakeClient>;
+  let lockManager: LockManager;
+  const config: StateBackendConfig = { bucket: 'test-bucket', prefix: 'stacks' };
+
+  beforeEach(async () => {
+    clearReplicationProbeCache();
+    vi.clearAllMocks();
+    const { resolveBucketRegion } = await import('../../../src/utils/aws-region-resolver.js');
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+    s3Client = makeFakeClient('us-east-1');
+    lockManager = new LockManager(s3Client as unknown as S3Client, config);
+  });
+
+  // Ordinary JSON, and `Number` / `String` of it THROW: ToPrimitive finds
+  // `valueOf` returning the object itself and `toString` not callable. Built
+  // with `JSON.stringify`, which never calls `toString`, so the bytes the
+  // manager reads are exactly what a hand-edited lock.json would hold.
+  const UNCOERCIBLE = { toString: null };
+  const lockBody = (fields: Record<string, unknown>): { Body: { transformToString: () => Promise<string> } } => ({
+    Body: {
+      transformToString: () =>
+        Promise.resolve(JSON.stringify({ owner: 'u@h:1', timestamp: 1, expiresAt: 1, ...fields })),
+    },
+  });
+
+  it('reads an uncoercible expiresAt as NaN rather than handing a throwing value to its readers', async () => {
+    s3Client.send.mockResolvedValueOnce(lockBody({ expiresAt: UNCOERCIBLE }));
+
+    const info = await lockManager.getLockInfo('test-stack', 'us-east-1');
+
+    expect(info).not.toBeNull();
+    expect(Number.isNaN(info!.expiresAt)).toBe(true);
+    // The five readers all do this subtraction; it no longer throws.
+    expect(() => info!.expiresAt - Date.now()).not.toThrow();
+  });
+
+  it('passes every COERCIBLE expiresAt through untouched, numeric strings included', async () => {
+    // A numeric string is non-finite to `isLockExpired` and so reads as
+    // EXPIRED; converting it would turn a future string deadline "live" — the
+    // direction only `force-unlock` recovers from. So the raw value must survive.
+    const cases: Array<[unknown, unknown]> = [
+      ['99999999999999', '99999999999999'],
+      [null, null],
+      [true, true],
+      [{}, {}],
+    ];
+    for (const [raw, expected] of cases) {
+      s3Client.send.mockResolvedValueOnce(lockBody({ expiresAt: raw }));
+      const info = await lockManager.getLockInfo('test-stack', 'us-east-1');
+      expect(info!.expiresAt).toEqual(expected);
+    }
+  });
+
+  it('takes over a lock whose expiresAt is a FUTURE numeric string, since the raw value is not finite', async () => {
+    // The INVARIANT behind passing a coercible value through untouched, rather
+    // than the one instance of it the case above pins: `isLockExpired` tests
+    // `Number.isFinite` of the RAW value, so a string deadline reads EXPIRED
+    // however far ahead it points. Converting in `getLockRecord` would make
+    // this lock live until that timestamp — the direction only `force-unlock`
+    // recovers from.
+    const future = String(Date.now() + 3_600_000);
+    s3Client.send.mockRejectedValueOnce(
+      new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} })
+    );
+    s3Client.send.mockResolvedValueOnce({
+      ETag: '"expired-etag"',
+      ...lockBody({ expiresAt: future }),
+    });
+    s3Client.send.mockResolvedValueOnce({}); // DeleteObject
+    s3Client.send.mockResolvedValueOnce({}); // PutObject — the re-acquisition
+
+    expect(await lockManager.acquireLock('test-stack', 'us-east-1', 'new-user')).toBe(true);
+    expect(
+      s3Client.send.mock.calls
+        .slice(0, 4)
+        .map((c: unknown[]) => (c[0] as { constructor: { name: string } }).constructor.name)
+    ).toEqual(['PutObjectCommand', 'GetObjectCommand', 'DeleteObjectCommand', 'PutObjectCommand']);
+  });
+
+  it('reads an uncoercible owner and operation without throwing', async () => {
+    s3Client.send.mockResolvedValueOnce(lockBody({ owner: UNCOERCIBLE, operation: UNCOERCIBLE }));
+
+    const info = await lockManager.getLockInfo('test-stack', 'us-east-1');
+
+    expect(info!.owner).toBe('[object Object]');
+    expect(info!.operation).toBe('[object Object]');
+  });
+
+  it('completes the expired-lock TAKEOVER on an uncoercible expiresAt instead of crashing after the delete', async () => {
+    // `isLockExpired` rates the value expired (`Number.isFinite` of an object
+    // is false), so the takeover DELETES the lock. Its warning is built only
+    // after that, and `now - expiresAt` used to throw there: the deploy crashed
+    // with the stack left UNLOCKED and no re-acquisition.
+    s3Client.send.mockRejectedValueOnce(
+      new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} })
+    );
+    s3Client.send.mockResolvedValueOnce({ ETag: '"expired-etag"', ...lockBody({ expiresAt: UNCOERCIBLE }) });
+    s3Client.send.mockResolvedValueOnce({}); // DeleteObject
+    s3Client.send.mockResolvedValueOnce({}); // PutObject — the re-acquisition
+
+    const result = await lockManager.acquireLock('test-stack', 'us-east-1', 'new-user');
+
+    expect(result).toBe(true);
+    // The second PutObject is the proof the stack was not left unlocked.
+    expect(
+      s3Client.send.mock.calls
+        .slice(0, 4)
+        .map((c: unknown[]) => (c[0] as { constructor: { name: string } }).constructor.name)
+    ).toEqual(['PutObjectCommand', 'GetObjectCommand', 'DeleteObjectCommand', 'PutObjectCommand']);
+  });
+});

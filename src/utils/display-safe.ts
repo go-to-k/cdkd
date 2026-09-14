@@ -45,11 +45,27 @@ export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): str
   // `'undefined'` — a truthy string — so a caller keying its
   // "is there anything here?" decision on the result was silently answered
   // "yes" for a lock.json with no `owner`, printing `held by undefined` while
-  // certifying that the holder was live. Every caller of this helper keys some
-  // decision on emptiness, so the rule belongs here rather than at each of
-  // them.
+  // certifying that the holder was live. The callers that key a decision on
+  // emptiness — the lock summary, and every refusal that falls back to
+  // `UNRENDERABLE` — would each need this same rule, so it lives here rather
+  // than at each of them. Not all of them do: `ConsoleLogger` concatenates the
+  // result and `sameLockIdentity` only compares two of them, and neither is
+  // harmed by it.
   if (value === undefined || value === null) return '';
-  const text = String(value);
+  // `String(value)` is NOT total: an object whose `toString` is not callable —
+  // `{"toString": null}`, reachable through `JSON.parse` of a hand-edited record
+  // (issue #2947) — makes it throw, and a display helper that throws takes the
+  // whole render with it. The fallback is `Object.prototype.toString`, which
+  // calls none of the object's own methods — it reads only
+  // `Symbol.toStringTag`, a key `JSON.parse` cannot produce — so it cannot
+  // throw for any JSON-derived value. Every value `String` already handled
+  // renders exactly as before; only the throwing ones change.
+  let text: string;
+  try {
+    text = String(value);
+  } catch {
+    text = Object.prototype.toString.call(value);
+  }
   const stripped = opts?.asciiOnly
     ? // Printable ASCII only. Correct for a stack name or an AWS region, both
       // of which have a known charset.
@@ -60,4 +76,27 @@ export function displaySafe(value: unknown, opts?: { asciiOnly?: boolean }): str
         ' '
       );
   return stripped.trim();
+}
+
+/**
+ * Cut `text` to at most `maxCodePoints` CODE POINTS, never splitting a
+ * surrogate pair.
+ *
+ * `String.prototype.slice` counts UTF-16 code units, so a cut landing between
+ * the two halves of an astral character leaves a lone high surrogate at the
+ * end — rendered as a replacement character or dropped, depending on the
+ * terminal (issue #2947). One helper rather than a fix at each call site: a
+ * truncation site adopts the rule by calling it, and go-to-k/cdkd#3018 tracks
+ * the one known site that does not yet.
+ *
+ * `truncated` reports whether anything was actually cut, so a caller marking
+ * the cut (`…`) does not mark a value that was exactly the window's length.
+ */
+export function truncateCodePoints(
+  text: string,
+  maxCodePoints: number
+): { text: string; truncated: boolean } {
+  const codePoints = Array.from(text);
+  if (codePoints.length <= maxCodePoints) return { text, truncated: false };
+  return { text: codePoints.slice(0, maxCodePoints).join(''), truncated: true };
 }
