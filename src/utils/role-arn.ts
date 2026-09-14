@@ -241,14 +241,16 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
  * up the assumed-role credentials automatically without touching the
  * client construction sites.
  *
- * **Why cdkd needs admin-equivalent on the assumed role.** Unlike `cdk
- * deploy`, cdkd does NOT route through CloudFormation. There is no
- * cfn-exec-role to delegate to. Every IAM / EC2 / Lambda / etc. API
- * call is issued from the cdkd process directly. The role you pass to
- * `--role-arn` (or set in `CDKD_ROLE_ARN`) MUST therefore have
- * admin-equivalent permissions on the resources being deployed; CDK
- * CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — that role
- * only carries CFn + asset-publish permissions.
+ * **What the assumed role must carry.** Unlike `cdk deploy`, cdkd does
+ * NOT route through CloudFormation. There is no cfn-exec-role to
+ * delegate to. Every IAM / EC2 / Lambda / etc. API call is issued from
+ * the cdkd process directly. The role you pass to `--role-arn` (or set
+ * in `CDKD_ROLE_ARN`) must therefore carry the actions for the resource
+ * types being deployed plus cdkd's own bookkeeping set (Cloud Control,
+ * `sts:GetCallerIdentity`, the state bucket) — i.e. exactly what the
+ * caller's own principal would otherwise have needed, not
+ * `AdministratorAccess`. CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT
+ * sufficient — that role only carries CFn + asset-publish permissions.
  *
  * Default session duration is 1 hour. For longer-running deploys, the
  * caller should re-issue the cdkd command (the in-flight credentials

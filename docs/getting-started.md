@@ -17,10 +17,8 @@ npm i -g @go-to-k/cdkd@<version> # pin to a specific version
 The installed binary is `cdkd`. Running it requires:
 
 - **Node.js** >= 22.12.0
-- **AWS credentials with admin-equivalent permissions** for the resources being
-  deployed. cdkd does NOT route through CloudFormation, so CDK CLI's
-  `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see
-  [`--role-arn`](cli-reference.md#role-arn).
+- **AWS credentials that can create the resources your stacks deploy** — see
+  [Permissions](#permissions).
 
 ## Quick Start
 
@@ -57,6 +55,41 @@ storage is added automatically on the first `cdkd deploy` into each region.
 legacy-mode opt-outs, and how this relates to `cdk bootstrap`. If you
 bootstrapped under an earlier cdkd, see
 [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
+
+## Permissions
+
+cdkd calls each AWS service's API directly instead of handing a template to
+CloudFormation, so whatever identity runs `cdkd` is what AWS sees on every
+call. That identity needs three things:
+
+| What | Why |
+| --- | --- |
+| The actions for the resource types in your stacks — `s3:CreateBucket`, `lambda:CreateFunction`, and so on | cdkd creates, updates and deletes each resource itself |
+| `iam:PassRole` for every role your template hands to a service (a Lambda's `Role`, an ECS task role) | The `PassRole` is issued by your identity, not by a CloudFormation execution role |
+| cdkd's own bookkeeping: the Cloud Control API actions, `sts:GetCallerIdentity`, and read/write on the `cdkd-state-*` bucket | Needed by every deploy, whatever the stack contains |
+
+**`AdministratorAccess` is not required.** Grant the services your stacks
+actually use — the same actions you would need to create those resources by
+hand. [Permission errors](troubleshooting.md#access-denied-error) has the
+copy-pasteable policy for the bookkeeping set and the full list of what the
+other two cover.
+
+**CDK CLI's `cdk-hnb659fds-*` bootstrap roles do not work here.** They exist to
+delegate to CloudFormation, which cdkd never calls: the deploy role carries
+only CloudFormation and asset-publish actions, and the cfn-exec-role is
+assumable by the CloudFormation service alone, not by your IAM identity.
+
+To keep these permissions off your own principal — a CI runner, or a deploy
+into another account — put them on a dedicated role and assume it with
+[`--role-arn`](cli-reference.md#role-arn) (or the `CDKD_ROLE_ARN` env var):
+
+```bash
+cdkd deploy --role-arn arn:aws:iam::123456789012:role/cdkd-deploy
+```
+
+Your own credentials then need nothing but `sts:AssumeRole` on that role.
+[Per-PR Environments in CI](ci-per-pr.md#credentials) shows the pattern with
+GitHub Actions OIDC.
 
 ## Commands by task
 
