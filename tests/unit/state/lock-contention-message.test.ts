@@ -143,7 +143,7 @@ describe('buildLockContentionMessage (issue #2170)', () => {
       // ...but the EXPIRY is independent evidence the lock file definitely
       // carries, so dropping it too threw away the one usable fact.
       expect(msg, why).toContain('held by an unnamed holder');
-      expect(msg, why).toMatch(/expires in ~\d+m/);
+      expect(msg, why).toMatch(/expires in \d+(m\d+)?s/);
     }
   });
 
@@ -160,7 +160,7 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     });
     expect(msg).toContain('held by alice@host:4242');
     expect(msg).toContain('operation: deploy');
-    expect(msg).toMatch(/expires in ~1[12]m/);
+    expect(msg).toMatch(/expires in 1[12]m\d+s/);
   });
 
   it('reads the holder for the region it was asked about', async () => {
@@ -209,8 +209,9 @@ describe('buildLockContentionMessage (issue #2170)', () => {
       ...base,
       lockManager: lockManagerReturning({ owner: 'bob@host:1', expiresAt: Date.now() - 60_000 }),
     });
-    expect(msg).toContain('already expired');
+    expect(msg).toMatch(/expired (59s|1m0s) ago/);
     expect(msg).not.toContain('-1m');
+    expect(msg).not.toContain('expires in');
   });
 
   it('varies only the noun across subjects, so one grep finds every spelling', async () => {
@@ -375,6 +376,22 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     expect(msg).not.toContain('NaN');
   });
 
+  it('reads a NUMERIC-STRING expiresAt as an unknown deadline, matching the expiry check (issue #3085)', async () => {
+    // `isLockExpired` tests the RAW value with `Number.isFinite`, so a numeric
+    // string is expired to the check. Subtracting first coerced it here and
+    // the refusal said `expires in ~Xm` for a lock the next acquire would take
+    // over — the one input that still split the renderers after issue #3083.
+    const msg = await buildLockContentionMessage({
+      ...base,
+      lockManager: lockManagerReturning({
+        owner: 'bob@host:1',
+        expiresAt: String(Date.now() + 10 * 60_000) as unknown as number,
+      }),
+    });
+    expect(msg).toContain('expires at an unknown time');
+    expect(msg).not.toMatch(/expires in \d/);
+  });
+
   it('says the holder is STILL RUNNING when it could name one', async () => {
     // `acquireLock` reaps an expired lock, so a nameable holder is live by
     // construction — the old wording invited the force-unlock this refusal
@@ -391,12 +408,12 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     expect(anonymous).not.toContain('That process is still running');
   });
 
-  it('reports a sub-minute remainder without rounding it to ~0m', async () => {
+  it('reports a sub-minute remainder in seconds rather than rounding it to ~0m', async () => {
     const msg = await buildLockContentionMessage({
       ...base,
       lockManager: lockManagerReturning({ owner: 'bob@host:1', expiresAt: Date.now() + 20_000 }),
     });
-    expect(msg).toContain('expires in under a minute');
+    expect(msg).toMatch(/expires in (19|20)s/);
     expect(msg).not.toContain('~0m');
   });
 

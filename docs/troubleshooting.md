@@ -111,7 +111,7 @@ LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attemp
 > **not** proceed while another process holds the lock:
 >
 > ```text
-> Could not acquire lock for stack 'MyStack' (us-east-1) — held by alice@host:4242, operation: deploy, expires in ~12m. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
+> Could not acquire lock for stack 'MyStack' (us-east-1) — held by alice@host:4242, operation: deploy, expires in 12m4s. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
 > ```
 >
 > **Read the holder before acting on the suggestion.** cdkd cleans up an

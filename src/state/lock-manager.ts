@@ -18,6 +18,7 @@ import {
   UNRENDERABLE,
   UNREPRODUCIBLE_LOCK_CLAUSE,
   buildForceUnlockCommand,
+  formatLockExpiry,
 } from './lock-contention-message.js';
 import { hostname } from 'os';
 
@@ -324,28 +325,6 @@ export class LockManager {
   }
 
   /**
-   * `expires in 1m23s` / `expired 45s ago` for a finite deadline, `expires at
-   * an unknown time` otherwise — the ONE spelling for a lock's expiry in this
-   * module's messages, so the three sites that render one (the expired-lock
-   * takeover warning, the retry line, the final refusal) cannot disagree.
-   *
-   * The non-finite arm is what stops `expired NaNmNaNs ago` (issue #3083):
-   * `expiresAt` is an unchecked cast, and `getLockRecord` deliberately hands
-   * a coercion that THROWS through as `NaN` (go-to-k/cdkd#2947) rather than
-   * inventing a deadline. The wording matches `formatRemaining` in
-   * `lock-contention-message.ts`, which answered the same input this way
-   * first. `isLockExpired` decides what such a value MEANS (expired); this
-   * only decides what it SAYS.
-   */
-  private formatExpiry(expiresAt: number): string {
-    if (!Number.isFinite(expiresAt)) return 'expires at an unknown time';
-    const remainingMs = expiresAt - Date.now();
-    return remainingMs > 0
-      ? `expires in ${this.formatDuration(remainingMs)}`
-      : `expired ${this.formatDuration(-remainingMs)} ago`;
-  }
-
-  /**
    * Try to acquire a lock for a stack
    *
    * Uses If-None-Match: "*" to ensure atomic lock acquisition.
@@ -463,7 +442,7 @@ export class LockManager {
             : `Its expiresAt is not a finite number, which cdkd treats as already expired`;
           this.logger.warn(
             `Took over an EXPIRED lock for stack: ${stackName} (${region}, owner: ${existing.info.owner}, ` +
-              `${this.formatExpiry(existing.info.expiresAt)}). ${why} -- ` +
+              `${formatLockExpiry(existing.info.expiresAt)}). ${why} -- ` +
               `if it is in fact still running, both processes are now writing to the same stack.`
           );
 
@@ -1481,7 +1460,7 @@ export class LockManager {
             `Stack '${safeSegment(stackName)}' ` +
               `(${safeSegment(region)}) is locked by ${lockInfo.owner}` +
               `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
-              `. Lock ${this.formatExpiry(lockInfo.expiresAt)}.` +
+              `. Lock ${formatLockExpiry(lockInfo.expiresAt)}.` +
               ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
           );
           await new Promise((resolve) => setTimeout(resolve, retryDelay));
@@ -1492,7 +1471,7 @@ export class LockManager {
 
     // Failed to acquire lock after all retries
     const lockInfo = await this.getLockInfo(stackName, region);
-    const expiry = lockInfo ? this.formatExpiry(lockInfo.expiresAt) : undefined;
+    const expiry = lockInfo ? formatLockExpiry(lockInfo.expiresAt) : undefined;
 
     // Issue [#2610] site 14. This used to read "Use --force-unlock to manually
     // release the lock", and NO `--force-unlock` Option is registered anywhere

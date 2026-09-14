@@ -83,15 +83,43 @@ export interface LockContentionArgs {
   suffix?: string | undefined;
 }
 
-/** Render `expiresIn` without implying more precision than a clock skew allows. */
-function formatRemaining(ms: number): string {
-  // A hand-written / truncated lock.json can omit `expiresAt`, which arrives
-  // here as NaN and used to render `expires in ~NaNm`.
-  if (!Number.isFinite(ms)) return 'at an unknown time';
-  if (ms <= 0) return 'already expired';
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return 'in under a minute';
-  return `in ~${minutes}m`;
+/**
+ * The ONE rendering of a lock's deadline: `expires in 1m23s` / `expired 45s
+ * ago` for a finite `expiresAt`, `expires at an unknown time` otherwise
+ * (issue #3085). Consumed by this module's contention refusal, by
+ * `LockManager`'s three sites (the expired-lock takeover warning, the acquire
+ * retry line, the final `LockError`) and by `cdkd state show`'s lock row, so
+ * a record renders the same everywhere it is shown.
+ *
+ * Takes the RAW `expiresAt`, never a difference: the field is an unchecked
+ * cast, and `Number.isFinite` on the raw value is the test `isLockExpired`
+ * makes, so what this SAYS agrees with what the expiry check DOES. Subtracting
+ * first (the previous `formatRemaining(info.expiresAt - Date.now())`) coerced
+ * a numeric string to a real deadline here while the check called it expired
+ * — the one input that still split the renderers after issue #3083. `{}`,
+ * `"soon"`, an absent field, and the `NaN` that `getLockRecord` substitutes
+ * for a coercion that throws (go-to-k/cdkd#2947) all land on the unknown arm.
+ *
+ * Seconds precision, deliberately: this module used to round to `in ~12m`
+ * "without implying more precision than a clock skew allows", but the
+ * `LockError` refusal that advises the same force-unlock decision already
+ * printed `expires in 4m12s`, so the coarser form was a second spelling of the
+ * same fact rather than a guard against skew.
+ */
+export function formatLockExpiry(expiresAt: number): string {
+  if (!Number.isFinite(expiresAt)) return 'expires at an unknown time';
+  const remainingMs = expiresAt - Date.now();
+  return remainingMs > 0
+    ? `expires in ${formatDuration(remainingMs)}`
+    : `expired ${formatDuration(-remainingMs)} ago`;
+}
+
+/** `1m23s` / `45s` from a non-negative millisecond count. */
+function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m${seconds % 60}s`;
 }
 
 /**
@@ -219,7 +247,7 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
     const info = await lockManager.getLockInfo(stackName, region);
     if (info) {
       const operation = info.operation ? `, operation: ${displaySafe(info.operation)}` : '';
-      const expires = formatRemaining(info.expiresAt - Date.now());
+      const expires = formatLockExpiry(info.expiresAt);
       const owner = displaySafe(info.owner);
       // An ABSENT / empty owner is not evidence of a live holder. `getLockInfo`
       // is an unvalidated `JSON.parse(...) as LockInfo`, so `String(undefined)`
@@ -232,7 +260,7 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
       // lock file definitely carries. Only the "still running" CERTIFICATION
       // is withheld, since that is what an owner-less record cannot support.
       const holder = owner ? `held by ${owner}${operation}` : `held by an unnamed holder`;
-      held = `${heldClause ? `${heldClause} — ` : ''}${holder}, expires ${expires}`;
+      held = `${heldClause ? `${heldClause} — ` : ''}${holder}, ${expires}`;
       // LAST, and only for a NAMED holder: setting it earlier paired the
       // degraded wording with the confident advice.
       if (owner) sawHolder = true;
