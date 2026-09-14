@@ -58,6 +58,7 @@ import {
   recoverMaskedOutput,
   carriesSecretMask,
   MIN_NEEDLE_LENGTH,
+  SECRET_MASK,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -807,6 +808,40 @@ function withoutProducerRegions(context: ResolverContext | undefined): ResolverC
   const { producerRegions: _stripped, ...rest } = context;
   return rest;
 }
+
+/**
+ * A resolved string beside its LOG TWIN (issue
+ * [#3100](https://github.com/go-to-k/cdkd/issues/3100)): the same string with
+ * every span a recorded secret was WRITTEN into replaced by
+ * {@link SECRET_MASK}. `resolveJoin` / `resolveSub` build it alongside the
+ * value and log the twin, never the value.
+ *
+ * It exists because `maskSecretsForLog` is a NEEDLE mask: a 1-3 character
+ * secret is masked only as the WHOLE text (`MIN_NEEDLE_LENGTH`), so
+ * `port:` + a two-character secret printed in the clear. The floor is right for
+ * a needle — a short needle would rewrite unrelated text in every line — and
+ * what the needle lacks is POSITION, which only the writer holds. The twin is
+ * therefore built at the writes, and the needle mask still runs over it for
+ * everything a write did not see.
+ */
+interface LogTwin {
+  readonly result: string;
+  readonly twin: string;
+}
+
+/**
+ * Masked log twins registered this pass, per pass bag (issue #3100;
+ * `rememberLogTwin` / `logTwinOfProduct`). Log-only: nothing that resolves or
+ * persists a value reads it.
+ *
+ * MODULE scope, not instance scope: a region-pinned sibling resolver
+ * (`resolverForProducerRegion`) resolves on behalf of the consumer with the
+ * consumer's bag, so an instance-local registry left the sibling's twin where
+ * the consumer's `Fn::Join` / `Fn::Sub` never looked. The key is still the
+ * pass's own bag object, so scope does not widen: another pass holds another
+ * bag and cannot reach these entries, and they die with the bag.
+ */
+const LOG_TWINS_BY_PASS = new WeakMap<RecordedSecretValues, Map<string, string>>();
 
 /**
  * Does `value` carry a CloudFormation dynamic reference anywhere inside it?
@@ -5646,21 +5681,61 @@ export class IntrinsicFunctionResolver {
     // Resolve each value first, draining every part before a rejection
     // surfaces (issue #2563): a part that records a secret must finish
     // recording before a caller's `catch` / `finally` sees the failure.
-    const resolvedValues = await allSettledKeepingFirstRejection(
-      values.map(async (v) => {
-        const resolved = await this.resolveValue(v, context);
-        return String(resolved);
-      }),
+    //
+    // Each part carries its LOG TWIN (issue #3100, see `LogTwin`). A STRING
+    // part is resolved here rather than through `resolveValue`, whose string
+    // arm is exactly `resolveDynamicReferences` over a string holding a
+    // `{{resolve:` opener and the string itself otherwise, so the value is
+    // unchanged and the substitution's twin is kept. A part in a LITERAL list
+    // that spells no reference keeps itself as its twin even when it equals a
+    // recorded secret: a template literal is not a resolution product, and
+    // masking it would be a needle mask with no floor. Every other part — an
+    // intrinsic, or an element of a list an intrinsic returned — is a
+    // resolution product, whose twin is decided only AFTER the drain: the
+    // parts resolve concurrently, and a product checked as soon as it settled
+    // would miss a secret a sibling part records later in the same Join.
+    const literalList = Array.isArray(rawValues);
+    const resolvedParts = await allSettledKeepingFirstRejection(
+      values.map(
+        async (
+          v
+        ): Promise<LogTwin & { readonly product: boolean; readonly raw?: { value: unknown } }> => {
+          if (typeof v === 'string') {
+            const part = v.includes('{{resolve:')
+              ? await this.resolveDynamicReferencesWithLogTwin(v, v, context)
+              : { result: v, twin: v };
+            return { ...part, product: !literalList };
+          }
+          const raw = await this.resolveValue(v, context);
+          const resolved = String(raw);
+          return { result: resolved, twin: resolved, product: true, raw: { value: raw } };
+        }
+      ),
       (pending) => this.warnAbandonedParts(pending)
     );
+    const parts = resolvedParts.map((part) => {
+      if (!part.product) return part;
+      // An intrinsic part is twinned from its RAW value, so a list keeps its
+      // elements' twins through the stringification; a string element of a
+      // list an intrinsic returned keeps its own twin rule.
+      if (part.raw)
+        return { result: part.result, twin: this.productLogTwin(part.raw.value, context) };
+      return this.logTwinOfProduct(part, context);
+    });
 
-    let result = resolvedValues.join(delimiter);
+    let result = parts.map((part) => part.result).join(delimiter);
+    let twin = parts.map((part) => part.twin).join(delimiter);
     // Resolve any dynamic references in the joined result (secret refs are
-    // left unresolved per-reference when skipDynamicReferences is set).
+    // left unresolved per-reference when skipDynamicReferences is set). The
+    // CDK `secretValueFromJson` shape completes its token only HERE, so this
+    // substitution is the write the twin most needs to see.
     if (result.includes('{{resolve:')) {
-      result = await this.resolveDynamicReferences(result, context);
+      ({ result, twin } = await this.resolveDynamicReferencesWithLogTwin(result, twin, context));
     }
-    this.logger.debug(`Resolved Fn::Join: ${this.maskSecretsForLog(result, context)}`);
+    this.rememberLogTwin(context, result, twin);
+    this.logger.debug(
+      `Resolved Fn::Join: ${this.maskSecretsForLog(this.logTwinText(result, twin, context), context)}`
+    );
     return result;
   }
 
@@ -5840,6 +5915,16 @@ export class IntrinsicFunctionResolver {
     // source text and now falls through to pseudo-parameter / `Ref`
     // resolution like any other unknown name.
     const variables: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    // The LOG TWIN of each variable whose raw value was a STRING (issue #3100,
+    // see `LogTwin`), null-prototype for the reason `variables` is. A string
+    // variable is resolved here rather than through `resolveValue`, whose
+    // string arm is exactly `resolveDynamicReferences` over a string holding a
+    // `{{resolve:` opener and the string itself otherwise, so the value is
+    // unchanged: a reference-bearing one keeps its substitution's twin, and a
+    // LITERAL keeps itself even when it equals a recorded secret. A variable
+    // with no entry here (an intrinsic) is a resolution product, masked whole
+    // at the replacement below when it is a recorded secret.
+    const variableTwins: Record<string, string> = Object.create(null) as Record<string, string>;
 
     if (Array.isArray(subArgs)) {
       const [templateString, variableMap] = subArgs;
@@ -5866,14 +5951,25 @@ export class IntrinsicFunctionResolver {
         );
       }
       for (const [key, val] of Object.entries(variableMap)) {
-        variables[key] = await this.resolveValue(val, context);
+        if (typeof val === 'string') {
+          const resolved = val.includes('{{resolve:')
+            ? await this.resolveDynamicReferencesWithLogTwin(val, val, context)
+            : { result: val, twin: val };
+          variables[key] = resolved.result;
+          variableTwins[key] = resolved.twin;
+        } else {
+          variables[key] = await this.resolveValue(val, context);
+        }
       }
     } else {
       template = subArgs;
     }
 
     // Collect all replacements
-    const replacements: Array<{ match: string; replacement: string }> = [];
+    // `twin` is the replacement's LOG TWIN (issue #3100); an entry no secret
+    // can reach (an escape, an empty `${}`, a pseudo parameter, a kept
+    // placeholder) carries its replacement as its own twin.
+    const replacements: Array<{ match: string; replacement: string; twin: string }> = [];
     // Match BOTH the literal-escape form `${!X}` and the variable form `${X}`.
     // The CloudFormation rule: a `${` immediately followed by `!` is an escape —
     // it renders as the literal text `${X}` with NO variable substitution. We
@@ -5887,22 +5983,29 @@ export class IntrinsicFunctionResolver {
 
       // Literal-escape form `${!X}` -> emit `${X}` verbatim, no resolution.
       if (isEscaped) {
-        replacements.push({ match: match[0], replacement: `\${${varNameStr ?? ''}}` });
+        const escapedLiteral = `\${${varNameStr ?? ''}}`;
+        replacements.push({ match: match[0], replacement: escapedLiteral, twin: escapedLiteral });
         continue;
       }
 
       if (!varNameStr) {
         // An empty `${}` has nothing to resolve — leave it verbatim. Push an
         // entry so the positional single-pass replace below stays aligned.
-        replacements.push({ match: match[0], replacement: match[0] });
+        replacements.push({ match: match[0], replacement: match[0], twin: match[0] });
         continue;
       }
 
       let replacement: string;
+      // Set only by the arms that RESOLVED something (issue #3100).
+      let twinReplacement: string | undefined;
 
       // Check explicit variables first
       if (varNameStr in variables) {
         replacement = String(variables[varNameStr]);
+        twinReplacement =
+          varNameStr in variableTwins
+            ? variableTwins[varNameStr]
+            : this.productLogTwin(variables[varNameStr], context);
       } else {
         // Check if it's a pseudo parameter
         const pseudoValue = await this.resolvePseudoParameter(varNameStr, context);
@@ -5913,12 +6016,14 @@ export class IntrinsicFunctionResolver {
           try {
             const value = await this.resolveRef(varNameStr, context);
             replacement = String(value);
+            twinReplacement = this.productLogTwin(value, context);
           } catch (refError) {
             // If not found, try to resolve as GetAtt (e.g., "Resource.Attribute")
             if (varNameStr.includes('.')) {
               try {
                 const value = await this.resolveGetAtt(varNameStr, context);
                 replacement = String(value);
+                twinReplacement = this.productLogTwin(value, context);
               } catch (getAttError) {
                 // A DELIBERATE refusal is re-raised, never laundered into a
                 // literal `${...}` (issue #1740). Only a genuine miss — or an
@@ -5986,7 +6091,7 @@ export class IntrinsicFunctionResolver {
         }
       }
 
-      replacements.push({ match: match[0], replacement });
+      replacements.push({ match: match[0], replacement, twin: twinReplacement ?? replacement });
     }
 
     // Apply all replacements in a SINGLE left-to-right pass over the same
@@ -6003,13 +6108,23 @@ export class IntrinsicFunctionResolver {
       // fall back to the matched text if a gap ever appears.
       return entry ? entry.replacement : whole;
     });
+    // The LOG TWIN (issue #3100): the same positional pass over the same
+    // template, consuming each entry's twin instead.
+    let twinCursor = 0;
+    let twin = template.replace(/\$\{(!)?([^}]*)\}/g, (whole) => {
+      const entry = replacements[twinCursor++];
+      return entry ? entry.twin : whole;
+    });
 
     // Resolve any dynamic references in the substituted result (secret refs are
     // left unresolved per-reference when skipDynamicReferences is set).
     if (result.includes('{{resolve:')) {
-      result = await this.resolveDynamicReferences(result, context);
+      ({ result, twin } = await this.resolveDynamicReferencesWithLogTwin(result, twin, context));
     }
-    this.logger.debug(`Resolved Fn::Sub: ${this.maskSecretsForLog(result, context)}`);
+    this.rememberLogTwin(context, result, twin);
+    this.logger.debug(
+      `Resolved Fn::Sub: ${this.maskSecretsForLog(this.logTwinText(result, twin, context), context)}`
+    );
     return result;
   }
 
@@ -6267,11 +6382,14 @@ export class IntrinsicFunctionResolver {
     }
 
     const result = resolvedValue.split(delimiter);
+    // Issue #3100: a piece of a string an earlier write masked keeps its part
+    // of that mask, on this line and on an outer Join over the pieces.
+    const pieceTwins = this.splitLogTwins(resolvedValue, delimiter, result, context);
     // not-in-class(delimiter): a structural operand (an index, count, delimiter or property key).
     this.logger.debug(
       // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
       // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)).
-      `Resolved Fn::Split: split by "${delimiter}" -> ${JSON.stringify(this.maskValueLeaves(result, context))}`
+      `Resolved Fn::Split: split by "${delimiter}" -> ${JSON.stringify(this.maskValueLeaves(pieceTwins, context))}`
     );
     return result;
   }
@@ -8055,8 +8173,10 @@ export class IntrinsicFunctionResolver {
     // plaintext that already carries a real expression, so registering the
     // encoding can never weaken the entry for the secret itself.
     //
-    // Recorded BEFORE the debug line, which is what makes that line's right
-    // half maskable at all.
+    // Recorded BEFORE the debug line, which is what lets that line's NEEDLE
+    // mask catch its right half. An input masked by POSITION (issue #3100)
+    // masks the right half whole there regardless, since this detector does
+    // not see an embedded sub-floor secret.
     if (
       context.recordedSecretValues &&
       this.maskSecretsForLog(resolvedValue, context) !== resolvedValue
@@ -8064,8 +8184,12 @@ export class IntrinsicFunctionResolver {
       recordMaskOnlyValue(context.recordedSecretValues, result);
     }
 
+    // Issue #3100: the input is a leaf an earlier write may have masked by
+    // position. When it carries a mask, the ENCODING is masked whole too: it
+    // decodes straight back to the plaintext the input's mask hides.
+    const inputLogText = this.logTextOfLeaf(resolvedValue, context);
     this.logger.debug(
-      `Resolved Fn::Base64: ${this.maskSecretsForLog(resolvedValue, context)} -> ${this.maskSecretsForLog(result, context)}`
+      `Resolved Fn::Base64: ${this.maskSecretsForLog(inputLogText, context)} -> ${this.maskSecretsForLog(inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
     );
     return result;
   }
@@ -8339,6 +8463,190 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Is `value` WHOLE a secret either bag holds (issue #3100)? Asked of a
+   * resolution PRODUCT only — never of a template literal — so an exact match
+   * at any length is a verdict about what was written, not a floorless needle.
+   */
+  private isRecordedSecretForLog(value: string, context?: ResolverContext): boolean {
+    // No `''` guard: no writer records an empty plaintext (every recording
+    // site requires a truthy value), so `has('')` already answers false.
+    return (
+      context?.recordedSecretValues?.has(value) === true ||
+      context?.inheritedSecrets?.has(value) === true
+    );
+  }
+
+  /**
+   * The text a `Resolved Fn::Join:` / `Resolved Fn::Sub:` line prints (issue
+   * #3100): the twin through the needle mask — unless the needle mask ALSO
+   * fires on the value itself, in which case the whole line is masked. The
+   * twin splits the text at the spans it masked, so a 4+ character recorded
+   * secret that overlaps one of them (or IS the whole value) is no longer a
+   * contiguous needle in the twin, and masking the twin alone would print the
+   * part of it outside the span. The value's own needle mask cannot be merged
+   * with the twin's positions, so the line gives both up for `***`: never
+   * more text than either mask alone would print. Returns the text BEFORE the
+   * needle mask; each log line wraps it in `maskSecretsForLog` itself, so the
+   * resolver's mask-coverage checker sees a masker at the site.
+   */
+  private logTwinText(result: string, twin: string, context?: ResolverContext): string {
+    const bothMasksFire = twin !== result && this.maskSecretsForLog(result, context) !== result;
+    return bothMasksFire ? SECRET_MASK : twin;
+  }
+
+  /**
+   * The log twins of `Fn::Split`'s pieces (issue #3100), each registered for
+   * the pass so an outer `Fn::Join` over the pieces keeps the mask. A source
+   * that is itself a recorded or inherited secret counts as a twin of `***`;
+   * a source with neither is its pieces' own twin.
+   *
+   * The source's twin is split by the same delimiter. When both splits give
+   * the same number of pieces they are paired by position; when they do not —
+   * a secret carrying the delimiter, or a delimiter that occurs in the mask
+   * itself — no pairing can be trusted, so every piece is masked whole. Every
+   * masked piece is registered by VALUE, so an equal string elsewhere in the
+   * pass is masked too: the over-masking direction `logTwinOfProduct` accepts.
+   */
+  private splitLogTwins(
+    value: string,
+    delimiter: string,
+    pieces: string[],
+    context: ResolverContext
+  ): string[] {
+    const bag = this.logTwinBag(context);
+    // A source that IS a recorded or inherited secret is masked whole even
+    // with no registered twin — a `Ref` to a parameter holding one is never
+    // registered, since no substitution in this pass wrote it.
+    const sourceTwin = this.isRecordedSecretForLog(value, context)
+      ? SECRET_MASK
+      : bag
+        ? LOG_TWINS_BY_PASS.get(bag)?.get(value)
+        : undefined;
+    if (sourceTwin === undefined) return pieces;
+    const twinPieces = sourceTwin.split(delimiter);
+    // A delimiter that occurs in the mask itself splits `***` into pieces that
+    // can coincide in COUNT with the value's while pairing nothing, so the
+    // count test alone is not enough.
+    const aligned = twinPieces.length === pieces.length && !SECRET_MASK.includes(delimiter);
+    return pieces.map((piece, index) => {
+      // Through `logTwinText`, like the Join / Sub lines: a piece's twin can
+      // split a 4+ character secret the piece still holds whole.
+      const twin = this.logTwinText(
+        piece,
+        aligned ? (twinPieces[index] ?? SECRET_MASK) : SECRET_MASK,
+        context
+      );
+      this.rememberLogTwin(context, piece, twin);
+      return twin;
+    });
+  }
+
+  /**
+   * The log twin of a resolution product as `String(value)` renders it (issue
+   * #3100). A LIST is stringified element by element exactly as
+   * `Array.prototype.join` does (`null` / `undefined` as the empty string,
+   * nested lists recursively, comma-separated), so each element keeps its own
+   * twin: `String()` over the whole list produced a string no registered twin
+   * matched. No cycle guard: a product is JSON-sourced state or a fresh
+   * resolution result, and neither can hold a self-referencing list.
+   */
+  private productLogTwin(value: unknown, context: ResolverContext): string {
+    if (Array.isArray(value)) {
+      return value
+        .map((element: unknown) =>
+          element === null || element === undefined ? '' : this.productLogTwin(element, context)
+        )
+        .join(',');
+    }
+    const text = String(value);
+    return this.logTwinOfProduct({ result: text, twin: text }, context).twin;
+  }
+
+  /**
+   * The pre-mask log text of a string LEAF a debug line prints (issue #3100):
+   * the leaf treated as a resolution product — masked whole when it is a
+   * recorded secret, otherwise the masked twin this pass registered for it —
+   * and then `logTwinText`'s whole-line guard. The caller still wraps the
+   * result in `maskSecretsForLog`. Shared by every caller of `maskValueLeaves`
+   * (the `Fn::Select`, `Fn::Split`, `Fn::Equals`, `Fn::FindInMap`,
+   * `Fn::GetAZs` and `Fn::Cidr` lines and the VPC `Ipv6CidrBlocks` line among
+   * them) and by the `Fn::Base64` line, so a string one
+   * write already masked by position is not printed in the clear by the next
+   * intrinsic that logs it. `maskValueLeaves` also masks values interpolated
+   * into THROWN messages (the `Fn::Cidr` argument refusals, for one), so those
+   * messages take the same position mask: a short secret an earlier write put
+   * into the value is `***` there too, the direction the mask at the throw
+   * already takes for a whole secret.
+   */
+  private logTextOfLeaf(value: string, context?: ResolverContext): string {
+    return this.logTwinText(
+      value,
+      this.logTwinOfProduct({ result: value, twin: value }, context).twin,
+      context
+    );
+  }
+
+  /** The bag a pass's log twins are keyed by (issue #3100): the recorded one, else the inherited one. */
+  private logTwinBag(context?: ResolverContext): RecordedSecretValues | undefined {
+    return context?.recordedSecretValues ?? context?.inheritedSecrets;
+  }
+
+  /**
+   * The log twin of a RESOLUTION PRODUCT — an intrinsic part, variable or
+   * placeholder — for issue #3100. Masked whole when its value is a recorded
+   * secret. Otherwise a part that carries no mask of its own takes the masked
+   * twin an earlier write of this pass registered for that exact string
+   * (`rememberLogTwin`) — how a Join part that is itself an `Fn::Sub`, or a
+   * `Fn::Select` over a reference-bearing string, keeps the inner mask. A part
+   * whose OWN masked twin disagrees with the registered one (a list element
+   * still spelling a reference) is masked whole, since the two span sets
+   * cannot be merged; one that agrees keeps its twin.
+   *
+   * The registry is keyed by VALUE, so a product equal to a registered string
+   * from another provenance takes its mask too. That over-masks a line whose
+   * text holds a recorded secret at a position some write in this pass put
+   * one. The registry holds masked twins only, so a lookup never unmasks.
+   *
+   * The whole-secret check reads the bags as they stand when the product is
+   * placed, before the enclosing Join / Sub runs its final substitution. A
+   * secret that substitution records is therefore not matched against an
+   * earlier product equal to it. Such a product did not come from that secret:
+   * a parameter holding one arrives in the inherited bag before its `Ref`
+   * resolves, so what stays printed is a public value that coincides with it.
+   */
+  private logTwinOfProduct(part: LogTwin, context?: ResolverContext): LogTwin {
+    if (this.isRecordedSecretForLog(part.result, context)) {
+      return { result: part.result, twin: SECRET_MASK };
+    }
+    const bag = this.logTwinBag(context);
+    const registered = bag ? LOG_TWINS_BY_PASS.get(bag)?.get(part.result) : undefined;
+    if (registered === undefined || registered === part.twin) return part;
+    return { result: part.result, twin: part.twin === part.result ? registered : SECRET_MASK };
+  }
+
+  /**
+   * Register a MASKED `twin` as the log twin of `result` for this pass (issue
+   * #3100). An unmasked twin is not registered, so a later literal that
+   * resolves to the same string cannot replace an earlier write's mask, and
+   * two DIFFERENT masked twins for one string register `***` for the whole
+   * string, since their spans cannot be merged. Scoped to the pass's bag
+   * through a `WeakMap`, like the cross-stack associations, so it dies with
+   * the bag and another pass's strings cannot be reached.
+   */
+  private rememberLogTwin(context: ResolverContext, result: string, twin: string): void {
+    if (twin === result) return;
+    const bag = this.logTwinBag(context);
+    if (!bag) return;
+    let twins = LOG_TWINS_BY_PASS.get(bag);
+    if (!twins) {
+      twins = new Map<string, string>();
+      LOG_TWINS_BY_PASS.set(bag, twins);
+    }
+    const existing = twins.get(result);
+    twins.set(result, existing === undefined || existing === twin ? twin : SECRET_MASK);
+  }
+
+  /**
    * A copy of `value` with every string LEAF (and every object KEY) masked, for
    * a caller about to ENCODE it into a message (issue
    * [#2759](https://github.com/go-to-k/cdkd/issues/2759)).
@@ -8378,7 +8686,9 @@ export class IntrinsicFunctionResolver {
     // repeat its real rendering.
     const done = new Map<object, unknown>();
     const walk = (node: unknown): unknown => {
-      if (typeof node === 'string') return this.maskSecretsForLog(node, context);
+      if (typeof node === 'string') {
+        return this.maskSecretsForLog(this.logTextOfLeaf(node, context), context);
+      }
       if (node === null || typeof node !== 'object') return node;
       const memo = done.get(node);
       if (memo !== undefined) return memo;
@@ -8423,7 +8733,7 @@ export class IntrinsicFunctionResolver {
         // reason the receiver was changed from `{}`. The critic's own
         // `Object.create(null)` arm does not fire here because the bag is
         // declared inside this arrow rather than an enclosing scope.
-        out[this.maskSecretsForLog(key, context)] = walk(child);
+        out[this.maskSecretsForLog(this.logTextOfLeaf(key, context), context)] = walk(child);
       }
       return out;
     };
@@ -8475,9 +8785,38 @@ export class IntrinsicFunctionResolver {
   }
 
   async resolveDynamicReferences(value: string, context?: ResolverContext): Promise<string> {
+    return (await this.resolveDynamicReferencesWithLogTwin(value, value, context)).result;
+  }
+
+  /**
+   * {@link resolveDynamicReferences}, also returning the LOG TWIN of the result
+   * (issue [#3100](https://github.com/go-to-k/cdkd/issues/3100), see
+   * `LogTwin`). `logTwin` is the caller's twin of `value`, which may already
+   * mask spans an earlier write put there.
+   *
+   * Every arm that writes into `result` writes into the twin too, replacing
+   * the SAME token: a secret verdict writes {@link SECRET_MASK}, anything else
+   * the value itself. The verdict is the one each arm already holds — the
+   * fresh lookup's `isSecret`, the cache entry's own `secret` (never the
+   * process-wide store, for the #1933 reason the cache-hit arm states), and
+   * for a region-pinned sibling the twin the sibling itself returns. An arm
+   * that `continue`s without writing leaves the token in both.
+   *
+   * A token whose text an earlier write masked (`{{resolve:${Pw}}}` over a
+   * secret `Pw`) is not found in the twin, so the twin keeps the masked token
+   * where the value holds its resolution. What the twin cannot carry is a
+   * NEEDLE match that straddles a masked span, which is why the log lines go
+   * through `logTwinText` rather than masking the twin alone.
+   */
+  private async resolveDynamicReferencesWithLogTwin(
+    value: string,
+    logTwin: string,
+    context?: ResolverContext
+  ): Promise<LogTwin> {
     // Match all {{resolve:...}} patterns
     const pattern = /\{\{resolve:([^}]+)\}\}/g;
     let result = value;
+    let twin = logTwin;
     let match: RegExpExecArray | null;
 
     // Collect all matches first (to avoid issues with modifying string during iteration)
@@ -8606,7 +8945,8 @@ export class IntrinsicFunctionResolver {
         // by construction, so the sibling verdicts `local` whatever evidence it
         // holds -- but the shape is identical, and leaving one site to depend
         // on that argument is how the other one broke.
-        const foreign = await sibling.resolveDynamicReferences(
+        const foreign = await sibling.resolveDynamicReferencesWithLogTwin(
+          fullMatch,
           fullMatch,
           // Unconditional here: this arm is reached only for an ARN-form token,
           // whose region the ARN itself states, so the origin is known by
@@ -8616,7 +8956,8 @@ export class IntrinsicFunctionResolver {
         // Replacer FUNCTION for the same reason as every other substitution in
         // this method: a resolved secret legitimately containing `$&` would
         // otherwise splice the matched expression back into itself.
-        result = result.replace(fullMatch, () => foreign);
+        result = result.replace(fullMatch, () => foreign.result);
+        twin = twin.replace(fullMatch, () => foreign.twin);
         continue;
       }
 
@@ -8674,6 +9015,9 @@ export class IntrinsicFunctionResolver {
         // back INTO the value. A secret is exactly the kind of value that
         // legitimately contains `$`.
         result = result.replace(fullMatch, () => cached.value);
+        twin = twin.replace(fullMatch, () =>
+          cached.secret && cached.value ? SECRET_MASK : cached.value
+        );
         continue;
       }
 
@@ -8837,9 +9181,17 @@ export class IntrinsicFunctionResolver {
       // Replacer FUNCTION — see the cache-hit arm above for why a replacement
       // STRING is unsafe here.
       result = result.replace(fullMatch, () => resolved);
+      twin = twin.replace(fullMatch, () => (isSecret && resolved ? SECRET_MASK : resolved));
     }
 
-    return result;
+    // Registered HERE rather than by callers (issue #3100): every route into
+    // a reference-bearing string — `resolveValue`, a region-pinned sibling,
+    // a cross-stack re-resolution, `cdkd scrub` / `drift` — reaches this
+    // method, so an `Fn::Join` / `Fn::Sub` whose part arrived by any of them
+    // (`Fn::Select`, `Fn::If`, `Fn::ImportValue`, ...) still masks where the
+    // substitution wrote. A per-caller registration missed each route in turn.
+    if (context) this.rememberLogTwin(context, result, twin);
+    return { result, twin };
   }
 
   /**
@@ -9096,10 +9448,14 @@ export class IntrinsicFunctionResolver {
     // (issue #2827 review, item D2: one of the five encodings the fix's own
     // comment had claimed were all leaf-masked).
     //
-    // The two masks on this line are MUTUALLY redundant, and no test can
-    // discriminate either one (measured both ways, review round 4: stripping
-    // the leaf walk reds nothing, and so does stripping the outer call; only
-    // removing BOTH reds). `maskValueLeaves`'s leaf arm IS `maskSecretsForLog`,
+    // As NEEDLE masks the two on this line are MUTUALLY redundant, and no test
+    // can discriminate either one (measured both ways, review round 4:
+    // stripping the leaf walk reds nothing, and so does stripping the outer
+    // call; only removing BOTH reds). Since issue #3100 the leaf arm also
+    // consults the pass's log-twin registry, which only ever masks MORE: a
+    // computed CIDR equal to a string an earlier write masked by position is
+    // masked by the leaf walk and not by the outer call, an over-mask. For the
+    // needle part the leaf arm is `maskSecretsForLog`,
     // so the only thing that could separate per-leaf from whole-JSON masking is
     // `maskSecretsInText`'s asymmetry — the whole-string arm has no floor while
     // the substring arm is floored at {@link MIN_NEEDLE_LENGTH} = 4 — and
