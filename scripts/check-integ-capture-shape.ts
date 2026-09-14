@@ -137,7 +137,7 @@ function openSubstitutions(text: string): number {
   return depth;
 }
 
-const HEREDOC_OPENER = /(?<!<)<<-?(?!<)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/;
+export const HEREDOC_OPENER = /(?<!<)<<-?(?!<)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/;
 
 /**
  * Joins one logical statement out of its physical lines -- a backslash
