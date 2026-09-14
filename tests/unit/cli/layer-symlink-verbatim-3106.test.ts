@@ -1,9 +1,11 @@
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -32,14 +34,18 @@ import { copyLayerTreeLastWins } from '../../../src/local/layer-tree-copy.js';
  * is bind-mounted directly and never copied. The `local-invoke-layers`
  * fixture carries the same link and EXECS through it inside the container.
  *
- * The second group pins why the fix is a helper and not `verbatimSymlinks:
- * true` on the old call: with that option, Node's C++ `cpSync` (every
- * release after 22.12) throws `EEXIST` when a later layer carries a symlink
- * at a path an earlier layer already placed one — `node_modules/.bin/<tool>`
- * in two layers built from the same dependency — so the merge that used to
- * succeed would refuse (found by the go-to-k/cdkd#3118 review). The helper
- * places symlinks by hand, last-wins, for link-over-link, link-over-file
- * and file-over-link, keeps `+x`, and never resolves a target.
+ * The second group pins why the fix is an explicit walk and not a `cpSync`
+ * option: with `verbatimSymlinks: true`, Node's C++ `cpSync` (every release
+ * after 22.12) throws `EEXIST` when a later layer carries a symlink at a
+ * path an earlier layer already placed one — `node_modules/.bin/<tool>` in
+ * two layers built from the same dependency — so the merge that used to
+ * succeed would refuse; and a recursive `readdirSync` DESCENDS into
+ * directory symlinks on the same releases, so a cyclic link hung the merge
+ * and an absolute link to a host directory made it write INSIDE the host
+ * directory (both found by the go-to-k/cdkd#3118 review rounds). The helper
+ * recurses only on real directories, applies last-wins to every kind
+ * (link / file / directory over any of the others), keeps `+x`, and never
+ * resolves or writes through a link.
  */
 
 const scratch: string[] = [];
@@ -157,5 +163,79 @@ describe('copyLayerTreeLastWins merges symlinks last-wins without resolving them
     const dest = mergedOf(a, b);
     expect(readlinkSync(join(dest, 'bin', 'abs'))).toBe('/abs/host/path');
     expect(readlinkSync(join(dest, 'bin', 'dangling'))).toBe('missing');
+  });
+
+  it("a later layer's link replaces an earlier layer's DIRECTORY at that path (last wins, subtree included)", () => {
+    const a = layer('a', (d) => {
+      mkdirSync(join(d, 'python'));
+      writeFileSync(join(d, 'python', 'a.py'), 'a\n');
+    });
+    const b = layer('b', (d) => {
+      mkdirSync(join(d, 'python3.12'));
+      writeFileSync(join(d, 'python3.12', 'b.py'), 'b\n');
+      symlinkSync('python3.12', join(d, 'python'));
+    });
+    const dest = mergedOf(a, b);
+    expect(readlinkSync(join(dest, 'python'))).toBe('python3.12');
+    expect(existsSync(join(dest, 'python', 'a.py'))).toBe(false);
+    expect(readFileSync(join(dest, 'python', 'b.py'), 'utf8')).toBe('b\n');
+  });
+
+  it("a later layer's DIRECTORY replaces an earlier layer's link — nothing is written through the link", () => {
+    const a = layer('a', (d) => {
+      writeFileSync(join(d, 'nodejs', 'node_modules', 'x', 'index.js'), 'A\n');
+      symlinkSync('x', join(d, 'nodejs', 'node_modules', 'pkg'));
+    });
+    const b = layer('b', (d) => {
+      mkdirSync(join(d, 'nodejs', 'node_modules', 'pkg'));
+      writeFileSync(join(d, 'nodejs', 'node_modules', 'pkg', 'index.js'), 'B\n');
+    });
+    const dest = mergedOf(a, b);
+    expect(lstatSync(join(dest, 'nodejs', 'node_modules', 'pkg')).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(dest, 'nodejs', 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('B\n');
+    // The link's former target, from layer A, is untouched — the old
+    // `cpSync({ force })` wrote B's files THROUGH the link into it.
+    expect(readFileSync(join(dest, 'nodejs', 'node_modules', 'x', 'index.js'), 'utf8')).toBe('A\n');
+    expect(readFileSync(join(a, 'nodejs', 'node_modules', 'x', 'index.js'), 'utf8')).toBe('A\n');
+  });
+
+  it('a cyclic directory link terminates the walk, and an absolute link to a host directory never reaches the host', () => {
+    const host = mkdtempSync(join(tmpdir(), 'cdkd-3106-host-'));
+    scratch.push(host);
+    writeFileSync(join(host, 'host.txt'), 'HOST\n');
+    symlinkSync('host.txt', join(host, 'hostlink'));
+    const a = layer('a', (d) => {
+      mkdirSync(join(d, 'sub', 'real'), { recursive: true });
+      writeFileSync(join(d, 'sub', 'real', 'f'), 'f\n');
+      symlinkSync('..', join(d, 'sub', 'up'));
+      symlinkSync(host, join(d, 'nodejs', 'node_modules', 'ext'));
+    });
+    const b = layer('b', (d) => {
+      // A real directory at the path A linked to the host: it must land in
+      // dest, never inside the host directory.
+      mkdirSync(join(d, 'nodejs', 'node_modules', 'ext'));
+      writeFileSync(join(d, 'nodejs', 'node_modules', 'ext', 'payload.txt'), 'PAYLOAD\n');
+      symlinkSync('payload.txt', join(d, 'nodejs', 'node_modules', 'ext', 'l'));
+    });
+    const dest = mergedOf(a, b);
+    expect(readlinkSync(join(dest, 'sub', 'up'))).toBe('..');
+    expect(readFileSync(join(dest, 'sub', 'real', 'f'), 'utf8')).toBe('f\n');
+    expect(lstatSync(join(dest, 'nodejs', 'node_modules', 'ext')).isDirectory()).toBe(true);
+    expect(readlinkSync(join(dest, 'nodejs', 'node_modules', 'ext', 'l'))).toBe('payload.txt');
+    expect(readdirSync(host).sort()).toEqual(['host.txt', 'hostlink']);
+  });
+
+  it('an asset dir handed over through a symlink is copied whole (the root is resolved first)', () => {
+    const real = layer('real', (d) => {
+      writeFileSync(join(d, 'bin', 'x'), 'x\n');
+      symlinkSync('x', join(d, 'bin', 'l'));
+    });
+    const holder = mkdtempSync(join(tmpdir(), 'cdkd-3106-linkroot-'));
+    scratch.push(holder);
+    const linkRoot = join(holder, 'asset');
+    symlinkSync(real, linkRoot);
+    const dest = mergedOf(linkRoot, plainLayer());
+    expect(readFileSync(join(dest, 'bin', 'x'), 'utf8')).toBe('x\n');
+    expect(readlinkSync(join(dest, 'bin', 'l'))).toBe('x');
   });
 });
