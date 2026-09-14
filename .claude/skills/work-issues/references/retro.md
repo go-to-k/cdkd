@@ -59,6 +59,14 @@ done | sort -u
 rm -f /tmp/run-touched.$$
 ```
 
+- **The diff is a LOWER bound on what this run loaded — run the context test
+  on every `next` as well.** The query above sees files the run EDITED; the
+  run also READ its reviewers' diffs, the modules its lanes traced and every
+  sibling site a review named, none of which is in `run-touched`. For each
+  `next` still open, list the files its fix touches or must read and ask
+  whether any was read this run — if one was, it is `now` (`.claude/rules/session-report.md`
+  → Session-fit: the default is `now`, and the maintainer's wrap-time
+  challenge on exactly this has promoted every time it was asked).
 - **An EMPTY result is not "nothing to promote" — check the extraction saw a
   FILE at all.** A body names its subject by SYMBOL as often as by path
   (go-to-k/cdkd#2442), and a DOTFILE needs the `\.?` prefix above
@@ -198,9 +206,10 @@ unread one.
   Without the rules below this bullet is a duplicate GENERATOR (thirteen open
   issues across the repos were one change; go-to-k/cdkd#2011 /
   go-to-k/cdkd#2016 filed three lessons twice):
-  - **The session that FINDS the lesson lands all three** — the default; the
-    narrow exception (cannot pay the remaining gate cycles) is justified in
-    the wrap. Land the mirror BEFORE the original's review rounds finish: the
+  - **The session that FINDS the lesson lands all three** — the default, and
+    session budget is not a `next` reason (`.claude/rules/session-report.md`);
+    the only exception is external input, justified in the wrap. Land the
+    mirror BEFORE the original's review rounds finish: the
     mirror's own reviewers read the same design with none of the original's
     momentum (measured 2026-09-02: the cdk-local port's reviewers found two
     defects in code cdkd had already merged past a three-axis panel). It
