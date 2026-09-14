@@ -939,6 +939,17 @@ if [ "${PIN_STATE}" = "${PIN_FRAMED_VALUE}" ]; then
   echo "FAIL: PinParam persisted the framed PLAINTEXT -- the sub-floor carry did not reach the child (issue #2745)" >&2
   exit 1
 fi
+# THE #3079 DEFECT, named BEFORE the equality assert below can mask it:
+# whichever of `pin` / `pintwin` lost the parent's `q7` slot, its child leaf
+# used to persist the OTHER token's frame. Both directions, because the
+# slot's winner is a resolution-order accident (MEASURED on the pre-fix
+# recorder: `pin` lost, and this assert -- not the #3079 block's -- was the
+# one that fired, with an 86-character value against the 82 expected).
+PIN_TWIN_STATE="$(jq_state "${CHILD_STATE}" '.resources.PinTwinParam.properties.Value')"
+if [ "${PIN_TWIN_STATE}" = "${PIN_FRAMED_EXPR}" ] || [ "${PIN_STATE}" = "${PIN_TWIN_FRAMED_EXPR}" ]; then
+  echo "FAIL: a framed twin persisted the OTHER token's frame -- the per-name association did not reach the child (issue #3079)" >&2
+  exit 1
+fi
 assert_eq "child PinParam persists the FRAMED expression" "${PIN_STATE}" "${PIN_FRAMED_EXPR}"
 # The readback too: `observedProperties` is captured against the marked
 # readback bag and redacted through the same per-resource entry. Read with a
@@ -962,14 +973,8 @@ assert_eq "the parent's nested-stack row keeps SubFloorPinTwin as its OWN framed
 LIVE_PIN_TWIN=$(aws ssm get-parameter --name "${CHILD_PIN_TWIN_PARAM}" --region "${REGION}" \
   --query 'Parameter.Value' --output text)
 assert_eq "the LIVE PinTwinParam holds the framed resolved value" "${LIVE_PIN_TWIN}" "${PIN_FRAMED_VALUE}"
-# THE NAMED DEFECT FIRST: whichever token lost the parent's `q7` slot, its
-# child leaf used to persist the OTHER token's frame. Both directions are
-# checked because the slot's winner is a resolution-order accident.
-PIN_TWIN_STATE="$(jq_state "${CHILD_STATE}" '.resources.PinTwinParam.properties.Value')"
-if [ "${PIN_TWIN_STATE}" = "${PIN_FRAMED_EXPR}" ] || [ "${PIN_STATE}" = "${PIN_TWIN_FRAMED_EXPR}" ]; then
-  echo "FAIL: a framed twin persisted the OTHER token's frame -- the per-name association did not reach the child (issue #3079)" >&2
-  exit 1
-fi
+# The named defect ran above, beside `PinParam`'s own check; here the twin's
+# own values.
 if [ "${PIN_TWIN_STATE}" = "${PIN_FRAMED_VALUE}" ]; then
   echo "FAIL: PinTwinParam persisted the framed PLAINTEXT (issue #3079)" >&2
   exit 1
