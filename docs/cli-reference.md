@@ -270,7 +270,6 @@ role.
 So the role needs the actions for the resource types your stacks deploy, plus
 cdkd's own bookkeeping set — the same permissions your own principal would have
 needed, moved onto the role.
-[Permissions](getting-started.md#permissions) lists them, and
 [Permission errors](troubleshooting.md#access-denied-error) has the policy
 document. `AdministratorAccess` is not part of it; scope the role to the
 services your stacks actually use.
