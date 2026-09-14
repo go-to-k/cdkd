@@ -623,7 +623,8 @@ gate_segments_raw() {
     # quotes, as close_paren has it. `${...}` and `$((...))` are skipped whole,
     # and a `#` at word start ends the scan, because a `<<` inside any of them
     # is not an opener. Finally the FRAME of the opener is recorded -- the
-    # substitution depth and whether it sat inside a backtick -- and the
+    # substitution depth (an opener inside a backtick frame is a bail, below)
+    # -- and the
     # answer is "" whenever the line goes on to do something bash does not
     # read as "body follows on the next line": a NEW `$(` still open at end
     # of line (bash defers that body until the substitution closes, round 2,
@@ -631,10 +632,11 @@ gate_segments_raw() {
     # `y=$(cat <<\047EOF\047) ; z=$(` or `x=$(echo $(cat <<\047X\047)`, where
     # bash 3.2 and zsh run the next line as the new substitution and bash 5
     # reads it as the body -- version-dependent, so it is not modelled
-    # (round 3, code review); and a `#` after a `)` or an opening backtick
-    # is a comment like one after a space (rounds 3 and 4; `)#` measured
-    # as a comment on bash 3.2.57, bash 5 and zsh -- an earlier claim that
-    # 3.2 rejects it was wrong). Third, an
+    # (round 3, code review); and a `#` after a `)` is a comment like one
+    # after a space (round 3; `)#` measured as a comment on bash 3.2.57,
+    # bash 5 and zsh -- an earlier claim that 3.2 rejects it was wrong; the
+    # opening-backtick member of that class went with round 14, since an
+    # opener inside a backtick frame bails before it is recorded). Third, an
     # UNQUOTED opener ANYWHERE on the line
     # is a bail too, not merely "not latched": in `cat <<A <<\047B\047` bash
     # reads the A body FIRST and expands it, so recording only the quoted B
@@ -657,9 +659,9 @@ gate_segments_raw() {
     # are locals, so an earlier opener whose body run() already dropped is
     # never re-found (the round-1 joined-scan fail-open, S2).
     function lho_reset() { lho_iq = ""; lho_depth = 0; lho_bt = 0; lho_btq = ""; lho_bail = 0; split("", lho_OQ) }
-    function last_heredoc_opener(text,   j, n, c, d, rest, out, ol, of, ob, k) {
+    function last_heredoc_opener(text,   j, n, c, d, rest, out, ol, of, k) {
       if (lho_bail) return ""
-      out = ""; ol = 0; of = 0; ob = 0
+      out = ""; ol = 0; of = 0
       n = length(text)
       for (j = 1; j <= n; j++) {
         c = substr(text, j, 1)
@@ -678,12 +680,12 @@ gate_segments_raw() {
                           j = j + 1 + k; continue }
                         continue }
         if (c == "`" && (lho_iq == "" || lho_iq == "\"")) { if (!lho_bt) { lho_btq = lho_iq; lho_iq = ""; lho_bt = 1 }
-                                                            else { if (out != "" && ob) return ""; lho_bt = 0; lho_iq = lho_btq }; continue }
+                                                            else { lho_bt = 0; lho_iq = lho_btq }; continue }
         if (lho_iq != "") { if (c == lho_iq) lho_iq = ""; continue }
         if (c == "\"" || c == "\047") { lho_iq = c; continue }
         if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""; continue }
         if (c == ")") { if (lho_depth > 0) { if (out != "" && lho_depth <= of) return ""; lho_iq = lho_OQ[lho_depth]; lho_depth-- }; continue }
-        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|()`]/)) break
+        if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \t;&|()]/)) break
         if (c == "<" && substr(text, j + 1, 1) == "<") {
           if (substr(text, j + 2, 1) == "<") { j += 2; continue }
           rest = substr(text, j)
@@ -692,7 +694,14 @@ gate_segments_raw() {
           # and a word this walk cannot read has no modelled body either. Both
           # are the STICKY bail -- the rest of the substitution is commands.
           if (d == "" || !HW_QUOTED) { lho_bail = 1; return "" }
-          out = d; ol = lho_depth + lho_bt; of = lho_depth; ob = lho_bt
+          # An opener inside a BACKTICK frame has no modelled body end either:
+          # bash delimits a backtick substitution TEXTUALLY, so the first
+          # unescaped backtick on any body line -- a `\140foo\140` mention in
+          # quoted prose -- closes the substitution and the rest of that body
+          # runs as commands (security review round 14, all three shells).
+          # The sticky bail reads such a body as commands, as origin/main did.
+          if (lho_bt) { lho_bail = 1; return "" }
+          out = d; ol = lho_depth + lho_bt; of = lho_depth
           j += HW_LEN - 1
           continue
         }

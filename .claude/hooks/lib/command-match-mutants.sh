@@ -54,18 +54,22 @@ tally() { grep -E '^Pass: ' "$1" | head -1; }
 # of go-to-k/cdkd#3040, at load average 136: twenty-five one-case mutants
 # reported undiscriminated at once). A mutant discriminates when it fails a
 # case the baseline did NOT fail.
-# Keyed on the case NAME alone, read from the IMMEDIATE failure lines -- the
-# ones printed BEFORE the `Pass:` tally, once per case, with or without a
-# `(want X, got Y)` suffix. The tail summary after the tally prints the same
-# names again through printf %b, which renders a backslash in a name as an
-# escape, so it is not read. The TIMING cases carry their measurement in the
-# line (`took 9s`); a case that fails in both runs with different seconds
-# would read as a NEW failure and report a no-op mutant as discriminated
-# (review round 13 measured exactly that with a `$(date +%s)` case), so they
-# are outside the set: timing cannot discriminate a mutant.
+# Keyed on the case NAME, read from EVERY `FAIL` line -- the immediate one
+# and the tail summary. Eight sites in the suite record a failure in the
+# summary only (the `gate_missing_const` block, the soft-note needles), so a
+# cut at the `Pass:` tally hid them (review round 14). The summary renders a
+# backslash in a name through printf %b, differently from the immediate
+# line, so such a case yields two keys; both runs render it the same way, so
+# the comparison holds and only the count reads high. The TIMING cases carry
+# their measurement in the line (`took 9s`); a case that fails in both runs
+# with different seconds would read as a NEW failure and report a no-op
+# mutant as discriminated (round 13 measured that with a `$(date +%s)`
+# case), so lines named `latency` / `bounded walk` OR carrying a `took Ns`
+# figure are outside the set: timing cannot discriminate a mutant. Byte
+# collation is pinned so `sort` and `comm` agree whatever the locale.
 failset() {
-  awk '/^Pass: /{exit} /^FAIL /{print}' "$1" | grep -vE '^FAIL (latency|bounded walk)' \
-    | sed -E 's/ \(want .*$//' | sort -u
+  grep -E '^FAIL ' "$1" | grep -vE '^FAIL (latency|bounded walk)| took [0-9]+s' \
+    | LC_ALL=C sed -E 's/ \(want .*$//' | LC_ALL=C sort -u
 }
 base_out="$WORK/base.txt"
 cp "$LIB" "$WORK/command-match.sh"
@@ -152,15 +156,13 @@ edits={
  'lho-no-reset-on-close': ('        lho_reset()\n        # A line that ends INSIDE a quoted span',
                            '        # A line that ends INSIDE a quoted span'),
  'lho-frame-close-paren': ('if (out != "" && lho_depth <= of) return ""; lho_iq = lho_OQ[lho_depth]', 'lho_iq = lho_OQ[lho_depth]'),
- 'lho-frame-close-bt':  ('else { if (out != "" && ob) return ""; lho_bt = 0; lho_iq = lho_btq }', 'else { lho_bt = 0; lho_iq = lho_btq }'),
- 'lho-hash-class-paren': ('~ /[ \\t;&|()`]/)) break', '~ /[ \\t;&|(`]/)) break'),
- 'lho-hash-class-bt':   ('~ /[ \\t;&|()`]/)) break', '~ /[ \\t;&|()]/)) break'),
+ 'lho-hash-class-paren': ('~ /[ \\t;&|()]/)) break', '~ /[ \\t;&|(]/)) break'),
  'lho-herestring-skip': ('if (substr(text, j + 2, 1) == "<") { j += 2; continue }', 'if (0) { j += 2; continue }'),
  'lho-iq-bail':         ('      if (lho_iq != "") return ""\n', '      if (0) return ""\n'),
  'lho-ansi-c-arm':      ('if (d == "\\047" && lho_iq == "") { lho_iq = "A"; j++; continue }\n', ''),
  'lho-ansi-c-in-dq':    ('if (d == "\\047" && lho_iq == "") { lho_iq = "A"; j++; continue }', 'if (d == "\\047") { lho_iq = "A"; j++; continue }'),
  'lho-ol-check':        ('if (out != "" && lho_depth + lho_bt > ol) return ""', 'if (0) return ""'),
- 'lho-hash-break':      ('if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \\t;&|()`]/)) break', 'if (0) break'),
+ 'lho-hash-break':      ('if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \\t;&|()]/)) break', 'if (0) break'),
  'lho-brace-skip':      ('if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) return ""', 'if (0) { k = index(substr(text, j + 2), "}"); if (k == 0) return ""'),
  'lho-arith-skip':      ('if (d == "(" && substr(text, j + 2, 1) == "(") {', 'if (0) {'),
  'lho-arith-landing':   ('j = j + 3 + k; continue }', 'j = j + 2 + k; continue }'),
@@ -230,6 +232,9 @@ edits={
                          '        if (0) {\n'),
  'ptag-latch-off':      ('          if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd\n',
                          '          if (0) ptag = pd\n'),
+ # `lho-bt-latch` latches a heredoc opened inside a backtick frame, which
+ # bash closes textually at the next backtick on any body line (P01 / P03).
+ 'lho-bt-latch':        ('          if (lho_bt) { lho_bail = 1; return "" }\n', ''),
  'pending-tag-restore': ('      pending_tag = saved_pt\n', ''),
 }
 a,b=edits[probe]
@@ -241,7 +246,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close ptag-keep-delimiter ptag-trim-both ptag-paren-clause bs-parity bs-arm-off ptag-latch-off pending-tag-restore}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-hash-class-paren lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close ptag-keep-delimiter ptag-trim-both ptag-paren-clause bs-parity bs-arm-off ptag-latch-off lho-bt-latch pending-tag-restore}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then
@@ -256,11 +261,11 @@ for m in $MUTANTS; do
     printf '%-16s NO TALLY -- the suite failed to load, which is not discrimination\n' "$m"; rc=1; continue
   fi
   failset "$WORK/$m.txt" > "$WORK/$m.fails"
-  new_fails=$(comm -13 "$WORK/base.fails" "$WORK/$m.fails" | wc -l | tr -d ' ')
+  new_fails=$(LC_ALL=C comm -13 "$WORK/base.fails" "$WORK/$m.fails" | wc -l | tr -d ' ')
   if [ "$new_fails" -eq 0 ]; then
     printf '%-16s %s   <- NOT DISCRIMINATED: no case notices this mutation\n' "$m" "$(tally "$WORK/$m.txt")"; rc=1
   else
-    printf '%-16s %s   (%s case name(s) red beyond the baseline)\n' "$m" "$(tally "$WORK/$m.txt")" "$new_fails"
+    printf '%-16s %s   (%s failure name(s) red beyond the baseline)\n' "$m" "$(tally "$WORK/$m.txt")" "$new_fails"
   fi
 done
 exit "$rc"

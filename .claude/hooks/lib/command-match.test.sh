@@ -255,13 +255,21 @@ r2_case "\$((...)): a <<X inside arithmetic is not an opener" 0 \
 # was dropped -- a fail-open -- and no case saw it.
 r2_case "C1: a <<X after a closed \$( ) inside double quotes is still quoted" 0 \
   'x="$(true) <<X $(cat' 'git commit -m y' 'X' ')"'
-# B1 (test review round 2): the backtick arm. A heredoc opened inside a
-# BACKTICK substitution that itself sits inside double quotes is a real
-# heredoc (bash yields x = the body); with the arm deleted the opener read as
-# quoted text and the body was scanned as commands -- the refusing direction,
-# but the arm was unfenced.
-check "B1: a quoted heredoc inside a backtick substitution inside double quotes is stripped" 1 "$MERGE" \
+# B1 (test review round 2, re-pinned in round 14): the backtick arm keeps the
+# quote STATE right across a backtick span -- with it deleted, the `"` after
+# the backtick was read as closing the dq and the line bailed on the
+# unbalanced quote. What the arm no longer does is LATCH a heredoc opened
+# inside a backtick frame: bash delimits a backtick substitution textually,
+# so a `\`foo\`` mention on a body line closes it and the rest of the body
+# runs (security round 14, all three shells; P01 / P03 below). A
+# backtick-framed opener is therefore the sticky bail and its prose body is
+# read as commands -- origin/main parity, a false refusal, never a miss.
+check "B1: a quoted heredoc inside a backtick substitution inside double quotes is read as commands (parity)" 0 "$MERGE" \
   "$(printf '%s\n' 'x="`cat <<'"'"'EOF'"'"'' 'gh pr merge 1 was refused' 'EOF' '`"')"
+check "P03: a backtick mention on a body line closes the backtick substitution, and the line after it runs" 0 "$MERGE" \
+  "$(printf '%s\n' 'gh issue create --repo o/r --title t --body "`cat <<'"'"'E'"'"'' 'see `foo` first' 'gh pr merge 1 was refused' 'E' '`"')"
+check "P01: the same without the enclosing double quotes" 0 "$MERGE" \
+  "$(printf '%s\n' 'x=`cat <<'"'"'E'"'"'' 'see `foo` first' 'gh pr merge 1 was refused' 'E' '`')"
 
 # --- The QUOTED-delimiter twins of the arms above (round 2, author's matrix) --
 # Once the latch became quoted-only, every bare `<<X` case above answers 0
@@ -338,7 +346,7 @@ r3_case "d05: two QUOTED openers, verb after both terminators is still a segment
 # or the backtick that held the opener closing -- rather than modelling it.
 r3_case "c1: opener frame closes, a new \$( opens -- \$( form" 0 "$COMMIT" \
   'y=$(cat <<'"'"'EOF'"'"') ; z=$(' 'git commit -m y' 'EOF' ')'
-r3_case "c1b: opener frame closes, a new \$( opens -- backtick form" 0 "$COMMIT" \
+r3_case "c1b: opener frame closes, a new \$( opens -- backtick form (since round 14 a backtick-framed opener bails outright)" 0 "$COMMIT" \
   'y=`cat <<'"'"'EOF'"'"'` ; z=$(' 'git commit -m y' 'EOF' ')'
 r3_case "c1c: a NESTED opener frame closes while the outer stays open" 0 "$COMMIT" \
   'x=$(echo $(cat <<'"'"'X'"'"')' 'git commit -m y' 'X' ')'
@@ -399,9 +407,10 @@ check "s8: a quoted heredoc closed on an earlier line is not re-found -- the pus
 
 # Code review round 4: the `#` class had `)` (round 3) but not the backtick,
 # so `` x=`#<<'X' `` read the comment as an opener inside the backtick frame
-# and, the frame never closing on that line, latched it -- all three shells
-# run the commit (origin/main matched). Same defect one separator over.
-r3_case "s10: a # right after an opening backtick is a comment, not an opener in the backtick frame" 0 "$COMMIT" \
+# and latched it -- all three shells run the commit. Round 14 retired that
+# class member: an opener inside a backtick frame bails before it is
+# recorded, so this case now pins that bail.
+r3_case "s10: a <<'X' after # inside a backtick frame is not latched (the frame bails)" 0 "$COMMIT" \
   'x=`#<<'"'"'X'"'"'' 'git commit -m y' 'X' '`'
 # The carried state is per SUBSTITUTION: it resets when a line closes one, so
 # the sticky unquoted-opener bail from a first `$( )` does not leak into a
@@ -591,7 +600,8 @@ subst_backtick_heredoc=$(printf '%s\n' \
   'gh pr merge 1 was refused' \
   'EOF' \
   '`')
-check "a heredoc inside a BACKTICK substitution is stripped too" 1 "$MERGE" "$subst_backtick_heredoc"
+# Round 14: NOT stripped -- a backtick frame bails (see B1 / P01 / P03).
+check "a heredoc inside a BACKTICK substitution is read as commands (parity)" 0 "$MERGE" "$subst_backtick_heredoc"
 
 # --- Reviewer-found regressions of the FIRST cut (all must MATCH) ---------
 #

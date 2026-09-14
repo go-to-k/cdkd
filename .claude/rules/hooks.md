@@ -899,7 +899,7 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   the joined `$(` text — the join re-finds an opener whose heredoc already
   closed, and a later bare delimiter swallows the commands in between; the scan is QUOTE-AWARE
   with a per-depth STACK — `$(` and a bare `(` push the quote state and the
-  matching `)` restores it, a backtick saves and restores across its span, `${…}` / `$((…))` / a `#` comment (after a space, a `)` or an opening backtick) are
+  matching `)` restores it, a backtick saves and restores across its span, `${…}` / `$((…))` / a `#` comment (after a space or a `)`) are
   skipped whole — and it BAILS to "no opener" on any line it cannot read to
   the end: an unbalanced quote, a new `$(` opened after the delimiter, or the
   opener's OWN frame closing on that line (`y=$(cat <<'EOF') ; z=$(` — shells
@@ -908,9 +908,9 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   after quote removal (`<<'EOF'x` is `EOFx`, `<<\EOF` is quoted, `<<"E\xF"`
   keeps its backslash), in this arm and the
   top-level one, which latches an unquoted word only when a whole identifier
-  (`origin/main` latched the identifier PREFIX of any word that had one — a decoy) — and an unquoted or
-  unreadable opener ANYWHERE in the substitution is a bail, sticky to its
-  close: `cat <<A <<'B'` expands the A body first, so recording only B
+  (`origin/main` latched the identifier PREFIX of any word that had one — a decoy) — and an unquoted, unreadable or BACKTICK-framed opener ANYWHERE in the
+  substitution is a bail, sticky to its close (bash ends a backtick
+  substitution at the next backtick on any body line): `cat <<A <<'B'` expands the A body first, so recording only B
   dropped a verb. That lexer state CARRIES across the physical lines of one
   `$( )` and resets when it closes. A body line beginning with the delimiter
   and carrying a `)` ends the latch (bash 5 and 3.2 close the `$( )` there);
