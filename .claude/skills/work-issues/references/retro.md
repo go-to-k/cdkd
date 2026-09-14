@@ -73,6 +73,9 @@ rm -f /tmp/run-touched.$$
   (go-to-k/cdkd#2455); both reported nothing while the criterion fired. Print
   what the extraction found; resolve by hand (`git grep -l '<the symbol>'`)
   whenever no token is path-shaped or the diff is mostly dotfiles.
+- **Count the (b)s.** `.claude/rules/session-report.md`'s reason (b) — cold
+  AND heavy — must stay rare; more than one (b) among this run's filings
+  means re-classify all but the strongest as `now`.
 - **A hit is a prompt for judgement, not a verdict** — it cannot tell a
   citation from a target: a retro wrote go-to-k/cdkd#2621's citation of a
   SIBLING fixture into a rule as a sourced incident, unpicked only by review.

@@ -329,13 +329,13 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // +614), retro.md 10-0 gained the read-set-is-wider-than-the-diff
     // promotion bullet and 10-c lost its session-budget exception (+672), and
     // filing.md's sweep bullet and body template now name reason (a) and the
-    // context test (+317). Components: 28,323 -> 28,937, 18,796 -> 19,468,
-    // 15,330 -> 15,647, = +1,603 over two PRs (go-to-k/cdkd#3108 and the
-    // follow-up that dropped "a NEW fixture" as a `next` reason). Neither
-    // leader moved; the floor was re-derived upward beside
-    // MIN_REFERENCE_CORPUS_BYTES (a non-leader addition is charged there in
-    // full).
-    corpusBytes: 187_735,
+    // context test (+317). Components: 28,323 -> 28,937, 18,796 -> 19,673,
+    // 15,330 -> 15,647, = +1,808 over two PRs (go-to-k/cdkd#3108 and
+    // go-to-k/cdkd#3112, which dropped "a NEW fixture" as a `next` reason and
+    // gave 10-0 its (b)-counting bullet). Neither leader moved; the floor was
+    // re-derived upward beside MIN_REFERENCE_CORPUS_BYTES (a non-leader
+    // addition is charged there in full).
+    corpusBytes: 187_940,
     largest: { file: 'implement.md', bytes: 29_992 },
     runnerUp: { file: 'verify.md', bytes: 29_989 },
   },
@@ -781,14 +781,14 @@ const MIN_REFERENCE_FILES = 6;
 // band the derivations above carried. Both leaders are at the per-file cap's
 // doorstep (the cap's failure message prints the live headroom), so the next
 // edit to EITHER opens with a compression pass.
-// RE-DERIVED UPWARD 156_500 -> 158_100 by the `now`-by-default pass and its
-// follow-up (+1,603 B, corpus 186,132 -> 187,735), all of it in non-leader
+// RE-DERIVED UPWARD 156_500 -> 158_300 by the `now`-by-default pass and its
+// follow-up (+1,808 B, corpus 186,132 -> 187,940), all of it in non-leader
 // files (triage.md 3-b, retro.md 10-0 / 10-c, filing.md). Inputs at this
-// date: largest 29,992, runner-up 29,989, so the two thresholds are 157,743
-// (largest-side) and 157,746 (runner-up side, binding); 158_100 clears the
-// binding one by 354 B, inside the 347-383 B band the derivations above
+// date: largest 29,992, runner-up 29,989, so the two thresholds are 157,948
+// (largest-side) and 157,951 (runner-up side, binding); 158_300 clears the
+// binding one by 349 B, inside the 347-383 B band the derivations above
 // carried.
-const MIN_REFERENCE_CORPUS_BYTES = 158_100;
+const MIN_REFERENCE_CORPUS_BYTES = 158_300;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

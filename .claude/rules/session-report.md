@@ -31,7 +31,9 @@ A report adds a fifth line, **`Notes`**, for session-specific context
 HIT there is no issue to classify — the finding becomes a checklist row in
 the covering issue.
 
-The four answer four different questions, and none derives from another:
+The four answer four different questions, and none is a spelling of
+another (the one sanctioned link: `Severity: high` forces `now` unless
+external input blocks it):
 
 | Field | Question it answers | Kind |
 | --- | --- | --- |
@@ -79,7 +81,8 @@ reviewed in a diff; a reviewer's read set counts exactly like an author's.
 ONE loaded file makes the item `now`: a fresh session pays the launch probe,
 install, build, the module read and the evidence re-derivation BEFORE its
 first edit, while this session pays the edit alone. Precedence: `next` reason (a) below asks whether the work
-CAN finish here and is decided first; (b) is what the test decides.
+CAN finish here and is decided first; (b) is what the test gates — it
+decides whether (b) is available, not that it fires.
 
 - **`now`** — any of: a file the fix touches is loaded (above); skipping it
   leaves main self-inconsistent (docs contradicting shipped code, a stale
@@ -92,10 +95,11 @@ CAN finish here and is decided first; (b) is what the test decides.
   whether the request's purpose is met); or **leaving it loose compounds** —
   an integ fixture not yet written for a subsystem this session holds, a
   pattern landed at some sites and not others, a guard with a known hole:
-  the cost of undone grows with every session that passes, and the fixture
-  case is the clearest — deferred, it is the piece that never lands; or
-  **`Severity: high`** — a wrong result, data loss, or a security surface is
-  `now` unless (a) blocks it; (b) never overrides a `high`.
+  the cost of undone grows FOR THE REPO with every session that passes, and
+  the fixture case is the clearest — deferred, it is the piece that never
+  lands; or **`Severity: high`** — a wrong result, data loss, or a security
+  surface, rated on the scale below and never on the decision it forces —
+  is `now` unless (a) blocks it.
   **Residuals of a just-merged lane** — polish, nits, parity gaps, sibling
   sites a review named — are the hottest context there is and are `now` by
   the test above; "only a residual" names no cost. Writing a NEW integ
@@ -105,14 +109,14 @@ CAN finish here and is decided first; (b) is what the test decides.
   maintainer decision already asked through `AskUserQuestion` and unanswered
   — a routine call is yours to make); or (b) the work is COLD AND HEAVY —
   nothing the fix touches or must read was read this session, no `now`
-  criterion fires, AND doing it here is clearly worse than fresh: it needs a
-  large body of context this session would load from zero anyway, or the
-  context this session does hold would degrade the work (a security surface
-  read through an unrelated subsystem's assumptions). Cold alone is not (b) —
-  a small cold fix is `now`. (b) is legitimate and never to be forced through
-  — but it must stay RARE: the reason names the context the work needs and
-  why THIS session is the wrong one to load it; a (b) fired twice in one run,
-  or on an item with a loaded file, is the reflex, not the reason. **Nothing
+  criterion fires, AND doing it here is clearly WORSE than fresh, not merely
+  as costly: the reason names the modules to load and says why loading them
+  beside THIS session's context degrades the work (a security surface read
+  through an unrelated subsystem's assumptions). That is the one claim about
+  the session that counts. Cold alone is not (b) — a small cold fix is
+  `now`. (b) is legitimate and never to be forced through — but it must stay
+  RARE: a (b) fired twice in one run is the reflex, not the reason, and
+  `/work-issues` §10-0 counts them. **Nothing
   about the SESSION is a reason**: its length, the context left, "it has done
   enough", a wrap report already drafted, the PR already merged. The wrap reflex (file → classify → close)
   fires when the context is richest — which is why it produced `next`.
@@ -156,7 +160,7 @@ it. Not "run the integ": the fixture name. If naming it is hard, that is the
 finding: the verifier may be host-bound (CPU arch, toolchain, Docker state),
 account/region-bound, not yet existing (write it NOW while the subsystem is
 loaded — an unwritten fixture is the loose end that compounds; `next` only
-under (b)), or unnameable (an unbounded deferral). Measured: go-to-k/cdk-local#560 was deferred on the
+under (a) or (b)), or unnameable (an unbounded deferral). Measured: go-to-k/cdk-local#560 was deferred on the
 work's CATEGORY while the real verification was "run on an arm64 host" —
 which nothing guaranteed. Put the named command in the issue body beside
 `Session-fit`.
@@ -199,8 +203,9 @@ together.
   contradicting shipped code) lands here.
 
 Never rate "why this session should do it" — "main left self-inconsistent"
-is a `Session-fit: now` trigger, not a Severity level (copying it here makes
-that flavour of `high` permanently un-`next`-able). Add the one line saying
+is a `Session-fit: now` trigger, not a Severity level — rating it `high`
+smuggles a Session-fit trigger through the wrong field, and a misrated `high`
+now forces `now` by itself. Add the one line saying
 what is broken; a bare value still forces the reader to open the issue.
 
 ### Effort — which verification cycle it drags
@@ -230,34 +235,33 @@ retired the refusing hook); the PR inherits them via
 label is worse than none) and `Estimate` is free-form.
 
 A label can also be **DERIVED** (a 2026-09-06 maintainer-directed sweep
-labelled every open cdkd issue from body or content). A derived label is a
-ranking INPUT, never a measurement — where label and body line disagree the
-BODY wins, and the lane that learns better corrects both (`--remove-label` the
-superseded one). It still SATISFIES `/work-issues` §3-a rule 3's "when BOTH
-candidates carry it" precondition; alike labels fall through to rule 4. A lane
-labels what it touches; a BULK sweep is the maintainer's call, never a lane's.
+labelled every open cdkd issue from its body). A derived label is a ranking
+INPUT, never a measurement — where label and body disagree the BODY wins, and
+the lane that learns better corrects both. It still satisfies `/work-issues`
+§3-a rule 3's precondition. A lane labels what it touches; a BULK sweep is the
+maintainer's call.
 
 ## State — WAITING or STOPPED, stated every turn end
 
 - **WAITING (on: ...)** — you resume WITHOUT user input when the condition is
   met and carry the work to its goal. Name three things, one line each: what
   you wait on, how you learn it finished (a completion notification,
-  `gh pr checks --watch`, a `Monitor`, a poll loop), what you do next. If you
-  cannot name a concrete signal that will re-invoke you, you are STOPPED.
-  List only what THIS session will still do — a `Session-fit: next` TODO
-  never appears here.
+  `gh pr checks --watch`, a `Monitor`, a poll loop), what you do next. No
+  concrete signal that will re-invoke you means you are STOPPED. List only
+  what THIS session will still do — a `Session-fit: next` TODO never appears
+  here.
 - **STOPPED** — nothing pending; legitimate only when the work is finished.
-  If stopping with work undone, say in one line why it is not yours to do.
-- **Needing a user decision is NOT a state — it is an `AskUserQuestion`
-  call.** "Waiting on the user's answer" never appears on this line.
-- **When the state is WAITING, the thing being awaited IS the Session-close
-  blocker** — the two lines must name the same thing, not diverge.
+  Stopping with work undone: say in one line why it is not yours to do.
+- **A user decision is NOT a state — it is an `AskUserQuestion` call.**
+  "Waiting on the user's answer" never appears on this line.
+- **When WAITING, the thing awaited IS the Session-close blocker** — the
+  two lines must name the same thing, not diverge.
 
 **A NOT-CLOSEABLE verdict is a TO-DO LIST, not a stopping point** — keep
 working until CLOSEABLE or the only blockers are genuinely not yours (CI in
-flight, a running reviewer, a maintainer decision). Open PRs, unremoved
-worktrees, unfiled issues, un-run verification are all yours to finish; low
-context is not a blocker (bank the work and keep going).
+flight, a running reviewer, a maintainer decision). Open PRs, worktrees,
+unfiled issues, un-run verification are yours to finish; low context is not
+a blocker (bank the work and keep going).
 
 ## Report templates
 
