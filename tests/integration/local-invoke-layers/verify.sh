@@ -21,6 +21,31 @@ cd "$(dirname "$0")"
 CDKD="node ../../../dist/cli.js"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 
+# --- capture ---------------------------------------------------------------
+# Under `set -euo pipefail` the shape
+#     VAR=$(${CDKD} local invoke ... 2>/dev/null | tail -1)
+# aborts the WHOLE script at the ASSIGNMENT when the CLI exits non-zero:
+# pipefail fails the pipeline, the substitution fails, `set -e` kills the
+# script BEFORE the assertion, and the CLI's stderr is already gone. That is
+# how a transient during issue #3106's verification left a log ending at
+# `[2/4] Invoking ...` with no error text at all. `capture` runs the command
+# with its exit status captured EXPLICITLY, prints the status and the tail of
+# the captured stderr on a non-zero exit, and still emits the last stdout
+# line so the assertion runs, FAILS, and prints its own diagnostic — with
+# the evidence in the log. (The shape cdk-local's twin fixture carries.)
+CDKD_STDERR="$(mktemp)"
+capture() {
+  local out rc=0
+  out="$("$@" 2>"${CDKD_STDERR}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
+    tail -20 "${CDKD_STDERR}" >&2
+  fi
+  printf '%s\n' "${out}" | tail -1
+}
+trap 'rm -f "${CDKD_STDERR}"' EXIT
+
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
 
@@ -40,9 +65,9 @@ ${CDKD} synth >/dev/null
 # /opt mount point.
 echo "==> [1/4] Invoking EchoHandler (default empty event)"
 EVENT_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${CDKD_STDERR}"' EXIT
 echo '{"name":"alice","n":7}' > "${EVENT_FILE}"
-RESULT_1=$(${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_1}"
 
 # 1a: counters layer — distinct module name, no path overlap.
@@ -54,12 +79,20 @@ echo "${RESULT_1}" | grep -q '"counter":"count=7"' || {
   echo "FAIL: expected counter=count=7, got: ${RESULT_1}"
   exit 1
 }
+# 1c: a RELATIVE symlink inside the counters layer (`bin/rel-link ->
+# real.sh`) is executed THROUGH the link inside the container. Before issue
+# #3106 the cpSync merge rewrote the link to the host's absolute asset path,
+# so `/opt/bin/rel-link` was dangling in /opt and the handler threw ENOENT.
+echo "${RESULT_1}" | grep -q '"linkOutput":"real-via-link"' || {
+  echo "FAIL: expected linkOutput=real-via-link (relative layer symlink dangling in /opt, issue #3106), got: ${RESULT_1}"
+  exit 1
+}
 
 # 1b: greetings layer — last-wins. Both GreetingsA and GreetingsB
 # install /opt/nodejs/node_modules/util-greetings/index.js; the
 # template declares Layers in order [A, B, Counters], so B's index.js
 # must overwrite A's. cdkd merges the layer asset dirs into a single
-# tmpdir on the host (cpSync recursive+force, in template order) and
+# tmpdir on the host (copyLayerTreeLastWins, in template order) and
 # bind-mounts that at /opt — Docker rejects multiple -v ...:/opt:ro
 # entries, so we cannot rely on overlay layering at the runtime.
 echo "${RESULT_1}" | grep -q '"greetingSource":"greetings-b"' || {
@@ -75,9 +108,9 @@ echo "${RESULT_1}" | grep -q '"greeting":"from-layer-B:hello-alice"' || {
 # end-to-end (sanity check that nothing was cached as constants).
 echo "==> [2/4] Invoking with a different event payload"
 EVENT2=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${EVENT2}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${EVENT2}" "${CDKD_STDERR}"' EXIT
 echo '{"name":"bob","n":42}' > "${EVENT2}"
-RESULT_2=$(${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT2}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT2}" --no-pull)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -q '"greeting":"from-layer-B:hello-bob"' || {
   echo "FAIL: expected greeting=from-layer-B:hello-bob, got: ${RESULT_2}"
@@ -94,7 +127,15 @@ echo "${RESULT_2}" | grep -q '"counter":"count=42"' || {
 # payload; we just want to verify the layer-count line appears somewhere in
 # the cdkd output) so users know the layer wiring fired.
 echo "==> [3/4] Verifying cdkd logs the layer count"
-LOG_OUTPUT=$(${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1)
+# `capture` is not used here: this assertion greps the MERGED stdout+stderr,
+# which `capture` deliberately splits. Only the exit status needs handling --
+# without it a non-zero cdkd abandons the script before the FAIL branch that
+# prints the output. The diagnostic is already in LOG_OUTPUT.
+LOG_RC=0
+LOG_OUTPUT=$(${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1) || LOG_RC=$?
+if [ "${LOG_RC}" -ne 0 ]; then
+  echo "[verify] cdkd local invoke exited ${LOG_RC}; its output is echoed by the assertion below" >&2
+fi
 echo "${LOG_OUTPUT}" | grep -q 'Mounting 3 Lambda layers at /opt' || {
   echo "FAIL: expected 'Mounting 3 Lambda layers' message in cdkd output, got:"
   echo "${LOG_OUTPUT}"

@@ -52,6 +52,9 @@ const REPO_ROOT = resolve(import.meta.dirname, '../../..');
 const FIXTURE_STACKS = [
   'tests/integration/local-start-api/lib/local-start-api-stack.ts',
   'tests/integration/local-invoke/lib/local-invoke-stack.ts',
+  // Joined with issue #3106: its handler spawns a process, which under
+  // emulation hung the invoke on roughly one run in three on an arm64 host.
+  'tests/integration/local-invoke-layers/lib/local-invoke-layers-stack.ts',
 ];
 
 /** The one Lambda constructor spelling both fixtures are required to use. */
@@ -201,7 +204,7 @@ describe('integ fixture Lambdas run at the host architecture (go-to-k/cdk-local#
   it('pins the fixture count, so a fixture silently leaving the list is loud', () => {
     // The list is literals precisely so it can shrink by accident; this is what
     // makes that accident fail. Raise it as fixtures from go-to-k/cdkd#2287 join.
-    expect(FIXTURE_STACKS.length).toBe(2);
+    expect(FIXTURE_STACKS.length).toBe(3);
     expect(new Set(FIXTURE_STACKS).size).toBe(FIXTURE_STACKS.length);
   });
 });

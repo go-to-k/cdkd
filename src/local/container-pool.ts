@@ -166,7 +166,7 @@ export interface ZipContainerSpec extends ContainerSpecBase {
    * single-layer function this is the layer's asset dir; for multi-
    * layer functions this is a tmpdir that already merged the layers
    * in template order (later layers overwrite earlier files via
-   * `cpSync({force: true})`). Undefined when the function declares
+   * `copyLayerTreeLastWins`). Undefined when the function declares
    * no layers. Why pre-resolve at the server level instead of per
    * cold-start: the merge is deterministic (templates are
    * static for the server's lifetime) and we want exactly ONE merged

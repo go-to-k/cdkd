@@ -4,6 +4,20 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 
+/**
+ * Declare the HOST architecture on every function in this fixture (the
+ * shape `tests/integration/local-invoke/lib/local-invoke-stack.ts` set,
+ * fenced by `tests/unit/scripts/integ-fixture-host-architecture.test.ts`).
+ * A `lambda.Function` with no `architecture` is `X86_64`, so on an arm64
+ * host the container runs under CPU emulation — and the handler arm added
+ * for issue #3106 SPAWNS a process (`execFileSync('/opt/bin/rel-link')`),
+ * which under emulation hung the invoke past RIE's 30 s timeout on roughly
+ * one run in three (measured 2026-09-14, this host). The base image is
+ * multi-arch, so the host-derived form is native on both.
+ */
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -19,8 +33,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     same path `/opt/nodejs/node_modules/util-greetings/index.js`. The
  *     function declares `Layers: [GreetingsA, GreetingsB, Counters]`,
  *     so the GreetingsB version wins. cdkd implements this on the
- *     host: every layer is `cpSync({recursive: true, force: true})`'d
- *     into a fresh tmpdir IN ORDER — later layers overwrite earlier
+ *     host: every layer is merged (`copyLayerTreeLastWins`) into a
+ *     fresh tmpdir IN ORDER — later layers overwrite earlier
  *     files — and the merged tmpdir is bind-mounted at `/opt:ro`.
  *     (Docker rejects multiple `-v ...:/opt:ro` entries at the same
  *     target — bind mounts are NOT layered the way the OCI image
@@ -53,6 +67,7 @@ export class LocalInvokeLayersStack extends cdk.Stack {
 
     new lambda.Function(this, 'EchoHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
       // Order is load-bearing: GreetingsB declared after GreetingsA, so
@@ -80,6 +95,7 @@ export class LocalInvokeLayersStack extends cdk.Stack {
     // resolution.
     new lambda.Function(this, 'MismatchedArnLayerHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
       layers: [

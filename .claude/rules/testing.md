@@ -589,8 +589,8 @@ running the fixture — the fence is a source-shape test:
 `tests/unit/scripts/integ-fixture-host-architecture.test.ts`. Its
 `FIXTURE_STACKS` list is literals on purpose (cannot silently widen to fixtures
 nobody has run on arm64), and it REFUSES any Lambda constructor spelling other
-than `new lambda.Function(` rather than skipping it. Two fixtures are covered
-today; the remaining 16 are #2287 — they join one at a time, each after a green
+than `new lambda.Function(` rather than skipping it. Three fixtures are covered
+today; the remaining 15 are #2287 — they join one at a time, each after a green
 arm64 run (`provided.*` fixtures pin the arch to a prebuilt BINARY and
 `DockerImageFunction` takes it from the built image, so neither is mechanical).
 
