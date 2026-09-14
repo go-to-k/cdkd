@@ -8,6 +8,7 @@ import {
   MIN_NEEDLE_LENGTH,
   recordCrossStackExpression,
   recordResolvedPair,
+  recordSecretExpression,
   redactSecretsForState,
   STATE_DERIVED_RULES,
   recordNestedStackParameterExpressions,
@@ -1087,11 +1088,17 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     expect(threeRecord.Parameters['Pin2']).toBe(`port${COLON_TOKEN}`);
     expect(threeRecord.Parameters['Pin3']).toBe(C_TOKEN);
 
-    // An OBJECT spelling of the same value blocks the entry too, and so does a
-    // PLAIN LITERAL equal to it: neither is a single-span literal frame, and
-    // the entry would turn the plain literal's own record into an expression
-    // it never referenced.
-    for (const sibling of [{ 'Fn::Sub': `port:${PIN_TOKEN_A}` }, `port:${PIN}`]) {
+    // A PLAIN LITERAL equal to the value blocks the entry, and so does an
+    // OBJECT spelling the frame arm REFUSES (a `Ref` outside the token): neither
+    // has a frame, and the entry would turn the plain literal's own record into
+    // an expression it never referenced. An object spelling the frame arm
+    // POSITIONS is a frame like a literal one (issue #3062) -- the same frame
+    // around the same token is ONE spelling, so it records the entry.
+    for (const [sibling, recorded] of [
+      [`port:${PIN}`, false],
+      [{ 'Fn::Join': ['', [{ Ref: 'AWS::NoValue' }, `port:${PIN_TOKEN_A}`]] }, false],
+      [{ 'Fn::Sub': `port:${PIN_TOKEN_A}` }, true],
+    ] as const) {
       const mixed = parentResolved([PIN_TOKEN_A, PIN]);
       recordNestedStackParameterExpressions(
         mixed,
@@ -1099,7 +1106,7 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         { Parameters: { Pin1: `port:${PIN}`, Pin2: `port:${PIN}` } },
         { Parameters: { Pin1: `port:${PIN_TOKEN_A}`, Pin2: sibling } }
       );
-      expect(mixed.has(`port:${PIN}`)).toBe(false);
+      expect(mixed.get(`port:${PIN}`)).toBe(recorded ? `port:${PIN_TOKEN_A}` : undefined);
     }
 
     // A sibling leaf that merely CONTAINS the value blocks it too (condition
@@ -1424,9 +1431,12 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         [[PIN_TOKEN_B, PIN]],
       ],
       [
-        "an OBJECT-spelled source (residual (e): out of this arm's reach, issue #3062)",
-        frame(PIN),
-        { 'Fn::Sub': frame(PIN_TOKEN_A) },
+        // The OBJECT spelling the frame arm REFUSES (issue #3062): a region
+        // `Ref` OUTSIDE the token. The arm returns the leaf unrewritten, so
+        // (i) has no spelling to certify.
+        'an OBJECT-spelled source whose frame is not wholly literal',
+        `port:us-east-1:${PIN}`,
+        { 'Fn::Join': ['', ['port:', { Ref: 'AWS::Region' }, `:${PIN_TOKEN_A}`]] },
       ],
       ["a value that does not fit the source's frame", `PORT:${PIN}`, frame(PIN_TOKEN_A)],
       [
@@ -1475,6 +1485,433 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         { Parameters: { Pin: frame(PIN_TOKEN_A) } }
       );
       expect([...parent]).toEqual([[PIN, PIN_TOKEN_A]]);
+    });
+  });
+
+  /**
+   * The OBJECT spelling (issue #3062). The parent spells the parameter as an
+   * `Fn::Join` / `Fn::Sub`, so there is no source text for (i) to compare:
+   * the recorder takes what the position pass WROTE for the leaf, when it
+   * rewrote it at all. That is sound only beside (ii) -- the `per arm` cases
+   * below pin that every other arm able to rewrite an object-sourced leaf is
+   * refused: by (ii) where the source spells a secret service, and by the
+   * source-service check where the source renders no token -- so on a leaf
+   * both pass, the rewrite can only be the frame arm's.
+   */
+  describe('an OBJECT-spelled parameter source (#3062)', () => {
+    const ARN = 'arn:aws:secretsmanager:us-east-1:111111111111:secret:prod/db-AbCdEf';
+    /** The L2 `secretValueFromJson` shape: prefix fused into the token, ARN `Ref` inside. */
+    const L2_TOKEN = `{{resolve:secretsmanager:${ARN}:SecretString:pin::}}`;
+    const L2_JOIN = {
+      'Fn::Join': ['', ['port:{{resolve:secretsmanager:', { Ref: 'Secret' }, ':SecretString:pin::}}']],
+    };
+    /** The integ fixture's shape: an account `Ref` inside a name-form token. */
+    const ACCOUNT_TOKEN = '{{resolve:secretsmanager:cdkd-nested-secret-111111111111:SecretString:pinjoin::}}';
+    const ACCOUNT_JOIN = {
+      'Fn::Join': [
+        '',
+        ['port:{{resolve:secretsmanager:cdkd-nested-secret-', { Ref: 'AWS::AccountId' }, ':SecretString:pinjoin::}}'],
+      ],
+    };
+    const SUB_2ARG = {
+      'Fn::Sub': ['port:{{resolve:secretsmanager:${Arn}:SecretString:pin::}}', { Arn: { Ref: 'Secret' } }],
+    };
+    const SHAPES = [
+      ['the L2 Fn::Join', L2_JOIN, L2_TOKEN],
+      ["the integ fixture's Fn::Join (account Ref inside the token)", ACCOUNT_JOIN, ACCOUNT_TOKEN],
+      ['a one-argument Fn::Sub', { 'Fn::Sub': frame(PIN_TOKEN_A) }, PIN_TOKEN_A],
+      ['a two-argument Fn::Sub', SUB_2ARG, L2_TOKEN],
+    ] as const;
+
+    for (const [label, source, token] of SHAPES) {
+      it(`records the framed value as a WHOLE-VALUE entry through ${label}, and the child persists the frame`, () => {
+        const parent = parentResolved([token, PIN]);
+        // Premises: the scan is silent on the framed value, and the parent's
+        // own record of the row is already framed (the frame arm, #2745's
+        // first site) -- what was missing is only the carry.
+        expect(redactSecretsForState(frame(PIN), parent)).toBe(frame(PIN));
+        const resolved = { Parameters: { Pin: frame(PIN) } };
+        const parentRecord = redactSecretsForState(
+          markSameGenerationBag(structuredClone(resolved)),
+          parent,
+          { Parameters: { Pin: source } }
+        ) as { Parameters: Record<string, unknown> };
+        expect(parentRecord.Parameters['Pin']).toBe(frame(token));
+
+        recordNestedStackParameterExpressions(parent, NESTED, resolved, { Parameters: { Pin: source } });
+
+        expect(parent.get(frame(PIN))).toBe(frame(token));
+        expect(parent.size).toBe(2);
+        expect(inheritedParameterExpression(parent, 'Pin', frame(PIN))).toBe(frame(token));
+        const persisted = childPersist(parent, { Value: frame(PIN) }, { Value: { Ref: 'Pin' } });
+        expect(persisted['Value']).toBe(frame(token));
+      });
+    }
+
+    // The sub-floor range and the at-floor control, over an object source:
+    // spelled out rather than derived from the floor, for the reason the
+    // literal loop above gives.
+    for (const middle of ['z', 'zz', 'zzz', 'zzzz'] as const) {
+      const below = middle.length <= 3;
+      it(`for a ${middle.length}-character middle through an Fn::Join: ${below ? 'entry written' : 'NO entry, the substring arm carries it'}`, () => {
+        expect(middle.length < MIN_NEEDLE_LENGTH).toBe(below);
+        const parent = parentResolved([L2_TOKEN, middle]);
+        recordNestedStackParameterExpressions(
+          parent,
+          NESTED,
+          { Parameters: { Pin: frame(middle) } },
+          { Parameters: { Pin: L2_JOIN } }
+        );
+        expect(parent.has(frame(middle))).toBe(below);
+        expect(parent.size).toBe(below ? 2 : 1);
+        const persisted = childPersist(parent, { Value: frame(middle) }, { Value: { Ref: 'Pin' } });
+        expect(persisted['Value']).toBe(frame(L2_TOKEN));
+      });
+    }
+
+    // A LITERAL and an OBJECT spelling of one frame over one middle, two
+    // tokens: the (iii) shape across the two spellings, in BOTH survivor
+    // orders. The object token names its own JSON key so its skeleton cannot
+    // also match the literal token, which would make the frame arm refuse for
+    // two candidates and reduce the case to (iv)'s refusal.
+    const TWIN_TOKEN = `{{resolve:secretsmanager:${ARN}:SecretString:pintwin::}}`;
+    const TWIN_JOIN = {
+      'Fn::Join': ['', ['port:{{resolve:secretsmanager:', { Ref: 'Secret' }, ':SecretString:pintwin::}}']],
+    };
+    for (const [order, pairs, survivor] of [
+      ['the object token resolved last', [[PIN_TOKEN_A, PIN], [TWIN_TOKEN, PIN]], TWIN_TOKEN],
+      ['the literal token resolved last', [[TWIN_TOKEN, PIN], [PIN_TOKEN_A, PIN]], PIN_TOKEN_A],
+    ] as const) {
+      it(`beside a literal twin over the same middle (${order}): the entry is the survivor's frame and each association its own`, () => {
+        const parent = parentResolved(...pairs);
+        expect(parent.get(PIN)).toBe(survivor);
+        const resolved = { Parameters: { Lit: frame(PIN), Obj: frame(PIN) } };
+        const source = { Parameters: { Lit: frame(PIN_TOKEN_A), Obj: TWIN_JOIN } };
+        // Premise, BEFORE the carry: each leaf is already positioned to its own
+        // frame on the parent's record, so the entry is what the case decides.
+        const before = redactSecretsForState(
+          markSameGenerationBag(structuredClone(resolved)),
+          parent,
+          source
+        ) as { Parameters: Record<string, unknown> };
+        expect(before.Parameters).toEqual({ Lit: frame(PIN_TOKEN_A), Obj: frame(TWIN_TOKEN) });
+
+        recordNestedStackParameterExpressions(parent, NESTED, resolved, source);
+
+        expect(parent.get(frame(PIN))).toBe(frame(survivor));
+        expect(inheritedParameterExpression(parent, 'Lit', frame(PIN))).toBe(frame(PIN_TOKEN_A));
+        expect(inheritedParameterExpression(parent, 'Obj', frame(PIN))).toBe(frame(TWIN_TOKEN));
+        const parentRecord = redactSecretsForState(
+          markSameGenerationBag(structuredClone(resolved)),
+          parent,
+          source
+        ) as { Parameters: Record<string, unknown> };
+        expect(parentRecord.Parameters['Lit']).toBe(frame(PIN_TOKEN_A));
+        expect(parentRecord.Parameters['Obj']).toBe(frame(TWIN_TOKEN));
+        const persisted = childPersist(
+          parent,
+          { Value: frame(PIN), Description: frame(PIN) },
+          { Value: { Ref: 'Lit' }, Description: { Ref: 'Obj' } }
+        );
+        expect(persisted['Value']).toBe(frame(PIN_TOKEN_A));
+        expect(persisted['Description']).toBe(frame(TWIN_TOKEN));
+      });
+    }
+
+    it('writes nothing for a map NO RESOLVER populated: the frame arm needs the pass-local pair, so the leaf is not rewritten', () => {
+      const parent: RecordedSecretValues = new Map([[PIN, L2_TOKEN]]);
+      recordNestedStackParameterExpressions(
+        parent,
+        NESTED,
+        { Parameters: { Pin: frame(PIN) } },
+        { Parameters: { Pin: L2_JOIN } }
+      );
+      expect([...parent]).toEqual([[PIN, L2_TOKEN]]);
+    });
+
+    // PER ARM: every other writer that can rewrite an object-sourced string
+    // leaf, each shown REWRITING the leaf on the recorder's own marked copy
+    // and the recorder still writing no entry. The two whole-value arms write
+    // a token that is NOT the map's survivor for the value: a rewrite to the
+    // survivor itself would carry an entry equal to the one already in the
+    // map, and no refusal could be seen. WHICH refusal decides differs: the
+    // skeleton and value-scan sources spell `secretsmanager:` literally, so
+    // (ii) is what refuses them; an `Fn::ImportValue` source renders no token
+    // at all, so the source-service check refuses it before (ii) is asked.
+    describe('per arm, a rewrite the recorder refuses writes no entry', () => {
+      it("the SKELETON arm: a whole-token join matching ONE recorded expression, not the map's survivor", () => {
+        // The join names the `pintwin` key, so its pattern matches TWIN_TOKEN
+        // alone; PIN_TOKEN_A resolved last and holds the `q7` slot.
+        const TWIN_WHOLE = {
+          'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'Secret' }, ':SecretString:pintwin::}}']],
+        };
+        const parent = parentResolved([TWIN_TOKEN, PIN], [PIN_TOKEN_A, PIN]);
+        recordSecretExpression(TWIN_TOKEN);
+        expect(parent.get(PIN)).toBe(PIN_TOKEN_A);
+        const bag = markSameGenerationBag({ Pin: PIN });
+        expect(redactSecretsForState(bag, parent, { Pin: TWIN_WHOLE })).toEqual({ Pin: TWIN_TOKEN });
+        const before = [...parent];
+        recordNestedStackParameterExpressions(
+          parent,
+          NESTED,
+          { Parameters: { Pin: PIN } },
+          { Parameters: { Pin: TWIN_WHOLE } }
+        );
+        expect([...parent]).toEqual(before);
+      });
+
+      it("the CROSS-STACK arm: an Fn::ImportValue associated with a token that is not the map's survivor", () => {
+        const IMPORT = { 'Fn::ImportValue': 'SharedPin' };
+        const parent = parentResolved([TWIN_TOKEN, PIN], [L2_TOKEN, PIN]);
+        recordCrossStackExpression(parent, crossStackSourceKey(IMPORT)!, TWIN_TOKEN, PIN);
+        expect(parent.get(PIN)).toBe(L2_TOKEN);
+        const bag = markSameGenerationBag({ Pin: PIN });
+        expect(redactSecretsForState(bag, parent, { Pin: IMPORT })).toEqual({ Pin: TWIN_TOKEN });
+        const before = [...parent];
+        recordNestedStackParameterExpressions(
+          parent,
+          NESTED,
+          { Parameters: { Pin: PIN } },
+          { Parameters: { Pin: IMPORT } }
+        );
+        expect([...parent]).toEqual(before);
+      });
+
+      it('the VALUE SCAN: a 4+ character needle interfering with the frame', () => {
+        const WORD_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:word::}}`;
+        const parent = parentResolved([L2_TOKEN, PIN], [WORD_TOKEN, 'port']);
+        const bag = markSameGenerationBag({ Pin: frame(PIN) });
+        // Premise: the scan rewrote the `port` needle, so the frame arm's bound
+        // refused and the leaf holds the scan's answer, not the plaintext.
+        expect((redactSecretsForState(bag, parent, { Pin: L2_JOIN }) as Record<string, unknown>)['Pin']).toBe(
+          `${WORD_TOKEN}:${PIN}`
+        );
+        const before = [...parent];
+        recordNestedStackParameterExpressions(
+          parent,
+          NESTED,
+          { Parameters: { Pin: frame(PIN) } },
+          { Parameters: { Pin: L2_JOIN } }
+        );
+        expect([...parent]).toEqual(before);
+      });
+    });
+
+    it("refuses an ssm token the frame arm matched, because a PUBLIC parameter's leaf reads as a recorded SecureString sibling's", () => {
+      // `/app/dev` is a SecureString this pass resolved to `q7`; the leaf's own
+      // reference is `/app/prod`, a public String holding the same characters,
+      // which the resolver records nothing for. The frame arm's wildcard then
+      // matches `/app/dev` alone -- the premise below, the arm's own residual.
+      // From the recorder's side a SecureString spelled the same way is
+      // indistinguishable, so every ssm object frame is refused.
+      const DEV = '{{resolve:ssm:/app/dev}}';
+      const PUB_JOIN = { 'Fn::Join': ['', ['port:{{resolve:ssm:/app/', { Ref: 'Env' }, '}}']] };
+      const parent = parentResolved([DEV, PIN]);
+      const resolved = { Parameters: { Pub: frame(PIN) } };
+      const source = { Parameters: { Pub: PUB_JOIN } };
+      const parentRecord = redactSecretsForState(
+        markSameGenerationBag(structuredClone(resolved)),
+        parent,
+        source
+      ) as { Parameters: Record<string, unknown> };
+      expect(parentRecord.Parameters['Pub']).toBe(frame(DEV));
+      const before = [...parent];
+
+      recordNestedStackParameterExpressions(parent, NESTED, resolved, source);
+
+      expect([...parent]).toEqual(before);
+      expect(inheritedParameterExpression(parent, 'Pub', frame(PIN))).toBeUndefined();
+      // The child keeps the value scan's answer, never the sibling's reference.
+      const persisted = childPersist(parent, { Value: frame(PIN) }, { Value: { Ref: 'Pub' } });
+      expect(persisted['Value']).toBe(frame(PIN));
+    });
+
+    it('writes nothing for an object leaf beside a PLAIN LITERAL equal to its value (condition (iv))', () => {
+      const parent = parentResolved([L2_TOKEN, PIN]);
+      const resolved = { Parameters: { Obj: frame(PIN), Lit: frame(PIN) } };
+      const source = { Parameters: { Obj: L2_JOIN, Lit: frame(PIN) } };
+      // Premise: the object leaf IS positioned (so it would pass (i)), and the
+      // plain literal is not -- only (iv) can refuse the entry.
+      const before = redactSecretsForState(
+        markSameGenerationBag(structuredClone(resolved)),
+        parent,
+        source
+      ) as { Parameters: Record<string, unknown> };
+      expect(before.Parameters).toEqual({ Obj: frame(L2_TOKEN), Lit: frame(PIN) });
+      recordNestedStackParameterExpressions(parent, NESTED, resolved, source);
+      expect(parent.has(frame(PIN))).toBe(false);
+      const parentRecord = redactSecretsForState(
+        markSameGenerationBag(structuredClone(resolved)),
+        parent,
+        source
+      ) as { Parameters: Record<string, unknown> };
+      expect(parentRecord.Parameters['Lit']).toBe(frame(PIN));
+    });
+
+    it('writes nothing for an object leaf when a LIST sibling or the TemplateURL equals its value (condition (v))', () => {
+      const withList = parentResolved([L2_TOKEN, PIN]);
+      // Premise for both rows: the object leaf is positioned, so only (v) can
+      // refuse the entry.
+      const positionedList = redactSecretsForState(
+        markSameGenerationBag({ Parameters: { Obj: frame(PIN), Public: [frame(PIN)] } }),
+        withList,
+        { Parameters: { Obj: L2_JOIN, Public: [frame(PIN)] } }
+      ) as { Parameters: Record<string, unknown> };
+      expect(positionedList.Parameters['Obj']).toBe(frame(L2_TOKEN));
+      recordNestedStackParameterExpressions(
+        withList,
+        NESTED,
+        { Parameters: { Obj: frame(PIN), Public: [frame(PIN)] } },
+        { Parameters: { Obj: L2_JOIN, Public: [frame(PIN)] } }
+      );
+      expect(withList.has(frame(PIN))).toBe(false);
+      const withUrl = parentResolved([L2_TOKEN, PIN]);
+      const positionedUrl = redactSecretsForState(
+        markSameGenerationBag({ Parameters: { Obj: frame(PIN) }, TemplateURL: frame(PIN) }),
+        withUrl,
+        { Parameters: { Obj: L2_JOIN }, TemplateURL: frame(PIN) }
+      ) as { Parameters: Record<string, unknown> };
+      expect(positionedUrl.Parameters['Obj']).toBe(frame(L2_TOKEN));
+      recordNestedStackParameterExpressions(
+        withUrl,
+        NESTED,
+        { Parameters: { Obj: frame(PIN) }, TemplateURL: frame(PIN) },
+        { Parameters: { Obj: L2_JOIN }, TemplateURL: frame(PIN) }
+      );
+      expect(withUrl.has(frame(PIN))).toBe(false);
+    });
+
+    it("records a LONE object leaf whose token LOST the slot, through (iii)'s second arm", () => {
+      const parent = parentResolved([TWIN_TOKEN, PIN], [PIN_TOKEN_A, PIN]);
+      expect(parent.get(PIN)).toBe(PIN_TOKEN_A);
+      recordNestedStackParameterExpressions(
+        parent,
+        NESTED,
+        { Parameters: { Obj: frame(PIN) } },
+        { Parameters: { Obj: TWIN_JOIN } }
+      );
+      expect(parent.get(frame(PIN))).toBe(frame(TWIN_TOKEN));
+    });
+
+    it('records under STATE_DERIVED_RULES too: a rollback replay can pass a record cdkd import left holding raw intrinsics', () => {
+      const parent = parentResolved([L2_TOKEN, PIN]);
+      recordNestedStackParameterExpressions(
+        parent,
+        NESTED,
+        { Parameters: { Pin: frame(PIN) } },
+        { Parameters: { Pin: L2_JOIN } },
+        STATE_DERIVED_RULES
+      );
+      expect(parent.get(frame(PIN))).toBe(frame(L2_TOKEN));
+    });
+
+    // The check reads the SOURCE's own service, never the token the frame arm
+    // WROTE, which is always a recorded secret's. With the service itself an
+    // intrinsic part the arm's wildcard reaches a secretsmanager sibling, so a
+    // check on the written token passes a public leaf -- measured in review on
+    // the first three spellings below; the fourth puts the Ref inside the prefix.
+    for (const [label, source] of [
+      ['an Fn::Join whose service is a Ref', { 'Fn::Join': ['', ['port:{{resolve:', { Ref: 'Svc' }, '}}']] }],
+      ['an Fn::Sub whose service is a ${} variable', { 'Fn::Sub': 'port:{{resolve:${Svc}}}' }],
+      [
+        'an Fn::Join whose service is a Ref beside a literal SecretString tail',
+        { 'Fn::Join': ['', ['port:{{resolve:', { Ref: 'Svc' }, ':SecretString:pin::}}']] },
+      ],
+      [
+        // The unknown part sits INSIDE the prefix: rendered as the placeholder
+        // it breaks `startsWith`; rendered as nothing it would spell the
+        // prefix and pass a public leaf the sibling's reference.
+        'an Fn::Join whose Ref sits inside the service prefix',
+        { 'Fn::Join': ['', ['port:{{resolve:', { Ref: 'Pfx' }, 'secretsmanager:prod/db/cred:SecretString:pin::}}']] },
+      ],
+    ] as const) {
+      it(`refuses ${label}, though the frame arm wrote a secretsmanager sibling's reference`, () => {
+        const parent = parentResolved([PIN_TOKEN_A, PIN]);
+        const resolved = { Parameters: { Pub: frame(PIN) } };
+        const sources = { Parameters: { Pub: source } };
+        const parentRecord = redactSecretsForState(
+          markSameGenerationBag(structuredClone(resolved)),
+          parent,
+          sources
+        ) as { Parameters: Record<string, unknown> };
+        expect(parentRecord.Parameters['Pub']).toBe(frame(PIN_TOKEN_A));
+        const before = [...parent];
+
+        recordNestedStackParameterExpressions(parent, NESTED, resolved, sources);
+
+        expect([...parent]).toEqual(before);
+        expect(inheritedParameterExpression(parent, 'Pub', frame(PIN))).toBeUndefined();
+      });
+    }
+
+    it('records an ssm-secure frame, whose service is spelled secret and which the resolver never resolves as public', () => {
+      const SECURE = '{{resolve:ssm-secure:/app/pin}}';
+      const SECURE_JOIN = { 'Fn::Join': ['', ['port:{{resolve:ssm-secure:/app/', { Ref: 'Name' }, '}}']] };
+      const parent = parentResolved([SECURE, PIN]);
+      // Premise: the frame arm positions the leaf, so the carry is what decides.
+      const parentRecord = redactSecretsForState(
+        markSameGenerationBag({ Parameters: { Pin: frame(PIN) } }),
+        parent,
+        { Parameters: { Pin: SECURE_JOIN } }
+      ) as { Parameters: Record<string, unknown> };
+      expect(parentRecord.Parameters['Pin']).toBe(frame(SECURE));
+      recordNestedStackParameterExpressions(
+        parent,
+        NESTED,
+        { Parameters: { Pin: frame(PIN) } },
+        { Parameters: { Pin: SECURE_JOIN } }
+      );
+      expect(parent.get(frame(PIN))).toBe(frame(SECURE));
+    });
+
+    it('counts a refused ssm object leaf as UNFRAMED, so a same-value literal sibling cannot take the entry for it', () => {
+      // Refused only at certification, the ssm leaf would share `port:` with
+      // `Lit` in (iv), `Lit`'s frame would become the entry, and the entry
+      // would answer for `Pub`'s value too -- a public leaf persisting `Lit`'s
+      // secret reference in the child.
+      const DEV = '{{resolve:ssm:/app/dev}}';
+      const PUB_JOIN = { 'Fn::Join': ['', ['port:{{resolve:ssm:/app/', { Ref: 'Env' }, '}}']] };
+      const parent = parentResolved([DEV, PIN], [PIN_TOKEN_A, PIN]);
+      // Premise: both leaves share the `port:` frame on the parent's record, so
+      // (iv) would see one frame if the refused leaf counted as framed.
+      const before = redactSecretsForState(
+        markSameGenerationBag({ Parameters: { Pub: frame(PIN), Lit: frame(PIN) } }),
+        parent,
+        { Parameters: { Pub: PUB_JOIN, Lit: frame(PIN_TOKEN_A) } }
+      ) as { Parameters: Record<string, unknown> };
+      expect(before.Parameters).toEqual({ Pub: frame(DEV), Lit: frame(PIN_TOKEN_A) });
+      recordNestedStackParameterExpressions(
+        parent,
+        NESTED,
+        { Parameters: { Pub: frame(PIN), Lit: frame(PIN) } },
+        { Parameters: { Pub: PUB_JOIN, Lit: frame(PIN_TOKEN_A) } }
+      );
+      expect(parent.has(frame(PIN))).toBe(false);
+    });
+
+    it('treats an object source that renders NO token as unframed, though the value scan rewrote the leaf', () => {
+      // The VALUE SCAN, not the frame arm, rewrites a leaf whose whole value is
+      // a recorded plaintext, and frame gathering asks for the leaf's spelling
+      // before (ii) refuses that value -- so a source with no `{{resolve:` text
+      // reaches the span count with zero spans. Without that refusal the
+      // recorder throws.
+      const WORD = 'abcdword';
+      const WORD_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:word::}}`;
+      const parent = parentResolved([WORD_TOKEN, WORD]);
+      const resolved = { Parameters: { Name: WORD } };
+      const source = { Parameters: { Name: { 'Fn::Join': ['', [{ Ref: 'Prefix' }, 'word']] } } };
+      // Premise: the pass DID rewrite the leaf, and to the recorded token.
+      const positioned = redactSecretsForState(
+        markSameGenerationBag(structuredClone(resolved)),
+        parent,
+        source
+      ) as { Parameters: Record<string, unknown> };
+      expect(positioned.Parameters['Name']).toBe(WORD_TOKEN);
+      const before = [...parent];
+
+      expect(() => recordNestedStackParameterExpressions(parent, NESTED, resolved, source)).not.toThrow();
+
+      expect([...parent]).toEqual(before);
     });
   });
 });

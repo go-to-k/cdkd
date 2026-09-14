@@ -1494,11 +1494,35 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * (`'port:q7' -> 'port:{{resolve:...}}'`) as an ordinary WHOLE-VALUE entry of
  * the parent's own bag, under five conditions:
  *
- *   (i)   `positioned[name] === sourceLeaf` -- the pass CERTIFIED the leaf.
- *         On a literal source the span arm returns the source verbatim, so a
- *         mismatch proves it did not fire -- refusal 2b's test, applied to
- *         a literal source; pinned by the "map NO RESOLVER populated" case,
+ *   (i)   The pass CERTIFIED the leaf, and the certified SPELLING is what
+ *         every later condition reads. On a LITERAL source it is the source:
+ *         the span arm returns the source verbatim, so `positioned[name] ===
+ *         sourceLeaf` proves it fired -- refusal 2b's test, applied to a
+ *         literal source; pinned by the "map NO RESOLVER populated" case,
  *         where (ii) and (iii) both pass and only the missing pair refuses.
+ *         On an OBJECT source (`Fn::Join` / `Fn::Sub`, issue #3062) there is
+ *         no source text to compare, so the spelling is what the pass WROTE,
+ *         admitted only when `positioned[name] !== resolvedValue`. Sound
+ *         together with (ii), not alone: on a value the scan is silent on,
+ *         the cross-stack and skeleton arms both refuse (each requires the
+ *         WHOLE leaf to be a key of the map, which would make the scan's
+ *         whole-value arm fire), the list arm needs an array, and the value
+ *         scan leaves the leaf alone -- so the frame arm is the only writer
+ *         that can have rewritten it, on its pair and the engine's mark. A
+ *         frame that is not wholly literal makes that arm refuse, the leaf
+ *         comes back unrewritten, and (i) refuses too. The object arm
+ *         certifies only a source whose OWN rendered token starts with a
+ *         spelled-secret prefix (`secretsmanager:` / `ssm-secure:`), read from
+ *         the source and never from what the pass wrote: the frame arm
+ *         matches among RECORDED references and a public `ssm` parameter
+ *         records none, so a public leaf whose source spells `ssm:`, or leaves
+ *         the service to an intrinsic part, can match a recorded secret
+ *         sibling and be written as the sibling's reference. A SecureString
+ *         spelled either way is indistinguishable here, so both are refused
+ *         (see (e)). The STATE-derived
+ *         call sites reach this arm as well: `cdkd import` can leave raw
+ *         intrinsics in a record's `properties`, which a rollback replay
+ *         passes as its source, and the frame arm does not read `rules`.
  *   (ii)  `redactSecretsForState(resolvedValue, secrets) === resolvedValue`
  *         -- the value scan is SILENT on it: the sub-floor gate, byte-for-byte
  *         the bound the span arm accepted. What it refuses is a middle at or
@@ -1529,8 +1553,12 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  *         beside `port:` + B -- passes that bound and keeps its own token. A
  *         DIFFERENT frame (`port:` + `q7` beside `port` + `:q7`, each passing
  *         (i)-(iii) on its own), a leaf (iii) refused under a different
- *         frame, an object spelling and a plain literal equal to the value
- *         all fail it and would take the entry's frame -- and so would a
+ *         frame, an object spelling the frame arm refused and a plain
+ *         literal equal to the value all fail it and would take the entry's
+ *         frame (an object spelling the arm POSITIONED whose own source
+ *         spells a secret service is a frame like a literal one, issue
+ *         #3062; one whose source does not counts as unframed) -- and so
+ *         would a
  *         same-frame sibling whose token this pass never resolved to the
  *         middle: a PUBLIC `ssm` reference in the same `port:` frame holding
  *         the same two characters is kept RESOLVED on the record, and the
@@ -1623,12 +1651,20 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * OUTPUT carrying the framed value re-resolves in the parent to `port:q7`,
  * where the cross-stack seam refuses a non-token and the consumer's leaf
  * persists the plaintext -- the same class as the nonliteral-frame deferral.
- * (e) An OBJECT-spelled parameter source (`Fn::Join` / `Fn::Sub` in the
- * parent's own `Parameters` block) is out of this arm's reach -- (i) cannot
- * hold for one. #2745 scopes this site to the literal spelling; the object
- * spelling is issue #3062. (f) A child record persisted BEFORE this carry
+ * (e) CLOSED for a wholly literal frame by (i)'s object arm (issue #3062;
+ * was: an `Fn::Join` / `Fn::Sub` source in the parent's own `Parameters`
+ * block was never carried). What remains of it: an object source whose frame
+ * is NOT wholly literal -- a region `Ref` outside the token -- is refused by
+ * the frame arm, so (i) refuses it and the child leaf keeps the plaintext,
+ * the same nonliteral-frame deferral the parent's own record has; and an
+ * intrinsic frame whose token spells `ssm:`, or leaves its service to an
+ * intrinsic part, is refused by (i) whatever the parameter's type, so a 1-3
+ * character SecureString spelled that way keeps the plaintext in the child
+ * too. That refusal is what keeps the frame arm's own wrong-reference
+ * residual -- a public leaf matching a recorded sibling -- on the parent's
+ * record instead of carrying it into the child's. (f) A child record persisted BEFORE this carry
  * keeps `port:q7` until the child is next redeployed: the parent's own row
- * already held the frame (the literal arm), so a parent deploy whose child
+ * already held the frame (the literal or frame arm), so a parent deploy whose child
  * row is unchanged never re-runs the child, and `cdkd scrub` cannot repair
  * it either -- it walks the child's stored bag with no inherited bag.
  */
@@ -1819,23 +1855,94 @@ export function recordNestedStackParameterExpressions(
   // the walk, so no iteration reads the recorder's own write.
   //
   // (iv) needs the FRAME of every spelling of every value, not only the
-  // certified ones: a leaf (iii) refused, an object-spelled one and a plain
-  // literal all share the value the entry would be keyed by, and the parent's
-  // record of such a leaf answers against the entry. So the frames are
-  // gathered over the whole row first, keyed by prefix + suffix; a spelling
-  // that is not a single-span literal frame of the value, or whose token this
-  // pass did NOT resolve to the middle (a PUBLIC sibling in the same frame,
-  // kept resolved on the record), is its own key.
+  // certified ones: a leaf (iii) refused, an object-spelled one the frame arm
+  // refused and a plain literal all share the value the entry would be keyed
+  // by, and the parent's record of such a leaf answers against the entry. So
+  // the frames are gathered over the whole row first, keyed by prefix +
+  // suffix; a spelling that is not a single-span frame of the value, or whose
+  // token this pass did NOT resolve to the middle (a PUBLIC sibling in the
+  // same frame, kept resolved on the record), is its own key.
   const framesByValue = new Map<string, Set<string | typeof UNFRAMED_SPELLING>>();
   // The TOKENS the row's framed spellings of each value carry -- (iii)'s
   // second arm (issue #3079) reads it. An unframed spelling adds nothing
   // here because (iv) refuses the value before (iii) is asked.
   const tokensOf = new Map<string, Set<string>>();
+  // The TEXT a leaf's frame is read from. A LITERAL source is its own text,
+  // certified or not -- (iv) must see an uncertified literal frame too. An
+  // OBJECT source (`Fn::Join` / `Fn::Sub`, issue #3062) carries no text
+  // about the frame, so its text is what the position pass WROTE for it, and
+  // only when the pass rewrote the leaf at all: an unrewritten leaf has no
+  // frame to report and stays its own (unframed) key. `singleSpanFrame`
+  // refuses that shape as well (a spelling equal to its bag has no middle
+  // that is not itself a token), so the inequality states the rule rather
+  // than being its only enforcement. Anything else -- an array, a number --
+  // has no frame.
+  //
+  // ONLY A SOURCE THAT SPELLS ITS SERVICE AS A SECRET, read from the SOURCE's
+  // own rendered text and never from what the pass wrote -- a refusal of the
+  // WRONG REFERENCE, not tidiness. The frame arm picks the one candidate its
+  // wildcard pattern matches among the references this pass RECORDED, so the
+  // written token is always a recorded secret's, whatever the leaf really
+  // referenced. A PUBLIC `ssm` parameter records nothing, so a public leaf
+  // matches a recorded sibling whenever the source leaves room for one: an
+  // `ssm:` service beside a SecureString sibling (`port:{{resolve:ssm:/app/` +
+  // `{Ref: Env}` + `}}`), or a service that is itself an intrinsic part
+  // (`port:{{resolve:` + `{Ref: Svc}` + `}}`, `${Svc}`) beside ANY recorded
+  // secret. A token whose rendered text STARTS with a spelled-secret prefix
+  // (`secretsmanager:` / `ssm-secure:`, the resolver refusing a public
+  // parameter under the latter) names a reference this pass recorded if it
+  // resolved it, so a second match refuses; a placeholder inside the prefix
+  // fails `startsWith` and refuses. Refused here rather than after
+  // certification so the leaf also counts as UNFRAMED in (iv), which keeps a
+  // same-value literal sibling from taking the entry.
+  //
+  // What each test below refuses. `written === resolvedValue` refuses an
+  // unrewritten leaf, which `singleSpanFrame` refuses too (a spelling equal
+  // to its bag has no middle that is not itself a token); it states the rule.
+  // The span count is LOAD-BEARING: the VALUE SCAN, not only the frame arm,
+  // rewrites an object-sourced leaf whose whole value is a recorded plaintext,
+  // and frame gathering asks this before (ii) refuses that value -- so a
+  // source rendering no `{{resolve:` text reaches here with zero spans, and
+  // without the refusal the destructuring below throws. Its MORE-than-one
+  // arm is inert rather than unreachable: the same value-scan rewrite of a
+  // two-token source reaches it, but (ii) then refuses that value for every
+  // leaf holding it, so a laxer count could not change an entry or an
+  // association -- no case can pin it, and none is claimed. `isPlainObject`
+  // and `typeof written` narrow the types the calls below take.
+  const frameSpellingOf = (name: string, resolvedValue: string): string | undefined => {
+    const sourceLeaf = sourceParameters[name];
+    if (typeof sourceLeaf === 'string') return sourceLeaf;
+    if (!isPlainObject(sourceLeaf)) return undefined;
+    const written = positioned[name];
+    if (typeof written !== 'string' || written === resolvedValue) return undefined;
+    const segments = intrinsicSkeletonSegments(sourceLeaf);
+    if (segments === undefined) return undefined;
+    const rendered = segments
+      .map((s) => (s === UNKNOWN_PART ? UNKNOWN_PART_PLACEHOLDER : s))
+      .join('');
+    const spans = dynamicReferenceSpans(rendered);
+    if (spans.length !== 1) return undefined;
+    const [span] = spans as [{ start: number; end: number }];
+    const ownToken = rendered.slice(span.start, span.end);
+    return SPELLED_SECRET_REFERENCE_PREFIXES.some((prefix) => ownToken.startsWith(prefix))
+      ? written
+      : undefined;
+  };
+  // The spelling condition (i) CERTIFIED for a leaf, or `undefined`. See the
+  // doc above for why each arm's test is sound: a literal is certified when
+  // the pass returned it verbatim; an object when the pass rewrote the leaf,
+  // which on a value (ii) finds silent only the frame arm can do.
+  const certifiedSpellingOf = (name: string, resolvedValue: string): string | undefined => {
+    const sourceLeaf = sourceParameters[name];
+    if (typeof sourceLeaf === 'string') {
+      return positioned[name] === sourceLeaf ? sourceLeaf : undefined;
+    }
+    return frameSpellingOf(name, resolvedValue);
+  };
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
     if (typeof resolvedValue !== 'string') continue;
-    const sourceLeaf = sourceParameters[name];
-    const frame =
-      typeof sourceLeaf === 'string' ? singleSpanFrame(resolvedValue, sourceLeaf) : undefined;
+    const spelling = frameSpellingOf(name, resolvedValue);
+    const frame = spelling === undefined ? undefined : singleSpanFrame(resolvedValue, spelling);
     const frames = framesByValue.get(resolvedValue) ?? new Set<string | typeof UNFRAMED_SPELLING>();
     const unframed =
       frame === undefined || resolvedPlaintextOf(secrets, frame.token) !== frame.middle;
@@ -1863,19 +1970,24 @@ export function recordNestedStackParameterExpressions(
   // fills. Collected here, stored after the loop with the entries.
   const framedByName: Array<[name: string, expression: string, plaintext: string]> = [];
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
-    const sourceLeaf = sourceParameters[name];
-    if (typeof resolvedValue !== 'string' || typeof sourceLeaf !== 'string') continue;
+    if (typeof resolvedValue !== 'string') continue;
     // (i) the position pass CERTIFIED this leaf. On a literal source the span
-    // arm returns the source verbatim, so a mismatch proves it did not fire.
-    if (positioned[name] !== sourceLeaf) continue;
+    // arm returns the source verbatim, so a mismatch proves it did not fire;
+    // on an object source (issue #3062) a REWRITE is the evidence, sound only
+    // together with (ii) below -- see the doc above.
+    const spelling = certifiedSpellingOf(name, resolvedValue);
+    if (spelling === undefined) continue;
     // (ii) the value scan is SILENT on the value: the sub-floor gate. A middle
     // at or above the floor is refused here -- the child's substring carry
     // already has it.
     if (redactSecretsForState(resolvedValue, secrets) !== resolvedValue) continue;
     // The frame, and THIS leaf's own pair evidence: the pass resolved the
-    // frame's token to the middle. LOAD-BEARING UNDER BOTH RULESETS, and not
-    // implied by (i) + (ii) -- two arms of `redactByPath` return a source
-    // verbatim. A LITERAL frame reaches here only through the span arm,
+    // frame's token to the middle. For a LITERAL spelling it is
+    // LOAD-BEARING UNDER BOTH RULESETS, and not implied by (i) + (ii) -- two
+    // arms of `redactByPath` return a source verbatim. For an OBJECT spelling
+    // it is implied (the frame arm wrote it only on that pair), and kept so
+    // both spellings leave through one gate. A LITERAL frame reaches here
+    // only through the span arm,
     // which fires on pair evidence alone. An EMPTY frame (a whole-token
     // source) reaches here through the whole-token arm, which asks for NO
     // pair: under STATE_DERIVED_RULES it trusts any expression, so a raw
@@ -1889,10 +2001,10 @@ export function recordNestedStackParameterExpressions(
     // it to `rules.trustAnyExpression`. `singleSpanFrame` also refuses a
     // middle that is itself a token, which is what refusal 3's
     // self-referential shape has here (a bag equal to its source).
-    const frame = singleSpanFrame(resolvedValue, sourceLeaf);
+    const frame = singleSpanFrame(resolvedValue, spelling);
     if (frame === undefined || resolvedPlaintextOf(secrets, frame.token) !== frame.middle) continue;
     // (iv) ONE frame per value across the row. `port:` + `q7` beside `port` +
-    // `:q7`, an object spelling or a plain literal would each fail the span
+    // `:q7`, an object spelling the frame arm refused or a plain literal would each fail the span
     // arm's bound against this entry on the parent's record and take its
     // frame; the same frame around another token (the (iii) shape) passes
     // that bound and keeps its own token. So the value is recorded only when
@@ -1939,7 +2051,7 @@ export function recordNestedStackParameterExpressions(
     // the child's own resolution of the same plaintext, answered with this
     // leaf's own frame) -- so on a row where (iii) refuses every leaf of a
     // value, the association is inert or correct, never wrong.
-    framedByName.push([name, sourceLeaf, resolvedValue]);
+    framedByName.push([name, spelling, resolvedValue]);
     // (iii) the token IS the map's survivor for the middle -- the collapse
     // hazard the doc above spells out -- OR every spelling of the value in
     // the row carries THIS token (issue #3079). The hazard is a same-frame
@@ -1953,7 +2065,7 @@ export function recordNestedStackParameterExpressions(
     if (secrets.get(frame.middle) !== frame.token && tokensOf.get(resolvedValue)?.size !== 1) {
       continue;
     }
-    framed.set(resolvedValue, sourceLeaf);
+    framed.set(resolvedValue, spelling);
   }
   for (const [plaintext, expression] of framed) secrets.set(plaintext, expression);
   for (const [name, expression, plaintext] of framedByName) {
