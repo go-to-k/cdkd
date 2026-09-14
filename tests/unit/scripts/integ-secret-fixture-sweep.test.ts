@@ -851,7 +851,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // puts a paren between the name and the member and walks past; the
       // runtime half catches the READ of any such stash (measured, round 3),
       // which is the closer -- this arm is the cheap write-side half.
-      /\b(?:asJson|requireSecretStringShape|generateMemberRefusal|SecretsManagerSecretProvider|requireConfigObject|configStringRefusal|configBooleanRefusal|configIntegerRefusal|coerceCfnBoolean|coerceCfnInteger|getLogger|getAwsClients|redactSecretsForState|getCurrentResourceSecrets|assertRegionMatch|generateResourceName|normalizeAwsTagsToCfn|clearOnUpdateRemoval|isDeepStrictEqual|ProvisioningError|SecretsManagerClient|CreateSecretCommand|DeleteSecretCommand|DescribeSecretCommand|UpdateSecretCommand|TagResourceCommand|UntagResourceCommand|ReplicateSecretToRegionsCommand|RemoveRegionsFromReplicationCommand|ResourceNotFoundException)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
+      /\b(?:asJson|requireSecretStringShape|generateMemberRefusal|generateCharset|randomIndex|SecretsManagerSecretProvider|requireConfigObject|configStringRefusal|configBooleanRefusal|configIntegerRefusal|coerceCfnBoolean|coerceCfnInteger|getLogger|getAwsClients|redactSecretsForState|getCurrentResourceSecrets|assertRegionMatch|generateResourceName|normalizeAwsTagsToCfn|clearOnUpdateRemoval|isDeepStrictEqual|ProvisioningError|SecretsManagerClient|CreateSecretCommand|DeleteSecretCommand|DescribeSecretCommand|UpdateSecretCommand|TagResourceCommand|UntagResourceCommand|ReplicateSecretToRegionsCommand|RemoveRegionsFromReplicationCommand|ResourceNotFoundException)(?:\.\w+|\[[^\]]*\])\s*(?:\|\||\?\?|&&|\*\*|<<|>>>?|[-+*\/%&|^])?=(?!=)/,
       /\bthis\b(?!\.)/,
     ]) {
       expect(
@@ -885,7 +885,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     expect(depth, 'the brace walk did not return to depth 0 — the stripper mis-read the source').toBe(0);
     const unexpectedTopLevel = topLevel.filter(
       (line) =>
-        !/^(?:import\b|export\s+class\s+SecretsManagerSecretProvider\b|function\s+(?:asJson|requireSecretStringShape|generateMemberRefusal)\()/.test(
+        !/^(?:import\b|export\s+class\s+SecretsManagerSecretProvider\b|function\s+(?:asJson|requireSecretStringShape|generateMemberRefusal|generateCharset|randomIndex)\()/.test(
           line
         )
     );

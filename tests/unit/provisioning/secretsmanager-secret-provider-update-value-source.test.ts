@@ -343,6 +343,13 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     ['SecretStringTemplate a JSON array', { GenerateStringKey: 'p', SecretStringTemplate: '[1]' }, /SecretStringTemplate must be a JSON object \(got JSON that is not an object/],
     ['SecretStringTemplate JSON null (template[key] would throw on the update path)', { GenerateStringKey: 'p', SecretStringTemplate: 'null' }, /SecretStringTemplate must be a JSON object \(got JSON that is not an object/],
     ['SecretStringTemplate a JSON scalar', { GenerateStringKey: 'p', SecretStringTemplate: '42' }, /SecretStringTemplate must be a JSON object \(got JSON that is not an object/],
+    // Issue #3068: the two members the recipe used to ignore, and the three
+    // charset rules measured on CloudFormation.
+    ['IncludeSpace: "yes"', { IncludeSpace: 'yes' }, /IncludeSpace must be a boolean/],
+    ['RequireEachIncludedType: null', { RequireEachIncludedType: null }, /RequireEachIncludedType must be a boolean/],
+    ['PasswordLength 3 under four required types (CFn: too short based on the required types)', { PasswordLength: 3 }, /PasswordLength 3 is too short for the 4 character types RequireEachIncludedType requires/],
+    ['a REQUIRED class emptied by ExcludeCharacters (CFn: all characters of the desired type have been excluded)', { ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' }, /all characters of the uppercase type have been excluded while RequireEachIncludedType requires one \(exclude the type with ExcludeUppercase instead\)/],
+    ['every character excluded (CFn: all characters have been excluded from selection)', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true }, /all characters have been excluded from selection/],
     ['GenerateStringKey: "__proto__" (the password went to the prototype, not the document)', { GenerateStringKey: '__proto__', SecretStringTemplate: '{"u":"a"}' }, /GenerateStringKey must not be __proto__/],
   ];
   const withBlock = (members: Record<string, unknown>): Record<string, unknown> => ({
@@ -409,6 +416,132 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     const sent = updateInput().SecretString;
     expect(sent).toBeDefined();
     check(sent!);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  // Issue #3068: the recipe itself. Every row below reads the WHOLE sent value
+  // against a charset the config yields, so none depends on a random draw
+  // landing anywhere in particular; the RequireEachIncludedType rows draw
+  // repeatedly because the guarantee is per draw.
+  const AWS_PUNCTUATION = '!"#$%&\'()*+,-./:;<=>?@[\\]^_' + String.fromCharCode(0x60) + '{|}~';
+  const classesIn = (v: string): number =>
+    [
+      (t: string) => /[A-Z]/.test(t),
+      (t: string) => /[a-z]/.test(t),
+      (t: string) => /[0-9]/.test(t),
+      (t: string) => [...t].some((c) => AWS_PUNCTUATION.includes(c)),
+    ].filter((has) => has(v)).length;
+
+  it('the punctuation class is the SERVICE\'s 32-character set, not the old 26', async () => {
+    // Uppercase / lowercase / numbers excluded, so the pool IS the
+    // punctuation class; over 2000 draws every member appears (the chance a
+    // given one is absent is (31/32)^2000, ~1e-28), including the six the
+    // old set lacked.
+    const block = { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, PasswordLength: 2000 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+    const sent = updateInput().SecretString!;
+    expect([...sent].every((c) => AWS_PUNCTUATION.includes(c))).toBe(true);
+    for (const c of ['"', "'", '/', '\\', String.fromCharCode(0x60), '~']) expect(sent).toContain(c);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    // The issue's headline: an ExcludeCharacters naming one of the six the
+    // old set lacked was INERT. Every class is stripped by the same helper,
+    // and each row keeps the class non-empty so the default
+    // RequireEachIncludedType still holds.
+    ['the six punctuation characters the old set lacked', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludeCharacters: '"\'/\\' + String.fromCharCode(0x60) + '~' }, /^[!#$%&()*+,\-.:;<=>?@[\]^_{|}]+$/],
+    ['half the digits', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludePunctuation: true, ExcludeCharacters: '01234' }, /^[5-9]+$/],
+    ['all but one letter of a REQUIRED class (the guarantee then places that one)', { ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true, ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXY' }, /^Z+$/],
+  ])('ExcludeCharacters strips %s', async (_l, members, shape) => {
+    const block = { ...members, PasswordLength: 2000 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+    expect(updateInput().SecretString).toMatch(shape);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('a draw at or above the rejection limit is thrown away, not folded by modulo', async () => {
+    // Deterministic fence for the rejection sampling (test-review round):
+    // pool = lowercase (26), limit = floor(2^32 / 26) * 26 = 4294967274, so a
+    // draw of 0xFFFFFFFF sits above it and must be re-drawn; the re-draw of 0
+    // lands on 'a'. A `% n` shortcut would mint 'v' (0xFFFFFFFF % 26 = 21).
+    const draws = [0xff_ff_ff_ff, 0];
+    const spy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(((arr: Uint32Array) => {
+      arr[0] = draws.shift() ?? 0;
+      return arr;
+    }) as typeof crypto.getRandomValues);
+    try {
+      const block = { ExcludeUppercase: true, ExcludeNumbers: true, ExcludePunctuation: true, RequireEachIncludedType: false, PasswordLength: 1 };
+      await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+      expect(updateInput().SecretString).toBe('a');
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('the PLACED character of a required class comes from the STRIPPED class', async () => {
+    // Deterministic fence for the placement step (round-2 review: the
+    // probabilistic rows let a "placement draws from the unstripped class"
+    // mutant survive ~1.6% of runs). All-zero draws: the pool draw lands on
+    // the pool's first char and the placement draw on the required class's
+    // first char -- 'Z' after A..Y are excluded, 'A' on the mutant.
+    const spy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(((
+      arr: Uint32Array
+    ) => {
+      arr[0] = 0;
+      return arr;
+    }) as typeof crypto.getRandomValues);
+    try {
+      const block = { ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true, ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXY', PasswordLength: 1 };
+      await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+      expect(updateInput().SecretString).toBe('Z');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('IncludeSpace admits the space character (and ExcludeCharacters can take it back)', async () => {
+    // Every class switched off, RequireEachIncludedType off, IncludeSpace on:
+    // the pool is the space alone.
+    const only = { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true, RequireEachIncludedType: false, IncludeSpace: true, PasswordLength: 16 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(only), generated());
+    expect(updateInput().SecretString).toBe(' '.repeat(16));
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    // Space admitted but excluded by name: the pool is lowercase only.
+    const taken = { ExcludeUppercase: true, ExcludeNumbers: true, ExcludePunctuation: true, IncludeSpace: true, ExcludeCharacters: ' ', PasswordLength: 200 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(taken), generated());
+    expect(updateInput().SecretString).toMatch(/^[a-z]+$/);
+  });
+
+  it('RequireEachIncludedType (the DEFAULT) puts one of every included class in every draw, even at the minimum length', async () => {
+    for (let i = 0; i < 200; i++) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await provider.update('L', SECRET_ARN, TYPE, withBlock({ PasswordLength: 4 }), generated());
+      const v = updateInput().SecretString!;
+      expect(classesIn(v), JSON.stringify(v)).toBe(4);
+    }
+  });
+
+  it('RequireEachIncludedType: false draws uniformly, so a short password can miss a class', async () => {
+    // 200 four-character draws from 94 characters: the chance EVERY one carries
+    // all four classes is astronomically small, so at least one misses.
+    let missing = 0;
+    for (let i = 0; i < 200; i++) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({});
+      await provider.update('L', SECRET_ARN, TYPE, withBlock({ PasswordLength: 4, RequireEachIncludedType: false }), generated());
+      if (classesIn(updateInput().SecretString!) < 4) missing++;
+    }
+    expect(missing).toBeGreaterThan(0);
+  });
+
+  it('a class emptied by ExcludeCharacters is fine when it is not REQUIRED (measured: CREATE_COMPLETE)', async () => {
+    const block = { RequireEachIncludedType: false, ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', PasswordLength: 200 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+    expect(updateInput().SecretString).not.toMatch(/[A-Z]/);
     expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
