@@ -124,9 +124,10 @@ describe('parseRollbackJournal refuses to forge a line (issue #3064)', () => {
   });
 
   it('reports a null journalVersion as `null`, not as absent', () => {
-    // `String(v)` runs BEFORE the sanitiser: `displaySafe` maps `null` to the
-    // empty string, so sanitising first would print `(...)` and read as a
-    // missing field rather than a present, wrong one.
+    // `null` is mapped to its word before `displaySafe` sees it: the sanitiser
+    // renders `null` empty, so without the mapping the refusal would print
+    // `(<unrenderable>)` -- a present, wrong field shown as if it had nothing
+    // to show.
     const body = JSON.stringify({ journalVersion: null, stackName: 'S', segments: [] });
 
     expect(messageOf(body, 'S')).toContain("'journalVersion' (null)");
@@ -176,8 +177,12 @@ describe('parseRollbackJournal refuses to forge a line (issue #3064)', () => {
     const body = '{"journalVersion":{"toString":null},"stackName":"S","segments":[]}';
     const message = messageOf(body, 'S');
 
+    // The positive needle alone discriminates: with `String(v)` restored the
+    // `TypeError` escapes `parseRollbackJournal` and `messageOf` returns ITS
+    // message, `Cannot convert object to primitive value`, which lacks the
+    // needle. (A `not.toContain('TypeError')` was here and was vacuous -- the
+    // class name lives on `.name`, never in `.message`.)
     expect(message).toContain("has an invalid 'journalVersion'");
-    expect(message).not.toContain('TypeError');
   });
 
   it('renders a journalVersion that sanitizes to NOTHING as the placeholder', () => {
