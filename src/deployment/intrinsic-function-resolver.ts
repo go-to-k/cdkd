@@ -8161,10 +8161,19 @@ export class IntrinsicFunctionResolver {
     // rather than a `secrets.has(resolvedValue)` membership test, because the
     // input is often ASSEMBLED (`Fn::Sub` builds a UserData script around a
     // `{{resolve:...}}` reference), and base64 of a string that merely
-    // CONTAINS a secret decodes back to that secret just as completely. It
-    // inherits the masker's own bound: a sub-{@link MIN_NEEDLE_LENGTH}
-    // plaintext EMBEDDED in a longer input is invisible to the substring arm,
-    // so its encoding is not registered either (issues #2516 / #2745).
+    // CONTAINS a secret decodes back to that secret just as completely. TWO
+    // maskers ask it, and each sees what the other cannot: the NEEDLE mask
+    // catches a plaintext at or above {@link MIN_NEEDLE_LENGTH} wherever it
+    // sits, and the POSITION mask (`logTextOfLeaf`, issue #3100) catches a
+    // sub-floor plaintext an earlier write of this pass put into the input,
+    // which the substring arm is blind to by design (issues #2516 / #2745).
+    // Before the second asked (issue #3119), `port:` + a two-character
+    // `secretValueFromJson('pin')` under `Fn::Base64` — the CDK UserData
+    // shape — persisted its encoding to `state.json` in the clear while the
+    // debug line beside it was already masked. The position twin is keyed by
+    // the exact string a secret was written into, so a value it masks CARRIES
+    // that secret's text, and registering its encoding is the same direction
+    // the needle arm takes.
     //
     // MASK-ONLY, not an expression pair. The whole point of an expression is
     // that a reader can re-resolve it, and re-resolving `{{resolve:...}}` here
@@ -8174,20 +8183,18 @@ export class IntrinsicFunctionResolver {
     // encoding can never weaken the entry for the secret itself.
     //
     // Recorded BEFORE the debug line, which is what lets that line's NEEDLE
-    // mask catch its right half. An input masked by POSITION (issue #3100)
-    // masks the right half whole there regardless, since this detector does
-    // not see an embedded sub-floor secret.
+    // mask catch its right half; the line masks the right half whole on a
+    // positioned input regardless, since the encoding decodes straight back
+    // to the plaintext the input's mask hides.
+    const inputLogText = this.logTextOfLeaf(resolvedValue, context);
     if (
       context.recordedSecretValues &&
-      this.maskSecretsForLog(resolvedValue, context) !== resolvedValue
+      (inputLogText !== resolvedValue ||
+        this.maskSecretsForLog(resolvedValue, context) !== resolvedValue)
     ) {
       recordMaskOnlyValue(context.recordedSecretValues, result);
     }
 
-    // Issue #3100: the input is a leaf an earlier write may have masked by
-    // position. When it carries a mask, the ENCODING is masked whole too: it
-    // decodes straight back to the plaintext the input's mask hides.
-    const inputLogText = this.logTextOfLeaf(resolvedValue, context);
     this.logger.debug(
       `Resolved Fn::Base64: ${this.maskSecretsForLog(inputLogText, context)} -> ${this.maskSecretsForLog(inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
     );

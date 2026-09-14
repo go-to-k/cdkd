@@ -818,6 +818,44 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
         `Resolved Fn::Base64: plain-text -> ${Buffer.from('plain-text').toString('base64')}`,
       ]);
     });
+
+    // Issue #3119: the STATE side of M3. The mask-only detector at the
+    // `Fn::Base64` site asked the needle mask alone, which is blind to a
+    // sub-floor plaintext embedded in a longer input, so the encoding of
+    // `port:q7` reached `state.json` in the clear while the line beside it was
+    // already masked. The detector now also asks the position mask.
+    it('#3119: the encoding of a positioned sub-floor input is recorded mask-only, so the persist path masks it', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const ctx = freshContext();
+      const value = await resolver.resolve(
+        { 'Fn::Base64': { 'Fn::Join': ['', ['port:', PIN_REF]] } },
+        ctx as never
+      );
+
+      const encoded = Buffer.from(`port:${PIN}`).toString('base64');
+      expect(value).toBe(encoded);
+      // Premise: the needle mask alone does NOT see this input (the pin is
+      // below the floor and not the whole text), so the entry below can only
+      // come from the position arm.
+      expect(PIN.length).toBeLessThan(4);
+      expect(ctx.recordedSecretValues.get(encoded)).toBe('***');
+      // The secret's own entry is untouched: a real expression, not demoted.
+      expect(ctx.recordedSecretValues.get(PIN)).toBe(PIN_REF);
+    });
+
+    it('#3119 control: a Base64 input no write masked and no needle matches records nothing', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const ctx = freshContext();
+      // Record the pin first so the bag is non-empty and the control is not
+      // vacuous: a detector keyed on "any secret in the bag" would fire here.
+      await resolver.resolve({ 'Fn::Sub': `seed:${PIN_REF}` }, ctx as never);
+      const before = ctx.recordedSecretValues.size;
+
+      const value = await resolver.resolve({ 'Fn::Base64': 'plain-text' }, ctx as never);
+
+      expect(value).toBe(Buffer.from('plain-text').toString('base64'));
+      expect(ctx.recordedSecretValues.size).toBe(before);
+    });
   });
 
   it('M4: the Sub arms no secret can reach (pseudo parameter, escape, empty placeholder) keep their text', async () => {

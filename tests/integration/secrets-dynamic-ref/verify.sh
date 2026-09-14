@@ -186,6 +186,17 @@ EXPECTED_DB_DSN_LITERAL="postgres://app-svc:${EXPECTED_PASSWORD}@db.internal:543
 # collapsed map's survivor) and never the plaintext (the pre-fix answer).
 EXPECTED_DB_PORT_LITERAL_EXPR="port:{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin}}"
 EXPECTED_DB_PORT_LITERAL="port:${EXPECTED_PIN}"
+# The BASE64 of the framed pin (issue #3119): `Fn::Base64` over that literal
+# is the CDK UserData shape with a sub-floor secret, and its encoding decodes
+# to the pin in one command. Derived HERE, beside `EXPECTED_PASSWORD_B64` in
+# spirit, so `diag_output` can withhold it from its first callable moment;
+# round-tripped for the same reason as that needle.
+EXPECTED_PIN_B64=$(printf '%s' "${EXPECTED_DB_PORT_LITERAL}" | base64 | tr -d '\n')
+if [ -z "${EXPECTED_PIN_B64}" ] \
+  || [ "$(printf '%s' "${EXPECTED_PIN_B64}" | base64 --decode)" != "${EXPECTED_DB_PORT_LITERAL}" ]; then
+  echo "FAIL: premise: could not derive/round-trip the base64 of the framed pin -- diag_output could not withhold it and the #3119 assertions would be vacuous" >&2
+  exit 1
+fi
 EXPECTED_SECRET_PIN_STAGED_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin:AWSCURRENT}}"
 # The SecureString reference as a WHOLE token, which is what SSM_SECURE_VALUE
 # and SSM_SECURE_COPY must both hold in state (issues #1901 / #2012).
@@ -352,6 +363,7 @@ diag_output() { # diag_output <text>
     || [[ "${text}" == *"${EXPECTED_USERNAME}"* ]] \
     || [[ "${text}" == *"${EXPECTED_DB_PORT_LITERAL}"* ]] \
     || [[ "${text}" == *"${EXPECTED_PASSWORD_B64}"* ]] \
+    || [[ "${text}" == *"${EXPECTED_PIN_B64}"* ]] \
     || [[ "${text}" =~ $pin_re ]]; then
     echo "      output: <WITHHELD — it carries a resolved secret, which is itself the bug>" >&2
     return 0
@@ -384,7 +396,8 @@ assert_diag_output_arms() {
     "$(printf 'non-SGR final byte \033[2K%s tail' "${EXPECTED_PIN}")" \
     "$(printf 'colon params \033[38:5:1m%s tail' "${EXPECTED_PIN}")" \
     "$(printf 'private params \033[?25h%s tail' "${EXPECTED_PIN}")" \
-    "Resolved Fn::Base64: *** -> ${EXPECTED_PASSWORD_B64}"; do
+    "Resolved Fn::Base64: *** -> ${EXPECTED_PASSWORD_B64}" \
+    "Resolved Fn::Base64: port:*** -> ${EXPECTED_PIN_B64}"; do
     case "$(diag_output "${diag_probe}" 2>&1)" in
       *WITHHELD*) ;;
       *) echo "FAIL: premise: diag_output would print a diagnostic carrying a secret" >&2; exit 1 ;;
@@ -906,15 +919,59 @@ if [[ "${DEPLOY_OUT_B64}" != *"Resolved Fn::Base64:"* ]]; then
   exit 1
 fi
 echo "    OK: no 'Resolved Fn::Base64' line carried the encoded secret (#2759)"
-# DROP the key from state before anything else runs. `Base64Secret` is declared
-# only for this probe deploy, and the diff pass resolves outputs with
-# `skipDynamicReferences` -- so it would show as a REMOVE row and red the
+# Issue #3119: the same site, one floor DOWN. `Base64Pin` is `Fn::Base64` over
+# the literal `port:{{resolve:...:pin}}`, whose resolved input `port:q7` sits
+# below the needle floor -- the #2759 detector (the needle mask) never saw it,
+# so its encoding was persisted in the clear while the debug line beside it was
+# already masked by position (#3100). The detector now asks the position mask
+# too. Same three checks as #2759's arm, against a needle the needle-floor
+# arm above can NOT stand in for: `EXPECTED_PIN_B64` shares no substring with
+# `EXPECTED_PASSWORD_B64`, so a regression of the position arm alone is caught
+# here and nowhere above.
+B64PIN_SHAPE=$(jq -r --arg secret "${SECRET_NAME}" '.Outputs.Base64Pin.Value
+  | if . == null then "absent"
+    elif type != "object" then "not-an-intrinsic"
+    elif .["Fn::Base64"] == ("port:{{resolve:secretsmanager:" + $secret + ":SecretString:pin}}") then "Fn::Base64"
+    else "other" end' "${SYNTH_TEMPLATE}")
+if [ "${B64PIN_SHAPE}" != "Fn::Base64" ]; then
+  echo "FAIL: premise: Base64Pin synthesized as '${B64PIN_SHAPE}', not an Fn::Base64 over the framed pin reference -- the #3119 arm is not what this deploy exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: Base64Pin is an Fn::Base64 over the framed pin reference (${B64PIN_SHAPE})"
+if grep -qF "${EXPECTED_PIN_B64}" "${B64_STATE}"; then
+  echo "FAIL: state.json carries the base64 of the framed sub-floor pin -- one command decodes it (issue #3119)" >&2
+  exit 1
+fi
+B64PIN_PERSISTED=$(jq -r '.outputs.Base64Pin // "<absent>"' "${B64_STATE}")
+if [ "${B64PIN_PERSISTED}" != "***" ]; then
+  echo "FAIL: state.outputs.Base64Pin is not the mask '***' -- the position arm of the Fn::Base64 detector did not fire (issue #3119); value follows" >&2
+  diag_output "${B64PIN_PERSISTED}"
+  exit 1
+fi
+echo "    OK: the Fn::Base64-over-framed-pin output persisted as the mask, not as a decodable secret (#3119)"
+if [[ "${DEPLOY_OUT_B64}" == *"${EXPECTED_PIN_B64}"* ]]; then
+  echo "FAIL: the probe deploy's --verbose log carries the base64 of the framed sub-floor pin (issue #3119)" >&2
+  exit 1
+fi
+# The line itself, asserted PRESENT and masked whole on its right half: the
+# negative above passes for free when the line stopped firing, and a line
+# that printed the encoding would have failed the grep just before.
+if [[ "${DEPLOY_OUT_B64}" != *"Resolved Fn::Base64: port:*** -> ***"* ]]; then
+  echo "FAIL: premise: the probe deploy logged no 'Resolved Fn::Base64: port:*** -> ***' line -- the #3119 log negative passes for free" >&2
+  diag_output "${DEPLOY_OUT_B64}"
+  exit 1
+fi
+echo "    OK: the framed pin's Fn::Base64 line is masked on both halves (#3119)"
+# DROP both keys from state before anything else runs. `Base64Secret` and
+# `Base64Pin` are declared only for this probe deploy, and the diff pass
+# resolves outputs with
+# `skipDynamicReferences` -- so each would show as a REMOVE row and red the
 # unchanged-stack `diff --fail` guard later in this fixture. Same direct-S3
 # write idiom Phase 1f / 1f2 use, and safe for the same reason: nothing holds
 # the lock between phases and the next `saveState` reads its own etag.
-jq 'del(.outputs.Base64Secret)' "${B64_STATE}" > "${B64_TRIMMED}"
-if jq -e 'has("outputs") and (.outputs | has("Base64Secret"))' "${B64_TRIMMED}" >/dev/null; then
-  echo "FAIL: could not drop Base64Secret from the persisted outputs -- the diff --fail guard later would red on it" >&2
+jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)' "${B64_STATE}" > "${B64_TRIMMED}"
+if jq -e 'has("outputs") and ((.outputs | has("Base64Secret")) or (.outputs | has("Base64Pin")))' "${B64_TRIMMED}" >/dev/null; then
+  echo "FAIL: could not drop Base64Secret / Base64Pin from the persisted outputs -- the diff --fail guard later would red on them" >&2
   exit 1
 fi
 aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
