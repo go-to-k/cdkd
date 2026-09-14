@@ -385,6 +385,18 @@ export class SecretsDynamicRefStack extends cdk.Stack {
           `{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}`
         ),
       });
+      // Issue #3119: the same site, one floor down. `port:` + the
+      // two-character pin is BELOW the needle floor, so the #2759 detector
+      // (the needle mask) never saw it and the encoding of `port:q7` was
+      // persisted in the clear -- the CDK UserData shape with a short secret.
+      // The detector now also asks the position mask #3100 introduced.
+      // Same gate, same deploy, same drop-from-state afterwards; verify.sh
+      // asserts the persisted value is the mask and the encoding is absent.
+      new cdk.CfnOutput(this, 'Base64Pin', {
+        value: cdk.Fn.base64(
+          `port:{{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`
+        ),
+      });
     }
     // A literal OUTPUT embedding the two-character reference (issue #2516):
     // the same leaf shape as DB_PORT_LITERAL, walked by the outputs
