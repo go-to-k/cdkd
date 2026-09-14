@@ -16,7 +16,8 @@ Reviewers are read-only agents that run in parallel.
 
 The skill itself never spawns reviewers — it reads PR stats, applies the
 heuristic, and prints a recommendation; the **main session orchestrator**
-issues the `Agent` calls.
+issues the `Agent` calls, extending the dispatch templates below with
+PR-specific context.
 
 ## Steps
 
@@ -116,9 +117,9 @@ issues the `Agent` calls.
    loc=$(( a + d - excluded ))
    ```
 
-   (PR #404: 4286 raw LOC → ~1100 substantive after exclusion. `fc` is NOT
-   adjusted — a 12-file diff is still cross-cutting when 2 files are
-   generated. The lockfile patterns are `(^|/)`-anchored because the lockfile
+   (`fc` is NOT adjusted — a 12-file diff is still cross-cutting when 2 files
+   are generated; see the #404 row below. The lockfile
+   patterns are `(^|/)`-anchored because the lockfile
    lives at repo ROOT — a bare `/pnpm-lock\.yaml$` never matched it, PR #1082.
    The same exclusion lives in `.claude/hooks/pr-review-gate.sh`; keep the two
    regexes in sync.)
@@ -327,9 +328,14 @@ issues the `Agent` calls.
      # writing the PR HEAD sha into it before `markgate set` binds the marker
      # to that sha — a later push invalidates it. Sentinel + markgate state
      # land in the CURRENT worktree; set markers from the worktree you intend
-     # to merge from.
-     gh pr view <N> --json headRefOid -q .headRefOid > .markgate-pr-review-sha
-     mise exec -- markgate set pr-review
+     # to merge from. Right after a push `gh pr view` can still answer the
+     # PREVIOUS head (go-to-k/cdkd#879; twice on 2026-09-14), so bind only
+     # when it equals local HEAD: run this after `gh pr checks <N> --watch`,
+     # never in the push's own call; on a mismatch re-run it (no sleep loop).
+     SHA=$(gh pr view <N> --json headRefOid -q .headRefOid)
+     if [ "$SHA" = "$(git rev-parse HEAD)" ]; then
+       printf '%s\n' "$SHA" > .markgate-pr-review-sha && mise exec -- markgate set pr-review
+     else echo "PR head ${SHA:0:7} != local HEAD: NOT bound" >&2; fi
      ```
 
    For `inline`, the marker is NOT set — the gate's heuristic also outputs
@@ -414,14 +420,6 @@ same parallel batch):
       - Security concern to focus on: <name the sensitive value(s) / surface this PR touches — e.g. "the redacted secret expression persisted to state + journal; trace every reader". With no named value, the reviewer defaults to enumerating all sensitive values in the diff.>
   }
 ```
-
-## Important
-
-- **Never auto-dispatch** from inside this skill — it recommends, the
-  orchestrator acts. Extend reviewer prompts with PR-specific context; the
-  blocks are starting templates.
-- Thresholds are heuristics. When in doubt, go UP — the question is "would I
-  be comfortable being wrong about this reaching main?".
 
 ## Dry-run reference (sanity check)
 

@@ -103,10 +103,15 @@ verify, clean up.
    wait "$VPID"; RC=$?
    kill "$WPID" 2>/dev/null
    grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
+   echo "verify.sh rc=$RC"   # the verdict steps 6-13 read; nothing else carries it out
    ```
 
-   The `grep` is load-bearing (`kill -9` surfaces as rc=137, otherwise just a
-   crash).
+   The `grep` and the `rc` line are load-bearing (`kill -9` surfaces as
+   rc=137, otherwise just a crash). **Steps 6-13 are LATER calls that read
+   this output** — a marker or a `PASS` ledger row chained into this call was
+   written before any verdict existed (2026-09-14, the go-to-k/cdkd#3118
+   lane: a FAILED run had `integ-local` set and `PASS` recorded in the same
+   call, undone by a clean re-run).
 
 6. **Verify cleanup**:
    - `aws s3 ls s3://<bucket>/cdkd/ --region us-east-1` — no leftover state.
