@@ -45,7 +45,7 @@ npm i -g @go-to-k/cdkd          # latest release
 npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
 ```
 
-The installed binary is `cdkd`.
+The installed binary is `cdkd`. It requires Node.js 22.12 or later.
 
 ## Quick Start
 

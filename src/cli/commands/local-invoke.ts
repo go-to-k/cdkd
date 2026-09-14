@@ -1050,7 +1050,7 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
     // half of AWS's "last layer wins" semantic. cpSync merges into the
     // existing target rather than replacing it.
     //
-    // **Contract pinned (Node 20+)**: cdkd relies on three default
+    // **Contract pinned (Node 22.12+, the `engines` floor)**: cdkd relies on three default
     // behaviors of `fs.cpSync` that future readers should NOT change
     // without auditing every Lambda Layer the integ test exercises:
     //   - `mode` defaults to preserving the source's file-mode bits,
@@ -1060,15 +1060,22 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
     //     that runs `bin/<script>` from `/opt` would fail with a bare
     //     "Permission denied" otherwise. Equivalent to `cp -a` semantics
     //     for the bits Lambda actually cares about.
-    //   - `verbatimSymlinks` defaults to true on Node 20+; symlinks in
-    //     the source are copied as symlinks (not dereferenced), which
-    //     matches how AWS extracts a layer ZIP into `/opt`. Some build
-    //     tools emit symlinks inside the layer asset directory and we
-    //     don't want to silently flatten them.
+    //   - `dereference` defaults to false, so a symlink in the source is
+    //     copied as a symlink rather than flattened into its target,
+    //     matching how AWS extracts a layer ZIP into `/opt`. Some build
+    //     tools emit symlinks inside the layer asset directory.
+    //     KNOWN DEFECT, issue #3106: `verbatimSymlinks` ALSO defaults to
+    //     false (in every Node release), and a non-verbatim copy rewrites
+    //     a RELATIVE link target to the ABSOLUTE path of the source, so
+    //     `bin/rel-link -> real.sh` arrives as `-> <cdk.out>/asset.<hash>/
+    //     bin/real.sh` and is dangling inside the container, where only
+    //     the merged tmpdir is mounted. Measured on Node 22.23 / 24.21;
+    //     the fix (`verbatimSymlinks: true` + a symlink in the layers
+    //     fixture) is that issue's, not a comment's.
     //   - `force: true` (above) makes a later layer's entry overwrite
     //     the previous layer's same-path entry; mirrors AWS's
     //     last-layer-wins file-collision rule.
-    // The first two are Node 20+ defaults and require no explicit flag;
+    // The first two are defaults on every supported Node and require no explicit flag;
     // we document them here so a future "tighten the cpSync options"
     // refactor doesn't accidentally drop the `+x` bit or dereference
     // symlinks and silently break `/opt/bin/...` layers in the field.

@@ -37,7 +37,7 @@
   },
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.12.0"
   },
   "dependencies": {
     "@aws-sdk/client-acm": "^3.1053.0",

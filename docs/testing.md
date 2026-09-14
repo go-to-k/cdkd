@@ -9,7 +9,7 @@ description: "How to test cdkd — prerequisites, unit tests, and the real-AWS i
 
 1. AWS Account
 2. AWS CLI configured (`aws configure`)
-3. Node.js 20 or higher
+3. Node.js 22.12 or higher
 4. cdkd built (`vp run build`)
 
 ## 1. Create Test S3 Bucket
