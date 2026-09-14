@@ -40,9 +40,10 @@ The four answer four different questions, and none derives from another:
 | `Effort` | which verification cycle does it drag? | kind of cost |
 | `Estimate` | how many hours? | amount of cost |
 
-**Do not collapse `Severity` into `Session-fit`** — a `high` can be `next` (a
-new fixture must be written) and a `low` can be `now` (it lands in an open
-file); the moment the two track each other one field is wasted. **`Effort` is
+**Do not collapse `Severity` into `Session-fit`** — a `high` can still be
+`next` (external input) and a `low` is usually `now` (it lands in an open
+file); `Severity` says what a USER suffers, `Session-fit` what THIS session
+does, and one field is wasted the moment they merely track each other. **`Effort` is
 not `Estimate`**: "one integ run" is a kind of cost; the hours depend on the
 fixture.
 
@@ -64,7 +65,7 @@ fixture.
 
 ### Session-fit — the deferral decision
 
-**`now` is the DEFAULT; `next` needs one of three reasons.** At the wrap of
+**`now` is the DEFAULT; `next` needs one of two reasons.** At the wrap of
 nearly every recent session the maintainer has had to ask whether the
 leftover would not be cheaper to finish HERE, with the context already
 loaded — and every time the answer was yes: the item was re-classified `now`
@@ -75,11 +76,10 @@ every file it touched was already read). This rule pre-answers the question.
 touches or must read to be made correctly (tests and docs included), and
 say, per file, whether this session already READ it — read, edited, or
 reviewed in a diff; a reviewer's read set counts exactly like an author's.
-ONE loaded file makes the item
-`now`: a fresh session pays the launch probe, install, build, the module read
-and the evidence re-derivation BEFORE its first edit, while this session pays
-the edit alone. Precedence: `next` reasons (a) and (b) below ask whether the
-work CAN finish here and are decided first; (c) is what the test decides.
+ONE loaded file makes the item `now`: a fresh session pays the launch probe,
+install, build, the module read and the evidence re-derivation BEFORE its
+first edit, while this session pays the edit alone. Precedence: `next` reason (a) below asks whether the work
+CAN finish here and is decided first; (b) is what the test decides.
 
 - **`now`** — any of: a file the fix touches is loaded (above); skipping it
   leaves main self-inconsistent (docs contradicting shipped code, a stale
@@ -89,77 +89,74 @@ work CAN finish here and are decided first; (c) is what the test decides.
   observation, a measurement — understanding survives in an issue body,
   evidence does not); or **the user cannot use the result yet** (unreleased /
   undeployed — "merged" is not done; this criterion alone is decided by
-  whether the request's purpose is met). **Residuals of a just-merged lane**
-  — polish, nits, parity gaps, sibling sites a review named — are the hottest
-  context there is and are `now` by the test above; "only a residual" names
-  no cost.
-- **`next`** — ONLY one of: (a) a NEW live-AWS verifier (an integ fixture,
-  `Effort: large`) must be WRITTEN and writing it is most of the work — a
-  unit case never qualifies, every fix writes one; (b) external input (a
-  quota, an upstream fix, credentials this host lacks, a file held by another
-  lane's OPEN PR, a maintainer decision already asked through
-  `AskUserQuestion` and unanswered — a routine call is yours to make); or (c)
-  the subsystem is COLD — nothing the fix touches or must read was read this
-  session AND no `now` criterion fires. **Nothing about the SESSION is a
-  reason**: its length, the context left, "it has done enough", a wrap report
-  already drafted, the PR already merged. The wrap reflex (file → classify →
-  close) fires when the context is richest — which is why it produced `next`.
+  whether the request's purpose is met); or **leaving it loose compounds** —
+  an integ fixture not yet written for a subsystem this session holds, a
+  pattern landed at some sites and not others, a guard with a known hole:
+  the cost of undone grows with every session that passes, and the fixture
+  case is the clearest — deferred, it is the piece that never lands; or
+  **`Severity: high`** — a wrong result, data loss, or a security surface is
+  `now` unless (a) blocks it; (b) never overrides a `high`.
+  **Residuals of a just-merged lane** — polish, nits, parity gaps, sibling
+  sites a review named — are the hottest context there is and are `now` by
+  the test above; "only a residual" names no cost. Writing a NEW integ
+  fixture is `Effort: large`, a cost to record, never a reason to defer.
+- **`next`** — ONLY one of: (a) external input (a quota, an upstream fix,
+  credentials this host lacks, a file held by another lane's OPEN PR, a
+  maintainer decision already asked through `AskUserQuestion` and unanswered
+  — a routine call is yours to make); or (b) the work is COLD AND HEAVY —
+  nothing the fix touches or must read was read this session, no `now`
+  criterion fires, AND doing it here is clearly worse than fresh: it needs a
+  large body of context this session would load from zero anyway, or the
+  context this session does hold would degrade the work (a security surface
+  read through an unrelated subsystem's assumptions). Cold alone is not (b) —
+  a small cold fix is `now`. (b) is legitimate and never to be forced through
+  — but it must stay RARE: the reason names the context the work needs and
+  why THIS session is the wrong one to load it; a (b) fired twice in one run,
+  or on an item with a loaded file, is the reflex, not the reason. **Nothing
+  about the SESSION is a reason**: its length, the context left, "it has done
+  enough", a wrap report already drafted, the PR already merged. The wrap reflex (file → classify → close)
+  fires when the context is richest — which is why it produced `next`.
 
-**No `next` criterion is about the PR.** Two used to be — "a schema bump /
-behavior change that must not share a PR" and "bundling makes the PR
-unreviewable" — PR-SPLITTING guidance filed under a SESSION-deferral heading,
-contradicting `/work-issues` §3-b's "'It needs its own PR' is NOT a `next`
-reason", and the contradiction was load-bearing: an agent deferring three
-items in one session cited the PR-shaped branch for all three (2026-09-04,
-go-to-k/cdkd#2587 / #2588 / #2590 — all three re-classified `now` and
-finished that session). A rule that offers two answers is not a rule; the
-reader takes the cheaper one. Splitting work across PRs is normal — decide it
-on review surface, and `Session-fit` on the criteria above.
-
-**The PR's REVIEW HISTORY is the spelling that survives both tells.** "PR #N
-took eight review rounds; folding this in is how the next instance gets
-written" says neither "its own PR" nor "unreviewable", yet a round count, or a
-count of the changes a PR absorbed, is a property of the PULL REQUEST and not
-of the deferred work. One run on 2026-09-09 gave six of its ten `next`
-filings a PR-shaped reason — two bundling (go-to-k/cdkd#2846 / #2847), four
-review-history (go-to-k/cdkd#2850 / #2852 / #2854 / #2872); all six already
-carried a work-owned reason, so the retro DELETED the PR-shaped clause. The
-test is the one the paragraph below states — ask which of the two a clause is
-ABOUT, never whether it MENTIONS a PR — then strike every clause about the PR
-and see whether a reason is left.
+**No `next` criterion is about the PR.** Two used to be — "must not share a
+PR", "bundling makes the PR unreviewable" — PR-SPLITTING guidance under a
+SESSION-deferral heading, and load-bearing: three items deferred on it in one
+session were all re-classified `now` and finished that session (2026-09-04,
+go-to-k/cdkd#2587 / #2588 / #2590). A rule that offers two answers is not a
+rule; the reader takes the cheaper one. Splitting work across PRs is normal —
+decide it on review surface, and `Session-fit` on the criteria above. **The
+PR's REVIEW HISTORY is the spelling that survives both tells** — "PR #N took
+eight rounds; folding this in is how the next instance gets written" is still
+a claim about the PULL REQUEST (2026-09-09: six of ten `next` filings,
+go-to-k/cdkd#2846 / #2847 / #2850 / #2852 / #2854 / #2872, each already
+carrying a work-owned reason; the retro DELETED the PR-shaped clause). Ask
+which of the two a clause is ABOUT, never whether it MENTIONS a PR — strike
+every clause about the PR and see whether a reason is left.
 
 **The neighbouring failure: a reason about the FILING SESSION's own STATE
 expires when that session does.** Not the rule above (a claim about the PULL
 REQUEST); this is a claim about the SESSION that filed it — "PR 2519's scope
 was frozen at its final review round" (go-to-k/cdkd#2554), "the file is held
-by another open PR's diff" (go-to-k/cdkd#2604), "a unit-and-review lane with
-no integ run budgeted" (go-to-k/cdkd#2539). A PR can be named on either side,
-so ask which of the two the sentence is ABOUT. Only #2604's survives, as
-reason (b) ending at that merge; "no integ run budgeted" and "no file
-overlap" are no longer reasons. A session-state clause is legal only when it
-carries its expiry event, and it goes stale; classify-once freezes the
-DECISION, not the PREMISE.
-
-So: prefer a reason the WORK owns; if a session-state clause is written anyway,
-name the event that ends it on the same line (go-to-k/cdkd#2604's "unblocked
-the moment that PR merges" is the model). The COLD criterion above is such a
-claim about a MOVING target: the lane keeps reading and editing after the
-reason is written (go-to-k/cdkd#2440 was deferred on "no file overlap", and
-the lane's merged PR then changed that very file `+9/-2`); `/work-issues`
-`references/retro.md` §10-0 re-checks every `next` at end of run and has
-promoted on this shape in two consecutive runs (go-to-k/cdkd#2544,
-go-to-k/cdkd#2595). **No vocabulary gate closes it, and one was tried**:
-`issue-deferral-criteria-gate` refused three spellings and the fourth walked
-through (go-to-k/cdkd#2595, rc=0); go-to-k/cdkd#2717 retired it — a PR-shaped
-reason is a rhetorical property, not a mechanical one. The criteria above are
-the control.
+by another open PR's diff" (go-to-k/cdkd#2604), "no integ run budgeted"
+(go-to-k/cdkd#2539). A PR can be named on either side, so ask which of the
+two the sentence is ABOUT. Only #2604's survives, as reason (a) ending at that
+merge — "unblocked the moment that PR merges" is the model: a session-state
+clause is legal only when it names its expiry event on the same line, since
+classify-once freezes the DECISION, not the PREMISE. The COLD half of (b) is
+such a claim about a MOVING target — the lane keeps reading after the reason
+is written (go-to-k/cdkd#2440: deferred on "no file overlap", then the lane's
+own PR changed that file `+9/-2`); `/work-issues` `references/retro.md` §10-0
+re-checks every `next` at end of run (promoted go-to-k/cdkd#2544, #2595). No
+vocabulary gate closes it — `issue-deferral-criteria-gate` refused three
+spellings and the fourth walked through; go-to-k/cdkd#2717 retired it. The
+criteria above are the control.
 
 **Before writing `next`, NAME the next session's verification** — the
 concrete command a FRESH session will run, and that it will be able to run
 it. Not "run the integ": the fixture name. If naming it is hard, that is the
 finding: the verifier may be host-bound (CPU arch, toolchain, Docker state),
-account/region-bound, not yet existing (reason (a)), or unnameable (an
-unbounded deferral). Measured: go-to-k/cdk-local#560 was deferred on the
+account/region-bound, not yet existing (write it NOW while the subsystem is
+loaded — an unwritten fixture is the loose end that compounds; `next` only
+under (b)), or unnameable (an unbounded deferral). Measured: go-to-k/cdk-local#560 was deferred on the
 work's CATEGORY while the real verification was "run on an arm64 host" —
 which nothing guaranteed. Put the named command in the issue body beside
 `Session-fit`.
@@ -167,32 +164,30 @@ which nothing guaranteed. Put the named command in the issue body beside
 **Calibration: RUNNING an existing integ is never a deferral reason.**
 Measured over the 268-row ledger (2026-08-20): median run 85 s, mean 4.6 min,
 p90 8.8 min. A fix riding a fixture the session already runs costs zero.
-What is genuinely expensive: WRITING a new fixture — reason (a) — and an
-integ that FAILS, which is an `Estimate` line, not a reason: unbounded here
-is unbounded next session too.
-
-Review of a larger diff grows superlinearly too — a reason to SPLIT the PR,
-never to end the session; it belongs under `Effort`.
+What is genuinely expensive: WRITING a new fixture, and an integ that FAILS.
+Both are `Effort` / `Estimate` lines, not reasons: the fixture is written
+cheapest while the subsystem is loaded, and unbounded here is unbounded next
+session too.
 
 **Classify by PURPOSE, never by MEANS.** Misfires: "the release PR is
 tagpr's, so out of scope" (the purpose was a usable release); "toolchain fix
-is developer-facing" (it rode loaded files); "only two occurrences" (2 of 2
-with the mechanism known). Do not hold your own regressions to a higher
-reporting bar — noticing one right after shipping is a reason to raise it.
+is developer-facing" (it rode loaded files). Do not hold your own regressions
+to a higher reporting bar — noticing one right after shipping is a reason to
+raise it.
 
 **A newly DISCOVERED bug is `now` even in a cold subsystem**: its expensive
 part is the evidence (repro, observed AWS behavior, measured numbers), which
 an issue body cannot carry cheaply — unless that evidence is already
-PERSISTED in the repo (a committed fixture or corpus case), when (c) applies
-as usual. If deferred anyway on reason (a) or (b), the issue body carries the
+PERSISTED in the repo (a committed fixture or corpus case), when (b) applies
+as usual. If deferred anyway on (a) or (b), the issue body carries the
 EVIDENCE, not just the diagnosis.
 
 **`next` is not on the menu inside a scope the user framed as "do this across
-the repos in one session".** The framing IS the deferral decision. Three
+the repos in one session".** The framing IS the deferral decision; three
 tells force `now`: filing the SAME issue body in more than one repo; a
 mechanical fix whose evidence is live now; the user already said "finish it
-here" (2026-08-20: three per-repo issues, carried in-session after the user
-objected). Same session is the bar; same PR only when reviewable together.
+here" (2026-08-20). Same session is the bar; same PR only when reviewable
+together.
 
 ### Severity — what a USER experiences while it is undone
 
@@ -214,7 +209,7 @@ what is broken; a bare value still forces the reader to open the issue.
 - **`medium` (M)** — one re-review round, or an EXISTING integ fixture this
   session was not otherwise running.
 - **`large` (L)** — a NEW integ fixture must be written, or an own-PR
-  behavior change / schema bump.
+  behavior change / schema bump. A cost, not a `Session-fit` input.
 
 Review and fixture authoring dominate, not integ runtime (calibration above).
 
@@ -312,7 +307,6 @@ share a line.
 Lead with the decision, then the literal start command:
 
 ```text
-Not this session — start a fresh session with: /work-issues
 Not this session — start a fresh session with: fix issue <N> (Estimate: ~1-3 h)
 ```
 

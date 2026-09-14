@@ -413,22 +413,23 @@ talked into by a ranking before:
 
 ### 3-b. Before writing `next`, NAME the next session's verification
 
-**`now` is the default; `next` needs one of the three reasons
-`.claude/rules/session-report.md` → Session-fit enumerates** (a NEW integ
-fixture to write / external input / a COLD subsystem). Once the first two are
-excluded, the CONTEXT TEST decides: list the files the fix touches or must
-read; if this session read, edited or reviewed ANY of them, the item is
-`now`. The maintainer's wrap-time "cheaper to do it here, with the context
-loaded?" has flipped every item it was asked about; this paragraph asks it in
-advance.
+**`now` is the default; `next` needs one of the two reasons
+`.claude/rules/session-report.md` → Session-fit enumerates** (external input
+/ COLD AND HEAVY). Once external input is excluded, the CONTEXT TEST decides:
+list the files the fix touches or must read; if this session read, edited or
+reviewed ANY of them, the item is `now` — and so is anything that compounds
+if left loose (an integ fixture the fix still needs is written HERE, while
+the subsystem is loaded). The maintainer's wrap-time "cheaper to do it here,
+with the context loaded?" has flipped every item it was asked about; this
+paragraph asks it in advance.
 
 **You may not write `Session-fit: next` until you can name the command the
 NEXT session will run to verify the fix, and say a fresh session can run it.**
 `.claude/rules/session-report.md` holds the rest: the bar (name the
 FIXTURE, not "run the integ"; the assertion that goes red to green), the four
 failure modes a hard-to-name verifier reveals (host-bound / account- or
-region-bound / does not exist yet, reason (a) / unnameable, which is an
-unbounded deferral), the go-to-k/cdk-local#560
+region-bound / does not exist yet, which is written NOW while the subsystem
+is loaded / unnameable, which is an unbounded deferral), the go-to-k/cdk-local#560
 measurement behind them, and why "it needs its own PR" is an `Effort` note
 rather than a `next` reason. Read it there. Two things this stage adds at PICK
 time — one about EVIDENCE, one about the COMPARAND.
