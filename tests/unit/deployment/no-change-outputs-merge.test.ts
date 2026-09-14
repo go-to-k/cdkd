@@ -235,7 +235,7 @@ describe('mergeNoChangeOutputs', () => {
   });
 
   it('bagHoldsSecretExpression tolerates a null bag (hand-edited state)', () => {
-    expect(bagHoldsSecretExpression(null as unknown as undefined)).toBe(false);
+    expect(bagHoldsSecretExpression(null)).toBe(false);
   });
 
   it('starts the export set from this pass\x27s aliases, then the carried ones', () => {
