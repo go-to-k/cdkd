@@ -1431,11 +1431,14 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * "No public expressions" carries the carve-out {@link PathSourceRules} states
  * and this note must not restate without it: `cdkd import` warns and persists
  * the RAW template intrinsic, so a public `ssm:` token CAN sit in a record. The
- * replay then CERTIFIES one the deploy default would refuse, at a cost bounded
- * to the issue #1901 class — a spurious UPDATE over a value state should hold
- * resolved, never a disclosure, since an expression is what gets persisted
- * either way. See the replay call sites for why gating on
- * {@link isKnownSecretExpression} is the wrong way to close it.
+ * replay's POSITION pass then certifies one the deploy default would refuse;
+ * since issue #3090 refusal 5 refuses to RECORD it under either ruleset (a
+ * token resolved as public is never paired), so the child's leaf falls to the
+ * value scan. Before that the cost was bounded to the issue #1901 class — a
+ * spurious UPDATE over a value state should hold resolved, never a
+ * disclosure, since an expression is what gets persisted either way. See the
+ * replay call sites for why gating on {@link isKnownSecretExpression} is the
+ * wrong way to close it.
  *
  * FIVE REFUSALS, each degrading to today's behaviour (the child leaf falls to
  * the plaintext-keyed value scan); the fifth is stated at its line:
@@ -1584,8 +1587,9 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * the value, which the entry provides -- or the child's OWN resolution of
  * the same plaintext, in which case the association answers with the leaf's
  * own frame, the right reference for it. So a FRAMED association whose value
- * (iii) refused is inert or correct, never wrong -- a claim both walks now
- * earn the same way, the whole-token walk through refusal 5 (issue #3090).
+ * (iii) refused is inert or correct, never wrong -- a claim the whole-token
+ * walk's STRING-source half now earns the same way, through refusal 5 (issue
+ * #3090); its intrinsic-source half rests on the reader's condition 3.
  * The association's expression is
  * the FRAME, not a token -- the one writer into that table that stores a
  * non-token, said so on {@link storeAssociation}; its readers return it to be
@@ -1769,15 +1773,26 @@ export function recordNestedStackParameterExpressions(
     // parameters) has NO pair to show, and an unscoped refusal collapsed
     // every three-level chain back onto the survivor (measured: the loser's
     // grandchild leaf took the sibling's expression). An intrinsic source is
-    // not the #3090 shape: it positions only through an association the
-    // PARENT's recorder already gated with this refusal, or through the
-    // skeleton / frame arms, which require a pair of their own. Pairs are
-    // deliberately NOT recorded at the carry instead -- that would newly arm
-    // `positionByEmbeddedSpan` on every child literal (a change with its own
-    // review). On an intrinsic source the reader's own condition 3
-    // ({@link certifiedExpressionForLeaf}, same bag, same index) has already
-    // refused what refusal 4 would, so refusal 4 is redundant on both
-    // shapes and kept as the reading that needs no pair table.
+    // not the #3090 shape: it positions only through an association -- a
+    // `Ref` key the PARENT's recorder gated with this refusal, or a seam key
+    // (`Fn::ImportValue` / `Fn::GetAtt` / `Fn::GetStackOutput`) gated at
+    // `recordCrossStackExpression`, whose residual the resolver states -- or
+    // through the skeleton / frame arms: the frame arm requires a pair, the
+    // skeleton arm none, its safety being a candidate set (map values plus
+    // the pinned verdict set) that holds secret-verdict expressions only.
+    // Pairs are deliberately NOT recorded at the carry instead -- that would
+    // newly arm `positionByEmbeddedSpan` on every child literal (a change
+    // with its own review).
+    //
+    // REFUSAL 4 IS NOT SUBSUMED BY THIS ONE. On an intrinsic source the
+    // reader's own condition 3 ({@link certifiedExpressionForLeaf}, same bag,
+    // same index) has already refused what refusal 4 would. On a STRING
+    // source in a bag whose map entries carry no pairs -- a child engine's,
+    // inherited entries beside the child's own paired resolutions -- an
+    // expression can hold a clean pair (its own resolution) while the map's
+    // index says it resolved to an INHERITED plaintext: refusal 5 passes it,
+    // refusal 4 alone refuses (pinned by the "child bag: refusal 4 alone"
+    // case; measured in review as the one shape a deletion would change).
     if (
       typeof sourceLeaf === 'string' &&
       resolvedPlaintextOf(secrets, expression) !== resolvedValue

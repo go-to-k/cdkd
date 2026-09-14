@@ -459,6 +459,10 @@ describe('nested-stack parameter associations (#2291)', () => {
       { Parameters: { [PARAM_A]: SHARED } },
       { Parameters: { [PARAM_A]: EXPR_B } }
     );
+    // POSITIVE CONTROL: the grandchild row WAS recorded on the child's table,
+    // or the separation asserted below is vacuous (a future refusal of this
+    // row would leave every later line green).
+    expect(inheritedParameterExpression(child, PARAM_A, SHARED)).toBe(EXPR_B);
 
     const persisted = redactSecretsForState(CHILD_RESOLVED, child, CHILD_SOURCE) as Record<
       string,
@@ -514,6 +518,52 @@ describe('nested-stack parameter associations (#2291)', () => {
     expect(persisted['V']).toBe(EXPR_B);
   });
 
+  it('child bag: refusal 4 alone refuses a STRING-sourced row whose expression the map ties to an INHERITED plaintext while its own pair is clean (#3093 review)', () => {
+    // The one shape refusal 5 does not subsume (measured in review: deleting
+    // refusal 4 changed this alone). A child engine's bag holds INHERITED
+    // entries (no pairs) beside the child's OWN resolutions (with pairs):
+    // `EXPR_A` was inherited against `INHERITED`, and the child then resolved
+    // `EXPR_A` and `EXPR_B` itself to `OWN` (survivor `EXPR_B`). Its nested
+    // row spells `A: EXPR_A` as a STRING. Refusal 5 passes `A` (the pair
+    // `EXPR_A -> OWN` is clean); the map's index says `EXPR_A -> INHERITED`,
+    // and refusal 4 is what refuses. Without it the grandchild's persist side
+    // certifies `EXPR_A` while the diff side refuses -- the split refusal 4
+    // was written to prevent.
+    const INHERITED = 'inherited-plaintext-3093';
+    const OWN = 'own-plaintext-3093';
+    const child: RecordedSecretValues = new Map([
+      [INHERITED, EXPR_A],
+      [OWN, EXPR_B],
+    ]);
+    recordResolvedPair(child, EXPR_A, OWN);
+    recordResolvedPair(child, EXPR_B, OWN);
+    recordNestedStackParameterExpressions(
+      child,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { A: OWN, B: OWN } },
+      { Parameters: { A: EXPR_A, B: EXPR_B } }
+    );
+    // NOT asserted on the child's own table: its reader's condition 3 reads
+    // the same index refusal 4 does and answers `undefined` either way (a
+    // confluence -- measured, the first draft of this case was green with
+    // refusal 4 deleted). The split shows one level down: the GRANDCHILD's
+    // bag is the carry's shape, holding only `OWN -> survivor`, so `EXPR_A`
+    // is not a value there and condition 3 cannot see the inherited tie.
+    // With refusal 4 the association was never written and the grandchild
+    // takes the value scan (`EXPR_B`); without it the persist side certifies
+    // `EXPR_A` while the diff side (the child's bag) refuses.
+    const grandchild: RecordedSecretValues = new Map([[OWN, EXPR_B]]);
+    inheritNestedStackParameterAssociations(grandchild, child);
+    const persisted = redactSecretsForState({ U: OWN, V: OWN }, grandchild, {
+      U: { Ref: 'A' },
+      V: { Ref: 'B' },
+    }) as Record<string, unknown>;
+    expect(persisted['U']).toBe(EXPR_B);
+    // POSITIVE CONTROL: the sibling with a clean index entry IS recorded and
+    // reaches the grandchild by name.
+    expect(inheritedParameterExpression(child, 'B', OWN)).toBe(EXPR_B);
+    expect(persisted['V']).toBe(EXPR_B);
+  });
 });
 
 describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)', () => {

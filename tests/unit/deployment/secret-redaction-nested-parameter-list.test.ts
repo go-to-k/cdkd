@@ -366,7 +366,7 @@ describe('#2327 persist/diff parity', () => {
     // Refusal 4 moves that verdict to WRITE time, against the parent's map,
     // which is the bag that watched the resolution. Both readers then see one
     // table and degrade together to the value scan. Since issue #3090 the
-    // pair table refuses the same parameter first (refusal 5: `EXPR_A` is
+    // pair table refuses the same parameter too (refusal 5: `EXPR_A` is
     // CONFLICTING there, having resolved to both plaintexts), so this case
     // fences the AGREEMENT of the two readers rather than refusal 4 alone.
     const parent: RecordedSecretValues = new Map([
@@ -382,6 +382,9 @@ describe('#2327 persist/diff parity', () => {
       PARENT_RESOLVED,
       PARENT_SOURCE
     );
+    // POSITIVE CONTROL: the clean sibling is recorded, so the refusal below
+    // is a verdict about `PARAM_A`, not a recorder that wrote nothing.
+    expect(inheritedParameterExpression(parent, PARAM_B, [SHARED])).toEqual([EXPR_B]);
 
     // Both settings of the only degree of freedom the child bag has.
     for (const last of [PARAM_A, PARAM_B]) {
@@ -410,7 +413,7 @@ describe('#2327 persist/diff parity', () => {
   it('REFUSAL 4 also fires through the CONFLICTING-plaintext symbol, not only a plain mismatch', () => {
     // A SECOND SHAPE for refusal 4 -- written when the blocker case above was
     // its only discriminating test. Since issue #3090 NEITHER discriminates
-    // refusal 4 on its own: refusal 5 asks the pair table first and refuses
+    // refusal 4 on its own: refusal 5 asks the pair table as well and refuses
     // the same parameter (measured: refusal 4 removed, every case in this
     // file green). Both cases now fence the READERS' agreement over a
     // CONFLICTING expression, with refusal 4 kept as the reading that needs no
@@ -526,7 +529,7 @@ describe('#2327 persist/diff parity', () => {
     // the one its scope is written from. No EMBEDDING anywhere in this bag --
     // both leaves are bare `[SHARED]` -- so the case above cannot stand in for
     // it. (A future REMOVAL of refusal 4 is no longer observable here either;
-    // refusal 5 refuses `PARAM_B` first, #3090. A WIDENING still is.)
+    // refusal 5 refuses `PARAM_B` too, #3090. A WIDENING still is.)
     //
     // THE MECHANISM: `EXPR_B` is recorded against TWO plaintexts, so
     // `plaintextIndexOf` poisons its entry and refusal 4 fires for `PARAM_B`.
@@ -650,7 +653,7 @@ describe('#2327 persist/diff parity', () => {
     // That verdict now lives at WRITE time, so nothing is recorded at all and
     // BOTH readers refuse together; see the blocker case above for why
     // deciding it at read time made the two sides disagree. (Refusal 5 refuses
-    // this parameter first since #3090 -- its pair is CONFLICTING -- so the
+    // this parameter too since #3090 -- its pair is CONFLICTING -- so the
     // title names the reading, not the only line that fires.)
     const parent: RecordedSecretValues = new Map([
       [SHARED, EXPR_B],
@@ -665,6 +668,9 @@ describe('#2327 persist/diff parity', () => {
       PARENT_RESOLVED,
       PARENT_SOURCE
     );
+    // POSITIVE CONTROL: the clean sibling is recorded, so the refusal below
+    // is a verdict about `PARAM_A`, not a recorder that wrote nothing.
+    expect(inheritedParameterExpression(parent, PARAM_B, [SHARED])).toEqual([EXPR_B]);
     expect(inheritedParameterExpression(parent, PARAM_A, [SHARED])).toBeUndefined();
   });
 
