@@ -946,6 +946,11 @@ gate_segments_raw() {
           # alone: bash 3.2 alone closes on it, and that gap is recorded in
           # hooks.md rather than modelled.
           if (index(t, ptag) != 1 || index(substr(t, length(ptag) + 1), ")") == 0) continue
+          # Only what FOLLOWS the delimiter is handed to the join: the
+          # delimiter text is data bash has consumed, and one carrying a quote
+          # (`<<"a\047b"` then `a\047b);verb`) would open a quoted span in
+          # subst_open and fold the verb into it (security review round 10).
+          line = substr(t, length(ptag) + 1)
           ptag = ""
         }
         if (pending != "") { line = pending line; pending = "" }

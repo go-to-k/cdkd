@@ -520,6 +520,13 @@ check "Pc-ctl1: a body line carrying a ) that does not begin with the delimiter 
   "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused (see #3)' 'E' ')')"
 check "Pc-ctl2: a body line beginning with the delimiter but carrying no ) is still data" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'EOF is not this: gh pr merge 1' 'E' ')')"
+# Round 10: the fall-through hands the join only what FOLLOWS the delimiter.
+# A delimiter carrying a quote (`<<"a'b"`) re-lexed as an open quoted span in
+# subst_open and folded the verbs after `a'b)` into it -- bash 5 runs both.
+r3_case "X5: a delimiter carrying a quote does not re-open a quoted span on the fall-through line" 0 "$COMMIT" \
+  'x=$(cat <<"a'"'"'b"' 'body' 'a'"'"'b);git commit -m C' 'git commit -m B' 'a'"'"'b' ')'
+check "X5-ctl: the same delimiter over a plain body keeps it data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<"a'"'"'b"' 'gh pr merge 1 was refused' 'a'"'"'b' ')')"
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes
