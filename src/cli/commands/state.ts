@@ -847,19 +847,33 @@ function formatLastModified(value: unknown): string {
  *
  * `expiresAt` is declared a number and is not guaranteed to be one, but it
  * reaches the row only through subtraction and `formatDuration`, so no character
- * the record carries can survive into the output either. One that cannot be
- * coerced arrives as `NaN` (`getLockRecord`), so the row reads as expired
- * rather than the read throwing.
+ * the record carries can survive into the output either. One that is not a
+ * finite number — absent, `{}`, `"soon"`, or the `NaN` that `getLockRecord`
+ * substitutes for a coercion that throws (go-to-k/cdkd#2947) — is reported as
+ * an UNKNOWN deadline rather than pushed through the arithmetic, which printed
+ * `expired NaNmNaNs ago` (issue #3083). The wording is the one
+ * `lock-contention-message.ts`'s `formatRemaining` already uses for the same
+ * input, so the two lock renderers agree. What the expiry CHECK does with such
+ * a value (`isLockExpired` treats it as expired) is a separate decision that
+ * this row does not restate.
  */
 function formatLockSummary(lockInfo: LockInfo | null): string {
   if (!lockInfo) return 'unlocked';
   const opStr = lockInfo.operation ? ` (operation: ${lockInfo.operation})` : '';
-  const expiresInMs = lockInfo.expiresAt - Date.now();
-  const expiresStr =
-    expiresInMs > 0
-      ? `expires in ${formatDuration(expiresInMs)}`
-      : `expired ${formatDuration(-expiresInMs)} ago`;
-  return `locked by ${lockInfo.owner}${opStr}, ${expiresStr}`;
+  return `locked by ${lockInfo.owner}${opStr}, ${formatExpiry(lockInfo.expiresAt)}`;
+}
+
+/**
+ * `expires in 1m23s` / `expired 45s ago` for a finite deadline, `expires at an
+ * unknown time` for anything else. The non-finite arm exists because
+ * `expiresAt` is an unchecked cast (see `formatLockSummary`).
+ */
+function formatExpiry(expiresAt: number): string {
+  if (!Number.isFinite(expiresAt)) return 'expires at an unknown time';
+  const expiresInMs = expiresAt - Date.now();
+  return expiresInMs > 0
+    ? `expires in ${formatDuration(expiresInMs)}`
+    : `expired ${formatDuration(-expiresInMs)} ago`;
 }
 
 /**

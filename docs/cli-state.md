@@ -240,8 +240,9 @@ or `null` no longer aborts either: `cdkd state list --long` counts it as zero
 resources, and `--show-nested` walks past it with no children. A lock whose
 `owner`, `operation` or `expiresAt` holds an object that cannot be coerced
 renders too: the owner and operation read as `[object Object]`, and the expiry
-reads as `expired NaNmNaNs ago` — the row an `expiresAt` of `{}` already
-produced.
+reads as `expires at an unknown time` — the same words the lock-contention
+refusal uses for any `expiresAt` that is not a finite number (`{}`, `"soon"`,
+absent), so a hand-edited deadline never prints as `NaNmNaNs`.
 
 A record malformed at its ROOT is still refused rather than rendered, with a
 message that names the problem — for example a `state.json` that is not valid

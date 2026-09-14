@@ -80,7 +80,7 @@ This document summarizes common issues when using cdkd and their solutions.
 **Symptoms:**
 
 ```
-LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in: 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
+LockError: Failed to acquire lock for stack 'MyStack' (us-east-1) after 4 attempts. Locked by: alice@host-1:12345, operation: deploy, expires in 4m12s. If you are certain no other process is active, run: cdkd force-unlock MyStack --stack-region us-east-1
 ```
 
 **Causes:**

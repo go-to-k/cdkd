@@ -324,6 +324,28 @@ export class LockManager {
   }
 
   /**
+   * `expires in 1m23s` / `expired 45s ago` for a finite deadline, `expires at
+   * an unknown time` otherwise — the ONE spelling for a lock's expiry in this
+   * module's messages, so the three sites that render one (the expired-lock
+   * takeover warning, the retry line, the final refusal) cannot disagree.
+   *
+   * The non-finite arm is what stops `expired NaNmNaNs ago` (issue #3083):
+   * `expiresAt` is an unchecked cast, and `getLockRecord` deliberately hands
+   * a coercion that THROWS through as `NaN` (go-to-k/cdkd#2947) rather than
+   * inventing a deadline. The wording matches `formatRemaining` in
+   * `lock-contention-message.ts`, which answered the same input this way
+   * first. `isLockExpired` decides what such a value MEANS (expired); this
+   * only decides what it SAYS.
+   */
+  private formatExpiry(expiresAt: number): string {
+    if (!Number.isFinite(expiresAt)) return 'expires at an unknown time';
+    const remainingMs = expiresAt - Date.now();
+    return remainingMs > 0
+      ? `expires in ${this.formatDuration(remainingMs)}`
+      : `expired ${this.formatDuration(-remainingMs)} ago`;
+  }
+
+  /**
    * Try to acquire a lock for a stack
    *
    * Uses If-None-Match: "*" to ensure atomic lock acquisition.
@@ -431,10 +453,17 @@ export class LockManager {
             }
           }
 
+          // Two explanations, because `isLockExpired` reaches "expired" two
+          // ways: a deadline in the past, or one that is not a finite number
+          // (issue #3083). The crashed-owner story is only evidence for the
+          // first; for the second the honest cause is the record itself.
+          const why = Number.isFinite(existing.info.expiresAt)
+            ? `A live cdkd process renews its lock well inside the TTL, so this normally means the ` +
+              `previous owner crashed or was suspended`
+            : `Its expiresAt is not a finite number, which cdkd treats as already expired`;
           this.logger.warn(
             `Took over an EXPIRED lock for stack: ${stackName} (${region}, owner: ${existing.info.owner}, ` +
-              `expired ${this.formatDuration(now - existing.info.expiresAt)} ago). A live cdkd process renews its ` +
-              `lock well inside the TTL, so this normally means the previous owner crashed or was suspended -- ` +
+              `${this.formatExpiry(existing.info.expiresAt)}). ${why} -- ` +
               `if it is in fact still running, both processes are now writing to the same stack.`
           );
 
@@ -609,12 +638,14 @@ export class LockManager {
         ...parsed,
         owner: displaySafe(parsed.owner),
         ...(parsed.operation !== undefined && { operation: displaySafe(parsed.operation) }),
-        // Normalised HERE for the same reason `owner` is: `expiresAt` has five
-        // readers that do arithmetic on it (`formatLockSummary`, the contention
-        // message, the retry line, the final refusal, and the expired-lock
-        // takeover's own warning), and an object whose `toString` is not
-        // callable makes every one of them throw — the takeover's AFTER it has
-        // deleted the lock, leaving the stack unlocked (issue #2947). Only a
+        // Normalised HERE for the same reason `owner` is: an object whose
+        // `toString` is not callable made every reader that subtracted from
+        // `expiresAt` throw — five of them at the time, the expired-lock
+        // takeover's warning AFTER it had deleted the lock, leaving the stack
+        // unlocked (issue #2947). Since issue #3083 four of those test
+        // `Number.isFinite` first, which never coerces, so the one reader this
+        // still protects is `lock-contention-message.ts`'s subtraction; it
+        // stays load-bearing for that one and for any reader added later. Only a
         // value whose coercion THROWS is replaced; every other value passes
         // through untouched, because `isLockExpired` decides on the RAW value:
         // a numeric string is non-finite there and therefore expired, and
@@ -1435,8 +1466,6 @@ export class LockManager {
       const lockInfo = await this.getLockInfo(stackName, region);
 
       if (lockInfo) {
-        const remainingMs = lockInfo.expiresAt - Date.now();
-
         if (attempt < maxRetries) {
           // The retry line is the SIBLING of the throw below and renders the
           // same two values, so it takes the same sanitization. Scope, stated
@@ -1452,7 +1481,7 @@ export class LockManager {
             `Stack '${safeSegment(stackName)}' ` +
               `(${safeSegment(region)}) is locked by ${lockInfo.owner}` +
               `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
-              `. Lock expires in ${this.formatDuration(remainingMs)}.` +
+              `. Lock ${this.formatExpiry(lockInfo.expiresAt)}.` +
               ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
           );
           await new Promise((resolve) => setTimeout(resolve, retryDelay));
@@ -1463,7 +1492,7 @@ export class LockManager {
 
     // Failed to acquire lock after all retries
     const lockInfo = await this.getLockInfo(stackName, region);
-    const expiresIn = lockInfo ? this.formatDuration(lockInfo.expiresAt - Date.now()) : 'unknown';
+    const expiry = lockInfo ? this.formatExpiry(lockInfo.expiresAt) : undefined;
 
     // Issue [#2610] site 14. This used to read "Use --force-unlock to manually
     // release the lock", and NO `--force-unlock` Option is registered anywhere
@@ -1509,7 +1538,7 @@ export class LockManager {
         (lockInfo
           ? `Locked by: ${lockInfo.owner}` +
             `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
-            `, expires in: ${expiresIn}. ` +
+            `, ${expiry}. ` +
             recovery
           : `Lock exists but could not read lock info. ${recovery}`)
     );
