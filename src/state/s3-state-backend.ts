@@ -1422,9 +1422,10 @@ export class S3StateBackend {
     // a truthiness test), so dropping the entry changes nothing THERE. What it
     // changes is every consumer that enumerates KEYS — the destroy count,
     // `state orphan`'s `id in resources`, the diff — for which a `null` entry
-    // keeps the logical id visible and actionable while a dropped one erases
-    // it from the record silently. Inner shapes are tolerated where they are
-    // dereferenced instead.
+    // keeps the logical id visible (nameable to a command, even though
+    // `state orphan` still refuses the entry at its own dereference today —
+    // go-to-k/cdkd#3018 again) while a dropped one erases it from the record
+    // silently. Inner shapes are tolerated where they are dereferenced instead.
     if (root === null || typeof root !== 'object' || Array.isArray(root)) {
       const got = root === null ? 'null' : Array.isArray(root) ? 'an array' : `a ${typeof root}`;
       throw new StateError(
