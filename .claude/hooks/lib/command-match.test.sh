@@ -456,7 +456,7 @@ check "P3: <<'a\"b' keeps the inner quote, so an ab line does not end the body e
 # matched). Both arms read the word through heredoc_word now.
 r3_case "D5: top-level <<'EOF'x with a substitution on the line -- the push before a later bare EOF is a segment" 0 "$GATE_RE_GIT_PUSH" \
   'cat <<'"'"'EOF'"'"'x $(echo y)' 'p' 'EOFx' 'git push' 'cat <<'"'"'EOF'"'"'' 'q' 'EOF'
-r3_case "D7: top-level <<EOF.x -- a bare word with a dot is one delimiter" 0 "$GATE_RE_GIT_PUSH" \
+r3_case "D7: top-level <<EOF.x -- not an identifier, so nothing is latched and the push after the body is a segment" 0 "$GATE_RE_GIT_PUSH" \
   'cat <<EOF.x $(echo y)' 'p' 'EOF.x' 'git push' 'cat <<'"'"'EOF'"'"'' 'q' 'EOF'
 r3_case "D8: top-level <<E\"O\"F -- quote removal gives EOF" 0 "$GATE_RE_GIT_PUSH" \
   'cat <<E"O"F $(echo y)' 'p' 'EOF' 'git push' 'cat <<'"'"'E'"'"'' 'q' 'E'
@@ -487,7 +487,7 @@ r3_case "B1a: <<\"E\\xF\" keeps the backslash -- a decoy ExF line is not the ter
   'x=$(cat <<"E\xF"' 'body' 'E\xF' 'git commit -m y' 'ExF' ')'
 r3_case "B1b: the top-level twin of B1a" 0 "$GATE_RE_GIT_PUSH" \
   'cat <<"E\xF"' 'body' 'E\xF' 'git push' 'ExF'
-check "B1c: a real E\\xF terminator ends the body (control)" 1 "$MERGE" \
+check "B1c: a real E\\xF terminator ends the body -- the fix also removes a false refusal (the old walk waited for ExF)" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<"E\xF"' 'gh pr merge 1 was refused' 'E\xF' ')')"
 # Security: the top-level arm latches an UNQUOTED word only when it is
 # identifier-shaped, which is all origin/main ever latched. That arm drops a
@@ -499,6 +499,27 @@ r3_case "B2b: top-level <<E-x likewise" 0 "$GATE_RE_GIT_PUSH" \
   'cat <<E-x' '$(git push)' 'E-x'
 check "B2c: top-level <<'EOF.x' is QUOTED, so its body is data (control)" 1 "$MERGE" \
   "$(printf '%s\n' 'cat <<'"'"'EOF.x'"'"'' 'gh pr merge 1 was refused' 'EOF.x')"
+# origin/main latched the identifier PREFIX of `<<EOF.x` -- the tag `EOF` --
+# so a later bare `EOF` line dropped the expanded body; B2a has no such line
+# and passes on main, this one fences the closed main fail-open.
+r3_case "B2d: top-level <<EOF.x with a decoy bare EOF line -- main latched the prefix and dropped the expanded body" 0 "$GATE_RE_GIT_PUSH" \
+  'cat <<EOF.x' '$(git push)' 'EOF.x' 'EOF'
+# Round 9 (/review-pr, fourth pass). Security: inside `$( )` bash 5 and 3.2
+# end BOTH the heredoc and the substitution on a body line that begins with
+# the delimiter and carries a `)` -- `E);git commit -m C` runs C, and every
+# line after it at top level (zsh keeps reading the body). The latch dropped
+# all of it; origin/main matched. Such a line now ends the latch and falls
+# through to the join, where its `)` closes the frame.
+r3_case "Pc10: a body line E);<verb> closes the heredoc AND the substitution -- both verbs are segments" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E);git commit -m C' 'git commit -m B' 'E' ')'
+r3_case "Pc11: E) && <verb> likewise" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E) && git commit -m C' 'E' ')'
+r3_case "Pc17: E) ; x=\$( re-opens a substitution and the next line is its command" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E) ; x=$(' 'git commit -m B' 'E' ')'
+check "Pc-ctl1: a body line carrying a ) that does not begin with the delimiter is still data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'gh pr merge 1 was refused (see #3)' 'E' ')')"
+check "Pc-ctl2: a body line beginning with the delimiter but carrying no ) is still data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'EOF is not this: gh pr merge 1' 'E' ')')"
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

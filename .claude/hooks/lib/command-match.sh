@@ -807,12 +807,14 @@ gate_segments_raw() {
             # a word the walk cannot read sets no tag, and the line stays a
             # command line (review round 7 of go-to-k/cdkd#3040).
             d = heredoc_word(rest)
-            # An UNQUOTED word is latched only when it is identifier-shaped,
-            # which is all origin/main ever latched: this arm drops a body
+            # An UNQUOTED word is latched only when it is a whole identifier.
+            # origin/main latched the identifier PREFIX of any unquoted word
+            # (`<<EOF.x` gave it the tag `EOF`, a decoy), so this set is a
+            # strict subset of what main latched: this arm drops a body
             # whatever its quoting, and an unquoted body is EXPANDED by bash,
-            # so latching `<<EOF.x` here dropped a `$(git push)` main still
-            # matched (review round 8). The identifier gap itself is the
-            # accepted top-level one hooks.md records; it is not widened.
+            # so a wider latch drops a `$(git push)` (review round 8). The
+            # identifier gap itself is the accepted top-level one hooks.md
+            # records; it is not widened.
             if (d != "" && (HW_QUOTED || d ~ /^[A-Za-z_][A-Za-z0-9_]*$/)) pending_tag = d
             continue
           }
@@ -933,8 +935,18 @@ gate_segments_raw() {
         if (ptag != "") {
           t = line
           gsub(/^[ \t]+|[ \t]+$/, "", t)
-          if (t == ptag) ptag = ""
-          continue
+          if (t == ptag) { ptag = ""; continue }
+          # A body line that BEGINS with the delimiter and carries a `)` after
+          # it is where bash 5 and 3.2 end BOTH the heredoc and the
+          # substitution: `E);git commit -m C` runs C and every line after it
+          # at top level (security review round 9 of go-to-k/cdkd#3040; zsh
+          # keeps reading the body). Dropping it dropped those commands, so
+          # the latch ends here and the line falls through to the join, where
+          # its `)` closes the frame. A bare `)` elsewhere in a body is left
+          # alone: bash 3.2 alone closes on it, and that gap is recorded in
+          # hooks.md rather than modelled.
+          if (index(t, ptag) != 1 || index(substr(t, length(ptag) + 1), ")") == 0) continue
+          ptag = ""
         }
         if (pending != "") { line = pending line; pending = "" }
         if (line ~ /\\$/) {               # `\`-continuation: join with the next line

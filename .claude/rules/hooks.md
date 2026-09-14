@@ -897,25 +897,24 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   that latch are load-bearing, each measured against shapes bash executes
   and origin/main matched**: the opener scan reads the PHYSICAL line, never
   the joined `$(` text — the join re-finds an opener whose heredoc already
-  closed, and any bare delimiter still ahead (a second same-delimiter
-  heredoc in the substitution, a top-level one after the `)`) satisfies the
-  look-ahead and swallows the commands in between; the scan is QUOTE-AWARE
+  closed, and a later bare delimiter swallows the commands in between; the scan is QUOTE-AWARE
   with a per-depth STACK — `$(` and a bare `(` push the quote state and the
   matching `)` restores it, a backtick saves and restores across its span, `${…}` / `$((…))` / a `#` comment (after a space, a `)` or an opening backtick) are
   skipped whole — and it BAILS to "no opener" on any line it cannot read to
   the end: an unbalanced quote, a new `$(` opened after the delimiter, or the
   opener's OWN frame closing on that line (`y=$(cat <<'EOF') ; z=$(` — shells
-  disagree on which line is the body, so it is not modelled), so a `'<<X'` mention plus a bare `X` later is prose; and the
+  disagree there), so a `'<<X'` mention plus a bare `X` later is prose; and the
   latch is **QUOTED-DELIMITER ONLY** — the delimiter being the whole WORD
-  after quote removal, as bash reads it (`<<'EOF'x` is `EOFx`, `<<\EOF`
-  is quoted, `<<"E\xF"` keeps its backslash), in this arm and the
-  top-level one, which latches an unquoted word only when identifier-shaped
-  (all `origin/main` ever latched) — and an unquoted or
+  after quote removal (`<<'EOF'x` is `EOFx`, `<<\EOF` is quoted, `<<"E\xF"`
+  keeps its backslash), in this arm and the
+  top-level one, which latches an unquoted word only when a whole identifier
+  (`origin/main` latched the identifier PREFIX of any word — a decoy) — and an unquoted or
   unreadable opener ANYWHERE in the substitution is a bail, sticky to its
   close: `cat <<A <<'B'` expands the A body first, so recording only B
   dropped a verb. That lexer state CARRIES across the physical lines of one
-  `$( )` and resets when it closes (a per-line scan latched five carried-data
-  shapes). A
+  `$( )` and resets when it closes. A body line beginning with the delimiter
+  and carrying a `)` ends the latch (bash 5 and 3.2 close the `$( )` there);
+  bash 3.2 alone also closes on ANY `)` in a body — not modelled. A
   `<<EOF` body is expanded by bash — `$(git commit)` on a body line runs —
   and two review rounds each measured a shape (a multi-line `$(` spanning
   body lines, a literal `<<Y` on a fallen-through line) that a body-line

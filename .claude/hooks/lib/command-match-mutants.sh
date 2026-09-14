@@ -177,6 +177,15 @@ edits={
                          'w = w substr(rest, j + 1, 1); j += 2; continue }'),
  'hw-toplevel-any-word': ('            if (d != "" && (HW_QUOTED || d ~ /^[A-Za-z_][A-Za-z0-9_]*$/)) pending_tag = d\n',
                           '            if (d != "") pending_tag = d\n'),
+ # `hw-toplevel-ident-only` drops the quoted arm of the top-level guard, so a
+ # QUOTED non-identifier word (`<<'EOF.x'`) is no longer latched and its body
+ # is refused as commands (B2c). `ptag-paren-close` puts the latch back to
+ # dropping a body line that begins with the delimiter and carries a `)`,
+ # which bash 5 and 3.2 run as commands (Pc10 / Pc11 / Pc17).
+ 'hw-toplevel-ident-only': ('            if (d != "" && (HW_QUOTED || d ~ /^[A-Za-z_][A-Za-z0-9_]*$/)) pending_tag = d\n',
+                            '            if (d != "" && d ~ /^[A-Za-z_][A-Za-z0-9_]*$/) pending_tag = d\n'),
+ 'ptag-paren-close':    ('          if (index(t, ptag) != 1 || index(substr(t, length(ptag) + 1), ")") == 0) continue\n          ptag = ""\n',
+                         '          continue\n'),
  'pending-tag-restore': ('      pending_tag = saved_pt\n', ''),
 }
 a,b=edits[probe]
@@ -188,7 +197,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word pending-tag-restore}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close pending-tag-restore}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then
