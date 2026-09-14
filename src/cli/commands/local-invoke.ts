@@ -1064,22 +1064,23 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
     //     copied as a symlink rather than flattened into its target,
     //     matching how AWS extracts a layer ZIP into `/opt`. Some build
     //     tools emit symlinks inside the layer asset directory.
-    //     KNOWN DEFECT, issue #3106: `verbatimSymlinks` ALSO defaults to
-    //     false (in every Node release), and a non-verbatim copy rewrites
-    //     a RELATIVE link target to the ABSOLUTE path of the source, so
-    //     `bin/rel-link -> real.sh` arrives as `-> <cdk.out>/asset.<hash>/
-    //     bin/real.sh` and is dangling inside the container, where only
-    //     the merged tmpdir is mounted. Measured on Node 22.23 / 24.21;
-    //     the fix (`verbatimSymlinks: true` + a symlink in the layers
-    //     fixture) is that issue's, not a comment's.
+    //   - `verbatimSymlinks: true` is set EXPLICITLY (issue #3106): it
+    //     defaults to false in every Node release, and a non-verbatim
+    //     copy rewrites a RELATIVE link target to the ABSOLUTE path of
+    //     the source, so `bin/rel-link -> real.sh` arrived as
+    //     `-> <cdk.out>/asset.<hash>/bin/real.sh` — dangling inside the
+    //     container, where only the merged tmpdir is mounted. Measured on
+    //     Node 22.12 / 24.21; the `local-invoke-layers` fixture execs
+    //     through such a link.
     //   - `force: true` (above) makes a later layer's entry overwrite
     //     the previous layer's same-path entry; mirrors AWS's
     //     last-layer-wins file-collision rule.
     // The first two are defaults on every supported Node and require no explicit flag;
     // we document them here so a future "tighten the cpSync options"
-    // refactor doesn't accidentally drop the `+x` bit or dereference
-    // symlinks and silently break `/opt/bin/...` layers in the field.
-    cpSync(layer.assetPath, tmpDir, { recursive: true, force: true });
+    // refactor doesn't accidentally drop the `+x` bit, dereference
+    // symlinks, or drop `verbatimSymlinks` and silently break
+    // `/opt/bin/...` layers in the field.
+    cpSync(layer.assetPath, tmpDir, { recursive: true, force: true, verbatimSymlinks: true });
   }
   return {
     mount: { hostPath: tmpDir, containerPath: '/opt', readOnly: true },

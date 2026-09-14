@@ -54,6 +54,14 @@ echo "${RESULT_1}" | grep -q '"counter":"count=7"' || {
   echo "FAIL: expected counter=count=7, got: ${RESULT_1}"
   exit 1
 }
+# 1c: a RELATIVE symlink inside the counters layer (`bin/rel-link ->
+# real.sh`) is executed THROUGH the link inside the container. Before issue
+# #3106 the cpSync merge rewrote the link to the host's absolute asset path,
+# so `/opt/bin/rel-link` was dangling in /opt and the handler threw ENOENT.
+echo "${RESULT_1}" | grep -q '"linkOutput":"real-via-link"' || {
+  echo "FAIL: expected linkOutput=real-via-link (relative layer symlink dangling in /opt, issue #3106), got: ${RESULT_1}"
+  exit 1
+}
 
 # 1b: greetings layer — last-wins. Both GreetingsA and GreetingsB
 # install /opt/nodejs/node_modules/util-greetings/index.js; the

@@ -2080,14 +2080,15 @@ export async function materializeLambdaLayers(
     //     would otherwise fail with "Permission denied".
     //   - `dereference` defaults to false, so symlinks are copied as
     //     symlinks rather than flattened, matching AWS's layer-ZIP
-    //     extraction into `/opt`. KNOWN DEFECT, issue #3106:
-    //     `verbatimSymlinks` also defaults to false, so a RELATIVE link
-    //     target is rewritten to the source's absolute host path and is
-    //     dangling in the container — the fix belongs to that issue.
+    //     extraction into `/opt`.
+    //   - `verbatimSymlinks: true` is set EXPLICITLY (issue #3106): it
+    //     defaults to false in every Node, and a non-verbatim copy
+    //     rewrites a RELATIVE link target to the source's absolute host
+    //     path, which is dangling in the container.
     // Mirrors the same contract pinned in `local-invoke.ts`'s
     // `materializeLambdaLayers`; keep the two call sites in sync if
     // they ever consolidate into one helper.
-    cpSync(layer.assetPath, dir, { recursive: true, force: true });
+    cpSync(layer.assetPath, dir, { recursive: true, force: true, verbatimSymlinks: true });
   }
   layerTmpDirs.add(dir);
   return dir;
