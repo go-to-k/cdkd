@@ -2850,7 +2850,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Stands in for a source part the skeleton cannot know — an `Fn::Join` element
- * that is itself an intrinsic, or an `Fn::Sub` `${...}` variable.
+ * that is itself an intrinsic or any other non-scalar or `null` part (see
+ * {@link joinPartLiteralText}), or an `Fn::Sub` `${...}` variable.
  *
  * Built from {@link DYNAMIC_REFERENCE_INNER_CHAR} rather than `.` because a
  * recorded expression's INNER text never contains `}`: the resolver matches
@@ -2922,7 +2923,7 @@ const MAX_SKELETON_CANDIDATE_LENGTH = 512;
  * between them. Measured on a ~120-char candidate, before the collapse:
  * 4 adjacent wildcards 39ms, 5 ~1s, 6 20s, 8 did not finish in two minutes. Two
  * legal CFn shapes CDK can emit produce ADJACENT ones — an `Fn::Join` with an
- * EMPTY delimiter and consecutive non-string parts, and an `Fn::Sub` with
+ * EMPTY delimiter and consecutive intrinsic (or `null`) parts, and an `Fn::Sub` with
  * adjacent `${a}${b}` variables — and the collapse takes both to a single
  * wildcard. It does NOT close the class, which is why the cap exists beside it.
  *
@@ -3013,7 +3014,8 @@ function anchoredSkeletonPattern(
 
 /**
  * A source part the skeleton cannot know — an `Fn::Join` element that is
- * itself an intrinsic, or an `Fn::Sub` `${...}` variable. The segment form of
+ * itself an intrinsic or any other non-scalar or `null` part (see
+ * {@link joinPartLiteralText}), or an `Fn::Sub` `${...}` variable. The segment form of
  * {@link SKELETON_WILDCARD}: what a part IS, before {@link anchoredSkeletonPattern}
  * — the one speller — turns it into the wildcard.
  */
@@ -3032,13 +3034,53 @@ const UNKNOWN_PART = Symbol('unknown intrinsic part');
 const UNKNOWN_PART_PLACEHOLDER = '\u0000';
 
 /**
+ * The literal text an `Fn::Join` PART contributes, or `undefined` when the
+ * part is not knowable from the template (issue #3055).
+ *
+ * The resolver joins every part as `String(await resolveValue(part))`, and
+ * `resolveValue` returns a NUMBER or BOOLEAN unchanged, so such a part
+ * contributes exactly `String(part)` -- `8080` joins as `8080`, `true` as
+ * `true`. A string part is its raw text here as it always was (a
+ * `{{resolve:` inside it is the token the readers look for, not text this
+ * function resolves). Reading only strings as literal made the other two a
+ * wildcard for the skeleton arm (a candidate differing at that position could
+ * match) and a placeholder for the frame arm (whose rendered frame then no
+ * longer equals the leaf's text around the middle, so the arm refuses) -- and,
+ * through the frame arm's rewrite, for the nested-stack parameter recorder's
+ * `frameSpellingOf`, which carries a framed parameter to the child only when
+ * that arm wrote it. The recorder's own rendering of such a part does not
+ * decide the case: a part outside the token leaves its one span and service
+ * prefix the same either way.
+ *
+ * `null` stays unknowable although the resolver would join it as `null`, as it
+ * was before this function existed: it is not a part a CloudFormation template
+ * can carry meaningfully. Being a wildcard, it can still let the skeleton arm
+ * match a lone candidate spelling something else at that position -- the
+ * arm's existing wrong-reference residual, not narrowed here. The literal
+ * reading reaches that same residual in a few more places: a source that left
+ * two candidates matching as a wildcard can now leave ONE, which the arm
+ * accepts even when the leaf's own reference was never recorded (a public
+ * `ssm` parameter). An object or array part (an intrinsic, a list, or any
+ * other object) stays {@link UNKNOWN_PART}.
+ */
+function joinPartLiteralText(part: unknown): string | undefined {
+  if (typeof part === 'string') return part;
+  if (typeof part === 'number' || typeof part === 'boolean') return String(part);
+  return undefined;
+}
+
+/**
  * The text of an `Fn::Join` / `Fn::Sub` source in order: a literal part as its
- * RAW text, an unknowable part as {@link UNKNOWN_PART}. ONE parser for the two
+ * RAW text (a number or boolean `Fn::Join` part as the text the resolver joins
+ * it as, {@link joinPartLiteralText}), an unknowable part as
+ * {@link UNKNOWN_PART}. ONE parser for the three
  * readers of that shape — {@link intrinsicSkeletonPattern}, which hands every
- * segment to {@link anchoredSkeletonPattern} to spell as a regex, and
+ * segment to {@link anchoredSkeletonPattern} to spell as a regex,
  * {@link positionByIntrinsicFrame}, which needs the
- * literal text VERBATIM to know where a token's frame begins and ends — so
- * the two cannot disagree about what a source says (issue #2745).
+ * literal text VERBATIM to know where a token's frame begins and ends, and
+ * `frameSpellingOf` in {@link recordNestedStackParameterExpressions}, which
+ * renders the same text to find the token a carried frame spells — so
+ * they cannot disagree about what a source says (issues #2745, #3062).
  *
  * `undefined` for any source this cannot describe, per the pattern reader's
  * doc: a delimiter that is itself an intrinsic, a non-array `Fn::Join`, a
@@ -3055,13 +3097,18 @@ function intrinsicSkeletonSegments(
     const args = source[key];
     if (!Array.isArray(args) || args.length !== 2) return undefined;
     const [delimiter, parts] = args as [unknown, unknown];
-    // A non-string delimiter is unknowable, and it sits BETWEEN every pair of
-    // parts, so wildcarding it would erase most of the skeleton's specificity.
+    // A non-string delimiter is REFUSED. An intrinsic one is unknowable, and it
+    // sits BETWEEN every pair of parts, so wildcarding it would erase most of
+    // the skeleton's specificity. A number delimiter would be knowable (joined
+    // as `String(delimiter)`, like a part), but no template is known to carry
+    // one. Refusing it costs a parser-wide refusal: every reader gets
+    // `undefined`, so the leaf falls to the value scan and no nested-stack
+    // carry is recorded.
     if (typeof delimiter !== 'string' || !Array.isArray(parts)) return undefined;
     const segments: Array<string | typeof UNKNOWN_PART> = [];
     parts.forEach((part, index) => {
       if (index > 0) segments.push(delimiter);
-      segments.push(typeof part === 'string' ? part : UNKNOWN_PART);
+      segments.push(joinPartLiteralText(part) ?? UNKNOWN_PART);
     });
     return segments;
   }
@@ -3365,9 +3412,10 @@ function positionByCrossStackSource(
  *
  * One residual is worth naming rather than leaving to be rediscovered: a single
  * WRONG candidate can win only when this leaf's own expression is in NEITHER
- * store — which is exactly an `ssm` reference whose `Type` came back
- * unclassifiable (deliberately unpinned per #1901) and which then lost the
- * value collapse. `recordedSecretExpressions` is process-wide, so the winner
+ * store — an `ssm` reference whose `Type` came back unclassifiable
+ * (deliberately unpinned per #1901) and which then lost the value collapse, or
+ * a PUBLIC `ssm` reference (stored resolved, #1901) whose value coincides with
+ * a recorded secret's plaintext. `recordedSecretExpressions` is process-wide, so the winner
  * could in principle come from another resource, and condition 3 cannot refuse
  * one the pass never recorded.
  *
@@ -3376,7 +3424,7 @@ function positionByCrossStackSource(
  * `resolveReplayProps` RE-RESOLVES the persisted expression against AWS and
  * hands the result to `provider.update`, so a rollback replays the wrong secret
  * — immediately, if the two references already resolve to different values. It
- * is narrow (unclassifiable-`ssm` leaves only) but it is not cosmetic, and an
+ * is narrow (unclassifiable or public `ssm` leaves only) but it is not cosmetic, and an
  * earlier draft of this paragraph called it "a spurious UPDATE rather than a
  * disclosure", which understated it.
  *
