@@ -86,6 +86,36 @@ describe('classifyCaptureShape', () => {
     expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([3]);
   });
 
+  it('attributes a statement joined after a `&&`-ending line to that line, not the next', () => {
+    // The `|` / `&&` / `||` arm of the join is observable only through the
+    // line number: the open-`$(` arm already joins a wrapped pipe by itself.
+    const c = classifyCaptureShape(`${PIPEFAIL}[ -n "$X" ] &&\n  R=$(x 2>/dev/null | tail -1)\n`);
+    expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([3]);
+  });
+
+  it('a heredoc opened inside an open $( is blanked in place and the join resumes after its terminator', () => {
+    // Second review round: joining first and looking for the opener
+    // afterwards swallowed the body into the statement, and the terminator
+    // search then ran to the NEXT same-named terminator -- 53 real lines of
+    // dynamodb-globaltable/verify.sh went inert. Both directions pinned: the
+    // real statement after the block is seen, the body's own shape is not.
+    const body = [
+      `V="$(python3 - <<'PY'`,
+      'print(1)',
+      'PY',
+      ')"',
+      'R=$(x 2>/dev/null | tail -1)',
+      `W="$(python3 - <<'PY'`,
+      'print(2)',
+      'PY',
+      ')"',
+      '',
+    ].join('\n');
+    expect(classifyCaptureShape(`${PIPEFAIL}${body}`).abortShapedCaptures.map((f) => f.line)).toEqual([7]);
+    const inBody = `V="$(bash <<'SH'\nls 2>/dev/null | tail -1\nSH\n)"\n`;
+    expect(classifyCaptureShape(`${PIPEFAIL}${inBody}`).abortShapedCaptures).toEqual([]);
+  });
+
   it('flags a backslash-continued statement at its FIRST physical line', () => {
     const c = classifyCaptureShape(
       `${PIPEFAIL}R=$(AWS_ACCESS_KEY_ID=a \\\n  AWS_REGION=us-east-1 \\\n  \${CDKD} local invoke-agentcore T --sigv4 2>/dev/null | tail -1)\n`,
@@ -121,11 +151,16 @@ describe('classifyCaptureShape', () => {
     ['a bare-word here-string', 'read -r x <<< foo\nR=$(x 2>/dev/null | tail -1)\n'],
     ['a quoted here-string', "read -r x <<< 'foo'\nR=$(x 2>/dev/null | tail -1)\n"],
     ['a heredoc whose terminator never comes', 'echo "<<EOF"\nR=$(x 2>/dev/null | tail -1)\n'],
+    // The here-string's word DOES appear later as a standalone line, so the
+    // unterminated-heredoc guard cannot rescue this one: only the `<<<`
+    // exclusion keeps line 4 visible (second review round).
+    ['a here-string whose word later closes a would-be heredoc', 'for w in a; do\n  read -r x <<< done\n  R=$(x 2>/dev/null | tail -1)\ndone\n'],
   ])('does not blank the rest of the file after %s', (_label, body) => {
     // Both shapes used to open a heredoc that never closed, so every later
     // line was data and the fence was silently inert from there on.
     const c = classifyCaptureShape(`${PIPEFAIL}${body}`);
-    expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([4]);
+    const expected = body.split('\n').findIndex((l) => l.includes('2>/dev/null')) + 3;
+    expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([expected]);
   });
 
   it('attributes a nested substitution\'s redirections to the inner body only', () => {
@@ -169,11 +204,14 @@ describe('classifyCaptureShape', () => {
 describe('codeLines / substitutionBodies', () => {
   it('keeps the physical line count while blanking comments and heredoc bodies', () => {
     const lines = codeLines('a\n# c\ncat <<EOF\nbody\nEOF\nb \\\n  c\nd\n');
+    // Body AND terminator lines are kept as blanks, so every physical line
+    // but a joined continuation has an entry and the numbering stays honest.
     expect(lines.map((l) => [l.line, l.text])).toEqual([
       [1, 'a'],
       [2, ''],
       [3, 'cat <<EOF'],
       [4, ''],
+      [5, ''],
       [6, 'b  c'],
       [8, 'd'],
       [9, ''],
@@ -254,6 +292,19 @@ describe('real-code probes (issue #3126)', () => {
     );
     const line = broken.slice(0, broken.indexOf('RESULT_1=$(')).split('\n').length;
     expect(classifyCaptureShape(broken).abortShapedCaptures.map((f) => f.line)).toEqual([line]);
+  });
+
+  it('a shape placed right after a heredoc-in-$( block of dynamodb-globaltable/verify.sh is flagged at its line', () => {
+    // The real file carrying four `V="$(python3 - <<'PY' ... PY )"` blocks;
+    // the first cut's join blanked the code between them.
+    const real = readFileSync(join(INTEG_ROOT, 'dynamodb-globaltable', 'verify.sh'), 'utf8');
+    const lines = real.split('\n');
+    const closer = lines.findIndex((l, k) => k > 0 && /^\)"/.test(l) && /^\s*PY\s*$/.test(lines[k - 1]!));
+    expect(closer, 'the fixture no longer carries the heredoc-in-$( shape this probe needs').toBeGreaterThan(0);
+    lines.splice(closer + 1, 0, 'PROBE=$(x 2>/dev/null | tail -1)');
+    const c = classifyCaptureShape(lines.join('\n'));
+    expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([closer + 2]);
+    expect(classifyCaptureShape(real).abortShapedCaptures).toEqual([]);
   });
 
   it('re-introducing the retry-loop shape into local-invoke-from-state/verify.sh is flagged', () => {

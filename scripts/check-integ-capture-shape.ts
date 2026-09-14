@@ -17,7 +17,8 @@
  * (2026-09-14, this scanner): eight `local-*` fixtures carried the shape at
  * 35 sites, plus three retry loops that lost every attempt's stderr the
  * same way (`if out=$(... 2>/dev/null | tail -1)` -- `set -e` is suspended
- * in a condition, so the loop ran, but the text was gone), plus three
+ * in a condition, so the loop ran, but the text was gone), plus two
+ * `grep`-piped captures in `local-invoke-agentcore-from-state` and two
  * sites outside `local-*` in other clothing.
  *
  * The shape is NOT a swallow: the script still fails, so nothing false-passes
@@ -136,25 +137,46 @@ function openSubstitutions(text: string): number {
   return depth;
 }
 
+const HEREDOC_OPENER = /(?<!<)<<-?(?!<)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/;
+
 /**
  * Joins one logical statement out of its physical lines -- a backslash
  * continuation, a line ending in `|` / `&&` / `||`, or a `$(` still open
  * at the line's end (a wrapped `R=$(cmd 2>/dev/null |` newline `tail -1)`
  * was invisible to the first cut, review of go-to-k/cdkd#3133) -- and blanks
  * comment lines and heredoc bodies, keeping the line count so a report's
- * line number is the first physical line of the statement. A `<<` that is
- * part of a here-string (`<<<`) is not a heredoc, and a heredoc whose
- * terminator never comes is not skipped either: both used to blank the rest
- * of the file, which made the fence silently inert from that line on.
- * Trailing comments stay: the banned shape cannot sit inside one without
- * also being code on that line, and a quote-aware stripper is more
- * machinery than the question needs.
+ * line number is the first physical line of the statement.
+ *
+ * A heredoc is recognised on the PHYSICAL line that opens it, including one
+ * opened inside a still-open `$(` (`V="$(python3 - <<'PY'` ... `PY` ... `)"`,
+ * four of them in `dynamodb-globaltable/verify.sh`): its body is blanked
+ * from there and the join resumes after the terminator. The first cut
+ * joined first and looked for the opener afterwards, so the body was
+ * swallowed into the statement and the terminator search ran past it to the
+ * NEXT same-named terminator, blanking 53 lines of real code in that file
+ * (second review round). A `<<` that is part of a here-string (`<<<`) is
+ * not a heredoc, and a heredoc whose terminator never comes is not skipped
+ * either: both used to blank the rest of the file, which made the fence
+ * silently inert from that line on. Trailing comments stay: the banned
+ * shape cannot sit inside one without also being code on that line, and a
+ * quote-aware stripper is more machinery than the question needs.
  */
 export function codeLines(content: string): Array<{ line: number; text: string }> {
   const raw = content.split('\n');
   const out: Array<{ line: number; text: string }> = [];
   const continues = (text: string) =>
     /(\\|\||&&)\s*$/.test(text) || openSubstitutions(text) > 0;
+  // Blank a heredoc body opened on physical line `at`; returns the index of
+  // the terminator line (also blanked), or `at` when there is no terminator.
+  const skipHeredoc = (at: number): number => {
+    const here = HEREDOC_OPENER.exec(raw[at]!);
+    if (!here) return at;
+    const end = new RegExp(`^\\s*${here[1]}\\s*$`);
+    const stop = raw.findIndex((l, k) => k > at && end.test(l));
+    if (stop === -1) return at;
+    for (let k = at + 1; k <= stop; k++) out.push({ line: k + 1, text: '' });
+    return stop;
+  };
   for (let i = 0; i < raw.length; i++) {
     const start = i;
     let text = raw[i]!;
@@ -162,23 +184,20 @@ export function codeLines(content: string): Array<{ line: number; text: string }
       out.push({ line: start + 1, text: '' });
       continue;
     }
+    i = skipHeredoc(i);
     while (continues(text) && i + 1 < raw.length) {
       i++;
       const next = raw[i]!;
-      if (/^\s*#/.test(next)) continue;
+      if (/^\s*#/.test(next)) {
+        out.push({ line: i + 1, text: '' });
+        continue;
+      }
       text = /\\$/.test(text) ? text.replace(/\\$/, ' ') + next.trim() : `${text} ${next.trim()}`;
+      i = skipHeredoc(i);
     }
     out.push({ line: start + 1, text });
-    const here = /(?<!<)<<-?(?!<)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/.exec(text);
-    if (here) {
-      const end = new RegExp(`^\\s*${here[1]}\\s*$`);
-      const stop = raw.findIndex((l, k) => k > i && end.test(l));
-      if (stop !== -1) {
-        while (++i < stop) out.push({ line: i + 1, text: '' });
-      }
-    }
   }
-  return out;
+  return out.sort((x, y) => x.line - y.line);
 }
 
 /**

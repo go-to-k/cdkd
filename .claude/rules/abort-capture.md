@@ -26,7 +26,8 @@ print `FAIL: ... got: ${RESULT_1}`, with the CLI's stderr already discarded by
 error text at all; that is how a transient during issue #3106's verification
 read as an unexplained abort and cost the lane a re-run. Measured before
 the sweep (2026-09-14): eight `local-*` fixtures carried it at 35 sites,
-plus three retry loops that lost every attempt's stderr the same way.
+plus three retry loops that lost every attempt's stderr the same way, two
+`grep`-piped captures and two sites outside `local-*`.
 
 It is NOT a swallow: the script still fails, so nothing false-passes (issue
 #1120's capture-form lint classifies a silenced capture with no fallback as
