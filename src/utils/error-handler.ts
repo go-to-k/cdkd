@@ -798,10 +798,10 @@ export function formatError(error: unknown): string {
       //
       // A cause that sanitizes to NOTHING drops its whole line rather than
       // printing a placeholder. It carried no readable information, and
-      // `Caused by:` with an empty tail reads as a formatting bug. The
-      // `UNRENDERABLE` stand-in the state layer uses is deliberately not
-      // imported here: `src/utils` sits BELOW `src/state`, and this one line
-      // does not justify moving the constant.
+      // `Caused by:` with an empty tail reads as a formatting bug, and so
+      // would `Caused by: <unrenderable>` -- the `UNRENDERABLE` stand-in is
+      // for a FIELD whose slot would otherwise read as absent, and a dropped
+      // cause line is not a slot.
       const cause = displaySafe(error.cause.message);
       if (cause) message += `\nCaused by: ${cause}`;
     }

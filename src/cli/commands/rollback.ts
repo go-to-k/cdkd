@@ -37,6 +37,7 @@ import {
   type StackOrphanRecord,
 } from '../../types/state.js';
 import type { StackStateRef } from '../../state/s3-state-backend.js';
+import { displaySafe, UNRENDERABLE } from '../../utils/display-safe.js';
 
 interface RollbackOptions {
   force?: boolean;
@@ -121,6 +122,36 @@ function snapshotNote(
 }
 
 /**
+ * One spelling of "this value came from an S3 key or a rollback-journal record,
+ * and is about to be interpolated into a message a terminal will render"
+ * (issue #3064).
+ *
+ * `rollback-journal.json` is a sibling of `state.json` in the same bucket, so
+ * anyone with `s3:PutObject` writes it, and cdkd's output is line-oriented --
+ * an injected newline invents a line that reads like a real one. Here that is
+ * worse than a forged diagnostic: the plan preview below is what the user
+ * CONFIRMS against, so a planted journal could forge the plan rows themselves.
+ *
+ * The ASCII allowlist, because every value it guards has a known charset: a
+ * logical id, a CFn resource type, a change type, a run id, a segment reason,
+ * a stack name, an AWS region. Call it for those; `grep safe(` answers the
+ * scope and this comment does not.
+ *
+ * NOT for a value that is about to be USED rather than shown -- the preview
+ * indexes `previewState` by the RAW `op.logicalId`, and sanitising a lookup
+ * key silently mismatches the record it is meant to find.
+ *
+ * NOT for free-form error text either. An SDK or provider message legitimately
+ * carries non-ASCII (a resource name, AWS's own wording), so a site that renders
+ * one calls `displaySafe()` directly and takes the DENYLIST -- the same class
+ * `formatError` picks for a `cause`, and for the same reason. `grep displaySafe(`
+ * answers how many; a count written here was wrong on its first revision.
+ */
+function safe(value: unknown): string {
+  return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
+}
+
+/**
  * Human label for a planned rollback action (plan preview). `skipFinalSnapshot`
  * is threaded in because the classifier is pure (it cannot see CLI flags) and
  * the Snapshot label would otherwise promise a final snapshot the run is about
@@ -131,18 +162,18 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
   const rep = replacement ? ' [replacement occurred, best-effort revert]' : '';
   switch (action) {
     case 'delete':
-      return `  - delete   ${op.logicalId} (${op.resourceType})${rep}`;
+      return `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)})${rep}`;
     case 'delete-with-final-snapshot':
       return (
-        `  - delete   ${op.logicalId} (${op.resourceType}) ` +
+        `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
         `[${snapshotNote(op.resourceType, item.effectiveProvisionedBy, skipFinalSnapshot)}]`
       );
     case 'orphan-retain':
-      return `  - orphan   ${op.logicalId} (${op.resourceType}) [DeletionPolicy Retain — left in AWS]`;
+      return `  - orphan   ${safe(op.logicalId)} (${safe(op.resourceType)}) [DeletionPolicy Retain — left in AWS]`;
     case 'orphan-flag':
-      return `  - orphan   ${op.logicalId} (${op.resourceType}) [--orphan]`;
+      return `  - orphan   ${safe(op.logicalId)} (${safe(op.resourceType)}) [--orphan]`;
     case 'revert':
-      return `  - revert   ${op.logicalId} (${op.resourceType})${rep}`;
+      return `  - revert   ${safe(op.logicalId)} (${safe(op.resourceType)})${rep}`;
     // Issue #2598: both labels used to promise "delete new" unconditionally,
     // and `UpdateReplacePolicy: Retain` on the new copy means the replay will
     // NOT delete it — a promise the run does not keep, in the one preview the
@@ -155,24 +186,24 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
       // Promising the unconditional happy path here would be the same #1366
       // defect this flag exists to close, one step further along.
       return item.retainsNewResource
-        ? `  - reverse-replace ${op.logicalId} (${op.resourceType}) ` +
+        ? `  - reverse-replace ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
             `[re-create old resource; new one RETAINED (UpdateReplacePolicy: Retain) and left ` +
             `untracked — REFUSED instead if the re-create collides with the name the retained ` +
             `resource still holds]`
-        : `  - reverse-replace ${op.logicalId} (${op.resourceType}) [re-create old resource, delete new]`;
+        : `  - reverse-replace ${safe(op.logicalId)} (${safe(op.resourceType)}) [re-create old resource, delete new]`;
     case 'reverse-replacement-readopt':
       return item.retainsNewResource
-        ? `  - reverse-replace ${op.logicalId} (${op.resourceType}) ` +
+        ? `  - reverse-replace ${safe(op.logicalId)} (${safe(op.resourceType)}) ` +
             `[re-adopt retained old resource; new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]`
-        : `  - reverse-replace ${op.logicalId} (${op.resourceType}) [delete new, re-adopt retained old resource]`;
+        : `  - reverse-replace ${safe(op.logicalId)} (${safe(op.resourceType)}) [delete new, re-adopt retained old resource]`;
     case 'unrecoverable-delete':
-      return `  - (cannot restore) ${op.logicalId} (${op.resourceType}) — was DELETED, unrecoverable`;
+      return `  - (cannot restore) ${safe(op.logicalId)} (${safe(op.resourceType)}) — was DELETED, unrecoverable`;
     case 'skip-mismatch':
-      return `  - skip     ${op.logicalId} (${op.resourceType}) — physical id changed, needs manual attention`;
+      return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — physical id changed, needs manual attention`;
     case 'skip-absent':
-      return `  - skip     ${op.logicalId} (${op.resourceType}) — no longer in state`;
+      return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — no longer in state`;
     case 'skip-already-done':
-      return `  - skip     ${op.logicalId} (${op.resourceType}) — already reverted`;
+      return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — already reverted`;
   }
 }
 
@@ -186,22 +217,22 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
   const { op, action } = item;
   switch (action) {
     case 'revert-failed-update':
-      return `  - revert   ${op.logicalId} (${op.resourceType}) [FAILED update — remote state unknown, force-applying previous properties]`;
+      return `  - revert   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED update — remote state unknown, force-applying previous properties]`;
     case 'delete-failed-create':
-      return `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create]`;
+      return `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED create]`;
     case 'delete-failed-create-with-final-snapshot':
       return (
-        `  - delete   ${op.logicalId} (${op.resourceType}) [FAILED create, ` +
+        `  - delete   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED create, ` +
         `${snapshotNote(op.resourceType, item.effectiveProvisionedBy, skipFinalSnapshot)}]`
       );
     case 'orphan-failed-create-retain':
-      return `  - orphan   ${op.logicalId} (${op.resourceType}) [FAILED create, DeletionPolicy Retain — left in AWS]`;
+      return `  - orphan   ${safe(op.logicalId)} (${safe(op.resourceType)}) [FAILED create, DeletionPolicy Retain — left in AWS]`;
     case 'skip-failed-unknown':
-      return `  - skip     ${op.logicalId} (${op.resourceType}) — failed CREATE recorded no physical id`;
+      return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed CREATE recorded no physical id`;
     case 'skip-failed-noop':
-      return `  - skip     ${op.logicalId} (${op.resourceType}) — failed ${op.changeType} left nothing to revert`;
+      return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — failed ${safe(op.changeType)} left nothing to revert`;
     case 'skip-failed-absent':
-      return `  - skip     ${op.logicalId} (${op.resourceType}) — no previous state available`;
+      return `  - skip     ${safe(op.logicalId)} (${safe(op.resourceType)}) — no previous state available`;
   }
 }
 
@@ -261,7 +292,7 @@ export async function rollbackCommand(
         return;
       }
       if (scoped.length > 1) {
-        const list = scoped.map((c) => `  - ${c.stackName} (${c.region})`).join('\n');
+        const list = scoped.map((c) => `  - ${safe(c.stackName)} (${safe(c.region)})`).join('\n');
         throw new Error(
           `Multiple stacks have a rollback journal. Pick one:\n${list}\n` +
             `Re-run 'cdkd rollback <stack>' (add --stack-region if the same name spans regions).`
@@ -339,14 +370,14 @@ export async function rollbackCommand(
       const journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
       if (!journal || journal.segments.length === 0) {
         throw new Error(
-          `Nothing to roll back for '${stackName}' (${region}). ` +
+          `Nothing to roll back for '${safe(stackName)}' (${safe(region)}). ` +
             "Run 'cdkd deploy' to (re)deploy, or 'cdkd destroy' to clean up."
         );
       }
       if (!stateData) {
         throw new Error(
-          `Rollback journal exists for '${stackName}' (${region}) but its state.json is missing ` +
-            `(keys: ${setup.prefix}/${stackName}/${region}/state.json and .../rollback-journal.json). ` +
+          `Rollback journal exists for '${safe(stackName)}' (${safe(region)}) but its state.json is missing ` +
+            `(keys: ${safe(`${setup.prefix}/${stackName}/${region}`)}/state.json and .../rollback-journal.json). ` +
             `State appears corrupted — inspect the bucket manually.`
         );
       }
@@ -366,19 +397,19 @@ export async function rollbackCommand(
       const newestSegment = journal.segments[journal.segments.length - 1]!;
       if (newestSegment.roleArn && !options.roleArn) {
         logger.info(
-          `Note: the failed deploy ran with --role-arn ${newestSegment.roleArn}; ` +
+          `Note: the failed deploy ran with --role-arn ${safe(newestSegment.roleArn)}; ` +
             `this rollback is running with ambient credentials (pass --role-arn to match).`
         );
       }
 
       // 5. Plan — newest-first, one block per segment.
-      logger.info(`\nRollback plan for '${stackName}' (${region}):`);
+      logger.info(`\nRollback plan for '${safe(stackName)}' (${safe(region)}):`);
       // Plan preview walks a COPY of state so it does not disturb replay.
       const planStateView: Record<string, ResourceState> = { ...stateResources };
       for (let s = journal.segments.length - 1; s >= 0; s--) {
         const segment = journal.segments[s]!;
         logger.info(
-          `\n  Segment ${s + 1}/${journal.segments.length} (${segment.reason}${segment.runId ? `, run ${segment.runId}` : ''}):`
+          `\n  Segment ${s + 1}/${journal.segments.length} (${safe(segment.reason)}${segment.runId ? `, run ${safe(segment.runId)}` : ''}):`
         );
         // #1198: the segment's FAILED in-flight op(s) come first (they are
         // the newest work of the failed deploy).
@@ -391,7 +422,7 @@ export async function rollbackCommand(
           } else {
             for (const fop of segment.failedOperations) {
               logger.info(
-                `  - (left as-is) ${fop.logicalId} (${fop.resourceType}) — its ${fop.changeType} ` +
+                `  - (left as-is) ${safe(fop.logicalId)} (${safe(fop.resourceType)}) — its ${safe(fop.changeType)} ` +
                   `FAILED mid-deploy; pass --revert-failed to attempt reverting it`
               );
             }
@@ -406,7 +437,7 @@ export async function rollbackCommand(
       logger.info('');
 
       if (!skipConfirmation) {
-        const ok = await confirm(`Roll back '${stackName}' (${region})?`);
+        const ok = await confirm(`Roll back '${safe(stackName)}' (${safe(region)})?`);
         if (!ok) {
           logger.info('Rollback cancelled');
           return;
@@ -481,8 +512,8 @@ export async function rollbackCommand(
             });
           } catch (retryError) {
             logger.warn(
-              `Failed to persist state after a rollback operation: ${retryError instanceof Error ? retryError.message : String(retryError)}. ` +
-                `The resource was reverted in AWS; re-run 'cdkd rollback ${stackName}' to reconcile state.`
+              `Failed to persist state after a rollback operation: ${displaySafe(retryError instanceof Error ? retryError.message : String(retryError))}. ` +
+                `The resource was reverted in AWS; re-run 'cdkd rollback ${safe(stackName)}' to reconcile state.`
             );
           }
         }
@@ -574,7 +605,7 @@ export async function rollbackCommand(
                       else segment.failedOperations = remaining;
                     } catch (stripError) {
                       logger.warn(
-                        `Failed to strip replayed failed-ops from the journal: ${stripError instanceof Error ? stripError.message : String(stripError)}`
+                        `Failed to strip replayed failed-ops from the journal: ${displaySafe(stripError instanceof Error ? stripError.message : String(stripError))}`
                       );
                     }
                   }
@@ -651,19 +682,21 @@ export async function rollbackCommand(
         survivingOrphans.length === 0
       ) {
         await setup.stateBackend.deleteState(stackName, region);
-        logger.info(`State for '${stackName}' (${region}) removed (stack fully rolled back).`);
+        logger.info(
+          `State for '${safe(stackName)}' (${safe(region)}) removed (stack fully rolled back).`
+        );
       }
 
       // 10. Exit codes.
       if (interrupted) {
         throw new PartialFailureError(
-          `Rollback interrupted. Journal preserved — re-run 'cdkd rollback ${stackName}' to finish.`
+          `Rollback interrupted. Journal preserved — re-run 'cdkd rollback ${safe(stackName)}' to finish.`
         );
       }
       if (totalFailures > 0) {
         throw new PartialFailureError(
           `Rollback completed with ${totalFailures} failed operation(s). Journal preserved — ` +
-            `re-run 'cdkd rollback ${stackName}' to retry.`
+            `re-run 'cdkd rollback ${safe(stackName)}' to retry.`
         );
       }
       if (totalWarnings > 0) {
@@ -671,7 +704,7 @@ export async function rollbackCommand(
           `Rollback completed with ${totalWarnings} skipped/unrecoverable operation(s) (see warnings above).`
         );
       }
-      logger.info(`\nRollback of '${stackName}' (${region}) complete.`);
+      logger.info(`\nRollback of '${safe(stackName)}' (${safe(region)}) complete.`);
     } finally {
       // Release FIRST, unregister LAST (issue #2118). While the release
       // round-trip is in flight the lock is still held, so the handlers must
@@ -699,7 +732,7 @@ export async function rollbackCommand(
       try {
         await setup.lockManager.releaseLock(stackName, region).catch((err) => {
           logger.warn(
-            `Failed to release lock for '${stackName}' (${region}): ${err instanceof Error ? err.message : String(err)}`
+            `Failed to release lock for '${safe(stackName)}' (${safe(region)}): ${displaySafe(err instanceof Error ? err.message : String(err))}`
           );
         });
       } finally {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
 import { setStdinIsTty } from '../../../stdin-tty.js';
 
 vi.mock('../../../../src/utils/logger.js', () => {
@@ -1178,5 +1179,570 @@ describe('rollbackCommand — plan preview vs a refused Snapshot delete (#1368)'
     const lines = await planLinesFor('completed', {}, 'AWS::EC2::Volume');
     expect(lines.filter((l) => /final snapshot, then delete/.test(l))).toHaveLength(1);
     expect(lines.some((l) => /already reverted/.test(l))).toBe(true);
+  });
+});
+
+/**
+ * Issue [#3064](https://github.com/go-to-k/cdkd/issues/3064): the plan preview
+ * is what the user CONFIRMS against, so a forged row here is worse than a
+ * forged diagnostic line -- the confirmation attests to something other than
+ * what will run.
+ *
+ * `rollback-journal.json` is a sibling of `state.json` in the same bucket and
+ * carries no more validation than an unchecked cast, so every field the
+ * preview renders is attacker-writable.
+ *
+ * Two dimensions per site. The HOLE is the guard being dropped. The CLASS is
+ * `asciiOnly` being swapped for the denylist, which still removes a newline
+ * but leaves the invisible formatters and bidi marks that `display-safe.ts`
+ * names as its residual -- a control byte is in BOTH classes and cannot tell
+ * them apart, which is why every fixture below carries a zero-width space too.
+ */
+describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)', () => {
+  let originalIsTTY: boolean | undefined;
+  beforeEach(() => {
+    originalIsTTY = process.stdin.isTTY;
+    vi.clearAllMocks();
+  });
+  afterEach(() => setStdinIsTty(originalIsTTY));
+
+  const CTRL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+  const INVISIBLE = /[\u200b-\u200f\ufeff]/;
+
+  const FORGED_ID = 'Vic\u200btim\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+  const FORGED_TYPE = 'AWS::S3::Buc\u200bket\n  - delete   RealBucket (AWS::S3::Bucket)';
+
+  function installForgedJournal(kind: 'completed' | 'failed'): FakeBackend {
+    const op = {
+      logicalId: FORGED_ID,
+      changeType: 'CRE\u200bATE\n  forged-change-type',
+      resourceType: FORGED_TYPE,
+      physicalId: 'phys-D',
+      provisionedBy: 'sdk',
+      ...(kind === 'failed' && { attemptedProperties: {} }),
+    };
+    return installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            runId: '2026\u200b0101\n  - delete   RealQueue (AWS::SQS::Queue)',
+            timestamp: 1,
+            reason: 'auto-rollb\u200back-clean\n  - delete   RealTable (AWS::DynamoDB::Table)',
+            // Rendered in its own `Note:` line directly ABOVE the plan header --
+            // the one journal field the first fix round did not enumerate.
+            roleArn: 'arn:aws:iam::1:role/De\u200bploy\n  - delete   RealRole (AWS::IAM::Role)',
+            initialDeploy: false,
+            operations: kind === 'completed' ? [op] : [],
+            ...(kind === 'failed' && { failedOperations: [op] }),
+          },
+        ],
+      }),
+    });
+  }
+
+  async function forgedPlanLines(
+    kind: 'completed' | 'failed',
+    opts: Record<string, unknown> = {}
+  ): Promise<string[]> {
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installForgedJournal(kind);
+    await rollbackCommand('S', { ...baseOpts, ...opts }).catch(() => undefined);
+    return info.mock.calls.map((c) => String(c[0]));
+  }
+
+  /**
+   * The plan's own first line begins with a newline (it separates segments), so
+   * "contains no newline" is the wrong assertion. What must hold is that no
+   * line the journal CONTRIBUTED text to gained a second one -- i.e. the
+   * forged rows never become rows.
+   */
+  const forgedRowCount = (lines: string[]): number =>
+    lines.join('\n').split('\n').filter((l) => /^\s*- delete\s+Real/.test(l)).length;
+
+  it('the completed-operation label cannot inject a row', async () => {
+    const lines = await forgedPlanLines('completed');
+
+    expect(forgedRowCount(lines)).toBe(0);
+    for (const line of lines) {
+      expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
+      expect(line).not.toMatch(INVISIBLE);
+    }
+    // Removed, not censored: the operator still sees what the journal claimed.
+    expect(lines.join('\n')).toContain('Vic tim');
+  });
+
+  it('the failed-operation label cannot inject a row', async () => {
+    const lines = await forgedPlanLines('failed', { revertFailed: true });
+
+    expect(forgedRowCount(lines)).toBe(0);
+    for (const line of lines) {
+      expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
+      expect(line).not.toMatch(INVISIBLE);
+    }
+  });
+
+  it('the not-reverting `left as-is` label cannot inject a row', async () => {
+    // `--revert-failed` OFF is a different label function from the two above,
+    // and it renders the failed op's changeType as well.
+    const lines = await forgedPlanLines('failed');
+
+    expect(forgedRowCount(lines)).toBe(0);
+    for (const line of lines) {
+      expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
+      expect(line).not.toMatch(INVISIBLE);
+    }
+    expect(lines.join('\n')).toContain('CRE ATE');
+  });
+
+  it('the SEGMENT header cannot inject a row through its reason or run id', async () => {
+    const lines = await forgedPlanLines('completed');
+    const header = lines.find((l) => l.includes('Segment 1/1'));
+
+    expect(header).toBeDefined();
+    expect(header!.replace(/^\n/, '')).not.toMatch(CTRL);
+    expect(header).not.toMatch(INVISIBLE);
+    expect(header).toContain('auto-rollb ack-clean');
+    expect(header).toContain('2026 0101');
+  });
+
+  it('the `--role-arn` NOTE above the plan cannot inject a row', async () => {
+    // A journal field the first round's enumeration missed: it is not an op
+    // field and not a segment-header field, and it prints INSIDE the block the
+    // user confirms against.
+    const lines = await forgedPlanLines('completed');
+    const note = lines.find((l) => l.includes('ran with --role-arn'));
+
+    expect(note).toBeDefined();
+    expect(note).not.toMatch(CTRL);
+    expect(note).not.toMatch(INVISIBLE);
+    expect(note).toContain('role/De ploy');
+    expect(forgedRowCount(lines)).toBe(0);
+  });
+
+  it('a field that sanitizes to NOTHING renders the placeholder, not an empty slot', async () => {
+    // `logicalId: '\u200b'` is all invisibles. Without the fallback the row
+    // reads `- skip      (AWS::...)`, i.e. as if the id were absent -- while
+    // the replay still keys on the raw `'\u200b'`. The predicate's
+    // `|| UNRENDERABLE` is what keeps the slot visibly filled.
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: { version: 8, stackName: 'S', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [
+              {
+                logicalId: '\u200b',
+                changeType: 'CREATE',
+                resourceType: 'AWS::S3::Bucket',
+                physicalId: 'p',
+                provisionedBy: 'sdk',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+    const row = info.mock.calls.map((c) => String(c[0])).find((l) => /^\s*- skip/.test(l));
+
+    expect(row).toBeDefined();
+    expect(row).toContain('<unrenderable> (AWS::S3::Bucket)');
+  });
+
+  it('the stack name and region reach every message sanitized on the no-arg path', async () => {
+    // With no positional argument the command picks the single journaled
+    // stack from a RAW KEY SCAN, so `stackName` / `region` are S3 key segments
+    // there -- the same population `state.ts` guards. The plan header and the
+    // confirmation prompt are the two lines that matter most.
+    const hostileStack = 'Gho\u200bst\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: hostileStack, region: 'us-east-1' }]),
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${hostileStack}/us-east-1/rollback-journal.json`,
+      ]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: hostileStack,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: hostileStack,
+        region: 'us-east-1',
+        segments: [
+          { timestamp: 1, reason: 'auto-rollback-clean', initialDeploy: false, operations: [] },
+        ],
+      }),
+    });
+    await rollbackCommand(undefined, { ...baseOpts }).catch(() => undefined);
+    const lines = info.mock.calls.map((c) => String(c[0]));
+
+    expect(forgedRowCount(lines)).toBe(0);
+    for (const line of lines) {
+      expect(line.replace(/^\n/, '')).not.toMatch(CTRL);
+      expect(line).not.toMatch(INVISIBLE);
+    }
+    expect(lines.some((l) => l.includes("Rollback plan for 'Gho st"))).toBe(true);
+  });
+
+  it('the CONFIRMATION PROMPT itself is sanitized', async () => {
+    // The prompt is the one line the user answers `y` to. It is reached only
+    // without `--force` / `--yes` and on a TTY; the readline mock at the top
+    // of this file records the exact text handed to `question()`.
+    const hostileStack = 'Gho\u200bst\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('n');
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: hostileStack, region: 'us-east-1' }]),
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${hostileStack}/us-east-1/rollback-journal.json`,
+      ]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: hostileStack,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: hostileStack,
+        region: 'us-east-1',
+        segments: [
+          { timestamp: 1, reason: 'auto-rollback-clean', initialDeploy: false, operations: [] },
+        ],
+      }),
+    });
+    await rollbackCommand(undefined, { ...baseOpts, force: false, yes: false }).catch(
+      () => undefined
+    );
+
+    expect(readlineQuestion).toHaveBeenCalledTimes(1);
+    const prompt = String(readlineQuestion.mock.calls[0]![0]);
+    expect(prompt).not.toMatch(CTRL);
+    expect(prompt).not.toMatch(INVISIBLE);
+    expect(prompt).toContain("Roll back 'Gho st");
+  });
+
+  it('the previewState LOOKUPS stay keyed on the RAW logicalId', async () => {
+    // The one place sanitizing is WRONG. The preview classifies each older
+    // segment against a running copy of state that the newer segments' plan
+    // has already mutated, and those mutations index by `op.logicalId`. A
+    // sanitized key would delete the wrong entry (nothing), so the older
+    // segment's op on the same id would classify as a live `revert` instead
+    // of `no longer in state`. This fixture is the only one in the suite whose
+    // journal id differs from its sanitized form AND exists in state, which is
+    // what makes the two keys observable as different -- an ASCII id cannot.
+    const X = 'Vic\u200btim';
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    const record = {
+      physicalId: 'phys-X',
+      resourceType: 'AWS::S3::Bucket',
+      properties: {},
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk',
+    };
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: { [X]: record },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          // OLDER: an update of X, replayed second.
+          {
+            timestamp: 1,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [
+              {
+                logicalId: X,
+                changeType: 'UPDATE',
+                resourceType: 'AWS::S3::Bucket',
+                physicalId: 'phys-X',
+                provisionedBy: 'sdk',
+                previousState: { ...record, properties: { Old: true } },
+              },
+            ],
+          },
+          // NEWER: the create of X, replayed first; its `delete` removes X
+          // from the preview, so the older UPDATE must then read as gone.
+          {
+            timestamp: 2,
+            reason: 'auto-rollback-clean',
+            initialDeploy: false,
+            operations: [
+              {
+                logicalId: X,
+                changeType: 'CREATE',
+                resourceType: 'AWS::S3::Bucket',
+                physicalId: 'phys-X',
+                provisionedBy: 'sdk',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+    const rows = info.mock.calls.map((c) => String(c[0])).filter((l) => /^\s*- /.test(l));
+
+    expect(rows.some((l) => /^\s*- delete\s+Vic tim/.test(l))).toBe(true);
+    expect(rows.some((l) => /^\s*- skip\s+Vic tim .*no longer in state/.test(l))).toBe(true);
+    expect(rows.some((l) => /^\s*- revert\s+Vic tim/.test(l))).toBe(false);
+  });
+
+  it('the REGION reaches the plan header and the prompt sanitized', async () => {
+    // Every other fixture in this file uses `us-east-1`, so un-sanitizing the
+    // REGION half of a `${safe(stackName)} (${safe(region)})` pair reddened
+    // nothing while the stack-name half was fenced. The region is an S3 key
+    // segment on the no-arg path exactly as the stack name is.
+    const hostileRegion = 'us-\u200beast-1\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('n');
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: hostileRegion }]),
+      listRawKeys: vi.fn().mockResolvedValue([`cdkd/S/${hostileRegion}/rollback-journal.json`]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: hostileRegion,
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: hostileRegion,
+        segments: [
+          { timestamp: 1, reason: 'auto-rollback-clean', initialDeploy: false, operations: [] },
+        ],
+      }),
+    });
+    await rollbackCommand(undefined, { ...baseOpts, force: false, yes: false }).catch(
+      () => undefined
+    );
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    const prompt = String(readlineQuestion.mock.calls[0]?.[0] ?? '');
+
+    expect(forgedRowCount(lines)).toBe(0);
+    expect(lines.some((l) => l.includes("Rollback plan for 'S' (us- east-1"))).toBe(true);
+    expect(prompt).not.toMatch(CTRL);
+    expect(prompt).not.toMatch(INVISIBLE);
+    expect(prompt).toContain("(us- east-1");
+  });
+
+  it('the multi-journal CANDIDATE LIST cannot inject a row', async () => {
+    // Reached with no argument when more than one stack has a journal. The
+    // names and regions come straight from a raw key scan.
+    const a = 'Al\u200bpha\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    const b = 'Be\u200bta';
+    installSetup({
+      listRawKeys: vi.fn().mockResolvedValue([
+        `cdkd/${a}/us-east-1/rollback-journal.json`,
+        `cdkd/${b}/eu-\u200bwest-1/rollback-journal.json`,
+      ]),
+    });
+    const caught = await rollbackCommand(undefined, { ...baseOpts }).catch((e: unknown) => e);
+    const message = (caught as Error).message;
+
+    expect(message).toContain('Multiple stacks have a rollback journal');
+    // The list's own newlines are structural; the forged row must not be one.
+    expect(message.split('\n').filter((l) => /^\s*- delete\s+Real/.test(l))).toHaveLength(0);
+    expect(message).not.toMatch(INVISIBLE);
+    expect(message).toContain('- Al pha');
+    expect(message).toContain('(eu- west-1)');
+  });
+
+  it('SOURCE SHAPE: no plan-label arm interpolates a journal field bare', () => {
+    // The per-arm wiring fence. `safe()` itself is pinned above, but each of
+    // the ~20 label arms wires it separately, and a hostile fixture reaches
+    // only the arms its classification lands on. Reading the source closes the
+    // rest at once: a bare `${op.logicalId}` / `${op.resourceType}` /
+    // `${op.changeType}` / `${fop.*}` anywhere in this file is a rendered
+    // journal field that escaped the predicate. The `previewState[op.logicalId]`
+    // LOOKUPS are bracket access, not `${...}`, so they are not matched -- and
+    // must not be.
+    const src = readFileSync(
+      new URL('../../../../src/cli/commands/rollback.ts', import.meta.url),
+      'utf8'
+    );
+    const bare = src.match(/\$\{(?:op|fop)\.(?:logicalId|resourceType|changeType)\}/g) ?? [];
+
+    expect(bare).toEqual([]);
+    // The fence sees its input: the wrapped form must be present in numbers.
+    expect((src.match(/\$\{safe\((?:op|fop)\.(?:logicalId|resourceType|changeType)\)\}/g) ?? []).length)
+      .toBeGreaterThan(20);
+  });
+
+  it('a free-form SDK error message takes the DENYLIST, not the allowlist, and cannot forge a row', async () => {
+    // The lock-release failure is the most reachable of the free-form renders:
+    // any rejection from `releaseLock` lands here. S3's own text echoes the KEY,
+    // which embeds the stack name -- so this is journal-adjacent even though
+    // the message is the SDK's. Two things are pinned: the newline is gone
+    // (the forgery), and a benign non-ASCII character SURVIVES (the class --
+    // `asciiOnly` would eat the accented name, which is what makes it the
+    // wrong class for prose an operator has to read).
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    installOneCreateSegment();
+    mockReleaseLock.mockRejectedValueOnce(
+      new Error('AccessDenied for caf\u00e9\n  - delete   RealDatabase (AWS::RDS::DBInstance)')
+    );
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('Failed to release lock'));
+
+    expect(line).toBeDefined();
+    expect(line!.split('\n')).toHaveLength(1);
+    expect(line).not.toMatch(CTRL);
+    expect(line).toContain('caf\u00e9');
+    expect(line).toContain('- delete   RealDatabase');
+  });
+
+  it('the failed-persist warning renders the S3 error through the DENYLIST too', async () => {
+    // The second free-form render. `saveState` is retried once against a fresh
+    // ETag, so BOTH attempts have to reject for the warn to fire -- a
+    // `mockRejectedValue` (not `Once`) does that.
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const hostile = 'PreconditionFailed on caf\u00e9\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    const backend = installOneCreateSegment();
+    backend.saveState.mockRejectedValue(new Error(hostile));
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to persist state after a rollback operation'));
+
+    expect(line).toBeDefined();
+    expect(line!.split('\n')).toHaveLength(1);
+    expect(line).toContain('caf\u00e9');
+    expect(line).toContain('- delete   RealDatabase');
+  });
+
+  it('the failed-strip warning renders the S3 error through the DENYLIST too', async () => {
+    // The third free-form render, reached only under `--revert-failed` after a
+    // failed op has been replayed and the per-op strip of the journal rejects.
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const hostile = 'NoSuchKey on caf\u00e9\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    const failedOp = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-Q',
+      previousState: {
+        physicalId: 'phys-Q',
+        resourceType: 'AWS::SQS::Queue',
+        properties: { a: 1 },
+        attributes: {},
+        dependencies: [],
+      },
+      attemptedProperties: { a: 2 },
+    };
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {
+            Q: {
+              physicalId: 'phys-Q',
+              resourceType: 'AWS::SQS::Queue',
+              properties: { a: 1 },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [failedOp],
+          },
+        ],
+      }),
+      setRollbackJournalFailedOperations: vi.fn().mockRejectedValue(new Error(hostile)),
+    });
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to strip replayed failed-ops'));
+
+    expect(line).toBeDefined();
+    expect(line!.split('\n')).toHaveLength(1);
+    expect(line).toContain('caf\u00e9');
+    expect(line).toContain('- delete   RealDatabase');
   });
 });

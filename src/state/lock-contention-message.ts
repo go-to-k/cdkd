@@ -20,7 +20,7 @@
  * two of three. `subject` now varies only the noun.
  */
 
-import { displaySafe } from '../utils/display-safe.js';
+import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
 import { DEFAULT_STATE_PREFIX } from './state-prefix.js';
 import type { LockManager } from './lock-manager.js';
 
@@ -54,11 +54,11 @@ export interface LockRecoveryContext {
 }
 
 /**
- * Stand-in for a value with nothing renderable left after sanitization. Named
- * rather than inlined so the message and the command-suppression branch cannot
- * disagree about what "unrenderable" looks like.
+ * Re-exported from its home in `src/utils/display-safe.ts` (moved there by
+ * issue #3064 so the leaf's own dependants can use it); every importer of this
+ * module's spelling keeps working.
  */
-export const UNRENDERABLE = '<unrenderable>';
+export { UNRENDERABLE };
 
 /** What the contended lock is on — varies the noun, nothing else. */
 export type LockSubject = 'stack' | 'nested stack' | 'nested-stack child';
