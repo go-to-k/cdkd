@@ -262,6 +262,21 @@ describe('tree-wide (issue #3126)', () => {
     expect(fixtures.filter((f) => f.definesCapture && !f.callsCapture).map((f) => f.name)).toEqual([]);
   });
 
+  it('no heredoc opener line ends in a continuation (the scanner\'s stated assumption)', () => {
+    // `cat <<EOF \` puts the body after the LOGICAL line in bash; the scanner
+    // blanks from the physical opener line and would then join the line after
+    // the terminator. Zero such lines in the corpus (round-3 review); this
+    // pins the assumption rather than modelling the case.
+    const offenders = fixtures.flatMap((f) =>
+      f.content
+        .split('\n')
+        .map((l, k) => [l, k + 1] as const)
+        .filter(([l]) => !/^\s*#/.test(l) && /(?<!<)<<-?(?!<)\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(l) && /(\\|\||&&)\s*$/.test(l))
+        .map(([, k]) => `${f.name}/verify.sh:${k}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
   it('the canonical block is the one local-invoke/verify.sh carries (the constant tracks a real file)', () => {
     const real = readFileSync(join(INTEG_ROOT, 'local-invoke', 'verify.sh'), 'utf8');
     expect(real.includes(CANONICAL_CAPTURE_BLOCK)).toBe(true);
