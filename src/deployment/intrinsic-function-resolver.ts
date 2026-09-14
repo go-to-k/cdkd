@@ -8524,7 +8524,10 @@ export class IntrinsicFunctionResolver {
         : undefined;
     if (sourceTwin === undefined) return pieces;
     const twinPieces = sourceTwin.split(delimiter);
-    const aligned = twinPieces.length === pieces.length;
+    // A delimiter that occurs in the mask itself splits `***` into pieces that
+    // can coincide in COUNT with the value's while pairing nothing, so the
+    // count test alone is not enough.
+    const aligned = twinPieces.length === pieces.length && !SECRET_MASK.includes(delimiter);
     return pieces.map((piece, index) => {
       // Through `logTwinText`, like the Join / Sub lines: a piece's twin can
       // split a 4+ character secret the piece still holds whole.
@@ -8730,7 +8733,7 @@ export class IntrinsicFunctionResolver {
         // reason the receiver was changed from `{}`. The critic's own
         // `Object.create(null)` arm does not fire here because the bag is
         // declared inside this arrow rather than an enclosing scope.
-        out[this.maskSecretsForLog(key, context)] = walk(child);
+        out[this.maskSecretsForLog(this.logTextOfLeaf(key, context), context)] = walk(child);
       }
       return out;
     };

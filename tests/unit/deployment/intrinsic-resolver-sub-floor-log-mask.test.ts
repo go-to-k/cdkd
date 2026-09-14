@@ -761,6 +761,42 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
       ]);
     });
 
+    it('M6: an object KEY a write masked by position is masked on a leaf-masked line too', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const ctx = freshContext();
+      // Registers `port:q7` -> `port:***`.
+      await resolver.resolve({ 'Fn::Sub': `port:${PIN_REF}` }, ctx as never);
+      logSpies.debug.mockClear();
+
+      await resolver.resolve({ 'Fn::Select': [0, [{ [`port:${PIN}`]: 'v' }]] }, ctx as never);
+
+      expect(debugLines('Resolved Fn::Select: ')).toEqual([
+        'Resolved Fn::Select: index 0 -> {"port:***":"v"}',
+      ]);
+    });
+
+    it('M7: a delimiter inside the mask never pairs pieces, even when the counts coincide', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const ctx = freshContext({
+        template: { Parameters: { Quad: { Type: 'String' } }, Resources: {} } as CloudFormationTemplate,
+        parameters: { Quad: 'p*q*r*s' },
+        inheritedSecrets: new Map<string, string>([['p*q*r*s', 'expr']]),
+      });
+
+      // `p*q*r*s` splits into 4 pieces and `***` into 4 empty strings: equal
+      // counts, and no pairing.
+      const value = await resolver.resolve(
+        { 'Fn::Join': ['-', { 'Fn::Split': ['*', { Ref: 'Quad' }] }] },
+        ctx as never
+      );
+
+      expect(value).toBe('p-q-r-s');
+      expect(debugLines('Resolved Fn::Split: ')).toEqual([
+        'Resolved Fn::Split: split by "*" -> ["***","***","***","***"]',
+      ]);
+      expect(resolvedLines('Join')).toEqual(['Resolved Fn::Join: ***-***-***-***']);
+    });
+
     it('M3: a Resolved Fn::Base64 line masks its input by position and its encoding whole', async () => {
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const ctx = freshContext();
