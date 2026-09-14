@@ -28,6 +28,7 @@ import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-c
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { definedAttributes } from '../attribute-map.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -328,13 +329,16 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       createdAt?: Date | undefined;
       workloadIdentityDetails?: unknown;
     },
-    agentRuntimeName: string
+    agentRuntimeName: string | undefined
   ): Record<string, unknown> {
-    const attributes: Record<string, unknown> = {
+    // `definedAttributes` (issue #3077): a member the response did not carry
+    // is ABSENT, never a present-but-`undefined` key and never `''` -- the
+    // import path used to pass `agentRuntimeName ?? ''` here.
+    const attributes: Record<string, unknown> = definedAttributes({
       AgentRuntimeArn: response.agentRuntimeArn,
       AgentRuntimeId: response.agentRuntimeId,
       AgentRuntimeName: agentRuntimeName,
-    };
+    });
     if (response.agentRuntimeVersion !== undefined) {
       attributes['AgentRuntimeVersion'] = response.agentRuntimeVersion;
     }
@@ -520,7 +524,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       );
       return {
         physicalId,
-        attributes: this.buildAttributes(resp, resp.agentRuntimeName ?? ''),
+        attributes: this.buildAttributes(resp, resp.agentRuntimeName),
       };
     } catch (err) {
       this.logger.debug(

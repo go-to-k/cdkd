@@ -87,6 +87,7 @@ import type {
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { definedAttributes } from '../attribute-map.js';
 
 /** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
 const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
@@ -2408,7 +2409,7 @@ export class AppSyncProvider implements ResourceProvider {
 
       const apiId = response.graphqlApi!.apiId!;
       const arn = response.graphqlApi!.arn!;
-      const graphQLUrl = response.graphqlApi!.uris?.['GRAPHQL'] ?? '';
+      const graphQLUrl = response.graphqlApi!.uris?.['GRAPHQL'];
 
       // Separate API — must run AFTER the API exists.
       await this.applyEnvironmentVariables(
@@ -2424,11 +2425,11 @@ export class AppSyncProvider implements ResourceProvider {
 
       return {
         physicalId: apiId,
-        attributes: {
+        attributes: definedAttributes({
           ApiId: apiId,
           Arn: arn,
           GraphQLUrl: graphQLUrl,
-        },
+        }),
       };
     } catch (error) {
       if (createdApiId) {

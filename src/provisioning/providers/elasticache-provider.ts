@@ -398,16 +398,19 @@ export class ElastiCacheProvider implements ResourceProvider {
       // Redis endpoint attributes
       if (described?.CacheNodes?.[0]?.Endpoint) {
         const endpoint = described.CacheNodes[0].Endpoint;
-        attributes['RedisEndpoint.Address'] = endpoint.Address ?? '';
-        attributes['RedisEndpoint.Port'] = String(endpoint.Port ?? '');
+        if (endpoint.Address !== undefined) attributes['RedisEndpoint.Address'] = endpoint.Address;
+        if (endpoint.Port !== undefined) attributes['RedisEndpoint.Port'] = String(endpoint.Port);
       }
 
       // Configuration endpoint (for Memcached clusters)
       if (described?.ConfigurationEndpoint) {
-        attributes['ConfigurationEndpoint.Address'] = described.ConfigurationEndpoint.Address ?? '';
-        attributes['ConfigurationEndpoint.Port'] = String(
-          described.ConfigurationEndpoint.Port ?? ''
-        );
+        const configurationEndpoint = described.ConfigurationEndpoint;
+        if (configurationEndpoint.Address !== undefined) {
+          attributes['ConfigurationEndpoint.Address'] = configurationEndpoint.Address;
+        }
+        if (configurationEndpoint.Port !== undefined) {
+          attributes['ConfigurationEndpoint.Port'] = String(configurationEndpoint.Port);
+        }
       }
 
       return {
@@ -560,15 +563,18 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       if (described?.CacheNodes?.[0]?.Endpoint) {
         const endpoint = described.CacheNodes[0].Endpoint;
-        attributes['RedisEndpoint.Address'] = endpoint.Address ?? '';
-        attributes['RedisEndpoint.Port'] = String(endpoint.Port ?? '');
+        if (endpoint.Address !== undefined) attributes['RedisEndpoint.Address'] = endpoint.Address;
+        if (endpoint.Port !== undefined) attributes['RedisEndpoint.Port'] = String(endpoint.Port);
       }
 
       if (described?.ConfigurationEndpoint) {
-        attributes['ConfigurationEndpoint.Address'] = described.ConfigurationEndpoint.Address ?? '';
-        attributes['ConfigurationEndpoint.Port'] = String(
-          described.ConfigurationEndpoint.Port ?? ''
-        );
+        const configurationEndpoint = described.ConfigurationEndpoint;
+        if (configurationEndpoint.Address !== undefined) {
+          attributes['ConfigurationEndpoint.Address'] = configurationEndpoint.Address;
+        }
+        if (configurationEndpoint.Port !== undefined) {
+          attributes['ConfigurationEndpoint.Port'] = String(configurationEndpoint.Port);
+        }
       }
 
       return {

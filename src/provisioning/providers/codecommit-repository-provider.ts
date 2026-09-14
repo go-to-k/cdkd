@@ -32,6 +32,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { definedAttributes } from '../attribute-map.js';
 
 /**
  * CFn `Tags` entry shape (`[{Key, Value}]`). CodeCommit's SDK tag APIs use a
@@ -219,14 +220,14 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * resolver can recover CFn's `Ref` value (the repository ID) from state.
    */
   private toAttributes(metadata: RepositoryMetadata | undefined): Record<string, unknown> {
-    return {
-      Arn: metadata?.Arn ?? '',
-      CloneUrlHttp: metadata?.cloneUrlHttp ?? '',
-      CloneUrlSsh: metadata?.cloneUrlSsh ?? '',
-      Name: metadata?.repositoryName ?? '',
-      KmsKeyId: metadata?.kmsKeyId ?? '',
-      RepositoryId: metadata?.repositoryId ?? '',
-    };
+    return definedAttributes({
+      Arn: metadata?.Arn,
+      CloneUrlHttp: metadata?.cloneUrlHttp,
+      CloneUrlSsh: metadata?.cloneUrlSsh,
+      Name: metadata?.repositoryName,
+      KmsKeyId: metadata?.kmsKeyId,
+      RepositoryId: metadata?.repositoryId,
+    });
   }
 
   /**

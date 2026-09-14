@@ -153,6 +153,54 @@ describe('DocDBProvider', () => {
       expect(createCmd.input.MasterUsername).toBe('admin');
     });
 
+    // Issue #3077: an unassigned cluster member is OMITTED and `Endpoint.Port`
+    // is never recorded as the literal `'undefined'` that `String(port)` decays
+    // to once the assigned-only guard is lost. The Port-less describe is not a
+    // shape the real API answers (a cluster's port is set at creation); it is
+    // the shape that reaches the guard, which is the branch under test.
+    it('create records only the assigned cluster members, never a stringified undefined Port', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBCluster: { DBClusterIdentifier: 'my-cluster' } })
+        .mockResolvedValueOnce({
+          DBClusters: [
+            {
+              DBClusterIdentifier: 'my-cluster',
+              Endpoint: 'cluster.cluster-xxx.docdb.amazonaws.com',
+              DBClusterArn: 'arn:aws:rds:us-east-1:123:cluster:my-cluster',
+            },
+          ],
+        });
+      const provider = new DocDBProvider();
+      const result = await provider.create('MyCluster', 'AWS::DocDB::DBCluster', {
+        DBClusterIdentifier: 'my-cluster',
+        MasterUsername: 'admin',
+        MasterUserPassword: 'secret123',
+      });
+      expect(result.attributes).toStrictEqual({
+        'Endpoint.Address': 'cluster.cluster-xxx.docdb.amazonaws.com',
+        Arn: 'arn:aws:rds:us-east-1:123:cluster:my-cluster',
+      });
+    });
+
+    it('update records only the assigned cluster members, never a stringified undefined Port', async () => {
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({
+          DBClusters: [{ DBClusterArn: 'arn:aws:rds:us-east-1:123:cluster:my-cluster' }],
+        });
+      const provider = new DocDBProvider();
+      const result = await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::DocDB::DBCluster',
+        { BackupRetentionPeriod: 7 },
+        {}
+      );
+      expect(result.attributes).toStrictEqual({
+        Arn: 'arn:aws:rds:us-east-1:123:cluster:my-cluster',
+      });
+    });
+
     it('update issues ModifyDBCluster with ApplyImmediately=true', async () => {
       mockSend
         .mockResolvedValueOnce({})
@@ -257,6 +305,34 @@ describe('DocDBProvider', () => {
       expect(createCmd.input.Engine).toBe('docdb');
       // DocDB DBInstance does NOT support DeletionProtection.
       expect(createCmd.input.DeletionProtection).toBeUndefined();
+    });
+
+    // Issue #3077: under --no-wait the attribute describe runs against a
+    // `creating` instance whose Endpoint is unassigned; the key is OMITTED,
+    // never recorded as `''` (nor `Endpoint.Port` as `'undefined'`).
+    it('create under --no-wait omits the unassigned Endpoint attributes and keeps the Arn', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          DBInstance: { DBInstanceIdentifier: 'my-instance' },
+        })
+        .mockResolvedValueOnce({
+          DBInstances: [
+            {
+              DBInstanceIdentifier: 'my-instance',
+              DBInstanceStatus: 'creating',
+              DBInstanceArn: 'arn:aws:rds:us-east-1:123:db:my-instance',
+            },
+          ],
+        });
+      const provider = new DocDBProvider();
+      const result = await provider.create('MyInst', 'AWS::DocDB::DBInstance', {
+        DBInstanceIdentifier: 'my-instance',
+        DBInstanceClass: 'db.r5.large',
+        DBClusterIdentifier: 'my-cluster',
+      });
+      expect(result.attributes).toStrictEqual({
+        Arn: 'arn:aws:rds:us-east-1:123:db:my-instance',
+      });
     });
 
     it('update issues ModifyDBInstance with ApplyImmediately=true', async () => {

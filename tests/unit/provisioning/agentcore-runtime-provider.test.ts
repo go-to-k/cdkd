@@ -430,6 +430,25 @@ describe('AgentCoreRuntimeProvider', () => {
       expect(mockSend.mock.calls[0][0].input.agentRuntimeId).toBe('runtime-12345');
     });
 
+    // Issue #3077: a member GetAgentRuntime did not carry is ABSENT from the
+    // cached map, never `''` (the import path used to pass
+    // `agentRuntimeName ?? ''` into the builder) and never a present-but-
+    // `undefined` key. `toStrictEqual` sees both failure shapes.
+    it('omits AgentRuntimeName and every other member the GetAgentRuntime response lacks', async () => {
+      mockSend.mockResolvedValueOnce({
+        agentRuntimeId: 'runtime-12345',
+        agentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
+      });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: 'runtime-12345' }));
+
+      expect(result?.attributes).toStrictEqual({
+        AgentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-12345',
+        AgentRuntimeId: 'runtime-12345',
+      });
+      expect(Object.hasOwn(result!.attributes!, 'AgentRuntimeName')).toBe(false);
+    });
+
     it('falls back to AgentRuntimeId only when GetAgentRuntime fails (best-effort enrichment)', async () => {
       mockSend.mockRejectedValueOnce(new Error('Throttling: rate exceeded'));
 

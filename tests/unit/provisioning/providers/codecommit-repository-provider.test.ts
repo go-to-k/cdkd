@@ -159,6 +159,30 @@ describe('CodeCommitRepositoryProvider', () => {
       ).rejects.toBeInstanceOf(ProvisioningError);
     });
 
+    // Issue #3077: a metadata member CreateRepository did not return (no KMS
+    // key on an AWS-managed-key repository) is ABSENT from the cached map,
+    // never `''` and never a present-but-`undefined` key -- the `toAttributes`
+    // helper used to spell every member `?? ''`.
+    it('omits a metadata member the response lacks from the attribute map', async () => {
+      mockSend.mockResolvedValueOnce({
+        repositoryMetadata: {
+          repositoryName: 'my-repo',
+          repositoryId: REPO_ID,
+          Arn: REPO_ARN,
+        },
+      });
+
+      const result = await provider.create('MyRepo', 'AWS::CodeCommit::Repository', {
+        RepositoryName: 'my-repo',
+      });
+
+      expect(result.attributes).toStrictEqual({
+        Arn: REPO_ARN,
+        Name: 'my-repo',
+        RepositoryId: REPO_ID,
+      });
+    });
+
     it('wraps a metadata-less CreateRepository response in ProvisioningError', async () => {
       mockSend.mockResolvedValueOnce({});
 

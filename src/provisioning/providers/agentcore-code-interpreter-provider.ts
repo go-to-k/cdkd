@@ -24,6 +24,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { definedAttributes } from '../attribute-map.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -79,11 +80,11 @@ export class AgentCoreCodeInterpreterProvider implements ResourceProvider {
 
       return {
         physicalId: codeInterpreterArn,
-        attributes: {
+        attributes: definedAttributes({
           CodeInterpreterArn: codeInterpreterArn,
           CodeInterpreterId: response.codeInterpreterId ?? DEFAULT_CODE_INTERPRETER_ID,
-          Status: response.status ?? '',
-        },
+          Status: response.status,
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -166,11 +167,11 @@ export class AgentCoreCodeInterpreterProvider implements ResourceProvider {
     );
     return {
       physicalId: response.codeInterpreterArn!,
-      attributes: {
+      attributes: definedAttributes({
         CodeInterpreterArn: response.codeInterpreterArn!,
         CodeInterpreterId: response.codeInterpreterId ?? DEFAULT_CODE_INTERPRETER_ID,
-        Status: response.status ?? '',
-      },
+        Status: response.status,
+      }),
     };
   }
 }

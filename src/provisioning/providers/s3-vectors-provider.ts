@@ -22,6 +22,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { definedAttributes } from '../attribute-map.js';
 
 /**
  * SDK Provider for AWS S3 Vectors resources
@@ -289,15 +290,13 @@ export class S3VectorsProvider implements ResourceProvider {
         })
       );
 
-      const vectorBucketArn = result.vectorBucketArn ?? '';
-
       this.logger.debug(`Successfully created S3 VectorBucket ${logicalId}: ${vectorBucketName}`);
 
       return {
         physicalId: vectorBucketName,
-        attributes: {
-          VectorBucketArn: vectorBucketArn,
-        },
+        attributes: definedAttributes({
+          VectorBucketArn: result.vectorBucketArn,
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;

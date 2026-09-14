@@ -21,6 +21,12 @@
 # provider path (before #1276 that property was a silent-drop and the #614 rule
 # flipped the whole resource onto Cloud Control), and the AZ must reach AWS.
 #
+# Also the issue #3077 arm: a `--no-wait` deploy first (Phase 0), asserting the
+# provider recorded NO empty-string attribute for the still-pending instances
+# and kept the launch-time members, then the default deploy (Phase 1) as the
+# no-change second deploy whose Outputs pass heals `PublicIp` to the live
+# address -- the half that reds with the pre-#3077 `?? ''` restored.
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -174,8 +180,97 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
+# --- Phase 0: --no-wait create records no '' attribute (issue #3077) --------
+# Under --no-wait the provider skips the `running` wait and describes the
+# instance while it is still `pending`, when EC2 has not assigned the public
+# address yet. Before #3077 every unassigned field was recorded as '' -- a
+# KNOWN-EMPTY the resolver then served from state forever (no later deploy
+# re-read AWS), and the Outputs pass exported. Now an unassigned field is
+# ABSENT from `attributes`, so the next deploy's Outputs pass re-describes the
+# instance and heals the Output. Phase 1 below (the default-wait deploy over an
+# unchanged template) is that next deploy, and its post-deploy assertion is the
+# discriminating half: with the pre-#3077 `?? ''` restored, `.outputs.PublicIp`
+# stays '' there.
+echo "==> Phase 0: deploy with --no-wait (issue #3077: unassigned attributes are omitted, never '')"
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --no-wait \
+  --yes
+
+NOWAIT_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${NOWAIT_STATE}" ]; then
+  echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after the --no-wait deploy" >&2
+  exit 1
+fi
+# Capture the ids now so the cleanup trap can reach the instances from here on.
+INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.InstanceId // ""')
+PUBLIC_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicInstanceId // ""')
+if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "null" ] || [ -z "${PUBLIC_INSTANCE_ID}" ] || [ "${PUBLIC_INSTANCE_ID}" = "null" ]; then
+  echo "FAIL: could not resolve both instance ids from the --no-wait state" >&2
+  echo "${NOWAIT_STATE}" | jq '.outputs'
+  exit 1
+fi
+
+# (a) No AWS::EC2::Instance record carries an EMPTY-STRING public attribute.
+# The positive marker of the fixed path is the key being ABSENT; a present,
+# non-empty value means EC2 had already assigned it by describe time.
+EMPTY_ATTRS=$(echo "${NOWAIT_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | .key as $id | (.value.attributes // {}) | to_entries[] | select(.value == "") | "\($id).\(.key)"] | join(" ")')
+if [ -n "${EMPTY_ATTRS}" ]; then
+  echo "FAIL: issue #3077 -- the --no-wait create recorded an empty-string attribute (${EMPTY_ATTRS}); an unassigned read-back must be ABSENT from attributes, never ''" >&2
+  echo "${NOWAIT_STATE}" | jq '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | {key, attributes: .value.attributes}]'
+  exit 1
+fi
+PENDING_OMITS=$(echo "${NOWAIT_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | .key as $id | (.value.attributes // {}) | select((has("PublicIp") | not) or (has("PublicDnsName") | not)) | $id] | join(" ")')
+if [ -z "${PENDING_OMITS}" ]; then
+  # Both instances were already running when the provider described them, so
+  # the pending arm never ran and (a) above attests only that no '' was
+  # written. Say so rather than pass quietly: the premise was not reached.
+  echo "FAIL: issue #3077 premise not reached -- both instances were already running at describe time (no PublicIp / PublicDnsName key omitted), so the --no-wait pending path was not exercised; re-run" >&2
+  echo "${NOWAIT_STATE}" | jq '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | {key, attributes: .value.attributes}]'
+  exit 1
+fi
+echo "    OK: pending-path omission observed on: ${PENDING_OMITS} (no '' attribute recorded)"
+
+# (b) Negative control: the launch-time members are assigned while `pending`
+# and must still be RECORDED -- a fix that dropped every attribute would pass
+# (a) and fail here.
+for id in ${PENDING_OMITS}; do
+  for key in PrivateIp AvailabilityZone InstanceId; do
+    VAL=$(echo "${NOWAIT_STATE}" | jq -r --arg id "${id}" --arg key "${key}" '.resources[$id].attributes[$key] // ""')
+    if [ -z "${VAL}" ]; then
+      echo "FAIL: issue #3077 -- ${id}.attributes.${key} is missing or empty on the pending record; launch-time members must be recorded even under --no-wait" >&2
+      echo "${NOWAIT_STATE}" | jq --arg id "${id}" '.resources[$id].attributes'
+      exit 1
+    fi
+  done
+done
+echo "    OK: launch-time members (PrivateIp / AvailabilityZone / InstanceId) recorded on the pending record"
+
+# (c) The Output over the omitted attribute resolved to SOMETHING rather than
+# '' -- the resolver's live arm answers the address once assigned, or the
+# instance id with a warning while still pending (the go-to-k/cdkd#3096
+# residual). Pre-#3077 this Output was '' whenever the record was.
+NOWAIT_PUBLIC_IP_OUTPUT=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicIp // ""')
+if [ -z "${NOWAIT_PUBLIC_IP_OUTPUT}" ] || [ "${NOWAIT_PUBLIC_IP_OUTPUT}" = "null" ]; then
+  echo "FAIL: issue #3077 -- .outputs.PublicIp is empty after the --no-wait deploy; the stored '' shadowed the live DescribeInstances arm" >&2
+  echo "${NOWAIT_STATE}" | jq '.outputs'
+  exit 1
+fi
+echo "    OK: --no-wait Output PublicIp resolved to '${NOWAIT_PUBLIC_IP_OUTPUT}' (live arm, not a stored '')"
+
+# Let both instances settle so Phase 1's Outputs pass can resolve the real
+# address, and so the pre-existing #1281 association assertion below reads a
+# running instance.
+echo "    waiting for both instances to reach running"
+aws ec2 wait instance-running \
+  --instance-ids "${INSTANCE_ID}" "${PUBLIC_INSTANCE_ID}" \
+  --region "${REGION}"
+
 # --- Phase 1: deploy --------------------------------------------------
-echo "==> Phase 1: deploy with the local binary"
+# Over the Phase 0 stack this is a no-change deploy, whose Outputs pass
+# re-resolves every Output against state (issue #875) -- the heal #3077 buys.
+echo "==> Phase 1: deploy with the local binary (default wait; heals the --no-wait Outputs)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -186,6 +281,24 @@ if [ -z "${STATE}" ]; then
   echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
   exit 1
 fi
+
+# --- Assertions: the Output healed (issue #3077, the discriminating half) ---
+HEALED_PUBLIC_IP=$(echo "${STATE}" | jq -r '.outputs.PublicIp // ""')
+LIVE_PUBLIC_IP=$(aws ec2 describe-instances \
+  --instance-ids "${INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' \
+  --output text)
+if [ -z "${LIVE_PUBLIC_IP}" ] || [ "${LIVE_PUBLIC_IP}" = "None" ]; then
+  echo "FAIL: running instance ${INSTANCE_ID} reports no PublicIpAddress; the fixture's public subnet should map one on launch" >&2
+  exit 1
+fi
+if [ "${HEALED_PUBLIC_IP}" != "${LIVE_PUBLIC_IP}" ]; then
+  echo "FAIL: issue #3077 -- .outputs.PublicIp is '${HEALED_PUBLIC_IP}' after the second deploy, expected the live address ${LIVE_PUBLIC_IP}; the --no-wait record did not heal (a stored '' is served from state and never re-read)" >&2
+  echo "${STATE}" | jq '.outputs'
+  exit 1
+fi
+echo "    OK: .outputs.PublicIp healed to the live address ${LIVE_PUBLIC_IP} on the second deploy (issue #3077)"
 
 # Confirm the instance took the SDK provider path (NOT Cloud Control). If a
 # silent-drop prop ever sneaks into the template, provisionedBy flips to

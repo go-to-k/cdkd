@@ -6,7 +6,7 @@
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 acm-certificate	2026-09-05T03:27:04Z	PASS	91	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (exit-2 survivor contract)
-agentcore-tools	2026-08-01T09:36:05Z	PASS	58	verify.sh	0801 regression sweep; 3 phases ok, 0 orphans
+agentcore-tools	2026-09-14T14:50:12Z	PASS	113	verify.sh	#3103 gating: 3 phases ok, 5 deleted 0 err 0 orph
 alb	2026-08-20T02:48:06Z	FAIL	430	verify.sh	listener attr routing.http.response.server.enabled not reset to AWS default on removal. NOT caused by the issue-2058/2063 change: isolated by reverting elbv2-provider.ts to main inside this same worktree and re-running, which still FAILED (rc=1). Sequence was FAIL(lane) / PASS(main checkout, same base 45d838b8) / FAIL(lane) / FAIL(lane+main elbv2), so the code is not the discriminator. Cleanup clean: 0 ALBs, 0 VPCs, 0 state. Filed as issue 2085 for root-cause.
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
@@ -76,7 +76,7 @@ destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded
 destroy-interrupt	2026-08-26T04:31:00Z	PASS	52	verify.sh	issue #2117 lane, re-run after the issue #2126 deploy flake (URLError Errno 16 in the Lambda sandbox) which never reached a destroy assertion. All 4 phases green incl. interrupt-then-resume; 0 errors. Independent scan clean after sweeping one auto-created /aws/lambda log group the fixture does not remove.
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
 dlm-lifecycle-policy	2026-09-05T22:48:21Z	PASS	94	verify.sh	PR2662 gate run; destroy 3 deleted 0 errors, 0 orphans
-docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
+docdb-neptune	2026-09-14T15:28:31Z	PASS	1545	verify.sh	#3103 gating: cluster/instance Endpoint.* omit-not-'' sites live; 14 deleted 0 err 0 orph
 docker-image-asset	2026-09-05T14:04:48Z	PASS	75	verify.sh	rc 0, real deploy+destroy 2 deleted 0 errors, 0 ECR orphans, state gone
 drift-revert	2026-09-11T13:09:51Z	PASS	162	verify.sh	3011 review fixes; broad set
 drift-revert-arrays	2026-09-10T13:40:26Z	PASS	192	verify.sh	gating PR 2912 (#2884/#2893 name it); rc0, 19 deleted 0 errors, orphan log group swept
@@ -92,7 +92,7 @@ dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; str
 dynamodb-streams	2026-08-10T05:13:55Z	PASS	81	verify.sh	0810 sweep b5; streams+ESM+StreamSpec UPDATE, 0 err 0 orph
 dynamodb-tableclass-switch	2026-08-22T19:12:07Z	PASS	72	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 dynamodb-ttl-attr-change	2026-08-10T11:50:46Z	PASS	57	verify.sh	0810 P0/P1 sweep b3; TTL attr change refused w/ actionable error, AWS TTL unchanged
-ec2-instance	2026-08-22T19:51:10Z	PASS	92	verify.sh	issue 2176 round-3 masking sweep; rc 0, destroy 0 errors, orphans clean
+ec2-instance	2026-09-14T14:47:05Z	PASS	169	verify.sh	rc ok, orph clean; #3077 --no-wait arm added, mutant (pre-fix pending path) red at (a)
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
 ec2-route-targets	2026-08-22T20:17:46Z	PASS	463	verify.sh	issue 2176 round-4; re-run after EC2 update-path masker threading; 0 errors, orphans clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
@@ -225,9 +225,9 @@ outputs-only-export	2026-08-18T06:09:14Z	PASS	160	verify.sh	13 checks; #1921 pre
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 propagation-races-2	2026-09-10T09:48:41Z	PASS	116	verify.sh	rc0, 22 deleted/0 err/0 orph; round-2 re-run; edge5 window 0ms (3rd)
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-08-10T08:05:51Z	PASS	2299	verify.sh	0810 P2 sweep b13; cluster removal reset live-verified, 0 err 0 orph
+rds-aurora	2026-09-14T16:07:02Z	PASS	2299	verify.sh	#3103 gating: DBCluster attrs live; 23 deleted 0 err 0 orph
 rds-dbinstance-backfill	2026-08-10T08:05:51Z	PASS	634	verify.sh	0810 P2 sweep b13; rds-provider re-verify, 0 err 0 orph
-rds-full-stack	2026-08-13T14:32:55Z	PASS	-	verify.sh	issue 1824 arm: SSM value == live DBSubnetGroupArn (subgrp: form, read off the create response); 16 created, all gone-probes OK, 0 err 0 orph
+rds-full-stack	2026-09-14T15:02:44Z	PASS	742	verify.sh	#3103 gating: GetAtt endpoint via stringifyIfAssigned live; 16 deleted 0 err 0 orph
 recreate-mixed-direction	2026-08-08T16:42:21Z	PASS	92	verify.sh	P1 post-#1360 replacement-rules touch; mixed SDK<->CC recreate ok, 3 del/0 err, 0 orphans
 recreate-nested-logical-id-collision	2026-09-05T18:18:50Z	PASS	150	verify.sh	rc 0, 21 assertions, 0 orphans
 recreate-via-cc-api	2026-09-05T09:12:25Z	PASS	130	verify.sh	#2615 review round: greps took -F and dropped the dead has-objects branch; both polarities still discriminate, 0 orphans

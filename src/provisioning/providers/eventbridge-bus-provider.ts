@@ -26,6 +26,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { definedAttributes } from '../attribute-map.js';
 
 /**
  * Sanitise a CFn-shape `DeadLetterConfig` (object with optional `Arn`) for
@@ -127,8 +128,6 @@ export class EventBridgeBusProvider implements ResourceProvider {
 
       const response = await this.eventBridgeClient.send(new CreateEventBusCommand(createParams));
 
-      const eventBusArn = response.EventBusArn ?? '';
-
       // Apply Policy if specified (must be done after creation)
       if (properties['Policy']) {
         // EventBridge uses PutPermission for policies, but for simplicity
@@ -137,10 +136,10 @@ export class EventBridgeBusProvider implements ResourceProvider {
 
       return {
         physicalId: name,
-        attributes: {
-          Arn: eventBusArn,
+        attributes: definedAttributes({
+          Arn: response.EventBusArn,
           Name: name,
-        },
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;

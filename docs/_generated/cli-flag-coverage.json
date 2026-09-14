@@ -373,6 +373,7 @@
       "flag": "--no-wait",
       "integs": [
         "acm-certificate",
+        "ec2-instance",
         "ecs-fargate",
         "lambda-microvm-image"
       ]

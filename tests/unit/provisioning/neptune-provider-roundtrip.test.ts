@@ -142,6 +142,47 @@ describe('NeptuneProvider', () => {
       expect(createCmd.input.DeletionProtection).toBe(true);
     });
 
+    // Issue #3077: an unassigned cluster member is OMITTED and `Endpoint.Port`
+    // is never recorded as the literal `'undefined'` that `String(port)` decays
+    // to once the assigned-only guard is lost. The Port-less describe is not a
+    // shape the real API answers; it is the shape that reaches the guard.
+    it('create records only the assigned cluster members, never a stringified undefined Port', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBCluster: { DBClusterIdentifier: 'my-cluster' } })
+        .mockResolvedValueOnce({
+          DBClusters: [
+            {
+              DBClusterIdentifier: 'my-cluster',
+              Endpoint: 'cluster.neptune.amazonaws.com',
+              DbClusterResourceId: 'cluster-ABC',
+            },
+          ],
+        });
+      const provider = new NeptuneProvider();
+      const result = await provider.create('MyCluster', 'AWS::Neptune::DBCluster', {
+        DBClusterIdentifier: 'my-cluster',
+      });
+      expect(result.attributes).toStrictEqual({
+        'Endpoint.Address': 'cluster.neptune.amazonaws.com',
+        ClusterResourceId: 'cluster-ABC',
+      });
+    });
+
+    it('update records only the assigned cluster members, never a stringified undefined Port', async () => {
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ DBClusters: [{ DbClusterResourceId: 'cluster-ABC' }] });
+      const provider = new NeptuneProvider();
+      const result = await provider.update(
+        'MyCluster',
+        'my-cluster',
+        'AWS::Neptune::DBCluster',
+        { BackupRetentionPeriod: 14 },
+        {}
+      );
+      expect(result.attributes).toStrictEqual({ ClusterResourceId: 'cluster-ABC' });
+    });
+
     it('update issues ModifyDBCluster with ApplyImmediately=true; empty VpcSecurityGroupIds dropped', async () => {
       mockSend
         .mockResolvedValueOnce({})
@@ -231,6 +272,28 @@ describe('NeptuneProvider', () => {
       expect(createCmd.input.Engine).toBe('neptune');
       // Neptune supports DBInstance-level DeletionProtection (unlike DocDB).
       expect(createCmd.input.DeletionProtection).toBe(true);
+    });
+
+    // Issue #3077: under --no-wait the attribute describe runs against a
+    // `creating` instance whose Endpoint is unassigned; both keys are OMITTED
+    // (a Neptune DBInstance records only the two Endpoint attributes), never
+    // `''` and never `Endpoint.Port: 'undefined'`.
+    it('create under --no-wait records an empty map while the Endpoint is unassigned', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          DBInstance: { DBInstanceIdentifier: 'my-instance' },
+        })
+        .mockResolvedValueOnce({
+          DBInstances: [{ DBInstanceIdentifier: 'my-instance', DBInstanceStatus: 'creating' }],
+        });
+      const provider = new NeptuneProvider();
+      const result = await provider.create('MyInst', 'AWS::Neptune::DBInstance', {
+        DBInstanceIdentifier: 'my-instance',
+        DBInstanceClass: 'db.r5.large',
+        DBClusterIdentifier: 'my-cluster',
+      });
+      expect(result.physicalId).toBe('my-instance');
+      expect(result.attributes).toStrictEqual({});
     });
 
     it('update issues ModifyDBInstance with DeletionProtection round-trip', async () => {

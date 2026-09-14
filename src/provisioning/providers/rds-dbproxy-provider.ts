@@ -25,6 +25,7 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
+import { definedAttributes } from '../attribute-map.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -213,11 +214,11 @@ export class RDSDBProxyProvider implements ResourceProvider {
 
     return {
       physicalId: dbProxyName,
-      attributes: {
+      attributes: definedAttributes({
         DBProxyArn: dbProxyArn,
         Endpoint: endpoint,
-        VpcId: vpcId ?? '',
-      },
+        VpcId: vpcId,
+      }),
     };
   }
 

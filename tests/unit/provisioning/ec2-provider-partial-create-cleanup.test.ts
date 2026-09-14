@@ -104,6 +104,51 @@ describe('EC2Provider createVpc partial-create cleanup (Issue #376)', () => {
   });
 });
 
+// Issue #3077: the VPC create's attribute map records `DefaultSecurityGroup`
+// only when the post-create read-back returned the group, and never records
+// a `DefaultNetworkAcl` placeholder (nothing reads it back; a permanent `''`
+// was the issue's shape). The fence in attribute-map.test.ts sees the
+// SPELLING; these two cases pin the BEHAVIOUR, so a `?? 'sg-unknown'` or a
+// `String(defaultSgId)` that the fence cannot see still fails.
+describe('EC2Provider createVpc attribute map (issue #3077)', () => {
+  let provider: EC2Provider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    warnSpy.mockReset();
+    provider = new EC2Provider();
+  });
+
+  it('records DefaultSecurityGroup from the read-back and no DefaultNetworkAcl placeholder', async () => {
+    mockSend.mockResolvedValueOnce({ Vpc: { VpcId: 'vpc-aaa' } }); // CreateVpcCommand
+    mockSend.mockResolvedValueOnce({}); // DescribeVpcsCommand (availability probe)
+    mockSend.mockResolvedValueOnce({ SecurityGroups: [{ GroupId: 'sg-default1' }] }); // DescribeSecurityGroupsCommand
+
+    const result = await provider.create('Vpc', 'AWS::EC2::VPC', { CidrBlock: '10.0.0.0/16' });
+
+    // Exactly the three primed calls, in primer order: a template with no DNS
+    // settings and no Tags issues no ModifyVpcAttribute / CreateTags, so a
+    // fourth call would shift the queue and pin the wrong response.
+    expect(mockSend).toHaveBeenCalledTimes(3);
+    expect(result.attributes).toStrictEqual({
+      VpcId: 'vpc-aaa',
+      CidrBlock: '10.0.0.0/16',
+      DefaultSecurityGroup: 'sg-default1',
+    });
+  });
+
+  it('omits DefaultSecurityGroup when the read-back fails, rather than recording an empty string', async () => {
+    mockSend.mockResolvedValueOnce({ Vpc: { VpcId: 'vpc-aaa' } }); // CreateVpcCommand
+    mockSend.mockResolvedValueOnce({}); // DescribeVpcsCommand
+    mockSend.mockRejectedValueOnce(new Error('Rate exceeded')); // DescribeSecurityGroupsCommand
+
+    const result = await provider.create('Vpc', 'AWS::EC2::VPC', { CidrBlock: '10.0.0.0/16' });
+
+    expect(mockSend).toHaveBeenCalledTimes(3);
+    expect(result.attributes).toStrictEqual({ VpcId: 'vpc-aaa', CidrBlock: '10.0.0.0/16' });
+  });
+});
+
 describe('EC2Provider createSubnet partial-create cleanup (Issue #376)', () => {
   let provider: EC2Provider;
 

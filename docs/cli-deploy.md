@@ -76,7 +76,7 @@ result.
 | `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create call | Wait for `available` (5-10 min) | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after the create call | Wait for `available` | same as default | Waits | Waits |
 | `AWS::EC2::NatGateway` | Return while `pending` | Wait for `available` (1-2 min) | same as default | Waits | Waits |
-| `AWS::EC2::Instance` | Return while `pending`; `PublicIp` / `PrivateIp` may be empty | Wait for `running` (30-60 s) | same as default | Waits | Waits |
+| `AWS::EC2::Instance` | Return while `pending`; a public address not yet assigned is omitted from state and re-read from AWS when referenced | Wait for `running` (30-60 s) | same as default | Waits | Waits |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning`; `DNSName` 503s until active | Wait for `active` (90-180 s) | same as default | Waits | Waits |
 | `AWS::Lambda::MicrovmImage` | Return while `CREATING`; the image ARN resolves first, so outputs still work | Wait for `CREATED` | same as default | Waits | n/a |
 
@@ -280,12 +280,24 @@ entry of its own, so such a deploy stays no-change. It still re-resolves the
 stack's Outputs, and an attribute the first deploy never produced does not read
 back as expected:
 
-- An Output over a `--no-wait` EC2 instance's `PublicIp` resolves to the empty
-  string the first deploy recorded, and that empty string is persisted and
-  served to `Fn::ImportValue` consumers. No later deploy re-reads it from AWS:
-  the recorded value stands until the instance is updated or replaced.
-  `PrivateIp`, `PublicDnsName`, `PrivateDnsName` and `AvailabilityZone` behave
-  the same way.
+- A public address a `--no-wait` EC2 instance had not been assigned when the
+  first deploy recorded it (`PublicIp` / `PublicDnsName`; the private address,
+  private DNS name and availability zone are assigned at launch and are
+  recorded whenever the read-back carries them) is absent from state rather
+  than recorded as an empty string, so
+  an Output over it re-reads the instance from AWS on the next resolution.
+  When the instance has the address by then, the Output and any
+  `Fn::ImportValue` consumer get the real value, cached for the rest of that
+  deploy. While it is still `pending`, the Output resolves to the instance ID
+  with a warning (or fails under `--strict-getatt`), and nothing is cached, so
+  the next deploy re-reads again. This is only the not-yet-assigned case: a
+  running instance with no public address (a private subnet) records both as
+  the empty string, which is what CloudFormation reports for it. An RDS, DocDB
+  or Neptune `DBInstance` created under `--no-wait` likewise omits
+  `Endpoint.Address` / `Endpoint.Port` while the instance is still `creating`. There is no live re-read for those two: a
+  reference resolves to the instance identifier with a warning (or fails under
+  `--strict-getatt`) until the next update of that resource records them — a
+  later no-change deploy does not.
 - A single Output the resolver cannot resolve at all suppresses the whole
   re-resolved bag: cdkd warns and keeps every previously persisted Output
   value, not only that one.
