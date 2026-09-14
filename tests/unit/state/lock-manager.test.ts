@@ -1138,4 +1138,47 @@ describe('LockManager — a lock record whose fields cannot be coerced (issue #2
         .map((c: unknown[]) => (c[0] as { constructor: { name: string } }).constructor.name)
     ).toEqual(['PutObjectCommand', 'GetObjectCommand', 'DeleteObjectCommand', 'PutObjectCommand']);
   });
+  it('names an unreadable deadline in the takeover warning instead of `expired NaNmNaNs ago` (issue #3083)', async () => {
+    // Same takeover as above; this pins what the warning SAYS. `isLockExpired`
+    // reaches "expired" two ways — a past deadline, or one that is not a finite
+    // number — and the crashed-owner explanation is only evidence for the
+    // first. `{}` rather than `UNCOERCIBLE` so the case is about a value that
+    // converts to NaN without throwing: the arithmetic, not the coercion.
+    s3Client.send.mockRejectedValueOnce(
+      new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} })
+    );
+    s3Client.send.mockResolvedValueOnce({ ETag: '"expired-etag"', ...lockBody({ expiresAt: {} }) });
+    s3Client.send.mockResolvedValueOnce({}); // DeleteObject
+    s3Client.send.mockResolvedValueOnce({}); // PutObject — the re-acquisition
+
+    await expect(lockManager.acquireLock('test-stack', 'us-east-1', 'new-user')).resolves.toBe(true);
+
+    const warning = childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(warning).toContain('Took over an EXPIRED lock');
+    expect(warning).toContain('expires at an unknown time');
+    expect(warning).toContain('not a finite number');
+    expect(warning).not.toContain('NaN');
+    expect(warning).not.toContain('crashed or was suspended');
+  });
+
+  it('keeps the crashed-owner explanation and a real duration for a FINITE past deadline', async () => {
+    // The discriminating twin: the finite arm must not have been swept into
+    // the unknown-deadline wording.
+    s3Client.send.mockRejectedValueOnce(
+      new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} })
+    );
+    s3Client.send.mockResolvedValueOnce({
+      ETag: '"expired-etag"',
+      ...lockBody({ expiresAt: Date.now() - 90_000 }),
+    });
+    s3Client.send.mockResolvedValueOnce({}); // DeleteObject
+    s3Client.send.mockResolvedValueOnce({}); // PutObject — the re-acquisition
+
+    await expect(lockManager.acquireLock('test-stack', 'us-east-1', 'new-user')).resolves.toBe(true);
+
+    const warning = childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(warning).toMatch(/expired 1m\d+s ago/);
+    expect(warning).toContain('crashed or was suspended');
+    expect(warning).not.toContain('unknown time');
+  });
 });

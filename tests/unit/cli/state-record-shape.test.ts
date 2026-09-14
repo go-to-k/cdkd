@@ -307,8 +307,27 @@ describe('state commands over a record no display guard reaches (issue #2947)', 
 
     expectRendered(error);
     // The exact row `docs/cli-state.md` quotes: the NaN the read substitutes
-    // flows through subtraction and `formatDuration` unchanged.
-    expect(out).toContain('locked by u@h:1, expired NaNmNaNs ago');
+    // is reported as an unknown deadline (issue #3083), never pushed through
+    // `formatDuration` — which is what printed `expired NaNmNaNs ago`.
+    expect(out).toContain('locked by u@h:1, expires at an unknown time');
+    expect(out).not.toContain('NaN');
+  });
+
+  it('state show reports a merely non-finite expiresAt ({} / "soon") the same way (issue #3083)', async () => {
+    // Neither value throws on coercion, so `getLockRecord` passes both through
+    // as stored (go-to-k/cdkd#2947); the renderer is what must refuse the
+    // arithmetic. Both are pinned because `{}` reaches `NaN` via ToPrimitive
+    // and `"soon"` via ToNumber — two conversion paths, one verdict.
+    for (const expiresAt of [{}, 'soon']) {
+      vi.clearAllMocks();
+      errorSpy.mockReset();
+      s3Send.mockImplementation(async (command) => route(command));
+      bucket.lock = JSON.stringify({ owner: 'u@h:1', timestamp: 1, expiresAt });
+      const { out, error } = await runState(['show', 'MyStack']);
+      expectRendered(error);
+      expect(out).toContain('locked by u@h:1, expires at an unknown time');
+      expect(out).not.toContain('NaN');
+    }
   });
 
   const uncoercibleOwnerLock = (): string =>
