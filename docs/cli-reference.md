@@ -259,7 +259,7 @@ name `cdkd-<unix-ms>`) and writes the resulting temporary credentials into
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, so every
 later AWS SDK client picks them up via the standard default credentials chain.
 
-### Why the assumed role must have admin-equivalent permissions
+### What the assumed role needs
 
 Unlike `cdk deploy`, **cdkd does not route through CloudFormation**. There is no
 cfn-exec-role to delegate to. Every IAM / EC2 / Lambda / CloudFront / DynamoDB /
@@ -267,20 +267,28 @@ etc. API call is issued from cdkd directly, using whatever identity the SDK
 default chain resolves to — which, when `--role-arn` is set, is the assumed
 role.
 
-That means **CDK CLI's `cdk-hnb659fds-deploy-role-*` is not enough**:
+So the role needs the actions for the resource types your stacks deploy, plus
+cdkd's own bookkeeping set — the same permissions your own principal would have
+needed, moved onto the role.
+[Permission errors](troubleshooting.md#access-denied-error) has the policy to
+start from. `AdministratorAccess` is not part of it; scope the role to the
+services your stacks actually use.
+
+That also means **CDK CLI's `cdk-hnb659fds-deploy-role-*` is not enough**:
 
 | Role | Trust policy | Permissions | Works for cdkd? |
 | --- | --- | --- | --- |
 | `cdk-hnb659fds-deploy-role-*` | IAM principals | CFn + asset-publish only (no raw EC2 / Lambda / IAM) | **No** — permission-denied during provisioning |
-| `cdk-hnb659fds-cfn-exec-role-*` | `Service: cloudformation.amazonaws.com` | Admin-equivalent | **No** — only assumable by the CFn service, not by cdkd's IAM identity |
-| Custom admin-equivalent role | IAM principals | Admin-equivalent on the resources you deploy | **Yes** |
+| `cdk-hnb659fds-cfn-exec-role-*` | `Service: cloudformation.amazonaws.com` | Broad, for CloudFormation to use | **No** — only assumable by the CFn service, not by cdkd's IAM identity |
+| A role you create for cdkd | IAM principals | The resource actions your stacks need + cdkd's bookkeeping set | **Yes** |
 
 CDK CLI achieves "no local admin needed" through a two-step delegation (IAM
-principal → deploy-role → CFn change set → cfn-exec-role's admin). cdkd has no
+principal → deploy-role → CFn change set → cfn-exec-role). cdkd has no
 analogous chain — what you grant the assumed role is what runs against AWS. The
 `--role-arn` flag exists so CI runners with limited base credentials can drive a
-cdkd deploy against a separate-account or higher-privilege role; it does **not**
-reduce the permissions the eventually-used identity needs.
+cdkd deploy against a separate-account or dedicated deploy role; it does **not**
+reduce the permissions the eventually-used identity needs — it moves them onto
+the role.
 
 ### When the `--role-arn` session expires
 
@@ -290,10 +298,16 @@ valid until expiry, so a re-run is the simplest recovery path.
 
 ### `--profile` vs `--role-arn`
 
-Independent. `--profile` selects which entry from `~/.aws/credentials` or
-`~/.aws/config` provides the **base** credentials; `--role-arn` then assumes a
-role from those base credentials. Use both together when the IAM principal lives
-in profile A and the deploy role lives in account B that profile A trusts.
+`--profile` selects which entry from `~/.aws/credentials` or `~/.aws/config`
+provides the **base** credentials; `--role-arn` then assumes a role from those
+base credentials.
+
+> **Do not combine them today.** cdkd hands the assumed-role credentials to the
+> AWS SDK through the `AWS_*` environment variables, and the SDK skips those
+> whenever a profile is selected — so with both flags set the role is assumed
+> and then ignored, and every later call runs as the profile's own principal.
+> For a cross-account deploy, make the base credentials the default ones (no
+> `--profile`) and pass `--role-arn` alone.
 
 ## Exit codes
 

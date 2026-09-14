@@ -217,7 +217,8 @@ cdkd migrate --from-cfn-stack legacy-billing --dry-run
 3. STS `GetCallerIdentity` (existing cdkd pre-flight): verify AWS credentials
    are usable for both `cdk migrate` (which needs `cloudformation:GetTemplate`
    + `cloudformation:DescribeStacks`) and the subsequent import (which needs
-   admin-equivalent per the role-arn rules).
+   the resource-type actions plus cdkd's bookkeeping set, per the role-arn
+   rules).
 
 ### Spawn contract
 

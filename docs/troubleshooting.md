@@ -1469,10 +1469,9 @@ away.
 
 The role you name needs the permissions the Set A / Set B / Set C policy above
 describes, granted on the assumed role rather than on your own principal —
-**not `AdministratorAccess`**. cdkd's own help text calls this
-"admin-equivalent" because the union of Set B across an arbitrary template is
-unbounded; that is an argument for scoping the role to the services your stacks
-actually use, not for attaching a blanket policy.
+**not `AdministratorAccess`**. Set B is whatever your stacks contain, so no
+fixed policy can be published for it; scope the role to the services your
+stacks actually use rather than attaching a blanket policy.
 
 **Solutions:**
 
