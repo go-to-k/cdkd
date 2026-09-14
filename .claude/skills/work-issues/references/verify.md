@@ -43,8 +43,8 @@ by a probe or a trace, never by re-reading the diff:
   the claim is WRITTEN and not only where it is implemented
   (`tests/unit/cli/local-state-source.test.ts` walks `src/` alone, so
   `.claude/rules/layout-local.md` still named the DELETED fork's
-  CloudFormation API — the exact defect go-to-k/cdkd#2527 was closing, caught
-  only because a reviewer was pointed at the rules delta; same shape in
+  CloudFormation API — the defect go-to-k/cdkd#2527 was closing, caught only
+  by a reviewer pointed at the rules delta; same shape in
   `tests/unit/local/docker-argv-redaction-fence.test.ts`, whose
   `readdirSync('src/local')` cannot reach go-to-k/cdkd#2623's `src/assets/**`
   sites).
@@ -141,7 +141,7 @@ Unit tests passing is necessary but NOT sufficient:
   easy tier to under-verify. **Never conclude a CI job cannot fail on your
   diff from the job's NAME** — a name bounds where it reads, not what it
   asserts; repo-wide fences (byte caps, corpus scans) live inside jobs with
-  narrow-sounding names (go-to-k/cdkd#2236 went red exactly this way). What
+  narrow-sounding names (go-to-k/cdkd#2236). What
   satisfies step 9 depends on the diff; a diff that does both takes BOTH arms:
   - **It changes what a command or gate DOES** → the verification IS that
     command. Run the command your own diff changes (`.claude/hooks/run-tests.sh`
@@ -174,9 +174,13 @@ Unit tests passing is necessary but NOT sufficient:
 
 An arm is the one place this flow routinely ships a fence nobody has watched
 fail. The probe is one extra run of a fixture you are already running: revert
-the fix, rebuild, run, confirm the arm goes RED, restore, rebuild. **Probe
-each HALF of a multi-part fix separately** (a scrub lane's probes proved the
-halves independently fenced — a single all-or-nothing revert cannot). Add a
+the fix, rebuild, run, confirm the arm goes RED — **at YOUR assertion: read
+which one fired**, since an older assert ahead of the new check reds first and
+the pre-fix log then names nothing about the issue (go-to-k/cdkd#3088: the
+control failed at a sibling's equality assert; the check was hoisted above
+it) — restore, rebuild. **Probe each HALF of a multi-part fix separately** (a
+scrub lane's probes proved the halves independently fenced — a single
+all-or-nothing revert cannot). Add a
 NEGATIVE CONTROL inside the arm — a sibling case that must NOT trip the new
 behaviour — or a refusal that fires on everything satisfies every positive
 assertion. The vacuity shapes, none visible by reading the script
@@ -195,9 +199,9 @@ assertion. The vacuity shapes, none visible by reading the script
   byte-identical to an earlier phase's is that trap with no fix to blame** —
   the diff is `NO_CHANGE`, the flag under test is never read (the engine
   consults it only under `case 'UPDATE'`), the phase cannot pass, and `set -e`
-  takes every later one with it (go-to-k/cdkd#2565: the fixture stopped at
-  that phase and the three proving the regression never ran, past every
-  author-side round). Make each phase assert its own change LANDED first.
+  takes every later one with it (go-to-k/cdkd#2565: the three phases proving
+  the regression never ran, past every author-side round). Make each phase
+  assert its own change LANDED first.
 - **The arm's PREMISE is out of scope, and the tell is both counts zero** —
   `0 leaks AND 0 masks` is an arm that did nothing (go-to-k/cdkd#2176: the
   spelling used was one cdkd deliberately does not resolve, so nothing was
@@ -206,7 +210,7 @@ assertion. The vacuity shapes, none visible by reading the script
 - **Any outcome REACHABLE BY TWO PATHS is a confluence point** — "the bad
   value was not written" is satisfied by a correct refusal AND by any
   unrelated failure that stopped short (measured: fix mutated back, arm
-  stayed green because the revert had errored instead of writing); a REFUSAL
+  green — the revert had errored instead of writing); a REFUSAL
   is satisfied by the guard firing AND by the probe behind it failing
   (go-to-k/cdkd#2565: a missing `logs:DescribeLogStreams` grant promotes to
   the same refusal, so on a role that cannot probe, the phase passes
@@ -225,15 +229,14 @@ assertion. The vacuity shapes, none visible by reading the script
   reach `tests/integration/**/verify.sh`**: vitest's `include` is `*.test.ts`
   under `tests/` and `src/`, which no shell fixture matches, so a `verify.sh`
   pins a contract no suite EXECUTES (several read them as text) and no
-  diff-reading reviewer sees — go-to-k/cdkd#2882 round 8: `secrets-array-nested`
-  FAILED on a negative control still pinning the residual the PR retired, "the
-  real-AWS integ round caught what six review rounds did not".
+  diff-reading reviewer sees (go-to-k/cdkd#2882 round 8: `secrets-array-nested`
+  FAILED on a negative control still pinning the retired residual, past six
+  review rounds).
 - **A fixture that establishes its precondition on the HAPPY path cannot test
-  the arm where the FAILING path creates it** (go-to-k/cdkd#2057: the refusal
-  could not fire — its evidence was persisted only by the success path — yet
-  the fixture passed; four diff-reading reviewers missed it, a fifth traced
-  the evidence). Ask which step wrote the state in the fixture, and which
-  writes it in the reachable case; if they differ, add the arm where one
+  the arm where the FAILING path creates it** (go-to-k/cdkd#2057: passed with
+  a refusal that could not fire; four diff-reading reviewers missed it, a
+  fifth traced the evidence). Ask which step wrote the state in the fixture,
+  and which writes it in the reachable case; if they differ, add the arm where one
   operation does both, and prove it discriminates (mutate the fix: original
   arm still green, new arm red).
 - **An arm added to a SHARED fixture must not touch an identifier the fixture
@@ -362,9 +365,9 @@ false claim a review round had read past:
 ### 8-h. Reviewer findings are inputs, not verdicts
 
 - **A NIT is not a work item.** Fix what a reviewer DEMONSTRATES is wrong;
-  leave the polish. Over four rounds on go-to-k/cdkd#2592 every blocker was
-  fixed correctly and every NEW defect came from a low-severity suggestion —
-  a "no escape hatch" nit produced a flag that could not reach green. The
+  leave the polish (go-to-k/cdkd#2592, four rounds: every NEW defect came
+  from a low-severity suggestion — a "no escape hatch" nit produced a flag
+  that could not reach green). The
   tell: the new code answers a hypothetical, not an observation. When three
   rounds have each found a defect inside the last one's fix, WITHDRAW the
   addition rather than bounding it — §8-a's blocker count names which one — and
@@ -417,8 +420,8 @@ leftover check — the `deployments/` events store legitimately survives it.
 **`pr-review` is not on that list, and a LANE must never set it.** `/review-pr`
 writes it, run by the ORCHESTRATOR after its dispatched reviewers report and
 every blocker is addressed — a lane setting it is the "sub-agent self-review
-is not independent review" failure arriving through the marker (two of three
-lanes on 2026-08-29, go-to-k/cdkd#2383; twice more on 2026-09-04 — only the
+is not independent review" failure arriving through the marker
+(go-to-k/cdkd#2383, two of three lanes; twice more on 2026-09-04 — only the
 lane whose BRIEF named the prohibition obeyed, so put it there too). The merge
 gate cannot catch it: the sentinel is per-worktree and §9
 merges from the lane's worktree, so a lane setting it after its final push
