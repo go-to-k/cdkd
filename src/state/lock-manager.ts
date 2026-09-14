@@ -638,12 +638,14 @@ export class LockManager {
         ...parsed,
         owner: displaySafe(parsed.owner),
         ...(parsed.operation !== undefined && { operation: displaySafe(parsed.operation) }),
-        // Normalised HERE for the same reason `owner` is: `expiresAt` has five
-        // readers that do arithmetic on it (`formatLockSummary`, the contention
-        // message, the retry line, the final refusal, and the expired-lock
-        // takeover's own warning), and an object whose `toString` is not
-        // callable makes every one of them throw — the takeover's AFTER it has
-        // deleted the lock, leaving the stack unlocked (issue #2947). Only a
+        // Normalised HERE for the same reason `owner` is: an object whose
+        // `toString` is not callable made every reader that subtracted from
+        // `expiresAt` throw — five of them at the time, the expired-lock
+        // takeover's warning AFTER it had deleted the lock, leaving the stack
+        // unlocked (issue #2947). Since issue #3083 four of those test
+        // `Number.isFinite` first, which never coerces, so the one reader this
+        // still protects is `lock-contention-message.ts`'s subtraction; it
+        // stays load-bearing for that one and for any reader added later. Only a
         // value whose coercion THROWS is replaced; every other value passes
         // through untouched, because `isLockExpired` decides on the RAW value:
         // a numeric string is non-finite there and therefore expired, and

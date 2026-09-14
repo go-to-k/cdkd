@@ -1060,7 +1060,8 @@ describe('LockManager — a lock record whose fields cannot be coerced (issue #2
 
     expect(info).not.toBeNull();
     expect(Number.isNaN(info!.expiresAt)).toBe(true);
-    // The five readers all do this subtraction; it no longer throws.
+    // The contention message still does this subtraction (the other readers
+    // test `Number.isFinite` first since issue #3083); it no longer throws.
     expect(() => info!.expiresAt - Date.now()).not.toThrow();
   });
 
