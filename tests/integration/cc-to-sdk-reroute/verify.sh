@@ -107,8 +107,11 @@ echo "==> Pre-run cleanup"; cleanup
 # id fails pre-flight; deriving it also keeps this fixture working when a CDK
 # upgrade changes the hash suffix.
 node "${LOCAL_DIST}" synth --region "${REGION}" >/dev/null 2>&1
-TEMPLATE=$(ls cdk.out/${STACK}.template.json 2>/dev/null | head -1)
-[ -n "${TEMPLATE}" ] || { echo "FAIL: no synth template at cdk.out/${STACK}.template.json" >&2; exit 1; }
+# A literal path needs no `ls | head`; under pipefail that shape aborted the
+# script at the assignment when the file was missing, so the FAIL line below
+# could never print (issue #3126).
+TEMPLATE="cdk.out/${STACK}.template.json"
+[ -f "${TEMPLATE}" ] || { echo "FAIL: no synth template at ${TEMPLATE}" >&2; exit 1; }
 LOGICAL_ID=$(jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::SNS::Topic") | .key' "${TEMPLATE}" | head -1)
 [ -n "${LOGICAL_ID}" ] || { echo "FAIL: no AWS::SNS::Topic in ${TEMPLATE}" >&2; exit 1; }
 echo "==> Resource under test: ${LOGICAL_ID}"

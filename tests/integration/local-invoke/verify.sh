@@ -20,6 +20,33 @@ cd "$(dirname "$0")"
 CDKD="node ../../../dist/cli.js"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 
+# --- capture ---------------------------------------------------------------
+# Under `set -euo pipefail` the shape
+#     VAR=$(${CDKD} local invoke ... 2>/dev/null | tail -1)
+# aborts the WHOLE script at the ASSIGNMENT when the CLI exits non-zero:
+# pipefail fails the pipeline, the substitution fails, `set -e` kills the
+# script BEFORE the assertion, and the CLI's stderr is already gone -- a log
+# that ends at `[2/4] Invoking ...` with no error text (issue #3106's lane
+# paid a re-run to learn a transient had hit; issue #3126 swept the shape).
+# `capture` runs the command with its exit status captured EXPLICITLY, prints
+# the status and the tail of the captured stderr on a non-zero exit, and
+# still emits the last stdout line so the assertion runs, FAILS, and prints
+# its own diagnostic -- with the evidence in the log. The stderr file is per
+# call and removed here, so the EXIT trap chain carries no entry for it.
+# Every local-* fixture carries this block byte-for-byte; the fence is
+# tests/unit/scripts/integ-verify-capture-shape.test.ts.
+capture() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$("$@" 2>"${err}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
+    tail -20 "${err}" >&2
+  fi
+  rm -f "${err}"
+  printf '%s\n' "${out}" | tail -1
+}
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
 
@@ -170,7 +197,7 @@ echo "    stdout: ids only ($(wc -l <"${LIST_OUT}" | tr -d ' ') lines); stderr: 
 
 # Test 1 — asset-backed Lambda echoes event + env var
 echo "==> [1/6] Invoking EchoHandler with default empty event"
-RESULT_1=$(${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -182,7 +209,7 @@ echo "==> [2/6] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -q '"key":"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -196,7 +223,7 @@ trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_F
 # Use a wildcard `Parameters` block so the test doesn't break if the
 # L1 logical ID changes.
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
-RESULT_3=$(${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_3=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_3}"
 echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
@@ -210,7 +237,7 @@ trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_F
 # The display-path key matches `Metadata['aws:cdk:path']` — i.e. the
 # same form `cdkd local invoke <target>` already accepts.
 echo '{"CdkdLocalInvokeFixture/EchoHandler":{"GREETING":"path-key-overridden"}}' > "${DP_ENV_FILE}"
-RESULT_4=$(${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${DP_ENV_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_4=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${DP_ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_4}"
 echo "${RESULT_4}" | grep -q '"greeting":"path-key-overridden"' || {
   echo "FAIL: expected greeting=path-key-overridden, got: ${RESULT_4}"
@@ -222,7 +249,7 @@ echo "==> [5/6] Invoking InlineHandler (Code.ZipFile)"
 INLINE_EVENT=$(mktemp)
 trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
-RESULT_5=$(${CDKD} local invoke CdkdLocalInvokeFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull 2>/dev/null | tail -1)
+RESULT_5=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull)
 echo "    response: ${RESULT_5}"
 echo "${RESULT_5}" | grep -q '"inlineEcho":{"hi":"there"}' || {
   echo "FAIL: expected inlineEcho={hi:there}, got: ${RESULT_5}"
@@ -242,7 +269,7 @@ echo "${RESULT_5}" | grep -q '"inlineEcho":{"hi":"there"}' || {
 # Both polarities: the upper-cased shell must produce the canonical container
 # value, and the already-canonical shell must produce byte-identical output.
 echo "==> [6/6] Invoking EchoHandler with an UPPER-CASED AWS_REGION (region-case fold)"
-RESULT_6=$(AWS_REGION=US-EAST-1 AWS_DEFAULT_REGION=US-EAST-1 ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_6=$(AWS_REGION=US-EAST-1 AWS_DEFAULT_REGION=US-EAST-1 capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_6}"
 echo "${RESULT_6}" | grep -q '"awsRegion":"us-east-1"' || {
   echo "FAIL: expected the container AWS_REGION to arrive canonical (us-east-1), got: ${RESULT_6}"
@@ -254,7 +281,7 @@ echo "${RESULT_6}" | grep -q '"awsRegion":"US-EAST-1"' && {
   echo "FAIL: container AWS_REGION carried the raw upper-cased spelling: ${RESULT_6}"
   exit 1
 }
-RESULT_6B=$(AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1 ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_6B=$(AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1 capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull)
 echo "    counter-case response: ${RESULT_6B}"
 [ "${RESULT_6}" = "${RESULT_6B}" ] || {
   echo "FAIL: an already-canonical AWS_REGION must be byte-identical to the folded one"

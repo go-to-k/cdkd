@@ -313,6 +313,9 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // `src/deployment/secret-redaction.ts` and `src/cli/commands/scrub.ts` paths,
   // both within a few dozen bytes of their caps, do not pay for it. EXACT.
   ['no-change-outputs-merge.md', 1],
+  // Every fixture's verify.sh (go-to-k/cdkd#3126); measured 257, the same
+  // population integ-verify-capture-shape.test.ts floors at 250.
+  ['abort-capture.md', 250],
   ['providers.md', 92],
   ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
@@ -366,6 +369,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // without this row the satellite would sit under no budget at all. Payload
   // is layout-deployment.md + architecture.md + code-layout.md + the satellite.
   ['src/deployment/no-change-outputs-merge.ts', 50_000, 62_000], // measured 56,993
+  // The path family that loads `abort-capture.md` (go-to-k/cdkd#3126): payload
+  // is testing.md + the satellite. Sized so the satellite cannot quietly grow
+  // into a second testing.md while the parent sits at its own cap.
+  ['tests/integration/local-invoke/verify.sh', 50_000, 58_000], // measured 55,012
   ['src/cli/commands/deploy.ts', 41_000, 63_000],
   ['src/local/docker-runner.ts', 41_500, 67_000],
   ['src/analyzer/dag-builder.ts', 26_000, 35_000],
@@ -1210,7 +1217,10 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 // Neither branch's figure is the merged one. That is the whole reason this
 // count is asserted rather than described: two correct increments compose to a
 // number neither author wrote.
-const CORPUS_FILE_COUNT = 55; // + no-change-outputs-merge.md (go-to-k/cdkd#3110).
+const CORPUS_FILE_COUNT = 56; // + abort-capture.md (go-to-k/cdkd#3126): testing.md sat 38 B under
+                              //  its 52,000 B path cap, so the verify.sh capture rule got its own
+                              //  satellite with a one-clause pointer left behind.
+                              // Was 55: + no-change-outputs-merge.md (go-to-k/cdkd#3110).
                               // Was 54: // -1 hooks-deferral-criteria.md (go-to-k/cdkd#2717, its gate retired). + layout-ci-pr-content.md (go-to-k/cdkd#2736): adding the
                               //  auto-close-form entry, plus the review round that followed
                               //  it, took layout-ci-checks.md to 20,839 B against the 20,000 B

@@ -192,7 +192,7 @@ fi
 FIRST_AZ_EXPECTED="$(aws ec2 describe-availability-zones \
   --region "${REGION}" \
   --filters "Name=region-name,Values=${REGION}" "Name=state,Values=available" \
-  --query 'AvailabilityZones[].ZoneName' --output text 2>/dev/null \
+  --query 'AvailabilityZones[].ZoneName' --output text \
   | tr '\t' '\n' | sort | head -n 1)"
 if [ -z "${FIRST_AZ_EXPECTED}" ]; then
   echo "[verify]   SKIP Fn::GetAZs: could not enumerate AZs for ${REGION}"

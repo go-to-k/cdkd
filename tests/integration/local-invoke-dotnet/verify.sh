@@ -24,6 +24,33 @@ CDKD="node ../../../dist/cli.js"
 LAMBDA_IMAGE="public.ecr.aws/lambda/dotnet:8"
 SDK_IMAGE="mcr.microsoft.com/dotnet/sdk:8.0"
 
+# --- capture ---------------------------------------------------------------
+# Under `set -euo pipefail` the shape
+#     VAR=$(${CDKD} local invoke ... 2>/dev/null | tail -1)
+# aborts the WHOLE script at the ASSIGNMENT when the CLI exits non-zero:
+# pipefail fails the pipeline, the substitution fails, `set -e` kills the
+# script BEFORE the assertion, and the CLI's stderr is already gone -- a log
+# that ends at `[2/4] Invoking ...` with no error text (issue #3106's lane
+# paid a re-run to learn a transient had hit; issue #3126 swept the shape).
+# `capture` runs the command with its exit status captured EXPLICITLY, prints
+# the status and the tail of the captured stderr on a non-zero exit, and
+# still emits the last stdout line so the assertion runs, FAILS, and prints
+# its own diagnostic -- with the evidence in the log. The stderr file is per
+# call and removed here, so the EXIT trap chain carries no entry for it.
+# Every local-* fixture carries this block byte-for-byte; the fence is
+# tests/unit/scripts/integ-verify-capture-shape.test.ts.
+capture() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$("$@" 2>"${err}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
+    tail -20 "${err}" >&2
+  fi
+  rm -f "${err}"
+  printf '%s\n' "${out}" | tail -1
+}
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
 
@@ -58,7 +85,7 @@ ${CDKD} synth >/dev/null
 # Silicon emulating x86_64) — the function's Timeout: 30 + cdkd's
 # `invokeTimeoutMs = max(30s, 2 * fn.timeout)` = 60s provides headroom.
 echo "==> [1/3] Invoking EchoHandler with default empty event"
-RESULT_1=$(${CDKD} local invoke CdkdLocalInvokeDotnetFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeDotnetFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -Eq '"greeting": *"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -70,7 +97,7 @@ echo "==> [2/3] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKD} local invoke CdkdLocalInvokeDotnetFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokeDotnetFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"

@@ -50,8 +50,14 @@ if [ ! -d node_modules ]; then
   vp install --prefer-offline
 fi
 
+# stderr of each `local invoke-agentcore` capture below. The old
+# `2>/dev/null | grep ... | tail -1` shape aborted the script at the assignment
+# when the CLI exited non-zero, with the error text already gone (#3126).
+CLI_ERR="$(mktemp)"
+
 cleanup() {
   rc=$?
+  rm -f "${CLI_ERR}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
@@ -82,7 +88,11 @@ BUCKET_ARN="arn:aws:s3:::${BUCKET}"
 # with no JSON in the captured value.
 
 echo "[verify] step 3: baseline — cdkd local invoke-agentcore WITHOUT --from-state"
-RESULT_BASELINE=$(${CLI} local invoke-agentcore "${TARGET}" --no-pull 2>/dev/null | grep '"env":' | tail -1)
+RESULT_BASELINE=$(${CLI} local invoke-agentcore "${TARGET}" --no-pull 2>"${CLI_ERR}" | grep '"env":' | tail -1) || {
+  echo "FAIL: baseline invoke exited non-zero or printed no \"env\" line; stderr tail:"
+  tail -20 "${CLI_ERR}"
+  exit 1
+}
 echo "    response: ${RESULT_BASELINE}"
 echo "${RESULT_BASELINE}" | grep -q '"BUCKET_NAME":"unset"' || {
   echo "FAIL: baseline (no --from-state) — expected BUCKET_NAME=\"unset\" (Ref intrinsic dropped); got: ${RESULT_BASELINE}"
@@ -99,7 +109,11 @@ echo "${RESULT_BASELINE}" | grep -q '"STATIC_VALUE":"cdkd-static"' || {
 
 echo "[verify] step 4: G2 — cdkd local invoke-agentcore WITH --from-state"
 RESULT_FROMSTATE=$(${CLI} local invoke-agentcore "${TARGET}" --from-state \
-  --state-bucket "${STATE_BUCKET}" --no-pull 2>/dev/null | grep '"env":' | tail -1)
+  --state-bucket "${STATE_BUCKET}" --no-pull 2>"${CLI_ERR}" | grep '"env":' | tail -1) || {
+  echo "FAIL: --from-state invoke exited non-zero or printed no \"env\" line; stderr tail:"
+  tail -20 "${CLI_ERR}"
+  exit 1
+}
 echo "    response: ${RESULT_FROMSTATE}"
 echo "${RESULT_FROMSTATE}" | grep -q "\"BUCKET_NAME\":\"${BUCKET}\"" || {
   echo "FAIL: --from-state — expected BUCKET_NAME=\"${BUCKET}\" (Ref resolved from state); got: ${RESULT_FROMSTATE}"
