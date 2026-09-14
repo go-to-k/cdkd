@@ -33,6 +33,7 @@ import {
   bindingSkippedOutputs,
 } from '../../../src/analyzer/skipped-outputs.js';
 import { resolveTemplateOutputs, computeOutputsDiff } from '../../../src/analyzer/outputs-diff.js';
+import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
 
 const warnSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => {
@@ -66,6 +67,23 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
       if (value === '__boom__') {
         return Promise.reject(new Error("Dynamic reference: key 'missing' not found in secret"));
       }
+      // The issue #3096 live-read REFUSAL: an `IntrinsicResolutionRefusalError`
+      // raised because a `--no-wait` EC2 instance was still `pending` when its
+      // address was read. Its class is what `Fn::Sub` re-raises on, and this
+      // harness pins that the Outputs pass treats it like any other failure:
+      // skipped + recorded, never fatal to the deploy.
+      if (value === '__refused__') {
+        // The SAME template value resolving on a later pass — the instance
+        // has settled — is the toggle, so a case can prove the re-resolution
+        // happens with the digest UNCHANGED.
+        if (refusedNowResolves.value) return Promise.resolve('54.1.2.3');
+        return Promise.reject(
+          new IntrinsicResolutionRefusalError(
+            'Cannot resolve Fn::GetAtt [Instance, PublicIp] for AWS::EC2::Instance: ' +
+              'DescribeInstances reports no PublicIp yet (state pending).'
+          )
+        );
+      }
       // A resolver that constructs NOTHING and returns `undefined` without
       // throwing (`constructAttribute`'s empty arm) — the second writer of an
       // `undefined` bag value.
@@ -98,6 +116,9 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
 
 /** Toggled by the one case that needs `evaluateConditions` to rewrite the template. */
 const conditionsEvaluationMutates = vi.hoisted(() => ({ value: false }));
+
+/** Toggled by the same-template heal case: `__refused__` resolves instead of refusing. */
+const refusedNowResolves = vi.hoisted(() => ({ value: false }));
 
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
@@ -291,6 +312,7 @@ async function diffAgainst(saved: StackState, tpl: CloudFormationTemplate) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  refusedNowResolves.value = false;
 });
 
 describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
@@ -439,6 +461,63 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
     const saved = lastSaved(stateBackend);
     expect(saved.skippedOutputs).toEqual({ Bad: skippedOutputDigest(after, 'Bad') });
     expect(saved.outputs).toStrictEqual({ Fine: 'fine-value' });
+  });
+
+  it('(a-refusal, #3096) an output the resolver REFUSES with IntrinsicResolutionRefusalError is skipped and recorded like any other failure, and the next deploy heals it', async () => {
+    // A resource property refusal fails the resource; an OUTPUT refusal must
+    // not fail the deploy -- `handleOutputResolutionFailure` is class-agnostic
+    // under the default arm. If it ever re-raised the refusal class (the way
+    // `resolveSub` does), this deploy would reject instead of saving.
+    const tpl = withBad({ Value: '__refused__' });
+    const { engine, stateBackend } = buildEngine({ creates: ['BucketA'] });
+    await expect(engine.deploy(stackName, tpl)).resolves.toBeDefined();
+
+    const saved = lastSaved(stateBackend);
+    expect(saved.outputs).toStrictEqual({ Fine: 'fine-value' });
+    expect(saved.skippedOutputs).toEqual({ Bad: skippedOutputDigest(tpl, 'Bad') });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to resolve output Bad: Cannot resolve Fn::GetAtt \[Instance, PublicIp\]/)
+    );
+
+    // The no-change second deploy (the instance has settled; the resolver now
+    // answers) re-resolves the skipped key, lands it, and clears the record --
+    // the integ fixture's Phase 1 heal, pinned here against the mocked resolver.
+    const second = buildEngine({
+      priorState: makeState(saved.outputs, { skippedOutputs: saved.skippedOutputs }),
+    });
+    await second.engine.deploy(stackName, withBad({ Value: '54.1.2.3' }));
+    const healed = lastSaved(second.stateBackend);
+    expect(healed.outputs).toStrictEqual({ Fine: 'fine-value', Bad: '54.1.2.3' });
+    expect(healed).not.toHaveProperty('skippedOutputs');
+  });
+
+  it('(a-refusal, same template) the no-change second deploy of the IDENTICAL template re-resolves the skipped key — its digest unchanged — and clears the record', async () => {
+    // The integ fixture's Phase 1 shape: the template did not change, so
+    // the skipped key's digest still matches the record; what changed is AWS
+    // (the instance settled). The record must not be read as "still skipped,
+    // do not re-resolve" — the deploy re-resolves EVERY output and the record
+    // is recomputed from THIS pass. (The (a-refusal) case above heals by
+    // changing the template value, which changes the digest too, so it cannot
+    // tell those apart.)
+    const tpl = withBad({ Value: '__refused__' });
+    const first = buildEngine({ creates: ['BucketA'] });
+    await first.engine.deploy(stackName, tpl);
+    const afterFirst = lastSaved(first.stateBackend);
+    expect(afterFirst.skippedOutputs).toEqual({ Bad: skippedOutputDigest(tpl, 'Bad') });
+
+    refusedNowResolves.value = true;
+    const second = buildEngine({
+      priorState: makeState(afterFirst.outputs, { skippedOutputs: afterFirst.skippedOutputs }),
+    });
+    const secondTpl = withBad({ Value: '__refused__' });
+    // The premise this case rests on, stated rather than assumed: the second
+    // template digests to the very row the record holds, so nothing but the
+    // resolver's answer distinguishes the two passes.
+    expect(skippedOutputDigest(secondTpl, 'Bad')).toBe(afterFirst.skippedOutputs!['Bad']);
+    await second.engine.deploy(stackName, secondTpl);
+    const healed = lastSaved(second.stateBackend);
+    expect(healed.outputs).toStrictEqual({ Fine: 'fine-value', Bad: '54.1.2.3' });
+    expect(healed).not.toHaveProperty('skippedOutputs');
   });
 
   it('(d) the output resolving on the next deploy clears the record and lands the key in outputs', async () => {

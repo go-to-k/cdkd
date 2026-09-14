@@ -288,19 +288,26 @@ back as expected:
   an Output over it re-reads the instance from AWS on the next resolution.
   When the instance has the address by then, the Output and any
   `Fn::ImportValue` consumer get the real value, cached for the rest of that
-  deploy. While it is still `pending`, the Output resolves to the instance ID
-  with a warning (or fails under `--strict-getatt`), and nothing is cached, so
-  the next deploy re-reads again. This is only the not-yet-assigned case: a
-  running instance with no public address (a private subnet) records both as
+  deploy. While it is still `pending`, cdkd **refuses** to resolve the
+  reference — the instance ID is never substituted for an address — and
+  nothing is cached, so the next deploy re-reads again. Where the reference
+  sits decides what that refusal does: in a resource property it fails that
+  resource; in an Output, cdkd warns and skips the Output (it fails the deploy
+  under `--strict-getatt`), and the next deploy re-resolves it. The same
+  refusal answers a `DescribeInstances` that fails, naming the error class
+  (`--verbose` shows the AWS text). This is only the not-yet-assigned case: a
+  running instance with no public address (a private subnet) resolves both to
   the empty string, which is what CloudFormation reports for it. An RDS, DocDB
   or Neptune `DBInstance` created under `--no-wait` likewise omits
   `Endpoint.Address` / `Endpoint.Port` while the instance is still `creating`. There is no live re-read for those two: a
   reference resolves to the instance identifier with a warning (or fails under
   `--strict-getatt`) until the next update of that resource records them — a
   later no-change deploy does not.
-- A single Output the resolver cannot resolve at all suppresses the whole
-  re-resolved bag: cdkd warns and keeps every previously persisted Output
-  value, not only that one.
+- An Output the resolver cannot resolve on the no-change deploy keeps its
+  previously persisted value while every sibling that did resolve is
+  persisted; cdkd warns naming the Output. Two shapes keep the whole previous
+  bag instead: a failed Output whose `Export.Name` is itself an intrinsic, and
+  a merge that would put a secret expression beside a carried plain value.
 
 **The baseline it reads is only as complete as the first deploy's exit.** A
 deploy that succeeded wrote its final state, physical IDs included, before

@@ -384,9 +384,15 @@ export interface Site {
  * widens the population.
  */
 export const BANDS = {
-  statements: { min: 128, max: 165 },
-  maskedExprs: { min: 150, max: 200 },
-  markers: { min: 90, max: 140 },
+  // Floors moved with the population by the same delta (issue #3096's review
+  // rounds added three throw sites, five masks and eight notes: 132 / 155 /
+  // 100 -> 135 / 160 / 108). A floor left behind goes inert on the block-comment
+  // injection above: the `resolveFindInMap` cut swallows seven statements, and
+  // 135 - 7 = 128 sat EXACTLY on the old floor, so the band no longer fired
+  // (measured by `resolver-mask-coverage.test.ts`'s instrument case).
+  statements: { min: 131, max: 165 },
+  maskedExprs: { min: 155, max: 200 },
+  markers: { min: 98, max: 140 },
 } as const;
 
 /** A `not-in-class(<expr>)` note the file carries but no site ever read. */

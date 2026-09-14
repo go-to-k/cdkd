@@ -1240,8 +1240,23 @@ every per-type handler's unknown-attribute default branch. Other suffixes only
 warn because an alias or an endpoint is shape-indistinguishable from a plain
 name, so hard-failing there would fail correct deploys.
 
-Three further rules round out the default:
+Four further rules round out the default:
 
+- **An attribute cdkd reads live never falls back to the physical ID.** A
+  few attributes are read from AWS at resolution time when the state record
+  does not hold them: an EC2 instance's `PrivateIp` / `PublicIp` /
+  `PrivateDnsName` / `PublicDnsName` / `AvailabilityZone`, a VPC's
+  `DefaultSecurityGroup`, a CloudFront distribution's `DomainName`. When
+  the read finds the value not yet assigned (an instance still `pending`
+  under `--no-wait`) or the read fails, cdkd refuses to resolve the reference
+  rather than substituting the instance / VPC / distribution ID, which can
+  never be the right value there; the message names the resource, the
+  attribute, what was observed (the instance state, or the error class —
+  `--verbose` shows the AWS text) and the remedy. Nothing is cached, so the
+  next deploy re-reads. An RDS `DBProxy` / `DBProxyEndpoint` `VpcId` the
+  record lacks is refused the same way without a live read. The
+  `--no-wait` section of [`cdkd deploy`](cli-deploy.md#what-a-second-deploy-started-too-early-runs-into)
+  says what the refusal does in a resource property versus an Output.
 - **The same refusals apply inside `Fn::Sub`.** A `${LogicalId.Attribute}`
   placeholder resolves through the same code path, so a reference that
   hard-fails as a resource property hard-fails there too. A variable that

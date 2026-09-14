@@ -6,16 +6,21 @@ import {
   cfnRefValueFromPhysicalId,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
-// Mock logger
+// Mock logger. `debug` is ONE shared spy (issue #3096): the live-read refusal
+// promises the AWS error text at `--verbose`, and a fresh `vi.fn()` per
+// `child()` call is unreachable from a test, so that promise was unfenced.
+const debugSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    debug: vi.fn(),
+    debug: debugSpy,
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
     child: () => ({
-      debug: vi.fn(),
+      debug: debugSpy,
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
@@ -33,6 +38,10 @@ const mockEc2Send = vi.fn().mockResolvedValue({
     { ZoneName: 'us-east-1c', State: 'available' },
   ],
 });
+
+// Mock CloudFront client (for the issue #3096 `DomainName` live re-read;
+// primed per test).
+const mockCloudFrontSend = vi.fn();
 
 // Mock CloudFormation client (for the issue #1697 cross-stack fallback).
 // Default: no exports, and DescribeStacks reports the stack as missing —
@@ -78,6 +87,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     },
     ec2: {
       send: mockEc2Send,
+    },
+    cloudFront: {
+      send: mockCloudFrontSend,
     },
   }),
 }));
@@ -3078,13 +3090,18 @@ describe('IntrinsicFunctionResolver - AWS::EC2::Instance Fn::GetAtt (live Descri
     expect(mockEc2Send).toHaveBeenCalledTimes(1);
   });
 
-  it('returns the physical id, and caches NOTHING, while the live read still finds the attribute unassigned', async () => {
-    // The residual issue #3077 leaves in place, pinned so its shape is
-    // visible: a still-`pending` instance answers with no address, the arm
-    // warns and degrades to the instance id, and because no value is cached
-    // the NEXT resolution re-describes rather than serving the degraded value.
+  // Issue #3096: a still-`pending` instance answers with no address. The arm
+  // used to warn `returning physical ID` and hand the instance id to the
+  // consumer -- an `i-...` where an IP belongs, silent in an Output or an
+  // export. It now REFUSES, caches nothing (the next resolution re-describes,
+  // when the instance may have settled), and stays UNMARKED for the retry
+  // classifiers: unlike the record-decided refusals in this file, this one
+  // can succeed on a retry.
+  it('refuses, caches NOTHING, and stays retryable while the live read still finds the attribute unassigned', async () => {
     mockEc2Send.mockResolvedValue({
-      Reservations: [{ Instances: [{ InstanceId: 'i-0123456789abcdef0', State: { Name: 'pending' } }] }],
+      Reservations: [
+        { Instances: [{ InstanceId: 'i-0123456789abcdef0', State: { Name: 'pending' } }] },
+      ],
     });
     const makeContext = (): ResolverContext => ({
       template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
@@ -3099,25 +3116,116 @@ describe('IntrinsicFunctionResolver - AWS::EC2::Instance Fn::GetAtt (live Descri
       },
     });
 
-    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
-      'i-0123456789abcdef0'
-    );
-    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
-      'i-0123456789abcdef0'
-    );
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain('Cannot resolve Fn::GetAtt [MyInstance, PublicIp]');
+    expect((refusal as Error).message).toContain('i-0123456789abcdef0');
+    expect((refusal as Error).message).toContain('state pending');
+    expect((refusal as Error).message).toContain('--no-wait');
+    expect(isMarkedNonRetryable(refusal as Error)).toBe(false);
+
+    // Nothing cached: the second resolution describes again.
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())
+    ).rejects.toBeInstanceOf(IntrinsicResolutionRefusalError);
     expect(mockEc2Send).toHaveBeenCalledTimes(2);
   });
 
-  it('falls back to the physical id when DescribeInstances fails', async () => {
-    mockEc2Send.mockRejectedValue(new Error('Access Denied'));
+  it('refuses (retryable, nothing cached) when DescribeInstances fails, naming the error CLASS and not its text', async () => {
+    const denied = Object.assign(
+      new Error(
+        'User: arn:aws:sts::123456789012:assumed-role/DeployRole/session is not authorized to perform: ec2:DescribeInstances'
+      ),
+      { name: 'UnauthorizedOperation', $metadata: { httpStatusCode: 403 } }
+    );
+    mockEc2Send.mockRejectedValue(denied);
+    debugSpy.mockClear();
+    const makeContext = (): ResolverContext => ({
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    });
 
-    const template: CloudFormationTemplate = {
-      Resources: {
-        MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} },
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, makeContext())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    // The CLASS and, when the SDK attached one, the HTTP status -- a 403
+    // reads as a denial and a 429 / 503 as a throttle without --verbose.
+    expect((refusal as Error).message).toContain(
+      'DescribeInstances failed (UnauthorizedOperation, HTTP 403)'
+    );
+    expect((refusal as Error).message).toContain('--verbose');
+    // ...and the promise that --verbose holds the AWS text: the debug line
+    // carries it (masked; nothing to mask here), and only the debug line.
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/DescribeInstances failed \(UnauthorizedOperation, HTTP 403\): .*is not authorized to perform: ec2:DescribeInstances/)
+    );
+    // The per-reader rule: AWS's raw text names the account, role and session
+    // and stays behind --verbose (debug), never in the default-verbosity throw.
+    expect((refusal as Error).message).not.toContain('assumed-role');
+    expect((refusal as Error).message).not.toContain('is not authorized');
+    expect((refusal as Error).cause).toBeUndefined();
+    expect(isMarkedNonRetryable(refusal as Error)).toBe(false);
+
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, makeContext())
+    ).rejects.toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders a physical id carrying U+2028 without the separator (the refusal message is one log line)', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [{ Instances: [{ InstanceId: 'i-0123', State: { Name: 'pending' } }] }],
+    });
+    const physicalId = 'i-0123\u2028forged line';
+    const context: ResolverContext = {
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId,
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
       },
     };
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).not.toContain('\u2028');
+    expect((refusal as Error).message).toContain('i-0123');
+  });
+
+  it('names the class `Error` when the live read throws an error whose name has no ASCII in it', async () => {
+    // A name with no ASCII code unit at all (Greek letters, spelled as
+    // escapes so the repository stays ASCII-clean): `asciiOnly` blanks every
+    // character and the fallback is the only thing left to print.
+    mockEc2Send.mockRejectedValue(
+      Object.assign(new Error('boom'), { name: '\u03b1\u03b2\u03b3' })
+    );
     const context: ResolverContext = {
-      template,
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
       resources: {
         MyInstance: {
           physicalId: 'i-0123456789abcdef0',
@@ -3128,13 +3236,649 @@ describe('IntrinsicFunctionResolver - AWS::EC2::Instance Fn::GetAtt (live Descri
         },
       },
     };
-
-    const result = await resolver.resolve(
-      { 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] },
-      context
-    );
-    expect(result).toBe('i-0123456789abcdef0');
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain('DescribeInstances failed (Error)');
   });
+
+  it('names the class `Error` when the live read throws a non-Error value', async () => {
+    mockEc2Send.mockRejectedValue('socket hang up');
+    const context: ResolverContext = {
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain('DescribeInstances failed (Error)');
+    expect((refusal as Error).message).not.toContain('(string)');
+  });
+
+  it('still returns the physical id for InstanceId with no describe at all (the one attribute the id IS)', async () => {
+    mockEc2Send.mockRejectedValue(new Error('must not be called'));
+    const context: ResolverContext = {
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'InstanceId'] }, context)).toBe(
+      'i-0123456789abcdef0'
+    );
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('negative control: a running instance still resolves and caches after the refusal landed', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [
+        {
+          Instances: [
+            {
+              InstanceId: 'i-0123456789abcdef0',
+              State: { Name: 'running' },
+              PublicIpAddress: '54.1.2.3',
+            },
+          ],
+        },
+      ],
+    });
+    const makeContext = (): ResolverContext => ({
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: { InstanceId: 'i-0123456789abcdef0' },
+          dependencies: [],
+        },
+      },
+    });
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
+      '54.1.2.3'
+    );
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
+      '54.1.2.3'
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  // The three-state rule `EC2Provider.describedInstanceAttributes` records by,
+  // applied at resolution time: a SETTLED instance with no public address is a
+  // private-subnet instance, and CloudFormation answers '' for its public pair.
+  // A `--no-wait` create in a private subnet omits the pair while pending and
+  // nothing later rewrites the record, so without this arm every later
+  // resolution would refuse.
+  it('resolves a settled instance with no public address to the known empty string (CloudFormation parity), cached', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [
+        {
+          Instances: [
+            {
+              InstanceId: 'i-0123456789abcdef0',
+              State: { Name: 'running' },
+              PrivateIpAddress: '10.0.3.42',
+              PublicDnsName: '',
+            },
+          ],
+        },
+      ],
+    });
+    const makeContext = (): ResolverContext => ({
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: { InstanceId: 'i-0123456789abcdef0', PrivateIp: '10.0.3.42' },
+          dependencies: [],
+        },
+      },
+    });
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
+      ''
+    );
+    expect(
+      await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicDnsName'] }, makeContext())
+    ).toBe('');
+    // Both cached as known values: a third read of either issues no describe.
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, makeContext())).toBe(
+      ''
+    );
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a public member a PENDING instance reports as the empty string (what EC2 really returns while pending)', async () => {
+    // Real AWS describes a pending instance with `PublicDnsName: ''` (and no
+    // `PublicIpAddress`); the provider omits that `''` (issue #3077) and the
+    // resolver must read it the same way. Without the `value !== ''` test
+    // the arm would cache and serve '' for an address that is still coming.
+    mockEc2Send.mockResolvedValue({
+      Reservations: [
+        {
+          Instances: [
+            { InstanceId: 'i-0123456789abcdef0', State: { Name: 'pending' }, PublicDnsName: '' },
+          ],
+        },
+      ],
+    });
+    const makeContext = (): ResolverContext => ({
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: { InstanceId: 'i-0123456789abcdef0' },
+          dependencies: [],
+        },
+      },
+    });
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicDnsName'] }, makeContext())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain('reports no PublicDnsName yet (state pending)');
+    // Nothing cached: the second resolution describes again.
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicDnsName'] }, makeContext())
+    ).rejects.toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a PRIVATE member a settled instance does not report (a terminated one), naming the state', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [
+        { Instances: [{ InstanceId: 'i-0123456789abcdef0', State: { Name: 'terminated' } }] },
+      ],
+    });
+    const context: ResolverContext = {
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyInstance', 'PrivateIp'] }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain('state terminated');
+    expect((refusal as Error).message).not.toContain('--no-wait');
+  });
+
+  it('refuses AvailabilityZone / PrivateDnsName on a SETTLED instance that reports neither (the known-empty arm is PUBLIC members only)', async () => {
+    // The settled-`''` arm mirrors `describedInstanceAttributes`, which
+    // wraps only the public pair; a settled instance with no zone or no
+    // private DNS name is not a private-subnet instance, it is a record AWS
+    // no longer describes, so it refuses rather than answering ''.
+    mockEc2Send.mockResolvedValue({
+      Reservations: [
+        {
+          Instances: [
+            { InstanceId: 'i-0123456789abcdef0', State: { Name: 'stopped' }, PublicDnsName: '' },
+          ],
+        },
+      ],
+    });
+    const makeContext = (): ResolverContext => ({
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    });
+    for (const attr of ['AvailabilityZone', 'PrivateDnsName'] as const) {
+      const refusal = await resolver
+        .resolve({ 'Fn::GetAtt': ['MyInstance', attr] }, makeContext())
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect((refusal as Error).message).toContain(`reports no ${attr} yet (state stopped)`);
+    }
+    // ...while the public member of the same settled instance IS the known ''.
+    expect(
+      await resolver.resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicDnsName'] }, makeContext())
+    ).toBe('');
+  });
+
+  it('refuses with "no instance state" and the --no-wait remedy when the describe returns no instance at all', async () => {
+    mockEc2Send.mockResolvedValue({ Reservations: [] });
+    const context: ResolverContext = {
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyInstance', 'PublicIp'] }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    // No state means nothing says the instance settled: treated like
+    // `pending`, the same rule the provider applies to a stateless read-back.
+    expect((refusal as Error).message).toContain('reports no PublicIp yet (no instance state)');
+    expect((refusal as Error).message).toContain('Deploy without --no-wait');
+    expect(isMarkedNonRetryable(refusal as Error)).toBe(false);
+  });
+
+  it('refuses an Fn::Sub ${Instance.PublicIp} the same way instead of keeping the placeholder (#1740 class)', async () => {
+    mockEc2Send.mockResolvedValue({
+      Reservations: [
+        { Instances: [{ InstanceId: 'i-0123456789abcdef0', State: { Name: 'pending' } }] },
+      ],
+    });
+    const context: ResolverContext = {
+      template: { Resources: { MyInstance: { Type: 'AWS::EC2::Instance', Properties: {} } } },
+      resources: {
+        MyInstance: {
+          physicalId: 'i-0123456789abcdef0',
+          resourceType: 'AWS::EC2::Instance',
+          properties: {},
+          attributes: { InstanceId: 'i-0123456789abcdef0' },
+          dependencies: [],
+        },
+      },
+    };
+    await expect(
+      resolver.resolve({ 'Fn::Sub': 'http://${MyInstance.PublicIp}:8080' }, context)
+    ).rejects.toBeInstanceOf(IntrinsicResolutionRefusalError);
+  });
+});
+
+describe('IntrinsicFunctionResolver - AWS::EC2::VPC DefaultSecurityGroup (live DescribeSecurityGroups, #3096)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    mockEc2Send.mockReset();
+  });
+
+  const makeContext = (attributes: Record<string, unknown>): ResolverContext => ({
+    template: { Resources: { MyVpc: { Type: 'AWS::EC2::VPC', Properties: {} } } },
+    resources: {
+      MyVpc: {
+        physicalId: 'vpc-0123456789abcdef0',
+        resourceType: 'AWS::EC2::VPC',
+        properties: {},
+        attributes,
+        dependencies: [],
+      },
+    },
+  });
+
+  it('refuses (marked, no read) a physical id that is not a vpc-<hex>, since EC2 filters read * / ? as wildcards', async () => {
+    mockEc2Send.mockRejectedValue(new Error('must not be called'));
+    const context: ResolverContext = {
+      template: { Resources: { MyVpc: { Type: 'AWS::EC2::VPC', Properties: {} } } },
+      resources: {
+        MyVpc: {
+          physicalId: 'vpc-*',
+          resourceType: 'AWS::EC2::VPC',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] }, context)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain('is not a VPC id (vpc-<hex>)');
+    expect((refusal as Error).message).toContain('vpc-*');
+    // Record-decided: no retry rewrites the state record.
+    expect(isMarkedNonRetryable(refusal as Error)).toBe(true);
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('refuses a prototype-keyed physical id (constructor / __proto__) before the cache read, with no AWS call', async () => {
+    // The cache is keyed by the physical id; on a plain `{}` a record holding
+    // `constructor` read `Object` out of the prototype as the "cached" group
+    // and served a FUNCTION with zero EC2 calls (#3096 delta review, measured).
+    mockEc2Send.mockRejectedValue(new Error('must not be called'));
+    for (const physicalId of ['constructor', '__proto__', 'hasOwnProperty']) {
+      const context: ResolverContext = {
+        template: { Resources: { MyVpc: { Type: 'AWS::EC2::VPC', Properties: {} } } },
+        resources: {
+          MyVpc: { physicalId, resourceType: 'AWS::EC2::VPC', properties: {}, attributes: {}, dependencies: [] },
+        },
+      };
+      const refusal = await resolver
+        .resolve({ 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] }, context)
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(refusal, physicalId).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect((refusal as Error).message).toContain('is not a VPC id (vpc-<hex>)');
+      expect(isMarkedNonRetryable(refusal as Error)).toBe(true);
+    }
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('serves a recorded DefaultSecurityGroup from state without any describe', async () => {
+    mockEc2Send.mockRejectedValue(new Error('must not be called'));
+    expect(
+      await resolver.resolve(
+        { 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] },
+        makeContext({ VpcId: 'vpc-0123456789abcdef0', DefaultSecurityGroup: 'sg-0aaa' })
+      )
+    ).toBe('sg-0aaa');
+    expect(mockEc2Send).not.toHaveBeenCalled();
+  });
+
+  it('re-reads the default group live when the record OMITS the key, filtered by vpc-id + group-name, and caches it', async () => {
+    mockEc2Send.mockResolvedValue({ SecurityGroups: [{ GroupId: 'sg-0default' }] });
+    const context = () => makeContext({ VpcId: 'vpc-0123456789abcdef0' });
+    expect(
+      await resolver.resolve({ 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] }, context())
+    ).toBe('sg-0default');
+    expect(
+      await resolver.resolve({ 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] }, context())
+    ).toBe('sg-0default');
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    const cmd = mockEc2Send.mock.calls[0]![0] as {
+      constructor: { name: string };
+      input: { Filters: Array<{ Name: string; Values: string[] }> };
+    };
+    expect(cmd.constructor.name).toBe('DescribeSecurityGroupsCommand');
+    expect(cmd.input.Filters).toEqual([
+      { Name: 'vpc-id', Values: ['vpc-0123456789abcdef0'] },
+      { Name: 'group-name', Values: ['default'] },
+    ]);
+  });
+
+  it('resetAccountInfoCache clears the cached default group, so the next resolution re-reads', async () => {
+    mockEc2Send.mockResolvedValue({ SecurityGroups: [{ GroupId: 'sg-0default' }] });
+    const context = () => makeContext({ VpcId: 'vpc-0123456789abcdef0' });
+    await resolver.resolve({ 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] }, context());
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    resetAccountInfoCache();
+    await resolver.resolve({ 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] }, context());
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses (never the VPC id, nothing cached, retryable) when the live read finds no default group', async () => {
+    mockEc2Send.mockResolvedValue({ SecurityGroups: [] });
+    const context = () => makeContext({ VpcId: 'vpc-0123456789abcdef0' });
+    const refusal = await resolver
+      .resolve({ 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] }, context())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain(
+      'Cannot resolve Fn::GetAtt [MyVpc, DefaultSecurityGroup]'
+    );
+    expect((refusal as Error).message).toContain('no group named "default"');
+    expect(isMarkedNonRetryable(refusal as Error)).toBe(false);
+    await expect(
+      resolver.resolve({ 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] }, context())
+    ).rejects.toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(mockEc2Send).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses when the live read fails, naming the error class only', async () => {
+    mockEc2Send.mockRejectedValue(
+      Object.assign(new Error('arn:aws:sts::123456789012:assumed-role/x/y is not authorized'), {
+        name: 'UnauthorizedOperation',
+        // A non-integer status is not rendered: only what the SDK attaches
+        // as a NUMBER earns the `, HTTP <n>` suffix.
+        $metadata: { httpStatusCode: '403' },
+      })
+    );
+    const refusal = await resolver
+      .resolve(
+        { 'Fn::GetAtt': ['MyVpc', 'DefaultSecurityGroup'] },
+        makeContext({ VpcId: 'vpc-0123456789abcdef0' })
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((refusal as Error).message).toContain(
+      'DescribeSecurityGroups failed (UnauthorizedOperation)'
+    );
+    expect((refusal as Error).message).not.toContain('HTTP');
+    expect((refusal as Error).message).not.toContain('assumed-role');
+    expect(isMarkedNonRetryable(refusal as Error)).toBe(false);
+  });
+});
+
+describe('IntrinsicFunctionResolver - AWS::CloudFront::Distribution DomainName (live GetDistribution, #3096)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    mockCloudFrontSend.mockReset();
+  });
+
+  const makeContext = (attributes: Record<string, unknown>): ResolverContext => ({
+    template: { Resources: { Dist: { Type: 'AWS::CloudFront::Distribution', Properties: {} } } },
+    resources: {
+      Dist: {
+        physicalId: 'E1ABCDEF2GHIJK',
+        resourceType: 'AWS::CloudFront::Distribution',
+        properties: {},
+        attributes,
+        dependencies: [],
+      },
+    },
+  });
+
+  it('refuses a physical id that is not a distribution id (upper-case alphanumerics) before the cache read, with no AWS call', async () => {
+    mockCloudFrontSend.mockRejectedValue(new Error('must not be called'));
+    for (const physicalId of ['constructor', '__proto__', 'e1abcdef2ghijk', 'E1ABC*']) {
+      const refusal = await resolver
+        .resolve({ 'Fn::GetAtt': ['Dist', 'DomainName'] }, {
+          template: { Resources: { Dist: { Type: 'AWS::CloudFront::Distribution', Properties: {} } } },
+          resources: {
+            Dist: {
+              physicalId,
+              resourceType: 'AWS::CloudFront::Distribution',
+              properties: {},
+              attributes: {},
+              dependencies: [],
+            },
+          },
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(refusal, physicalId).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect((refusal as Error).message).toContain('is not a distribution id');
+      expect(isMarkedNonRetryable(refusal as Error)).toBe(true);
+    }
+    expect(mockCloudFrontSend).not.toHaveBeenCalled();
+  });
+
+  it('re-reads DomainName live when the record omits it, caches it, and answers Id from the physical id', async () => {
+    mockCloudFrontSend.mockResolvedValue({
+      Distribution: { Id: 'E1ABCDEF2GHIJK', DomainName: 'd111111abcdef8.cloudfront.net' },
+    });
+    const context = () => makeContext({ Id: 'E1ABCDEF2GHIJK' });
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Dist', 'DomainName'] }, context())).toBe(
+      'd111111abcdef8.cloudfront.net'
+    );
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Dist', 'DomainName'] }, context())).toBe(
+      'd111111abcdef8.cloudfront.net'
+    );
+    expect(mockCloudFrontSend).toHaveBeenCalledTimes(1);
+    const cmd = mockCloudFrontSend.mock.calls[0]![0] as {
+      constructor: { name: string };
+      input: { Id: string };
+    };
+    expect(cmd.constructor.name).toBe('GetDistributionCommand');
+    expect(cmd.input.Id).toBe('E1ABCDEF2GHIJK');
+    // `Id` needs no read: the physical id IS the distribution id.
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Dist', 'Id'] }, makeContext({}))).toBe(
+      'E1ABCDEF2GHIJK'
+    );
+    expect(mockCloudFrontSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('resetAccountInfoCache clears the cached DomainName, so the next resolution re-reads', async () => {
+    mockCloudFrontSend.mockResolvedValue({
+      Distribution: { Id: 'E1ABCDEF2GHIJK', DomainName: 'd111111abcdef8.cloudfront.net' },
+    });
+    const context = () => makeContext({ Id: 'E1ABCDEF2GHIJK' });
+    await resolver.resolve({ 'Fn::GetAtt': ['Dist', 'DomainName'] }, context());
+    expect(mockCloudFrontSend).toHaveBeenCalledTimes(1);
+    resetAccountInfoCache();
+    await resolver.resolve({ 'Fn::GetAtt': ['Dist', 'DomainName'] }, context());
+    expect(mockCloudFrontSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses (never the distribution id, nothing cached, retryable) when GetDistribution reports no DomainName or fails', async () => {
+    mockCloudFrontSend.mockResolvedValue({ Distribution: { Id: 'E1ABCDEF2GHIJK' } });
+    const context = () => makeContext({ Id: 'E1ABCDEF2GHIJK' });
+    const empty = await resolver
+      .resolve({ 'Fn::GetAtt': ['Dist', 'DomainName'] }, context())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(empty).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((empty as Error).message).toContain('GetDistribution reports no DomainName');
+    expect(isMarkedNonRetryable(empty as Error)).toBe(false);
+
+    mockCloudFrontSend.mockRejectedValue(
+      Object.assign(new Error('arn:aws:sts::123456789012:assumed-role/x/y is not authorized'), {
+        name: 'AccessDenied',
+      })
+    );
+    const failed = await resolver
+      .resolve({ 'Fn::GetAtt': ['Dist', 'DomainName'] }, context())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(failed).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect((failed as Error).message).toContain('GetDistribution failed (AccessDenied)');
+    expect((failed as Error).message).not.toContain('assumed-role');
+    expect(isMarkedNonRetryable(failed as Error)).toBe(false);
+    // Neither outcome was cached: two resolutions, two reads.
+    expect(mockCloudFrontSend).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('IntrinsicFunctionResolver - AWS::RDS::DBProxy / DBProxyEndpoint VpcId (refusal only, #3096)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  it('leaves every other DBProxy attribute on the generic fallback (Endpoint warns and answers the name)', async () => {
+    const context: ResolverContext = {
+      template: { Resources: { Proxy: { Type: 'AWS::RDS::DBProxy', Properties: {} } } },
+      resources: {
+        Proxy: {
+          physicalId: 'my-proxy',
+          resourceType: 'AWS::RDS::DBProxy',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+    // `Endpoint` carries no shape the fallback can refuse on, so it takes
+    // the warn-and-return arm — the VpcId refusal must not widen to it.
+    expect(await resolver.resolve({ 'Fn::GetAtt': ['Proxy', 'Endpoint'] }, context)).toBe(
+      'my-proxy'
+    );
+    expect(resolver.getPhysicalIdFallbackCount()).toBe(1);
+  });
+
+  for (const [resourceType, physicalId] of [
+    ['AWS::RDS::DBProxy', 'my-proxy'],
+    ['AWS::RDS::DBProxyEndpoint', 'my-proxy-endpoint'],
+  ] as const) {
+    it(`${resourceType}: serves a recorded VpcId, and refuses (marked non-retryable) an omitted one instead of the name`, async () => {
+      const makeContext = (attributes: Record<string, unknown>): ResolverContext => ({
+        template: { Resources: { Proxy: { Type: resourceType, Properties: {} } } },
+        resources: {
+          Proxy: { physicalId, resourceType, properties: {}, attributes, dependencies: [] },
+        },
+      });
+      expect(
+        await resolver.resolve({ 'Fn::GetAtt': ['Proxy', 'VpcId'] }, makeContext({ VpcId: 'vpc-0abc' }))
+      ).toBe('vpc-0abc');
+
+      const refusal = await resolver
+        .resolve({ 'Fn::GetAtt': ['Proxy', 'VpcId'] }, makeContext({ Endpoint: 'x.rds.amazonaws.com' }))
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(refusal).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      expect((refusal as Error).message).toContain(`Cannot resolve Fn::GetAtt [Proxy, VpcId] for ${resourceType}`);
+      expect((refusal as Error).message).toContain(physicalId);
+      // No live read exists for this arm, so the verdict is read off the
+      // persisted record alone -- marked, per the #1838 rule.
+      expect(isMarkedNonRetryable(refusal as Error)).toBe(true);
+    });
+  }
 });
 
 describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {

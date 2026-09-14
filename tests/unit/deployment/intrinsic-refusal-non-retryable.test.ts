@@ -15,7 +15,9 @@
  *
  * The FOURTH — the #1730 fabricated-account guard — is deliberately left
  * unmarked, which is why the marking is at each `throw` rather than in the
- * class constructor. That is fenced at the SITE (drive the real refusal with a
+ * class constructor. Issue #3096's `refuseUnservedAttribute` is the second
+ * unmarked site (a live read that can succeed next time); its behavioural
+ * fences live beside its arms in `intrinsic-functions.test.ts`. That is fenced at the SITE (drive the real refusal with a
  * rejecting STS and assert it is NOT marked), not merely at the constructor: a
  * constructor-only assertion stays green when a marker is added at the throw,
  * so it would pin the mechanism while leaving the decision unguarded.
@@ -238,11 +240,111 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // A floor, so a regex that stops matching cannot pass vacuously.
     expect(marked.length).toBeGreaterThanOrEqual(6);
 
-    // EXACTLY ONE deliberate exception: the #1730 fabricated-account guard,
-    // whose behavioural fence is the test above. Identified by its message
-    // rather than by a line number, which every edit above it would shift.
-    expect(unmarked).toHaveLength(1);
-    const exception = lines.slice(unmarked[0]! - 1, unmarked[0]! + 6).join('\n');
-    expect(exception).toContain('STS did not report');
+    // EXACTLY TWO deliberate exceptions, each identified by its message rather
+    // than by a line number, which every edit above it would shift: the #1730
+    // fabricated-account guard (behavioural fence: the test above) and the
+    // #3096 live-read refusal `refuseUnservedAttribute` raises for the EC2
+    // Instance / VPC `DefaultSecurityGroup` / CloudFront `DomainName` arms
+    // (behavioural fences: `intrinsic-functions.test.ts`, which asserts
+    // `isMarkedNonRetryable` false on each arm). ONE construction site serves
+    // all three arms, which is why it is one census entry; the #3096 DBProxy
+    // `VpcId` refusal beside them has no live read and is MARKED, so it lands
+    // in `marked` above.
+    expect(unmarked).toHaveLength(2);
+    const windows = unmarked.map((line) => lines.slice(line - 1, line + 6).join('\n'));
+    expect(windows.some((w) => w.includes('STS did not report'))).toBe(true);
+    expect(windows.some((w) => w.includes('so cdkd refuses to substitute it'))).toBe(true);
+  });
+
+  it('the three live-read caches are null-prototype objects, so a prototype-keyed physical id can never read a function out of them (#3096)', () => {
+    // Defence in depth behind the shape guards (`vpc-<hex>`, upper-case
+    // alphanumerics), which refuse `constructor` / `__proto__` before any cache
+    // read; the EC2 cache key carries a `#`, so no physical id can spell a
+    // prototype key there at all. No behavioural case can therefore reach a
+    // plain `{}` today — which is exactly why this is pinned at the SOURCE:
+    // a guard moved back below its cache read would re-open the read the
+    // delta review measured, and the cache must not be the thing that fails.
+    const source = readFileSync(
+      new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url),
+      'utf8'
+    );
+    for (const cache of [
+      'cachedEc2InstanceAttributes',
+      'cachedVpcDefaultSecurityGroups',
+      'cachedCloudFrontDomainNames',
+    ]) {
+      const decl = new RegExp(
+        `const ${cache}: Record<string, string> = Object\\.create\\(null\\) as Record<\\s*string,\\s*string\\s*>;`
+      );
+      expect(decl.test(source), `${cache} is not declared null-prototype`).toBe(true);
+    }
+  });
+
+  it('every `observed:` clause handed to refuseUnservedAttribute is built from a literal, an error class or a masked name (#3096)', () => {
+    // `refuseUnservedAttribute` interpolates `observed` UNMASKED under a
+    // `not-in-class(observed)` note that asserts a property of its CALLERS:
+    // the clause is a cdkd-authored sentence carrying an instance STATE
+    // name, an error CLASS name, or a masked attribute name — never a
+    // resolved template value. `scripts/check-resolver-mask-coverage.ts`
+    // audits throw / log statements, and the clause is assembled at the CALL
+    // site, outside that population — so the note is a claim the checker
+    // cannot see. This pins it at the source: each `observed:` argument is
+    // either a string literal, a `describeFailureObserved(...)` call, or a
+    // template literal whose only holes are `this.maskSecretsForLog(...)` and
+    // `observedState` (the EC2 state enum). A fourth shape fails here.
+    const source = readFileSync(
+      new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url),
+      'utf8'
+    );
+    const observedArgs = [...source.matchAll(/^\s*observed:\s*(.+?),?\n/gm)]
+      .map((m) => m[1]!)
+      // The helper's own parameter type (`observed: string;`) is the one
+      // `observed:` line that is not a call-site argument.
+      .filter((arg) => !arg.endsWith(';'));
+    // A floor derived from the arms this PR added (EC2 empty / failed, VPC
+    // empty / failed, CloudFront empty / failed), so a regex that stops
+    // matching cannot pass vacuously.
+    expect(observedArgs.length).toBeGreaterThanOrEqual(6);
+    // WHOLE-expression anchors, never prefixes (delta review of #3096): a
+    // leading quote admitted `'literal ' + physicalId`, and a leading masker
+    // call admitted `${this.maskSecretsForLog(x, context) + physicalId}`.
+    const LITERAL = /^'[^'+`]*'$/;
+    const DESCRIBE_FAILURE = /^this\.describeFailureObserved\('[A-Za-z]+', err, context\)$/;
+    // `attributeName` by NAME, not any identifier: a masked resolved value
+    // (`maskSecretsForLog(physicalId, context)`) would satisfy "masked" while
+    // contradicting the `not-in-class(observed)` note, which promises a state
+    // name, an error class or the attribute NAME (closing probe of #3096).
+    const MASKED_HOLE = /^this\.maskSecretsForLog\(attributeName, context\)$/;
+    for (const arg of observedArgs) {
+      if (LITERAL.test(arg) || DESCRIBE_FAILURE.test(arg)) continue;
+      const holes = [...arg.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]!.trim());
+      expect(holes.length, arg).toBeGreaterThan(0);
+      for (const hole of holes) {
+        expect(
+          hole === 'observedState' || MASKED_HOLE.test(hole),
+          `unmasked hole in observed clause: ${hole}`
+        ).toBe(true);
+      }
+      // By CONSTRUCTION, not by exclusion (closing review round of #3096: a
+      // deny-list of `+` still admitted `.concat(physicalId)`, `||` and a
+      // ternary between two backtick-bounded ends): with the holes removed,
+      // what is left must be ONE template literal and nothing else — no
+      // operator, no call, no second literal after the closing backtick.
+      // The extraction reads the `observed:` LINE, so an operator led onto
+      // the next line is invisible here; `vp check`'s format gate folds such
+      // a continuation back onto this line (measured on eight shapes), and a
+      // re-binding of `observedState` inside the arm trips lint on the
+      // pinned outer `const`. State that as the fence's reach, not more.
+      expect(arg.replace(/\$\{[^}]*\}/g, ''), arg).toMatch(/^`[^`]*`$/);
+    }
+    // `observedState` is admitted by NAME, so pin its ONE initializer to the
+    // EC2 state enum: a sibling `const observedState = physicalId` would
+    // otherwise ride the name through.
+    const initializers = [...source.matchAll(/const observedState =\s*([^;]*);/g)].map((m) =>
+      m[1]!.replace(/\s+/g, ' ').trim()
+    );
+    expect(initializers).toEqual([
+      "stateName === undefined ? 'no instance state' : `state ${stateName}`",
+    ]);
   });
 });

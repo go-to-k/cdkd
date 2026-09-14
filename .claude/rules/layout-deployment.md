@@ -476,8 +476,8 @@ Index of every area: [code-layout.md](code-layout.md).
     `error-handler.ts` imports from this zero-import graph leaf — the edge
     cannot cycle. **Marking is NOT the default for a deliberate refusal**:
     `IntrinsicResolutionRefusalError` stays unmarked (its fabricated-account
-    arm is genuinely time-dependent — `getAccountInfo` caches a fabricated
-    answer for 10s so a later attempt can heal); `ProvisioningError` /
+    arm and the #3096 live-read refusals in `refuseUnservedAttribute` are
+    time-dependent); `ProvisioningError` /
     `CdkdError` stay unmarked (they wrap RELAYED AWS failures). The test is
     "can this succeed on a retry", not "did cdkd author it".
 - **src/deployment/retry.ts** - Retry helper used by DeployEngine.

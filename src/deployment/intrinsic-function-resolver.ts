@@ -9,8 +9,10 @@ import {
   DescribeAvailabilityZonesCommand,
   DescribeInstancesCommand,
   DescribeLaunchTemplatesCommand,
+  DescribeSecurityGroupsCommand,
   DescribeVpcsCommand,
 } from '@aws-sdk/client-ec2';
+import { GetDistributionCommand } from '@aws-sdk/client-cloudfront';
 import type { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
@@ -22,6 +24,7 @@ import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/ro
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { stripControlChars } from '../utils/regexp.js';
+import { displaySafe } from '../utils/display-safe.js';
 import {
   s3BucketArn,
   s3BucketDomainName,
@@ -71,6 +74,7 @@ import {
 import { S3StateBackend } from '../state/s3-state-backend.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
+import { isSettledInstanceState } from '../provisioning/ec2-instance-state.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
@@ -1371,10 +1375,47 @@ const recordedSecretExpressions = {
  * lookup (PrivateIp / PublicIp / PrivateDnsName / PublicDnsName /
  * AvailabilityZone). Keyed by `${physicalId}#${attributeName}`. The IP /
  * DNS attributes are not derivable from the instance id, so they are read
- * back from AWS once per (instance, attribute) and memoized for the deploy
- * lifetime.
+ * back from AWS once per (instance, attribute) and memoized for the PROCESS
+ * lifetime — one `cdkd deploy` per CLI process, so "the deploy" in practice;
+ * nothing in `src/` calls `resetAccountInfoCache`, tests do. Only a VALUE is cached — a settled instance's address, or the
+ * known-empty `''` a settled instance reports for a public member it has
+ * none of — never a refusal: a `pending` instance is re-described on the
+ * next resolution, when it may have settled (issue #3096).
  */
-const cachedEc2InstanceAttributes: Record<string, string> = {};
+const cachedEc2InstanceAttributes: Record<string, string> = Object.create(null) as Record<
+  string,
+  string
+>;
+
+/**
+ * The two sibling caches of {@link cachedEc2InstanceAttributes} (issue
+ * #3096), each holding a value the resolver read LIVE because the state
+ * record omitted it — `definedAttributes` drops a member the provider could
+ * not read back (issue #3077), so the `Fn::GetAtt` falls out of the flat
+ * lookup and into `constructAttribute`'s per-type arm. Keyed by physical id
+ * (AWS-minted, unique across accounts and regions, and the value — a default
+ * security group id, a distribution hostname — never changes); like the
+ * instance cache, a refusal caches nothing. Same process lifetime, cleared
+ * together with it by {@link resetAccountInfoCache}. The RDS `DBProxy` / `DBProxyEndpoint`
+ * `VpcId` arms have no cache because they have no live read: `AwsClients`
+ * exposes no RDS client and this file imports none, so those two arms refuse
+ * outright (see `refuseUnservedAttribute`'s callers).
+ *
+ * All three are NULL-PROTOTYPE objects (#3096 delta review, measured): the
+ * key is a state-record physical id, and on a plain `{}` a record holding
+ * `constructor` / `__proto__` / `hasOwnProperty` read a FUNCTION out of
+ * `Object.prototype` as the cached value — served with zero AWS calls, ahead
+ * of every shape guard below. `Object.create(null)` has nothing to read; the
+ * `delete`-based clears in `resetAccountInfoCache` keep the prototype.
+ */
+const cachedVpcDefaultSecurityGroups: Record<string, string> = Object.create(null) as Record<
+  string,
+  string
+>;
+const cachedCloudFrontDomainNames: Record<string, string> = Object.create(null) as Record<
+  string,
+  string
+>;
 
 /**
  * The region this call answers for: the caller's override, else the ambient one.
@@ -2030,9 +2071,16 @@ export function resetAccountInfoCache(): void {
   // `recordedSecretValues` bag through a `WeakMap`, so they die with it. A
   // module-level store cleared from here was the first shape, and is what let
   // one stack's expression be certified onto another stack's leaf.
-  // Also reset EC2 instance attribute cache
+  // Also reset the live-read attribute caches (EC2 instance, VPC default
+  // security group, CloudFront domain name — issue #3096).
   for (const key of Object.keys(cachedEc2InstanceAttributes)) {
     delete cachedEc2InstanceAttributes[key];
+  }
+  for (const key of Object.keys(cachedVpcDefaultSecurityGroups)) {
+    delete cachedVpcDefaultSecurityGroups[key];
+  }
+  for (const key of Object.keys(cachedCloudFrontDomainNames)) {
+    delete cachedCloudFrontDomainNames[key];
   }
 }
 
@@ -4741,8 +4789,75 @@ export class IntrinsicFunctionResolver {
             return [];
           }
         }
-        case 'DefaultSecurityGroup':
-          return resource.attributes?.['DefaultSecurityGroup'] || physicalId;
+        case 'DefaultSecurityGroup': {
+          // Reached only when the record OMITS the key: `resolveGetAtt`'s flat
+          // lookup serves any present value first, `''` included.
+          // `EC2Provider.createVpc` records the group id from a post-create
+          // `DescribeSecurityGroups`, and omits the key when that read failed
+          // (issue #3077), so this arm re-reads the same thing the provider
+          // could not. It used to answer `attributes.DefaultSecurityGroup ||
+          // physicalId` — the VPC id in a security-group position, with no
+          // warning (issue #3096). A `vpc-...` can never satisfy an `sg-...`
+          // slot, so a read that fails or finds nothing REFUSES instead;
+          // unmarked, because the read can succeed on a retry.
+          // The id goes into an EC2 FILTER value, and filters read `*` / `?`
+          // as wildcards: a state record holding `vpc-*` would match every
+          // VPC and serve another VPC's default group (#3096 security round).
+          // Refused BEFORE the cache read AND the describe (the cache is keyed
+          // by this id), and marked: the verdict is read off the persisted
+          // record, which no retry rewrites, and the message interpolates the
+          // logical id (#1838).
+          if (!/^vpc-[0-9a-f]+$/.test(physicalId)) {
+            // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
+            throw markNonRetryable(
+              new IntrinsicResolutionRefusalError(
+                `Cannot resolve Fn::GetAtt [${logicalId}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
+                  `state record's physical id "${displaySafe(this.maskThenStripThenMask(physicalId, context)).slice(0, 64)}" ` +
+                  `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
+                  `record (cdkd import, or re-create the VPC) and deploy again.`
+              )
+            );
+          }
+          const cachedGroupId = cachedVpcDefaultSecurityGroups[physicalId];
+          if (cachedGroupId !== undefined) return cachedGroupId;
+          let groupId: string | undefined;
+          try {
+            const ec2 = this.clientsForRegion(this.explicitRegion).ec2;
+            const resp = await ec2.send(
+              new DescribeSecurityGroupsCommand({
+                Filters: [
+                  { Name: 'vpc-id', Values: [physicalId] },
+                  { Name: 'group-name', Values: ['default'] },
+                ],
+              })
+            );
+            groupId = resp.SecurityGroups?.[0]?.GroupId;
+          } catch (err) {
+            this.refuseUnservedAttribute({
+              logicalId,
+              attributeName,
+              resourceType,
+              physicalId,
+              context,
+              observed: this.describeFailureObserved('DescribeSecurityGroups', err, context),
+              remedy:
+                'Fix the read (the vpc-id / group-name filtered DescribeSecurityGroups permission, or the region) and deploy again.',
+            });
+          }
+          if (groupId) {
+            cachedVpcDefaultSecurityGroups[physicalId] = groupId;
+            return groupId;
+          }
+          this.refuseUnservedAttribute({
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: 'DescribeSecurityGroups found no group named "default" in the VPC',
+            remedy: 'Check the VPC in the console, or reference the attribute from a later deploy.',
+          });
+        }
         default:
           return this.guardedPhysicalIdFallback(
             logicalId,
@@ -5423,6 +5538,12 @@ export class IntrinsicFunctionResolver {
     // default did — handed the instance id to a downstream consumer expecting
     // an IP (e.g. an ELBv2 IP-target group registration, which rejects
     // `i-...` with `not a valid IPv4 address`).
+    //
+    // Reached only when the record OMITS the attribute: `resolveGetAtt`'s
+    // flat lookup serves any stored value first, `''` included. Since issue
+    // #3077 `EC2Provider` omits a public member only while the instance is
+    // `pending` (a `--no-wait` create) and records a settled instance's
+    // missing public address as the known `''` CloudFormation reports.
     if (resourceType === 'AWS::EC2::Instance') {
       switch (attributeName) {
         case 'InstanceId':
@@ -5439,17 +5560,18 @@ export class IntrinsicFunctionResolver {
           if (cached !== undefined) {
             return cached;
           }
+          let value: string | undefined;
+          let stateName: string | undefined;
           try {
             // Region-sensitive: an instance id only resolves in its own region,
             // and a foreign-region client answers `InvalidInstanceID.NotFound`,
-            // which lands in the catch below and degrades to the physical-id
-            // fallback this branch exists to avoid (issue #1957).
+            // which lands in the catch below (issue #1957).
             const clients = this.clientsForRegion(this.explicitRegion);
             const response = await clients.ec2.send(
               new DescribeInstancesCommand({ InstanceIds: [physicalId] })
             );
             const instance = response.Reservations?.[0]?.Instances?.[0];
-            let value: string | undefined;
+            stateName = instance?.State?.Name;
             switch (attributeName) {
               case 'PrivateIp':
                 value = instance?.PrivateIpAddress;
@@ -5467,21 +5589,62 @@ export class IntrinsicFunctionResolver {
                 value = instance?.Placement?.AvailabilityZone;
                 break;
             }
-            if (value !== undefined && value !== null && value !== '') {
-              cachedEc2InstanceAttributes[cacheKey] = value;
-              return value;
-            }
-            // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
-            this.logger.warn(
-              `DescribeInstances(${physicalId}) returned no ${this.maskSecretsForLog(attributeName, context)}; returning physical ID`
-            );
           } catch (err) {
-            // not-in-class(physicalId): an AWS-assigned PHYSICAL ID from the state record, not a resolved value.
-            this.logger.warn(
-              `DescribeInstances(${physicalId}) failed for ${this.maskSecretsForLog(attributeName, context)}: ${this.maskSecretsForLog(err instanceof Error ? err.message : String(err), context)}`
-            );
+            // The instance id is the WRONG value for every one of these
+            // attributes, so a failed read is a refusal, not a fallback (issue
+            // #3096). Unmarked: the read can succeed on a retry.
+            this.refuseUnservedAttribute({
+              logicalId,
+              attributeName,
+              resourceType,
+              physicalId,
+              context,
+              observed: this.describeFailureObserved('DescribeInstances', err, context),
+              remedy:
+                'Fix the read (the ec2:DescribeInstances permission, or the region) and deploy again.',
+            });
           }
-          return physicalId;
+          if (value !== undefined && value !== null && value !== '') {
+            cachedEc2InstanceAttributes[cacheKey] = value;
+            return value;
+          }
+          // The SAME three-state rule `EC2Provider.describedInstanceAttributes`
+          // records by (issue #3077), through the ONE shared predicate
+          // (`isSettledInstanceState`), applied at resolution time: a SETTLED
+          // instance (any reported state but `pending`) with no public address
+          // is a private-subnet instance, and CloudFormation answers `''` for
+          // `PublicIp` / `PublicDnsName` there. It is a known value, so it is
+          // cached like an address. Without this arm a `--no-wait` create in a
+          // private subnet — whose record omits the pair and is never rewritten
+          // by a no-change deploy — would refuse on every later resolution
+          // (the residual that provider's doc comment tracked on #3096).
+          const settled = isSettledInstanceState(stateName);
+          if (settled && (attributeName === 'PublicIp' || attributeName === 'PublicDnsName')) {
+            cachedEc2InstanceAttributes[cacheKey] = '';
+            return '';
+          }
+          // Still `pending` (a `--no-wait` create read moments after launch),
+          // or a settled instance with no private address / zone at all (a
+          // terminated one, or a describe that returned no instance). Before
+          // #3096 this warned `returning physical ID` and handed the instance
+          // id to the consumer — an Output or an export carried it silently.
+          // Nothing is cached: the next resolution re-describes, when the
+          // instance may have settled. Unmarked for the same reason.
+          // `stateName` is an EC2 state enum value (`pending` / `running` /
+          // ...) from the describe, never a resolved template value.
+          const observedState =
+            stateName === undefined ? 'no instance state' : `state ${stateName}`;
+          this.refuseUnservedAttribute({
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: `DescribeInstances reports no ${this.maskSecretsForLog(attributeName, context)} yet (${observedState})`,
+            remedy: settled
+              ? 'Check the instance in the console; a terminated or stopped instance has no such attribute to serve.'
+              : 'Deploy without --no-wait so the instance is running before its attributes are read, or reference the attribute from a later deploy once it is.',
+          });
         }
         default:
           return this.guardedPhysicalIdFallback(
@@ -5546,6 +5709,110 @@ export class IntrinsicFunctionResolver {
       );
     }
 
+    // CloudFront Distribution — `DomainName` is the AWS-assigned hostname
+    // (`d111111abcdef8.cloudfront.net`), recorded by the provider from the
+    // create / update response and omitted when that response lacked it
+    // (issue #3077). The distribution id can never stand in for a hostname,
+    // so the arm re-reads it live rather than falling to
+    // `guardedPhysicalIdFallback` (issue #3096). `Id` IS the physical id.
+    if (resourceType === 'AWS::CloudFront::Distribution') {
+      switch (attributeName) {
+        case 'Id':
+          return physicalId;
+        case 'DomainName': {
+          // A distribution id is `E` + 13 upper-case alphanumerics. Refused
+          // before the cache read (keyed by this id) and the `GetDistribution`
+          // it would parameterise; marked, since the record decides it.
+          if (!/^[A-Z0-9]+$/.test(physicalId)) {
+            // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
+            throw markNonRetryable(
+              new IntrinsicResolutionRefusalError(
+                `Cannot resolve Fn::GetAtt [${logicalId}, DomainName] for AWS::CloudFront::Distribution: the ` +
+                  `state record's physical id "${displaySafe(this.maskThenStripThenMask(physicalId, context)).slice(0, 64)}" ` +
+                  `is not a distribution id (upper-case alphanumerics), so cdkd will not look it up. Repair the ` +
+                  `record (cdkd import, or re-create the distribution) and deploy again.`
+              )
+            );
+          }
+          const cachedDomainName = cachedCloudFrontDomainNames[physicalId];
+          if (cachedDomainName !== undefined) return cachedDomainName;
+          let domainName: string | undefined;
+          try {
+            // CloudFront is a global service; `AwsClients.cloudFront` answers
+            // for any region, so the ambient / `--region` bag is the right one.
+            const cloudFront = this.clientsForRegion(this.explicitRegion).cloudFront;
+            const resp = await cloudFront.send(new GetDistributionCommand({ Id: physicalId }));
+            domainName = resp.Distribution?.DomainName;
+          } catch (err) {
+            this.refuseUnservedAttribute({
+              logicalId,
+              attributeName,
+              resourceType,
+              physicalId,
+              context,
+              observed: this.describeFailureObserved('GetDistribution', err, context),
+              remedy: 'Fix the read (the cloudfront:GetDistribution permission) and deploy again.',
+            });
+          }
+          if (domainName) {
+            cachedCloudFrontDomainNames[physicalId] = domainName;
+            return domainName;
+          }
+          this.refuseUnservedAttribute({
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context,
+            observed: 'GetDistribution reports no DomainName',
+            remedy:
+              'Check the distribution in the console, or reference the attribute from a later deploy.',
+          });
+        }
+        default:
+          return this.guardedPhysicalIdFallback(
+            logicalId,
+            attributeName,
+            resourceType,
+            physicalId,
+            context
+          );
+      }
+    }
+
+    // RDS DBProxy / DBProxyEndpoint — `VpcId` is read from `DescribeDBProxies`
+    // / `DescribeDBProxyEndpoints` by the provider and omitted when the
+    // response lacked it (issue #3077). The proxy / endpoint NAME can never
+    // satisfy a `VpcId` position, and this file has no RDS client to re-read
+    // it with (`AwsClients` exposes none), so the arm is a refusal only — a
+    // VALUE-TYPED one, decided from the omitted key and the attribute name
+    // (issue #3096). Marked non-retryable, unlike the live-read arms above:
+    // no retry of this deploy rewrites the state record it is read from, and
+    // the message interpolates the logical id (#1838). The next `update()` of
+    // the resource records the key.
+    if (resourceType === 'AWS::RDS::DBProxy' || resourceType === 'AWS::RDS::DBProxyEndpoint') {
+      if (attributeName === 'VpcId') {
+        // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
+        // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
+        throw markNonRetryable(
+          new IntrinsicResolutionRefusalError(
+            `Cannot resolve Fn::GetAtt [${logicalId}, ${this.maskSecretsForLog(attributeName, context)}] for ${resourceType}: ` +
+              `the state record holds no VpcId for it (the read-back that would have recorded it reported none), ` +
+              `and the physical id "${displaySafe(this.maskThenStripThenMask(physicalId, context))}" is a name, not a VPC id, so cdkd ` +
+              `refuses to substitute it. Update the resource so its next deploy records the value, or reference ` +
+              `the VPC directly.`
+          )
+        );
+      }
+      return this.guardedPhysicalIdFallback(
+        logicalId,
+        attributeName,
+        resourceType,
+        physicalId,
+        context
+      );
+    }
+
     // Default: fall back to the physical ID via the shared shape guard
     // (issue #1106 / #1111 — the same rules apply to every per-type
     // `default:` branch above).
@@ -5556,6 +5823,110 @@ export class IntrinsicFunctionResolver {
       physicalId,
       context
     );
+  }
+
+  /**
+   * Refuse an attribute the state record omits and a live read could not
+   * serve (issue [#3096](https://github.com/go-to-k/cdkd/issues/3096)).
+   *
+   * The arms that call this all share one shape: the provider recorded no
+   * value because AWS had not assigned one yet or the read-back failed (issue
+   * #3077 made the key ABSENT rather than `''`), the resolver re-reads it
+   * live, and the read finds nothing — or fails. Before #3096 every such arm
+   * answered the PHYSICAL ID: an `i-...` where an IP address or a DNS name
+   * belongs, a `vpc-...` in a security-group slot, a distribution id where a
+   * hostname belongs, a proxy name in a `VpcId` position. Loud only where AWS
+   * rejects the shape; an Output, an export or a free-text property carried it
+   * silently. The physical id can never be the value for these attributes,
+   * so the honest answer is a refusal naming the resource, the attribute, what
+   * was observed and the remedy.
+   *
+   * DELIBERATELY NOT `markNonRetryable`, unlike every other refusal in this
+   * file but the fabricated-account guard: the verdict is TIME-DEPENDENT. A
+   * `pending` instance settles seconds later, and a failed describe can
+   * succeed on the next attempt, so cdkd must not DECLARE it terminal — the
+   * marker is that declaration, and `withRetry` honours it ahead of every
+   * classifier. Leaving it off promises no retry: `isRetryableTransientError`
+   * reads throttle names and HTTP statuses off the `cause` chain — which this
+   * refusal deliberately does not carry, see below — and everything else by
+   * message substring, and this message matches nothing on its own. So the
+   * nested-stack replay (`NestedStackProvider.create` runs the child deploy
+   * inside the parent's `withRetry`) re-runs the child only when an
+   * interpolated hole happens to carry a pattern — the `logicalId` (the #1838
+   * hazard: `DependencyViolation` and two other bare words), or the error
+   * CLASS name `describeFailureObserved` puts in `observed`, which none of
+   * these three reads raises — and then re-describes and can heal.
+   * Measured, not designed: the fabricated-account guard sits in exactly the
+   * same place. Threading a sanitized SDK error as `cause` so a throttled
+   * describe classifies as transient was considered and left out — a
+   * `CdkdError`'s `cause` is rendered at default verbosity by `formatError`
+   * (`Caused by:`), so the clone would need its own fence. What the
+   * refusal does at each consumer: a resource property fails the resource; a
+   * stack Output is caught per-output by `DeployEngine.
+   * handleOutputResolutionFailure`, skipped and recorded in `skippedOutputs`
+   * (#2740), then re-resolved on the next deploy; an `Fn::Sub` re-raises it
+   * (#1740); a `Conditions` entry still absorbs it to `false`
+   * (`evaluateConditions`).
+   *
+   * `observed` and `remedy` are cdkd-authored sentences built by the caller
+   * from an instance STATE name, an error CLASS name or a fixed phrase — never
+   * AWS's raw message, which `describeFailureObserved` keeps at debug (the
+   * per-reader rule in `.claude/rules/provider-resource-identity.md`: a
+   * denied describe quotes the caller's account, role and session).
+   */
+  private refuseUnservedAttribute(site: {
+    logicalId: string;
+    attributeName: string;
+    resourceType: string;
+    physicalId: string;
+    context: ResolverContext;
+    observed: string;
+    remedy: string;
+  }): never {
+    const { logicalId, attributeName, resourceType, physicalId, context, observed, remedy } = site;
+    // not-in-class(logicalId): a LOGICAL ID. CloudFormation requires a static string, so it is never a resolution result -- resolveGetAtt resolves only the ATTRIBUTE half.
+    // not-in-class(resourceType): a TYPE name from the template or from AWS, not a value.
+    // not-in-class(observed): a cdkd-authored sentence built from an AWS state name or an error CLASS name; the raw AWS text stays at debug.
+    // not-in-class(remedy): a cdkd-authored literal chosen by the calling arm.
+    throw new IntrinsicResolutionRefusalError(
+      `Cannot resolve Fn::GetAtt [${logicalId}, ${this.maskSecretsForLog(attributeName, context)}] for ${resourceType}: ` +
+        `${observed}. The physical id "${displaySafe(this.maskThenStripThenMask(physicalId, context))}" is not a usable ` +
+        `${this.maskSecretsForLog(attributeName, context)}, so cdkd refuses to substitute it. ${remedy}`
+    );
+  }
+
+  /**
+   * The `observed` clause of {@link refuseUnservedAttribute} for a live read
+   * that THREW: names the read and the error's CLASS at default verbosity and
+   * puts AWS's own text behind `--verbose`, since a denied describe quotes the
+   * caller's account, role and session into its message.
+   */
+  private describeFailureObserved(read: string, err: unknown, context: ResolverContext): string {
+    // `displaySafe` rather than `stripControlChars`: the latter keeps
+    // `U+2028` / `U+2029`, which a terminal renders as a line break (the
+    // `error-handler.ts` `formatError` rule). An SDK error name is ASCII.
+    // Slice THEN trim, so a cut at a space leaves no trailing one; a name
+    // with no ASCII in it (a hand-rolled mock — SDK names are ASCII) blanks
+    // to nothing, and `Error` is the honest class to print then.
+    // A non-`Error` throw (a string, a rejected plain object) has no class
+    // to name: `Error` is the honest word, not `typeof err`.
+    const name =
+      displaySafe(err instanceof Error && err.name ? err.name : 'Error', { asciiOnly: true })
+        .slice(0, 64)
+        .trim() || 'Error';
+    // The HTTP status, when the SDK attached one, tells an operator apart a
+    // denial (403) from a throttle (429 / 503) without `--verbose`; a network
+    // failure carries a generic `Error` name and no status at all.
+    const status = (err as { $metadata?: { httpStatusCode?: unknown } } | null)?.$metadata
+      ?.httpStatusCode;
+    const errorClass =
+      typeof status === 'number' && Number.isInteger(status) ? `${name}, HTTP ${status}` : name;
+    // not-in-class(read): the AWS API name the calling arm issued, a literal at every call site.
+    // not-in-class(errorClass): the thrown error's CLASS name plus its numeric HTTP status, bounded and display-safe; the message is masked beside it.
+    this.logger.debug(
+      `${read} failed (${errorClass}): ${this.maskSecretsForLog(err instanceof Error ? err.message : String(err), context)}`
+    );
+    return `${read} failed (${errorClass}); re-run with --verbose for the AWS error text`;
   }
 
   /**
@@ -5614,7 +5985,7 @@ export class IntrinsicFunctionResolver {
         new IntrinsicResolutionRefusalError(
           `Cannot resolve Fn::GetAtt [${logicalId}, ${this.maskSecretsForLog(attributeName, context)}] for ${resourceType}: ` +
             `attributes are not enriched for this resource type, and the physical ID ` +
-            `fallback "${this.maskSecretsForLog(physicalId, context)}" is not ${expectedShape}. CloudFormation would return ` +
+            `fallback "${displaySafe(this.maskThenStripThenMask(physicalId, context))}" is not ${expectedShape}. CloudFormation would return ` +
             `a different value here, so falling back to the physical ID would silently ` +
             `produce a wrong value (e.g. in stack Outputs). Avoid this Fn::GetAtt, or ` +
             `file an issue at https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
@@ -5632,7 +6003,7 @@ export class IntrinsicFunctionResolver {
         new IntrinsicResolutionRefusalError(
           `Cannot resolve Fn::GetAtt [${logicalId}, ${this.maskSecretsForLog(attributeName, context)}] for ${resourceType}: ` +
             `attributes are not enriched for this resource type, and --strict-getatt ` +
-            `rejects the physical ID fallback "${this.maskSecretsForLog(physicalId, context)}" (which may not be the value ` +
+            `rejects the physical ID fallback "${displaySafe(this.maskThenStripThenMask(physicalId, context))}" (which may not be the value ` +
             `CloudFormation would return). Drop --strict-getatt to fall back with a ` +
             `warning, avoid this Fn::GetAtt, or file an issue at ` +
             `https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
