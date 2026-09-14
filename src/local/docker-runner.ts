@@ -55,7 +55,7 @@ export interface DockerRunOptions {
    * across `mounts` + `extraMounts`. For Lambda Layers specifically:
    * AWS's "last layer wins on file collision" semantic is realized by
    * the caller (`materializeLambdaLayers` in `local-invoke.ts` /
-   * `local-start-api.ts`) `cpSync`-merging every layer's asset
+   * `local-start-api.ts`) merging every layer's asset
    * directory into ONE host tmpdir in template order, then passing a
    * single `{hostPath: <tmpdir>, containerPath: '/opt'}` entry here —
    * NOT one mount per layer.

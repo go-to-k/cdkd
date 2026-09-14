@@ -1723,11 +1723,11 @@ async function buildContainerSpec(args: {
     // PR 6 (#232): pre-resolve the `/opt` bind-mount source. Single-
     // layer functions reuse the layer's asset dir directly; multi-
     // layer functions get a freshly-merged tmpdir (later layers
-    // overwrite earlier files via `cpSync({force:true})` — the
+    // overwrite earlier files via `copyLayerTreeLastWins` — the
     // load-bearing half of AWS's "last layer wins" semantic).
     //
     // Issue #448: literal-ARN entries are downloaded + unzipped via
-    // `lambda:GetLayerVersion` before the cpSync-merge step. The per-ARN
+    // `lambda:GetLayerVersion` before the merge step. The per-ARN
     // tmpdirs are tracked in `layerTmpDirs` alongside multi-layer merge
     // dirs so the same shutdown path cleans every one.
     optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn);
@@ -2024,12 +2024,12 @@ async function resolveLocalBuildPlan(
  *     when the entry is a same-stack asset. Literal-ARN entries always
  *     pre-materialize first.
  *   - 2+ layers → copy each into a fresh tmpdir IN ORDER (later
- *     layers overwrite earlier files via `cpSync({force: true})`),
+ *     layers overwrite earlier files via `copyLayerTreeLastWins`),
  *     bind-mount the tmpdir at `/opt`. Records the tmpdir in
  *     `layerTmpDirs` so `shutdown(...)` removes it.
  *
  * Issue #448: literal-ARN entries (`{kind: 'arn', ...}`) are downloaded
- * + unzipped via `lambda:GetLayerVersion` BEFORE the cpSync-merge
+ * + unzipped via `lambda:GetLayerVersion` BEFORE the merge
  * branches run. Every per-ARN tmpdir is also recorded in `layerTmpDirs`
  * so the same shutdown path cleans it up — even for the single-layer
  * fast path that bind-mounts the dir directly.
@@ -2065,14 +2065,20 @@ export async function materializeLambdaLayers(
 
   if (flat.length === 1) return flat[0]!.assetPath;
   const dir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-start-api-layers-'));
-  for (const layer of flat) {
-    // Merged in template order with AWS's "last layer wins" semantic, mode
-    // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
-    // the two ways a bare `cpSync` breaks it, are written once on
-    // `copyLayerTreeLastWins` (issue #3106); `local-invoke.ts`'s
-    // `materializeLambdaLayers` is the same call. The `local-invoke-layers`
-    // fixture exercises it end-to-end.
-    copyLayerTreeLastWins(layer.assetPath, dir);
+  try {
+    for (const layer of flat) {
+      // Merged in template order with AWS's "last layer wins" semantic, mode
+      // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
+      // the ways a bare `cpSync` breaks it, are written once on
+      // `copyLayerTreeLastWins` (issue #3106); `local-invoke.ts`'s
+      // `materializeLambdaLayers` is the same call. The `local-invoke-layers`
+      // fixture exercises it end-to-end.
+      copyLayerTreeLastWins(layer.assetPath, dir);
+    }
+  } catch (error) {
+    // Not yet in `layerTmpDirs`, so shutdown would never remove it.
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
   }
   layerTmpDirs.add(dir);
   return dir;

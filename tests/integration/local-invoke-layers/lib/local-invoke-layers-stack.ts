@@ -33,8 +33,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     same path `/opt/nodejs/node_modules/util-greetings/index.js`. The
  *     function declares `Layers: [GreetingsA, GreetingsB, Counters]`,
  *     so the GreetingsB version wins. cdkd implements this on the
- *     host: every layer is `cpSync({recursive: true, force: true})`'d
- *     into a fresh tmpdir IN ORDER — later layers overwrite earlier
+ *     host: every layer is merged (`copyLayerTreeLastWins`) into a
+ *     fresh tmpdir IN ORDER — later layers overwrite earlier
  *     files — and the merged tmpdir is bind-mounted at `/opt:ro`.
  *     (Docker rejects multiple `-v ...:/opt:ro` entries at the same
  *     target — bind mounts are NOT layered the way the OCI image

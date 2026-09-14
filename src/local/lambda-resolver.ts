@@ -47,10 +47,10 @@ interface ResolvedLambdaBase {
    *
    * **Order is load-bearing**: AWS layer semantics are "last layer wins
    * on file collision", so this array preserves the template's input
-   * order. cdkd implements the last-wins rule by `cpSync`-merging every
+   * order. cdkd implements the last-wins rule by merging every
    * layer's asset directory into a single host tmpdir IN TEMPLATE ORDER
-   * (later layers overwrite earlier files via `recursive: true, force:
-   * true`), then bind-mounting the merged tmpdir at `/opt:ro`. Docker
+   * (later layers overwrite earlier files, `copyLayerTreeLastWins`), then
+   * bind-mounting the merged tmpdir at `/opt:ro`. Docker
    * rejects multiple `-v ...:/opt:ro` entries at the same target path
    * (`Error response from daemon: Duplicate mount point: /opt`) — bind
    * mounts are NOT layered the way the OCI image stack is — so the
@@ -766,7 +766,7 @@ function resolveAssetCodePath(
  * **Order is preserved**: `Properties.Layers` is iterated left-to-right
  * and the resulting `ResolvedLambdaLayer[]` carries the same order. The
  * caller (`local-invoke.ts`'s `materializeLambdaLayers` and
- * `local-start-api.ts`'s server-boot pre-merge) `cpSync`-merges every
+ * `local-start-api.ts`'s server-boot pre-merge) merges every
  * entry into one host tmpdir in template order to honor AWS's
  * "last-layer-wins" file-collision semantics — Docker rejects multiple
  * bind mounts at the same target so cdkd cannot rely on overlay

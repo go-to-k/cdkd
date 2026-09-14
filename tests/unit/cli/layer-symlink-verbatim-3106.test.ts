@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { basename } from 'node:path';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { materializeLambdaLayers as materializeForInvoke } from '../../../src/cli/commands/local-invoke.js';
@@ -237,5 +238,44 @@ describe('copyLayerTreeLastWins merges symlinks last-wins without resolving them
     const dest = mergedOf(linkRoot, plainLayer());
     expect(readFileSync(join(dest, 'bin', 'x'), 'utf8')).toBe('x\n');
     expect(readlinkSync(join(dest, 'bin', 'l'))).toBe('x');
+  });
+});
+
+describe('a merge that throws mid-loop removes the tmpdir it had allocated (#3106 round 3)', () => {
+  // A later layer whose asset path does not exist makes the helper throw
+  // after the tmpdir exists; without the guard nobody ever sees that
+  // tmpdir, so it sits in the OS tmp root forever.
+  const missing = join(tmpdir(), 'cdkd-3106-does-not-exist-' + process.pid);
+  const tmpDirsWithPrefix = (prefix: string): string[] =>
+    readdirSync(tmpdir()).filter((n) => n.startsWith(prefix));
+
+  it('cdkd local invoke', () => {
+    const before = tmpDirsWithPrefix('cdkd-local-invoke-layers-');
+    expect(() =>
+      materializeForInvoke([
+        { logicalId: 'Plain', assetPath: plainLayer() },
+        { logicalId: 'Missing', assetPath: missing },
+      ])
+    ).toThrow(/ENOENT/);
+    const leaked = tmpDirsWithPrefix('cdkd-local-invoke-layers-').filter((n) => !before.includes(n));
+    expect(leaked, `leaked ${leaked.map((n) => basename(n)).join(', ')}`).toEqual([]);
+  });
+
+  it('cdkd local start-api', async () => {
+    const before = tmpDirsWithPrefix('cdkd-local-start-api-layers-');
+    const tmpDirs = new Set<string>();
+    await expect(
+      materializeForStartApi(
+        [
+          { kind: 'asset', logicalId: 'Plain', assetPath: plainLayer() },
+          { kind: 'asset', logicalId: 'Missing', assetPath: missing },
+        ],
+        tmpDirs,
+        undefined
+      )
+    ).rejects.toThrow(/ENOENT/);
+    expect(tmpDirs.size).toBe(0);
+    const leaked = tmpDirsWithPrefix('cdkd-local-start-api-layers-').filter((n) => !before.includes(n));
+    expect(leaked, `leaked ${leaked.map((n) => basename(n)).join(', ')}`).toEqual([]);
   });
 });

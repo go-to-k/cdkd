@@ -301,7 +301,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // Track tmpdirs that may be materialized below so the outer `finally`
   // (and the SIGINT handler) can clean them up regardless of where in
   // the function body a failure unwinds. Hoisted out of the previous
-  // try/finally pair: `resolveImagePlan` runs `mkdtempSync` + `cpSync`
+  // try/finally pair: `resolveImagePlan` runs `mkdtempSync` + the layer merge
   // before `runDetached` — if the failure landed between those two
   // calls (`pickFreePort`, `parseDebugPort`, etc.), unwind raced past
   // the per-block finally and we leaked the merged-layers tmpdir
@@ -801,7 +801,7 @@ interface ImagePlan {
    * way the OCI image stack is. AWS Lambda implements layer
    * stacking by extracting each layer's ZIP into `/opt` IN ORDER so
    * later layers overwrite earlier files; cdkd mirrors that on the
-   * host by `cpSync`-merging each layer's asset directory into one
+   * host by merging (`copyLayerTreeLastWins`) each layer's asset directory into one
    * tmpdir and bind-mounting THAT at `/opt`. The single-layer case
    * skips the copy and bind-mounts the layer's asset dir directly.
    * Empty `[]` for container Lambdas and ZIP Lambdas with no layers.
@@ -901,7 +901,7 @@ export async function resolveZipImagePlan(
   //
   // Issue #448: literal-ARN layers (`{kind: 'arn', ...}`) are
   // pre-materialized via `lambda:GetLayerVersion` + presigned-URL
-  // download + unzip BEFORE the same `cpSync`-merge path runs, so the
+  // download + unzip BEFORE the same merge path runs, so the
   // downstream code path is identical for asset-backed and ARN-backed
   // layers. The per-ARN unzip tmpdirs are tracked alongside the merged
   // `/opt` tmpdir so the outer cleanup can remove all of them.
@@ -942,7 +942,7 @@ export async function resolveZipImagePlan(
  *   - Stage 2: the resulting `{logicalId, assetPath}[]` list (in
  *     template order — ARN entries surface their `arn` as the
  *     `logicalId` for log lines) is handed to the existing
- *     `materializeLambdaLayers` `cpSync`-merge path. AWS's "last layer
+ *     `materializeLambdaLayers` merge path. AWS's "last layer
  *     wins" file-collision semantic is preserved across both layer
  *     kinds because the merge step is unchanged.
  */
@@ -1025,7 +1025,7 @@ export function resolveTmpfsForLambda(
  *      than copying since CDK has already unzipped the asset.
  *   3. **Multiple layers**: copies each layer's contents into a fresh
  *      tmpdir IN ORDER (later layers overwrite earlier files via
- *      `cpSync({force: true})`), then bind-mounts the merged tmpdir at
+ *      `copyLayerTreeLastWins`), then bind-mounts the merged tmpdir at
  *      `/opt`. Returns `{ mount, tmpDir: <path> }` so the caller can
  *      `rmSync` the tmpdir on cleanup.
  *
@@ -1045,13 +1045,20 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
     };
   }
   const tmpDir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-invoke-layers-'));
-  for (const layer of layers) {
-    // Merged in template order with AWS's "last layer wins" semantic, mode
-    // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
-    // the two ways a bare `cpSync` breaks it, are written once on
-    // `copyLayerTreeLastWins` (issue #3106); `local-start-api.ts`'s merge is
-    // the same call.
-    copyLayerTreeLastWins(layer.assetPath, tmpDir);
+  try {
+    for (const layer of layers) {
+      // Merged in template order with AWS's "last layer wins" semantic, mode
+      // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
+      // the ways a bare `cpSync` breaks it, are written once on
+      // `copyLayerTreeLastWins` (issue #3106); `local-start-api.ts`'s merge
+      // is the same call.
+      copyLayerTreeLastWins(layer.assetPath, tmpDir);
+    }
+  } catch (error) {
+    // A merge that throws mid-loop has nobody to hand the tmpdir to — the
+    // caller never sees it, so it would sit in the OS tmp root forever.
+    rmSync(tmpDir, { recursive: true, force: true });
+    throw error;
   }
   return {
     mount: { hostPath: tmpDir, containerPath: '/opt', readOnly: true },
