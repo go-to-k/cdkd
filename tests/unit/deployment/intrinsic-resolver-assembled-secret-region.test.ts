@@ -235,6 +235,106 @@ describe('the region a reference resolves in is decided AFTER assembly (issue #2
     }
   });
 
+  it("logs a SHORT secret the region-pinned sibling resolved masked on the Resolved Fn::Join line (issue #3100)", async () => {
+    // Two characters: below the needle floor, so only the log twin the
+    // region-pinned arm writes can mask it on the primary's line.
+    responses.set(`${PRODUCER_REGION}|GetSecretValueCommand`, {
+      SecretString: JSON.stringify({ password: 'x5' }),
+    });
+    const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+    const debug = vi.spyOn(
+      (resolver as unknown as { logger: { debug: (message: string) => void } }).logger,
+      'debug'
+    );
+    const recordedSecretValues = new Map<string, string>();
+
+    const out = await resolver.resolve(
+      {
+        'Fn::Join': [
+          '',
+          ['port:{{resolve:secretsmanager:', PRODUCER_ARN, ':SecretString:password}}'],
+        ],
+      },
+      ctx({ recordedSecretValues })
+    );
+
+    expect(out).toBe('port:x5');
+    expect(askedRegions()).toEqual([PRODUCER_REGION]);
+    // The sibling recorded into the SAME bag, which is what the arm reads.
+    expect(recordedSecretValues.has('x5')).toBe(true);
+    const joinLines = debug.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('Resolved Fn::Join: '));
+    expect(joinLines).toEqual(['Resolved Fn::Join: port:***']);
+  });
+
+  it('a PUBLIC value the region-pinned sibling resolved prints on the consumer’s Join line (issue #3100)', async () => {
+    // The negative of the sibling arm: an ARN-form `ssm` reference to a
+    // `String` parameter in the producer region takes the same arm, and its
+    // twin must be the value, not a mask.
+    responses.set(`${PRODUCER_REGION}|GetParameterCommand`, {
+      Parameter: { Value: 'ireland-host', Type: 'String' },
+    });
+    const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+    const debug = vi.spyOn(
+      (resolver as unknown as { logger: { debug: (message: string) => void } }).logger,
+      'debug'
+    );
+
+    const out = await resolver.resolve(
+      {
+        'Fn::Join': [
+          '',
+          [`host:{{resolve:ssm:arn:aws:ssm:${PRODUCER_REGION}:111122223333:parameter/app/host}}`],
+        ],
+      },
+      ctx({ recordedSecretValues: new Map<string, string>() })
+    );
+
+    expect(out).toBe('host:ireland-host');
+    expect(ssmSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+    const joinLines = debug.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('Resolved Fn::Join: '));
+    expect(joinLines).toEqual(['Resolved Fn::Join: host:ireland-host']);
+  });
+
+  it('a twin the region-pinned sibling registers is visible to the consumer’s Join (issue #3100)', async () => {
+    // The cross-stack re-resolution shape: the SIBLING resolves a whole value
+    // for the consumer, with the consumer's bag, and the consumer's Join later
+    // meets that value with no reference of its own.
+    responses.set(`${PRODUCER_REGION}|GetSecretValueCommand`, {
+      SecretString: JSON.stringify({ password: 'x5' }),
+    });
+    const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+    const debug = vi.spyOn(
+      (resolver as unknown as { logger: { debug: (message: string) => void } }).logger,
+      'debug'
+    );
+    const recordedSecretValues = new Map<string, string>();
+    const sibling = (
+      resolver as unknown as {
+        resolverForProducerRegion: (region: string) => IntrinsicFunctionResolver;
+      }
+    ).resolverForProducerRegion(PRODUCER_REGION);
+
+    const imported = await sibling.resolveDynamicReferences(
+      `port:{{resolve:secretsmanager:${PRODUCER_ARN}:SecretString:password}}`,
+      ctx({ recordedSecretValues })
+    );
+    expect(imported).toBe('port:x5');
+
+    await resolver.resolve(
+      { 'Fn::Join': ['', ['outer:', { 'Fn::Select': [0, [imported]] }]] },
+      ctx({ recordedSecretValues })
+    );
+
+    const joinLines = debug.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('Resolved Fn::Join: '));
+    expect(joinLines).toEqual(['Resolved Fn::Join: outer:port:***']);
+  });
+
   describe("an OWN-REGION ARN stays on the stack's own resolver, in every shape", () => {
     for (const shape of SHAPES) {
       it(`${shape.key}: resolves locally`, async () => {

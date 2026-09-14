@@ -550,12 +550,101 @@ if [ "${SECURE_TYPE}" != "SecureString" ]; then
 fi
 echo "    OK: SecureString parameter created"
 
+# resolved_line_carries_pin <line> -> 0 when the line, colour codes stripped,
+# carries the two-character pin bounded by non-alphanumerics (issue #3100).
+# Bounded rather than a substring because a two-character value occurs inside
+# unrelated ids; the bound is `diag_output`'s, escaped by the same
+# `ere_escape`. Checked here, before any deploy, with an input for each
+# direction: the bare and framed pin, the pin inside colour codes (the strip is
+# what lets the bound see it), the masked line, and the pin inside a longer id.
+resolved_line_carries_pin() {
+  local line pin_re
+  line=$(sed 's/\x1b\[[0-9;:?]*[A-Za-z]//g' <<< "$1")
+  pin_re="(^|[^A-Za-z0-9])$(ere_escape "${EXPECTED_PIN}")([^A-Za-z0-9]|$)"
+  [[ "${line}" =~ $pin_re ]]
+}
+if ! resolved_line_carries_pin "Resolved Fn::Join: port:${EXPECTED_PIN}" \
+  || ! resolved_line_carries_pin "Resolved Fn::Sub: ${EXPECTED_PIN}" \
+  || ! resolved_line_carries_pin "$(printf 'Resolved Fn::Join: port:\033[32m%s\033[0m' "${EXPECTED_PIN}")" \
+  || ! resolved_line_carries_pin "$(printf 'Resolved Fn::Join: port:\033[2K%s' "${EXPECTED_PIN}")" \
+  || ! resolved_line_carries_pin "$(printf 'Resolved Fn::Join: port:\033[38:5:1m%s' "${EXPECTED_PIN}")" \
+  || ! resolved_line_carries_pin "$(printf 'Resolved Fn::Join: port:\033[?25h%s' "${EXPECTED_PIN}")" \
+  || ! resolved_line_carries_pin "$(printf 'Resolved Fn::Join: port:\033[m%s' "${EXPECTED_PIN}")" \
+  || ! resolved_line_carries_pin "$(printf 'Resolved Fn::Join: port:\033[1;31;4m%s' "${EXPECTED_PIN}")" \
+  || ! resolved_line_carries_pin "$(printf 'Resolved Fn::Join: port:\033[1A%s' "${EXPECTED_PIN}")" \
+  || resolved_line_carries_pin "Resolved Fn::Join: port:***" \
+  || resolved_line_carries_pin "Resolved Fn::Join: arn:aws:x:ab${EXPECTED_PIN}cd"; then
+  echo "FAIL: premise: resolved_line_carries_pin misjudged a probe line (issue #3100)" >&2
+  exit 1
+fi
+
 # --- Phase 1: deploy --------------------------------------------------
+# `--verbose` and CAPTURED (issue #3100). This is the deploy that RESOLVES
+# DB_PORT_JOIN and DB_PORT_SUB for provisioning -- the `port:` + two-character
+# pin leaves -- so its log is the one that carried `Resolved Fn::Join:
+# port:<pin>` before the resolver logged a position-masked twin. The log
+# reaches the terminal only through `diag_output`, which withholds it when it
+# carries a secret, on a failing deploy too.
 echo "==> Phase 1: deploy with the local binary"
-node "${LOCAL_DIST}" deploy "${STACK}" \
+if ! DEPLOY_OUT_P1=$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 1 deploy exited non-zero" >&2
+  diag_output "${DEPLOY_OUT_P1}"
+  exit 1
+fi
+
+# Guard 1-verbose (issue #3100), PREMISE first: both pin leaves' debug lines
+# are in the log, masked. Without them the negative below passes for free on a
+# resolver that stopped emitting the lines, or on a template whose pin leaves
+# stopped synthesizing as the Join / Sub shapes (Guard 3d's premise pins those
+# shapes by equality further down). Bash substring tests over the captured
+# log, for the SIGPIPE reason `diag_output` records.
+# The unmasked PREFIX first, so a resolver that prints the line in the clear
+# fails as a leak below rather than as "the line was not logged" here.
+if [[ "${DEPLOY_OUT_P1}" != *"Resolved Fn::Join: port:"* ]] || [[ "${DEPLOY_OUT_P1}" != *"Resolved Fn::Sub: port:"* ]]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Fn::Join: port:' or 'Resolved Fn::Sub: port:' line at all -- the DB_PORT_JOIN / DB_PORT_SUB resolutions this guard reads did not log (issue #3100)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P1}" == *"${EXPECTED_DB_PORT_LITERAL}"* ]]; then
+  echo "FAIL: the Phase 1 --verbose log carries '<framed pin>' (port: + the two-character secret) in plaintext (issue #3100)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P1}" != *"Resolved Fn::Join: port:***"* ]]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Fn::Join: port:***' line -- the DB_PORT_JOIN resolution this guard reads did not log (issue #3100)" >&2
+  exit 1
+fi
+if [[ "${DEPLOY_OUT_P1}" != *"Resolved Fn::Sub: port:***"* ]]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Fn::Sub: port:***' line -- the DB_PORT_SUB resolution this guard reads did not log (issue #3100)" >&2
+  exit 1
+fi
+# The negative's second form (the FRAMED value anywhere in the log is checked
+# above, before the masked-line premise): the BARE pin on every `Resolved Fn::`
+# line, through `resolved_line_carries_pin` (self-checked before Phase 1). A
+# Join / Sub line that prints the pin in any other frame is the same class.
+# Neither check prints the offending line.
+P1_RESOLVED_LINES=0
+while IFS= read -r line || [ -n "${line}" ]; do
+  case "${line}" in
+    *"Resolved Fn::"*)
+      P1_RESOLVED_LINES=$((P1_RESOLVED_LINES + 1))
+      if resolved_line_carries_pin "${line}"; then
+        echo "FAIL: a 'Resolved Fn::' line in the Phase 1 --verbose log carries the two-character secret in plaintext (issue #3100)" >&2
+        exit 1
+      fi
+      ;;
+  esac
+done <<< "${DEPLOY_OUT_P1}"
+# The loop read the lines the premise proved present: a count of zero means the
+# loop and the premise disagree about the text, and the bare-pin scan read
+# nothing.
+if [ "${P1_RESOLVED_LINES}" -lt 2 ]; then
+  echo "FAIL: the bare-pin scan read ${P1_RESOLVED_LINES} 'Resolved Fn::' line(s), fewer than the two the premise found (issue #3100)" >&2
+  exit 1
+fi
+echo "    OK: the Phase 1 --verbose log masks the two-character pin on its ${P1_RESOLVED_LINES} 'Resolved Fn::' lines (#3100)"
 
 # The synthesized template cdkd's own synth wrote. Read by Guard 1b just below
 # and by the DB_DSN_LITERAL premise guards later; the Phase 1b deploy
