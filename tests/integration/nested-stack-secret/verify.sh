@@ -477,48 +477,29 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
     echo "      the log format drifted, so the plaintext scan below proves nothing" >&2
     exit 1
   fi
-  # EVERY line is scanned for the other five values. `PIN_JOIN_FRAMED_VALUE`
-  # alone is scanned with the PARENT resolver's `Resolved Fn::Join:` debug
-  # lines dropped: one of them prints it, because the log mask has the same
-  # 4-character substring floor as the value scan (measured on the #3062 lane
-  # with a masked diagnostic; that line and no other). That is a log residual
-  # of the resolver, issue #3100, not the state carry this arm pins. The
-  # presence check below fails when the filter would drop nothing, and a
-  # drifted wording leaves the leaking line in the filtered text, where the
-  # scan fails loudly rather than passing.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}" <<<"${text}"; then
+  # EVERY line is scanned for all six values, `PIN_JOIN_FRAMED_VALUE` included.
+  # That value used to be scanned with the parent resolver's
+  # `Resolved Fn::Join:` lines dropped, because one of them printed it; the
+  # resolver now masks a sub-floor secret on that line by position (issue
+  # #3100), so the exception is gone (issue #3113) and the line itself is
+  # asserted masked below.
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}" <<<"${text}"; then
     echo "FAIL: ${label}: --verbose printed a resolved secret plaintext" >&2
     exit 1
   fi
+  # PRESENCE of the masked line, so the negative above cannot pass because the
+  # parent's `Fn::Join` over the framed pin stopped logging, or stopped being
+  # the shape this arm reads. A drifted wording fails here rather than passing.
   if ! grep -q 'Resolved Fn::Join:' <<<"${text}"; then
     echo "FAIL: ${label}: no 'Resolved Fn::Join:' line in the --verbose output" >&2
-    echo "      the #3100 filter below would exclude nothing it was written for" >&2
+    echo "      the log format drifted, so the plaintext scan above proves nothing for the framed pin" >&2
     exit 1
   fi
-  # ...and the exception must still be EARNED: a dropped line has to carry the
-  # value. Once #3100 masks it, this fails, which is the signal to put
-  # `PIN_JOIN_FRAMED_VALUE` back into the full-text scan above.
-  # Captured first, then a here-string: `grep | grep -q` under pipefail can
-  # take SIGPIPE when `-q` exits early and FAIL a correct tree (the race this
-  # function's opening comment names).
-  local joins
-  joins="$(grep 'Resolved Fn::Join:' <<<"${text}" || true)"
-  if ! grep -qF "${PIN_JOIN_FRAMED_VALUE}" <<<"${joins}"; then
-    echo "FAIL: ${label}: no 'Resolved Fn::Join:' line carries the Fn::Join-framed value any more" >&2
-    echo "      #3100 may be fixed -- move PIN_JOIN_FRAMED_VALUE back into the full-text scan" >&2
+  if ! grep -qF 'Resolved Fn::Join: port:***' <<<"${text}"; then
+    echo "FAIL: ${label}: no 'Resolved Fn::Join: port:***' line -- the framed pin's Join was not logged masked (issue #3100)" >&2
     exit 1
   fi
-  local scanned
-  scanned="$(grep -v 'Resolved Fn::Join:' <<<"${text}" || true)"
-  if [ -z "${scanned}" ]; then
-    echo "FAIL: ${label}: nothing is left to scan once the Resolved Fn::Join lines are dropped" >&2
-    exit 1
-  fi
-  if grep -qF "${PIN_JOIN_FRAMED_VALUE}" <<<"${scanned}"; then
-    echo "FAIL: ${label}: --verbose printed the Fn::Join-framed plaintext outside the #3100 debug line" >&2
-    exit 1
-  fi
-  echo "    OK: ${label}: the parameter debug lines are present and carry no plaintext"
+  echo "    OK: ${label}: the parameter debug lines are present, the framed pin's Join line is masked, and no line carries a plaintext"
 }
 
 # ONE cleanup handler. A second `trap ... EXIT` would silently REPLACE this one
@@ -1392,4 +1373,4 @@ s3_assert_versions_swept "${STATE_BUCKET}" "${PARENT_PREFIX}" "nested-stack-secr
 s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_PREFIX}" "nested-stack-secret child state teardown"
 
 echo ""
-echo "[verify] PASS - nested-stack secret flow redacted in both directions, scoped per resource, redacted on the CREATE and the UPDATE arm, never printed at --verbose (the #3100 Fn::Join debug line excepted), no change on re-deploy, clean destroy with zero surviving state versions"
+echo "[verify] PASS - nested-stack secret flow redacted in both directions, scoped per resource, redacted on the CREATE and the UPDATE arm, never printed at --verbose (the framed pin's Fn::Join debug line asserted masked), no change on re-deploy, clean destroy with zero surviving state versions"
