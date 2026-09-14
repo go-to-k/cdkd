@@ -311,9 +311,19 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // (triage.md, gotchas.md, gates-and-pr.md) are most of what moved the
     // floor, the leaders' own net growth the rest; see beside
     // MIN_REFERENCE_CORPUS_BYTES.
-    corpusBytes: 186_109,
-    largest: { file: 'verify.md', bytes: 29_984 },
-    runnerUp: { file: 'implement.md', bytes: 29_974 },
+    //
+    // The go-to-k/cdkd#3079 / go-to-k/cdkd#3088 retro touched ONLY the two
+    // leaders and paid for both amendments inside each file: implement.md
+    // 5-e's "(2)" now says a green probe licenses ADDING a case per arm and
+    // never DELETING a guard as implied (funded by compressing incident
+    // narratives in 5-b, 5-c, 5-e and 5-f' to their citations), and verify.md
+    // 8-d's pre-fix control now says read WHICH assertion fired (funded the
+    // same way in 8-a, 8-c, 8-d, 8-h and 8-i). Components: implement.md
+    // 29,974 -> 29,992 (+18), verify.md 29,984 -> 29,989 (+5), = +23. The
+    // leaders SWAPPED again, by 3 B; neither cap nor the floor moved.
+    corpusBytes: 186_132,
+    largest: { file: 'implement.md', bytes: 29_992 },
+    runnerUp: { file: 'verify.md', bytes: 29_989 },
   },
 };
 

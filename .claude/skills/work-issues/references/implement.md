@@ -125,19 +125,17 @@ named, grep the shape across the repo. Rules, each bought by a measured miss:
   "never" or "only" — derive the population or drop the quantifier. The PREMISE
   half is worse because it looks done: enumerate the DESTINATIONS a refusal
   reaches before round one and key on the destination, never on the EVIDENCE
-  (an empty map — the near-miss that survived two rounds). It kept returning
-  as a blocker across go-to-k/cdkd#2882 / go-to-k/cdkd#2912 in two residual
-  flavours: a mask written where refusing is a REGRESSION (`export` blocks the
-  record), and a pairing floor whose refusal WRITES a token over a live value
-  in the arm that borrowed it while safely DROPPING THE RESOURCE in the arm it
-  came from (`drift.ts`'s `acceptForcedSingleton` doc states it at the site
-  that paid).
+  (an empty map — the near-miss that survived two rounds; two flavours kept
+  returning across go-to-k/cdkd#2882 / go-to-k/cdkd#2912 — a mask where
+  refusing REGRESSES `export`, and a refusal WRITING a token over a live
+  value, stated at the site that paid: `drift.ts`'s `acceptForcedSingleton`
+  doc).
 - **Grep for the SHAPE, not a NAME — then close the set from the READERS,
   because a literal shape is defeatable too.** A name finds only the copies you
   knew about (go-to-k/cdkd#2176: `maskDeep` found four and shipped "four";
   there were SIX, two spelled `maskLeaf*`), and a shape misses the same with
   an expression spliced in (go-to-k/cdkd#2874: a ternary in the argument hid a
-  THIRD call site from the grep that built the issue's own work table). Grep a
+  THIRD call site from the issue's own grep). Grep a
   structural line every copy must share, confirm by name second, take the COUNT
   from an enumeration of the readers.
 - **Count the population BEFORE you fix, assert it afterwards** — the post-fix
@@ -193,9 +191,9 @@ suites run by `run-tests.sh`, not visible from `tests/unit/**`.
   repo is a test, not a sentence.
 - **Adding a HANDLER to a slot that already has one REPLACES it.** Bash
   `trap` does not chain: a second `trap ... EXIT` silently disarms the first,
-  which in an integ fixture is the AWS teardown (a reviewer-nit fix would
-  have traded a leaked temp file for live AWS resources on every failure
-  path). Put the work inside the EXISTING handler or re-install one that CALLS
+  which in an integ fixture is the AWS teardown (a reviewer-nit fix nearly
+  traded a leaked temp file for live AWS resources on every failure path).
+  Put the work inside the EXISTING handler or re-install one that CALLS
   the original (fenced by `tests/unit/scripts/integ-single-exit-trap.test.ts`);
   before adding to ANY single-slot registration, count what is there.
 
@@ -255,15 +253,18 @@ the test mutates a COPY and reports RED for a fence that does not exist
 production turned six more floors green). A
 count above 1 decides the tool, in opposite directions: `sed` / `perl -pi`
 are per-LINE, so a RED can belong to every copy at once, while `perl -0pi`
-without `/g` mutates only the FIRST in the file — which on go-to-k/cdkd#2627
-hit one of four identical lines, left the arm under test untouched, and
-reported a false GREEN;
-(2) **does the case's execution path REACH the edited line?** (the fix is a
-case that must take that path, not a fence change); (3) **did the command run
-where you think it did?** (appendix, "Bash cwd silent reset" — absolute paths,
-and a property the wrong tree cannot fake). Plus one fixture shape: **an
-expected value must be an INDEPENDENT variable from the one under test.** Only
-after all four does "the fence is weak" remain.
+without `/g` mutates only the FIRST in the file (go-to-k/cdkd#2627: one of
+four identical lines, the arm under test untouched, a false GREEN);
+(2) **does a case REACH the edited line — by EVERY arm that can?** A green
+licenses ADDING a case per arm / ruleset / caller — never a fence change,
+never DELETING a guard as "implied": before dropping a conjunct on a green
+probe, enumerate the arms reaching that line and state per arm what implies
+it (go-to-k/cdkd#3088: "the other conjuncts imply it" held under neither
+ruleset — one arm found per review round, no test built either shape); (3)
+**did the command run where you think it did?** (appendix, "Bash cwd silent
+reset" — absolute paths, and a property the wrong tree cannot fake). Plus one
+fixture shape: **an expected value must be an INDEPENDENT variable from the
+one under test.** Only after all four does "the fence is weak" remain.
 
 **A RED probe is void as easily as a green one** — the multi-copy anchor
 above is one way, and an edit that does not COMPILE is another: it fails the
@@ -284,8 +285,8 @@ writing the paragraph that explains why you did not do what was asked.
 
 **A probe MATRIX that must recur is a SCRIPT, not a re-measured table** —
 §8-g's "delete the number" disposition. Re-measuring on the merge tree was
-already the rule and a table went stale TWICE in one lane anyway, a reviewer
-catching each; a harness instead PRINTS the tallies and exits non-zero when a
+already the rule; a table went stale TWICE in one lane anyway. A harness
+instead PRINTS the tallies and exits non-zero when a
 mutant discriminates nothing, so an inert probe is reported, not assumed
 absent (go-to-k/cdkd#2333, `.claude/hooks/lib/command-match-mutants.sh`).
 
@@ -342,7 +343,7 @@ real tree:**
   `tests/integration/import-secret-observed/verify.sh` — `ASSERTIONS_RUN`
   bumped at each of 14 assertions, all 14 deletion-probed).
 - **Is anything RUNNING it?** (nine shell hook harnesses were invoked by no
-  CI step and no task — exercised only by hand since written).
+  CI step and no task).
 
 **When the change alters a CLASSIFIER, hand-picked cases cannot fence it —
 measure the DELTA against the old implementation.** A classifier is any
