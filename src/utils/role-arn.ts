@@ -247,7 +247,8 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
  * the cdkd process directly. The role you pass to `--role-arn` (or set
  * in `CDKD_ROLE_ARN`) must therefore carry the actions for the resource
  * types being deployed plus cdkd's own bookkeeping set (Cloud Control,
- * `sts:GetCallerIdentity`, the state bucket) — i.e. exactly what the
+ * `cloudformation:DescribeType` / `ListExports` / `DescribeStacks`,
+ * `sts:GetCallerIdentity`, the state and asset storage) — i.e. exactly what the
  * caller's own principal would otherwise have needed, not
  * `AdministratorAccess`. CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT
  * sufficient — that role only carries CFn + asset-publish permissions.

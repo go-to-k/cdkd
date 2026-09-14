@@ -270,8 +270,8 @@ role.
 So the role needs the actions for the resource types your stacks deploy, plus
 cdkd's own bookkeeping set — the same permissions your own principal would have
 needed, moved onto the role.
-[Permission errors](troubleshooting.md#access-denied-error) has the policy
-document. `AdministratorAccess` is not part of it; scope the role to the
+[Permission errors](troubleshooting.md#access-denied-error) has the policy to
+start from. `AdministratorAccess` is not part of it; scope the role to the
 services your stacks actually use.
 
 That also means **CDK CLI's `cdk-hnb659fds-deploy-role-*` is not enough**:
@@ -287,8 +287,8 @@ principal → deploy-role → CFn change set → cfn-exec-role). cdkd has no
 analogous chain — what you grant the assumed role is what runs against AWS. The
 `--role-arn` flag exists so CI runners with limited base credentials can drive a
 cdkd deploy against a separate-account or dedicated deploy role; it does **not**
-reduce the permissions the eventually-used identity needs, it moves them off the
-base credentials.
+reduce the permissions the eventually-used identity needs — it moves them onto
+the role.
 
 ### When the `--role-arn` session expires
 
@@ -298,10 +298,16 @@ valid until expiry, so a re-run is the simplest recovery path.
 
 ### `--profile` vs `--role-arn`
 
-Independent. `--profile` selects which entry from `~/.aws/credentials` or
-`~/.aws/config` provides the **base** credentials; `--role-arn` then assumes a
-role from those base credentials. Use both together when the IAM principal lives
-in profile A and the deploy role lives in account B that profile A trusts.
+`--profile` selects which entry from `~/.aws/credentials` or `~/.aws/config`
+provides the **base** credentials; `--role-arn` then assumes a role from those
+base credentials.
+
+> **Do not combine them today.** cdkd hands the assumed-role credentials to the
+> AWS SDK through the `AWS_*` environment variables, and the SDK skips those
+> whenever a profile is selected — so with both flags set the role is assumed
+> and then ignored, and every later call runs as the profile's own principal.
+> For a cross-account deploy, make the base credentials the default ones (no
+> `--profile`) and pass `--role-arn` alone.
 
 ## Exit codes
 

@@ -19,10 +19,10 @@ The installed binary is `cdkd`. Running it requires:
 - **Node.js** >= 22.12.0
 - **AWS credentials that can create the resources your stacks deploy.** cdkd
   calls each service's API directly, so it needs the same actions you would use
-  to create those resources by hand.
-  [Permission errors](troubleshooting.md#access-denied-error) has the policy to
-  start from, and [`--role-arn`](cli-reference.md#role-arn) puts it on a
-  dedicated role instead of your own principal.
+  to create those resources by hand, plus a small set of its own for state and
+  asset storage. [Permission errors](troubleshooting.md#access-denied-error) has
+  the policy to start from, and [`--role-arn`](cli-reference.md#role-arn) puts
+  it on a dedicated role instead of your own principal.
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ cdkd deploy --no-wait
 cdkd destroy
 
 # Deploy through a dedicated role instead of your own credentials (CI,
-# cross-account) — your principal then needs only sts:AssumeRole on it
+# cross-account). Not combinable with --profile — see the CLI reference
 cdkd deploy --role-arn arn:aws:iam::123456789012:role/cdkd-deploy
 ```
 
