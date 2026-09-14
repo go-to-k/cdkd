@@ -142,9 +142,10 @@ function snapshotNote(
  * key silently mismatches the record it is meant to find.
  *
  * NOT for free-form error text either. An SDK or provider message legitimately
- * carries non-ASCII (a resource name, AWS's own wording), so the two sites that
- * render one call `displaySafe()` directly and take the DENYLIST -- the same
- * class `formatError` picks for a `cause`, and for the same reason.
+ * carries non-ASCII (a resource name, AWS's own wording), so a site that renders
+ * one calls `displaySafe()` directly and takes the DENYLIST -- the same class
+ * `formatError` picks for a `cause`, and for the same reason. `grep displaySafe(`
+ * answers how many; a count written here was wrong on its first revision.
  */
 function safe(value: unknown): string {
   return displaySafe(value, { asciiOnly: true }) || UNRENDERABLE;
@@ -604,7 +605,7 @@ export async function rollbackCommand(
                       else segment.failedOperations = remaining;
                     } catch (stripError) {
                       logger.warn(
-                        `Failed to strip replayed failed-ops from the journal: ${stripError instanceof Error ? stripError.message : String(stripError)}`
+                        `Failed to strip replayed failed-ops from the journal: ${displaySafe(stripError instanceof Error ? stripError.message : String(stripError))}`
                       );
                     }
                   }

@@ -1633,4 +1633,116 @@ describe('rollbackCommand — a planted journal cannot forge a plan row (#3064)'
     expect((src.match(/\$\{safe\((?:op|fop)\.(?:logicalId|resourceType|changeType)\)\}/g) ?? []).length)
       .toBeGreaterThan(20);
   });
+
+  it('a free-form SDK error message takes the DENYLIST, not the allowlist, and cannot forge a row', async () => {
+    // The lock-release failure is the most reachable of the free-form renders:
+    // any rejection from `releaseLock` lands here. S3's own text echoes the KEY,
+    // which embeds the stack name -- so this is journal-adjacent even though
+    // the message is the SDK's. Two things are pinned: the newline is gone
+    // (the forgery), and a benign non-ASCII character SURVIVES (the class --
+    // `asciiOnly` would eat the accented name, which is what makes it the
+    // wrong class for prose an operator has to read).
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    installOneCreateSegment();
+    mockReleaseLock.mockRejectedValueOnce(
+      new Error('AccessDenied for caf\u00e9\n  - delete   RealDatabase (AWS::RDS::DBInstance)')
+    );
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('Failed to release lock'));
+
+    expect(line).toBeDefined();
+    expect(line!.split('\n')).toHaveLength(1);
+    expect(line).not.toMatch(CTRL);
+    expect(line).toContain('caf\u00e9');
+    expect(line).toContain('- delete   RealDatabase');
+  });
+
+  it('the failed-persist warning renders the S3 error through the DENYLIST too', async () => {
+    // The second free-form render. `saveState` is retried once against a fresh
+    // ETag, so BOTH attempts have to reject for the warn to fire -- a
+    // `mockRejectedValue` (not `Once`) does that.
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const hostile = 'PreconditionFailed on caf\u00e9\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    const backend = installOneCreateSegment();
+    backend.saveState.mockRejectedValue(new Error(hostile));
+    await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to persist state after a rollback operation'));
+
+    expect(line).toBeDefined();
+    expect(line!.split('\n')).toHaveLength(1);
+    expect(line).toContain('caf\u00e9');
+    expect(line).toContain('- delete   RealDatabase');
+  });
+
+  it('the failed-strip warning renders the S3 error through the DENYLIST too', async () => {
+    // The third free-form render, reached only under `--revert-failed` after a
+    // failed op has been replayed and the per-op strip of the journal rejects.
+    const { getLogger } = await import('../../../../src/utils/logger.js');
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    const hostile = 'NoSuchKey on caf\u00e9\n  - delete   RealDatabase (AWS::RDS::DBInstance)';
+    const failedOp = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-Q',
+      previousState: {
+        physicalId: 'phys-Q',
+        resourceType: 'AWS::SQS::Queue',
+        properties: { a: 1 },
+        attributes: {},
+        dependencies: [],
+      },
+      attemptedProperties: { a: 2 },
+    };
+    installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: {
+          version: 8,
+          stackName: 'S',
+          region: 'us-east-1',
+          resources: {
+            Q: {
+              physicalId: 'phys-Q',
+              resourceType: 'AWS::SQS::Queue',
+              properties: { a: 1 },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 1,
+        },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            initialDeploy: false,
+            operations: [],
+            failedOperations: [failedOp],
+          },
+        ],
+      }),
+      setRollbackJournalFailedOperations: vi.fn().mockRejectedValue(new Error(hostile)),
+    });
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true }).catch(() => undefined);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('Failed to strip replayed failed-ops'));
+
+    expect(line).toBeDefined();
+    expect(line!.split('\n')).toHaveLength(1);
+    expect(line).toContain('caf\u00e9');
+    expect(line).toContain('- delete   RealDatabase');
+  });
 });
