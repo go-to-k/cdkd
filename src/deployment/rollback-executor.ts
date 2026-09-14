@@ -2308,14 +2308,16 @@ async function replaySingle(
         // it unqualified -- as this note first did -- restates something
         // `PathSourceRules`' own doc contradicts: `cdkd import` WARNS and
         // persists the RAW template intrinsic, so a public `ssm:` expression CAN
-        // sit in a record's `properties`. Measured in review: such a token is
-        // CERTIFIED here and REFUSED under `TEMPLATE_DERIVED_RULES`. The cost is
-        // bounded to the issue #1901 class -- a spurious UPDATE, because the
-        // child persists an expression for a value state should hold RESOLVED --
-        // and never a disclosure, since what is persisted is a reference either
-        // way. Accepted for the same reason `trustAnyExpression`'s whole-token
-        // arm accepts it: the alternative is refusing every replay of an
-        // imported stack's nested parameters.
+        // sit in a record's `properties`. Measured in review: the POSITION
+        // pass certifies such a token here and refuses it under
+        // `TEMPLATE_DERIVED_RULES`. Since issue #3090 the recorder no longer
+        // RECORDS it either way -- its refusal 5 asks the pass's pair table,
+        // which a public token (resolved as public, never paired) is not in --
+        // so the child's leaf falls to the value scan. The cost before that
+        // was bounded to the issue #1901 class (a spurious UPDATE, never a
+        // disclosure: a reference either way); what remains is the ordinary
+        // value-scan answer, and every replay of an imported stack's nested
+        // parameters still runs.
         //
         // The WRONG fix, ruled out explicitly: do NOT gate this on
         // `isKnownSecretExpression`. That reopens refusal 2b's hole, where an
@@ -2897,14 +2899,16 @@ async function replaySingle(
         // it unqualified -- as this note first did -- restates something
         // `PathSourceRules`' own doc contradicts: `cdkd import` WARNS and
         // persists the RAW template intrinsic, so a public `ssm:` expression CAN
-        // sit in a record's `properties`. Measured in review: such a token is
-        // CERTIFIED here and REFUSED under `TEMPLATE_DERIVED_RULES`. The cost is
-        // bounded to the issue #1901 class -- a spurious UPDATE, because the
-        // child persists an expression for a value state should hold RESOLVED --
-        // and never a disclosure, since what is persisted is a reference either
-        // way. Accepted for the same reason `trustAnyExpression`'s whole-token
-        // arm accepts it: the alternative is refusing every replay of an
-        // imported stack's nested parameters.
+        // sit in a record's `properties`. Measured in review: the POSITION
+        // pass certifies such a token here and refuses it under
+        // `TEMPLATE_DERIVED_RULES`. Since issue #3090 the recorder no longer
+        // RECORDS it either way -- its refusal 5 asks the pass's pair table,
+        // which a public token (resolved as public, never paired) is not in --
+        // so the child's leaf falls to the value scan. The cost before that
+        // was bounded to the issue #1901 class (a spurious UPDATE, never a
+        // disclosure: a reference either way); what remains is the ordinary
+        // value-scan answer, and every replay of an imported stack's nested
+        // parameters still runs.
         //
         // The WRONG fix, ruled out explicitly: do NOT gate this on
         // `isKnownSecretExpression`. That reopens refusal 2b's hole, where an

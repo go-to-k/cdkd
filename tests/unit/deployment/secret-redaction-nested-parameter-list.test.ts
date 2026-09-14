@@ -365,11 +365,17 @@ describe('#2327 persist/diff parity', () => {
     //
     // Refusal 4 moves that verdict to WRITE time, against the parent's map,
     // which is the bag that watched the resolution. Both readers then see one
-    // table and degrade together to the value scan.
+    // table and degrade together to the value scan. Since issue #3090 the
+    // pair table refuses the same parameter first (refusal 5: `EXPR_A` is
+    // CONFLICTING there, having resolved to both plaintexts), so this case
+    // fences the AGREEMENT of the two readers rather than refusal 4 alone.
     const parent: RecordedSecretValues = new Map([
       [SHARED, EXPR_B],
       ['a-different-plaintext-2327', EXPR_A],
     ]);
+    recordResolvedPair(parent, EXPR_B, SHARED);
+    recordResolvedPair(parent, EXPR_A, 'a-different-plaintext-2327');
+    recordResolvedPair(parent, EXPR_A, SHARED);
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',
@@ -402,9 +408,13 @@ describe('#2327 persist/diff parity', () => {
   });
 
   it('REFUSAL 4 also fires through the CONFLICTING-plaintext symbol, not only a plain mismatch', () => {
-    // A SECOND SHAPE for refusal 4, because the blocker case above was its only
-    // discriminating test and a single point of fence is what this lane has
-    // twice found to be worth less than it looks.
+    // A SECOND SHAPE for refusal 4 -- written when the blocker case above was
+    // its only discriminating test. Since issue #3090 NEITHER discriminates
+    // refusal 4 on its own: refusal 5 asks the pair table first and refuses
+    // the same parameter (measured: refusal 4 removed, every case in this
+    // file green). Both cases now fence the READERS' agreement over a
+    // CONFLICTING expression, with refusal 4 kept as the reading that needs no
+    // pair table.
     //
     // DIFFERENT ROUTE THROUGH THE SAME COMPARISON. There, `plaintextIndexOf`
     // answers with a STRING -- one other plaintext this pass watched `EXPR_A`
@@ -414,9 +424,10 @@ describe('#2327 persist/diff parity', () => {
     // never equalling the resolved value. A fix that compared only strings
     // would pass the case above and fail this one.
     //
-    // Measured in an isolated copy: with refusal 4 removed, this configuration
-    // diverges on 2 of its 4 rows (persist certifies `EXPR_A`, the diff side
-    // refuses and falls back), and with it in place all 4 agree.
+    // Measured in an isolated copy BEFORE refusal 5 existed: with refusal 4
+    // removed, this configuration diverged on 2 of its 4 rows (persist
+    // certified `EXPR_A`, the diff side refused and fell back); with it in
+    // place all 4 agreed. Today refusal 5 keeps all 4 agreeing either way.
     const parent: RecordedSecretValues = new Map([
       [SHARED, EXPR_B],
       ['a-different-plaintext-2327', EXPR_A],
@@ -514,8 +525,8 @@ describe('#2327 persist/diff parity', () => {
     // [#2349](https://github.com/go-to-k/cdkd/issues/2349) fall-through, and
     // the one its scope is written from. No EMBEDDING anywhere in this bag --
     // both leaves are bare `[SHARED]` -- so the case above cannot stand in for
-    // it, and nothing else would notice a future change to refusal 4 that
-    // widened or removed it.
+    // it. (A future REMOVAL of refusal 4 is no longer observable here either;
+    // refusal 5 refuses `PARAM_B` first, #3090. A WIDENING still is.)
     //
     // THE MECHANISM: `EXPR_B` is recorded against TWO plaintexts, so
     // `plaintextIndexOf` poisons its entry and refusal 4 fires for `PARAM_B`.
@@ -638,11 +649,16 @@ describe('#2327 persist/diff parity', () => {
     //
     // That verdict now lives at WRITE time, so nothing is recorded at all and
     // BOTH readers refuse together; see the blocker case above for why
-    // deciding it at read time made the two sides disagree.
+    // deciding it at read time made the two sides disagree. (Refusal 5 refuses
+    // this parameter first since #3090 -- its pair is CONFLICTING -- so the
+    // title names the reading, not the only line that fires.)
     const parent: RecordedSecretValues = new Map([
       [SHARED, EXPR_B],
       ['a-different-plaintext-2327', EXPR_A],
     ]);
+    recordResolvedPair(parent, EXPR_B, SHARED);
+    recordResolvedPair(parent, EXPR_A, 'a-different-plaintext-2327');
+    recordResolvedPair(parent, EXPR_A, SHARED);
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',

@@ -43,7 +43,7 @@ import {
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   type RecordedSecretValues,
-} from "../../../src/deployment/secret-redaction.js";
+} from '../../../src/deployment/secret-redaction.js';
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';

@@ -30,7 +30,7 @@ import {
   recordResolvedPair,
   redactSecretsForState,
   type RecordedSecretValues,
-} from "../../../src/deployment/secret-redaction.js";
+} from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {

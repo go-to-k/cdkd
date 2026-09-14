@@ -449,7 +449,10 @@ describe('nested-stack parameter associations (#2291)', () => {
 
     const child = childBagFrom(parent);
     inheritNestedStackParameterAssociations(child, parent);
-    // The child's own grandchild row: SAME parameter name, DIFFERENT expression.
+    // The child's own grandchild row: SAME parameter name, DIFFERENT expression
+    // -- a STRING source the child RESOLVED itself, so its pair is on the
+    // child's table (refusal 5, #3090).
+    recordResolvedPair(child, EXPR_B, SHARED);
     recordNestedStackParameterExpressions(
       child,
       'AWS::CloudFormation::Stack',
@@ -473,6 +476,44 @@ describe('nested-stack parameter associations (#2291)', () => {
     ) as Record<string, unknown>;
     expect(grandchildPersisted['Value']).toBe(EXPR_B);
   });
+
+  it('carries a THREE-LEVEL chain per leaf: a child whose bag holds inherited ENTRIES but no PAIRS still certifies its grandchild row spelled {Ref} (#3090 review)', () => {
+    // The child engine's bag is filled by `recordInheritedParameterSecrets`
+    // -- entries, never pairs -- and its own nested row spells the grandchild's
+    // parameters as `{Ref: <own parameter>}`. Refusal 5 asks the pair table,
+    // which this bag cannot answer; unscoped it refused every such row and the
+    // grandchild collapsed onto the survivor (measured in review, all three
+    // reviewers). It is scoped to STRING sources; the intrinsic source
+    // positions through the association the parent's recorder already gated.
+    // THE LOSER is asserted -- the survivor is a confluence point.
+    const parent = collapsedParentBag();
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      PARENT_RESOLVED,
+      PARENT_SOURCE
+    );
+    const child = childBagFrom(parent); // entries only, no pairs -- the carry's shape
+    inheritNestedStackParameterAssociations(child, parent);
+    recordNestedStackParameterExpressions(
+      child,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { GA: SHARED, GB: SHARED } },
+      { Parameters: { GA: { Ref: PARAM_A }, GB: { Ref: PARAM_B } } }
+    );
+    expect(inheritedParameterExpression(child, 'GA', SHARED)).toBe(EXPR_A);
+    expect(inheritedParameterExpression(child, 'GB', SHARED)).toBe(EXPR_B);
+    const grandchild = childBagFrom(child);
+    inheritNestedStackParameterAssociations(grandchild, child);
+    const persisted = redactSecretsForState(
+      { U: SHARED, V: SHARED },
+      grandchild,
+      { U: { Ref: 'GA' }, V: { Ref: 'GB' } }
+    ) as Record<string, unknown>;
+    expect(persisted['U']).toBe(EXPR_A);
+    expect(persisted['V']).toBe(EXPR_B);
+  });
+
 });
 
 describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)', () => {
@@ -563,6 +604,8 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
     for (const rules of [undefined, STATE_DERIVED_RULES]) {
       const parent = recordUnder(rules, false);
       expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).toBeUndefined();
+      // The SURVIVOR's own parameter is refused too: it has no pair either.
+      expect(inheritedParameterExpression(parent, PARAM_B, SSM_SHARED)).toBeUndefined();
       // AND -- the load-bearing half -- it must not fall back to recording
       // the SURVIVOR under the LOSING parameter's name (the value-scan answer
       // before refusal 2b).

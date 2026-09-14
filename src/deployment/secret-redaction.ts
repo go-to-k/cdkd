@@ -1761,7 +1761,29 @@ export function recordNestedStackParameterExpressions(
     // recorded beside the survivor's), so does an unpinned `ssm` token (a
     // pass-local pair), and the sub-floor walk below asks the same question
     // of its frames. Refuses to the value scan, i.e. today's answer.
-    if (resolvedPlaintextOf(secrets, expression) !== resolvedValue) continue;
+    //
+    // STRING SOURCES ONLY, and the scope is load-bearing (#3093 review, all
+    // three reviewers): a CHILD engine's bag is filled by
+    // `recordInheritedParameterSecrets` -- entries, no pairs -- so inside a
+    // child, a nested row spelling `{Ref: <Param>}` (a GRANDCHILD's
+    // parameters) has NO pair to show, and an unscoped refusal collapsed
+    // every three-level chain back onto the survivor (measured: the loser's
+    // grandchild leaf took the sibling's expression). An intrinsic source is
+    // not the #3090 shape: it positions only through an association the
+    // PARENT's recorder already gated with this refusal, or through the
+    // skeleton / frame arms, which require a pair of their own. Pairs are
+    // deliberately NOT recorded at the carry instead -- that would newly arm
+    // `positionByEmbeddedSpan` on every child literal (a change with its own
+    // review). On an intrinsic source the reader's own condition 3
+    // ({@link certifiedExpressionForLeaf}, same bag, same index) has already
+    // refused what refusal 4 would, so refusal 4 is redundant on both
+    // shapes and kept as the reading that needs no pair table.
+    if (
+      typeof sourceLeaf === 'string' &&
+      resolvedPlaintextOf(secrets, expression) !== resolvedValue
+    ) {
+      continue;
+    }
     if (table === undefined) {
       table = new Map();
       nestedStackParameterExpressions.set(secrets, table);
