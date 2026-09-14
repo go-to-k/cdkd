@@ -68,8 +68,13 @@ function requireSecretStringShape(literal: unknown): string {
  * the predicate and the generator, so the shapes the predicate refuses are
  * exactly the shapes the generator cannot serve.
  *
- * Three rules, each MEASURED on CloudFormation (us-east-1, 2026-09-14) rather
- * than read off the docs, because the docs state none of them:
+ * The caller has already run the member SHAPE predicates (`ExcludeCharacters`
+ * is a string or absent, the booleans coerce, `PasswordLength` is an integer
+ * in range) — this function reads the block by cast on that precondition.
+ *
+ * Three refusals, each MEASURED on CloudFormation (us-east-1, 2026-09-14): the
+ * docs give the default (`RequireEachIncludedType` on) and the four-type
+ * wording, but none of the refusal shapes or their messages:
  *
  * - `RequireEachIncludedType` defaults to TRUE and covers the four classes
  *   (upper, lower, number, punctuation) that are not switched off; a space is
@@ -79,9 +84,9 @@ function requireSecretStringShape(literal: unknown): string {
  *   (measured), so the refusal is scoped to REQUIRED classes.
  * - With it on, `PasswordLength` below the number of required classes is
  *   refused: `Password length is too short based on the required types`.
- * - A pool with no character at all cannot mint anything; the old local
- *   fallback to lowercase invented a charset the template excluded, so it is
- *   a refusal now.
+ * - A pool with no character at all is refused: `All characters have been
+ *   excluded from selection`. The old local fallback to lowercase invented a
+ *   charset the template had excluded.
  */
 function generateCharset(config: Record<string, unknown>): {
   readonly required: readonly string[];
@@ -102,22 +107,25 @@ function generateCharset(config: Record<string, unknown>): {
   const off = (key: string): boolean => coerceCfnBoolean(config[key]) ?? false;
   const excluded = new Set((config['ExcludeCharacters'] as string | undefined) ?? '');
   const strip = (chars: string): string => [...chars].filter((c) => !excluded.has(c)).join('');
-  const classes: Array<[name: string, chars: string, included: boolean]> = [
-    ['uppercase', strip('ABCDEFGHIJKLMNOPQRSTUVWXYZ'), !off('ExcludeUppercase')],
-    ['lowercase', strip('abcdefghijklmnopqrstuvwxyz'), !off('ExcludeLowercase')],
-    ['number', strip('0123456789'), !off('ExcludeNumbers')],
-    ['punctuation', strip(PUNCTUATION), !off('ExcludePunctuation')],
+  // [type name, its characters after ExcludeCharacters, the switch that turns
+  // the whole type off] — the switch travels with the row so the refusal can
+  // name it without re-deriving it from the type name.
+  const classes: ReadonlyArray<readonly [name: string, chars: string, switchKey: string]> = [
+    ['uppercase', strip('ABCDEFGHIJKLMNOPQRSTUVWXYZ'), 'ExcludeUppercase'],
+    ['lowercase', strip('abcdefghijklmnopqrstuvwxyz'), 'ExcludeLowercase'],
+    ['number', strip('0123456789'), 'ExcludeNumbers'],
+    ['punctuation', strip(PUNCTUATION), 'ExcludePunctuation'],
   ];
   const requireEach = coerceCfnBoolean(config['RequireEachIncludedType']) ?? true;
-  const included = classes.filter(([, , on]) => on);
+  const included = classes.filter(([, , switchKey]) => !off(switchKey));
   const required: string[] = [];
   if (requireEach) {
-    for (const [name, chars] of included) {
+    for (const [name, chars, switchKey] of included) {
       if (chars.length === 0) {
         return {
           required: [],
           pool: '',
-          refusal: `all characters of the ${name} type have been excluded while RequireEachIncludedType requires one (exclude the type with Exclude${name === 'number' ? 'Numbers' : name[0]!.toUpperCase() + name.slice(1)} instead)`,
+          refusal: `all characters of the ${name} type have been excluded while RequireEachIncludedType requires one (exclude the type with ${switchKey} instead)`,
         };
       }
       required.push(chars);
@@ -130,7 +138,7 @@ function generateCharset(config: Record<string, unknown>): {
     return {
       required: [],
       pool: '',
-      refusal: 'every character has been excluded, so no password can be generated',
+      refusal: 'all characters have been excluded from selection, so no password can be generated',
     };
   }
   const length = coerceCfnInteger(config['PasswordLength']) ?? 32;
@@ -148,11 +156,11 @@ function generateCharset(config: Record<string, unknown>): {
  * A uniformly distributed index below `n`, by rejection: `byte % n` biases
  * toward the low indexes whenever 256 is not a multiple of `n` (it never is
  * for a 26- or 32-character class), and a password generator should not.
- * RECORDED BOUND: the rejection is not fenced -- removing it leaves every
- * unit case green (measured), because the bias is statistical (about 1 part
- * in 2^32 / n per index at this width) and a test that could see it would be
- * a distribution test over millions of draws. The width is what makes the
- * bias negligible even without the rejection; the rejection makes it zero.
+ * The rejection IS fenced, deterministically: the unit suite stubs
+ * `crypto.getRandomValues` to hand back a draw at or above `limit` and then
+ * one below it, and asserts the first is thrown away (a `% n` shortcut would
+ * mint from it). The bias itself is about 1 part in 2^32 / n per index at
+ * this width — negligible either way; the rejection makes it zero.
  */
 function randomIndex(n: number): number {
   // An empty range is a caller bug, and it must FAIL rather than spin: with

@@ -349,7 +349,7 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     ['RequireEachIncludedType: null', { RequireEachIncludedType: null }, /RequireEachIncludedType must be a boolean/],
     ['PasswordLength 3 under four required types (CFn: too short based on the required types)', { PasswordLength: 3 }, /PasswordLength 3 is too short for the 4 character types RequireEachIncludedType requires/],
     ['a REQUIRED class emptied by ExcludeCharacters (CFn: all characters of the desired type have been excluded)', { ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' }, /all characters of the uppercase type have been excluded while RequireEachIncludedType requires one \(exclude the type with ExcludeUppercase instead\)/],
-    ['every character excluded', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true }, /every character has been excluded/],
+    ['every character excluded (CFn: all characters have been excluded from selection)', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true }, /all characters have been excluded from selection/],
     ['GenerateStringKey: "__proto__" (the password went to the prototype, not the document)', { GenerateStringKey: '__proto__', SecretStringTemplate: '{"u":"a"}' }, /GenerateStringKey must not be __proto__/],
   ];
   const withBlock = (members: Record<string, unknown>): Record<string, unknown> => ({
@@ -425,9 +425,12 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
   // repeatedly because the guarantee is per draw.
   const AWS_PUNCTUATION = '!"#$%&\'()*+,-./:;<=>?@[\\]^_' + String.fromCharCode(0x60) + '{|}~';
   const classesIn = (v: string): number =>
-    [/[A-Z]/, /[a-z]/, /[0-9]/, (t: string) => [...t].some((c) => AWS_PUNCTUATION.includes(c))].filter(
-      (re) => (typeof re === 'function' ? re(v) : re.test(v))
-    ).length;
+    [
+      (t: string) => /[A-Z]/.test(t),
+      (t: string) => /[a-z]/.test(t),
+      (t: string) => /[0-9]/.test(t),
+      (t: string) => [...t].some((c) => AWS_PUNCTUATION.includes(c)),
+    ].filter((has) => has(v)).length;
 
   it('the punctuation class is the SERVICE\'s 32-character set, not the old 25', async () => {
     // Uppercase / lowercase / numbers excluded, so the pool IS the
@@ -440,6 +443,41 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     expect([...sent].every((c) => AWS_PUNCTUATION.includes(c))).toBe(true);
     for (const c of ['"', "'", '/', '\\', String.fromCharCode(0x60), '~']) expect(sent).toContain(c);
     expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    // The issue's headline: an ExcludeCharacters naming one of the seven the
+    // old set lacked was INERT. Every class is stripped by the same helper,
+    // and each row keeps the class non-empty so the default
+    // RequireEachIncludedType still holds.
+    ['the seven punctuation characters the old set lacked', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludeNumbers: true, ExcludeCharacters: '"\'/\\' + String.fromCharCode(0x60) + '~' }, /^[!#$%&()*+,\-.:;<=>?@[\]^_{|}]+$/],
+    ['half the digits', { ExcludeUppercase: true, ExcludeLowercase: true, ExcludePunctuation: true, ExcludeCharacters: '01234' }, /^[5-9]+$/],
+    ['all but one letter of a REQUIRED class (the guarantee then places that one)', { ExcludeLowercase: true, ExcludeNumbers: true, ExcludePunctuation: true, ExcludeCharacters: 'ABCDEFGHIJKLMNOPQRSTUVWXY' }, /^Z+$/],
+  ])('ExcludeCharacters strips %s', async (_l, members, shape) => {
+    const block = { ...members, PasswordLength: 2000 };
+    await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+    expect(updateInput().SecretString).toMatch(shape);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('a draw at or above the rejection limit is thrown away, not folded by modulo', async () => {
+    // Deterministic fence for the rejection sampling (test-review round):
+    // pool = lowercase (26), limit = floor(2^32 / 26) * 26 = 4294967274, so a
+    // draw of 0xFFFFFFFF sits above it and must be re-drawn; the re-draw of 0
+    // lands on 'a'. A `% n` shortcut would mint 'v' (0xFFFFFFFF % 26 = 21).
+    const draws = [0xff_ff_ff_ff, 0];
+    const spy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(((arr: Uint32Array) => {
+      arr[0] = draws.shift() ?? 0;
+      return arr;
+    }) as typeof crypto.getRandomValues);
+    try {
+      const block = { ExcludeUppercase: true, ExcludeNumbers: true, ExcludePunctuation: true, RequireEachIncludedType: false, PasswordLength: 1 };
+      await provider.update('L', SECRET_ARN, TYPE, withBlock(block), generated());
+      expect(updateInput().SecretString).toBe('a');
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('IncludeSpace admits the space character (and ExcludeCharacters can take it back)', async () => {
@@ -461,7 +499,8 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
       vi.clearAllMocks();
       mockSend.mockResolvedValue({});
       await provider.update('L', SECRET_ARN, TYPE, withBlock({ PasswordLength: 4 }), generated());
-      expect(classesIn(updateInput().SecretString!)).toBe(4);
+      const v = updateInput().SecretString!;
+      expect(classesIn(v), JSON.stringify(v)).toBe(4);
     }
   });
 
