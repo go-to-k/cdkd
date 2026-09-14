@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
   CANONICAL_CAPTURE_BLOCK,
+  HEREDOC_OPENER,
   classifyCaptureShape,
   codeLines,
   substitutionBodies,
@@ -86,11 +87,24 @@ describe('classifyCaptureShape', () => {
     expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([3]);
   });
 
-  it('attributes a statement joined after a `&&`-ending line to that line, not the next', () => {
+  it.each([
+    ['&&', '[ -n "$X" ] &&\n  R=$(x 2>/dev/null | tail -1)\n'],
+    ['||', '[ -n "$X" ] ||\n  R=$(x 2>/dev/null | tail -1)\n'],
+    ['|', 'printf x |\n  R=$(x 2>/dev/null | tail -1)\n'],
+  ])('attributes a statement joined after a `%s`-ending line to that line, not the next', (_op, body) => {
     // The `|` / `&&` / `||` arm of the join is observable only through the
     // line number: the open-`$(` arm already joins a wrapped pipe by itself.
-    const c = classifyCaptureShape(`${PIPEFAIL}[ -n "$X" ] &&\n  R=$(x 2>/dev/null | tail -1)\n`);
+    const c = classifyCaptureShape(`${PIPEFAIL}${body}`);
     expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([3]);
+  });
+
+  it('a heredoc opened on a CONTINUATION line inside an open $( is blanked where it starts', () => {
+    // The opener sits on the second physical line of the statement, so only
+    // the `skipHeredoc` call inside the join loop can see it; with that call
+    // gone the body is joined into the statement and its shape misreported
+    // (found by the cdk-local twin's review, go-to-k/cdk-local#734).
+    const body = ['V="$(', "  python3 - <<'PY'", 'ls 2>/dev/null | tail -1', 'PY', ')"', 'R=$(x 2>/dev/null | tail -1)', ''].join('\n');
+    expect(classifyCaptureShape(`${PIPEFAIL}${body}`).abortShapedCaptures.map((f) => f.line)).toEqual([8]);
   });
 
   it('a heredoc opened inside an open $( is blanked in place and the join resumes after its terminator', () => {
@@ -271,7 +285,7 @@ describe('tree-wide (issue #3126)', () => {
       f.content
         .split('\n')
         .map((l, k) => [l, k + 1] as const)
-        .filter(([l]) => !/^\s*#/.test(l) && /(?<!<)<<-?(?!<)\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(l) && /(\\|\||&&)\s*$/.test(l))
+        .filter(([l]) => !/^\s*#/.test(l) && HEREDOC_OPENER.test(l) && /(\\|\||&&)\s*$/.test(l))
         .map(([, k]) => `${f.name}/verify.sh:${k}`),
     );
     expect(offenders).toEqual([]);
