@@ -15,17 +15,17 @@ tier, integ run, merge, release — for the same edit N times; swept together
 that cost is paid once, the reviewer sees the whole class, and sites 2..N
 cannot sit open while site 1's fix drifts away. Two boundaries:
 
-- **A sweep whose residue needs a NEW integ fixture is a genuine `next`** —
-  `.claude/rules/session-report.md`'s reason (a); (b) is the only other one a
-  residue can take (its files are loaded, so never (c)). File an umbrella
-  naming every
+- **A sweep's residue is `next` only on external input** —
+  `.claude/rules/session-report.md`'s reason (a); its files are loaded, so
+  never (b), and a fixture it still needs is written NOW, not deferred. When
+  (a) does hold, file an umbrella naming every
   site (§3 sorts umbrellas last), and say which sites this lane DID close, so
   the residue is unambiguous.
 
   **Say WHY in the criteria's terms, not the PR's.** This read "would make the
   PR unreviewable" until 2026-09-05, so the file blessed what its own rule
-  refuses. Review size is the SIGNAL; under it is a NEW fixture the residue
-  needs — reason (a). Else the residue is `now`.
+  refuses. Review size is the SIGNAL; under it must be external input the
+  residue waits on — reason (a). Else the residue is `now`.
 
   **The unreviewable state is never reached by drifting into it**, because each
   widening is small and real:
@@ -145,7 +145,7 @@ PR from that tree costs almost nothing, deps and markers already paid.
 `.claude/rules/session-report.md` owns the criteria and wins on conflict (a
 frozen-scope reason is a SESSION-STATE clause there, and one that no longer
 counts as a reason at all; only "held by another lane's open PR" survives, as
-reason (b) with its ending event named). This step adds only the TIMING: twice a
+reason (a) with its ending event named). This step adds only the TIMING: twice a
 frozen-scope `next` was filed while the owning lane was still open
 (go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
 
