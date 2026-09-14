@@ -716,9 +716,9 @@ An Output the deploy could NOT resolve is SKIPPED — warned about when the
 resolver threw (under the default arm; `--strict-getatt` aborts the deploy
 instead), silently when the resolver returned nothing — and `cdkd deploy`
 stores nothing for it, so a bag the deploy re-resolved lacks the key (a
-no-change deploy keeps the previous bag whole when any output fails, so a key
-that resolved on an earlier deploy can keep its stored value beside a record —
-the diff then ignores the record for it). When that
+no-change deploy keeps a failed output's stored value, so a key that resolved
+on an earlier deploy can keep that value beside a record — the diff then
+ignores the record for it). When that
 failure happens INSIDE a secret lookup — a `{{resolve:secretsmanager:...}}`
 naming a JSON key the secret does not hold, or a reference assembled from
 another secret's value — `cdkd diff` cannot reproduce it: the diff resolves
@@ -762,8 +762,13 @@ change.
 
 Lifecycle: written by every deploy that re-resolves outputs (the changed and
 the no-change path alike; the no-change path saves on a record change alone,
-and writes THIS pass's record even when it keeps the previous bag because an
-output failed), omitted when nothing was skipped, cleared for a key that
+and writes THIS pass's record beside the outputs that did resolve, while a
+failed output keeps its earlier value — or beside the whole previous outputs
+when they cannot be merged safely: a failed output with an earlier value whose
+`Export.Name` is an intrinsic, or a save that would put the first secret
+reference beside a kept value, checked on the outputs as they will be saved; a
+kept value is not repositioned onto a reference from today's template, though
+the ordinary secret scan still redacts it), omitted when nothing was skipped, cleared for a key that
 resolves or leaves the template, and carried forward unchanged by the saves
 that carry the `outputs` bag forward without re-resolving it (a failed
 deploy's partial saves, and the snapshot a partial `cdkd destroy` leaves —

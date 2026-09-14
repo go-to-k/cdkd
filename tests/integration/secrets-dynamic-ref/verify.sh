@@ -569,8 +569,8 @@ SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
 # resolver's own `key '<password>' not found in secret` error, carrying the
 # plaintext, is what the deploy engine reports. Nothing else changes, so this
 # is a no-change deploy in which only the outputs pass does work; the engine
-# warns, skips the output (and, on that no-change path, also says it is
-# keeping the previously persisted outputs), and exits 0. The log is CAPTURED
+# warns, skips the output (and, on that no-change path, persists the outputs
+# that did resolve, go-to-k/cdkd#2771), and exits 0. The log is CAPTURED
 # and NOT shown: the line under test is the one that would carry the password
 # on a masking regression, so it reaches the terminal only through
 # `diag_output`, which withholds it when it carries a secret -- on a failing

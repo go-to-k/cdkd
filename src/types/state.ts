@@ -296,7 +296,8 @@ export interface StackState {
    * every template input that fed its resolution (issue
    * [#2740](https://github.com/go-to-k/cdkd/issues/2740)). Such a key is
    * absent from `outputs` when the save re-resolved the bag; the no-change
-   * path keeps the PREVIOUS bag when any output fails, so a key that resolved
+   * path keeps a failed key's STORED value (issue
+   * [#2771](https://github.com/go-to-k/cdkd/issues/2771)), so a key that resolved
    * on an earlier deploy can sit in `outputs` beside its record — the diff
    * then ignores the record for it (it checks absence first). `cdkd diff`
    * cannot reproduce the failure when

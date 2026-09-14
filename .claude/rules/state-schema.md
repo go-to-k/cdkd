@@ -76,8 +76,8 @@ that carried a pre-v9 bag forward) and keeps the legacy rule so no existing
 cross-stack reference breaks on upgrade; `[]` means KNOWN to export nothing.
 Two writer rules follow, and both are fenced by
 `tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts`: a save
-that RE-RESOLVES outputs (the success path, the no-change refresh) always
-writes the set, `[]` included — unlike `imports` / `outputReads`, an empty
+that RE-RESOLVES outputs (the success path, the no-change refresh; #2771's
+partial persist writes the merged set, and its keep-whole arm carries the kept bag's set) writes the set, `[]` included — unlike `imports` / `outputReads`, an empty
 array is NOT omitted, because absent and empty are different records here;
 and a save that CARRIES a bag forward (`outputs: currentState.outputs` on the
 five failure-path saves, `cdkd import` over an existing record) spreads
@@ -85,7 +85,7 @@ five failure-path saves, `cdkd import` over an existing record) spreads
 whose set it does not know. The no-change deploy path additionally persists
 the set (and re-feeds the exports index with the exports only) whenever the
 EFFECTIVE export set changed even though the outputs VALUES did not — compared
-as `importableOutputKeys(currentState)` against the freshly-resolved set. Two
+as `importableOutputKeys(currentState)` against the set this save writes. Two
 shapes reach it: a pre-v9 record whose every-key legacy set differs from the
 real exports (its first migration, evicting the plain-name entries a pre-v9
 deploy published — without which a producer whose template never changes would
@@ -112,8 +112,8 @@ otherwise: code reading a `state.outputs` value back must not assume `string`
 `Record<string, string>` is wrong (issue
 [#1876](https://github.com/go-to-k/cdkd/issues/1876)). An output the resolver
 could not resolve is stored as `undefined` and therefore drops out of the
-persisted JSON entirely — absence means "not resolved" (a no-change save may
-keep the old bag).
+persisted JSON entirely — absence means "not resolved" (a no-change save keeps
+that key's old value, #2771).
 
 **Do not verify any of this from the deploy summary.** `cdkd deploy`'s
 `Outputs:` block prints each value with `String(value)`

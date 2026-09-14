@@ -75,11 +75,14 @@ const SUCCESS_PATH_WRITES: readonly string[] = [
   // — it exports nothing, and that is KNOWN, so a first deploy that fails
   // before its outputs resolve persists `[]` rather than "not known"), and
   // the two RE-RESOLVING saves, because the no-change path re-resolves
-  // outputs too: the no-change refresh and the success-path save. Every
-  // other save carries the previous set forward via `exportNamesCarriedFrom`
-  // (fenced separately below).
+  // outputs too: the no-change refresh and the success-path save. The
+  // no-change refresh writes the set of the bag it persists, which since
+  // issue #2771 is this pass's or the partial merge's (`exportNamesToPersist`),
+  // and carries the previous set only when the whole previous bag is kept.
+  // Every other save carries the previous set forward via
+  // `exportNamesCarriedFrom` (fenced separately below).
   'exportNames: [],',
-  ': { exportNames: [...this.resolvedExportNames] }),',
+  ': { exportNames: [...exportNamesToPersist] }),',
   'exportNames: [...this.resolvedExportNames],',
   '...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),',
   'outputReads: [...this.recordedOutputReads],',

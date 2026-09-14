@@ -861,8 +861,17 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     expect(source).toMatch(/some\(\(v\) => v === undefined\)/);
   });
 
-  it('deploy still declines to persist when that signal is set', () => {
-    expect(source).toMatch(/!resolutionFailed && !outputMapsEqual\(/);
+  it('deploy routes a failure through the merge and persists the MERGED bag (source spelling)', () => {
+    // Issue #2771 moved the gate: a failed output no longer blocks the persist;
+    // the bag goes through `mergeNoChangeOutputs`, and only its `kept` verdict
+    // keeps the previous bag (which can still save, for the #2740 record). This
+    // module stays the CONSERVATIVE side. A SPELLING fence, so it pins the
+    // three lines below and nothing about their behaviour — that is pinned by
+    // `deploy-engine-outputs-only-change.test.ts`.
+    expect(source).toContain('mergeNoChangeOutputs({');
+    expect(source).toMatch(/merge\.kind === 'merged'\s*\?\s*merge\.outputs\s*:\s*persistedOutputs/);
+    expect(source).toMatch(/const outputsChanged = !outputMapsEqual\(persistedOutputs, outputsToPersist\);/);
+    expect(source).not.toMatch(/!resolutionFailed && !outputMapsEqual\(/);
   });
 });
 

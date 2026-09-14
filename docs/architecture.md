@@ -356,15 +356,22 @@ break a consumer — was hidden the same way.
   policy body's `${aws:username}` or a UserData shell `${VAR}`, and a single such
   key suppresses the whole Outputs section for that stack forever.
 - `computeOutputsDiff` compares **bag key by bag key**, which is exactly the
-  `outputMapsEqual` predicate the deploy engine gates its persist on, so the
-  preview cannot drift from the apply. A partially-resolved bag reports no
-  delta at all, mirroring the deploy engine's NO-CHANGE branch declining to
-  persist one (its changed-resources branch has no such gate, correctly, since
-  by then every resource exists) — and
-  nothing is lost, since an output only fails to resolve when it references a
-  resource this deploy has yet to CREATE, which the resource side already shows.
-  As on the deploy side a suppressed delta is WARNED about, so an absent Outputs
-  section never silently conflates "unchanged" with "uncomputable".
+  `outputMapsEqual` predicate the deploy engine gates its persist on, so a fully
+  resolved preview compares the same bags the apply does. A partially-resolved
+  bag reports no delta at all. That is the conservative side of the deploy
+  engine's NO-CHANGE branch, which persists the outputs that did resolve and
+  keeps each failed output's stored value, or keeps the previous outputs whole
+  in the two cases it cannot merge safely (an intrinsic `Export.Name` on a
+  failed output with a stored value, and a first secret reference beside a kept
+  value, checked on the outputs as they will be saved; a kept value is not
+  repositioned onto today's template, though the secret scan still redacts it)
+  — so in one narrow shape the preview reports no delta that the apply then
+  writes. Its changed-resources branch has no gate at all, correctly, since by
+  then every resource exists, and usually nothing is lost, since an output
+  usually fails to resolve because it references a resource this deploy has yet
+  to CREATE, which the resource side already shows.
+  A suppressed delta is WARNED about when a difference survives the failed-key
+  filter; when none does, an absent Outputs section is silent.
 - Because this is the first code path that **displays** a stored output value,
   it withholds an `oldValue` that is legacy secret plaintext. Two signals
   identify such a record: the desired side still being a secret-bearing dynamic
@@ -387,8 +394,10 @@ break a consumer — was hidden the same way.
   output name plus every literal `Export.Name`) nor the resolved bag has its
   value withheld — gated on the template still proving a secret reference
   *anywhere*, `Resources` included, and exonerated when any stored value is
-  itself a secret expression (which proves the last write redacted the whole
-  bag, since `resolveOutputs` rewrites every key). This arm withholds per KEY
+  itself a secret expression (read as evidence the last write redacted the
+  whole bag; a no-change deploy that carries a failed output's stored value
+  refuses to create the one shape that breaks that reading, though a deploy
+  that keeps the whole previous set can still produce it). This arm withholds per KEY
   rather than record-wide: unlike the two above it concludes only that one key
   is undecidable, not that the record predates redaction. A stack whose only
   secret reference *was* the deleted output leaves nothing to gate on, and

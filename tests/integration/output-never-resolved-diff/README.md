@@ -28,12 +28,13 @@ what the next deploy will leave in state.
   `CDKD_TEST_RESOURCE_EDIT=true`. It exists so that a skipped output can
   REFERENCE a resource the diff reports as changing.
 - `NeverResolvesViaRef` — the same missing key, reached through an `Fn::Sub`
-  that also names `RefMarker`. It repairs on the same toggle as
-  `NeverResolves`, because deploy's no-resource-change path keeps the previous
-  outputs bag while any output is still unresolved
-  ([#2771](https://github.com/go-to-k/cdkd/issues/2771)), so a partial repair
-  would publish nothing.
+  that also names `RefMarker`. It repairs under `CDKD_TEST_UPDATE=true`, and
+  alone under `CDKD_TEST_PARTIAL_REPAIR=true`.
 - `Plain` — a literal.
+- `Plain2` — a literal declared only under `CDKD_TEST_ADD_OUTPUT=true`: the
+  output [#2771](https://github.com/go-to-k/cdkd/issues/2771) is about, added
+  beside the two that keep failing. Every later phase carries the toggle, so it
+  is never removed before destroy.
 
 ## What `verify.sh` asserts
 
@@ -60,10 +61,22 @@ what the next deploy will leave in state.
 4. **Upgrade path**: the field is stripped from `state.json` out of band (a
    record written before the field existed) and a no-change deploy writes it
    back with the same digest; `diff --fail` exits 0 again.
-5. **Repair** (`CDKD_TEST_UPDATE=true` switches both broken Values to the
-   `username` key): `diff --fail` exits 1 and renders both ADD rows (the record
-   must not suppress a repaired output); the deploy publishes both keys as
-   their expressions and empties the record; `diff --fail` exits 0.
+4b. **An output added beside the broken ones lands**
+   ([#2771](https://github.com/go-to-k/cdkd/issues/2771),
+   `CDKD_TEST_ADD_OUTPUT=true`): `diff --fail` first exits 1 with the one
+   `[+] Plain2` row; the no-change deploy still fails both broken outputs,
+   does not keep the previous outputs bag whole, persists `Plain2`, and leaves
+   the record unmoved; `diff --fail` then exits 0. Before the fix it stayed at
+   exit 1 on every run.
+4c. **A partial repair publishes** (`CDKD_TEST_PARTIAL_REPAIR=true` repairs
+   `NeverResolvesViaRef` alone): the repaired key lands with its expected
+   value while `NeverResolves` still fails, the record narrows to
+   `NeverResolves`, and `diff --fail` exits 0.
+5. **Repair** (`CDKD_TEST_UPDATE=true`, with the 4b / 4c toggles carried
+   forward, repairs `NeverResolves` too): `diff --fail` exits 1 and renders
+   its one ADD row (the record must not suppress a repaired output); the
+   deploy publishes it as its expression and empties the record, keeping
+   `Plain2`; `diff --fail` exits 0.
 6. **Destroy**, then the secret is gone or scheduled for deletion, the state
    file is gone, and every state-object version is swept.
 

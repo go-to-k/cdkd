@@ -733,12 +733,15 @@ export async function computeStackDiff(
     currentState.outputs,
     bindingSkipped
   );
-  // A partially-resolved bag reports NO delta, exactly like the deploy engine's
-  // NO-CHANGE branch declining to persist one (`resolutionFailed` there). That
-  // branch is the one this preview stands in for; deploy's changed-resources
-  // branch has no such gate, correctly, because by then every resource exists.
-  // Being conservative in the same direction is what keeps an unchanged stack at
-  // "no changes" instead of showing a phantom the apply would never write.
+  // A partially-resolved bag reports NO delta. This is the CONSERVATIVE side of
+  // the deploy engine's NO-CHANGE branch rather than a mirror of it: since
+  // go-to-k/cdkd#2771 that branch persists the outputs that did resolve and
+  // keeps each failed key's stored value, while this preview, which cannot tell
+  // an output that will fail at deploy from one that merely waits on a pending
+  // resource, withholds the whole section and warns. Deploy's changed-resources
+  // branch has no gate at all, correctly, because by then every resource exists.
+  // Suppressing here keeps an unchanged stack at "no changes" instead of
+  // showing a phantom the apply would never write.
   // Nothing is lost in the common case: an output usually fails to resolve
   // because it references a resource this deploy has yet to create, and that
   // CREATE is already on the resource side of the diff. Since issue #2740 a

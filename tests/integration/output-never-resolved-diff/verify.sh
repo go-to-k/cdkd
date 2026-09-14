@@ -36,12 +36,20 @@
 #   4.  UPGRADE: the field is stripped from state.json out of band (a record a
 #       pre-#2740 binary wrote) and a no-change deploy writes it back with the
 #       same digest; `diff --fail` exits 0 again
-#   5.  REPAIR (CDKD_TEST_UPDATE=true switches BOTH broken Values to a key
-#       that exists): `diff --fail` exits 1 and renders both rows — the record
-#       must NOT suppress a repaired output; the deploy publishes the keys as
-#       their expressions and empties the record; `diff --fail` exits 0.
-#       Both repair together because a PARTIAL repair publishes nothing at all
-#       (go-to-k/cdkd#2771), which is an engine limitation, not this fix
+#   4b. ADD (go-to-k/cdkd#2771, CDKD_TEST_ADD_OUTPUT=true declares `Plain2`
+#       beside the two outputs that still fail): `diff --fail` exits 1 with the
+#       one `[+] Plain2` row; the no-change deploy persists `Plain2` without
+#       keeping the previous bag whole and without moving the record;
+#       `diff --fail` exits 0 (pre-fix: rc 1 on every run)
+#   4c. PARTIAL REPAIR (CDKD_TEST_PARTIAL_REPAIR=true repairs
+#       NeverResolvesViaRef alone): the repaired key is published while
+#       NeverResolves still fails, the record narrows to NeverResolves, and
+#       `diff --fail` exits 0 (pre-fix: nothing published until both repaired)
+#   5.  REPAIR (CDKD_TEST_UPDATE=true switches the remaining broken Value to a
+#       key that exists; the phase 4b / 4c toggles are carried forward):
+#       `diff --fail` exits 1 and renders its row — the record must NOT
+#       suppress a repaired output; the deploy publishes the key as its
+#       expression and empties the record; `diff --fail` exits 0
 #   6.  destroy; secret gone or scheduled for deletion; state gone; every
 #       state-object version swept
 #
@@ -122,6 +130,8 @@ EXPECTED_USERNAME="cdkd-neverres-user"
 EXPECTED_PLAIN="cdkd-neverres-plain-value"
 # The `Plain` sibling's value under CDKD_TEST_SIBLING=true (Phase 2b).
 EXPECTED_PLAIN_CHANGED="cdkd-neverres-plain-value-changed"
+# The output phase 4b ADDS beside the broken ones (CDKD_TEST_ADD_OUTPUT=true).
+EXPECTED_PLAIN2="cdkd-neverres-plain2-value"
 # The two reference spellings the template carries, verbatim.
 BROKEN_REF="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:password}}"
 REPAIRED_REF="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:username}}"
@@ -455,7 +465,7 @@ SYNTH_DIR="$(mktemp -d)"
 # echoed, and the two paths that run before it print NO captured text at all:
 # their message plus an exit status is enough to debug a fixture this small,
 # and it is the only shape that cannot leak a drifted seed.
-if ! SYNTH_OUT=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" 2>&1); then
+if ! SYNTH_OUT=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" 2>&1); then
   echo "FAIL: the baseline synth failed (output withheld — the seed value is not yet known to match the redaction needle)" >&2
   exit 1
 fi
@@ -525,11 +535,14 @@ cp "${SYNTH_TEMPLATE}" "${SYNTH_BASELINE}"
 # spelling, leaving the sibling and the literal alone.
 # Withheld like the baseline's: a failed synth has no template to read the
 # seed out of, so nothing yet proves this variant's seed is the needle.
-if ! CDKD_TEST_UPDATE=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+if ! CDKD_TEST_UPDATE=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
   echo "FAIL: the repaired synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
   exit 1
 fi
 assert_seed_needle "${SYNTH_TEMPLATE}" repaired
+# Kept for the repaired-carried premise, which compares against it whole.
+SYNTH_REPAIRED_FULL="${SYNTH_DIR}/repaired.template.json"
+cp "${SYNTH_TEMPLATE}" "${SYNTH_REPAIRED_FULL}"
 if ! SYNTH_REPAIRED=$(render_output "${SYNTH_TEMPLATE}" NeverResolves 2>"${RENDER_ERR}"); then
   echo "FAIL: the repaired NeverResolves value has a shape this guard cannot render" >&2
   diag_output "$(cat "${RENDER_ERR}")"
@@ -581,7 +594,7 @@ fi
 # returns nothing would still pass. Mirrors `skippedOutputDigest`'s coverage:
 # every top-level section EXCEPT `Resources` and `Outputs`, plus the output's
 # own entry.
-if ! CDKD_TEST_RESOURCE_EDIT=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+if ! CDKD_TEST_RESOURCE_EDIT=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
   echo "FAIL: the resource-edit synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
   exit 1
 fi
@@ -620,7 +633,7 @@ fi
 # gated on this toggle alone would reach `diag_output` under a stale needle.
 # The Plain value phase 2b greps for is pinned here too, offline, so a
 # constant that drifted fails before the run costs an account.
-if ! CDKD_TEST_SIBLING=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+if ! CDKD_TEST_SIBLING=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
   echo "FAIL: the sibling-change synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
   exit 1
 fi
@@ -631,13 +644,104 @@ if [ "${SYNTH_SIBLING_PLAIN}" != "${EXPECTED_PLAIN_CHANGED}" ]; then
   diag_output "Plain: ${SYNTH_SIBLING_PLAIN}"
   exit 1
 fi
+# --- Premise for phases 4b / 4c / 5 (go-to-k/cdkd#2771) ----------------------
+# Three more variants, each synthesized for the reason every variant above is
+# (`assert_seed_needle` must see every template this run can produce) and each
+# pinned, offline, to exactly the change its phase rests on.
+#
+# add-output (phase 4b): `Plain2` appears, the baseline did not declare it, and
+# the rest of the template is the baseline's, whole — so the phase is about an
+# ADDED output and nothing else.
+if ! CDKD_TEST_ADD_OUTPUT=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+  echo "FAIL: the add-output synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
+  exit 1
+fi
+assert_seed_needle "${SYNTH_TEMPLATE}" add-output
+if [ "$(jq -r '.Outputs.Plain2.Value // "ABSENT"' "${SYNTH_BASELINE}")" != "ABSENT" ]; then
+  echo "FAIL: the baseline synth already declares Plain2 — phase 4b would not be adding anything" >&2
+  exit 1
+fi
+if [ "$(jq -r '.Outputs.Plain2.Value // "ABSENT"' "${SYNTH_TEMPLATE}")" != "${EXPECTED_PLAIN2}" ]; then
+  echo "FAIL: CDKD_TEST_ADD_OUTPUT=true did not declare Plain2 with the value phase 4b asserts" >&2
+  exit 1
+fi
+if [ "$(jq -cS . "${SYNTH_BASELINE}")" != "$(jq -cS 'del(.Outputs.Plain2)' "${SYNTH_TEMPLATE}")" ]; then
+  echo "FAIL: CDKD_TEST_ADD_OUTPUT=true changed the template beyond declaring Plain2" >&2
+  exit 1
+fi
+# Kept so the later variants can compare Plain2's WHOLE declaration, not only its value.
+SYNTH_ADD_FULL="${SYNTH_DIR}/add-output.template.json"
+cp "${SYNTH_TEMPLATE}" "${SYNTH_ADD_FULL}"
+# partial-repair (phase 4c): NeverResolvesViaRef takes the repaired key ALONE,
+# while NeverResolves still renders the broken reference — the phase needs one
+# output repaired and one still failing on the same deploy.
+if ! CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+  echo "FAIL: the partial-repair synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
+  exit 1
+fi
+assert_seed_needle "${SYNTH_TEMPLATE}" partial-repair
+if ! SYNTH_PARTIAL_BROKEN=$(render_output "${SYNTH_TEMPLATE}" NeverResolves 2>"${RENDER_ERR}"); then
+  echo "FAIL: the partial-repair synth's NeverResolves value has a shape this guard cannot render" >&2
+  diag_output "$(cat "${RENDER_ERR}")"
+  exit 1
+fi
+if [ "${SYNTH_PARTIAL_BROKEN}" != "${BROKEN_REF}" ]; then
+  echo "FAIL: CDKD_TEST_PARTIAL_REPAIR=true repaired NeverResolves too — phase 4c needs it still broken" >&2
+  diag_output "NeverResolves: ${SYNTH_PARTIAL_BROKEN}"
+  exit 1
+fi
+if [ "$(jq -cS '.Outputs.NeverResolvesViaRef.Value' "${SYNTH_TEMPLATE}")" != "${VIA_REF_WANT}" ]; then
+  echo "FAIL: CDKD_TEST_PARTIAL_REPAIR=true did not repair NeverResolvesViaRef to the baseline value with the username key" >&2
+  exit 1
+fi
+if [ "$(jq -r '.Outputs.Plain2.Value // "ABSENT"' "${SYNTH_TEMPLATE}")" != "${EXPECTED_PLAIN2}" ]; then
+  echo "FAIL: the partial-repair synth dropped Plain2, which phase 4c carries forward" >&2
+  exit 1
+fi
+# ...and nothing else moved: minus Plain2 and NeverResolvesViaRef's Value (both
+# asserted above), the template is the baseline's, whole.
+if [ "$(jq -cS 'del(.Outputs.NeverResolvesViaRef.Value)' "${SYNTH_BASELINE}")" != "$(jq -cS 'del(.Outputs.Plain2) | del(.Outputs.NeverResolvesViaRef.Value)' "${SYNTH_TEMPLATE}")" ]; then
+  echo "FAIL: CDKD_TEST_PARTIAL_REPAIR=true changed the template beyond repairing NeverResolvesViaRef" >&2
+  exit 1
+fi
+if [ "$(jq -cS '.Outputs.Plain2' "${SYNTH_ADD_FULL}")" != "$(jq -cS '.Outputs.Plain2' "${SYNTH_TEMPLATE}")" ]; then
+  echo "FAIL: the partial-repair synth declares Plain2 differently from the add-output synth" >&2
+  exit 1
+fi
+# repaired-carried (phase 5): the full repair with both toggles above carried
+# forward, so both broken outputs repair and Plain2 is still declared.
+if ! CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" synth --region "${REGION}" --output "${SYNTH_DIR}" >/dev/null 2>&1; then
+  echo "FAIL: the repaired-carried synth failed (output withheld — this variant's seed is not yet known to match the redaction needle)" >&2
+  exit 1
+fi
+assert_seed_needle "${SYNTH_TEMPLATE}" repaired-carried
+if ! SYNTH_CARRIED_NR=$(render_output "${SYNTH_TEMPLATE}" NeverResolves 2>"${RENDER_ERR}"); then
+  echo "FAIL: the repaired-carried synth's NeverResolves value has a shape this guard cannot render" >&2
+  diag_output "$(cat "${RENDER_ERR}")"
+  exit 1
+fi
+if [ "${SYNTH_CARRIED_NR}" != "${REPAIRED_REF}" ] \
+   || [ "$(jq -cS '.Outputs.NeverResolvesViaRef.Value' "${SYNTH_TEMPLATE}")" != "${VIA_REF_WANT}" ] \
+   || [ "$(jq -r '.Outputs.Plain2.Value // "ABSENT"' "${SYNTH_TEMPLATE}")" != "${EXPECTED_PLAIN2}" ]; then
+  echo "FAIL: the repaired-carried synth does not repair both broken outputs while keeping Plain2" >&2
+  exit 1
+fi
+# ...and minus Plain2 it is the CDKD_TEST_UPDATE=true template, whole.
+if [ "$(jq -cS . "${SYNTH_REPAIRED_FULL}")" != "$(jq -cS 'del(.Outputs.Plain2)' "${SYNTH_TEMPLATE}")" ]; then
+  echo "FAIL: carrying the phase 4b / 4c toggles changed the repaired template beyond declaring Plain2" >&2
+  exit 1
+fi
+if [ "$(jq -cS '.Outputs.Plain2' "${SYNTH_ADD_FULL}")" != "$(jq -cS '.Outputs.Plain2' "${SYNTH_TEMPLATE}")" ]; then
+  echo "FAIL: the repaired-carried synth declares Plain2 differently from the add-output synth" >&2
+  exit 1
+fi
 rm -rf "${SYNTH_DIR}"
-echo "    OK: all four variants seed the same secret; both spellings render as asserted; the repair flips both broken outputs; the resource edit moves the resource and nothing the digest reads; the sibling toggle moves Plain"
+echo "    OK: all seven variants seed the same secret; both spellings render as asserted; the repair flips both broken outputs; the resource edit moves the resource and nothing the digest reads; the sibling toggle moves Plain; the add-output, partial-repair and repaired-carried variants change exactly what their phases rest on"
 
 # --- Phase 1: deploy — the output fails INSIDE the secret lookup -------------
 echo "==> Phase 1: deploy (the NeverResolves lookup fails on the missing 'password' key)"
 set +e
-DEPLOY_OUT=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" deploy "${STACK}" \
+DEPLOY_OUT=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
 DEPLOY_RC=$?
 set -e
@@ -788,7 +892,7 @@ fi
 # --- Phase 2: diff --fail on the UNCHANGED stack exits 0 -------------------
 echo "==> Phase 2: 'cdkd diff --fail' on the unchanged stack (pre-fix: rc 1 with '[+] NeverResolves')"
 set +e
-DIFF_2=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+DIFF_2=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
 DIFF_2_RC=$?
 set -e
@@ -820,7 +924,7 @@ echo "    OK: diff --fail exits 0, no NeverResolves row, no warning"
 # --- Phase 2b: a changed SIBLING is not hidden by the record -----------------
 echo "==> Phase 2b: 'cdkd diff --fail' with the Plain sibling changed (CDKD_TEST_SIBLING=true) exits 1 and renders the sibling only"
 set +e
-DIFF_2B=$(CDKD_TEST_SIBLING=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+DIFF_2B=$(CDKD_TEST_SIBLING=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
 DIFF_2B_RC=$?
 set -e
@@ -859,7 +963,7 @@ echo "    OK: sibling change renders alone, both skipped outputs stay absent, di
 # whole fixture green.
 echo "==> Phase 2c: a referenced resource changes (CDKD_TEST_RESOURCE_EDIT=true) — the record must not bind for that output"
 set +e
-DIFF_2C=$(CDKD_TEST_RESOURCE_EDIT=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING node "${LOCAL_DIST}" diff "${STACK}" \
+DIFF_2C=$(CDKD_TEST_RESOURCE_EDIT=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
 DIFF_2C_RC=$?
 set -e
@@ -903,7 +1007,7 @@ echo "    OK: the referencing output un-binds alone, its sibling stays suppresse
 # --- Phase 3: a no-change re-deploy re-saves nothing ----------------------
 echo "==> Phase 3: no-change re-deploy (record equal -> no state write)"
 set +e
-DEPLOY_3=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" deploy "${STACK}" \
+DEPLOY_3=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
 DEPLOY_3_RC=$?
 set -e
@@ -941,7 +1045,7 @@ if [ "$(read_state | jq -r 'has("skippedOutputs")')" != "false" ]; then
   exit 1
 fi
 set +e
-DEPLOY_4=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" deploy "${STACK}" \
+DEPLOY_4=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
 DEPLOY_4_RC=$?
 set -e
@@ -974,7 +1078,7 @@ if [ "$(jq -r '.outputs.Resolves' <<<"${STATE_4}")" != "${REPAIRED_REF}" ] || [ 
   exit 1
 fi
 set +e
-DIFF_4=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+DIFF_4=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_ADD_OUTPUT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
 DIFF_4_RC=$?
 set -e
@@ -986,10 +1090,180 @@ if [ "${DIFF_4_RC}" -ne 0 ] || never_resolves_row "${DIFF_4}"; then
 fi
 echo "    OK: record written back with the same digest, bag carried, diff --fail exits 0"
 
-# --- Phase 5: REPAIR — the record must not suppress a repaired output --------
-echo "==> Phase 5: repair both broken Values (CDKD_TEST_UPDATE=true); diff shows the ADDs, deploy publishes and clears the record"
+# --- Phase 4b: an output ADDED beside the broken ones lands (go-to-k/cdkd#2771)
+# The issue's own shape. Both broken outputs still fail, and `Plain2` is added
+# beside them with no resource change. Pre-fix the no-change deploy kept the
+# previous outputs bag whole because a sibling was unresolved, so `Plain2` never
+# reached state and `cdkd diff --fail` showed `[+] Plain2` on every run.
+# `CDKD_TEST_ADD_OUTPUT` is carried through every later phase, so the output is
+# never removed again before destroy.
+KEPT_WHOLE_FRAGMENT="keeping the previously persisted outputs"
+# The negative below greps the kept-whole warning; pinned against the BUILT
+# bundle so a reword cannot leave it vacuously green.
+if ! grep -rqF "${KEPT_WHOLE_FRAGMENT}" "$(dirname "${LOCAL_DIST}")"/*.js; then
+  echo "FAIL: the built CLI no longer carries the kept-whole warning fragment this fixture asserts the ABSENCE of: ${KEPT_WHOLE_FRAGMENT}" >&2
+  exit 1
+fi
+echo "==> Phase 4b: add Plain2 beside the still-broken outputs (CDKD_TEST_ADD_OUTPUT=true); the no-change deploy must persist it"
 set +e
-DIFF_5=$(CDKD_TEST_UPDATE=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+DIFF_4B=$(CDKD_TEST_ADD_OUTPUT=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+DIFF_4B_RC=$?
+set -e
+assert_no_plaintext "the add-output diff output" "${DIFF_4B}"
+# PREMISE: before the deploy the ADD is real, and it is the only output row —
+# both broken outputs still bind their records.
+if [ "${DIFF_4B_RC}" -ne 1 ] || ! grep -qE "^ {4}\[\+\] Plain2( |\$)" <<<"${DIFF_4B}" \
+   || [ "$(count_output_rows "${DIFF_4B}")" -ne 1 ]; then
+  echo "FAIL: premise: before the add-output deploy, 'cdkd diff --fail' must exit 1 with exactly one row, '[+] Plain2' (rc=${DIFF_4B_RC})" >&2
+  diag_output "${DIFF_4B}"
+  exit 1
+fi
+set +e
+DEPLOY_4B=$(CDKD_TEST_ADD_OUTPUT=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+DEPLOY_4B_RC=$?
+set -e
+assert_no_plaintext "the add-output deploy output" "${DEPLOY_4B}"
+if [ "${DEPLOY_4B_RC}" -ne 0 ] || ! grep -qF "No changes detected" <<<"${DEPLOY_4B}"; then
+  echo "FAIL: the add-output deploy did not take the no-change path (rc=${DEPLOY_4B_RC})" >&2
+  diag_output "${DEPLOY_4B}"
+  exit 1
+fi
+# PREMISE: both outputs really failed on THIS deploy, or the persist below is
+# not happening beside a failure at all.
+for skipped in NeverResolves NeverResolvesViaRef; do
+  if ! grep -qF "Failed to resolve output ${skipped}:" <<<"${DEPLOY_4B}"; then
+    echo "FAIL: premise: the add-output deploy did not warn 'Failed to resolve output ${skipped}:'" >&2
+    diag_output "${DEPLOY_4B}"
+    exit 1
+  fi
+done
+if grep -qF "${KEPT_WHOLE_FRAGMENT}" <<<"${DEPLOY_4B}"; then
+  echo "FAIL: the add-output deploy kept the previous outputs bag whole — the partial persist did not run" >&2
+  diag_output "${DEPLOY_4B}"
+  exit 1
+fi
+STATE_4B=$(read_state)
+assert_state_no_plaintext "state.json after the add-output deploy" "${STATE_4B}"
+if [ "$(jq -r '.outputs.Plain2 // "ABSENT"' <<<"${STATE_4B}")" != "${EXPECTED_PLAIN2}" ]; then
+  echo "FAIL: state.outputs.Plain2 != ${EXPECTED_PLAIN2} after a no-change deploy that resolved it (got: $(jq -c '.outputs.Plain2' <<<"${STATE_4B}")) — the bug in go-to-k/cdkd#2771" >&2
+  exit 1
+fi
+if [ "$(jq -r '.outputs | has("NeverResolves") or has("NeverResolvesViaRef")' <<<"${STATE_4B}")" != "false" ]; then
+  echo "FAIL: state.outputs gained a key for an output that still failed" >&2
+  exit 1
+fi
+if [ "$(jq -r '.outputs.Plain' <<<"${STATE_4B}")" != "${EXPECTED_PLAIN}" ] || [ "$(jq -r '.outputs.Resolves' <<<"${STATE_4B}")" != "${REPAIRED_REF}" ]; then
+  echo "FAIL: the add-output deploy changed a sibling's persisted value" >&2
+  exit 1
+fi
+KEYS_4B=$(jq -c '(.skippedOutputs // {}) | keys' <<<"${STATE_4B}")
+if [ "${KEYS_4B}" != '["NeverResolves","NeverResolvesViaRef"]' ] || [ "$(jq -r '.skippedOutputs.NeverResolves' <<<"${STATE_4B}")" != "${DIGEST_1}" ]; then
+  echo "FAIL: the add-output deploy moved the skipped-outputs record (keys: ${KEYS_4B}) — a sibling output is not a digest input" >&2
+  exit 1
+fi
+set +e
+DIFF_4B2=$(CDKD_TEST_ADD_OUTPUT=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT -u CDKD_TEST_PARTIAL_REPAIR node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+DIFF_4B2_RC=$?
+set -e
+assert_no_plaintext "the post-add-output diff output" "${DIFF_4B2}"
+if [ "${DIFF_4B2_RC}" -ne 0 ] || [ "$(count_output_rows "${DIFF_4B2}")" -ne 0 ]; then
+  echo "FAIL: 'cdkd diff --fail' after the add-output deploy exited ${DIFF_4B2_RC} or rendered an output row (pre-fix: rc 1 with '[+] Plain2' forever)" >&2
+  diag_output "${DIFF_4B2}"
+  exit 1
+fi
+echo "    OK: Plain2 persisted beside two failing outputs, record unmoved, diff --fail exits 0"
+
+# --- Phase 4c: a PARTIAL repair publishes the repaired key (go-to-k/cdkd#2771)
+# NeverResolvesViaRef is repaired ALONE (CDKD_TEST_PARTIAL_REPAIR=true) while
+# NeverResolves keeps failing. Pre-fix nothing was published until BOTH were
+# repaired, which is why phase 5 used to repair them together.
+echo "==> Phase 4c: repair NeverResolvesViaRef alone (CDKD_TEST_PARTIAL_REPAIR=true); it lands while NeverResolves still fails"
+set +e
+DIFF_4C=$(CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+DIFF_4C_RC=$?
+set -e
+assert_no_plaintext "the partial-repair diff output" "${DIFF_4C}"
+if [ "${DIFF_4C_RC}" -ne 1 ] || ! via_ref_row "${DIFF_4C}" || never_resolves_row "${DIFF_4C}" \
+   || [ "$(count_output_rows "${DIFF_4C}")" -ne 1 ]; then
+  echo "FAIL: premise: before the partial repair, 'cdkd diff --fail' must exit 1 with exactly the NeverResolvesViaRef row (rc=${DIFF_4C_RC})" >&2
+  diag_output "${DIFF_4C}"
+  exit 1
+fi
+set +e
+DEPLOY_4C=$(CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+DEPLOY_4C_RC=$?
+set -e
+assert_no_plaintext "the partial-repair deploy output" "${DEPLOY_4C}"
+if [ "${DEPLOY_4C_RC}" -ne 0 ] || ! grep -qF "No changes detected" <<<"${DEPLOY_4C}"; then
+  echo "FAIL: the partial-repair deploy did not take the no-change path (rc=${DEPLOY_4C_RC})" >&2
+  diag_output "${DEPLOY_4C}"
+  exit 1
+fi
+if ! grep -qF "Failed to resolve output NeverResolves:" <<<"${DEPLOY_4C}"; then
+  echo "FAIL: premise: NeverResolves did not fail on the partial-repair deploy" >&2
+  diag_output "${DEPLOY_4C}"
+  exit 1
+fi
+if grep -qF "Failed to resolve output NeverResolvesViaRef:" <<<"${DEPLOY_4C}"; then
+  echo "FAIL: the repaired NeverResolvesViaRef still failed to resolve" >&2
+  diag_output "${DEPLOY_4C}"
+  exit 1
+fi
+if grep -qF "${KEPT_WHOLE_FRAGMENT}" <<<"${DEPLOY_4C}"; then
+  echo "FAIL: the partial-repair deploy kept the previous outputs bag whole" >&2
+  diag_output "${DEPLOY_4C}"
+  exit 1
+fi
+STATE_4C=$(read_state)
+assert_state_no_plaintext "state.json after the partial-repair deploy" "${STATE_4C}"
+# The expected value is derived from the same state document, as phase 5 does:
+# the marker parameter's name is CDK-generated.
+MARKER_NAME_4C=$(jq -r '[.resources[] | select(.resourceType == "AWS::SSM::Parameter") | .physicalId] | if length == 1 then .[0] else "AMBIGUOUS" end' <<<"${STATE_4C}")
+if [ "${MARKER_NAME_4C}" = "AMBIGUOUS" ] || [ -z "${MARKER_NAME_4C}" ] || [ "${MARKER_NAME_4C}" = "null" ]; then
+  echo "FAIL: state does not hold exactly one SSM parameter, so the expected NeverResolvesViaRef value cannot be derived (got: ${MARKER_NAME_4C})" >&2
+  exit 1
+fi
+VIA_REF_4C=$(jq -r '.outputs.NeverResolvesViaRef // "ABSENT"' <<<"${STATE_4C}")
+if [ "${VIA_REF_4C}" != "${MARKER_NAME_4C}-${REPAIRED_REF}" ]; then
+  echo "FAIL: state.outputs.NeverResolvesViaRef is not <marker name>-<repaired expression> after a partial repair (pre-fix: ABSENT, the bag was kept whole)" >&2
+  diag_output "NeverResolvesViaRef: ${VIA_REF_4C}"
+  exit 1
+fi
+if [ "$(jq -r '.outputs | has("NeverResolves")' <<<"${STATE_4C}")" != "false" ]; then
+  echo "FAIL: state.outputs holds NeverResolves, which still failed" >&2
+  exit 1
+fi
+if [ "$(jq -r '.outputs.Plain2 // "ABSENT"' <<<"${STATE_4C}")" != "${EXPECTED_PLAIN2}" ]; then
+  echo "FAIL: the partial-repair deploy dropped Plain2" >&2
+  exit 1
+fi
+KEYS_4C=$(jq -c '(.skippedOutputs // {}) | keys' <<<"${STATE_4C}")
+if [ "${KEYS_4C}" != '["NeverResolves"]' ] || [ "$(jq -r '.skippedOutputs.NeverResolves' <<<"${STATE_4C}")" != "${DIGEST_1}" ]; then
+  echo "FAIL: after the partial repair the record must name NeverResolves alone, digest unmoved (keys: ${KEYS_4C})" >&2
+  exit 1
+fi
+set +e
+DIFF_4C2=$(CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_UPDATE -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
+DIFF_4C2_RC=$?
+set -e
+assert_no_plaintext "the post-partial-repair diff output" "${DIFF_4C2}"
+if [ "${DIFF_4C2_RC}" -ne 0 ] || [ "$(count_output_rows "${DIFF_4C2}")" -ne 0 ]; then
+  echo "FAIL: 'cdkd diff --fail' after the partial repair exited ${DIFF_4C2_RC} or rendered an output row" >&2
+  diag_output "${DIFF_4C2}"
+  exit 1
+fi
+echo "    OK: the repaired key published while its sibling still fails, record narrowed to NeverResolves, diff --fail exits 0"
+
+# --- Phase 5: REPAIR — the record must not suppress a repaired output --------
+echo "==> Phase 5: repair the remaining broken Value (CDKD_TEST_UPDATE=true, phase 4b / 4c toggles carried); diff shows the ADD, deploy publishes and clears the record"
+set +e
+DIFF_5=$(CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
 DIFF_5_RC=$?
 set -e
@@ -1007,8 +1281,10 @@ if ! never_resolves_row "${DIFF_5}"; then
   diag_output "${DIFF_5}"
   exit 1
 fi
-if ! via_ref_row "${DIFF_5}"; then
-  echo "FAIL: the repair diff did not render the NeverResolvesViaRef row" >&2
+# Phase 4c already published NeverResolvesViaRef with its repaired value, so
+# the full repair has nothing left to show for it.
+if via_ref_row "${DIFF_5}"; then
+  echo "FAIL: the repair diff rendered a NeverResolvesViaRef row although phase 4c already published it" >&2
   diag_output "${DIFF_5}"
   exit 1
 fi
@@ -1017,16 +1293,16 @@ if ! grep -qE "^ {4}\[\+\] NeverResolves( |$)" <<<"${DIFF_5}"; then
   diag_output "${DIFF_5}"
   exit 1
 fi
-# ...and NOTHING else: the repair touches the two broken outputs, so exactly
-# two rows. Counted over the OUTPUT rows alone. The indent is the
+# ...and NOTHING else: the repair touches the one output still broken, so
+# exactly one row. Counted over the OUTPUT rows alone. The indent is the
 # discriminator, taken from the renderer: an outputs row is `    [x] <name>`
 # (FOUR spaces, `renderOutputChangeLines`) while a resource row is
 # `  [x] <id> (<Type>)` (TWO), so a bare `[+] ` count would also count
 # resource rows on a phase that ever grows one (review nit). Everything after
 # the marker is left unanchored so an ` [export]` suffix still counts.
 OUTPUT_ROWS=$(count_output_rows "${DIFF_5}")
-if grep -qE "^ {4}\[[~-]\] " <<<"${DIFF_5}" || [ "${OUTPUT_ROWS}" -ne 2 ]; then
-  echo "FAIL: the repair diff rendered ${OUTPUT_ROWS} output row(s), or a non-ADD one, rather than the two repaired ADDs" >&2
+if grep -qE "^ {4}\[[~-]\] " <<<"${DIFF_5}" || [ "${OUTPUT_ROWS}" -ne 1 ]; then
+  echo "FAIL: the repair diff rendered ${OUTPUT_ROWS} output row(s), or a non-ADD one, rather than the one repaired ADD" >&2
   diag_output "${DIFF_5}"
   exit 1
 fi
@@ -1036,10 +1312,10 @@ if ! grep -qF "${REPAIRED_REF}" <<<"${DIFF_5}"; then
   diag_output "${DIFF_5}"
   exit 1
 fi
-echo "    OK: diff --fail exits 1 and renders both repaired ADDs, NeverResolves with its expression"
+echo "    OK: diff --fail exits 1 and renders the one repaired ADD, NeverResolves with its expression"
 
 set +e
-DEPLOY_5=$(CDKD_TEST_UPDATE=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" deploy "${STACK}" \
+DEPLOY_5=$(CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
 DEPLOY_5_RC=$?
 set -e
@@ -1065,13 +1341,10 @@ if [ "$(jq -r '.outputs.NeverResolves // "ABSENT"' <<<"${STATE_5}")" != "${REPAI
   echo "FAIL: state.outputs.NeverResolves is not the repaired expression after the repair deploy (got: $(jq -c '.outputs.NeverResolves' <<<"${STATE_5}"))" >&2
   exit 1
 fi
-# The toggle repairs BOTH broken outputs, so the record empties. It is not
-# tested with only ONE of them repaired, and that is a limitation of the
-# ENGINE rather than of the fixture: deploy's no-resource-change path keeps
-# the previous outputs bag whenever any output is still unresolved, so a
-# partial repair publishes nothing at all (go-to-k/cdkd#2771). Asserted as an
-# empty KEY LIST rather than `has(...) == false`, so a record that kept a
-# stale entry is caught whichever way the field is written.
+# Both broken outputs are repaired by now (NeverResolvesViaRef since phase 4c),
+# so the record empties. Asserted as an empty KEY LIST rather than
+# `has(...) == false`, so a record that kept a stale entry is caught whichever
+# way the field is written.
 KEYS_5=$(jq -c '(.skippedOutputs // {}) | keys' <<<"${STATE_5}")
 if [ "${KEYS_5}" != '[]' ]; then
   echo "FAIL: after the repair the record must be empty (got: ${KEYS_5})" >&2
@@ -1098,8 +1371,12 @@ if [ "$(jq -r '.outputs.Plain' <<<"${STATE_5}")" != "${EXPECTED_PLAIN}" ] || [ "
   echo "FAIL: the repair deploy changed a sibling's persisted value (Plain=$(jq -c '.outputs.Plain' <<<"${STATE_5}") Resolves=$(jq -c '.outputs.Resolves' <<<"${STATE_5}"))" >&2
   exit 1
 fi
+if [ "$(jq -r '.outputs.Plain2 // "ABSENT"' <<<"${STATE_5}")" != "${EXPECTED_PLAIN2}" ]; then
+  echo "FAIL: the repair deploy dropped Plain2, whose toggle it carries" >&2
+  exit 1
+fi
 set +e
-DIFF_5B=$(CDKD_TEST_UPDATE=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
+DIFF_5B=$(CDKD_TEST_UPDATE=true CDKD_TEST_ADD_OUTPUT=true CDKD_TEST_PARTIAL_REPAIR=true env -u CDKD_TEST_SIBLING -u CDKD_TEST_RESOURCE_EDIT node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)
 DIFF_5B_RC=$?
 set -e
@@ -1184,4 +1461,4 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "output-never-resolved-diff state teardown"
 
 echo ""
-echo "[verify] PASS — output-never-resolved-diff (no phantom ADD on the unchanged stack, record written / carried / un-bound on a resource edit / cleared, clean destroy, zero surviving state versions)"
+echo "[verify] PASS — output-never-resolved-diff (no phantom ADD on the unchanged stack, record written / carried / un-bound on a resource edit / cleared, an output added beside failing ones persisted and a partial repair published (#2771), clean destroy, zero surviving state versions)"

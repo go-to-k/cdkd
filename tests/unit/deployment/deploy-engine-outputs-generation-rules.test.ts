@@ -40,6 +40,8 @@ const EXPR_A_PLAIN = '{{resolve:secretsmanager:db:SecretString:password}}';
 // on a marked bag, can write it as its token.
 const EXPR_PIN = '{{resolve:secretsmanager:db:SecretString:pin}}';
 const PLAINTEXT_PIN = 'q7';
+// Issue #2771: a whole reference whose lookup always fails (see the resolver).
+const EXPR_FAILS = '{{resolve:secretsmanager:db:SecretString:nokey}}';
 const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_A]: PLAINTEXT_A,
   [EXPR_B]: PLAINTEXT_B,
@@ -71,6 +73,12 @@ function resolveWithSecrets(
   ctx: { recordedSecretValues?: Map<string, string> }
 ): unknown {
   if (typeof value === 'string') {
+    // A whole secret reference whose lookup FAILS (issue #2771's carried-key
+    // case): the output is skipped, while its template source stays a whole
+    // token the save's position pass would return verbatim.
+    if (value === EXPR_FAILS) {
+      throw new Error("Dynamic reference: key 'nokey' not found in secret");
+    }
     const plaintext = SECRET_BY_EXPRESSION[value];
     if (plaintext !== undefined) {
       ctx.recordedSecretValues?.set(plaintext, value);
@@ -346,6 +354,15 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
   });
 
   it('does NOT descend positionally into a PREVIOUS generation outputs list', async () => {
+    // `Broken` resolved on the previous deploy, so the intrinsic-name refusal
+    // below applies (issue #2771) and the previous bag is the one saved.
+    mockStateBackend.getState!.mockResolvedValue({
+      state: {
+        ...structuredClone(currentState),
+        outputs: { ...currentState.outputs, Broken: 'broken-v0' },
+      },
+      etag: 'etag-1',
+    });
     const template: CloudFormationTemplate = {
       Resources: {
         Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
@@ -355,9 +372,15 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
         // from what state carries: index 0 is a secret expression here and an
         // ordinary literal there.
         List: { Value: [EXPR_A, EXPR_B] },
-        // Fails to resolve, so `resolutionFailed` keeps `persistedOutputs` —
-        // the previous generation's bag — as the one that gets saved.
-        Broken: { Value: { 'Fn::GetAtt': ['Missing', 'Arn'] } },
+        // Fails to resolve AND declares an intrinsic `Export.Name`, which is
+        // one of the two shapes the no-change partial persist refuses (issue
+        // #2771): the alias it published cannot be named, so `persistedOutputs`
+        // — the previous generation's bag — is still the one that gets saved.
+        // Without the intrinsic name the merge would write today's `List`.
+        Broken: {
+          Value: { 'Fn::GetAtt': ['Missing', 'Arn'] },
+          Export: { Name: { 'Fn::Sub': 'broken-${AWS::StackName}' } as never },
+        },
       },
     };
 
@@ -410,10 +433,39 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
       expect(JSON.stringify(saved)).not.toContain(PORT_PLAINTEXT);
     });
 
-    it('the PREVIOUS deploy\'s bag a resolution failure keeps is not marked, so its plaintext stays as stored', async () => {
+    it('the PREVIOUS deploy\'s bag a refused merge keeps is not marked, so its plaintext stays as stored', async () => {
       // The value scan leaves a sub-floor middle alone, and nothing vouches
       // for a bag this pass did not produce — writing today's token over it
-      // would be the fabrication the mark exists to prevent.
+      // would be the fabrication the mark exists to prevent. `Broken`'s
+      // intrinsic `Export.Name` is what makes the no-change path keep the
+      // previous bag whole (issue #2771); without it see the next case. It has
+      // a stored value, since that refusal applies only to an output that
+      // resolved before (one that never did published no alias).
+      withPreviousOutputs({ Port: PORT_PLAINTEXT, Broken: 'broken-v0' });
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
+        },
+        Outputs: {
+          Port: { Value: PORT_SOURCE },
+          Broken: {
+            Value: { 'Fn::GetAtt': ['Missing', 'Arn'] },
+            Export: { Name: { 'Fn::Sub': 'broken-${AWS::StackName}' } as never },
+          },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+      expect(saved.outputs['Port']).toBe(PORT_PLAINTEXT);
+    });
+
+    it('a MERGED bag carries the value this pass already redacted through its marked bag, so the sub-floor token survives the unmarked save', async () => {
+      // Issue #2771: the merge is a fresh, unmarked object, but it is built
+      // from `redactOutputs`' output of the MARKED bag, so the span arm has
+      // already written the token before the merge copies it. A merge built
+      // from the pre-redaction bag would store the plaintext here.
       withPreviousOutputs({ Port: PORT_PLAINTEXT });
       const template: CloudFormationTemplate = {
         Resources: {
@@ -428,7 +480,62 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
       await makeEngine().deploy(stackName, template);
 
       const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
-      expect(saved.outputs['Port']).toBe(PORT_PLAINTEXT);
+      expect(saved.outputs['Port']).toBe(PORT_SOURCE);
+      expect(JSON.stringify(saved)).not.toContain(PORT_PLAINTEXT);
+    });
+  });
+
+  describe('today\x27s template does not position a value this pass did not write (issue #2771)', () => {
+    // `Out` failed, so its stored value is carried (merged arm) or the whole
+    // bag is kept. Its template source is a WHOLE secret reference, which
+    // `redactByPath` returns verbatim — so positioning the save by today's
+    // template would persist a reference the stored value never came from.
+    // `Whole` resolves a real secret, so the pass map is non-empty and the
+    // save's redaction really runs.
+    function withPrevious(outputs: Record<string, unknown>) {
+      mockStateBackend.getState!.mockResolvedValue({
+        state: { ...structuredClone(currentState), outputs },
+        etag: 'etag-1',
+      });
+    }
+    const resources: CloudFormationTemplate['Resources'] = {
+      Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
+    };
+
+    it('MERGED arm: a carried key keeps its stored value', async () => {
+      withPrevious({ Out: 'literal-v1', Whole: EXPR_A });
+      await makeEngine().deploy(stackName, {
+        Resources: resources,
+        Outputs: {
+          Out: { Value: EXPR_FAILS },
+          Whole: { Value: EXPR_A },
+          Plain2: { Value: 'added' },
+        },
+      });
+
+      const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+      expect(saved.outputs['Plain2']).toBe('added');
+      expect(saved.outputs['Out']).toBe('literal-v1');
+      expect(saved.outputs['Whole']).toBe(EXPR_A);
+    });
+
+    it('KEPT arm: the whole previous bag is not positioned either', async () => {
+      withPrevious({ Out: 'literal-v1', Whole: EXPR_A });
+      await makeEngine().deploy(stackName, {
+        Resources: resources,
+        Outputs: {
+          // An intrinsic Export.Name on a failed output with a stored value:
+          // the merge keeps the whole bag.
+          Out: { Value: EXPR_FAILS, Export: { Name: { 'Fn::Sub': 'out-${AWS::StackName}' } as never } },
+          Whole: { Value: EXPR_A },
+          Plain2: { Value: 'added' },
+        },
+      });
+
+      const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+      // PREMISE: the bag really was kept whole (no `Plain2`).
+      expect(saved.outputs).not.toHaveProperty('Plain2');
+      expect(saved.outputs['Out']).toBe('literal-v1');
     });
   });
 });

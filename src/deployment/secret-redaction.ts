@@ -259,7 +259,10 @@ const sameGenerationBags = new WeakSet<object>();
  *   stored. On the no-change path the newly redacted bag is installed when
  *   the outputs CHANGED, and the previous `persistedOutputs` is kept
  *   otherwise; that previous bag is unmarked, which is the answer that arm
- *   wants.
+ *   wants. When an output FAILED there, what is installed is either a fresh
+ *   merge of this pass's values with the previous bag's carried ones (issue
+ *   #2771), mixed provenance and never marked, or — when that merge refuses —
+ *   the previous bag kept whole, unmarked as above.
  * - the update arm's no-change re-check — a marked `{ ...resolvedProps }`
  *   compared against the stored record so a stored token reads as a no-op.
  *   NOT installed; the object the provider is handed is the unmarked original.

@@ -466,7 +466,13 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
     expect(saved).not.toHaveProperty('skippedOutputs');
   });
 
-  it('(f) UPGRADE: a record with no field whose broken output is skipped again on a no-change deploy gains the record, bag and export set carried', async () => {
+  it('(f) UPGRADE: a record with no field whose broken output is skipped again on a no-change deploy gains the record, the bag and its effective export set unchanged', async () => {
+    // The stored set names `S:Fine`, which the bag does not hold, so the
+    // EFFECTIVE set is empty — and this pass exports nothing either. Since
+    // issue #2771 the save writes the set of the bag it persists (this pass's
+    // `[]`) rather than carrying the stale entry, and the effective set, which
+    // is what every reader goes through, is unchanged, so the index is not
+    // republished for a record-only save.
     const prior = makeState({ Fine: 'fine-value' }, { exportNames: ['S:Fine'] });
     expect(prior).not.toHaveProperty('skippedOutputs');
     const { engine, stateBackend, exportIndexStore } = buildEngine({ priorState: prior });
@@ -474,14 +480,113 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
     expect(stateBackend.saveState).toHaveBeenCalledTimes(1);
     const saved = lastSaved(stateBackend);
     expect(saved.skippedOutputs).toEqual({ Bad: skippedOutputDigest(template(), 'Bad') });
-    // `resolutionFailed` keeps the persisted bag and its export set; the index
-    // is not republished for a record-only save.
     expect(saved.outputs).toStrictEqual({ Fine: 'fine-value' });
-    expect(saved.exportNames).toEqual(['S:Fine']);
+    expect(saved.exportNames).toEqual([]);
     expect(exportIndexStore.updateForStack).not.toHaveBeenCalled();
 
     const { reported } = await diffAgainst(saved, template());
     expect(reported).toEqual([]);
+  });
+
+  describe('the partial persist meets the diff (issue #2771)', () => {
+    /**
+     * The diff as `computeStackDiff` wires it, INCLUDING the #1948 inputs the
+     * helper above leaves out: those are what decide whether a deleted key's
+     * stored value is withheld.
+     */
+    async function diffWithWithholding(saved: StackState, tpl: CloudFormationTemplate) {
+      const resolved = await resolveTemplateOutputs(
+        structuredClone(tpl),
+        async (v) => v,
+        undefined,
+        saved.outputs,
+        bindingSkippedOutputs(structuredClone(tpl), saved.skippedOutputs)
+      );
+      return computeOutputsDiff(saved.outputs, resolved.outputs, resolved.exportNames, resolved.secretSourceKeys, {
+        declaredKeys: resolved.declaredKeys,
+        templateHasSecretReference: resolved.templateHasSecretReference,
+      });
+    }
+
+    const SEC = '{{resolve:secretsmanager:db:SecretString:password}}';
+
+    it('an output ADDED beside the broken one lands, and the unchanged stack then diffs clean', async () => {
+      const added = template();
+      added.Outputs!['Plain2'] = { Value: 'plain-2' };
+      const { engine, stateBackend } = buildEngine({
+        priorState: makeState(
+          { Fine: 'fine-value' },
+          { skippedOutputs: { Bad: skippedOutputDigest(template(), 'Bad') } }
+        ),
+      });
+
+      // PREMISE: before the deploy the diff reports the real ADD.
+      const before = await diffAgainst(
+        makeState({ Fine: 'fine-value' }, { skippedOutputs: { Bad: skippedOutputDigest(added, 'Bad') } }),
+        added
+      );
+      expect(before.reported.map((r) => [r.name, r.changeType])).toEqual([['Plain2', 'ADD']]);
+
+      await engine.deploy(stackName, added);
+      const saved = lastSaved(stateBackend);
+      expect(saved.outputs).toStrictEqual({ Fine: 'fine-value', Plain2: 'plain-2' });
+      expect(Object.keys(saved.skippedOutputs ?? {})).toEqual(['Bad']);
+
+      const after = await diffAgainst(saved, added);
+      expect(after.reported).toEqual([]);
+    });
+
+    it('REFUSED merge: a carried value never sits beside a first expression, so deleting it later still withholds its value', async () => {
+      const PLAINTEXT = 'pre-ghsa-plaintext-of-old';
+      const withSecret = (): CloudFormationTemplate => ({
+        Resources: template().Resources,
+        Outputs: { Old: { Value: '__boom__' }, Sec: { Value: SEC } },
+      });
+      const { engine, stateBackend } = buildEngine({ priorState: makeState({ Old: PLAINTEXT }) });
+      await engine.deploy(stackName, withSecret());
+      const saved = lastSaved(stateBackend);
+      // Kept whole: no expression was written beside the carried plaintext.
+      expect(saved.outputs).toStrictEqual({ Old: PLAINTEXT });
+
+      // The user then deletes `Old`. The template still proves a secret, and
+      // the stored bag holds no expression, so the value is withheld.
+      const deleted: CloudFormationTemplate = { Resources: template().Resources, Outputs: { Sec: { Value: SEC } } };
+      const rows = await diffWithWithholding(saved, deleted);
+      const removed = rows.find((r) => r.name === 'Old');
+      expect(removed).toMatchObject({ changeType: 'REMOVE', oldValueRedacted: true });
+      expect(JSON.stringify(rows)).not.toContain(PLAINTEXT);
+
+      // CONTROL: the bag an unguarded merge would have written exonerates the
+      // same row and exposes the plaintext as its returned `oldValue`, which
+      // the renderer then prints.
+      const unguarded = { ...saved, outputs: { Old: PLAINTEXT, Sec: SEC } };
+      const leaked = await diffWithWithholding(unguarded, deleted);
+      expect(JSON.stringify(leaked)).toContain(PLAINTEXT);
+    });
+
+    it('ALLOWED merge: from a bag that already held an expression, the carried value is merged and a later deletion returns it as the row\x27s old value', async () => {
+      const PREV = '{{resolve:secretsmanager:prev:SecretString:password}}';
+      const tpl = (): CloudFormationTemplate => ({
+        Resources: template().Resources,
+        Outputs: { Old: { Value: '__boom__' }, Prev: { Value: PREV }, Sec: { Value: SEC } },
+      });
+      const { engine, stateBackend } = buildEngine({
+        priorState: makeState({ Old: 'an-ordinary-value', Prev: PREV }),
+      });
+      await engine.deploy(stackName, tpl());
+      const saved = lastSaved(stateBackend);
+      expect(saved.outputs).toStrictEqual({ Old: 'an-ordinary-value', Prev: PREV, Sec: SEC });
+
+      const deleted: CloudFormationTemplate = {
+        Resources: template().Resources,
+        Outputs: { Prev: { Value: PREV }, Sec: { Value: SEC } },
+      };
+      const rows = await diffWithWithholding(saved, deleted);
+      expect(rows.find((r) => r.name === 'Old')).toMatchObject({
+        changeType: 'REMOVE',
+        oldValue: 'an-ordinary-value',
+      });
+    });
   });
 
   it('an Export.Name that fails on the alias pass blanks the output\x27s own key, so it is recorded too', async () => {
