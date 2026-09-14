@@ -334,7 +334,7 @@ PR-specific context.
      # in the push's own call; on a mismatch re-run it. `:?` refuses an empty
      # answer, which would compare equal to an empty `rev-parse`.
      SHA=$(gh pr view <N> --json headRefOid -q .headRefOid)
-     if [ "${SHA:?}" = "$(git rev-parse HEAD)" ]; then
+     if [ "${SHA:?no PR head}" = "$(git rev-parse HEAD)" ]; then
        printf '%s\n' "$SHA" > .markgate-pr-review-sha && mise exec -- markgate set pr-review
      else echo "PR head ${SHA:0:7} != local HEAD: NOT bound" >&2; fi
      ```
