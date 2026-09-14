@@ -55,30 +55,41 @@ describe('DagExecutor', () => {
   it('starts a downstream node as soon as its only dependency completes (not waiting for siblings)', async () => {
     // A is fast (10ms), B/C are slow (100ms). X depends only on A.
     // Event-driven dispatch: X must start once A completes, NOT wait for B/C.
+    //
+    // Fake timers (PR #3134): the verdict used to compare two `Date.now()`
+    // readings taken under real timers, so a consumer starved for ~90 ms
+    // between A's completion and X's dispatch — ordinary under a loaded
+    // full-suite run — read as a level barrier. On the fake clock A's 10 ms
+    // timer fires before either 100 ms timer by construction, and the verdict
+    // is the ORDER of the recorded events, which no scheduling delay can move.
     const exec = new DagExecutor<null>();
     exec.add(node('A'));
     exec.add(node('B'));
     exec.add(node('C'));
     exec.add(node('X', ['A']));
 
-    const events: { id: string; phase: 'start' | 'end'; t: number }[] = [];
-    const start = Date.now();
+    const events: string[] = [];
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-    await exec.execute(4, async (n) => {
-      events.push({ id: n.id, phase: 'start', t: Date.now() - start });
-      const ms = n.id === 'A' ? 10 : n.id === 'X' ? 10 : 100;
-      await sleep(ms);
-      events.push({ id: n.id, phase: 'end', t: Date.now() - start });
-    });
-
-    const xStart = events.find((e) => e.id === 'X' && e.phase === 'start')!.t;
-    const bEnd = events.find((e) => e.id === 'B' && e.phase === 'end')!.t;
-    const cEnd = events.find((e) => e.id === 'C' && e.phase === 'end')!.t;
+    vi.useFakeTimers();
+    try {
+      const run = exec.execute(4, async (n) => {
+        events.push(`${n.id}:start`);
+        const ms = n.id === 'A' ? 10 : n.id === 'X' ? 10 : 100;
+        await sleep(ms);
+        events.push(`${n.id}:end`);
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
 
     // X must start before B/C finish (proves no level barrier)
-    expect(xStart).toBeLessThan(bEnd);
-    expect(xStart).toBeLessThan(cEnd);
+    expect(events.indexOf('X:start')).toBeGreaterThan(events.indexOf('A:end'));
+    expect(events.indexOf('X:start')).toBeLessThan(events.indexOf('B:end'));
+    expect(events.indexOf('X:start')).toBeLessThan(events.indexOf('C:end'));
+    expect(events).toHaveLength(8);
   });
 
   it('runs independent nodes in parallel', async () => {

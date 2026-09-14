@@ -15,6 +15,13 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
 
+// Six cases below run the uncached `extractBareTargets()` walk over every
+// checker input in the repo (the slowest measured 896 ms under a 40+ load
+// average against vitest's 5 s default — the go-to-k/cdkd#2741 / #3038
+// class). Declared generously on every case that walks, not only the one that
+// crossed: the bound stops a hang, not latency.
+const POPULATION_WALK_TIMEOUT_MS = 60_000;
+
 /**
  * Checker-INPUT scope fence (issue #2364).
  *
@@ -786,7 +793,7 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
     // subject would survive most of the list being deleted, which is the
     // failure a parse floor exists to catch.
     expect(globs.length, 'include list parsed').toBeGreaterThanOrEqual(15);
-  });
+  }, POPULATION_WALK_TIMEOUT_MS);
 
   it('parser floor: the BARE extraction sees what the JOIN parser cannot (issue #2381)', () => {
     // None of these three is written as join(repoRoot, ...), so a floor
@@ -823,7 +830,7 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
       bareOnly.length,
       `the bare parser reaches only ${bareOnly.length} target(s) the join parser misses; it was narrowed toward what the join idiom already covers, so it is no longer fencing the table-sourced idiom it exists for`,
     ).toBeGreaterThanOrEqual(75);
-  });
+  }, POPULATION_WALK_TIMEOUT_MS);
 
   it('the root-file shape reaches real root files and no directory', () => {
     // What this pins is the OUTCOME, not the mechanism. Two things reject a
@@ -845,7 +852,7 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
       }
     });
     expect(dirs, `${dirs.join(', ')} are directories, not files`).toEqual([]);
-  });
+  }, POPULATION_WALK_TIMEOUT_MS);
 
   it('the non-read carve-out list stays exactly what was measured, and every entry is still LIVE', () => {
     // Direction 1 — it cannot grow silently into a blanket suppressor.
@@ -884,7 +891,7 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
       dead,
       `${dead.join(', ')} no longer occurs as a path literal in tests/unit, so the carve-out exempts nothing and would silently suppress a future real read of the same path. Drop the entry.`,
     ).toEqual([]);
-  });
+  }, POPULATION_WALK_TIMEOUT_MS);
 
   it('a per-developer literal is carved out of the bare-literal population (issue #2751)', () => {
     // This case does not vary the file's presence, and does not need to: a
@@ -902,7 +909,7 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
     );
     expect(extractBareTargets().has(rel), `${rel} reaches the population despite the carve-out`).toBe(false);
     expect(extractJoinTargets().has(rel), `${rel} is also built through the JOIN idiom, which the carve-out does not cover`).toBe(false);
-  });
+  }, POPULATION_WALK_TIMEOUT_MS);
 
   it('the carve-out fence rules hold with the file present, absent, and under each invalid qualifier', () => {
     const entries = new Map([
@@ -1146,7 +1153,7 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
       expect(why.length, `${rel} needs a stated reason`).toBeGreaterThan(20);
       expect(seen, `SELF_READS declares ${rel} but this file no longer reads it — drop the entry`).toContain(rel);
     }
-  });
+  }, POPULATION_WALK_TIMEOUT_MS);
 
   it('the fence itself fails when a covered entry is dropped (self-probe)', () => {
     // Deleting `.claude/settings.json` from the include must flip the main

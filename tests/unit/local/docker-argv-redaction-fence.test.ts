@@ -2,6 +2,12 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 
+// The tree-wide walk below reads every module under `src/`, so its wall-clock
+// cost scales with the repo and with machine load (measured 1855 ms under a
+// 40+ load average against vitest's 5 s default — the go-to-k/cdkd#2741 /
+// #3038 class). Declared generously: the bound stops a hang, not latency.
+const SRC_WALK_TIMEOUT_MS = 60_000;
+
 /**
  * Structural fence for issue #2440.
  *
@@ -427,7 +433,7 @@ describe('docker argv redaction fence (issue #2440)', () => {
       offenders,
       'This module spawns docker but sits outside SWEPT_DIRS, so the fence below cannot see it. Add its directory to SWEPT_DIRS (and the module to both floor tables).'
     ).toEqual([]);
-  });
+  }, SRC_WALK_TIMEOUT_MS);
 
   it('derives its module set from the code, and the set is neither empty nor drifted', () => {
     // A derivation that silently stopped matching makes every case below

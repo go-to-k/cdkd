@@ -201,6 +201,22 @@ describe('describeFinding', () => {
  * is the repo's "a checker must prove it SEES its input" rule failing on this
  * checker's own test.
  */
+/**
+ * Declared bound for every case that calls {@link sweepTree} (issue #2741).
+ *
+ * The sweep reads every tracked text file -- ~3300 of them -- and its cost
+ * is a function of machine load and repo size, not of correctness, so the
+ * 5 s in-process default is the wrong bound for it: measured at 0.6-1.1 s
+ * per case on a quiet-ish host (load 25-45, 2026-09-15) and observed
+ * crossing 5 s while a second repository's suite ran beside it. Per the
+ * rule in `.claude/rules/testing.md`, this bound exists to stop a HANG, not
+ * to police latency, so it is sized at >= 50x the measured cost rather than
+ * tuned. Sized for one suite on a loaded CI runner; N-way LOCAL contention
+ * is a different regime (three concurrent suites once took a sibling file's
+ * 60 s bound to 778 s), and no in-file bound covers that.
+ */
+const SWEEP_TIMEOUT_MS = 60_000;
+
 function sweepTree(): { offenders: string[]; tracked: string[]; untracked: string[] } {
   const offenders: string[] = [];
   const read = { tracked: [] as string[], untracked: [] as string[] };
@@ -266,7 +282,7 @@ function sweepTree(): { offenders: string[]; tracked: string[]; untracked: strin
 describe('the working tree', () => {
   it('has no stray control bytes in any text file, tracked or untracked', () => {
     expect(sweepTree().offenders).toEqual([]);
-  });
+  }, SWEEP_TIMEOUT_MS);
 
   it('actually READ a realistic number of TRACKED files, so a broken sweep cannot pass vacuously', () => {
     // Banded against the ~3344 actually read. A loose `> 500` floor was NOT
@@ -274,7 +290,7 @@ describe('the working tree', () => {
     // 1648 files and still leaves ~1695, which would clear it. The
     // per-extension floors below are what make that specific neuter fail.
     expect(sweepTree().tracked.length).toBeGreaterThan(2500);
-  });
+  }, SWEEP_TIMEOUT_MS);
 
   it.each([
     ['.ts', 1000],
@@ -284,7 +300,7 @@ describe('the working tree', () => {
   ])('actually READ the tracked %s files (floor %i), so exempting them by extension fails', (ext, floor) => {
     const read = sweepTree().tracked.filter((p) => p.endsWith(ext));
     expect(read.length).toBeGreaterThan(floor);
-  });
+  }, SWEEP_TIMEOUT_MS);
 
   it('keeps the efs-provider creationToken separator as the escape, not a raw NUL', () => {
     // The #1587 site. Pinned by NAME because it is the one occurrence the
@@ -400,7 +416,7 @@ describe('the untracked half of the working tree', () => {
         describeFinding(relative, { byte: 0, offset: 13, line: 1 }),
       ]);
     });
-  });
+  }, SWEEP_TIMEOUT_MS);
 
   it('reads a CLEAN untracked file at the repo ROOT without reporting it', () => {
     // Two jobs. The other DIRECTION: without this, a sweep that flagged
@@ -419,7 +435,7 @@ describe('the untracked half of the working tree', () => {
       // untracked NUL). A discrimination case must fail for its own reason.
       expect(offenders.filter((o) => o.startsWith(`${relative}:`))).toEqual([]);
     });
-  });
+  }, SWEEP_TIMEOUT_MS);
 
   it('leaves a GITIGNORED file out of the population entirely', () => {
     // `--exclude-standard` is what keeps `node_modules/` and `dist/` out, and
@@ -440,7 +456,7 @@ describe('the untracked half of the working tree', () => {
       expect(tracked).not.toContain(relative);
       expect(offenders.filter((o) => o.startsWith(`${relative}:`))).toEqual([]);
     });
-  });
+  }, SWEEP_TIMEOUT_MS);
 });
 
 describe('BINARY_EXTENSIONS', () => {

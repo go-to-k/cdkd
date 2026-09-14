@@ -169,34 +169,84 @@ describe('invokeRieStreaming', () => {
   });
 
   it('streams chunks incrementally — body Readable emits as RIE writes', async () => {
-    // The handler writes the prelude, then writes 5 chunks each ~200ms
-    // apart. We measure the wall time between chunk arrivals on the
-    // consumer side — they must NOT all arrive after the response ends.
+    // The property is "the body emits BEFORE the response ends", and the
+    // fixture makes it CAUSAL rather than timed (issue #2444): the server
+    // writes chunk N+1 only after the consumer has SEEN chunk N, and ends
+    // the response only after the consumer has seen the last one. A client
+    // that buffers until end can never deliver chunk 0 while the response
+    // is open, so the server's wait for that ack never resolves on its own
+    // -- and that deadlock is turned into a verdict by a generous bound on
+    // each wait: on a timeout the server records `starved:N` and moves on,
+    // so the run ENDS and the ORDER below carries the failure. The bound
+    // stops a hang, it does not police latency; a correct client hands the
+    // consumer each chunk within the same event-loop turn the socket read
+    // it, and the earlier shape -- `lastArrival - firstArrival > 80` over
+    // real timestamps -- read 52 under full-suite load because the
+    // consumer STARTED late, not because the client buffered.
+    const CHUNKS = 3;
+    const acks = Array.from({ length: CHUNKS }, () => {
+      let open!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      return { promise, open };
+    });
+    const order: string[] = [];
     nextStreamResponse = async (_req, res) => {
       res.writeHead(200);
       const prelude = JSON.stringify({ statusCode: 200, headers: {} });
       res.write(Buffer.concat([Buffer.from(prelude), SEPARATOR]));
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < CHUNKS; i++) {
+        order.push(`write:${i}`);
         res.write(Buffer.from(`c${i}|`));
-        await new Promise<void>((r) => setTimeout(r, 50));
+        // Real timer on purpose: the process must keep running while the
+        // consumer's read is expected to complete.
+        let starved: ReturnType<typeof setTimeout> | undefined;
+        const outcome = await Promise.race([
+          acks[i]!.promise.then(() => `acked:${i}`),
+          new Promise<string>((r) => {
+            starved = setTimeout(() => r(`starved:${i}`), 3_000);
+          }),
+        ]);
+        clearTimeout(starved);
+        order.push(outcome);
       }
+      order.push('end');
       res.end();
     };
-    const start = Date.now();
-    const result = await invokeRieStreaming('127.0.0.1', port, {}, 5000);
-    const chunkArrivalTimes: number[] = [];
+    const result = await invokeRieStreaming('127.0.0.1', port, {}, 15_000);
+    const chunks: string[] = [];
     for await (const chunk of result.body) {
-      void chunk;
-      chunkArrivalTimes.push(Date.now() - start);
+      chunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+      // Ack every marker seen SO FAR over the joined body, not this read
+      // alone: a read that coalesces two markers releases both writes, and a
+      // marker split across two reads (not observed on loopback, but the
+      // client splits only at the separator, not at markers) is acked once
+      // its second half lands rather than starving the server.
+      for (const [, n] of chunks.join('').matchAll(/c(\d)\|/g)) acks[Number(n)]!.open();
     }
-    // At least 2 chunks (Node may coalesce a couple), and the LAST chunk
-    // arrives well after the first — proves streaming is real (not a
-    // buffered "wait for end, then emit").
-    expect(chunkArrivalTimes.length).toBeGreaterThanOrEqual(2);
-    const lastArrival = chunkArrivalTimes[chunkArrivalTimes.length - 1] ?? 0;
-    const firstArrival = chunkArrivalTimes[0] ?? 0;
-    expect(lastArrival - firstArrival).toBeGreaterThan(80);
-  });
+    // The whole sequence, not a count: each write was SEEN by the consumer
+    // before the next write happened and before the response ended. A client
+    // that buffers the drained body until end read `write:0, acked:0,
+    // write:1, starved:1, write:2, starved:2, end` here (measured against
+    // that mutant of `invokeRieStreaming`'s drain loop): chunk 0 can still
+    // ride in with the prelude's own network chunk and be pushed eagerly,
+    // which is why the fixture writes THREE and not two.
+    expect(order).toEqual([
+      'write:0',
+      'acked:0',
+      'write:1',
+      'acked:1',
+      'write:2',
+      'acked:2',
+      'end',
+    ]);
+    // Kept from the earlier shape: the body reached the consumer in more
+    // than one push. (Under the causal writes above it is exactly three, but
+    // this pins only what the streaming claim needs.)
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks.join('')).toBe('c0|c1|c2|');
+  }, 30_000);
 
   it('handles a prelude that spans multiple chunks before the separator', async () => {
     // The reader buffers across chunks until the 8-NULL separator

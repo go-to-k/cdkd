@@ -151,18 +151,23 @@ describe('LockManager', () => {
       // Acquire lock and verify expiresAt is ~30 minutes from now
       s3Client.send.mockResolvedValueOnce({});
 
-      const now = Date.now();
-      await manager.acquireLock('test-stack', 'us-east-1');
+      // Pinned clock (PR #3134): the case used to allow ±1 s between its own
+      // `Date.now()` and the one inside `acquireLock`, a wall-clock margin a
+      // loaded host can exceed. With the system time pinned the expiry is exact.
+      const now = Date.parse('2026-09-14T12:00:00.000Z');
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+      try {
+        await manager.acquireLock('test-stack', 'us-east-1');
+      } finally {
+        vi.useRealTimers();
+      }
 
       const putCall = s3Client.send.mock.calls[0][0];
       // Squatting hardening (PR 1015): lock writes carry the caller account.
       expect(putCall.input.ExpectedBucketOwner).toBe('111111111111');
       const lockBody = JSON.parse(putCall.input.Body) as LockInfo;
-      const expectedExpiry = now + 30 * 60 * 1000;
-
-      // Allow 1 second tolerance
-      expect(lockBody.expiresAt).toBeGreaterThanOrEqual(expectedExpiry - 1000);
-      expect(lockBody.expiresAt).toBeLessThanOrEqual(expectedExpiry + 1000);
+      expect(lockBody.expiresAt).toBe(now + 30 * 60 * 1000);
     });
 
     it('should use custom TTL when specified', async () => {
@@ -172,15 +177,19 @@ describe('LockManager', () => {
 
       s3Client.send.mockResolvedValueOnce({});
 
-      const now = Date.now();
-      await manager.acquireLock('test-stack', 'us-east-1');
+      // Pinned clock, same reason as the default-TTL case above (PR #3134).
+      const now = Date.parse('2026-09-14T12:00:00.000Z');
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+      try {
+        await manager.acquireLock('test-stack', 'us-east-1');
+      } finally {
+        vi.useRealTimers();
+      }
 
       const putCall = s3Client.send.mock.calls[0][0];
       const lockBody = JSON.parse(putCall.input.Body) as LockInfo;
-      const expectedExpiry = now + 10 * 60 * 1000;
-
-      expect(lockBody.expiresAt).toBeGreaterThanOrEqual(expectedExpiry - 1000);
-      expect(lockBody.expiresAt).toBeLessThanOrEqual(expectedExpiry + 1000);
+      expect(lockBody.expiresAt).toBe(now + 10 * 60 * 1000);
     });
   });
 
