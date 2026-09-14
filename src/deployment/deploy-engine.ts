@@ -120,6 +120,12 @@ import { hasNoRegistrySchema } from '../provisioning/describe-type.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { collectSkippedOutputs, skippedOutputsEqual } from '../analyzer/skipped-outputs.js';
 import {
+  bagHoldsSecretExpression,
+  keptWholeReasonText,
+  mergeNoChangeOutputs,
+  type NoChangeOutputsMerge,
+} from './no-change-outputs-merge.js';
+import {
   IMPLICIT_DELETE_DEPENDENCIES,
   computeImplicitDeleteEdges,
 } from '../analyzer/implicit-delete-deps.js';
@@ -1627,10 +1633,10 @@ export class DeployEngine {
     // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
     // [#1943](https://github.com/go-to-k/cdkd/issues/1943)). `descendArrays` is
     // the only flag the two differ on, and it claims "this bag was PRODUCED by
-    // resolving this source" — which three of this method's seven callers
-    // cannot say: `redactStateForPersist`, and the no-change path's exports
-    // index and summary. (Both numbers are recounted, not incremented: issue
-    // #2814 took the callers from three to seven, and the "two" was already
+    // resolving this source" — which several of its callers cannot say:
+    // `redactStateForPersist`, the no-change path's exports index and summary,
+    // and that path's save-time mixed-generation check over a MERGED bag (issue
+    // #2771). (Issue #2814 took the callers from three to seven, and the "two" was already
     // wrong before it — of the base's three sites only the persist walk took
     // a foreign bag.) `redactStateForPersist` walks whatever `state.outputs`
     // holds, and on
@@ -3135,14 +3141,81 @@ export class DeployEngine {
               )
             )
           );
+          // Drain any auto-refresh readCurrentState calls (drainObservedCaptures
+          // short-circuits on an empty map) so the refreshed observed-properties
+          // baseline lands in the same save. Drained BEFORE the outputs bag is
+          // decided (issue #2771): it is the one await between the outputs pass
+          // and the save, and a secret a released outputs-pass part records
+          // during it must be visible to the save-time check below.
+          const observedRefresh = this.observedCaptureTasks.size > 0;
+          if (observedRefresh) {
+            await this.drainObservedCaptures(currentState.resources);
+          }
+
           // resolveOutputs stores `undefined` for any output it could not
-          // resolve (logged as a warn there). In the no-change path every
-          // resource is already in state so resolution should succeed; if it
-          // doesn't, keep the existing good outputs rather than overwrite them
-          // with a partial map.
+          // resolve (warned about there when the resolver threw, silently when
+          // it returned nothing). In the no-change path every resource is
+          // already in state so resolution usually succeeds.
           const resolutionFailed = Object.values(resolvedOutputs).some((v) => v === undefined);
-          const outputsChanged =
-            !resolutionFailed && !outputMapsEqual(persistedOutputs, resolvedOutputs);
+          const currentEffectiveExports = new Set(importableOutputKeys(currentState));
+          // Issue #2771: when one did not, persist what DID resolve instead of
+          // keeping the previous bag whole. A failed key keeps its stored value
+          // (the #875 guard: never overwrite a good value with nothing), a key
+          // this pass did not produce is removed, and the shapes the merge
+          // cannot do safely keep the whole previous bag as before. The rules
+          // and the refusals are in `no-change-outputs-merge.ts`.
+          let merge: NoChangeOutputsMerge | undefined = resolutionFailed
+            ? mergeNoChangeOutputs({
+                persisted: persistedOutputs,
+                resolved: resolvedOutputs,
+                declaredOutputs: effectiveTemplate.Outputs,
+                previousExportNames: currentEffectiveExports,
+                resolvedExportNames: this.resolvedExportNames,
+              })
+            : undefined;
+          // Today's template may position only the keys THIS pass wrote. The save
+          // redacts the bag again (`withParentInfo` -> `redactOutputs`), and
+          // `redactByPath` returns a source leaf that is a whole secret expression
+          // verbatim — so a carried key, or a whole kept bag, positioned by
+          // today's template would be persisted as a reference its stored value
+          // never came from. Those keys fall to the value scan instead.
+          if (merge?.kind === 'merged') {
+            for (const key of merge.carriedKeys) {
+              Reflect.deleteProperty(this.outputsTemplateSource, key);
+            }
+            // The merge's own mixed-generation check read the bag BEFORE this
+            // save's redaction, which can still give it a first expression (a
+            // needle recorded late, during the drain above). Re-read it as the
+            // save will write it. No await separates this check from the
+            // save's own redaction below.
+            if (
+              merge.carriedKeys.length > 0 &&
+              !bagHoldsSecretExpression(persistedOutputs) &&
+              bagHoldsSecretExpression(this.redactOutputs(merge.outputs))
+            ) {
+              merge = { kind: 'kept', reason: 'mixed-generation' };
+            }
+          }
+          if (merge?.kind === 'kept') this.outputsSourceUsable = false;
+          // The bag and export set this save describes: this pass's when every
+          // output resolved, the merge's when one did not, and the previous
+          // bag itself when the merge keeps it whole — `undefined` for the set
+          // then, because its own set travels with it (below). No separate
+          // kept-whole guard on `outputsChanged`: a kept bag IS
+          // `persistedOutputs`, so it compares equal by construction.
+          const outputsToPersist =
+            merge === undefined
+              ? resolvedOutputs
+              : merge.kind === 'merged'
+                ? merge.outputs
+                : persistedOutputs;
+          const exportNamesToPersist: readonly string[] | undefined =
+            merge === undefined
+              ? this.resolvedExportNames
+              : merge.kind === 'merged'
+                ? merge.exportNames
+                : undefined;
+          const outputsChanged = !outputMapsEqual(persistedOutputs, outputsToPersist);
           // Issue #2193: the EFFECTIVE export set can change without the outputs
           // VALUES changing, and the no-change path is the only place that would
           // persist it. Two shapes reach here with `outputsChanged` false:
@@ -3155,49 +3228,53 @@ export class DeployEngine {
           //     `exportNames` flips between `[]` and `[<key>]`. Without this the
           //     added export never lands in state/index (consumer's Fn::ImportValue
           //     hard-fails), and the removed one is a phantom export served forever.
-          // Detect it by comparing the CURRENTLY-effective set against this pass's
-          // resolved set. Subsumes the old pre-v9 backfill and catches both
-          // self-named directions. Kept OUT of `outputsChanged` deliberately: this
-          // is not an outputs-VALUE change, so it must not flip the "Outputs-only
-          // change" log or the `resolvedOutputs`-vs-`persistedOutputs` bag choice.
-          const currentEffectiveExports = new Set(importableOutputKeys(currentState));
-          const resolvedExportSet = new Set(this.resolvedExportNames);
+          // Detect it by comparing the CURRENTLY-effective set against the set
+          // this save would write. Subsumes the old pre-v9 backfill and catches
+          // both self-named directions. Kept OUT of `outputsChanged` deliberately:
+          // this is not an outputs-VALUE change, so it must not flip the
+          // "Outputs-only change" log or the bag choice. Never set when the
+          // previous bag is kept whole: its own set is carried with it.
+          const persistExportSet = new Set(exportNamesToPersist ?? []);
           const exportSetChanged =
-            !resolutionFailed &&
-            (currentEffectiveExports.size !== resolvedExportSet.size ||
-              [...resolvedExportSet].some((k) => !currentEffectiveExports.has(k)));
+            exportNamesToPersist !== undefined &&
+            (currentEffectiveExports.size !== persistExportSet.size ||
+              [...persistExportSet].some((k) => !currentEffectiveExports.has(k)));
 
-          // Surface the rare case where outputs DID change but a resolution
-          // failure suppressed the persist. resolveOutputs already warns
+          // Surface the case where outputs DID change but the merge refused and
+          // the previous bag was kept whole. resolveOutputs already warns
           // per-output, but a call-site summary makes the "deploy reports
           // no-change yet a new export silently failed to land" path explicit
           // (a downstream Fn::ImportValue would otherwise break later with no
-          // obvious link back to this deploy).
-          if (resolutionFailed && !outputMapsEqual(persistedOutputs, resolvedOutputs)) {
+          // obvious link back to this deploy). The merged arm needs no such
+          // line: everything that resolved is persisted, an output whose
+          // resolver threw already has its own warning, and one whose resolver
+          // returned nothing is silent here as it is on every path — the #2740
+          // record still names it.
+          if (merge?.kind === 'kept' && !outputMapsEqual(persistedOutputs, resolvedOutputs)) {
             this.logger.warn(
               'Outputs changed but one or more could not be resolved; keeping the previously ' +
-                'persisted outputs. A downstream Fn::ImportValue may fail until the next deploy.'
+                `persisted outputs. ${keptWholeReasonText(merge.reason)} ` +
+                'A downstream Fn::ImportValue may fail until the next deploy.'
             );
-          }
-
-          // Drain any auto-refresh readCurrentState calls (drainObservedCaptures
-          // short-circuits on an empty map) so the refreshed observed-properties
-          // baseline lands in the same save.
-          const observedRefresh = this.observedCaptureTasks.size > 0;
-          if (observedRefresh) {
-            await this.drainObservedCaptures(currentState.resources);
+          } else if (merge?.kind === 'merged' && merge.carriedKeys.length > 0) {
+            this.logger.debug(
+              `Kept the previously persisted value of ${merge.carriedKeys.length} output key(s) ` +
+                'that could not be resolved (no-change path, #2771)'
+            );
           }
 
           // Issue #2740: the skipped-outputs record needs its OWN trigger on
           // this path. The shape that produces it — an output failing inside
           // a secret lookup on a stack with no resource diff — lands here
-          // with `resolutionFailed` true, which switches `outputsChanged` and
-          // `exportSetChanged` OFF, so without this the field would exist in
-          // the type and never be written for exactly the case it exists for.
-          // A difference in either direction saves: a key newly skipped (or
-          // its digest moved), or one that resolved / left the template and
-          // must be cleared. Also the upgrade path — a record with no field
-          // yet whose broken output is skipped again today.
+          // with `resolutionFailed` true, and `outputsChanged` /
+          // `exportSetChanged` stay false whenever the bag this save would
+          // write equals the stored one (the usual case: the skipped key was
+          // never stored) or the previous bag is kept whole, so without this
+          // the field would never be written for exactly the case it exists
+          // for. A difference in either direction saves: a key newly skipped
+          // (or its digest moved), or one that resolved / left the template
+          // and must be cleared. Also the upgrade path — a record with no
+          // field yet whose broken output is skipped again today.
           const skippedOutputsChanged = !skippedOutputsEqual(
             currentState.skippedOutputs,
             this.skippedOutputs
@@ -3217,17 +3294,17 @@ export class DeployEngine {
                 stackName: currentState.stackName,
                 resources: currentState.resources,
                 ...orphansCarriedFrom(currentState),
-                outputs: (outputsChanged ? resolvedOutputs : persistedOutputs) as Record<
+                outputs: (outputsChanged ? outputsToPersist : persistedOutputs) as Record<
                   string,
                   string
                 >,
                 // The set belongs to the bag written above: this pass's when
-                // the bag resolved clean (changed, or equal — either way the
-                // resolved set describes it), the previous record's when the
-                // persisted bag was kept because resolution failed.
-                ...(resolutionFailed
+                // every output resolved (changed, or equal — either way the
+                // resolved set describes it), the merge's when one did not, and
+                // the previous record's when the previous bag was kept whole.
+                ...(exportNamesToPersist === undefined
                   ? exportNamesCarriedFrom(currentState)
-                  : { exportNames: [...this.resolvedExportNames] }),
+                  : { exportNames: [...exportNamesToPersist] }),
                 // Unlike `exportNames`, ALWAYS this pass's: the record says
                 // what THIS deploy skipped, which the resolution just decided
                 // whether or not the bag was carried forward. Omitted when
@@ -3283,20 +3360,18 @@ export class DeployEngine {
                     this.stackRegion,
                     // Redacted again as the save above redacts it (issue
                     // #2814), so this path's index cannot diverge from what
-                    // state holds. It cannot differ today for one reason: a
-                    // LATE needle cannot arrive here at all, because a
-                    // released drain leaves an output unresolved, so
-                    // `resolutionFailed` is true and both flags guarding this
-                    // block are false. (Not because the bag is already
-                    // redacted — on the `exportSetChanged`-only arm it is
-                    // `persistedOutputs`, the PREVIOUS deploy's bag, and a
-                    // second pass is not unconditionally idempotent either;
-                    // see `absorbOutputsPassSecrets`.) The call is still the right shape
-                    // rather than redundant — it is the FAIL-SAFE direction.
-                    // If a swallow above a drain ever appears, the index ends
-                    // up more redacted than state, never less; and a reader
-                    // should not have to re-derive that gate to see why the
-                    // sibling on the changes path redacts and this did not.
+                    // state holds. Since issue #2771 the call is load-bearing
+                    // rather than only fail-safe: a released drain leaves an
+                    // output unresolved, and the partial persist then writes
+                    // the SIBLINGS that did resolve, so a needle a released
+                    // part records after the outputs pass CAN reach this
+                    // block. (The bag is not always this pass's either: on the
+                    // `exportSetChanged`-only arm it is `persistedOutputs`,
+                    // the PREVIOUS deploy's bag, and a second pass is not
+                    // unconditionally idempotent; see
+                    // `absorbOutputsPassSecrets`.) A needle arriving between
+                    // the save and this call leaves the index more redacted
+                    // than state, never less.
                     importableOutputs({
                       ...refreshedState,
                       outputs: this.redactOutputs(refreshedState.outputs),
@@ -8499,7 +8574,8 @@ export class DeployEngine {
     // walks `currentState.outputs`, the previous deploy's bag, which stays
     // unmarked. A per-output failure caught inside the loop above DOES reach
     // it: the partial bag it marks is still this pass's own resolution, and
-    // the no-change caller then discards it for `persistedOutputs` — again the
+    // the no-change caller then either copies its redacted values into a
+    // fresh, unmarked merge (issue #2771) or keeps `persistedOutputs` — the
     // previous deploy's bag, unmarked — so nothing this pass did not produce
     // ever carries the mark. `cdkd scrub`'s outputs walk never calls this
     // method at all.

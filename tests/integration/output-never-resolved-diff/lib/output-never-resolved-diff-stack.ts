@@ -28,9 +28,7 @@ import { Construct } from 'constructs';
  *     THE SUBJECT. Under `CDKD_TEST_UPDATE=true` (the repair phase) its Value
  *     switches to the `username` key, which exists — the digest the deploy
  *     recorded no longer matches, so the diff must show the ADD again, and
- *     the next deploy publishes it. `NeverResolvesViaRef` repairs on the same
- *     toggle, so the record is emptied — see its note for why a PARTIAL
- *     repair is not what this fixture asserts.
+ *     the next deploy publishes it.
  *   - `Resolves` — the same secret's `username` key: a SIBLING that resolves
  *     fine, so the record's scope (only the skipped key) is observable.
  *   - `NeverResolvesViaRef` — the same missing key, reached through an
@@ -39,9 +37,15 @@ import { Construct } from 'constructs';
  *     the digest is unmoved while the resource diff reports it — the one
  *     shape that exercises the change-map un-bind (review round 2). Without
  *     it the fixture passes even if `referencedLogicalIds` returns nothing.
+ *     It repairs under `CDKD_TEST_UPDATE=true` AND, alone, under
+ *     `CDKD_TEST_PARTIAL_REPAIR=true` (issue #2771's partial-repair phase).
  *   - `Plain` — a literal, so the bag is never empty. Under
  *     `CDKD_TEST_SIBLING=true` its value changes, so `verify.sh` can assert
  *     that a genuine sibling change still renders beside the suppressed key.
+ *   - `Plain2` — declared only under `CDKD_TEST_ADD_OUTPUT=true`: the output
+ *     issue #2771 is about, ADDED beside the two that keep failing. `verify.sh`
+ *     carries the toggle forward through every later phase, so the output is
+ *     never removed again before destroy.
  *
  * The secret name carries the account: with `CDK_DEFAULT_ACCOUNT` reaching
  * the app (cdkd's synth exports it, see `src/synthesis/app-executor.ts`) the
@@ -56,6 +60,10 @@ export class OutputNeverResolvedDiffStack extends cdk.Stack {
     const account = process.env['CDK_DEFAULT_ACCOUNT'] ?? cdk.Stack.of(this).account;
     const secretName = `cdkd-test-neverres-secret-${account}`;
     const repaired = process.env['CDKD_TEST_UPDATE'] === 'true';
+    // Issue #2771: the PARTIAL repair. Only `NeverResolvesViaRef` takes it, so
+    // `NeverResolves` keeps failing on the same deploy that must publish the
+    // repaired sibling.
+    const viaRefRepaired = repaired || process.env['CDKD_TEST_PARTIAL_REPAIR'] === 'true';
 
     // A KNOWN value with exactly one key. `generateSecretString` is NOT used:
     // the whole fixture rests on `password` being absent.
@@ -97,16 +105,15 @@ export class OutputNeverResolvedDiffStack extends cdk.Stack {
       // skipped on every deploy too — and its `Fn::Sub` names `RefMarker`,
       // which is what the change map intersects with.
       //
-      // It repairs on the SAME toggle, and that is not cosmetic: deploy's
-      // no-resource-change path keeps the PREVIOUS outputs bag whenever any
-      // output is still unresolved (`resolutionFailed`, go-to-k/cdkd#2771), so
-      // leaving this one broken would make the repair phase unable to publish
-      // `NeverResolves` at all and the fixture would be asserting that bug
-      // instead of this fix.
+      // It repairs on its OWN toggle as well as the shared one, which is what
+      // lets `verify.sh` repair it while `NeverResolves` stays broken: since
+      // go-to-k/cdkd#2771 deploy's no-resource-change path persists the outputs
+      // that resolve even while a sibling does not, and the partial-repair
+      // phase is the live proof.
       value: cdk.Fn.sub(
         '${Marker}-{{resolve:secretsmanager:' +
           secretName +
-          `:SecretString:${repaired ? 'username' : 'password'}}}`,
+          `:SecretString:${viaRefRepaired ? 'username' : 'password'}}}`,
         { Marker: marker.parameterName }
       ),
       description: 'Skipped like NeverResolves, but REFERENCES a resource',
@@ -119,5 +126,14 @@ export class OutputNeverResolvedDiffStack extends cdk.Stack {
           : 'cdkd-neverres-plain-value',
       description: 'A literal, so the outputs bag is never empty',
     });
+
+    // Issue #2771: an output ADDED beside the two that keep failing. Pre-fix a
+    // no-change deploy never persisted it, so `cdkd diff --fail` stayed red.
+    if (process.env['CDKD_TEST_ADD_OUTPUT'] === 'true') {
+      new cdk.CfnOutput(this, 'Plain2', {
+        value: 'cdkd-neverres-plain2-value',
+        description: 'Added beside the broken outputs; must land on a no-change deploy',
+      });
+    }
   }
 }

@@ -197,10 +197,11 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
     const result = await engine.deploy(stackName, template);
 
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve output Bad'));
-    // No-change path: a resolution failure keeps the previously persisted
-    // outputs (empty here) instead of persisting a partial map — the deploy
-    // still exits successfully in default mode.
-    expect(result.outputs).toEqual({});
+    // No-change path: since issue #2771 a resolution failure no longer keeps
+    // the previous bag whole — the output that DID resolve is persisted and
+    // displayed, the failed one is skipped, and the deploy still exits
+    // successfully in default mode.
+    expect(result.outputs).toEqual({ Good: 'ok-value' });
   });
 
   it('strict mode: an unresolvable Output fails the deploy with an actionable error', async () => {

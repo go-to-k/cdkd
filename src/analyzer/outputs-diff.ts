@@ -6,6 +6,10 @@ import {
   isExportAliasCollision,
 } from '../deployment/outputs-export-alias.js';
 import { stripControlChars } from '../utils/regexp.js';
+import {
+  bagHoldsSecretExpression,
+  isSecretBearingReferenceString as isSecretDynamicReference,
+} from '../deployment/no-change-outputs-merge.js';
 
 /**
  * Kind of change for one key of the persisted Outputs bag.
@@ -62,10 +66,12 @@ export interface ResolvedTemplateOutputs {
   /**
    * True when at least one output could not be fully resolved against current
    * state. See {@link computeOutputsDiff}'s caller contract: the diff must then
-   * report NO outputs delta — the deploy engine's NO-CHANGE branch likewise
-   * declines to persist a partially-resolved bag. (Its changed-resources branch
-   * has no such gate, because by then every resource exists and resolution is
-   * expected to succeed; the mirrored semantics here are the no-change one.)
+   * report NO outputs delta. That is the conservative side of the deploy
+   * engine's NO-CHANGE branch, not a mirror of it: since issue #2771 that branch
+   * persists the outputs that resolved and keeps each failed key's stored
+   * value, while this preview cannot tell a failure the deploy will repeat from
+   * an output waiting on a resource this deploy creates. (The changed-resources
+   * branch has no gate at all, because by then every resource exists.)
    */
   resolutionFailed: boolean;
   /**
@@ -219,10 +225,12 @@ export function templateUsesSub(templateValue: unknown): boolean {
   return Object.values(record).some(templateUsesSub);
 }
 
-/**
- * True when `value` is a string carrying a SECRET-BEARING CloudFormation
- * dynamic reference — `{{resolve:secretsmanager:` or `{{resolve:ssm-secure:`,
- * the two spellings that are secret regardless of what they point at.
+/*
+ * `isSecretDynamicReference` (imported above) is true for a string carrying a
+ * SECRET-BEARING dynamic reference — `{{resolve:secretsmanager:` or
+ * `{{resolve:ssm-secure:`. Its definition, and why a plain `{{resolve:ssm:` is
+ * excluded, live with the deploy side's no-change merge, so the merge's refusal
+ * and this module's exoneration read ONE predicate (issue #2771).
  *
  * The diff resolves with `skipDynamicReferences`, so a secret-bearing output
  * arrives here as its unresolved `{{resolve:...}}` expression — which is also
@@ -231,19 +239,6 @@ export function templateUsesSub(templateValue: unknown): boolean {
  * `cdkd scrub` exists to repair), and printing it is this module's problem
  * because it is the first code path that DISPLAYS a stored output value.
  */
-function isSecretDynamicReference(value: unknown): boolean {
-  if (typeof value !== 'string') return false;
-  // Only the spellings that are secret-bearing REGARDLESS of what they point at.
-  // A plain `{{resolve:ssm:...}}` is deliberately excluded: per issue #1901 it is
-  // classified by the parameter's TYPE, and a `String` / `StringList` parameter
-  // is PUBLIC and legitimately persisted RESOLVED. Treating it as a signal would
-  // fire on a perfectly ordinary record — and since the verdict is record-WIDE,
-  // that would withhold every previous value in the stack and tell the user to
-  // run `cdkd scrub`, which would find nothing to fix. The residual is a
-  // pre-#1901 SecureString `ssm:` record, a strictly narrower gap than the
-  // false positive this exclusion removes.
-  return value.includes('{{resolve:secretsmanager:') || value.includes('{{resolve:ssm-secure:');
-}
 
 /**
  * The same question asked of a whole template VALUE, walking every string leaf.
@@ -686,10 +681,14 @@ export async function resolveTemplateOutputs(
  * - `templateHasSecretReference` — the template must still prove this stack
  *   handles secrets AT ALL (anywhere, `Resources` included). An ordinary stack
  *   with no secret reference keeps printing its REMOVE values.
- * - no stored value is itself a secret-bearing expression. One that is proves
- *   the LAST write was post-GHSA, and the bag is rewritten wholesale by
- *   `resolveOutputs` on every deploy, so every other value in it is redacted
- *   too. This exonerates the record.
+ * - no stored value is itself a secret-bearing expression. One that is
+ *   exonerates the record, read as evidence that the last write redacted the
+ *   whole bag. A bag resolved whole by one post-GHSA pass earns that reading,
+ *   and the no-change path's partial persist (issue #2771) refuses to carry a
+ *   previous value into a bag it is about to give its FIRST expression. The
+ *   reading is not unconditional: see the scrub and kept-whole residuals
+ *   below. The refusal lives in `src/deployment/no-change-outputs-merge.ts`,
+ *   beside the predicate both sides read.
  *
  *   That reasoning holds for a DEPLOY write and is weaker for a `cdkd scrub`
  *   one, which rewrites `state.outputs` IN PLACE: scrub redacts what it has a
@@ -698,6 +697,11 @@ export async function resolveTemplateOutputs(
  *   can exonerate a deleted key's surviving plaintext. Recorded rather than
  *   closed: removing the exoneration would withhold values on every clean
  *   post-GHSA record in a secret-handling stack, which is the larger harm.
+ *   The deploy's own save belongs to the same class when the no-change path
+ *   keeps a previous bag whole: its value scan can redact one stored value into
+ *   an expression while another stored plaintext, which no needle names,
+ *   survives beside it. The partial persist refuses to CREATE that shape
+ *   (issue #2771); a kept-whole save can still create it.
  *
  * Withholding here is PER-KEY, unlike the record-level arms above, and the
  * asymmetry follows from what each concludes: those conclude the record was
@@ -740,12 +744,11 @@ export function computeOutputsDiff(
 
   // Pass 2: the issue #1948 exoneration, RECORD-level unlike the per-key veto
   // above, and it has to be: the question is whether the LAST write redacted,
-  // and one redacted key answers it for the whole bag (`resolveOutputs`
-  // rewrites every key on every deploy). Same LEAF granularity, so a container
-  // holding an expression still does not earn it.
-  const recordProvesPostGhsa = Object.values(currentBag).some(
-    (v) => typeof v === 'string' && isSecretDynamicReference(v)
-  );
+  // and one redacted key is read as answering it for the whole bag — a reading
+  // with the residuals the note above names (issue #2771 refuses the merge that
+  // would add one). Same LEAF granularity, so a container holding an expression
+  // still does not earn it.
+  const recordProvesPostGhsa = bagHoldsSecretExpression(currentBag);
   const declaredKeys = unaccountableScan.declaredKeys ?? new Set<string>();
   const unaccountable = (name: string): boolean =>
     unaccountableScan.templateHasSecretReference === true &&

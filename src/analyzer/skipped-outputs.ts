@@ -5,10 +5,10 @@
  *
  * The deploy side (`DeployEngine.handleOutputResolutionFailure`, default arm)
  * warns, stores `undefined` for the key and moves on, so a re-resolved
- * `state.outputs` lacks it (the no-change path keeps the previous bag whole
- * when any output fails, so a key that resolved on an EARLIER deploy can keep
- * its value beside a record — the reader checks absence first and ignores the
- * record then). The diff side resolves outputs with `skipDynamicReferences`, so a
+ * `state.outputs` lacks it (the no-change path keeps a failed key's STORED
+ * value, go-to-k/cdkd#2771, so a key that resolved on an EARLIER deploy can
+ * keep its value beside a record — the reader checks absence first and ignores
+ * the record then). The diff side resolves outputs with `skipDynamicReferences`, so a
  * failure that happens INSIDE a secret lookup — a JSON key the secret does not
  * hold, a reference assembled from another secret's value — does not reproduce
  * there: the value assembles into its token, the key is absent from state, and
@@ -89,10 +89,10 @@
  * the writing binary's version is knowable and merely unstored: keeping it
  * beside the digest and un-binding on mismatch would close that one. All four
  * end the same way: the record keeps binding until the next deploy re-resolves
- * the output, and that deploy publishes the key — unless a SIBLING output is
- * still unresolved on a run with no resource change, where the engine keeps
- * the previous outputs bag wholesale and the key stays unpublished for a
- * further run (go-to-k/cdkd#2771, pre-existing and not introduced here).
+ * the output, and that deploy publishes the key, a still-unresolved SIBLING
+ * included, since the no-change path persists what resolved rather than
+ * keeping the previous bag whole (go-to-k/cdkd#2771; the two shapes it still
+ * keeps whole are in `src/deployment/no-change-outputs-merge.ts`).
  * Documented as the accepted limitation in `docs/cli-diff.md`; it is narrower
  * than the pre-#2740 behaviour, where the diff was wrong on EVERY run.
  *
@@ -484,8 +484,9 @@ export function bindingSkippedOutputs(
 /**
  * Whether two records — either possibly absent — describe the same skipped
  * set with the same digests. The no-change deploy path persists on a
- * difference here: it is the ONLY save trigger for this field on that path,
- * because a skipped output switches the outputs-changed trigger off.
+ * difference here: it is what saves this field when the outputs bag that save
+ * would write is unchanged, which is the usual shape — a skipped output that
+ * never had a stored value leaves the bag equal.
  */
 export function skippedOutputsEqual(
   a: Record<string, string> | undefined,

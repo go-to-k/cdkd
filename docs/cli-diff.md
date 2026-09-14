@@ -191,8 +191,17 @@ as an `ADD` either. Two things get skipped, and only the first is announced:
   `{{resolve:secretsmanager:...}}` naming a JSON key the secret does not
   hold. The deploy warns per output (`--strict-getatt` aborts instead).
 - the resolver **returned nothing** — an `Fn::GetAtt` whose attribute could
-  not be constructed. No per-output warning; the no-change path still says
-  the outputs could not be resolved when they otherwise differ.
+  not be constructed. No per-output warning.
+
+Either way the deploy still persists every other output that did resolve, so
+an output you add beside a broken one lands on the next deploy. A broken
+output keeps the value it had from an earlier deploy, if it had one. Two cases
+keep all of the previous outputs instead, with a warning naming why: a broken
+output that had a value before and declares its `Export.Name` with an
+intrinsic function, and a save that would put the first secret reference into
+the stored outputs beside a value it cannot vouch for — checked on the outputs
+exactly as they will be saved. A kept value is not repositioned onto a reference
+from today's template; the ordinary secret scan still redacts it.
 
 The diff never fetches secrets, so it cannot reproduce the first failure at
 all. The second it does reproduce — an attribute it cannot build is unresolved
@@ -322,9 +331,10 @@ by a pre-redaction binary, so every previous value in it is suspect.
 The per-key gate is narrower on purpose, since deleting an output is an
 ordinary refactor. It fires **only** when the template still proves a secret
 reference somewhere, and **not** when any stored value is itself a secret
-expression — the latter shows that the last write already redacted the whole
-bag. Those two conditions are what keep the refusal off stacks that handle no
-secrets at all.
+expression — the latter is read as evidence that the last write already
+redacted the whole bag, which holds for a full deploy and is not guaranteed for
+every earlier write. Those two conditions are what keep the refusal off stacks
+that handle no secrets at all.
 
 For a nested child **removed** from its parent's template there is no template
 left to account for anything, so the refusal applies to that child's whole

@@ -6,20 +6,20 @@ import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 import { skippedOutputDigest } from '../../../src/analyzer/skipped-outputs.js';
 
 // Logger silenced (the no-change path may emit a warn we don't want in output).
-vi.mock('../../../src/utils/logger.js', () => ({
-  getLogger: () => ({
+// Shared spies, so a case can assert what the engine WARNED (issue #2771's
+// keep-whole warnings name their reason).
+const warnSpy = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/utils/logger.js', () => {
+  const fns = {
+    setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
-    child: () => ({
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
-  }),
-}));
+    child: () => fns,
+  };
+  return { getLogger: () => fns };
+});
 
 // The resolver resolves every value to itself — so resolveOutputs() maps each
 // Output.Value (a literal in these fixtures) straight through, and an
@@ -381,14 +381,16 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
     expect(result.outputs).toEqual({ BucketArn: 'arn:aws:s3:::bucket-a' });
   });
 
-  it('keeps existing outputs (bag carried, no index) when an output cannot be resolved; the one save is the #2740 record', async () => {
+  it('REMOVES a stored output the template no longer declares even when another output cannot be resolved, and republishes the index (#2771 rule 3)', async () => {
     // resolveOutputs stores `undefined` for any output it could not resolve
-    // (e.g. a Fn::If → AWS::NoValue). The guard must NOT overwrite the good
-    // persisted outputs with a partial map, and must NOT touch the index.
-    // Since issue #2740 the skipped key IS persisted — as `skippedOutputs`,
-    // beside the carried bag — so exactly one save happens, for that record.
+    // (e.g. a Fn::If → AWS::NoValue). Before issue #2771 that kept the whole
+    // previous bag, so `Existing` — declared by no template any more — stayed
+    // in state for as long as the other output kept failing, and the diff
+    // showed its REMOVE forever. The partial persist drops it, exactly as the
+    // changed-resources path does. The #2740 record is written in the same
+    // save.
     mockStateBackend.getState.mockResolvedValue({
-      state: makeState({ Existing: 'keep-me' }),
+      state: makeState({ Existing: 'keep-me' }, []),
       etag: 'etag-old',
     });
 
@@ -405,12 +407,310 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
 
     expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
     const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
-    expect(saved.outputs).toEqual({ Existing: 'keep-me' });
+    expect(saved.outputs).toEqual({});
     expect(saved.skippedOutputs).toEqual({
       // From a FRESH copy: the digest must equal what a re-parse produces.
       Unresolvable: skippedOutputDigest(structuredClone(template), 'Unresolvable'),
     });
-    expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
+    expect(saved.exportNames).toEqual([]);
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledTimes(1);
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {});
+  });
+
+  describe('a resolvable Output beside one that keeps failing (issue #2771)', () => {
+    const resources: CloudFormationTemplate['Resources'] = {
+      BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } },
+    };
+
+    it('persists the NEW resolvable output, keeps the failed one absent, and still writes the #2740 record', async () => {
+      // The issue's own shape: `NeverResolves` never landed in state, and
+      // `Plain2` is added beside it. Pre-fix nothing was persisted, so
+      // `cdkd diff --fail` showed `[+] Plain2` on every run.
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeState({ Plain: 'p' }, []),
+        etag: 'etag-old',
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          NeverResolves: { Value: undefined as unknown as string },
+          Plain: { Value: 'p' },
+          Plain2: { Value: 'x' },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual({ Plain: 'p', Plain2: 'x' });
+      expect(Object.prototype.hasOwnProperty.call(saved.outputs, 'NeverResolves')).toBe(false);
+      expect(saved.skippedOutputs).toEqual({
+        NeverResolves: skippedOutputDigest(structuredClone(template), 'NeverResolves'),
+      });
+      expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {});
+    });
+
+    it('a STILL-DECLARED failing output keeps its stored value while a sibling change lands (the #875 guard, re-pinned)', async () => {
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeState({ Existing: 'keep-me', Other: 'old' }, []),
+        etag: 'etag-old',
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          Existing: { Value: undefined as unknown as string },
+          Other: { Value: 'new' },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      // Never overwritten with nothing, never dropped...
+      expect(saved.outputs).toEqual({ Existing: 'keep-me', Other: 'new' });
+      // ...and still recorded as skipped, because this deploy did skip it.
+      expect(Object.keys(saved.skippedOutputs ?? {})).toEqual(['Existing']);
+    });
+
+    it('carries a failed output\x27s LITERAL export alias and its export membership, so the index keeps serving it', async () => {
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeState({ Api: 'api-v1', 'producer:Api': 'api-v1' }, ['producer:Api']),
+        etag: 'etag-old',
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          Api: { Value: undefined as unknown as string, Export: { Name: 'producer:Api' } },
+          Added: { Value: 'added', Export: { Name: 'producer:Added' } },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual({
+        Api: 'api-v1',
+        'producer:Api': 'api-v1',
+        Added: 'added',
+        'producer:Added': 'added',
+      });
+      expect([...(saved.exportNames ?? [])].sort()).toEqual(['producer:Added', 'producer:Api']);
+      expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {
+        'producer:Api': 'api-v1',
+        'producer:Added': 'added',
+      });
+    });
+
+    it('does NOT carry an alias the previous record never published', async () => {
+      // `producer:Api` is in the stored bag but NOT in the stored export set,
+      // so nothing proves it is this output's alias; it is not carried.
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeState({ Api: 'api-v1', 'producer:Api': 'stale' }, []),
+        etag: 'etag-old',
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          Api: { Value: undefined as unknown as string, Export: { Name: 'producer:Api' } },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual({ Api: 'api-v1' });
+      expect(saved.exportNames).toEqual([]);
+    });
+
+    it('keeps the WHOLE previous bag when a failed output declares an intrinsic Export.Name, and warns why', async () => {
+      const previous = { Api: 'api-v1', 'producer-Api': 'api-v1', Gone: 'gone' };
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeState(previous, ['producer-Api']),
+        etag: 'etag-old',
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          Api: {
+            Value: undefined as unknown as string,
+            Export: { Name: { 'Fn::Sub': 'producer-Api' } as unknown as string },
+          },
+          Added: { Value: 'added' },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      // The save still happens — for the #2740 record — but carries the bag
+      // and its set verbatim, and republishes nothing.
+      expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual(previous);
+      expect(saved.exportNames).toEqual(['producer-Api']);
+      expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
+      // ...and the warning says the bag was kept, and why.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/keeping the previously persisted outputs\..*intrinsic Export\.Name/)
+      );
+    });
+
+    it('persists an EXPORT-SET change on the merged path even when no value changed', async () => {
+      // `A` becomes a self-named export while `F` keeps failing and its record
+      // is unchanged: the bag is byte-equal, so only the export-set comparison
+      // can save it (the #2193 shape, now reached beside a failure).
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          A: { Value: 'a', Export: { Name: 'A' } },
+          F: { Value: undefined as unknown as string },
+        },
+      };
+      const state = makeState({ A: 'a', F: 'f' }, []);
+      state.skippedOutputs = { F: skippedOutputDigest(structuredClone(template), 'F') };
+      mockStateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+
+      await makeEngine().deploy(stackName, template);
+
+      expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual({ A: 'a', F: 'f' });
+      expect(saved.exportNames).toEqual(['A']);
+      expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {
+        A: 'a',
+      });
+    });
+
+    it('decides the bag AFTER the observed-capture drain and re-checks it as the save redacts it, so a needle recorded during the drain cannot slip past', async () => {
+      // A needle a released outputs-pass part records late lands in the pass
+      // map while the engine awaits the observed-capture drain. Here the
+      // pending capture itself records it, after the outputs pass has been
+      // redacted: waiting for `skippedOutputs` (set at the end of that pass)
+      // plus a run of microtask yields puts the write inside the drain. With the drain
+      // moved back BELOW the check, or the save-time re-check removed, the
+      // merge would pass on a bag with no expression and the save would write
+      // `Plain2`'s expression beside the carried `Old`.
+      const SEC = '{{resolve:secretsmanager:late:SecretString:k}}';
+      const LATE = 'late-needle-plaintext';
+      const previous = { Old: 'maybe-a-pre-ghsa-plaintext' };
+      const state = makeState(previous, []);
+      delete state.resources['BucketA']!.observedProperties;
+      mockStateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+      const engine = makeEngine();
+      const internals = engine as unknown as {
+        skippedOutputs: Record<string, string> | undefined;
+        outputsPassSecretMaps: Map<string, string>[];
+      };
+      // MICROTASK yields only: a timer yield would also run whatever timer an
+      // EARLIER test in this file left pending, inside this test's window. The
+      // extra yields after `skippedOutputs` appears let the engine finish
+      // redacting this pass's bag and reach the drain await, where it then
+      // waits on this very capture, so over-yielding is harmless.
+      mockProvider.readCurrentState.mockImplementation(async () => {
+        for (let i = 0; internals.skippedOutputs === undefined; i += 1) {
+          if (i > 100_000) throw new Error('outputs pass never finished');
+          await Promise.resolve();
+        }
+        for (let i = 0; i < 200; i += 1) await Promise.resolve();
+        internals.outputsPassSecretMaps[0]!.set(LATE, SEC);
+        return { BucketName: 'bucket-a' };
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          Old: { Value: undefined as unknown as string },
+          Plain2: { Value: LATE },
+        },
+      };
+
+      await engine.deploy(stackName, template);
+
+      // PREMISE: the capture ran, so the needle really arrived during the drain.
+      expect(mockProvider.readCurrentState).toHaveBeenCalledTimes(1);
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual(previous);
+      expect(JSON.stringify(saved)).not.toContain(LATE);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/redacted secret reference/));
+    });
+
+    it('keeps the WHOLE previous bag rather than carry a value into a bag it would give its FIRST secret expression', async () => {
+      // The mixed-generation refusal. `Old` may be pre-GHSA plaintext; writing
+      // `Sec`'s expression beside it would let `cdkd diff` read that one
+      // expression as proof every stored value is redacted.
+      const previous = { Old: 'maybe-a-pre-ghsa-plaintext' };
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeState(previous, []),
+        etag: 'etag-old',
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          Old: { Value: undefined as unknown as string },
+          Sec: { Value: '{{resolve:secretsmanager:db:SecretString:password}}' },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual(previous);
+      expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/keeping the previously persisted outputs\..*redacted secret reference/)
+      );
+    });
+
+    it('...but MERGES when the previous bag already held a secret expression (the refusal is only against giving a bag its FIRST one)', async () => {
+      const previous = {
+        Old: 'ordinary',
+        Prev: '{{resolve:secretsmanager:prev:SecretString:password}}',
+      };
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeState(previous, []),
+        etag: 'etag-old',
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          Old: { Value: undefined as unknown as string },
+          Prev: { Value: previous.Prev },
+          Sec: { Value: '{{resolve:secretsmanager:db:SecretString:password}}' },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual({
+        ...previous,
+        Sec: '{{resolve:secretsmanager:db:SecretString:password}}',
+      });
+    });
+
+    it('...and MERGES when nothing is carried, even into a bag with no expression yet', async () => {
+      // No carried value, so no generation can mix: the failed key had nothing
+      // stored. Refusing here would re-open the issue for its most common shape.
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeState({ Plain: 'p' }, []),
+        etag: 'etag-old',
+      });
+      const template: CloudFormationTemplate = {
+        Resources: resources,
+        Outputs: {
+          Broken: { Value: undefined as unknown as string },
+          Plain: { Value: 'p' },
+          Sec: { Value: '{{resolve:secretsmanager:db:SecretString:password}}' },
+        },
+      };
+
+      await makeEngine().deploy(stackName, template);
+
+      const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+      expect(saved.outputs).toEqual({
+        Plain: 'p',
+        Sec: '{{resolve:secretsmanager:db:SecretString:password}}',
+      });
+    });
   });
 
   it('treats key-reordered and deep-equal output maps as unchanged (no save)', async () => {
