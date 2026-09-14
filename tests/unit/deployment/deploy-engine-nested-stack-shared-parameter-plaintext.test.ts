@@ -41,6 +41,7 @@ import {
   redactSecretsForState,
   inheritNestedStackParameterAssociations,
   recordNestedStackParameterExpressions,
+  recordResolvedPair,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
@@ -562,6 +563,9 @@ describe('DeployEngine — two child Parameters resolving to ONE plaintext (#229
   /** The parent bag exactly as the parent half above produces it. */
   function inheritedFromParent(): RecordedSecretValues {
     const parent: RecordedSecretValues = new Map([[SHARED, EXPR_B]]);
+    // Both tokens resolved to `SHARED` in the parent's pass (refusal 5, #3090).
+    recordResolvedPair(parent, EXPR_A, SHARED);
+    recordResolvedPair(parent, EXPR_B, SHARED);
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',

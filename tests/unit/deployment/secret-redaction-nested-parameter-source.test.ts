@@ -91,7 +91,13 @@ const PARENT_RESOLVED = {
  * resolved plaintext. `EXPR_B` survives because it was recorded last.
  */
 function collapsedParentBag(): RecordedSecretValues {
-  return new Map([[SHARED, EXPR_B]]);
+  // The map collapsed, the PAIR TABLE beside it not: the resolver records
+  // `recordResolvedPair` for every resolution, so both tokens are on record
+  // against `SHARED` -- what the recorder's refusal 5 (issue #3090) reads.
+  const parent: RecordedSecretValues = new Map([[SHARED, EXPR_B]]);
+  recordResolvedPair(parent, EXPR_A, SHARED);
+  recordResolvedPair(parent, EXPR_B, SHARED);
+  return parent;
 }
 
 /**
@@ -288,6 +294,7 @@ describe('nested-stack parameter associations (#2291)', () => {
     // would hand a caller a PLAINTEXT labelled as an expression.
     const SELF = '{{resolve:secretsmanager:self/ref:SecretString:token::}}';
     const parent: RecordedSecretValues = new Map([[SELF, SELF]]);
+    recordResolvedPair(parent, SELF, SELF); // the pass resolved it (refusal 5, #3090)
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',
@@ -299,6 +306,7 @@ describe('nested-stack parameter associations (#2291)', () => {
     // being token-shaped. The same token-shaped plaintext resolved from a
     // DIFFERENT expression still certifies normally.
     const other: RecordedSecretValues = new Map([[SELF, EXPR_A]]);
+    recordResolvedPair(other, EXPR_A, SELF);
     recordNestedStackParameterExpressions(
       other,
       'AWS::CloudFormation::Stack',
@@ -395,7 +403,10 @@ describe('nested-stack parameter associations (#2291)', () => {
     // up answering `EXPR_B` and the case would be a confluence point that
     // passes under either. `EXPR_C` makes the two outcomes differ: poison
     // refuses and falls back to the value scan (`EXPR_B`), while an overwriting
-    // store would certify `EXPR_C`.
+    // store would certify `EXPR_C`. The second sighting is a RESOLUTION, so it
+    // carries its pair (refusal 5, #3090) -- without one the recorder refuses
+    // the sighting before it can poison, and the case measures nothing.
+    recordResolvedPair(parent, EXPR_C, SHARED);
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',
@@ -438,13 +449,20 @@ describe('nested-stack parameter associations (#2291)', () => {
 
     const child = childBagFrom(parent);
     inheritNestedStackParameterAssociations(child, parent);
-    // The child's own grandchild row: SAME parameter name, DIFFERENT expression.
+    // The child's own grandchild row: SAME parameter name, DIFFERENT expression
+    // -- a STRING source the child RESOLVED itself, so its pair is on the
+    // child's table (refusal 5, #3090).
+    recordResolvedPair(child, EXPR_B, SHARED);
     recordNestedStackParameterExpressions(
       child,
       'AWS::CloudFormation::Stack',
       { Parameters: { [PARAM_A]: SHARED } },
       { Parameters: { [PARAM_A]: EXPR_B } }
     );
+    // POSITIVE CONTROL: the grandchild row WAS recorded on the child's table,
+    // or the separation asserted below is vacuous (a future refusal of this
+    // row would leave every later line green).
+    expect(inheritedParameterExpression(child, PARAM_A, SHARED)).toBe(EXPR_B);
 
     const persisted = redactSecretsForState(CHILD_RESOLVED, child, CHILD_SOURCE) as Record<
       string,
@@ -462,21 +480,112 @@ describe('nested-stack parameter associations (#2291)', () => {
     ) as Record<string, unknown>;
     expect(grandchildPersisted['Value']).toBe(EXPR_B);
   });
+
+  it('carries a THREE-LEVEL chain per leaf: a child whose bag holds inherited ENTRIES but no PAIRS still certifies its grandchild row spelled {Ref} (#3090 review)', () => {
+    // The child engine's bag is filled by `recordInheritedParameterSecrets`
+    // -- entries, never pairs -- and its own nested row spells the grandchild's
+    // parameters as `{Ref: <own parameter>}`. Refusal 5 asks the pair table,
+    // which this bag cannot answer; unscoped it refused every such row and the
+    // grandchild collapsed onto the survivor (measured in review, all three
+    // reviewers). It is scoped to STRING sources; the intrinsic source
+    // positions through the association the parent's recorder already gated.
+    // THE LOSER is asserted -- the survivor is a confluence point.
+    const parent = collapsedParentBag();
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      PARENT_RESOLVED,
+      PARENT_SOURCE
+    );
+    const child = childBagFrom(parent); // entries only, no pairs -- the carry's shape
+    inheritNestedStackParameterAssociations(child, parent);
+    recordNestedStackParameterExpressions(
+      child,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { GA: SHARED, GB: SHARED } },
+      { Parameters: { GA: { Ref: PARAM_A }, GB: { Ref: PARAM_B } } }
+    );
+    expect(inheritedParameterExpression(child, 'GA', SHARED)).toBe(EXPR_A);
+    expect(inheritedParameterExpression(child, 'GB', SHARED)).toBe(EXPR_B);
+    const grandchild = childBagFrom(child);
+    inheritNestedStackParameterAssociations(grandchild, child);
+    const persisted = redactSecretsForState(
+      { U: SHARED, V: SHARED },
+      grandchild,
+      { U: { Ref: 'GA' }, V: { Ref: 'GB' } }
+    ) as Record<string, unknown>;
+    expect(persisted['U']).toBe(EXPR_A);
+    expect(persisted['V']).toBe(EXPR_B);
+  });
+
+  it('child bag: refusal 4 alone refuses a STRING-sourced row whose expression the map ties to an INHERITED plaintext while its own pair is clean (#3093 review)', () => {
+    // The one shape refusal 5 does not subsume (measured in review: deleting
+    // refusal 4 changed this alone). A child engine's bag holds INHERITED
+    // entries (no pairs) beside the child's OWN resolutions (with pairs):
+    // `EXPR_A` was inherited against `INHERITED`, and the child then resolved
+    // `EXPR_A` and `EXPR_B` itself to `OWN` (survivor `EXPR_B`). Its nested
+    // row spells `A: EXPR_A` as a STRING. Refusal 5 passes `A` (the pair
+    // `EXPR_A -> OWN` is clean); the map's index says `EXPR_A -> INHERITED`,
+    // and refusal 4 is what refuses. Without it the grandchild's persist side
+    // certifies `EXPR_A` while the diff side refuses -- the split refusal 4
+    // was written to prevent.
+    const INHERITED = 'inherited-plaintext-3093';
+    const OWN = 'own-plaintext-3093';
+    const child: RecordedSecretValues = new Map([
+      [INHERITED, EXPR_A],
+      [OWN, EXPR_B],
+    ]);
+    recordResolvedPair(child, EXPR_A, OWN);
+    recordResolvedPair(child, EXPR_B, OWN);
+    recordNestedStackParameterExpressions(
+      child,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { A: OWN, B: OWN } },
+      { Parameters: { A: EXPR_A, B: EXPR_B } }
+    );
+    // NOT asserted on the child's own table: its reader's condition 3 reads
+    // the same index refusal 4 does and answers `undefined` either way (a
+    // confluence -- measured, the first draft of this case was green with
+    // refusal 4 deleted). The split shows one level down: the GRANDCHILD's
+    // bag is the carry's shape, holding only `OWN -> survivor`, so `EXPR_A`
+    // is not a value there and condition 3 cannot see the inherited tie.
+    // With refusal 4 the association was never written and the grandchild
+    // takes the value scan (`EXPR_B`); without it the persist side certifies
+    // `EXPR_A` while the diff side (the child's bag) refuses.
+    const grandchild: RecordedSecretValues = new Map([[OWN, EXPR_B]]);
+    inheritNestedStackParameterAssociations(grandchild, child);
+    const persisted = redactSecretsForState({ U: OWN, V: OWN }, grandchild, {
+      U: { Ref: 'A' },
+      V: { Ref: 'B' },
+    }) as Record<string, unknown>;
+    expect(persisted['U']).toBe(EXPR_B);
+    // POSITIVE CONTROL: the sibling with a clean index entry IS recorded.
+    // (Its grandchild leaf reads `EXPR_B` by name AND from the value scan --
+    // a confluence, so only the table line above discriminates.)
+    expect(inheritedParameterExpression(child, 'B', OWN)).toBe(EXPR_B);
+  });
 });
 
 describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)', () => {
   /**
-   * THE DISCRIMINATING INPUT is an `ssm` reference whose SecureString verdict
-   * this process has not pinned. A `secretsmanager` reference cannot see the
-   * difference: `isKnownSecretExpression` answers true by SPELLING, so both
-   * rule sets certify it and the argument is unobservable. Only the `ssm` form
-   * — secret by the parameter's TYPE rather than by its text (issue #1901) —
-   * separates them, because `TEMPLATE_DERIVED_RULES` sets
-   * `trustAnyExpression: false` and must consult the verdict store, while
-   * `STATE_DERIVED_RULES` sets it true: a persisted JOURNAL holds no PUBLIC
-   * reference, since a plain `String` ssm parameter is stored RESOLVED.
+   * THE PROBE INPUT is an `ssm` reference whose SecureString verdict this
+   * process has not pinned. A `secretsmanager` reference cannot see any
+   * difference: `isKnownSecretExpression` answers true by SPELLING. The `ssm`
+   * form — secret by the parameter's TYPE rather than by its text (issue
+   * #1901) — is where `TEMPLATE_DERIVED_RULES` (`trustAnyExpression: false`,
+   * consults the verdict store) and `STATE_DERIVED_RULES` (`true`: a JOURNAL
+   * holds no PUBLIC reference, a plain `String` parameter being stored
+   * RESOLVED) part ways in `redactByPath`'s whole-token arm.
    *
-   * That is exactly why the rollback replay passes `STATE_DERIVED_RULES` and
+   * SINCE ISSUE #3090 THAT SPLIT IS NOT OBSERVABLE THROUGH THIS RECORDER on a
+   * resolver-populated bag: refusal 5 asks the pair table under both rule
+   * sets, and a resolved unpinned `ssm` reference has a pair (only its pin is
+   * withheld), which positions it through `positionByEmbeddedSpan`'s empty
+   * frame under either. The cases below fence THAT: paired certifies under
+   * both, unpaired refuses under both. What the two constants still change
+   * here is `sourceIsSameGeneration`, fenced by the replay call sites' file.
+   *
+   * That is still why the rollback replay passes `STATE_DERIVED_RULES` and
    * the deploy path keeps the `TEMPLATE_DERIVED_RULES` default.
    *
    * THIS FILE FENCES THE ARGUMENT'S SEMANTICS; the CALL SITES are fenced in
@@ -500,8 +609,15 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
     clearRecordedSecretExpressions();
   });
 
-  function recordUnder(rules?: PathSourceRules): RecordedSecretValues {
+  function recordUnder(rules?: PathSourceRules, paired = true): RecordedSecretValues {
     const parent: RecordedSecretValues = new Map([[SSM_SHARED, SSM_EXPR_B]]);
+    // An unpinned `ssm` resolution still records its PAIR (only the verdict
+    // pin is withheld) -- the production shape. `paired = false` is the bag
+    // NO resolver populated, kept as refusal 5's discriminator (#3090).
+    if (paired) {
+      recordResolvedPair(parent, SSM_EXPR_A, SSM_SHARED);
+      recordResolvedPair(parent, SSM_EXPR_B, SSM_SHARED);
+    }
     recordNestedStackParameterExpressions(
       parent,
       'AWS::CloudFormation::Stack',
@@ -512,27 +628,77 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
     return parent;
   }
 
-  it('the TEMPLATE default REFUSES an unpinned ssm reference, because a template can carry a public one', () => {
-    const parent = recordUnder();
-    expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).toBeUndefined();
-    // AND — the load-bearing half — it must not fall back to recording the
-    // SURVIVOR under the LOSING parameter's name. That is what the value-scan
-    // fallback produced before refusal 2b, and it labelled the sibling's
-    // reference as certified for `PARAM_A`.
-    expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).not.toBe(SSM_EXPR_B);
+  it('certifies an unpinned ssm reference this pass RESOLVED under BOTH rulesets: the pair positions it through the span arm, and only the pin is withheld', () => {
+    // Before issue #3090 the TEMPLATE default refused this shape and
+    // STATE_DERIVED_RULES certified it -- on a bag WITHOUT pairs, which no
+    // resolver produces. With the pair on record `positionByEmbeddedSpan`
+    // writes the source through an EMPTY frame under either ruleset, so
+    // `trustAnyExpression` alone no longer changes what the recorder writes
+    // for a resolved reference; the constants still differ on
+    // `sourceIsSameGeneration`, fenced by the replay call sites' own file.
+    for (const rules of [undefined, STATE_DERIVED_RULES]) {
+      const parent = recordUnder(rules);
+      expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).toBe(SSM_EXPR_A);
+      expect(inheritedParameterExpression(parent, PARAM_B, SSM_SHARED)).toBe(SSM_EXPR_B);
+    }
   });
 
-  it('STATE_DERIVED_RULES certifies it, because a JOURNAL holds no public reference', () => {
-    const parent = recordUnder(STATE_DERIVED_RULES);
-    expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).toBe(SSM_EXPR_A);
-    expect(inheritedParameterExpression(parent, PARAM_B, SSM_SHARED)).toBe(SSM_EXPR_B);
+  it('REFUSES it under BOTH rulesets when the pass recorded NO pair -- the bag no resolver populated (refusal 5, #3090)', () => {
+    // The hole #3090 closes: STATE_DERIVED_RULES trusts any expression, so a
+    // raw public `ssm` token a `cdkd import` record kept passed the position
+    // pass with no pair and, when its plaintext coincided with a held secret,
+    // was recorded as the child's reference. Refusal 5 asks the pair table,
+    // which a public token is never in. Red without it under STATE rules;
+    // the TEMPLATE arm refuses earlier (`isKnownSecretExpression`) and is
+    // the scope control.
+    for (const rules of [undefined, STATE_DERIVED_RULES]) {
+      const parent = recordUnder(rules, false);
+      expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).toBeUndefined();
+      // The SURVIVOR's own parameter is refused too: it has no pair either.
+      expect(inheritedParameterExpression(parent, PARAM_B, SSM_SHARED)).toBeUndefined();
+      // AND -- the load-bearing half -- it must not fall back to recording
+      // the SURVIVOR under the LOSING parameter's name (the value-scan answer
+      // before refusal 2b).
+      expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).not.toBe(SSM_EXPR_B);
+    }
+  });
+
+  it("does NOT record a raw PUBLIC ssm token whose plaintext COINCIDES with a held secret, on the whole-token walk under STATE_DERIVED_RULES (#3090, the reported shape)", () => {
+    // The parent op bag holds `prod` from a secretsmanager token, with its
+    // pair; a journaled public `ssm` token also resolved to `prod` and has NO
+    // pair. Refusal 1 passes on the secret's key, refusal 4 finds nothing to
+    // disagree with; refusal 5 is what refuses. The child's `{Ref: Env}` leaf
+    // then takes the value scan's answer (the secret's token -- the #2291
+    // collapse, pre-existing), never the PUBLIC reference.
+    const PUBLIC = '{{resolve:ssm:/public/env}}';
+    const parent: RecordedSecretValues = new Map([['prod', EXPR_A]]);
+    recordResolvedPair(parent, EXPR_A, 'prod');
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { Env: 'prod', Pw: 'prod' } },
+      { Parameters: { Env: PUBLIC, Pw: EXPR_A } },
+      STATE_DERIVED_RULES
+    );
+    expect(inheritedParameterExpression(parent, 'Env', 'prod')).toBeUndefined();
+    expect(inheritedParameterExpression(parent, 'Pw', 'prod')).toBe(EXPR_A);
+    const child: RecordedSecretValues = new Map([['prod', EXPR_A]]);
+    inheritNestedStackParameterAssociations(child, parent);
+    const persisted = redactSecretsForState(
+      { Value: 'prod', Pw: 'prod' },
+      child,
+      { Value: { Ref: 'Env' }, Pw: { Ref: 'Pw' } }
+    ) as Record<string, unknown>;
+    expect(persisted['Value']).not.toBe(PUBLIC);
+    expect(persisted['Value']).toBe(EXPR_A);
+    expect(persisted['Pw']).toBe(EXPR_A);
   });
 
   it('the two constants AGREE on a secretsmanager reference, which is why the ssm form is the probe', () => {
     // Scope control: without this, the two cases above could be read as a
     // blanket difference rather than the narrow one they are.
     const bySpelling = (rules?: PathSourceRules): string | unknown[] | undefined => {
-      const parent: RecordedSecretValues = new Map([[SHARED, EXPR_B]]);
+      const parent = collapsedParentBag();
       recordNestedStackParameterExpressions(
         parent,
         'AWS::CloudFormation::Stack',
