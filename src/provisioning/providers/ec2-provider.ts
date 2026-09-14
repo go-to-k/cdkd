@@ -105,6 +105,7 @@ import {
 } from '../ec2-termination-protection.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { definedAttributes } from '../attribute-map.js';
+import { isSettledInstanceState } from '../ec2-instance-state.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import type { MaskerFn } from '../masked-retry-logger.js';
@@ -385,20 +386,21 @@ function canonicalizeSgInlineRuleProtocols(
  * `definedAttributes` then drops the `undefined` members; it keeps `''`, so the
  * pending-window normalization has to happen HERE, where the state is known.
  *
- * The residual that follows from the pending rule: a `--no-wait` create of an
- * instance in a PRIVATE subnet omits the public pair, and nothing later writes
- * it -- a no-change deploy's auto-refresh touches `observedProperties`, never
- * `attributes` -- so `Fn::GetAtt [.., PublicIp]` takes the resolver's live arm,
- * finds no address, and degrades to the instance id with a warning until the
- * next `update()` of that instance records the known-empty pair. Tracked on
- * go-to-k/cdkd#3096.
+ * What follows from the pending rule: a `--no-wait` create of an instance in
+ * a PRIVATE subnet omits the public pair, and nothing later writes it -- a
+ * no-change deploy's auto-refresh touches `observedProperties`, never
+ * `attributes` -- so `Fn::GetAtt [.., PublicIp]` takes the resolver's live arm
+ * on every resolution. That arm applies THIS SAME three-state rule at read
+ * time (issue #3096): a settled instance's missing public member resolves to
+ * the known `''`, while a still-`pending` one is REFUSED rather than degraded
+ * to the instance id, and nothing is cached so the next deploy re-reads.
  */
 export function describedInstanceAttributes(
   instanceId: string,
   instance: Instance | undefined
 ): Record<string, unknown> {
   const stateName = instance?.State?.Name;
-  const settled = stateName !== undefined && stateName !== 'pending';
+  const settled = isSettledInstanceState(stateName);
   // A settled instance's public member: reported value, or the known empty.
   // A pending one's: reported non-empty value, or unknown.
   const publicMember = (value: string | undefined): string | undefined =>
@@ -1000,9 +1002,9 @@ export class EC2Provider implements ResourceProvider {
         // absent, a reference falls to the resolver's `guardedPhysicalIdFallback`
         // (the VPC id, with a warning) instead of resolving to the empty
         // string. `DefaultSecurityGroup` is absent only when the read-back
-        // above failed; the resolver's own arm for it then answers the VPC id
-        // WITHOUT a warning -- the same silent physical-id class as the EC2
-        // Instance arm, tracked on issue #3096.
+        // above failed; the resolver's own arm for it then repeats this same
+        // filtered `DescribeSecurityGroups` live, and REFUSES (never the VPC
+        // id) when that read fails or finds nothing (issue #3096).
         attributes: definedAttributes({
           VpcId: vpcId,
           CidrBlock: cidrBlock,

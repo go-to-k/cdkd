@@ -84,21 +84,27 @@ describe('check-resolver-mask-coverage', () => {
       // A band computed from the pool it guards is unfalsifiable, so `BANDS` is
       // pinned as literals — widening one is then a diff a reviewer sees.
       expect(BANDS).toEqual({
-        statements: { min: 128, max: 165 },
-        maskedExprs: { min: 150, max: 200 },
-        markers: { min: 90, max: 140 },
+        statements: { min: 131, max: 165 },
+        maskedExprs: { min: 155, max: 200 },
+        markers: { min: 98, max: 140 },
       });
       // ...and the counts are pinned EXACTLY, from a separate measurement
       // (2026-09-10: 131 / 155 / 98; issue #2814's drain warning then added one
-      // log site and its two notes). This subsumes the band check on the real
+      // log site and its two notes; issue #3096 replaced the EC2 arm's two
+      // physical-id warns (3 masks, 2 notes) with `refuseUnservedAttribute`'s
+      // throw, `describeFailureObserved`'s debug line and the DBProxy `VpcId`
+      // throw (6 masks, 8 notes): 132 / 155 / 100 -> 133 / 158 / 106; its review
+      // round added the VPC `vpc-id` filter-shape refusal, one mask and one
+      // note: 134 / 159 / 107; its delta round added the CloudFront
+      // distribution-id shape refusal the same way: 135 / 160 / 108). This subsumes the band check on the real
       // tree and is meant
       // to: a change to this file's throw/log population is a decision, and the
       // three numbers moving in a diff is how it gets read. The band still earns
       // its place — it is what the SHIPPED binary enforces in CI, where this
       // suite's assertions do not run.
-      expect(result.statements).toBe(132);
-      expect(result.maskedExprs).toBe(155);
-      expect(result.markers).toBe(100);
+      expect(result.statements).toBe(135);
+      expect(result.maskedExprs).toBe(160);
+      expect(result.markers).toBe(108);
     });
 
     it('a subject with no statements is not silently green', () => {
@@ -324,7 +330,13 @@ describe('check-resolver-mask-coverage', () => {
 
   describe('REAL-TREE mutation probes — the fence watches the field it claims', () => {
     it.each([
-      ['physicalId in guardedPhysicalIdFallback (BL1 own fix)', '${this.maskSecretsForLog(physicalId, context)}', '${physicalId}'],
+      // Since #3096's review the physical id is also CONTROL-STRIPPED and
+      // display-sanitised at every refusal site (a crafted state id with a
+      // newline or U+2028 forges a log line), so the premise pattern is the
+      // wrapped spelling. `String.replace` mutates the FIRST occurrence, which
+      // is the DBProxy `VpcId` refusal, not `guardedPhysicalIdFallback`
+      // (whose two sites are the last of the six).
+      ['physicalId at the first strip-and-mask refusal site (DBProxy VpcId)', '${displaySafe(this.maskThenStripThenMask(physicalId, context))}', '${physicalId}'],
       ['attributeName', '${this.maskSecretsForLog(attributeName, context)}', '${attributeName}'],
       ['maskValueLeaves under a JSON encoding', 'this.maskValueLeaves(value, context)', 'value'],
     ])('reports a finding when the mask is stripped from %s', (_label, pattern, replacement) => {

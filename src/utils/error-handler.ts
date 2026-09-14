@@ -231,7 +231,15 @@ function formatDuration(ms: number): string {
  *    `Outputs.<Key>` the child does not declare rather than letting
  *    `guardedPhysicalIdFallback` serve the synthetic
  *    `arn:cdkd-local:...` physical id — that id starts with `arn:`, so the
- *    #1103 ARN-shape guard passes it.
+ *    #1103 ARN-shape guard passes it; and the LIVE-READ refusals of issue
+ *    [#3096](https://github.com/go-to-k/cdkd/issues/3096)
+ *    (`refuseUnservedAttribute`, raised by the `AWS::EC2::Instance` address /
+ *    DNS / zone arm, the `AWS::EC2::VPC` `DefaultSecurityGroup` arm and the
+ *    `AWS::CloudFront::Distribution` `DomainName` arm when the record omits
+ *    the attribute and the live read finds nothing or fails), plus the
+ *    read-less `AWS::RDS::DBProxy` / `DBProxyEndpoint` `VpcId` refusal beside
+ *    them — each replacing a physical id the attribute's value type can never
+ *    accept.
  * 2. NOT reachable from it, and thrown as this class only so that "deliberate
  *    refusal" is a property of the THROW rather than of the one catch that
  *    inspects it: `resolveSplit`'s two refusals of a non-string value (#1874),
@@ -260,11 +268,17 @@ function formatDuration(ms: number): string {
  *    subclass, never on this class.
  *
  * The class is deliberately NOT `markNonRetryable` at construction, unlike
- * {@link ResourceUpdateNotSupportedError}: EXACTLY ONE of its throw sites is
+ * {@link ResourceUpdateNotSupportedError}: two kinds of throw site are
  * genuinely time-dependent — the fabricated-account guard, where
  * `getAccountInfo` caches a fabricated answer for only 10s precisely so a
- * later attempt can heal — so a constructor-level marker would wrongly make
- * that one terminal. Every OTHER site marks at its own `throw`: each
+ * later attempt can heal, and since issue #3096 the LIVE-READ refusals
+ * (`refuseUnservedAttribute`), where a `pending` instance settles seconds
+ * later and a failed describe can succeed on the next attempt — so a
+ * constructor-level marker would wrongly DECLARE those terminal (whether
+ * `withRetry` then retries one is the classifiers' call, and that helper's
+ * doc comment says what they actually see). Every OTHER
+ * site marks at its own `throw` (the #3096 `DBProxy` `VpcId` refusal
+ * included — it has no live read, so it decides from the record alone): each
  * decides from inputs a retry cannot change (a persisted state record, an
  * attribute-name suffix, a CLI flag, an already-resolved value's type, a
  * template's literal `RoleArn`, a child stack's declared output names), and

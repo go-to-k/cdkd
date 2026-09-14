@@ -80,7 +80,7 @@ docdb-neptune	2026-09-14T15:28:31Z	PASS	1545	verify.sh	#3103 gating: cluster/ins
 docker-image-asset	2026-09-05T14:04:48Z	PASS	75	verify.sh	rc 0, real deploy+destroy 2 deleted 0 errors, 0 ECR orphans, state gone
 drift-revert	2026-09-14T18:52:39Z	PASS	183	verify.sh	rc ok, orph clean (PR #3124)
 drift-revert-arrays	2026-09-14T18:48:58Z	PASS	199	verify.sh	rc ok, orph clean (PR #3124)
-drift-revert-vpc	2026-09-10T21:55:30Z	PASS	301	verify.sh	broad-set gate for PR 2924 round-5 tree (383f4d75). The prior broad run predates the opt-in, the structured RedactedAttributeRead entries and the bag-scope change, all of which sit on every deploy's resolveOutputs / resolveRefValue / buildResolverContext path. All 7 steps: deploy 21, inject drift, drift exit 1, --revert -y, drift exit 0, destroy. 21 created / 21 deleted, 0 errors; orphan scan clean across VPC / subnets / SG / ENI / IGW / route tables / EFS / ASG / LaunchTemplate / TargetGroup / ServiceDiscovery / IAM. 533 surviving state.json versions are prior-run history: fixture greps clean for secret material and the newest surviving version holds 0 dynamic refs and 0 masks over VPC + EFS only
+drift-revert-vpc	2026-09-14T21:26:24Z	PASS	288	verify.sh	#3125 gating (broad): 21 deleted 0 err 0 orph
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-08-21T18:32:07Z	PASS	164	verify.sh	#2157 live arm (Phase 3e), FINAL run on the merged shape. A THIRD stack carries ONE assembled foreign-ARN SecureString reference and no region-less one -- the other two spell theirs region-LESSLY and would classify ambiguous and refuse FIRST once foreign outputReads is seeded. Seeds the legacy plaintext plus that evidence, requires rc=0 AND 'Scrubbed 1 resource record(s)' AND the record back on its expression. MUTATION-PROBED against real AWS on an earlier build: restoring the pre-2157 refusal reds it with 'exited 2, expected 0'. The deferred-lookup FINDING that a Phase 3f once fenced was withdrawn after 3 review rounds (residual filed as go-to-k/cdkd#2166), so that phase is gone with it. 3 stacks destroyed, 0 errors, 0 orphans, 0 surviving state object versions
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
@@ -92,7 +92,7 @@ dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; str
 dynamodb-streams	2026-08-10T05:13:55Z	PASS	81	verify.sh	0810 sweep b5; streams+ESM+StreamSpec UPDATE, 0 err 0 orph
 dynamodb-tableclass-switch	2026-08-22T19:12:07Z	PASS	72	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 dynamodb-ttl-attr-change	2026-08-10T11:50:46Z	PASS	57	verify.sh	0810 P0/P1 sweep b3; TTL attr change refused w/ actionable error, AWS TTL unchanged
-ec2-instance	2026-09-14T14:47:05Z	PASS	169	verify.sh	rc ok, orph clean; #3077 --no-wait arm added, mutant (pre-fix pending path) red at (a)
+ec2-instance	2026-09-14T21:15:12Z	PASS	117	verify.sh	#3125 gating: Phase 0 pending omission on both instances, Output took the assigned branch, heal + skippedOutputs cleared; 0 err 0 orph
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
 ec2-route-targets	2026-08-22T20:17:46Z	PASS	463	verify.sh	issue 2176 round-4; re-run after EC2 update-path masker threading; 0 errors, orphans clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
@@ -100,7 +100,7 @@ ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo
 ecr-scanning	2026-08-09T06:01:13Z	PASS	55	verify.sh	#1392 exclusion-filter create + filters-only update + filterType asserts; 2 del/0 err, 0 orphans
 ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24, destroy 24/0, orphans clean
 ecs-fargate	2026-09-02T10:40:36Z	PASS	416	verify.sh	go-to-k/cdkd#2080 EFS AccessPoint create+destroy live; 23 deleted 0 errors, 0 orphans
-ecs-schedule-targets	2026-08-08T19:04:46Z	PASS	60	verify.sh	re-run with drift assert after review fixes; clean
+ecs-schedule-targets	2026-09-14T21:27:55Z	PASS	83	verify.sh	#3125 gating: GetAtt Vpc.DefaultSecurityGroup consumer; 21 deleted 0 err 0 orph
 ecs-service-update-props	2026-08-26T08:19:23Z	PASS	107	verify.sh	issue 1861 lane, final run on the merge-ready tree (3rd: rounds 2 and 3 each edited ecs-provider.ts, which is in integ-destroy's hash:diff scope); both #1861 arms green - removal resets to true/{BOUNDED_PERCENT,50}, never-declared out-of-band false/{COUNT,9} survives a Rollback flip inside the block; destroy 15 deleted 0 errors, 0 orphans
 efs-immutable-replacement	2026-09-04T13:03:37Z	PASS	70	verify.sh	#2514 lane; property-driven twin + stateful guard, 1 del / 0 err
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
@@ -151,7 +151,7 @@ intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 stale
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-14T18:27:27Z	PASS	85	verify.sh	rc ok, orph clean; issue 3119 lane (integ-broad for the resolver edit); 9 deleted, 0 errors
+lambda	2026-09-14T21:17:02Z	PASS	110	verify.sh	#3125 gating (broad): 9 deleted 0 err 0 orph
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
@@ -249,7 +249,7 @@ rollback-sqs-cooldown	2026-08-20T01:42:30Z	PASS	156	verify.sh	#2032 lane: the di
 route53	2026-08-22T19:12:07Z	PASS	267	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-09-01T14:53:10Z	PASS	180	verify.sh	PR#2398 arm 3/6: asset-storage file/ZIP upload path, rc 0, 0 orphans
-s3-cloudfront	2026-08-20T11:58:20Z	PASS	226	verify.sh	#2079 lane: real Distribution created with the retry-stable acquireIdempotencyToken CallerReference, updated, drift-checked and deleted; AWS accepted the new token and release() ran on the success path. Does NOT reach the retried-500 replay (not inducible) -- that arm is unit-only, stated in the PR. Destroy clean, 0 distributions left in the account
+s3-cloudfront	2026-09-14T21:21:26Z	PASS	252	verify.sh	#3125 gating: CloudFront DomainName arm consumer; 5 deleted 0 err 0 orph
 s3-directory-bucket	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 s3-event-notification	2026-09-09T10:40:58Z	PASS	420	verify.sh	rc ok, orph clean
 s3-lifecycle	2026-09-11T17:45:21Z	PASS	507	verify.sh	rc ok, orph clean; config-shape guard regression check (issue 3032)

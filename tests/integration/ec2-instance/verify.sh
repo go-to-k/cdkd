@@ -247,17 +247,43 @@ for id in ${PENDING_OMITS}; do
 done
 echo "    OK: launch-time members (PrivateIp / AvailabilityZone / InstanceId) recorded on the pending record"
 
-# (c) The Output over the omitted attribute resolved to SOMETHING rather than
-# '' -- the resolver's live arm answers the address once assigned, or the
-# instance id with a warning while still pending (the go-to-k/cdkd#3096
-# residual). Pre-#3077 this Output was '' whenever the record was.
-NOWAIT_PUBLIC_IP_OUTPUT=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicIp // ""')
-if [ -z "${NOWAIT_PUBLIC_IP_OUTPUT}" ] || [ "${NOWAIT_PUBLIC_IP_OUTPUT}" = "null" ]; then
-  echo "FAIL: issue #3077 -- .outputs.PublicIp is empty after the --no-wait deploy; the stored '' shadowed the live DescribeInstances arm" >&2
-  echo "${NOWAIT_STATE}" | jq '.outputs'
-  exit 1
+# (c) The Output over the omitted attribute took one of exactly two arms
+# (issue #3096): the resolver's live re-read answered the ADDRESS (EC2 had
+# assigned it by the time the Outputs pass ran), or the read found the
+# instance still pending and REFUSED, so the Outputs pass SKIPPED the Output
+# and the key is ABSENT from `.outputs` (recorded in `skippedOutputs`, healed
+# by Phase 1). What it must never be: '' (the pre-#3077 stored placeholder)
+# or the instance id (the pre-#3096 physical-id degradation, an `i-...`
+# where an address belongs -- the discriminating negative).
+if echo "${NOWAIT_STATE}" | jq -e '.outputs | has("PublicIp")' >/dev/null; then
+  NOWAIT_PUBLIC_IP_OUTPUT=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicIp // ""')
+  case "${NOWAIT_PUBLIC_IP_OUTPUT}" in
+    i-*)
+      echo "FAIL: issue #3096 -- .outputs.PublicIp is the instance id '${NOWAIT_PUBLIC_IP_OUTPUT}' after the --no-wait deploy; the live arm degraded a still-unassigned address to the physical id instead of refusing" >&2
+      echo "${NOWAIT_STATE}" | jq '.outputs'
+      exit 1
+      ;;
+    ""|null)
+      echo "FAIL: issue #3077 -- .outputs.PublicIp is '${NOWAIT_PUBLIC_IP_OUTPUT}' after the --no-wait deploy; an unassigned address must be ABSENT (skipped) or the live address, never a stored placeholder" >&2
+      echo "${NOWAIT_STATE}" | jq '.outputs'
+      exit 1
+      ;;
+  esac
+  if ! echo "${NOWAIT_PUBLIC_IP_OUTPUT}" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
+    echo "FAIL: issue #3096 -- .outputs.PublicIp is '${NOWAIT_PUBLIC_IP_OUTPUT}' after the --no-wait deploy, neither an IPv4 address nor absent" >&2
+    echo "${NOWAIT_STATE}" | jq '.outputs'
+    exit 1
+  fi
+  echo "    OK: --no-wait Output PublicIp resolved to the live address '${NOWAIT_PUBLIC_IP_OUTPUT}' (assigned by the time the Outputs pass ran)"
+else
+  NOWAIT_SKIPPED=$(echo "${NOWAIT_STATE}" | jq -r '.skippedOutputs // {} | has("PublicIp")')
+  if [ "${NOWAIT_SKIPPED}" != "true" ]; then
+    echo "FAIL: issue #3096 -- .outputs.PublicIp is absent after the --no-wait deploy but .skippedOutputs does not record it; a refused Output must be recorded as skipped so the next deploy re-resolves it" >&2
+    echo "${NOWAIT_STATE}" | jq '{outputs, skippedOutputs}'
+    exit 1
+  fi
+  echo "    OK: --no-wait Output PublicIp was REFUSED while the instance was pending and skipped (absent from .outputs, recorded in .skippedOutputs) -- never the instance id"
 fi
-echo "    OK: --no-wait Output PublicIp resolved to '${NOWAIT_PUBLIC_IP_OUTPUT}' (live arm, not a stored '')"
 
 # Let both instances settle so Phase 1's Outputs pass can resolve the real
 # address, and so the pre-existing #1281 association assertion below reads a
@@ -299,6 +325,18 @@ if [ "${HEALED_PUBLIC_IP}" != "${LIVE_PUBLIC_IP}" ]; then
   exit 1
 fi
 echo "    OK: .outputs.PublicIp healed to the live address ${LIVE_PUBLIC_IP} on the second deploy (issue #3077)"
+
+# The healing deploy also CLEARS the skipped-outputs digest row Phase 0 may
+# have written (issue #3096): the record says what THIS deploy skipped, and
+# it skipped nothing. A row surviving here would make `cdkd diff` preview the
+# healed Output as absent.
+HEALED_SKIPPED=$(echo "${STATE}" | jq -r '.skippedOutputs // {} | has("PublicIp")')
+if [ "${HEALED_SKIPPED}" != "false" ]; then
+  echo "FAIL: issue #3096 -- .skippedOutputs still records PublicIp after the healing deploy (has=${HEALED_SKIPPED}); the digest row must clear once the Output resolves" >&2
+  echo "${STATE}" | jq '{outputs, skippedOutputs}'
+  exit 1
+fi
+echo "    OK: .skippedOutputs no longer records PublicIp after the healing deploy"
 
 # Confirm the instance took the SDK provider path (NOT Cloud Control). If a
 # silent-drop prop ever sneaks into the template, provisionedBy flips to
