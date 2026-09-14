@@ -908,7 +908,7 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   after quote removal (`<<'EOF'x` is `EOFx`, `<<\EOF` is quoted, `<<"E\xF"`
   keeps its backslash), in this arm and the
   top-level one, which latches an unquoted word only when a whole identifier
-  (`origin/main` latched the identifier PREFIX of any word — a decoy) — and an unquoted or
+  (`origin/main` latched the identifier PREFIX of any word that had one — a decoy) — and an unquoted or
   unreadable opener ANYWHERE in the substitution is a bail, sticky to its
   close: `cat <<A <<'B'` expands the A body first, so recording only B
   dropped a verb. That lexer state CARRIES across the physical lines of one

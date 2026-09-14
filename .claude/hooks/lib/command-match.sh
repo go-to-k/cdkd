@@ -958,7 +958,13 @@ gate_segments_raw() {
           ptag = ""
         }
         if (pending != "") { line = pending line; pending = "" }
-        if (line ~ /\\$/) {               # `\`-continuation: join with the next line
+        # `\`-continuation: join with the next line -- only when the trailing
+        # run of backslashes is ODD. An even run is escaped backslashes and the
+        # line ends there; bash runs the next line as a command, and gluing it
+        # onto this one as an argument silenced every gate (security review
+        # round 12 of go-to-k/cdkd#3040; the same parity rule already lives in
+        # _gate_odd_trailing_bs for the structural dequoter).
+        if (match(line, /\\+$/) && RLENGTH % 2 == 1) {
           sub(/\\$/, "", line)
           pending = line
           continue

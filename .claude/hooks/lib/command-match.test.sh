@@ -490,7 +490,7 @@ r3_case "B1b: the top-level twin of B1a" 0 "$GATE_RE_GIT_PUSH" \
 check "B1c: a real E\\xF terminator ends the body -- the fix also removes a false refusal (the old walk waited for ExF)" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<"E\xF"' 'gh pr merge 1 was refused' 'E\xF' ')')"
 # Security: the top-level arm latches an UNQUOTED word only when it is a
-# whole identifier; origin/main latched the identifier PREFIX of any word. That arm drops a
+# whole identifier; origin/main latched the identifier PREFIX of any word that has one. That arm drops a
 # body whatever its quoting, and bash EXPANDS an unquoted body, so `<<EOF.x`
 # latched by the round-7 walk dropped a `$(git push)` main still matched.
 r3_case "B2a: top-level <<EOF.x is unquoted and not an identifier -- its expanded body is scanned" 0 "$GATE_RE_GIT_PUSH" \
@@ -533,6 +533,22 @@ check "X5-ctl: the same delimiter over a plain body keeps it data" 1 "$MERGE" \
 # glued the verb on the next line onto `echo` (bash 5 and 3.2 run the verb).
 r3_case "T1: a closing line ending in an escaped space is not a line continuation" 0 "$MERGE" \
   'x=$(cat <<'"'"'E'"'"'' 'body' 'E);echo \ ' 'gh pr merge 1' 'E' ')'
+check "T1-ctl: a closing line ending in a REAL continuation glues the next line -- the verb is an argument (control)" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<'"'"'E'"'"'' 'body' 'E);echo \' 'gh pr merge 1' 'E' ')')"
+# Round 12 (security): the continuation arm read ANY trailing backslash as a
+# continuation. bash continues only on an ODD run -- `echo \\` is an escaped
+# backslash and the line ends -- so the verb on the next line, which all three
+# shells run, was glued onto `echo` as an argument and no gate saw it. Pre-
+# existing on origin/main and independent of heredocs; fixed here because it
+# sits beside the arm the last three rounds worked on.
+r3_case "E1: an EVEN run of trailing backslashes is not a continuation -- the next line is a command" 0 "$MERGE" \
+  'echo \\' 'gh pr merge 1'
+r3_case "E2: four trailing backslashes likewise" 0 "$MERGE" \
+  'echo \\\\' 'gh pr merge 1'
+check "E3: an ODD run is a real continuation, the verb is an argument (control)" 1 "$MERGE" \
+  "$(printf '%s\n' 'echo \\\' 'gh pr merge 1')"
+r3_case "E4: the same on a closing body line inside \$( )" 0 "$MERGE" \
+  'x=$(cat <<'"'"'E'"'"'' 'body' 'E);echo \\' 'gh pr merge 1' 'E' ')'
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

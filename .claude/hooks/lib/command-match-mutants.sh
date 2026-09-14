@@ -46,10 +46,19 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 sed 's/^CASE_FLOOR=[0-9]*$/CASE_FLOOR=0/' "$SUITE" > "$WORK/command-match.test.sh"
 
 tally() { grep -E '^Pass: ' "$1" | head -1; }
+# The failing CASE NAMES of a run, one per line, sorted. Discrimination is
+# decided on these, not on the pass count: under load a LATENCY case can fail
+# in the baseline run alone, and a mutant that reds exactly one case then ties
+# the baseline tally and reads as NOT DISCRIMINATED (measured, review round 12
+# of go-to-k/cdkd#3040, at load average 136: twenty-five one-case mutants
+# reported undiscriminated at once). A mutant discriminates when it fails a
+# case the baseline did NOT fail.
+failset() { grep -E '^FAIL ' "$1" | sed 's/ (want .*$//' | sort -u; }   # the suite prints each failure twice, once with its verdict
 base_out="$WORK/base.txt"
 cp "$LIB" "$WORK/command-match.sh"
 bash "$WORK/command-match.test.sh" > "$base_out" 2>&1
 base_pass=$(sed -n 's/^Pass: \([0-9]*\).*/\1/p' "$base_out" | head -1)
+failset "$base_out" > "$WORK/base.fails"
 printf '%-16s %s\n' "unmutated" "$(tally "$base_out")"
 [ -n "$base_pass" ] || { echo "the unmutated suite printed no tally -- nothing below means anything" >&2; exit 1; }
 
@@ -197,6 +206,13 @@ edits={
                          '          line = substr(t, length(ptag) + 1)\n'),
  'ptag-paren-clause':   ('          if (index(t, ptag) != 1 || index(substr(t, length(ptag) + 1), ")") == 0) continue\n',
                          '          if (index(t, ptag) != 1) continue\n'),
+ # `bs-parity` reads ANY trailing backslash as a continuation (E1 / E2 / E4);
+ # `ptag-latch-off` never latches a heredoc inside `$( )` at all, the
+ # pre-#3040 behaviour whose false refusals the control cases pin.
+ 'bs-parity':           ('        if (match(line, /\\\\+$/) && RLENGTH % 2 == 1) {\n',
+                         '        if (line ~ /\\\\$/) {\n'),
+ 'ptag-latch-off':      ('          if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd\n',
+                         '          if (0) ptag = pd\n'),
  'pending-tag-restore': ('      pending_tag = saved_pt\n', ''),
 }
 a,b=edits[probe]
@@ -208,7 +224,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close ptag-keep-delimiter ptag-trim-both ptag-paren-clause pending-tag-restore}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard hw-stop-at-quote hw-drop-inner-quote hw-unquoted-latch hw-bail-not-sticky hw-flush-line-regex hw-stop-at-dquote hw-dq-backslash hw-backslash-arm hw-toplevel-any-word hw-toplevel-ident-only ptag-paren-close ptag-keep-delimiter ptag-trim-both ptag-paren-clause bs-parity ptag-latch-off pending-tag-restore}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then
@@ -222,10 +238,12 @@ for m in $MUTANTS; do
   if [ -z "$pass" ]; then
     printf '%-16s NO TALLY -- the suite failed to load, which is not discrimination\n' "$m"; rc=1; continue
   fi
-  if [ "$pass" -ge "$base_pass" ]; then
+  failset "$WORK/$m.txt" > "$WORK/$m.fails"
+  new_fails=$(comm -13 "$WORK/base.fails" "$WORK/$m.fails" | wc -l | tr -d ' ')
+  if [ "$new_fails" -eq 0 ]; then
     printf '%-16s %s   <- NOT DISCRIMINATED: no case notices this mutation\n' "$m" "$(tally "$WORK/$m.txt")"; rc=1
   else
-    printf '%-16s %s\n' "$m" "$(tally "$WORK/$m.txt")"
+    printf '%-16s %s   (%s case(s) red beyond the baseline)\n' "$m" "$(tally "$WORK/$m.txt")" "$new_fails"
   fi
 done
 exit "$rc"
