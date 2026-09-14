@@ -888,11 +888,11 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   terminator included; a verb AFTER the terminator, inside the substitution
   or after it closes, is still a segment, and an opener with no terminator
   latches nothing — the fail-closed half, pinned in `command-match.test.sh`
-  and priced as `SUBST_HEREDOC` in the differential. One qualification,
-  pre-existing and NOT this change's: when a LATER top-level heredoc reuses
-  the same delimiter, the substitution body's re-flush in `drain_extra`
-  leaves `pending_tag` set and the top-level latch swallows the verb up to
-  that later terminator — go-to-k/cdkd#3066, present on `origin/main` too.
+  and priced as `SUBST_HEREDOC` in the differential. go-to-k/cdkd#3066
+  (a LATER top-level heredoc reusing the delimiter: the body's re-flush in
+  `drain_extra` left `pending_tag` set and the top-level latch swallowed the
+  verb up to that later terminator, on `origin/main` too) closed with it —
+  `drain_extra` saves and restores `pending_tag` as it does `q`.
   **Three things about
   that latch are load-bearing, each measured against shapes bash executes
   and origin/main matched**: the opener scan reads the PHYSICAL line, never

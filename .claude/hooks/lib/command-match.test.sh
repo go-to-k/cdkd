@@ -281,11 +281,14 @@ check "B1: a quoted heredoc inside a backtick substitution inside double quotes 
 # the line ends inside a quote -- which the bail-on-doubt answers with "no
 # opener", the same verdict as the intact arm. Only a `#` the intact scan stops
 # at, holding one `"` the deleted arm keeps reading, re-syncs the two and
-# makes the fail-open observable (bash runs the commit: verified).
+# makes the fail-open observable (bash runs the commit: verified). Both this
+# twin and the `${}` one carry a SPACE after the delimiter: round 6 added a
+# word-boundary bail (`<<\047EOF\047x` is delimiter `EOFx`), and a `"` or
+# `}` right after the closing quote now bails before either arm is asked.
 r2_case "#-comment (quoted): a <<'X' after # on the opener line is not an opener" 0 \
   'x="$(echo a # <<'"'"'X'"'"'' 'git commit -m y' 'X' ')"'
 r2_case "\${...} (quoted): a <<'X' inside a parameter expansion is not an opener" 0 \
-  'x="$(echo ${y:-<<'"'"'X'"'"'}' 'git commit -m y' 'X' ')"'
+  'x="$(echo ${y:-<<'"'"'X'"'"' }' 'git commit -m y' 'X' ')"'
 r2_case "\$((...)) (quoted): a <<\"2\" inside arithmetic is a shift, not an opener" 0 \
   'x="$(echo $((1<<"2"))' 'git commit -m y' '2' ')"'
 # The `$((` skip's fail-open twin is now caught by the frame-close bail (round
@@ -296,7 +299,7 @@ r2_case "\$((...)) (quoted): a <<\"2\" inside arithmetic is a shift, not an open
 check "\$((...)) (bare shift): \$((1<<2)) before a quoted opener is arithmetic, not an unquoted opener" 1 "$MERGE" \
   "$(printf '%s\n' 'x="$(echo $((1<<2)); cat <<'"'"'EOF'"'"'' 'gh pr merge 1 was refused' 'EOF' ')"')"
 r2_case "\$'a' (quoted): \$' inside double quotes is literal, so the <<'X' after it is still quoted" 0 \
-  'x="$(echo "$'"'"'a'"'"' <<'"'"'X'"'"'" # the comment holds one "' 'git commit -m y' 'X' ')"'
+  'x="$(echo "$'"'"'a'"'"' <<'"'"'X'"'"' " # the comment holds one "' 'git commit -m y' 'X' ')"'
 check "stack pop: the ) of a nested \$( ) inside dq restores the dq, so the ; cat <<'X' after the closing quote is a real opener" 1 "$MERGE" \
   "$(printf '%s\n' 'x="$(echo "$(true)" ; cat <<'"'"'X'"'"'' 'gh pr merge 1 was refused' 'X' ')"')"
 check "stack push: a bare ( ) inside \$( ) pushes its own frame, so its ) does not pop the \$( frame" 1 "$MERGE" \
@@ -338,10 +341,9 @@ r3_case "c1b: opener frame closes, a new \$( opens -- backtick form" 0 "$COMMIT"
   'y=`cat <<'"'"'EOF'"'"'` ; z=$(' 'git commit -m y' 'EOF' ')'
 r3_case "c1c: a NESTED opener frame closes while the outer stays open" 0 "$COMMIT" \
   'x=$(echo $(cat <<'"'"'X'"'"')' 'git commit -m y' 'X' ')'
-# Code review: `)#` starts a comment like ` #` does -- in bash 5 and zsh;
-# inside `$( )` bash 3.2 makes it a syntax error and runs nothing, so
-# reading it as a comment is right on the shells that run it and safe on
-# the one that does not. The class had every separator but `)`.
+# Code review: `)#` starts a comment like ` #` does -- measured on bash 3.2.57,
+# bash 5 and zsh alike (a round-4 report said 3.2 rejects it; round 6
+# re-measured and it runs). The class had every separator but `)`.
 r3_case "c2: a # right after ) is a comment, so the quoted <<X in it is not an opener" 0 "$COMMIT" \
   'x="$( (echo a)# <<'"'"'X'"'"'' 'git commit -m y' 'X' ')"'
 # Code review: two arms that existed and were fenced by nothing -- the `<<<`
@@ -399,6 +401,39 @@ r3_case "s10: a # right after an opening backtick is a comment, not an opener in
 # later one and turn its quoted body back into commands.
 check "s11: the sticky bail from a closed substitution does not leak into the next one" 1 "$MERGE" \
   "$(printf '%s\n' 'x=$(cat <<A' 'body' 'A' ')' "y=\$(cat <<'B'" 'gh pr merge 1 was refused' 'B' ')')"
+
+# --- Round 6 (/review-pr 3-axis + security): pending_tag and the delimiter WORD
+# Security: this latch WIDENED go-to-k/cdkd#3066. A `cat <<EOF` in a flushed
+# substitution body sets the GLOBAL `pending_tag`; run() then tests it for the
+# ENCLOSING line, and terminated() finds the bare `EOF` of any LATER top-level
+# heredoc, so every line between -- a real `git push` -- is dropped as that
+# body. origin/main had it for a plain body; a body carrying a backtick or
+# `$(` went through drain_extra there and the verb after the `)` was still
+# matched, while the latch dropped that body and lost the match (bash 3.2,
+# 5 and zsh all run the push; main MATCH, the round-5 tree NOMATCH).
+# drain_extra now saves and restores `pending_tag` the way it does `q`, which
+# is the fix #3066 itself asked for and closes both variants.
+r3_case "f01: a backtick in a quoted body, then a LATER top-level heredoc reusing the delimiter -- the push between is a segment" 0 "$GATE_RE_GIT_PUSH" \
+  'x="$(cat <<'"'"'E'"'"'' '`echo z`' 'E' ')"' 'git push origin main' 'cat <<E' 'zz' 'E'
+r3_case "y5: same, gh pr merge between" 0 "$MERGE" \
+  'x="$(cat <<'"'"'E'"'"'' '`echo z`' 'E' ')"' 'gh pr merge 1 --squash' 'cat <<E' 'zz' 'E'
+r3_case "zA: #3066 with a plain quoted body -- pre-existing on origin/main, closed here" 0 "$GATE_RE_GIT_PUSH" \
+  'x="$(cat <<'"'"'E'"'"'' 'prose' 'E' ')"' 'git push origin main' 'cat <<E' 'zz' 'E'
+r3_case "3066: the issue shape itself, UNQUOTED body, commit before a later top-level heredoc" 0 "$COMMIT" \
+  'x=$(cat <<EOF' 'p' 'EOF' ')' 'git commit -m x' 'cat <<EOF' 'q' 'EOF'
+check "3066 control: the later top-level heredoc body is still data" 1 "$MERGE" \
+  "$(printf '%s\n' 'x="$(cat <<'"'"'E'"'"'' 'prose' 'E' ')"' 'cat <<E' 'gh pr merge 1 was refused' 'E')"
+# Code review: the delimiter is the whole WORD. `<<'EOF'x` is delimiter
+# `EOFx` (bash 3.2 and 5 run the line after a decoy `EOF`), and `<<"EO"F` is
+# `EOF`; the scan took the quoted span alone and latched on the decoy. And
+# `<<'a"b'` is `a"b` with the inner quote kept -- stripping every quote made
+# it `ab`, which the body's prose then terminated early.
+r3_case "P1: <<'EOF'x -- the delimiter is EOFx, so a bare EOF line is not the terminator" 0 "$COMMIT" \
+  'x=$(cat <<'"'"'EOF'"'"'x' 'body' 'EOFx' 'git commit -m y' 'EOF' ')'
+r3_case "P2: <<\"EO\"F -- a quoted span followed by more word is a bail, never a latch on EO" 0 "$COMMIT" \
+  'x=$(cat <<"EO"F' 'body' 'git commit -m y' 'EO' 'EOF' ')'
+check "P3: <<'a\"b' keeps the inner quote, so an ab line does not end the body early" 1 "$MERGE" \
+  "$(printf '%s\n' 'x=$(cat <<'"'"'a"b'"'"'' 'body' 'ab' 'gh pr merge 1 was refused' 'a"b' ')')"
 
 # --- The UNQUOTED delimiter is DELIBERATELY not latched (round 2) ------------
 # Two review rounds of go-to-k/cdkd#3040 each measured shapes bash executes

@@ -593,9 +593,9 @@ gate_segments_raw() {
     # bash 3.2 and zsh run the next line as the new substitution and bash 5
     # reads it as the body -- version-dependent, so it is not modelled
     # (round 3, code review); and a `#` after a `)` or an opening backtick
-    # is a comment like one after a space (rounds 3 and 4 -- `)#` is bash 5
-    # and zsh; bash 3.2 makes it a syntax error inside `$( )`, which runs
-    # nothing, so the comment reading is safe there too). Third, an
+    # is a comment like one after a space (rounds 3 and 4; `)#` measured
+    # as a comment on bash 3.2.57, bash 5 and zsh -- an earlier claim that
+    # 3.2 rejects it was wrong). Third, an
     # UNQUOTED opener ANYWHERE on the line
     # is a bail too, not merely "not latched": in `cat <<A <<\047B\047` bash
     # reads the A body FIRST and expands it, so recording only the quoted B
@@ -649,9 +649,15 @@ gate_segments_raw() {
           if (substr(text, j + 2, 1) == "<") { j += 2; continue }
           rest = substr(text, j)
           if (match(rest, /^<<-?[ \t]*("[^"]+"|\047[^\047]+\047)/)) {
+            # The delimiter is the whole WORD: `<<\047EOF\047x` ends at `EOFx`,
+            # and `<<\047a"b\047` is `a"b` with the inner quote kept. A quoted
+            # span followed by more word is not modelled (code review round 6
+            # measured bash running the line after a decoy `EOF`); only the
+            # quote characters that delimit the span are stripped.
+            if (substr(rest, RSTART + RLENGTH, 1) !~ /^([ \t;&|()<>]|$)/) return ""
             d = substr(rest, RSTART, RLENGTH)
             sub(/^<<-?[ \t]*/, "", d)
-            gsub(/["\047]/, "", d)
+            d = substr(d, 2, length(d) - 2)
             if (d != "") { out = d; ol = lho_depth + lho_bt; of = lho_depth; ob = lho_bt }
             j += RLENGTH - 1
           } else if (match(rest, /^<<-?[ \t]*[^ \t<]/)) { lho_bail = 1; return "" }
@@ -864,12 +870,15 @@ gate_segments_raw() {
         # (go-to-k/cdkd#3040). The terminator line is dropped with the body:
         # the joined line then carries an opener with no terminator, so the
         # top-level `tag` latch below does not fire for it FROM THIS LINE --
-        # terminated() searches only lines AFTER the one being flushed. It CAN
-        # still fire through a different route: drain_extra() re-flushes the
-        # body and leaves `pending_tag` set, and a bare delimiter belonging to
-        # some LATER top-level heredoc then satisfies the look-ahead. That is
-        # pre-existing (origin/main has it) and is go-to-k/cdkd#3066, not
-        # something this latch introduces or fixes.
+        # terminated() searches only lines AFTER the one being flushed. It USED
+        # to fire through a different route: drain_extra() re-flushed the body
+        # and left `pending_tag` set, and a bare delimiter belonging to some
+        # LATER top-level heredoc then satisfied the look-ahead
+        # (go-to-k/cdkd#3066, pre-existing on origin/main and WIDENED by an
+        # earlier cut of this latch -- a body carrying a backtick used to
+        # reach drain_extra and keep the verb after the `)` matched; the
+        # latch dropped it). drain_extra now saves and restores
+        # `pending_tag` around its flushes, which closes both.
         #
         # Every line under the latch is dropped, and that is safe ONLY because
         # last_heredoc_opener latches on a QUOTED delimiter alone: bash performs
@@ -1003,7 +1012,7 @@ gate_segments_raw() {
     # resolves them against the base as it stood when the enclosing command ran
     # -- earlier than the truth when a `cd` precedes the substitution ON THE
     # SAME LINE, which is the LOUD direction, and never later.
-    function drain_extra(   out, rounds, batch, nlines, elines, ei, flushed, nf, fl, fi, saved_q) {
+    function drain_extra(   out, rounds, batch, nlines, elines, ei, flushed, nf, fl, fi, saved_q, saved_pt) {
       # `q` IS GLOBAL AND LIVE ACROSS LINES. It carries "this line ended inside
       # a quoted span", which is what stops each line of a multi-line
       # `--body "..."` being promoted to a segment start. Draining a body runs
@@ -1016,6 +1025,16 @@ gate_segments_raw() {
       # restore it: the bodies are a separate scan, not a continuation of the
       # quoting on the enclosing line.
       saved_q = q
+      # `pending_tag` IS GLOBAL AND LIVE ACROSS LINES TOO, and the same
+      # argument applies (go-to-k/cdkd#3066): a `cat <<EOF` in a flushed body
+      # sets it, run() then tests it for the ENCLOSING line, and terminated()
+      # finds the bare `EOF` of any LATER top-level heredoc -- so every line
+      # between, a real `git commit` included, is dropped as that body. The
+      # heredoc the opener belongs to was consumed inside the substitution;
+      # the latch was answering for a different one. Measured on origin/main:
+      # `x=$(cat <<EOF` / p / EOF / `)` / `git commit -m x` / `cat <<EOF` / q
+      # / EOF -- bash runs the commit, NOMATCH. Saved here, restored below.
+      saved_pt = pending_tag
       out = ""
       rounds = 0
       while (extra != "" && rounds < 8) {
@@ -1098,6 +1117,7 @@ gate_segments_raw() {
       # rule ORs in.
       if (q != "") body_q_open = 1
       q = saved_q
+      pending_tag = saved_pt
       return out
     }
     { line = $0; sub(/\r$/, "", line); lines[NR] = line }

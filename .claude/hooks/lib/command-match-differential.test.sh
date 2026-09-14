@@ -358,6 +358,8 @@ eD0iJChlY2hvIDw8RU9GIGlzIHByb3NlCmdoIHByIG1lcmdlIDEpIg==
 eD0kKGNhdCA8PCdYJwpib2R5CikKZ2l0IGNvbW1pdCAtbSB5Cg==
 eD0kKGNhdCA8PEEgPDwnQicKJChnaXQgY29tbWl0IC1tIHkpCkEKYmJiCkIKKQo=
 eT0kKGNhdCA8PCdFT0YnKSA7IHo9JCgKZ2l0IGNvbW1pdCAtbSB5CkVPRgopCg==
+eD0kKGNhdCA8PEVPRgpwCkVPRgopCmdpdCBjb21taXQgLW0geApjYXQgPDxFT0YKcQpFT0YK
+eD0iJChjYXQgPDwnRScKYGVjaG8gemAKRQopIgpnaXQgcHVzaCBvcmlnaW4gbWFpbgpjYXQgPDxFCnp6CkUK
 
 CORPUS_EOF
 
@@ -590,7 +592,7 @@ ALLOWED="$TMPDIR/allowed.tsv"
 # marking corpus (process substitution, a quoted `)` in a subshell, an
 # `if (...)` compound, a `bash -c` body); what actually fences their behaviour
 # is `main-tree-edit-gate.test.sh`, where reverting each one turns cases red.
-# --- go-to-k/cdkd#3040: a heredoc BODY inside `$( )` (ids 240-247) -----------
+# --- go-to-k/cdkd#3040: a heredoc BODY inside `$( )` (ids 240-249) -----------
 #   SUBST_HEREDOC  run() joins the lines of a `$(` still open at end of line
 #                 with `;` into one logical line BEFORE any heredoc is
 #                 recognised, so a `cat <<'EOF' ... EOF` inside the substitution
@@ -625,7 +627,11 @@ ALLOWED="$TMPDIR/allowed.tsv"
 # drained a substitution at all, so it answered NO MATCH on every verb inside
 # `$( )` -- its own fail-open, not a verdict to preserve -- and the branch
 # matching there is the correction. `command-match.test.sh` carries each
-# one's mutation receipt.
+# one's mutation receipt. Ids 248 and 249 are the go-to-k/cdkd#3066 pair:
+# the issue shape (unquoted body, no cell -- the baseline read it the same
+# way) and the round-6 widening (quoted body with a backtick, a segcount
+# cell: the body is dropped, the push between is a segment, and the later
+# top-level body stays data now that drain_extra restores pending_tag).
 cat > "$ALLOWED" <<'ALLOWED_EOF'
 26	segcount	2	SEGCOUNT	git -C subst-quoted commit
 27	segcount	2	SEGCOUNT	gh -C subst-quoted pr merge
@@ -917,6 +923,7 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 247	segcount	3	SUBST_HEREDOC	the opener frame closes before a new $( opens: bail, the next line is a segment
 247	m:GATE_RE_GIT_COMMIT	1	SUBST_HEREDOC	the verb on the line after a closed opener frame matches (bash 3.2 / zsh run it)
 247	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	SUBST_HEREDOC	the verb on the line after a closed opener frame matches (bash 3.2 / zsh run it)
+249	segcount	3	SUBST_HEREDOC	quoted body with a backtick, then a LATER top-level heredoc reusing the delimiter: body dropped, the push between is a segment, the later body is data (pending_tag no longer leaks, go-to-k/cdkd#3066)
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -955,7 +962,7 @@ fi
 # so the "undeclared" arm is blind to it and these floors are the only thing
 # that sees it. Raise them with the measurement whenever the corpus grows; do
 # not leave slack "for headroom", which is precisely what defeated them.
-for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2" "SUBST_HEREDOC:13"; do
+for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2" "SUBST_HEREDOC:14"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"

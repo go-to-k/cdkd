@@ -539,6 +539,15 @@ mkdir -p "$merge_repo/tests/unit"
 git -C "$merge_repo" config diff.relative true
 run_case "git merge <cdk-local-bump range> still fires under diff.relative=true from a subdirectory" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git merge --ff-only incoming-cdklocal-bump"}}' "$merge_repo/tests/unit")"
+# 26g. The same config, but the incoming range touches `src/local/**` and
+#      NOT the manifest: this is what pins the NAME-ONLY reader's pin. 26f
+#      cannot -- its range bumps only package.json, so when the name-only
+#      list comes back empty the CONTENT reader still finds the bump and the
+#      case stays green with the first pin deleted (test review round 6
+#      measured exactly that). Here the content reader has no cdk-local line
+#      to find, so an empty name-only list is a fail-open on its own.
+run_case "git merge <src/local range> still fires under diff.relative=true from a subdirectory" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git merge incoming-local"}}' "$merge_repo/tests/unit")"
 git -C "$merge_repo" config --unset diff.relative
 
 # --- CROSS-REPO GATE NAMING (go-to-k/cdkd#2236) ---

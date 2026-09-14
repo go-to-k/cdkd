@@ -119,6 +119,38 @@ edits={
                       '*) out="$out$c"; rest="${rest#?}" ;;'),
  'gh-extra-always':  ('        case "$kind" in\n          gh)\n',
                       '        extra=1\n        case "$kind" in\n          gh)\n'),
+ # --- go-to-k/cdkd#3040: the heredoc-inside-$( ) latch (`last_heredoc_opener`
+ # and its call site in run()). Six review rounds each re-derived this matrix
+ # by hand from the commit messages; it lives here now so the next round runs
+ # it. One arm per entry; each reds the case(s) named beside it in
+ # command-match.test.sh (`r2_case` / `r3_case` / the Round 6 block).
+ 'lho-reset-each-line': ('          pd = last_heredoc_opener(phys)\n',
+                         '          lho_reset(); pd = last_heredoc_opener(phys)\n'),
+ 'lho-no-reset-on-close': ('        lho_reset()\n        # A line that ends INSIDE a quoted span',
+                           '        # A line that ends INSIDE a quoted span'),
+ 'lho-bail-not-sticky': ('{ lho_bail = 1; return "" }', '{ return "" }'),
+ 'lho-unquoted-bail':   ('} else if (match(rest, /^<<-?[ \\t]*[^ \\t<]/)) { lho_bail = 1; return "" }', '}'),
+ 'lho-frame-close-paren': ('if (out != "" && lho_depth <= of) return ""; lho_iq = lho_OQ[lho_depth]', 'lho_iq = lho_OQ[lho_depth]'),
+ 'lho-frame-close-bt':  ('else { if (out != "" && ob) return ""; lho_bt = 0; lho_iq = lho_btq }', 'else { lho_bt = 0; lho_iq = lho_btq }'),
+ 'lho-hash-class-paren': ('~ /[ \\t;&|()`]/)) break', '~ /[ \\t;&|(`]/)) break'),
+ 'lho-hash-class-bt':   ('~ /[ \\t;&|()`]/)) break', '~ /[ \\t;&|()]/)) break'),
+ 'lho-herestring-skip': ('if (substr(text, j + 2, 1) == "<") { j += 2; continue }', 'if (0) { j += 2; continue }'),
+ 'lho-iq-bail':         ('      if (lho_iq != "") return ""\n', '      if (0) return ""\n'),
+ 'lho-ansi-c-arm':      ('if (d == "\\047" && lho_iq == "") { lho_iq = "A"; j++; continue }\n', ''),
+ 'lho-ansi-c-in-dq':    ('if (d == "\\047" && lho_iq == "") { lho_iq = "A"; j++; continue }', 'if (d == "\\047") { lho_iq = "A"; j++; continue }'),
+ 'lho-ol-check':        ('if (out != "" && lho_depth + lho_bt > ol) return ""', 'if (0) return ""'),
+ 'lho-hash-break':      ('if (c == "#" && (j == 1 || substr(text, j - 1, 1) ~ /[ \\t;&|()`]/)) break', 'if (0) break'),
+ 'lho-brace-skip':      ('if (d == "{") { k = index(substr(text, j + 2), "}"); if (k == 0) return ""', 'if (0) { k = index(substr(text, j + 2), "}"); if (k == 0) return ""'),
+ 'lho-arith-skip':      ('if (d == "(" && substr(text, j + 2, 1) == "(") {', 'if (0) {'),
+ 'lho-arith-landing':   ('j = j + 3 + k; continue }', 'j = j + 2 + k; continue }'),
+ 'lho-paren-pop-restore': ('if (out != "" && lho_depth <= of) return ""; lho_iq = lho_OQ[lho_depth]; lho_depth-- }', 'if (out != "" && lho_depth <= of) return ""; lho_depth-- }'),
+ 'lho-bare-paren-push': ('if (c == "(") { lho_depth++; lho_OQ[lho_depth] = ""; continue }', 'if (0) { lho_depth++; lho_OQ[lho_depth] = ""; continue }'),
+ 'lho-subst-push-save-iq': ('if (d == "(") { lho_depth++; lho_OQ[lho_depth] = lho_iq; lho_iq = ""; j++; continue }', 'if (d == "(") { lho_depth++; lho_OQ[lho_depth] = ""; lho_iq = ""; j++; continue }'),
+ 'lho-backtick-arm':    ('if (c == "`" && (lho_iq == "" || lho_iq == "\\"")) { if (!lho_bt)', 'if (0) { if (!lho_bt)'),
+ 'lho-terminated-guard': ('if (pd != "" && terminated(pd, i + 1) > 0) ptag = pd', 'if (pd != "") ptag = pd'),
+ 'lho-word-boundary':   ('            if (substr(rest, RSTART + RLENGTH, 1) !~ /^([ \\t;&|()<>]|$)/) return ""\n', ''),
+ 'lho-strip-all-quotes': ('            d = substr(d, 2, length(d) - 2)\n', '            gsub(/["\\047]/, "", d)\n'),
+ 'pending-tag-restore': ('      pending_tag = saved_pt\n', ''),
 }
 a,b=edits[probe]
 n=s.count(a)
@@ -129,7 +161,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs lho-reset-each-line lho-no-reset-on-close lho-bail-not-sticky lho-unquoted-bail lho-frame-close-paren lho-frame-close-bt lho-hash-class-paren lho-hash-class-bt lho-herestring-skip lho-iq-bail lho-ansi-c-arm lho-ansi-c-in-dq lho-ol-check lho-hash-break lho-brace-skip lho-arith-skip lho-arith-landing lho-paren-pop-restore lho-bare-paren-push lho-subst-push-save-iq lho-backtick-arm lho-terminated-guard lho-word-boundary lho-strip-all-quotes pending-tag-restore}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then
