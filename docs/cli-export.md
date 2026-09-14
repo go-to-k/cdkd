@@ -84,6 +84,7 @@ offending resource is named in one message so you can fix them in one pass.
 | --- | --- | --- |
 | A template resource with no cdkd state entry | Nothing to hand over — cdkd does not know its physical id. | Import it first, or remove it from the stack. |
 | A resource whose recorded properties hold the redaction mask `***` | A `NoEcho` Custom Resource value cdkd cannot re-derive. | See below. |
+| A resource whose CloudFormation import identifier would be the redaction mask `***` | The recorded attribute cdkd reads as the identifier (an `AWS::S3Tables::Table` `TableARN`, an `AWS::EC2::SecurityGroupIngress` `Id`, ...) was masked by a Cloud Control import, or the physical id itself is masked. | Re-import the resource with `cloudformation:DescribeType` granted, or export without it. See below. |
 | An `AWS::CloudFormation::Stack` row with no matching nested-stack entry in cdkd state | The child's state record is missing, so its resources cannot be imported. | Repair or re-import the child's state. |
 | A resource type CloudFormation cannot import | See [Resource types CloudFormation cannot import](#resource-types-cloudformation-cannot-import). | Remove the resource, or destroy it and let CloudFormation create it fresh. |
 | A composite-id type with no registered identifier mapping | cdkd cannot turn its physical id into the field map CloudFormation expects. | Remove the resource before exporting. |
@@ -97,6 +98,20 @@ the block: the handler supplies the value to the *deploy*, and cdkd re-masks it
 on the way into state — which is what the export reads. Either stop setting
 `NoEcho` on that response and re-deploy, then export again, or export the stack
 without that resource and adopt it into CloudFormation by hand.
+
+A mask in a record's `attributes` is a different population and is judged
+differently. `cdkd import` writes the mask there for every Cloud Control model
+key it cannot certify as read-only — the whole model when
+`cloudformation:DescribeType` was unavailable — so a Cloud-Control-imported
+record routinely carries masked attributes, and those records export normally:
+the export reads `attributes` at exactly one position, the recorded identifier
+of the few types whose cdkd physical id is not CloudFormation's identifier. Only
+a mask at THAT position blocks, because it would become the resource's identity
+in the import changeset; re-deploying does not clear it (the import re-masks),
+so the remedy is `cdkd import <stack> --resource <logicalId>=<physicalId>
+--force` with `cloudformation:DescribeType` granted, or exporting without the
+resource. Whatever produced the identifier, a value equal to the mask is
+refused before the changeset is built.
 
 ## Resource types CloudFormation cannot import
 

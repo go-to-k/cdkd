@@ -56,6 +56,15 @@
  * Issues: #1760 / #1768 (Table, PR #1808), #1857 (GlobalTable).
  */
 
+// A `.ts` extension, deliberately, against this repo's ordinary `.js` rule —
+// the same reason `stateful-types.ts` spells ITS import of this module that
+// way: `scripts/audit-stateful-candidates.ts` runs under BARE `node`, whose
+// resolution is literal, and this module is on that entrypoint's import
+// closure. `config-shape.ts` is a LEAF (no imports of its own), so the closure
+// ends here; `tests/unit/scripts/stateful-candidates.test.ts` is what goes red
+// when it does not.
+import { coerceCfnInteger } from './config-shape.ts';
+
 /**
  * The two `WarmThroughput` members, in the ONE order every message, every
  * comparison and every emitted block uses. A shared order is what makes two
@@ -120,12 +129,20 @@ export interface WarmThroughputCoercion {
  *
  * The accepted STRING set is `Number()`'s, which is WIDER than a decimal
  * integer: `'0x1e'`, `'0o36'`, `'1e3'`, `'30.5'` and `' 30 '` all coerce.
- * Whether CloudFormation accepts those for an `Integer`-typed property is
- * unmeasured, and issue [#2698](https://github.com/go-to-k/cdkd/issues/2698)
- * holds the live A/B that would settle it. It matters at the CALLERS that
- * FORWARD the result to AWS rather than merely compare it — narrowing this
- * shared helper would change the DynamoDB capacity readers too, so read that
- * issue before tightening anything here.
+ * CloudFormation accepts only the LAST of those for an `Integer`-typed
+ * property — measured on `AWS::Logs::LogGroup.RetentionInDays`, issue
+ * [#2698](https://github.com/go-to-k/cdkd/issues/2698) — and
+ * {@link toCfnInteger} is the reader that matches that measurement. It matters
+ * at the CALLERS that FORWARD the result to AWS rather than merely compare it:
+ * the log-group provider switched; the DynamoDB capacity / throughput
+ * forwarders (`coerceWarmThroughput` below, and the `GlobalTable` provider's
+ * `ProvisionedThroughput` / `OnDemandThroughput` readers) still read through
+ * THIS helper, because the measurement covers one resource handler and
+ * DynamoDB's has not been A/B'd — issue
+ * [#3135](https://github.com/go-to-k/cdkd/issues/3135) holds that pass. A
+ * GUARD caller (`stateful-types.ts`'s `has-retention`, the DynamoDB
+ * already-matches / decrease tests) is safe on the wider set: over-acceptance
+ * there can only produce MORE refusals or skip fewer calls.
  *
  * EXPORTED, and not because warm throughput needs it exported. This exact rule
  * was hand-written three times — here, as `dynamodb-table-provider.ts`'s
@@ -145,6 +162,60 @@ export function toFiniteNumber(value: unknown): number | undefined {
     return Number.isFinite(n) ? n : undefined;
   }
   return undefined;
+}
+
+/**
+ * A CloudFormation-borne `Integer` property, read the way CloudFormation reads
+ * it, or `undefined` when CloudFormation would REJECT the value.
+ *
+ * The sibling of {@link toFiniteNumber} for the callers that FORWARD the number
+ * to AWS. That helper is `Number()`, which accepts hex, octal, binary,
+ * exponent and decimal-point spellings; CloudFormation does not, and a
+ * provider forwarding `Number('0x1e')` sends `30` for a template CloudFormation
+ * would have refused outright. Measured live on
+ * `AWS::Logs::LogGroup.RetentionInDays` (us-east-1, 2026-09-14, issue
+ * [#2698](https://github.com/go-to-k/cdkd/issues/2698); a one-resource stack
+ * updated per spelling, live value read back with `logs describe-log-groups`):
+ *
+ * ```
+ * template spelling        CloudFormation                   live retention after
+ * 30 (JSON number)         accepted                         30
+ * "60"                     accepted                         60
+ * "+30"                    accepted                         30
+ * " 30 " (padded)          accepted                         30
+ * "  " (whitespace only)   accepted, treated as ABSENT      none (policy REMOVED)
+ * "" (empty string)        accepted, treated as ABSENT      none (policy REMOVED)
+ * property absent          accepted                         none (policy REMOVED)
+ * "0x1e"                   REJECTED (handler)               unchanged
+ * "1e3"                    REJECTED (handler)               unchanged
+ * "30.5"                   REJECTED (handler)               unchanged
+ * "30.0"                   REJECTED (handler)               unchanged
+ * "abc"                    REJECTED (handler)               unchanged
+ * true / false             REJECTED (handler)               unchanged
+ * 0 / "0"                  REJECTED (handler: enum)         unchanged
+ * null                     REJECTED at update-stack         unchanged
+ * ```
+ *
+ * So the accepted string grammar is `optional sign + decimal digits`, with
+ * surrounding whitespace TRIMMED — `/^\s*[+-]?\d+\s*$/`, then `Number()`. The
+ * digits grammar is `config-shape.ts`'s {@link coerceCfnInteger}, reused rather
+ * than respelled so the two cannot drift on it; the ONE difference is the
+ * trim, and it is a measured difference, not a relaxation: that helper's own
+ * measurement (a NESTED `GenerateSecretString.PasswordLength`, 2026-09-13)
+ * saw `" 12 "` REJECTED where this one saw `" 30 "` accepted. Per-handler
+ * behaviour varies on padding, so each helper carries its own measurement and
+ * a caller picks by the property it forwards.
+ *
+ * What this helper does NOT decide: the empty / whitespace-only strings above
+ * are CloudFormation's spelling of "property absent", which is a statement
+ * about the PROPERTY, not about the number — they answer `undefined` here, and
+ * the caller decides whether `undefined` means "absent" or "unusable" from the
+ * raw value (`logs-loggroup-provider.ts`'s `assertUsableRetention` is the
+ * reference). `0` / `'0'` parse to `0` here; whether zero is usable is again the
+ * property's question (the log-group handler rejects it by enum).
+ */
+export function toCfnInteger(value: unknown): number | undefined {
+  return coerceCfnInteger(typeof value === 'string' ? value.trim() : value);
 }
 
 /**

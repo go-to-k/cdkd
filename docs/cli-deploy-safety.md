@@ -1100,17 +1100,27 @@ counts as 30 rather than as no retention. A zero recorded in one bag never
 cancels a positive recorded in the other: zero is never-expire, which is not a
 statement that the group is empty.
 
-The coercion is JavaScript's `Number()`, filtered to finite values. That is
-**not** a reimplementation of CloudFormation's own parsing, and this page does
-not claim parity: `Number()` also accepts `'0x1e'`, `'0o36'`, `'1e3'`,
-`'30.5'` and `' 30 '`, spellings cdkd has not checked CloudFormation against.
-In the GUARD the difference is safe in the only direction that matters — a
-wider accepted set can only produce MORE `has-retention` verdicts, i.e. more
-refusals. The provider FORWARDS the coerced number to
-`logs:PutRetentionPolicy`, so an exotic spelling reaches AWS as its numeric
-value and is rejected there rather than by cdkd. Spell the retention as a
-plain decimal, which is the only form this page can promise behaves the same
-in cdkd and in CloudFormation.
+The guard's coercion is JavaScript's `Number()`, filtered to finite values.
+That is wider than CloudFormation's own Integer parsing — `Number()` also
+accepts `'0x1e'`, `'0o36'`, `'1e3'` and `'30.5'` — and in the GUARD the
+difference is safe in the only direction that matters: a wider accepted set
+can only produce MORE `has-retention` verdicts, i.e. more refusals.
+
+The **provider** is the half that forwards the number to
+`logs:PutRetentionPolicy`, and it reads the property
+the way CloudFormation does, measured rather than assumed (live A/B on
+`AWS::Logs::LogGroup`, us-east-1, 2026-09-14): an optional sign and decimal
+digits, with surrounding whitespace trimmed — `30`, `'30'`, `'+30'` and
+`' 30 '` all deploy as 30 — while `'0x1e'`, `'1e3'`, `'30.5'` and `'30.0'`
+are REFUSED before any AWS call, as CloudFormation refuses them. The falsy
+family was measured in the same pass: an absent property, an
+empty string and a whitespace-only string are CloudFormation's spellings of
+"no retention" and remove the live policy on an update, while `0`, `'0'`,
+`false` and `null` are rejected by CloudFormation and are refused by cdkd
+rather than silently removing a retention you set on purpose. The one
+cdkd-side exception is `cdkd drift --revert`, where a numeric `0` is cdkd's
+own readback spelling of a never-expiring log group and reverts a
+console-added retention as expected.
 
 ### How the conditional types are judged, per path
 

@@ -269,8 +269,15 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
     // for `${logicalId}` reddened nothing while handing the user a command
     // naming a resource that does not exist. Flag spellings verified against
     // `aws logs put-log-group-deletion-protection help` (aws-cli 2.36.19).
+    //
+    // UNQUOTED since issue #2669: the id is rendered by
+    // `replacement-protection-advice.ts`'s `renderDisableCommand`, whose
+    // `shellQuote` leaves a value in `[A-Za-z0-9._/@:+-]` bare — the form
+    // `tests/integration/loggroup-class-guard/verify.sh` greps. A hand-quoted
+    // `'${PHYSICAL_ID}'` here would pass against the pre-#2669 rendering and
+    // fail against this one, which is the discrimination this literal carries.
     expect(message).toContain(
-      `aws logs put-log-group-deletion-protection --log-group-identifier '${PHYSICAL_ID}' --no-deletion-protection-enabled`
+      `aws logs put-log-group-deletion-protection --log-group-identifier ${PHYSICAL_ID} --no-deletion-protection-enabled`
     );
     // The message advises DISABLING a safety control, and what happens to the
     // flag afterwards depends on `UpdateReplacePolicy` and on whether the
@@ -312,6 +319,77 @@ describe('LogGroupClass refusal names the deletion-protection dead-end (#2579)',
       { LogGroupClass: 'STANDARD', DeletionProtectionEnabled: 'true' }
     );
     expect(message).toContain('cdkd deploy has no --remove-protection flag');
+  });
+
+  /**
+   * Issue #2669: the id in the pasteable command is a `state.json` value, not
+   * an AWS-minted literal, and this site used to hand-quote it as
+   * `'${physicalId}'`. It now goes through `renderDisableCommand`, so it gets
+   * the identical treatment the five `protectedReplacementAdvice` callers get:
+   * `displaySafe(asciiOnly)`, then `shellQuote`, and the WHOLE command
+   * suppressed when sanitizing changed the id. Each case below names the id
+   * shape and the property it exercises; the PROTECTED arm is used throughout
+   * so the command is the thing under test rather than the branch.
+   */
+  describe('the disable command sanitizes, quotes or suppresses the state-borne id (#2669)', () => {
+    const refuseWithId = async (physicalId: string): Promise<string> => {
+      const err = await provider
+        .update(
+          'ClassLg',
+          physicalId,
+          RESOURCE_TYPE,
+          { LogGroupClass: 'INFREQUENT_ACCESS', DeletionProtectionEnabled: true },
+          { LogGroupClass: 'STANDARD', DeletionProtectionEnabled: true }
+        )
+        .catch((e: Error) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      return (err as Error).message;
+    };
+
+    it('shell-quotes an id carrying a single quote instead of pasting it raw', async () => {
+      // A `'` breaks out of the old hand-quoting: `'a'b'` pastes as `a` then a
+      // bare `b`. `shellQuote` spells it `'a'\''b'` — one argument again.
+      // ASCII throughout, so nothing is sanitized and the command survives.
+      const message = await refuseWithId("/cdkd/it's-a-group");
+      expect(message).toContain(
+        "aws logs put-log-group-deletion-protection --log-group-identifier '/cdkd/it'\\''s-a-group' --no-deletion-protection-enabled"
+      );
+      expect(message).not.toContain("--log-group-identifier '/cdkd/it's-a-group'");
+    });
+
+    it('SUPPRESSES the whole command for an id carrying a control byte, and says why', async () => {
+      // A control character forges lines on the terminal and inside the
+      // persisted `deployments/*.jsonl`. Sanitizing strips it — but a command
+      // naming the SANITIZED id would act on a DIFFERENT resource, so no
+      // command is shown at all: the `UNNAMEABLE_ID_CLAUSE` takes its place,
+      // and the rest of the protected-arm text (the doc hand-off, the flag
+      // set) is untouched.
+      const message = await refuseWithId('/cdkd/forged\u001b[2Kline');
+      expect(message).not.toContain('put-log-group-deletion-protection');
+      expect(message).not.toContain('\u001b');
+      expect(message).toContain(
+        'the physical id cdkd recorded for this resource cannot be reproduced safely on a command line'
+      );
+      expect(message).toContain('Then re-deploy with --replace --force-stateful-recreation');
+      expect(message).toContain('Read "Deletion protection blocks a replacement" in docs/cli-deploy-safety.md');
+      expect(message).toContain('cdkd deploy has no --remove-protection flag');
+    });
+
+    it('SUPPRESSES it for a non-ASCII id too (asciiOnly is a positive allowlist)', async () => {
+      const message = await refuseWithId('/cdkd/gr\u00fcppe');
+      expect(message).not.toContain('put-log-group-deletion-protection');
+      expect(message).toContain('cannot be reproduced safely on a command line');
+    });
+
+    it('leaves a clean id bare — the shape the loggroup-class-guard fixture greps', async () => {
+      // The CONTROL: a real CloudWatch Logs name (`[A-Za-z0-9._/#-]`) needs no
+      // quoting, and `shellQuote` adds none. The integ fixture's needle is this
+      // exact bare form.
+      const message = await refuseWithId('/cdkd-integ/loggroup-class-guard/class');
+      expect(message).toContain(
+        'aws logs put-log-group-deletion-protection --log-group-identifier /cdkd-integ/loggroup-class-guard/class --no-deletion-protection-enabled'
+      );
+    });
   });
 
   it('leaves the existing advice untouched when the recorded bag has no protection', async () => {

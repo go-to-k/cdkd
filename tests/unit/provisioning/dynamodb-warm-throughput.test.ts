@@ -22,8 +22,10 @@ import {
   WARM_THROUGHPUT_MEMBERS,
   coerceWarmThroughput,
   isWarmThroughputDecrease,
+  toCfnInteger,
   toFiniteNumber,
 } from '../../../src/provisioning/dynamodb-warm-throughput.js';
+import { coerceCfnInteger } from '../../../src/provisioning/config-shape.js';
 
 describe('toFiniteNumber (the ONE CFn-numeric rule, issue #1857 PR review)', () => {
   // This rule was written by hand THREE times: here, as
@@ -59,6 +61,78 @@ describe('toFiniteNumber (the ONE CFn-numeric rule, issue #1857 PR review)', () 
     ['Infinity', Number.POSITIVE_INFINITY, undefined],
   ])('reads %s', (_label, input, expected) => {
     expect(toFiniteNumber(input)).toBe(expected);
+  });
+});
+
+describe('toCfnInteger (CloudFormation\'s MEASURED Integer grammar, issue #2698)', () => {
+  // Every row below with a `cfn` column is a row of the live A/B on
+  // `AWS::Logs::LogGroup.RetentionInDays` (us-east-1, 2026-09-14, the table on
+  // the helper's doc comment). The reader must answer a NUMBER exactly where
+  // CloudFormation accepted a number, and `undefined` everywhere it rejected —
+  // the difference from `toFiniteNumber` is the whole point, so each rejected
+  // spelling is ALSO asserted to be one `Number()` accepts, or the row would
+  // pin nothing the older reader did not already do.
+  it.each([
+    ['a JSON number', 30, 30],
+    ['a decimal string', '60', 60],
+    ['a signed string', '+30', 30],
+    ['a padded string', ' 30 ', 30],
+    ['a padded signed string', '\t+30\n', 30],
+    ['a leading-zero string (coerceCfnInteger measurement, 007)', '007', 7],
+    ['a negative (a caller decides, not this reader)', -1, -1],
+    ['a negative string', '-1', -1],
+    ['a zero (a caller decides, not this reader)', 0, 0],
+    ['a string zero', '0', 0],
+  ])('reads %s as the integer CloudFormation reads', (_label, input, expected) => {
+    expect(toCfnInteger(input)).toBe(expected);
+  });
+
+  it.each([
+    ['a hex string', '0x1e', 30],
+    ['an exponent string', '1e3', 1000],
+    ['a decimal-point string', '30.5', 30.5],
+    ['a decimal-point string spelling an integer', '30.0', 30],
+    ['an octal string', '0o36', 30],
+    ['a binary string', '0b11110', 30],
+    ['a non-integer number', 30.5, 30.5],
+  ])('REFUSES %s, which Number() would have forwarded as %s', (_label, input, viaNumber) => {
+    expect(toCfnInteger(input)).toBeUndefined();
+    // The discriminator against the older reader — without this the row is
+    // satisfiable by any function that returns `undefined`.
+    expect(toFiniteNumber(input)).toBe(viaNumber);
+  });
+
+  it.each([
+    ['an empty string (CloudFormation: property ABSENT)', ''],
+    ['a whitespace-only string (CloudFormation: property ABSENT)', '   '],
+    ['undefined', undefined],
+    ['null', null],
+    ['a non-numeric string', 'abc'],
+    ['true', true],
+    ['false', false],
+    ['an empty array', []],
+    ['an object (an unresolved intrinsic)', { Ref: 'X' }],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['an unsafe integer', 2 ** 53],
+    ['an unsafe integer string', '9007199254740993'],
+  ])('answers undefined for %s (absent or unusable is the CALLER\'s question)', (_label, input) => {
+    expect(toCfnInteger(input)).toBeUndefined();
+  });
+
+  it('is coerceCfnInteger plus a trim and nothing else — the two grammars cannot drift', () => {
+    // The digits grammar is REUSED from `config-shape.ts`; the trim is the one
+    // measured difference between the two properties (a nested
+    // `PasswordLength` rejected `" 12 "`, a top-level `RetentionInDays`
+    // accepted `" 30 "`). So on every UNPADDED input the two agree exactly, and
+    // a padded input is the only one where they part — asserted in both
+    // directions so neither helper can quietly absorb the other's rule.
+    const unpadded: unknown[] = [30, '30', '+30', '007', '0x1e', '1e3', '30.5', '', 'abc', null, 0, '0', -1, 30.5];
+    for (const input of unpadded) {
+      expect(toCfnInteger(input), `unpadded ${JSON.stringify(input)}`).toBe(coerceCfnInteger(input));
+    }
+    expect(toCfnInteger(' 30 ')).toBe(30);
+    expect(coerceCfnInteger(' 30 ')).toBeUndefined();
   });
 });
 

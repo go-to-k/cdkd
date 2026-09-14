@@ -145,6 +145,12 @@ describe('LogsLogGroupProvider read-update round-trip', () => {
     // The reverse: dropping retention back to "never expire" must
     // produce a Delete, matching the always-emit `?? 0` semantic on
     // the read side.
+    //
+    // Driven WITH `desiredFromAwsReadback`, because that is the bag this
+    // round-trip models: `cdkd drift --revert` hands `update()` the observed
+    // baseline, and since issue #2699 a numeric `0` is "never expire" ONLY
+    // there — on a template bag CloudFormation rejects `0`, and so does cdkd
+    // (pinned in `logs-loggroup-provider-retention-coercion.test.ts`).
     const oldProps: Record<string, unknown> = {
       LogGroupName: PHYSICAL_ID,
       KmsKeyId: '',
@@ -156,7 +162,9 @@ describe('LogsLogGroupProvider read-update round-trip', () => {
       RetentionInDays: 0,
     };
 
-    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps, {
+      desiredFromAwsReadback: true,
+    });
 
     const deleteRetentionCall = mockSend.mock.calls.find(
       (c) => c[0] instanceof DeleteRetentionPolicyCommand

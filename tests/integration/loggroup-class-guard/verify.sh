@@ -423,10 +423,17 @@ lg_protection() { # prints True / False for the exact-named log group
 # regression, so a needle added here is automatically both asserted on the
 # protected arm (phase 5) and forbidden on the unprotected one (phase 2), and
 # the two can never drift apart.
+#
+# The third needle is the command AS RENDERED, which since issue #2669 goes
+# through `renderDisableCommand` (src/provisioning/replacement-protection-advice.ts):
+# the id is sanitized, then `shellQuote`d, and this fixture's name is in the
+# quote-free class (`[A-Za-z0-9._/@:+-]`), so it is rendered BARE. A needle
+# carrying the pre-#2669 hand-quoting `'$1'` would silently stop matching —
+# which is why the needle is the bare form and why phase 5 hard-fails on it.
 protected_needles() { # $1 = exact log group name
   printf '%s\n' "carry DeletionProtectionEnabled"
   printf '%s\n' "cdkd deploy has no --remove-protection flag"
-  printf '%s\n' "put-log-group-deletion-protection --log-group-identifier '$1' --no-deletion-protection-enabled"
+  printf '%s\n' "put-log-group-deletion-protection --log-group-identifier $1 --no-deletion-protection-enabled"
 }
 
 assert_protected_arm() { # $1 = phase label, $2 = captured output, $3 = log group name
@@ -622,11 +629,12 @@ echo "    protected arm fired, named the property, the missing flag and the disa
 # the whole point of this phase: what the message PRINTS has to be what WORKS.
 #
 # Extracted and re-executed, never `eval`ed — a fixture must not hand program
-# output to the shell. The message prints exactly one shell-quoted argument (the
-# log group name), and CloudWatch Logs names cannot contain whitespace, so
-# stripping the quotes and word-splitting under `set -f` is a TOTAL parse rather
-# than a shell evaluation; the resulting argv is then checked element by element
-# before anything runs.
+# output to the shell. The message prints the log group name as ONE argument —
+# bare for this fixture's quote-free name, `'...'`-quoted by `shellQuote` for a
+# name outside `[A-Za-z0-9._/@:+-]` (issue #2669) — and CloudWatch Logs names
+# cannot contain whitespace, so stripping any quotes and word-splitting under
+# `set -f` is a TOTAL parse rather than a shell evaluation; the resulting argv
+# is then checked element by element before anything runs.
 echo "==> Phase 6: run the disable command the refusal printed, then --replace --force-stateful-recreation"
 # `sed -n 1p`, never `| head -1`: head exits on its first line, grep takes
 # SIGPIPE, and under `pipefail` the substitution would abort the run.
