@@ -56,13 +56,13 @@ import { join } from 'node:path';
  *
  * The ROOT may itself be a symlink (an asset dir handed over through a link
  * passes `resolveAssetCodePath`'s `statSync`). `readdirSync` follows a root
- * link by itself, so the `realpathSync` is not what makes that case work —
- * it keeps every path the walk joins real, and fails EARLY, with the asset
- * path in the error, on a dangling or looping root instead of deep inside
- * the walk.
+ * link by itself, so the `realpathSync` is not what makes that case work,
+ * and it does not move where a dangling or looping root fails either (the
+ * first `readdirSync` raises the same `ENOENT` / `ELOOP` naming the asset
+ * path); it only keeps every path the walk joins real.
  *
- * Bound, stated rather than handled: a FIFO / socket / device inside a
- * layer makes the single-file `cpSync` throw (`ERR_FS_CP_FIFO_PIPE` /
+ * Bound, stated rather than handled: a FIFO or a socket inside a layer
+ * makes the single-file `cpSync` throw (`ERR_FS_CP_FIFO_PIPE` /
  * `ERR_FS_CP_SOCKET`, immediately, never blocking) where the old recursive
  * copy skipped it in silence on some releases. CDK's own asset staging
  * cannot stage such an entry, so no real layer carries one.

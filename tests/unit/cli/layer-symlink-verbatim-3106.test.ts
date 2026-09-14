@@ -12,7 +12,6 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename } from 'node:path';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { materializeLambdaLayers as materializeForInvoke } from '../../../src/cli/commands/local-invoke.js';
@@ -244,38 +243,54 @@ describe('copyLayerTreeLastWins merges symlinks last-wins without resolving them
 describe('a merge that throws mid-loop removes the tmpdir it had allocated (#3106 round 3)', () => {
   // A later layer whose asset path does not exist makes the helper throw
   // after the tmpdir exists; without the guard nobody ever sees that
-  // tmpdir, so it sits in the OS tmp root forever.
+  // tmpdir, so it sits in the OS tmp root forever. `os.tmpdir()` re-reads
+  // `TMPDIR` on every call, so pointing it at a per-test scratch directory
+  // makes "nothing left behind" a hermetic assertion — a concurrent vitest
+  // worker or a real invoke on the host cannot write into it.
   const missing = join(tmpdir(), 'cdkd-3106-does-not-exist-' + process.pid);
-  const tmpDirsWithPrefix = (prefix: string): string[] =>
-    readdirSync(tmpdir()).filter((n) => n.startsWith(prefix));
+  // The fixture layer is created BEFORE `TMPDIR` is redirected, so the only
+  // thing that can appear in the scratch directory is the helper's tmpdir.
+  function withScratchTmpdir(
+    run: (scratchTmp: string, plain: string) => void | Promise<void>
+  ): Promise<void> {
+    const plain = plainLayer();
+    const scratchTmp = mkdtempSync(join(tmpdir(), 'cdkd-3106-tmp-'));
+    scratch.push(scratchTmp);
+    const saved = process.env['TMPDIR'];
+    process.env['TMPDIR'] = scratchTmp;
+    return Promise.resolve()
+      .then(() => run(scratchTmp, plain))
+      .finally(() => {
+        if (saved === undefined) delete process.env['TMPDIR'];
+        else process.env['TMPDIR'] = saved;
+      });
+  }
 
-  it('cdkd local invoke', () => {
-    const before = tmpDirsWithPrefix('cdkd-local-invoke-layers-');
-    expect(() =>
-      materializeForInvoke([
-        { logicalId: 'Plain', assetPath: plainLayer() },
-        { logicalId: 'Missing', assetPath: missing },
-      ])
-    ).toThrow(/ENOENT/);
-    const leaked = tmpDirsWithPrefix('cdkd-local-invoke-layers-').filter((n) => !before.includes(n));
-    expect(leaked, `leaked ${leaked.map((n) => basename(n)).join(', ')}`).toEqual([]);
-  });
+  it('cdkd local invoke', () =>
+    withScratchTmpdir((scratchTmp, plain) => {
+      expect(() =>
+        materializeForInvoke([
+          { logicalId: 'Plain', assetPath: plain },
+          { logicalId: 'Missing', assetPath: missing },
+        ])
+      ).toThrow(/ENOENT/);
+      expect(readdirSync(scratchTmp), 'the merge tmpdir was left behind').toEqual([]);
+    }));
 
-  it('cdkd local start-api', async () => {
-    const before = tmpDirsWithPrefix('cdkd-local-start-api-layers-');
-    const tmpDirs = new Set<string>();
-    await expect(
-      materializeForStartApi(
-        [
-          { kind: 'asset', logicalId: 'Plain', assetPath: plainLayer() },
-          { kind: 'asset', logicalId: 'Missing', assetPath: missing },
-        ],
-        tmpDirs,
-        undefined
-      )
-    ).rejects.toThrow(/ENOENT/);
-    expect(tmpDirs.size).toBe(0);
-    const leaked = tmpDirsWithPrefix('cdkd-local-start-api-layers-').filter((n) => !before.includes(n));
-    expect(leaked, `leaked ${leaked.map((n) => basename(n)).join(', ')}`).toEqual([]);
-  });
+  it('cdkd local start-api', () =>
+    withScratchTmpdir(async (scratchTmp, plain) => {
+      const tmpDirs = new Set<string>();
+      await expect(
+        materializeForStartApi(
+          [
+            { kind: 'asset', logicalId: 'Plain', assetPath: plain },
+            { kind: 'asset', logicalId: 'Missing', assetPath: missing },
+          ],
+          tmpDirs,
+          undefined
+        )
+      ).rejects.toThrow(/ENOENT/);
+      expect(tmpDirs.size).toBe(0);
+      expect(readdirSync(scratchTmp), 'the merge tmpdir was left behind').toEqual([]);
+    }));
 });
