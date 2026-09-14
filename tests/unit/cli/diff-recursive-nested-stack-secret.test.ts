@@ -232,6 +232,82 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
     expect(treeHasChanges(root)).toBe(true);
   });
 
+  /**
+   * The #3079 TWIN: a second parameter in the SAME frame around ANOTHER token.
+   * The recursive diff binds each child parameter to its parent's own framed
+   * string, so a child record where the losing parameter's leaf holds the
+   * OTHER token's frame (the pre-#3079 persist) reports a change on every run
+   * -- measured here, beside the NO_CHANGE the per-name association buys.
+   */
+  const PIN_TWIN_PARAM = 'referencetoParentPinTwin';
+  const PIN_TWIN_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:pintwin::}}';
+  const FRAMED_TWIN_EXPR = `port:${PIN_TWIN_EXPR}`;
+
+  async function diffPinTwin(pinValue: string, twinValue: string) {
+    const childPath = join(dir, 'child-pin-twin.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Parameters: { [PIN_PARAM]: { Type: 'String' }, [PIN_TWIN_PARAM]: { Type: 'String' } },
+        Resources: {
+          PinRes: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Type: 'String', Value: { Ref: PIN_PARAM } },
+          },
+          PinTwinRes: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Type: 'String', Value: { Ref: PIN_TWIN_PARAM } },
+          },
+        },
+      })
+    );
+    const parameters = { [PIN_PARAM]: FRAMED_EXPR, [PIN_TWIN_PARAM]: FRAMED_TWIN_EXPR };
+    const states: Record<string, StackState> = {
+      Parent: st('Parent', { Child: res(NESTED, { Parameters: parameters }) }),
+      'Parent~Child': st('Parent~Child', {
+        PinRes: res('AWS::SSM::Parameter', { Type: 'String', Value: pinValue }),
+        PinTwinRes: res('AWS::SSM::Parameter', { Type: 'String', Value: twinValue }),
+      }),
+    };
+    return await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Child: {
+            Type: NESTED,
+            Metadata: { 'aws:asset:path': 'child-pin-twin.json' },
+            Properties: { Parameters: parameters },
+          },
+        },
+      },
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: fakeBackend(states),
+      diffCalculator: new DiffCalculator(),
+    });
+  }
+
+  it('reports NO_CHANGE when each twin leaf persisted ITS OWN frame (#3079)', async () => {
+    const root = await diffPinTwin(FRAMED_EXPR, FRAMED_TWIN_EXPR);
+
+    const child = root.children[0]!;
+    expect(child.changes.get('PinRes')!.changeType).toBe('NO_CHANGE');
+    expect(child.changes.get('PinTwinRes')!.changeType).toBe('NO_CHANGE');
+    expect(treeHasChanges(root)).toBe(false);
+    expect(secretSend).not.toHaveBeenCalled();
+  });
+
+  it("reports a CHANGE on the loser while its leaf holds the OTHER token's frame — the pre-#3079 record, measured", async () => {
+    const root = await diffPinTwin(FRAMED_EXPR, FRAMED_EXPR);
+
+    const child = root.children[0]!;
+    expect(child.changes.get('PinRes')!.changeType).toBe('NO_CHANGE');
+    expect(child.changes.get('PinTwinRes')!.changeType).toBe('UPDATE');
+    expect(treeHasChanges(root)).toBe(true);
+  });
+
   it('reports NO_CHANGE on a freshly-deployed tree and never fetches the secret', async () => {
     const root = await diff(freshStates());
 
