@@ -466,7 +466,15 @@ jobs:
     needs: check-build-test
     strategy:
       matrix:
-        node-version: [20, 22, 24]
+        # The first row is the EXACT published floor (`package.json`
+        # `engines.node`, as major.minor — Node 20 went EOL on 2026-04-30),
+        # so this smoke proves the promised minimum and not merely "some
+        # 22.x"; the rest are the later majors, the dev pin (`.node-version`)
+        # among them. Quoted so YAML keeps the spelling verbatim (an unquoted
+        # 22.10 would parse as the float 22.1). The matrix, the engines
+        # range, the `vp pack` target and the docs are pinned to one another
+        # by `tests/unit/scripts/node-floor-sync.test.ts`.
+        node-version: ['22.12', '24']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
@@ -549,7 +557,7 @@ jobs:
   # exists instead of the ruleset naming this file's real jobs for two reasons:
   #
   #   1. `runtime-compat` is a matrix. A required check has to match the
-  #      EXPANDED name (`runtime-compat (20)`), but a matrix job that never
+  #      EXPANDED name (`runtime-compat (22.12)`), but a matrix job that never
   #      starts — because `check-build-test` failed — reports under the
   #      UNEXPANDED name (`runtime-compat`). Requiring either spelling leaves
   #      the other permanently "Expected", which blocks the PR forever.

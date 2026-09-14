@@ -25,7 +25,7 @@ Before installing or upgrading, verify the current release and runtime requireme
 npm view @go-to-k/cdkd version engines --json
 ```
 
-cdkd requires Node.js 20 or later. If the user asks to install it, prefer an explicit version so the action is reproducible:
+cdkd requires Node.js 22.12 or later. If the user asks to install it, prefer an explicit version so the action is reproducible:
 
 ```bash
 npm install --global @go-to-k/cdkd@<version>

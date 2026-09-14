@@ -149,7 +149,10 @@ export default defineConfig({
     },
     outDir: 'dist',
     platform: 'node',
-    target: 'node20',
+    // The shipped runtime floor. Kept in lockstep with `package.json`
+    // `engines.node`, the `runtime-compat` CI matrix and the docs by
+    // `tests/unit/scripts/node-floor-sync.test.ts` (issue #3037).
+    target: 'node22',
     format: 'esm',
     fixedExtension: false,
     dts: true,

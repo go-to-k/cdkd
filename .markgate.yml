@@ -322,6 +322,20 @@ gates:
       # file, so it stales `check` — which package.json in this same scope
       # already did on every release, so the entry adds no new cost.
       - "CHANGELOG.md"
+      # node-floor-sync.test.ts reads it as one of the prose files that STATE
+      # the published Node.js floor (issue #3037). It has no twin-sync fence
+      # against docs/contributing.md, so this is the only reader that notices
+      # the GitHub-facing copy still advertising an EOL runtime. The
+      # `assets/**`-style "needs neither gate" status CLAUDE.md used to give it
+      # ended here; the docs gate still leaves it alone.
+      - "CONTRIBUTING.md"
+      # The same test reads `.node-version` (the dev / CI pin) to assert its
+      # major is one of the `runtime-compat` matrix rows, so a pin bump that
+      # leaves the matrix behind must stale this marker. A dotfile with no
+      # extension is invisible to check-scope-checker-inputs.test.ts's bare-
+      # literal extractor, which is why this entry is written by hand rather
+      # than demanded by that fence.
+      - ".node-version"
       - "docs/**"
       # `.gitignore` is a checker INPUT since go-to-k/cdkd#2738:
       # `tests/unit/scripts/settings-bash-first-optout.test.ts` requires

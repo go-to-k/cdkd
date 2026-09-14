@@ -15,8 +15,9 @@ lives in **[docs/contributing.md](docs/contributing.md)**, next to the
 
 This repo uses Vite+ for the JavaScript toolchain and runtime/package-manager
 workflows. Developer tasks run on Node.js 24, pinned by `.node-version` and
-managed by Vite+, while the package continues to support users on Node.js 20
-and later. Dependencies are installed with pnpm 11 through Vite+.
+managed by Vite+, while the package supports users on Node.js 22.12 and
+later (Node 20 is past end of life and no longer supported). Dependencies
+are installed with pnpm 11 through Vite+.
 
 The global `vp` CLI itself is pinned by `.mise.toml` via mise's HTTP backend
 against Vite+'s platform CLI tarball. `mise install` also installs

@@ -2070,7 +2070,7 @@ export async function materializeLambdaLayers(
     // later layer's entry at the same relative path overwrites the
     // earlier one.
     //
-    // **Contract pinned (Node 20+)**: this call relies on `fs.cpSync`
+    // **Contract pinned (Node 22.12+, the `engines` floor)**: this call relies on `fs.cpSync`
     // defaults that the integ-test fixture (`tests/integration/local-
     // invoke-layers/`) exercises end-to-end, and that future
     // refactors must NOT silently drop:
@@ -2078,9 +2078,12 @@ export async function materializeLambdaLayers(
     //     including `+x`. AWS layers commonly ship executable scripts
     //     under `bin/` and a handler that runs `/opt/bin/<script>`
     //     would otherwise fail with "Permission denied".
-    //   - `verbatimSymlinks` defaults to true on Node 20+; symlinks
-    //     are copied as symlinks (not dereferenced), matching AWS's
-    //     layer-ZIP extraction into `/opt`.
+    //   - `dereference` defaults to false, so symlinks are copied as
+    //     symlinks rather than flattened, matching AWS's layer-ZIP
+    //     extraction into `/opt`. KNOWN DEFECT, issue #3106:
+    //     `verbatimSymlinks` also defaults to false, so a RELATIVE link
+    //     target is rewritten to the source's absolute host path and is
+    //     dangling in the container — the fix belongs to that issue.
     // Mirrors the same contract pinned in `local-invoke.ts`'s
     // `materializeLambdaLayers`; keep the two call sites in sync if
     // they ever consolidate into one helper.

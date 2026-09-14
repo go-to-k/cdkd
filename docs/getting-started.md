@@ -16,7 +16,7 @@ npm i -g @go-to-k/cdkd@<version> # pin to a specific version
 
 The installed binary is `cdkd`. Running it requires:
 
-- **Node.js** >= 20.0.0
+- **Node.js** >= 22.12.0
 - **AWS credentials with admin-equivalent permissions** for the resources being
   deployed. cdkd does NOT route through CloudFormation, so CDK CLI's
   `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see

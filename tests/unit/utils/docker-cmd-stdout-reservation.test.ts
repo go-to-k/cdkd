@@ -287,7 +287,7 @@ describe("spawnStreaming routes a child's live stdout by the reservation (issue 
  * needs Node >= 24. That is the repo's pinned dev/CI runtime (`.node-version`
  * 24.15.0, managed by Vite+ / mise), and the same assumption every
  * `node scripts/*.ts` invocation in this repo already makes; `engines`'
- * `>= 20` bounds what cdkd's USERS need, not what building it needs. On an
+ * `>= 22.12` bounds what cdkd's USERS need, not what building it needs. On an
  * older runner the failure is self-diagnosing — the probe's own stderr is
  * printed in the assertion message.
  */
