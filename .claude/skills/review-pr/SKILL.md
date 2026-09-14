@@ -329,11 +329,12 @@ PR-specific context.
      # to that sha — a later push invalidates it. Sentinel + markgate state
      # land in the CURRENT worktree; set markers from the worktree you intend
      # to merge from. Right after a push `gh pr view` can still answer the
-     # PREVIOUS head (go-to-k/cdkd#879; twice on 2026-09-14), so bind only
-     # when it equals local HEAD: run this after `gh pr checks <N> --watch`,
-     # never in the push's own call; on a mismatch re-run it (no sleep loop).
+     # PREVIOUS head (hit merging go-to-k/cdkd#879; twice on 2026-09-14): bind
+     # only when it equals local HEAD, after `gh pr checks <N> --watch`, never
+     # in the push's own call; on a mismatch re-run it. `:?` refuses an empty
+     # answer, which would compare equal to an empty `rev-parse`.
      SHA=$(gh pr view <N> --json headRefOid -q .headRefOid)
-     if [ "$SHA" = "$(git rev-parse HEAD)" ]; then
+     if [ "${SHA:?}" = "$(git rev-parse HEAD)" ]; then
        printf '%s\n' "$SHA" > .markgate-pr-review-sha && mise exec -- markgate set pr-review
      else echo "PR head ${SHA:0:7} != local HEAD: NOT bound" >&2; fi
      ```
@@ -348,9 +349,7 @@ PR-specific context.
    gate).
 
    **NEVER set the marker without dispatching the reviewers first** — the
-   gate exists so an un-reviewed large PR cannot reach main
-   (`pr-review-gate.sh` blocks `gh pr merge` until the marker is fresh AND
-   the recorded sha matches HEAD).
+   gate exists so an un-reviewed large PR cannot reach main.
 
 ## Output template
 
